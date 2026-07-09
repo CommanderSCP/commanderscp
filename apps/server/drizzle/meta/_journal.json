@@ -29,6 +29,13 @@
       "when": 1783690000000,
       "tag": "0003_runtime_roles",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1783700000000,
+      "tag": "0004_auth_expansion",
+      "breakpoints": true
     }
   ]
 }

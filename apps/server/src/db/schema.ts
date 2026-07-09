@@ -44,12 +44,20 @@ export const users = pgTable(
       .notNull()
       .references(() => orgs.id),
     username: text("username").notNull(),
-    passwordHash: text("password_hash").notNull(),
+    // NULL for OIDC-provisioned accounts (M2 stage 2, drizzle/0004_auth_expansion.sql) — those
+    // authenticate exclusively via the IdP, never a local password (auth/local-auth.ts `login()`
+    // treats NULL the same as a wrong password).
+    passwordHash: text("password_hash"),
     /** The graph `user` object representing this account (DESIGN.md §7 RBAC subject). */
     objectId: uuid("object_id"),
+    /** OIDC `sub` claim this account was JIT-provisioned from (auth/oidc.ts) — NULL for local-auth-only users. */
+    oidcSubject: text("oidc_subject"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
-  (table) => [unique("users_org_id_username_key").on(table.orgId, table.username)]
+  (table) => [
+    unique("users_org_id_username_key").on(table.orgId, table.username),
+    unique("users_org_id_oidc_subject_key").on(table.orgId, table.oidcSubject)
+  ]
 );
 
 export const sessions = pgTable("sessions", {
@@ -61,6 +69,60 @@ export const sessions = pgTable("sessions", {
     .notNull()
     .references(() => orgs.id),
   tokenHash: text("token_hash").notNull().unique(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+});
+
+/**
+ * Personal Access Tokens (M2 stage 2, BUILD_AND_TEST.md §8 M2 item 3) — auth substrate like
+ * orgs/users/sessions above (no RLS, see drizzle/0004_auth_expansion.sql). `tokenId` is an
+ * indexable CLEARTEXT lookup key: argon2's output is salted/non-comparable, so — unlike
+ * `sessions.tokenHash`'s SHA-256 equality lookup — a PAT can't be found by hashing the presented
+ * secret and matching it directly. The presented token is `scp_pat_<tokenId>.<secret>`;
+ * `tokenId` finds the row in O(1), then `tokenHash` (argon2 of `secret`) is verified
+ * (auth/pat.ts).
+ */
+export const personalAccessTokens = pgTable(
+  "personal_access_tokens",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    name: text("name").notNull(),
+    tokenId: text("token_id").notNull().unique(),
+    tokenHash: text("token_hash").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true })
+  },
+  (table) => [index("pat_org_user").on(table.orgId, table.userId)]
+);
+
+/**
+ * SCP's own RFC 8628-shaped device-authorization flow (M2 stage 2 Part C) — hosted by SCP itself,
+ * not a proxy to the upstream IdP's device grant, so it works identically for local-auth-only
+ * air-gapped orgs and OIDC-configured orgs alike (DESIGN.md §7 "headless jump boxes can't do
+ * browser redirects"). Auth substrate, no RLS — same treatment as orgs/users/sessions.
+ *
+ * `issuedToken` briefly holds a PLAINTEXT session token between approval and the CLI's next poll
+ * — acceptable because the row is short-lived (~10 min, `expiresAt`), single-use (claimed
+ * atomically and nulled out in the same update — auth/device-flow.ts `pollDeviceAuth`), and only
+ * reachable by whoever knows the long, unguessable `deviceCode` (never the short, human-typed
+ * `userCode`, which is deliberately low-entropy but short-lived + single-use).
+ */
+export const deviceAuthRequests = pgTable("device_auth_requests", {
+  id: uuid("id").primaryKey(),
+  deviceCodeHash: text("device_code_hash").notNull().unique(),
+  userCode: text("user_code").notNull().unique(),
+  status: text("status").notNull().default("pending"), // pending|approved|denied|expired|claimed
+  orgId: uuid("org_id").references(() => orgs.id), // set on approval
+  issuedToken: text("issued_token"), // plaintext, briefly — see doc comment above
+  issuedTokenExpiresAt: timestamp("issued_token_expires_at", { withTimezone: true }),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
 });
