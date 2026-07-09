@@ -19,6 +19,24 @@ export function isUuid(value: string): boolean {
   return UUID_RE.test(value);
 }
 
+/** Deterministic JSON serialization (recursively sorted object keys) for content-equality checks. */
+export function canonicalJson(value: unknown): string {
+  return JSON.stringify(sortKeysDeep(value));
+}
+
+function sortKeysDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeysDeep);
+  if (value !== null && typeof value === "object") {
+    return Object.keys(value as Record<string, unknown>)
+      .sort()
+      .reduce<Record<string, unknown>>((acc, key) => {
+        acc[key] = sortKeysDeep((value as Record<string, unknown>)[key]);
+        return acc;
+      }, {});
+  }
+  return value;
+}
+
 export function toGraphObject(row: typeof objects.$inferSelect): GraphObject {
   return {
     id: row.id,
@@ -381,6 +399,23 @@ export async function upsertObjectByUrn(
   }
   if (existing.deletedAt) {
     throw conflict(`urn '${input.urn}' refers to a soft-deleted object`);
+  }
+
+  // True idempotency: replaying the exact same PUT body against an unchanged row is a no-op —
+  // no version/revision bump, no audit event, no outbox event. Without this, a byte-identical
+  // replay would still increment `version` forever, which is "safe" for federation convergence
+  // (content matches either way) but not actually idempotent in the HTTP sense the endpoint
+  // claims to be (fast-check-tested: graph/idempotency.integration.test.ts).
+  const nextDomainId = input.domainId === undefined ? existing.domainId : input.domainId;
+  const nextProperties = input.properties ?? {};
+  const nextLabels = input.labels ?? {};
+  if (
+    existing.name === input.name &&
+    existing.domainId === nextDomainId &&
+    canonicalJson(existing.properties) === canonicalJson(nextProperties) &&
+    canonicalJson(existing.labels) === canonicalJson(nextLabels)
+  ) {
+    return { object: toGraphObject(existing), created: false };
   }
 
   const updated = await updateObject(tx, {

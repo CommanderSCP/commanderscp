@@ -3,6 +3,7 @@ import type { AppDeps } from "../types.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { createObject, listObjects, resolveDomainId } from "../graph/objects-repo.js";
 import { authorize } from "../authz/resolve.js";
+import { withIdempotency } from "../idempotency.js";
 import type { GraphObject } from "@scp/schemas";
 
 // Re-exported for backward compatibility — `objects-service.test.ts` (M0) imports these from
@@ -25,18 +26,20 @@ function toServiceObject(row: GraphObject): ServiceObject {
  * substrate is expected"). A plain `service`-typed graph object under the hood, so anything
  * created here is equally visible through the generic `/objects/{type}` endpoint family.
  *
- * RBAC-enforced (object:write) exactly like the generic create — Fastify's router prefers this
- * literal static route over the parametric `/objects/:type` for the exact path
- * `/objects/service`, so this is the ONLY handler that ever runs for that path; it must carry
- * full parity (authorization, domainId/properties/labels/custom id-urn support), not a stripped
- * subset, or those capabilities would silently be unavailable for the 'service' type specifically.
+ * RBAC-enforced (object:write) and Idempotency-Key-aware exactly like the generic create —
+ * Fastify's router prefers this literal static route over the parametric `/objects/:type` for
+ * the exact path `/objects/service`, so this is the ONLY handler that ever runs for that path;
+ * it must carry full parity (authorization, idempotency, domainId/properties/labels/custom
+ * id-urn support), not a stripped subset, or those capabilities would silently be unavailable
+ * for the 'service' type specifically.
  */
 export async function createServiceObject(
   deps: AppDeps,
   orgId: string,
   actorObjectId: string,
   body: CreateServiceObjectRequest,
-  requestId: string
+  requestId: string,
+  idempotencyKey: string | undefined
 ): Promise<ServiceObject> {
   const created = await withTenantTx(deps.db, orgId, async (tx) => {
     const scopeObjectId = await resolveDomainId(tx, orgId, body.domainId ?? undefined);
@@ -46,18 +49,26 @@ export async function createServiceObject(
       permission: "object:write",
       scopeObjectId: scopeObjectId ?? orgId
     });
-    return createObject(tx, {
-      orgId,
-      typeId: "service",
-      actorObjectId,
-      requestId,
-      id: body.id,
-      urn: body.urn,
-      name: body.name,
-      domainId: body.domainId,
-      properties: body.properties,
-      labels: body.labels
-    });
+    const result = await withIdempotency(
+      tx,
+      { orgId, idempotencyKey, route: "POST /objects/service", requestBody: body },
+      async () => ({
+        status: 201,
+        body: await createObject(tx, {
+          orgId,
+          typeId: "service",
+          actorObjectId,
+          requestId,
+          id: body.id,
+          urn: body.urn,
+          name: body.name,
+          domainId: body.domainId,
+          properties: body.properties,
+          labels: body.labels
+        })
+      })
+    );
+    return result.body;
   });
   return toServiceObject(created);
 }

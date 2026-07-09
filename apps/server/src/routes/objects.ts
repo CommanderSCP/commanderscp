@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import {
   CreateServiceObjectRequestSchema,
@@ -11,6 +11,11 @@ import {
 import type { AppDeps } from "../types.js";
 import { assertOrgMatch, requireAuth } from "../auth/require-auth.js";
 import { createServiceObject, listServiceObjects } from "../services/objects-service.js";
+
+function idempotencyKey(request: FastifyRequest): string | undefined {
+  const header = request.headers["idempotency-key"];
+  return typeof header === "string" ? header : undefined;
+}
 
 /**
  * `POST/GET /api/v1/objects/service` plus the `orgs/{org}` path-override form (DESIGN.md §6),
@@ -25,7 +30,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     url: "/api/v1/objects/service",
     schema: {
       body: CreateServiceObjectRequestSchema,
-      response: { 201: ServiceObjectSchema, 401: ProblemSchema, 403: ProblemSchema }
+      response: { 201: ServiceObjectSchema, 401: ProblemSchema, 403: ProblemSchema, 409: ProblemSchema, 422: ProblemSchema }
     },
     config: {
       openapi: {
@@ -36,7 +41,14 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
-      const created = await createServiceObject(deps, auth.orgId, auth.subjectObjectId, request.body, request.id);
+      const created = await createServiceObject(
+        deps,
+        auth.orgId,
+        auth.subjectObjectId,
+        request.body,
+        request.id,
+        idempotencyKey(request)
+      );
       reply.status(201).send(created);
     }
   });
@@ -68,7 +80,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     schema: {
       params: OrgParamSchema,
       body: CreateServiceObjectRequestSchema,
-      response: { 201: ServiceObjectSchema, 401: ProblemSchema, 403: ProblemSchema }
+      response: { 201: ServiceObjectSchema, 401: ProblemSchema, 403: ProblemSchema, 409: ProblemSchema, 422: ProblemSchema }
     },
     config: {
       openapi: {
@@ -80,7 +92,14 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       assertOrgMatch(auth, request.params.org);
-      const created = await createServiceObject(deps, auth.orgId, auth.subjectObjectId, request.body, request.id);
+      const created = await createServiceObject(
+        deps,
+        auth.orgId,
+        auth.subjectObjectId,
+        request.body,
+        request.id,
+        idempotencyKey(request)
+      );
       reply.status(201).send(created);
     }
   });
