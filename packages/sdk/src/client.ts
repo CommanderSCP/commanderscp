@@ -216,7 +216,10 @@ export class ScpClient {
 
   readonly typeRegistry = {
     objectTypes: {
-      create: async (req: CreateObjectTypeRequest, opts: { idempotencyKey?: string } = {}): Promise<ObjectType> => {
+      create: async (
+        req: CreateObjectTypeRequest,
+        opts: { idempotencyKey?: string } = {}
+      ): Promise<ObjectType> => {
         const result = await createObjectTypeRequest({
           client: this.client,
           body: req,
@@ -256,7 +259,10 @@ export class ScpClient {
   /** Returns a small ergonomic client scoped to one object type, e.g. `client.object("service")`. */
   object(type: string) {
     return {
-      create: async (req: CreateObjectRequest, opts: { idempotencyKey?: string } = {}): Promise<GraphObject> => {
+      create: async (
+        req: CreateObjectRequest,
+        opts: { idempotencyKey?: string } = {}
+      ): Promise<GraphObject> => {
         const result = await createObjectRequest({
           client: this.client,
           path: { type },
@@ -274,7 +280,11 @@ export class ScpClient {
         return unwrap(result);
       },
       update: async (idOrUrn: string, req: UpdateObjectRequest): Promise<GraphObject> => {
-        const result = await updateObjectRequest({ client: this.client, path: { type, idOrUrn }, body: req });
+        const result = await updateObjectRequest({
+          client: this.client,
+          path: { type, idOrUrn },
+          body: req
+        });
         return unwrap(result);
       },
       delete: async (idOrUrn: string): Promise<GraphObject> => {
@@ -282,14 +292,21 @@ export class ScpClient {
         return unwrap(result);
       },
       upsertByUrn: async (urn: string, req: UpsertObjectRequest): Promise<GraphObject> => {
-        const result = await upsertObjectByUrnRequest({ client: this.client, path: { type, urn }, body: req });
+        const result = await upsertObjectByUrnRequest({
+          client: this.client,
+          path: { type, urn },
+          body: req
+        });
         return unwrap(result);
       }
     };
   }
 
   /** Pagination iterator over any object type. */
-  async *listAllObjects(type: string, query: Omit<ListObjectsQuery, "cursor"> = {}): AsyncGenerator<GraphObject> {
+  async *listAllObjects(
+    type: string,
+    query: Omit<ListObjectsQuery, "cursor"> = {}
+  ): AsyncGenerator<GraphObject> {
     let cursor: string | undefined;
     do {
       const page = await this.object(type).list({ ...query, cursor });
@@ -334,7 +351,11 @@ export class ScpClient {
 
   readonly graph = {
     query: async (name: NamedGraphQuery, params: GraphQueryParams): Promise<GraphQueryResult> => {
-      const result = await graphQueryRequest({ client: this.client, path: { name }, query: params });
+      const result = await graphQueryRequest({
+        client: this.client,
+        path: { name },
+        query: params
+      });
       return unwrap(result) as GraphQueryResult;
     },
     traverse: async (params: TraverseParams): Promise<TraverseResult> => {

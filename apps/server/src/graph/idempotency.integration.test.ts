@@ -31,7 +31,9 @@ describe("idempotency: fast-check convergence properties", () => {
             const urn = `urn:scp:${org.orgId}:service:idem-put-${randomUUID()}`;
             let last;
             for (const body of bodies) {
-              last = await client.object("service").upsertByUrn(urn, { name: body.name, properties: { tier: body.tier } });
+              last = await client
+                .object("service")
+                .upsertByUrn(urn, { name: body.name, properties: { tier: body.tier } });
             }
             if (!last) throw new Error("unreachable: bodies is non-empty");
 
@@ -74,14 +76,18 @@ describe("idempotency: fast-check convergence properties", () => {
 
       await fc.assert(
         fc.asyncProperty(
-          fc.array(fc.string({ minLength: 1, maxLength: 24 }).filter((s) => s.trim().length > 0), {
-            minLength: 1,
-            maxLength: 5
-          }),
+          fc.array(
+            fc.string({ minLength: 1, maxLength: 24 }).filter((s) => s.trim().length > 0),
+            {
+              minLength: 1,
+              maxLength: 5
+            }
+          ),
           async (names) => {
             const runOnce = async (urn: string) => {
               let result;
-              for (const name of names) result = await client.object("service").upsertByUrn(urn, { name });
+              for (const name of names)
+                result = await client.object("service").upsertByUrn(urn, { name });
               return result;
             };
             const a = await runOnce(`urn:scp:${org.orgId}:service:idem-det-a-${randomUUID()}`);
@@ -145,7 +151,9 @@ describe("idempotency: fast-check convergence properties", () => {
           // (relationships_org_type_from_to_key), so reusing the same pair across separate
           // property runs would conflict on the run's first (non-replayed) call regardless of
           // idempotency-key behavior, which isn't what this property is testing.
-          const from = await client.object("service").create({ name: `idem-rel-from-${randomUUID()}` });
+          const from = await client
+            .object("service")
+            .create({ name: `idem-rel-from-${randomUUID()}` });
           const to = await client.object("service").create({ name: `idem-rel-to-${randomUUID()}` });
           const idempotencyKey = randomUUID();
           const responses = [];
@@ -160,7 +168,11 @@ describe("idempotency: fast-check convergence properties", () => {
           const first = responses[0];
           for (const r of responses) expect(r).toEqual(first);
 
-          const listed = await client.relationships.list({ fromId: from.id, toId: to.id, limit: 50 });
+          const listed = await client.relationships.list({
+            fromId: from.id,
+            toId: to.id,
+            limit: 50
+          });
           expect(listed.items).toHaveLength(1);
         }),
         { numRuns: 8 }
@@ -183,7 +195,10 @@ describe("idempotency: fast-check convergence properties", () => {
           const responses = [];
           for (let i = 0; i < replayCount; i++) {
             responses.push(
-              await client.typeRegistry.objectTypes.create({ id: typeId, displayName: "Idem Type" }, { idempotencyKey })
+              await client.typeRegistry.objectTypes.create(
+                { id: typeId, displayName: "Idem Type" },
+                { idempotencyKey }
+              )
             );
           }
           const first = responses[0];
@@ -210,7 +225,9 @@ describe("idempotency: fast-check convergence properties", () => {
       const idempotencyKey = randomUUID();
 
       await client.object("service").create({ name: "first-body" }, { idempotencyKey });
-      await expect(client.object("service").create({ name: "different-body" }, { idempotencyKey })).rejects.toThrow();
+      await expect(
+        client.object("service").create({ name: "different-body" }, { idempotencyKey })
+      ).rejects.toThrow();
     } finally {
       await server.close();
     }

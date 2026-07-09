@@ -26,7 +26,10 @@ export interface TestServer {
 
 /** Builds a Fastify app against the shared Testcontainers Postgres — migrations already applied by globalSetup. */
 export async function buildTestServer(): Promise<TestServer> {
-  const config = loadConfig({ DATABASE_URL: testDatabaseUrl(), SCP_COOKIE_SECRET: "test-cookie-secret-value" });
+  const config = loadConfig({
+    DATABASE_URL: testDatabaseUrl(),
+    SCP_COOKIE_SECRET: "test-cookie-secret-value"
+  });
   const pool = createPool(config.databaseUrl);
   const db = createDb(pool);
   const deps: AppDeps = { db, config };
@@ -82,7 +85,8 @@ export async function createTestOrg(server: TestServer, label = "org"): Promise<
     { orgName, adminUsername },
     { info: () => undefined, warn: () => undefined }
   );
-  if (!result.oneTimePassword) throw new Error("expected a freshly created org to return a one-time password");
+  if (!result.oneTimePassword)
+    throw new Error("expected a freshly created org to return a one-time password");
 
   const login = await server.app.inject({
     method: "POST",

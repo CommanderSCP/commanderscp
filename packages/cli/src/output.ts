@@ -10,7 +10,8 @@ function printTable(rows: Record<string, string>[]): void {
     Math.max(col.length, ...rows.map((row) => (row[col] ?? "").length))
   );
 
-  const line = (values: string[]): string => values.map((v, i) => v.padEnd(widths[i] ?? 0)).join("  ");
+  const line = (values: string[]): string =>
+    values.map((v, i) => v.padEnd(widths[i] ?? 0)).join("  ");
 
   console.log(line(columns.map((c) => c.toUpperCase())));
   for (const row of rows) {
@@ -18,7 +19,11 @@ function printTable(rows: Record<string, string>[]): void {
   }
 }
 
-export function printResult(data: unknown, format: OutputFormat, toRow: (item: unknown) => Record<string, string>): void {
+export function printResult(
+  data: unknown,
+  format: OutputFormat,
+  toRow: (item: unknown) => Record<string, string>
+): void {
   if (format === "json") {
     console.log(JSON.stringify(data, null, 2));
     return;

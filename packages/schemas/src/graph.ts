@@ -132,7 +132,10 @@ export const ObjectListResponseSchema = cursorPageResponseSchema(GraphObjectSche
 export type ObjectListResponse = z.infer<typeof ObjectListResponseSchema>;
 
 export const ObjectTypeParamSchema = z.object({ type: z.string().min(1) });
-export const ObjectIdOrUrnParamSchema = z.object({ type: z.string().min(1), idOrUrn: z.string().min(1) });
+export const ObjectIdOrUrnParamSchema = z.object({
+  type: z.string().min(1),
+  idOrUrn: z.string().min(1)
+});
 export const ObjectUrnParamSchema = z.object({ type: z.string().min(1), urn: z.string().min(1) });
 
 export const ObjectListQuerySchema = z.object({

@@ -135,7 +135,11 @@ function encodeSeqCursor(seq: number): string {
 function decodeSeqCursor(cursor: string): number | null {
   try {
     const parsed: unknown = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
-    if (typeof parsed === "object" && parsed !== null && typeof (parsed as { seq?: unknown }).seq === "number") {
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as { seq?: unknown }).seq === "number"
+    ) {
       return (parsed as { seq: number }).seq;
     }
     return null;

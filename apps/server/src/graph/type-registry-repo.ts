@@ -174,7 +174,9 @@ export async function getRelationshipType(
   tx: TenantTx,
   typeId: string
 ): Promise<typeof relationshipTypes.$inferSelect | null> {
-  const row = await tx.query.relationshipTypes.findFirst({ where: eq(relationshipTypes.id, typeId) });
+  const row = await tx.query.relationshipTypes.findFirst({
+    where: eq(relationshipTypes.id, typeId)
+  });
   return row ?? null;
 }
 

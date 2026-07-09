@@ -149,7 +149,12 @@ export const relationships = pgTable(
     deletedAt: timestamp("deleted_at", { withTimezone: true })
   },
   (table) => [
-    unique("relationships_org_type_from_to_key").on(table.orgId, table.typeId, table.fromId, table.toId),
+    unique("relationships_org_type_from_to_key").on(
+      table.orgId,
+      table.typeId,
+      table.fromId,
+      table.toId
+    ),
     index("rel_fwd").on(table.orgId, table.fromId, table.typeId),
     index("rel_rev").on(table.orgId, table.toId, table.typeId),
     index("rel_created_cursor").on(table.orgId, table.createdAt, table.id)

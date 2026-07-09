@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
-import { createTestOrg, listenTestServer, type ListeningTestServer } from "../test-support/harness.js";
+import {
+  createTestOrg,
+  listenTestServer,
+  type ListeningTestServer
+} from "../test-support/harness.js";
 import { startCliSession, type CliInvocation } from "../test-support/cli-runner.js";
 
 /**
@@ -30,7 +34,11 @@ describe("custom object/relationship type: immediately usable, no deploy", () =>
     const objectType = await client.typeRegistry.objectTypes.create({
       id: costCenterType,
       displayName: "Cost Center",
-      propertySchema: { type: "object", properties: { code: { type: "string" } }, required: ["code"] }
+      propertySchema: {
+        type: "object",
+        properties: { code: { type: "string" } },
+        required: ["code"]
+      }
     });
     expect(objectType.id).toBe(costCenterType);
 
@@ -52,7 +60,9 @@ describe("custom object/relationship type: immediately usable, no deploy", () =>
     expect(costCenter.properties.code).toBe("CC-100");
 
     // Ajv property-schema validation is enforced at write time (missing required 'code').
-    await expect(client.object(costCenterType).create({ name: "Bad Cost Center" })).rejects.toThrow();
+    await expect(
+      client.object(costCenterType).create({ name: "Bad Cost Center" })
+    ).rejects.toThrow();
 
     const service = await client.object("service").create({ name: "billing-api" });
 
@@ -98,7 +108,11 @@ describe("custom object/relationship type: immediately usable, no deploy", () =>
       expect(created.typeId).toBe(widgetType);
       expect(created.name).toBe("sprocket");
 
-      const listed = await cli.runJson<Array<{ id: string; name: string }>>(["object", "list", widgetType]);
+      const listed = await cli.runJson<Array<{ id: string; name: string }>>([
+        "object",
+        "list",
+        widgetType
+      ]);
       expect(listed.some((o) => o.id === created.id && o.name === "sprocket")).toBe(true);
     } finally {
       await cli.cleanup();

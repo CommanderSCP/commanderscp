@@ -1,4 +1,8 @@
-import type { CreateServiceObjectRequest, ServiceObject, ServiceObjectListResponse } from "@scp/schemas";
+import type {
+  CreateServiceObjectRequest,
+  ServiceObject,
+  ServiceObjectListResponse
+} from "@scp/schemas";
 import type { AppDeps } from "../types.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { createObject, listObjects, resolveDomainId } from "../graph/objects-repo.js";
@@ -86,7 +90,11 @@ export async function listServiceObjects(
       permission: "object:read",
       scopeObjectId: orgId
     });
-    return listObjects(tx, orgId, "service", { ...query, domainId: undefined, includeDeleted: false });
+    return listObjects(tx, orgId, "service", {
+      ...query,
+      domainId: undefined,
+      includeDeleted: false
+    });
   });
   return { items: page.items.map(toServiceObject), nextCursor: page.nextCursor };
 }

@@ -90,7 +90,10 @@ export function verifyAuditChain(events: AuditEvent[]): AuditChainVerification {
       return {
         valid: false,
         eventCount: events.length,
-        brokenAt: { id: event.id, reason: `prev_hash mismatch: expected ${expectedPrevHash}, got ${event.prevHash}` }
+        brokenAt: {
+          id: event.id,
+          reason: `prev_hash mismatch: expected ${expectedPrevHash}, got ${event.prevHash}`
+        }
       };
     }
     const recomputed = computeRowHash(event);
@@ -98,7 +101,10 @@ export function verifyAuditChain(events: AuditEvent[]): AuditChainVerification {
       return {
         valid: false,
         eventCount: events.length,
-        brokenAt: { id: event.id, reason: `row_hash mismatch: expected ${recomputed}, got ${event.rowHash}` }
+        brokenAt: {
+          id: event.id,
+          reason: `row_hash mismatch: expected ${recomputed}, got ${event.rowHash}`
+        }
       };
     }
     expectedPrevHash = event.rowHash;

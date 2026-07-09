@@ -14,10 +14,15 @@ export async function startPgBoss(databaseUrl: string): Promise<PgBoss> {
   });
   await boss.start();
   await boss.createQueue(DOMAIN_EVENTS_QUEUE);
-  await boss.work<{ id: string; orgId: string; type: string }>(DOMAIN_EVENTS_QUEUE, async (jobs) => {
-    for (const job of jobs) {
-      console.log(`[worker] ${DOMAIN_EVENTS_QUEUE}: ${job.data.type} (org=${job.data.orgId} event=${job.data.id})`);
+  await boss.work<{ id: string; orgId: string; type: string }>(
+    DOMAIN_EVENTS_QUEUE,
+    async (jobs) => {
+      for (const job of jobs) {
+        console.log(
+          `[worker] ${DOMAIN_EVENTS_QUEUE}: ${job.data.type} (org=${job.data.orgId} event=${job.data.id})`
+        );
+      }
     }
-  });
+  );
   return boss;
 }

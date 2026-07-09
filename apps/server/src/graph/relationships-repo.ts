@@ -50,7 +50,12 @@ async function assertCardinality(
     // "to" side is singular: this `to_id` may not already have an incoming edge of this type.
     const toClash = await tx.query.relationships.findFirst({
       where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
-        andOp(eqOp(t.orgId, orgId), eqOp(t.typeId, typeId), eqOp(t.toId, toId), isNullOp(t.deletedAt))
+        andOp(
+          eqOp(t.orgId, orgId),
+          eqOp(t.typeId, typeId),
+          eqOp(t.toId, toId),
+          isNullOp(t.deletedAt)
+        )
     });
     if (toClash) {
       throw conflict(
@@ -62,7 +67,12 @@ async function assertCardinality(
     // "from" side is also singular for one_to_one.
     const fromClash = await tx.query.relationships.findFirst({
       where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
-        andOp(eqOp(t.orgId, orgId), eqOp(t.typeId, typeId), eqOp(t.fromId, fromId), isNullOp(t.deletedAt))
+        andOp(
+          eqOp(t.orgId, orgId),
+          eqOp(t.typeId, typeId),
+          eqOp(t.fromId, fromId),
+          isNullOp(t.deletedAt)
+        )
     });
     if (fromClash) {
       throw conflict(
@@ -100,7 +110,9 @@ export async function createRelationship(
     );
   }
   if (type.toTypes && !type.toTypes.includes(toObj.typeId)) {
-    throw badRequest(`relationship type '${type.id}' does not allow '${toObj.typeId}' as the 'to' endpoint`);
+    throw badRequest(
+      `relationship type '${type.id}' does not allow '${toObj.typeId}' as the 'to' endpoint`
+    );
   }
 
   await assertCardinality(tx, input.orgId, type.id, type.cardinality, input.fromId, input.toId);
@@ -133,7 +145,9 @@ export async function createRelationship(
       .returning();
   } catch (err) {
     if (isUniqueViolation(err, "relationships_org_type_from_to_key")) {
-      throw conflict(`relationship '${input.typeId}' from '${input.fromId}' to '${input.toId}' already exists`);
+      throw conflict(
+        `relationship '${input.typeId}' from '${input.fromId}' to '${input.toId}' already exists`
+      );
     }
     if (isUniqueViolation(err)) throw conflict(`relationship id '${id}' already exists`);
     throw err;
@@ -160,7 +174,11 @@ export async function createRelationship(
   return toRelationship(row);
 }
 
-export async function getRelationship(tx: TenantTx, orgId: string, id: string): Promise<Relationship> {
+export async function getRelationship(
+  tx: TenantTx,
+  orgId: string,
+  id: string
+): Promise<Relationship> {
   const row = await tx.query.relationships.findFirst({
     where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
       andOp(eqOp(t.id, id), eqOp(t.orgId, orgId), isNullOp(t.deletedAt))
@@ -205,7 +223,10 @@ export async function listRelationships(
   const hasMore = rows.length > query.limit;
   const page = hasMore ? rows.slice(0, query.limit) : rows;
   const last = page[page.length - 1];
-  return { items: page.map(toRelationship), nextCursor: hasMore && last ? encodeCursor(last) : null };
+  return {
+    items: page.map(toRelationship),
+    nextCursor: hasMore && last ? encodeCursor(last) : null
+  };
 }
 
 export async function deleteRelationship(
@@ -218,7 +239,10 @@ export async function deleteRelationship(
   });
   if (!existing) throw notFound(`relationship '${input.id}' not found`);
 
-  await tx.update(relationships).set({ deletedAt: new Date() }).where(eq(relationships.id, existing.id));
+  await tx
+    .update(relationships)
+    .set({ deletedAt: new Date() })
+    .where(eq(relationships.id, existing.id));
 
   await appendAuditEvent(tx, {
     orgId: input.orgId,

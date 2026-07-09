@@ -34,7 +34,11 @@ interface OutboxRow {
  * internal system process relaying every org's events, not a tenant-facing API request, so it
  * needs cross-org visibility the RLS-restricted app role is designed to never have.
  */
-export function startOutboxRelay(adminPool: Pool, listenConnectionString: string, boss: PgBoss): OutboxRelayHandle {
+export function startOutboxRelay(
+  adminPool: Pool,
+  listenConnectionString: string,
+  boss: PgBoss
+): OutboxRelayHandle {
   let stopped = false;
 
   async function relayOnce(): Promise<void> {

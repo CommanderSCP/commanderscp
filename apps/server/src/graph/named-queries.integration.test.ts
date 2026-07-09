@@ -1,7 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
 import type { GraphObject } from "@scp/schemas";
-import { createTestOrg, listenTestServer, type ListeningTestServer } from "../test-support/harness.js";
+import {
+  createTestOrg,
+  listenTestServer,
+  type ListeningTestServer
+} from "../test-support/harness.js";
 
 /**
  * BUILD_AND_TEST.md §8 M1 DoD (c): "named queries return correct transitive closures on a
@@ -56,7 +60,9 @@ describe("named graph queries: fixture graph", () => {
     team = await client.object("team").create({ name: "platform-team" });
     domain = await client.object("domain").create({ name: "payments-domain" });
     await client.relationships.create({ typeId: "owns", fromId: team.id, toId: domain.id });
-    serviceInDomain = await client.object("service").create({ name: "in-domain-service", domainId: domain.id });
+    serviceInDomain = await client
+      .object("service")
+      .create({ name: "in-domain-service", domainId: domain.id });
 
     consumer = await mkService("consumer");
     consumed = await mkService("consumed");
@@ -90,7 +96,9 @@ describe("named graph queries: fixture graph", () => {
     }
     const first = chain[0];
     if (!first) throw new Error("missing chain[0]");
-    expect(ids.has(first.id), "chain[0] (11th hop) must be excluded by the depth-10 default").toBe(false);
+    expect(ids.has(first.id), "chain[0] (11th hop) must be excluded by the depth-10 default").toBe(
+      false
+    );
     expect(ids.has(last.id), "the target itself is not included").toBe(false);
   });
 
@@ -108,7 +116,10 @@ describe("named graph queries: fixture graph", () => {
   });
 
   it("impact-of: handles a two-node cycle without infinite recursion or duplicates", async () => {
-    const result = await client.graph.query("impact-of", { objectId: cycleA.id, relTypes: ["depends_on"] });
+    const result = await client.graph.query("impact-of", {
+      objectId: cycleA.id,
+      relTypes: ["depends_on"]
+    });
     const ids = result.objects.map((o) => o.id);
     expect(new Set(ids).size).toBe(ids.length); // no duplicates
     expect(ids).toContain(cycleB.id);
@@ -135,7 +146,11 @@ describe("named graph queries: fixture graph", () => {
   });
 
   it("domains-impacted: groups the closure by containing domain", async () => {
-    await client.relationships.create({ typeId: "depends_on", fromId: serviceInDomain.id, toId: consumed.id });
+    await client.relationships.create({
+      typeId: "depends_on",
+      fromId: serviceInDomain.id,
+      toId: consumed.id
+    });
     const result = await client.graph.query("domains-impacted", {
       objectId: consumed.id,
       relTypes: ["depends_on", "consumes"]
@@ -144,7 +159,10 @@ describe("named graph queries: fixture graph", () => {
   });
 
   it("paths-between: finds a multi-hop path across mixed relationship types", async () => {
-    const result = await client.graph.query("paths-between", { objectId: pathA.id, targetId: pathC.id });
+    const result = await client.graph.query("paths-between", {
+      objectId: pathA.id,
+      targetId: pathC.id
+    });
     expect(result.paths && result.paths.length).toBeGreaterThan(0);
     const path = result.paths?.[0];
     expect(path?.[0]).toBe(pathA.id);
@@ -153,12 +171,19 @@ describe("named graph queries: fixture graph", () => {
   });
 
   it("paths-between: returns no paths between disconnected objects", async () => {
-    const result = await client.graph.query("paths-between", { objectId: pathA.id, targetId: isolated.id });
+    const result = await client.graph.query("paths-between", {
+      objectId: pathA.id,
+      targetId: isolated.id
+    });
     expect(result.paths ?? []).toHaveLength(0);
   });
 
   it("graph/traverse: bounded induced subgraph around a node", async () => {
-    const result = await client.graph.traverse({ objectId: pathB.id, direction: "both", maxDepth: 1 });
+    const result = await client.graph.traverse({
+      objectId: pathB.id,
+      direction: "both",
+      maxDepth: 1
+    });
     const ids = result.objects.map((o) => o.id);
     expect(ids).toContain(pathA.id);
     expect(ids).toContain(pathB.id);

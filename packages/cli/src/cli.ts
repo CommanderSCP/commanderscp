@@ -8,7 +8,10 @@ import { clientFromStoredCredentials, DEFAULT_BASE_URL } from "./client-factory.
 import { promptLine } from "./prompt.js";
 import { printResult, type OutputFormat } from "./output.js";
 
-function parseJsonOption(value: string | undefined, flag: string): Record<string, unknown> | undefined {
+function parseJsonOption(
+  value: string | undefined,
+  flag: string
+): Record<string, unknown> | undefined {
   if (value === undefined) return undefined;
   try {
     const parsed: unknown = JSON.parse(value);
@@ -17,7 +20,9 @@ function parseJsonOption(value: string | undefined, flag: string): Record<string
     }
     return parsed as Record<string, unknown>;
   } catch (err) {
-    throw new Error(`${flag} must be a JSON object: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(
+      `${flag} must be a JSON object: ${err instanceof Error ? err.message : String(err)}`
+    );
   }
 }
 
@@ -74,7 +79,9 @@ export function buildProgram(): Command {
   // -------------------------------------------------------------------------------------
   // type-registry (DESIGN.md §4.1)
   // -------------------------------------------------------------------------------------
-  const typeRegistryCmd = program.command("type-registry").description("Manage the runtime type registry");
+  const typeRegistryCmd = program
+    .command("type-registry")
+    .description("Manage the runtime type registry");
 
   typeRegistryCmd
     .command("object-type-create <id>")
@@ -83,17 +90,26 @@ export function buildProgram(): Command {
     .option("--schema <json>", "JSON Schema validating instance properties")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
-    .action(async (id: string, opts: { displayName: string; schema?: string; baseUrl?: string; output: OutputFormat }) => {
-      const client = await clientFromStoredCredentials(opts);
-      const created = await client.typeRegistry.objectTypes.create(
-        { id, displayName: opts.displayName, propertySchema: parseJsonOption(opts.schema, "--schema") },
-        { idempotencyKey: randomUUID() }
-      );
-      printResult(created, opts.output, (item) => ({
-        id: (item as { id: string }).id,
-        displayName: (item as { displayName: string }).displayName
-      }));
-    });
+    .action(
+      async (
+        id: string,
+        opts: { displayName: string; schema?: string; baseUrl?: string; output: OutputFormat }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const created = await client.typeRegistry.objectTypes.create(
+          {
+            id,
+            displayName: opts.displayName,
+            propertySchema: parseJsonOption(opts.schema, "--schema")
+          },
+          { idempotencyKey: randomUUID() }
+        );
+        printResult(created, opts.output, (item) => ({
+          id: (item as { id: string }).id,
+          displayName: (item as { displayName: string }).displayName
+        }));
+      }
+    );
 
   typeRegistryCmd
     .command("object-type-list")
@@ -171,7 +187,9 @@ export function buildProgram(): Command {
   // -------------------------------------------------------------------------------------
   // object (generic — works for ANY registered type, built-in or custom)
   // -------------------------------------------------------------------------------------
-  const objectCmd = program.command("object").description("Manage graph objects of any registered type");
+  const objectCmd = program
+    .command("object")
+    .description("Manage graph objects of any registered type");
 
   objectCmd
     .command("create <type>")
@@ -221,23 +239,28 @@ export function buildProgram(): Command {
     .option("--domain-id <id>", "filter by containing object id")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
-    .action(async (type: string, opts: { domainId?: string; baseUrl?: string; output: OutputFormat }) => {
-      const client = await clientFromStoredCredentials(opts);
-      const items: GraphObject[] = [];
-      for await (const item of client.listAllObjects(type, { domainId: opts.domainId })) items.push(item);
-      printResult(items, opts.output, (item) => objectRow(item as GraphObject));
-    });
+    .action(
+      async (type: string, opts: { domainId?: string; baseUrl?: string; output: OutputFormat }) => {
+        const client = await clientFromStoredCredentials(opts);
+        const items: GraphObject[] = [];
+        for await (const item of client.listAllObjects(type, { domainId: opts.domainId }))
+          items.push(item);
+        printResult(items, opts.output, (item) => objectRow(item as GraphObject));
+      }
+    );
 
   objectCmd
     .command("get <type> <idOrUrn>")
     .description("Get an object by id or URN")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
-    .action(async (type: string, idOrUrn: string, opts: { baseUrl?: string; output: OutputFormat }) => {
-      const client = await clientFromStoredCredentials(opts);
-      const found = await client.object(type).get(idOrUrn);
-      printResult(found, opts.output, (item) => objectRow(item as GraphObject));
-    });
+    .action(
+      async (type: string, idOrUrn: string, opts: { baseUrl?: string; output: OutputFormat }) => {
+        const client = await clientFromStoredCredentials(opts);
+        const found = await client.object(type).get(idOrUrn);
+        printResult(found, opts.output, (item) => objectRow(item as GraphObject));
+      }
+    );
 
   objectCmd
     .command("update <type> <idOrUrn>")
@@ -252,7 +275,14 @@ export function buildProgram(): Command {
       async (
         type: string,
         idOrUrn: string,
-        opts: { name?: string; properties?: string; labels?: string; version?: string; baseUrl?: string; output: OutputFormat }
+        opts: {
+          name?: string;
+          properties?: string;
+          labels?: string;
+          version?: string;
+          baseUrl?: string;
+          output: OutputFormat;
+        }
       ) => {
         const client = await clientFromStoredCredentials(opts);
         const updated = await client.object(type).update(idOrUrn, {
@@ -270,11 +300,13 @@ export function buildProgram(): Command {
     .description("Soft-delete an object")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
-    .action(async (type: string, idOrUrn: string, opts: { baseUrl?: string; output: OutputFormat }) => {
-      const client = await clientFromStoredCredentials(opts);
-      const deleted = await client.object(type).delete(idOrUrn);
-      printResult(deleted, opts.output, (item) => objectRow(item as GraphObject));
-    });
+    .action(
+      async (type: string, idOrUrn: string, opts: { baseUrl?: string; output: OutputFormat }) => {
+        const client = await clientFromStoredCredentials(opts);
+        const deleted = await client.object(type).delete(idOrUrn);
+        printResult(deleted, opts.output, (item) => objectRow(item as GraphObject));
+      }
+    );
 
   objectCmd
     .command("upsert <type> <urn>")
@@ -288,7 +320,13 @@ export function buildProgram(): Command {
       async (
         type: string,
         urn: string,
-        opts: { name: string; properties?: string; labels?: string; baseUrl?: string; output: OutputFormat }
+        opts: {
+          name: string;
+          properties?: string;
+          labels?: string;
+          baseUrl?: string;
+          output: OutputFormat;
+        }
       ) => {
         const client = await clientFromStoredCredentials(opts);
         const result = await client.object(type).upsertByUrn(urn, {
@@ -315,7 +353,14 @@ export function buildProgram(): Command {
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(
-      async (opts: { type: string; from: string; to: string; properties?: string; baseUrl?: string; output: OutputFormat }) => {
+      async (opts: {
+        type: string;
+        from: string;
+        to: string;
+        properties?: string;
+        baseUrl?: string;
+        output: OutputFormat;
+      }) => {
         const client = await clientFromStoredCredentials(opts);
         const created = await client.relationships.create(
           {
@@ -338,11 +383,24 @@ export function buildProgram(): Command {
     .option("--type <typeId>", "filter by relationship type id")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
-    .action(async (opts: { from?: string; to?: string; type?: string; baseUrl?: string; output: OutputFormat }) => {
-      const client = await clientFromStoredCredentials(opts);
-      const page = await client.relationships.list({ fromId: opts.from, toId: opts.to, typeId: opts.type, limit: 100 });
-      printResult(page.items, opts.output, (item) => relationshipRow(item as Relationship));
-    });
+    .action(
+      async (opts: {
+        from?: string;
+        to?: string;
+        type?: string;
+        baseUrl?: string;
+        output: OutputFormat;
+      }) => {
+        const client = await clientFromStoredCredentials(opts);
+        const page = await client.relationships.list({
+          fromId: opts.from,
+          toId: opts.to,
+          typeId: opts.type,
+          limit: 100
+        });
+        printResult(page.items, opts.output, (item) => relationshipRow(item as Relationship));
+      }
+    );
 
   relCmd
     .command("get <id>")
@@ -373,7 +431,9 @@ export function buildProgram(): Command {
 
   graphCmd
     .command("query <name>")
-    .description("Run a named graph query (owners-of|dependents-of|consumers-of|impact-of|blast-radius|paths-between|domains-impacted)")
+    .description(
+      "Run a named graph query (owners-of|dependents-of|consumers-of|impact-of|blast-radius|paths-between|domains-impacted)"
+    )
     .requiredOption("--object-id <id>", "the object to query from")
     .option("--target-id <id>", "required by paths-between")
     .option("--rel-types <list>", "comma-separated relationship type override")
@@ -383,7 +443,14 @@ export function buildProgram(): Command {
     .action(
       async (
         name: string,
-        opts: { objectId: string; targetId?: string; relTypes?: string; maxDepth: string; baseUrl?: string; output: OutputFormat }
+        opts: {
+          objectId: string;
+          targetId?: string;
+          relTypes?: string;
+          maxDepth: string;
+          baseUrl?: string;
+          output: OutputFormat;
+        }
       ) => {
         const client = await clientFromStoredCredentials(opts);
         const result = await client.graph.query(name as NamedGraphQuery, {
@@ -432,7 +499,9 @@ export function buildProgram(): Command {
 
   auditCmd
     .command("verify")
-    .description("Re-walk the org's hash-chained audit log via the public API and verify it (DESIGN.md §4.3)")
+    .description(
+      "Re-walk the org's hash-chained audit log via the public API and verify it (DESIGN.md §4.3)"
+    )
     .option("--base-url <url>", "API base URL override")
     .action(async (opts: { baseUrl?: string }) => {
       const client = await clientFromStoredCredentials(opts);

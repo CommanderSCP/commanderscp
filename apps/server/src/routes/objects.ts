@@ -30,7 +30,13 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     url: "/api/v1/objects/service",
     schema: {
       body: CreateServiceObjectRequestSchema,
-      response: { 201: ServiceObjectSchema, 401: ProblemSchema, 403: ProblemSchema, 409: ProblemSchema, 422: ProblemSchema }
+      response: {
+        201: ServiceObjectSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        409: ProblemSchema,
+        422: ProblemSchema
+      }
     },
     config: {
       openapi: {
@@ -80,7 +86,13 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     schema: {
       params: OrgParamSchema,
       body: CreateServiceObjectRequestSchema,
-      response: { 201: ServiceObjectSchema, 401: ProblemSchema, 403: ProblemSchema, 409: ProblemSchema, 422: ProblemSchema }
+      response: {
+        201: ServiceObjectSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        409: ProblemSchema,
+        422: ProblemSchema
+      }
     },
     config: {
       openapi: {

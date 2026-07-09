@@ -10,7 +10,9 @@ export interface IdempotentResult<T> {
 }
 
 function hashRequest(body: unknown): string {
-  return createHash("sha256").update(JSON.stringify(body ?? null)).digest("hex");
+  return createHash("sha256")
+    .update(JSON.stringify(body ?? null))
+    .digest("hex");
 }
 
 /**
@@ -34,7 +36,8 @@ export async function withIdempotency<T>(
 
   const requestHash = hashRequest(opts.requestBody);
   const existing = await tx.query.idempotencyKeys.findFirst({
-    where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.orgId, opts.orgId), eqOp(t.idempotencyKey, opts.idempotencyKey as string))
+    where: (t, { eq: eqOp, and: andOp }) =>
+      andOp(eqOp(t.orgId, opts.orgId), eqOp(t.idempotencyKey, opts.idempotencyKey as string))
   });
   if (existing) {
     return replayOrReject(existing, opts.route, requestHash);
@@ -56,7 +59,8 @@ export async function withIdempotency<T>(
       // ours (both are computed from the same request, so this is safe under the property-test
       // convergence guarantee, but re-reading avoids diverging on any non-deterministic field).
       const race = await tx.query.idempotencyKeys.findFirst({
-        where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.orgId, opts.orgId), eqOp(t.idempotencyKey, opts.idempotencyKey as string))
+        where: (t, { eq: eqOp, and: andOp }) =>
+          andOp(eqOp(t.orgId, opts.orgId), eqOp(t.idempotencyKey, opts.idempotencyKey as string))
       });
       if (race) return replayOrReject(race, opts.route, requestHash);
     }

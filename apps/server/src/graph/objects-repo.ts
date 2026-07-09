@@ -67,7 +67,8 @@ export async function getOrgRootObjectId(tx: TenantTx, orgId: string): Promise<s
     where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
       andOp(eqOp(t.orgId, orgId), eqOp(t.typeId, "organization"), isNullOp(t.domainId))
   });
-  if (!row) throw new Error(`org ${orgId} has no root 'organization' object — bootstrap incomplete`);
+  if (!row)
+    throw new Error(`org ${orgId} has no root 'organization' object — bootstrap incomplete`);
   return row.id;
 }
 
@@ -236,7 +237,10 @@ export async function listObjects(
   const hasMore = rows.length > query.limit;
   const page = hasMore ? rows.slice(0, query.limit) : rows;
   const last = page[page.length - 1];
-  return { items: page.map(toGraphObject), nextCursor: hasMore && last ? encodeCursor(last) : null };
+  return {
+    items: page.map(toGraphObject),
+    nextCursor: hasMore && last ? encodeCursor(last) : null
+  };
 }
 
 export interface UpdateObjectInput {
@@ -434,7 +438,13 @@ export async function upsertObjectByUrn(
 
 export async function deleteObject(
   tx: TenantTx,
-  input: { orgId: string; typeId: string; actorObjectId: string; requestId: string; idOrUrn: string }
+  input: {
+    orgId: string;
+    typeId: string;
+    actorObjectId: string;
+    requestId: string;
+    idOrUrn: string;
+  }
 ): Promise<void> {
   const existing = await lockObjectRow(tx, input.orgId, input.typeId, input.idOrUrn);
 

@@ -1,5 +1,10 @@
 import { sql } from "drizzle-orm";
-import type { GraphObject, GraphQueryRequest, GraphQueryResult, NamedGraphQuery } from "@scp/schemas";
+import type {
+  GraphObject,
+  GraphQueryRequest,
+  GraphQueryResult,
+  NamedGraphQuery
+} from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { mapRawObjectRow, type RawObjectRow } from "./raw-row-mappers.js";
 import { sqlIn, sqlInOrAlways } from "./sql-helpers.js";
@@ -49,7 +54,12 @@ async function transitiveReverseClosure(
   return result.rows.map(mapRawObjectRow);
 }
 
-async function ownersOf(tx: TenantTx, orgId: string, startId: string, maxDepth: number): Promise<GraphObject[]> {
+async function ownersOf(
+  tx: TenantTx,
+  orgId: string,
+  startId: string,
+  maxDepth: number
+): Promise<GraphObject[]> {
   const result = await tx.execute<RawObjectRow>(sql`
     WITH RECURSIVE containment AS (
       SELECT ${startId}::uuid AS id, 0 AS depth
@@ -150,11 +160,23 @@ export async function runNamedQuery(
       return { query: name, objects: objs };
     }
     case "dependents-of": {
-      const objs = await transitiveReverseClosure(tx, orgId, params.objectId, relTypes ?? ["depends_on"], params.maxDepth);
+      const objs = await transitiveReverseClosure(
+        tx,
+        orgId,
+        params.objectId,
+        relTypes ?? ["depends_on"],
+        params.maxDepth
+      );
       return { query: name, objects: objs };
     }
     case "consumers-of": {
-      const objs = await transitiveReverseClosure(tx, orgId, params.objectId, relTypes ?? ["consumes"], params.maxDepth);
+      const objs = await transitiveReverseClosure(
+        tx,
+        orgId,
+        params.objectId,
+        relTypes ?? ["consumes"],
+        params.maxDepth
+      );
       return { query: name, objects: objs };
     }
     case "impact-of": {
@@ -190,7 +212,11 @@ export async function runNamedQuery(
         relTypes ?? DEFAULT_IMPACT_TYPES,
         params.maxDepth
       );
-      const counts = await groupByDomain(tx, orgId, objs.map((o) => o.id));
+      const counts = await groupByDomain(
+        tx,
+        orgId,
+        objs.map((o) => o.id)
+      );
       return { query: name, objects: objs, counts };
     }
     case "paths-between": {

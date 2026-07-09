@@ -40,7 +40,12 @@ export function registerTypeRegistryRoutes(app: FastifyInstance, deps: AppDeps):
     url: "/api/v1/type-registry/object-types",
     schema: {
       body: CreateObjectTypeRequestSchema,
-      response: { 201: ObjectTypeSchema, 401: ProblemSchema, 403: ProblemSchema, 409: ProblemSchema }
+      response: {
+        201: ObjectTypeSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        409: ProblemSchema
+      }
     },
     config: {
       openapi: {
@@ -107,7 +112,12 @@ export function registerTypeRegistryRoutes(app: FastifyInstance, deps: AppDeps):
     url: "/api/v1/type-registry/relationship-types",
     schema: {
       body: CreateRelationshipTypeRequestSchema,
-      response: { 201: RelationshipTypeSchema, 401: ProblemSchema, 403: ProblemSchema, 409: ProblemSchema }
+      response: {
+        201: RelationshipTypeSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        409: ProblemSchema
+      }
     },
     config: {
       openapi: {
@@ -133,7 +143,10 @@ export function registerTypeRegistryRoutes(app: FastifyInstance, deps: AppDeps):
             route: "POST /type-registry/relationship-types",
             requestBody: request.body
           },
-          async () => ({ status: 201, body: await createRelationshipType(tx, auth.orgId, request.body) })
+          async () => ({
+            status: 201,
+            body: await createRelationshipType(tx, auth.orgId, request.body)
+          })
         );
       });
       reply.status(result.status as 201).send(result.body);

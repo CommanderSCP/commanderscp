@@ -13,7 +13,12 @@ import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { withIdempotency } from "../idempotency.js";
-import { createRelationship, deleteRelationship, getRelationship, listRelationships } from "../graph/relationships-repo.js";
+import {
+  createRelationship,
+  deleteRelationship,
+  getRelationship,
+  listRelationships
+} from "../graph/relationships-repo.js";
 
 function idempotencyKey(request: FastifyRequest): string | undefined {
   const header = request.headers["idempotency-key"];
@@ -43,7 +48,11 @@ export function registerRelationshipRoutes(app: FastifyInstance, deps: AppDeps):
       }
     },
     config: {
-      openapi: { operationId: "createRelationship", summary: "Create a relationship", tags: ["relationships"] }
+      openapi: {
+        operationId: "createRelationship",
+        summary: "Create a relationship",
+        tags: ["relationships"]
+      }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
@@ -89,7 +98,11 @@ export function registerRelationshipRoutes(app: FastifyInstance, deps: AppDeps):
       response: { 200: RelationshipListResponseSchema, 401: ProblemSchema, 403: ProblemSchema }
     },
     config: {
-      openapi: { operationId: "listRelationships", summary: "List relationships", tags: ["relationships"] }
+      openapi: {
+        operationId: "listRelationships",
+        summary: "List relationships",
+        tags: ["relationships"]
+      }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
@@ -111,10 +124,19 @@ export function registerRelationshipRoutes(app: FastifyInstance, deps: AppDeps):
     url: "/api/v1/relationships/:id",
     schema: {
       params: RelationshipIdParamSchema,
-      response: { 200: RelationshipSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
+      response: {
+        200: RelationshipSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
     },
     config: {
-      openapi: { operationId: "getRelationship", summary: "Get a relationship by id", tags: ["relationships"] }
+      openapi: {
+        operationId: "getRelationship",
+        summary: "Get a relationship by id",
+        tags: ["relationships"]
+      }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
@@ -137,10 +159,19 @@ export function registerRelationshipRoutes(app: FastifyInstance, deps: AppDeps):
     url: "/api/v1/relationships/:id",
     schema: {
       params: RelationshipIdParamSchema,
-      response: { 200: RelationshipSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
+      response: {
+        200: RelationshipSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
     },
     config: {
-      openapi: { operationId: "deleteRelationship", summary: "Soft-delete a relationship", tags: ["relationships"] }
+      openapi: {
+        operationId: "deleteRelationship",
+        summary: "Soft-delete a relationship",
+        tags: ["relationships"]
+      }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);

@@ -96,7 +96,9 @@ describe("RLS: adversarial cross-org probes", () => {
     // design, regardless of org context.
     const raw = await RawScpAppClient.connect();
     await raw.setOrgContext(orgBId);
-    await expect(raw.query("DELETE FROM objects WHERE id = $1", [objectAId])).rejects.toThrow(/permission denied/i);
+    await expect(raw.query("DELETE FROM objects WHERE id = $1", [objectAId])).rejects.toThrow(
+      /permission denied/i
+    );
     await raw.close();
   });
 
@@ -138,9 +140,10 @@ describe("RLS: adversarial cross-org probes", () => {
     const raw = await RawScpAppClient.connect();
     await raw.setOrgContext(orgAId);
     await expect(
-      raw.query(`INSERT INTO object_types (id, org_id, display_name) VALUES ($1, NULL, 'Sneaky Built-in')`, [
-        `sneaky-${randomUUID()}`
-      ])
+      raw.query(
+        `INSERT INTO object_types (id, org_id, display_name) VALUES ($1, NULL, 'Sneaky Built-in')`,
+        [`sneaky-${randomUUID()}`]
+      )
     ).rejects.toThrow(/row-level security/i);
     await raw.close();
   });
@@ -156,10 +159,16 @@ describe("RLS: adversarial cross-org probes", () => {
   it("audit_events: correct org context still cannot UPDATE or DELETE (append-only guard)", async () => {
     const raw = await RawScpAppClient.connect();
     await raw.setOrgContext(orgAId);
-    const existing = await raw.query("SELECT id FROM audit_events WHERE org_id = $1 LIMIT 1", [orgAId]);
+    const existing = await raw.query("SELECT id FROM audit_events WHERE org_id = $1 LIMIT 1", [
+      orgAId
+    ]);
     expect(existing.rows.length).toBeGreaterThan(0);
-    await expect(raw.query("UPDATE audit_events SET action = 'tampered' WHERE org_id = $1", [orgAId])).rejects.toThrow();
-    await expect(raw.query("DELETE FROM audit_events WHERE org_id = $1", [orgAId])).rejects.toThrow();
+    await expect(
+      raw.query("UPDATE audit_events SET action = 'tampered' WHERE org_id = $1", [orgAId])
+    ).rejects.toThrow();
+    await expect(
+      raw.query("DELETE FROM audit_events WHERE org_id = $1", [orgAId])
+    ).rejects.toThrow();
     await raw.close();
   });
 

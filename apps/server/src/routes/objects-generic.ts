@@ -53,7 +53,12 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     schema: {
       params: ObjectTypeParamSchema,
       body: CreateObjectRequestSchema,
-      response: { 201: GraphObjectSchema, 401: ProblemSchema, 403: ProblemSchema, 409: ProblemSchema }
+      response: {
+        201: GraphObjectSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        409: ProblemSchema
+      }
     },
     config: {
       openapi: { operationId: "createObject", summary: "Create a graph object", tags: ["objects"] }
@@ -62,7 +67,11 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       const auth = await requireAuth(deps, request);
       const { type } = request.params;
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        const scopeObjectId = await resolveDomainId(tx, auth.orgId, request.body.domainId ?? undefined);
+        const scopeObjectId = await resolveDomainId(
+          tx,
+          auth.orgId,
+          request.body.domainId ?? undefined
+        );
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
@@ -109,7 +118,11 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       response: { 200: ObjectListResponseSchema, 401: ProblemSchema, 403: ProblemSchema }
     },
     config: {
-      openapi: { operationId: "listObjects", summary: "List graph objects of a type", tags: ["objects"] }
+      openapi: {
+        operationId: "listObjects",
+        summary: "List graph objects of a type",
+        tags: ["objects"]
+      }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
@@ -132,10 +145,19 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     url: "/api/v1/objects/:type/:idOrUrn",
     schema: {
       params: ObjectIdOrUrnParamSchema,
-      response: { 200: GraphObjectSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
+      response: {
+        200: GraphObjectSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
     },
     config: {
-      openapi: { operationId: "getObject", summary: "Get a graph object by id or URN", tags: ["objects"] }
+      openapi: {
+        operationId: "getObject",
+        summary: "Get a graph object by id or URN",
+        tags: ["objects"]
+      }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
@@ -169,7 +191,11 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       }
     },
     config: {
-      openapi: { operationId: "updateObject", summary: "Partially update a graph object", tags: ["objects"] }
+      openapi: {
+        operationId: "updateObject",
+        summary: "Partially update a graph object",
+        tags: ["objects"]
+      }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
@@ -204,10 +230,19 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     url: "/api/v1/objects/:type/:idOrUrn",
     schema: {
       params: ObjectIdOrUrnParamSchema,
-      response: { 200: GraphObjectSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
+      response: {
+        200: GraphObjectSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
     },
     config: {
-      openapi: { operationId: "deleteObject", summary: "Soft-delete a graph object", tags: ["objects"] }
+      openapi: {
+        operationId: "deleteObject",
+        summary: "Soft-delete a graph object",
+        tags: ["objects"]
+      }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
@@ -263,7 +298,8 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
         });
         const scopeObjectId = existing
           ? existing.id
-          : ((await resolveDomainId(tx, auth.orgId, request.body.domainId ?? undefined)) ?? auth.orgId);
+          : ((await resolveDomainId(tx, auth.orgId, request.body.domainId ?? undefined)) ??
+            auth.orgId);
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,

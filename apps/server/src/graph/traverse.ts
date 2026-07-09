@@ -22,7 +22,11 @@ type EdgeRow = {
  * node set (every live relationship with both endpoints visited) — richer than just the tree
  * edges used to reach each node, which is what a graph explorer actually wants to render.
  */
-export async function traverse(tx: TenantTx, orgId: string, req: TraverseRequest): Promise<TraverseResult> {
+export async function traverse(
+  tx: TenantTx,
+  orgId: string,
+  req: TraverseRequest
+): Promise<TraverseResult> {
   const relTypes = req.relTypes ?? null;
   const wantOut = req.direction === "out" || req.direction === "both";
   const wantIn = req.direction === "in" || req.direction === "both";
@@ -66,6 +70,11 @@ export async function traverse(tx: TenantTx, orgId: string, req: TraverseRequest
 
   return {
     objects: objRows.rows.map(mapRawObjectRow),
-    edges: edgeRows.rows.map((e) => ({ id: e.id, typeId: e.type_id, fromId: e.from_id, toId: e.to_id }))
+    edges: edgeRows.rows.map((e) => ({
+      id: e.id,
+      typeId: e.type_id,
+      fromId: e.from_id,
+      toId: e.to_id
+    }))
   };
 }

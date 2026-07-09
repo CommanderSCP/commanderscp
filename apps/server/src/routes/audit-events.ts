@@ -1,6 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
-import { AuditEventListQuerySchema, AuditEventListResponseSchema, ProblemSchema } from "@scp/schemas";
+import {
+  AuditEventListQuerySchema,
+  AuditEventListResponseSchema,
+  ProblemSchema
+} from "@scp/schemas";
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
@@ -22,7 +26,11 @@ export function registerAuditEventRoutes(app: FastifyInstance, deps: AppDeps): v
       response: { 200: AuditEventListResponseSchema, 401: ProblemSchema, 403: ProblemSchema }
     },
     config: {
-      openapi: { operationId: "listAuditEvents", summary: "List audit events (chain order)", tags: ["audit"] }
+      openapi: {
+        operationId: "listAuditEvents",
+        summary: "List audit events (chain order)",
+        tags: ["audit"]
+      }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);

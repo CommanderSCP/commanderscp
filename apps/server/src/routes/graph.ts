@@ -29,7 +29,12 @@ export function registerGraphRoutes(app: FastifyInstance, deps: AppDeps): void {
     schema: {
       params: GraphQueryParamSchema,
       querystring: GraphQueryRequestSchema,
-      response: { 200: GraphQueryResultSchema, 400: ProblemSchema, 401: ProblemSchema, 403: ProblemSchema }
+      response: {
+        200: GraphQueryResultSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema
+      }
     },
     config: {
       openapi: { operationId: "graphQuery", summary: "Run a named graph query", tags: ["graph"] }
@@ -61,7 +66,11 @@ export function registerGraphRoutes(app: FastifyInstance, deps: AppDeps): void {
       response: { 200: TraverseResultSchema, 401: ProblemSchema, 403: ProblemSchema }
     },
     config: {
-      openapi: { operationId: "graphTraverse", summary: "Bounded generic graph traversal", tags: ["graph"] }
+      openapi: {
+        operationId: "graphTraverse",
+        summary: "Bounded generic graph traversal",
+        tags: ["graph"]
+      }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
