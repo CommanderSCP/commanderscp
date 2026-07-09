@@ -1,19 +1,25 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { Command } from "commander";
 import { ScpApiError, ScpClient } from "@scp/sdk";
 import type { ListObjectsQuery, ListQuery } from "@scp/sdk";
 import type {
   CreateObjectRequest,
+  DesiredStateManifest,
   GraphObject,
   NamedGraphQuery,
   ObjectListResponse,
   Pat,
+  Plan,
+  PlanDiffSummary,
+  PlanObjectDiffEntry,
+  PlanRelationshipDiffEntry,
   Relationship,
   RelationshipListResponse,
   UpdateObjectRequest,
   UpsertObjectRequest
 } from "@scp/schemas";
-import { verifyAuditChain } from "@scp/schemas";
+import { DesiredStateManifestSchema, verifyAuditChain } from "@scp/schemas";
 import { saveCredentials } from "./config-store.js";
 import { clientFromStoredCredentials, DEFAULT_BASE_URL } from "./client-factory.js";
 import { promptLine } from "./prompt.js";
@@ -69,6 +75,79 @@ function patRow(p: Pat): Record<string, string> {
     revoked: p.revokedAt ? "yes" : "no",
     lastUsedAt: p.lastUsedAt ?? "(never)"
   };
+}
+
+// -------------------------------------------------------------------------------------
+// `@scp/iac` plan/apply (BUILD_AND_TEST.md §8 M2 item 4) — `scp plan` computes a diff
+// (dry run); `scp apply` does plan + apply in one shot, since that's the natural CLI UX and
+// what "`scp apply` twice = no-op the second time" means end to end, not two manual steps.
+// -------------------------------------------------------------------------------------
+
+async function readManifestFile(manifestPath: string): Promise<DesiredStateManifest> {
+  const raw = await readFile(manifestPath, "utf8");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(
+      `--manifest '${manifestPath}' is not valid JSON: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  return DesiredStateManifestSchema.parse(parsed);
+}
+
+function diffEntryRow(entry: PlanObjectDiffEntry | PlanRelationshipDiffEntry): Record<string, string> {
+  if (entry.kind === "object") {
+    return { kind: "object", action: entry.action, ref: entry.urn, reason: entry.reason };
+  }
+  return {
+    kind: "relationship",
+    action: entry.action,
+    ref: `${entry.fromUrn} --${entry.typeId}--> ${entry.toUrn}`,
+    reason: entry.reason
+  };
+}
+
+function summaryLine(summary: PlanDiffSummary): string {
+  return `creates=${summary.creates} updates=${summary.updates} deletes=${summary.deletes} noops=${summary.noops}`;
+}
+
+/** Prints a plan (full diff with per-entry reasons) — `scp plan` and `scp plan-status`. */
+function printPlanResult(plan: Plan, output: OutputFormat): void {
+  if (output === "json") {
+    console.log(JSON.stringify(plan, null, 2));
+    return;
+  }
+  const entries = [...plan.diff.objects, ...plan.diff.relationships];
+  printResult(entries, "table", (item) => diffEntryRow(item as PlanObjectDiffEntry | PlanRelationshipDiffEntry));
+  console.log(`\nPlan ${plan.id} (${plan.stackName}, status: ${plan.status}): ${summaryLine(plan.diff.summary)}`);
+}
+
+/**
+ * Prints an apply summary — `--output json` gives a flat, machine-parseable
+ * `{creates,updates,deletes,noops}` shape (not just prose), which is what makes DoD (b)'s
+ * "`scp apply` twice = no-op" assertable from a test (plans.cli.integration.test.ts).
+ */
+function printApplyResult(plan: Plan, summary: PlanDiffSummary, output: OutputFormat): void {
+  if (output === "json") {
+    console.log(
+      JSON.stringify(
+        {
+          planId: plan.id,
+          stackName: plan.stackName,
+          status: plan.status,
+          creates: summary.creates,
+          updates: summary.updates,
+          deletes: summary.deletes,
+          noops: summary.noops
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
+  console.log(`Applied plan ${plan.id} (${plan.stackName}): ${summaryLine(summary)}`);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -921,6 +1000,53 @@ export function buildProgram(): Command {
         printResult(result.objects, opts.output, (item) => objectRow(item as GraphObject));
       }
     );
+
+  // -------------------------------------------------------------------------------------
+  // plan / apply (`@scp/iac` server-side plan/apply — BUILD_AND_TEST.md §8 M2 item 4). A
+  // manifest file is what `@scp/iac`'s `synthToFile` writes (or any hand-authored/CI-generated
+  // JSON matching `DesiredStateManifestSchema`) — the CLI never imports/executes a user's IaC
+  // TypeScript program directly, only the synthesized manifest (DESIGN.md §15).
+  // -------------------------------------------------------------------------------------
+
+  program
+    .command("plan")
+    .description("Compute a desired-state diff for an @scp/iac manifest (dry run — does not apply)")
+    .requiredOption("--manifest <path>", "path to a synthesized DesiredStateManifest JSON file")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { manifest: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const manifest = await readManifestFile(opts.manifest);
+      const plan = await client.plans.create(manifest);
+      printPlanResult(plan, opts.output);
+    });
+
+  program
+    .command("apply")
+    .description(
+      "Plan and apply an @scp/iac manifest in one shot (POST /plans then apply) — applying an unchanged manifest again is a no-op"
+    )
+    .requiredOption("--manifest <path>", "path to a synthesized DesiredStateManifest JSON file")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { manifest: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const manifest = await readManifestFile(opts.manifest);
+      const plan = await client.plans.create(manifest);
+      const { plan: applied, summary } = await client.plans.apply(plan.id);
+      printApplyResult(applied, summary, opts.output);
+    });
+
+  program
+    .command("plan-status <id>")
+    .description("Get a previously computed plan by id")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const plan = await client.plans.get(id);
+      printPlanResult(plan, opts.output);
+    });
 
   // -------------------------------------------------------------------------------------
   // audit

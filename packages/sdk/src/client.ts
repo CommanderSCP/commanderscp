@@ -106,9 +106,14 @@ import {
   revokePat as revokePatRequest,
   startDeviceAuth as startDeviceAuthRequest,
   approveDeviceAuth as approveDeviceAuthRequest,
-  pollDeviceAuthToken as pollDeviceAuthTokenRequest
+  pollDeviceAuthToken as pollDeviceAuthTokenRequest,
+  // M2 stage 3: `@scp/iac` server-side plan/apply (BUILD_AND_TEST.md §8 M2 item 4).
+  createPlan as createPlanRequest,
+  getPlan as getPlanRequest,
+  applyPlan as applyPlanRequest
 } from "./generated/sdk.gen.js";
 import type {
+  ApplyPlanResponse,
   AuditEvent,
   AuditEventListResponse,
   CreateObjectRequest,
@@ -116,6 +121,7 @@ import type {
   CreateRelationshipRequest,
   CreateRelationshipTypeRequest,
   CreatePatResponse,
+  DesiredStateManifest,
   DeviceApproveResponse,
   DeviceStartResponse,
   GraphObject,
@@ -126,6 +132,7 @@ import type {
   ObjectTypeListResponse,
   Pat,
   PatListResponse,
+  Plan,
   Relationship,
   RelationshipListResponse,
   RelationshipType,
@@ -828,6 +835,27 @@ export class ScpClient {
         client: this.client,
         body: { deviceCode }
       });
+      return unwrap(result);
+    }
+  };
+
+  // -----------------------------------------------------------------------------------------
+  // `@scp/iac` server-side plan/apply (M2 stage 3, BUILD_AND_TEST.md §8 M2 item 4) — the diff
+  // engine lives once on the server (routes/plans.ts); `scp plan`/`scp apply` (packages/cli) are
+  // thin callers of `.create()`/`.apply()` here, same layering as every other resource.
+  // -----------------------------------------------------------------------------------------
+
+  readonly plans = {
+    create: async (manifest: DesiredStateManifest): Promise<Plan> => {
+      const result = await createPlanRequest({ client: this.client, body: { manifest } });
+      return unwrap(result);
+    },
+    get: async (id: string): Promise<Plan> => {
+      const result = await getPlanRequest({ client: this.client, path: { id } });
+      return unwrap(result);
+    },
+    apply: async (id: string): Promise<ApplyPlanResponse> => {
+      const result = await applyPlanRequest({ client: this.client, path: { id } });
       return unwrap(result);
     }
   };

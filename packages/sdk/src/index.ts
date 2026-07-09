@@ -35,3 +35,7 @@ export type {
   DeviceStartResponse,
   DeviceApproveResponse
 } from "@scp/schemas";
+
+// M2 stage 3: `@scp/iac` server-side plan/apply (BUILD_AND_TEST.md §8 M2 item 4).
+export type { ApplyPlanResponse, DesiredStateManifest, Plan, PlanDiff } from "@scp/schemas";
+export { DesiredStateManifestSchema } from "@scp/schemas";
