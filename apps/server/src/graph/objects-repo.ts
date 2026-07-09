@@ -202,6 +202,35 @@ export async function getObjectByIdOrUrn(
   return toGraphObject(row[0]);
 }
 
+function idOrUrnAnyTypeCondition(orgId: string, idOrUrn: string) {
+  const base = eq(objects.orgId, orgId);
+  return isUuid(idOrUrn) ? and(base, eq(objects.id, idOrUrn)) : and(base, eq(objects.urn, idOrUrn));
+}
+
+/**
+ * Same lookup as `getObjectByIdOrUrn`, but without a fixed `typeId` — for M2 ownership ergonomics
+ * (routes/ownership.ts) where the owner side of an `owns` edge can be a team/group/user/
+ * service-account and the caller doesn't know which ahead of time. Endpoint-type constraints are
+ * still enforced (by `createRelationship`, against the relationship type registry) — this helper
+ * only resolves the id-or-urn to a live object, it does not validate the object's type.
+ */
+export async function getObjectByIdOrUrnAnyType(
+  tx: TenantTx,
+  orgId: string,
+  idOrUrn: string,
+  opts: { includeDeleted?: boolean } = {}
+): Promise<GraphObject> {
+  const conditions = [idOrUrnAnyTypeCondition(orgId, idOrUrn)];
+  if (!opts.includeDeleted) conditions.push(isNull(objects.deletedAt));
+  const row = await tx
+    .select()
+    .from(objects)
+    .where(and(...conditions))
+    .limit(1);
+  if (row.length === 0 || !row[0]) throw notFound(`object '${idOrUrn}' not found`);
+  return toGraphObject(row[0]);
+}
+
 export interface ListObjectsQuery {
   cursor?: string | undefined;
   limit: number;

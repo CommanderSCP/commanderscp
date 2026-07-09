@@ -7,3 +7,4 @@ export * from "./objects.js";
 export * from "./auth.js";
 export * from "./graph.js";
 export * from "./audit.js";
+export * from "./registries.js";

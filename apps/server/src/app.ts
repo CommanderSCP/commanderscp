@@ -19,6 +19,11 @@ import { registerUiRoutes } from "./routes/ui.js";
 import { registerTypeRegistryRoutes } from "./routes/type-registry.js";
 import { registerObjectRoutes as registerGenericObjectRoutes } from "./routes/objects-generic.js";
 import { registerRelationshipRoutes } from "./routes/relationships.js";
+import {
+  registerTypedRegistryRoutes,
+  TYPED_REGISTRY_RESOURCES
+} from "./routes/typed-registries.js";
+import { registerOwnershipRoutes } from "./routes/ownership.js";
 import { registerGraphRoutes } from "./routes/graph.js";
 import { registerAuditEventRoutes } from "./routes/audit-events.js";
 import { registerEventStreamRoute } from "./routes/events.js";
@@ -89,6 +94,14 @@ export async function buildApp(
   registerTypeRegistryRoutes(app, deps);
   registerGenericObjectRoutes(app, deps); // M1 generic /objects/{type}
   registerRelationshipRoutes(app, deps);
+  // M2: typed convenience endpoints over the same graph substrate (BUILD_AND_TEST.md §8 M2 item
+  // 1) — one route-factory function invoked per resource; see routes/typed-registries.ts.
+  for (const resource of TYPED_REGISTRY_RESOURCES) {
+    registerTypedRegistryRoutes(app, deps, resource);
+  }
+  // M2: owns/consumes/depends_on sub-resource ergonomics over the typed resources above
+  // (routes/ownership.ts module doc).
+  registerOwnershipRoutes(app, deps);
   registerGraphRoutes(app, deps);
   registerAuditEventRoutes(app, deps);
   registerEventStreamRoute(app, deps);
