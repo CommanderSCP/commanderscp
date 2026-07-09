@@ -11,7 +11,7 @@ import { deriveUrn } from "./urn.js";
 import { requireObjectType } from "./type-registry-repo.js";
 import { validateProperties } from "./property-validation.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
-import { writeOutboxEvent } from "../events/outbox-repo.js";
+import { eventBus } from "../events/event-bus.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -167,7 +167,7 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
     afterHash: contentHash,
     requestId: input.requestId
   });
-  await writeOutboxEvent(tx, {
+  await eventBus.publish(tx, {
     orgId: input.orgId,
     type: `scp.object.created`,
     source: `/objects/${input.typeId}`,
@@ -338,7 +338,7 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
     afterHash,
     requestId: input.requestId
   });
-  await writeOutboxEvent(tx, {
+  await eventBus.publish(tx, {
     orgId: input.orgId,
     type: `scp.object.updated`,
     source: `/objects/${input.typeId}`,
@@ -453,7 +453,7 @@ export async function deleteObject(
     afterHash: null,
     requestId: input.requestId
   });
-  await writeOutboxEvent(tx, {
+  await eventBus.publish(tx, {
     orgId: input.orgId,
     type: `scp.object.deleted`,
     source: `/objects/${input.typeId}`,

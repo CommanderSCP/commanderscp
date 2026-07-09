@@ -1,9 +1,10 @@
 name: CI
 
-# Stages 1-4 from BUILD_AND_TEST.md §6 (M0 scope). Every stage is a plain pnpm command with no
-# hosted-service dependency, so the same pipeline runs on self-hosted runners or a bare
-# scripts/ci-local.sh (charter self-hosting requirement). Stage 5 (E2E) runs only on pushes to
-# main, per the M0 definition of done.
+# Stages 1-4 (+5 Integration, +7 E2E) from BUILD_AND_TEST.md §6. Every stage is a plain pnpm
+# command with no hosted-service dependency, so the same pipeline runs on self-hosted runners or
+# a bare scripts/ci-local.sh (charter self-hosting requirement). Stage 5 (Integration) and stage 7
+# (E2E)'s PR subset both gate every PR per §6 ("stages 1-6 are green, stage 7's PR subset is
+# green"); E2E's full run stays main-only per the M0 definition of done.
 
 on:
   push:
@@ -55,8 +56,20 @@ jobs:
       - run: pnpm build
       - run: pnpm test
 
+  integration:
+    name: "5. Integration (Testcontainers Postgres)"
+    # Needs a real Docker daemon for Testcontainers — the general runner has none
+    # (BUILD_AND_TEST.md §8 M1 item 9).
+    runs-on: homelab-commanderscp-linux-docker-build
+    needs: [static-checks, codegen-drift, unit-tests]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: pnpm build
+      - run: pnpm test:integration
+
   e2e-m0:
-    name: "5. E2E (M0 golden path, main only)"
+    name: "7. E2E (M0 golden path, main only)"
     runs-on: homelab-commanderscp-linux-docker-build
     needs: [static-checks, codegen-drift, unit-tests]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

@@ -10,7 +10,7 @@ import { computeRelationshipContentHash } from "./content-hash.js";
 import { requireRelationshipType } from "./type-registry-repo.js";
 import { validateProperties } from "./property-validation.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
-import { writeOutboxEvent } from "../events/outbox-repo.js";
+import { eventBus } from "../events/event-bus.js";
 
 function toRelationship(row: typeof relationships.$inferSelect): Relationship {
   return {
@@ -149,7 +149,7 @@ export async function createRelationship(
     afterHash: contentHash,
     requestId: input.requestId
   });
-  await writeOutboxEvent(tx, {
+  await eventBus.publish(tx, {
     orgId: input.orgId,
     type: "scp.relationship.created",
     source: `/relationships`,
@@ -229,7 +229,7 @@ export async function deleteRelationship(
     afterHash: null,
     requestId: input.requestId
   });
-  await writeOutboxEvent(tx, {
+  await eventBus.publish(tx, {
     orgId: input.orgId,
     type: "scp.relationship.deleted",
     source: `/relationships`,
