@@ -1,0 +1,170 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1560 1060" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="arrTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0f766e"/>
+    </marker>
+    <marker id="arrAmber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b45309"/>
+    </marker>
+  </defs>
+  <rect width="1560" height="1060" fill="#ffffff"/>
+
+  <text x="40" y="40" font-size="22" font-weight="700" fill="#0f172a">CommanderSCP — Multi-Domain Overview</text>
+  <text x="40" y="64" font-size="13" fill="#64748b">Hub-and-spoke federation · promotion Commercial → GovCloud → Air-gapped · every export signed, every import verified · every domain runs the same image</text>
+
+  <!-- parent -->
+  <rect x="400" y="88" width="760" height="180" rx="14" fill="#f0fdfa" stroke="#0f766e" stroke-width="2.5"/>
+  <text x="780" y="116" text-anchor="middle" font-size="15" font-weight="700" fill="#0f766e">Parent instance — Global Coordination Layer</text>
+  <text x="780" y="134" text-anchor="middle" font-size="10.5" fill="#134e4a">scpd (api + worker) + PostgreSQL — same image as every child</text>
+  <g font-size="10.5" fill="#134e4a">
+    <rect x="420" y="146" width="350" height="30" rx="6" fill="#ffffff" opacity="0.85" stroke="#5eead4"/>
+    <text x="595" y="165" text-anchor="middle">authoritative global config (single-writer origin)</text>
+    <rect x="790" y="146" width="350" height="30" rx="6" fill="#ffffff" opacity="0.85" stroke="#5eead4"/>
+    <text x="965" y="165" text-anchor="middle">domain registry + Ed25519 key registry (pairing · rotation)</text>
+    <rect x="420" y="182" width="350" height="30" rx="6" fill="#ffffff" opacity="0.85" stroke="#5eead4"/>
+    <text x="595" y="201" text-anchor="middle">campaigns · initiatives — cross-domain coordination</text>
+    <rect x="790" y="182" width="350" height="30" rx="6" fill="#ffffff" opacity="0.85" stroke="#5eead4"/>
+    <text x="965" y="201" text-anchor="middle">cross-domain status UI — all domains · sync freshness</text>
+    <rect x="420" y="218" width="350" height="30" rx="6" fill="#ffffff" opacity="0.85" stroke="#5eead4"/>
+    <text x="595" y="237" text-anchor="middle">global policies · release topologies → children (read-only)</text>
+    <rect x="790" y="218" width="350" height="30" rx="6" fill="#ffffff" opacity="0.85" stroke="#5eead4"/>
+    <text x="965" y="237" text-anchor="middle">signs journal segments · verifies child status + audit</text>
+  </g>
+
+  <!-- sync arrows -->
+  <polyline points="480,268 260,330 260,380" fill="none" stroke="#0f766e" stroke-width="1.8" marker-end="url(#arrTeal)" marker-start="url(#arrTeal)"/>
+  <text x="230" y="322" font-size="9.5" fill="#0f766e">mTLS ⇅ — child-initiated</text>
+  <text x="230" y="338" font-size="9.5" fill="#0f766e">config ↓ (RO) · status ↑</text>
+  <line x1="780" y1="268" x2="780" y2="380" stroke="#0f766e" stroke-width="1.8" marker-end="url(#arrTeal)" marker-start="url(#arrTeal)"/>
+  <text x="792" y="310" font-size="9.5" fill="#0f766e">mTLS ⇅ — GovCloud dials the parent;</text>
+  <text x="792" y="326" font-size="9.5" fill="#0f766e">nothing dials in · config ↓ (RO) · status ↑</text>
+  <rect x="1235" y="300" width="180" height="48" rx="10" fill="#f8fafc" stroke="#64748b" stroke-dasharray="5 4"/>
+  <text x="1325" y="320" text-anchor="middle" font-size="10.5" font-weight="700" fill="#374151">removable media</text>
+  <text x="1325" y="337" text-anchor="middle" font-size="9.5" fill="#6b7280">(sneakernet)</text>
+  <polyline points="1100,268 1325,300" fill="none" stroke="#0f766e" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#arrTeal)" marker-start="url(#arrTeal)"/>
+  <line x1="1325" y1="348" x2="1325" y2="380" stroke="#0f766e" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#arrTeal)" marker-start="url(#arrTeal)"/>
+  <text x="1170" y="254" font-size="9.5" fill="#0f766e">export / import .scpbundle ⇅ (signed)</text>
+  <text x="1170" y="270" font-size="9.5" fill="#64748b">parent view: transfer submitted → last-known on return</text>
+
+  <!-- commercial child -->
+  <rect x="40" y="380" width="440" height="470" rx="14" fill="#ffffff" stroke="#334155" stroke-width="2"/>
+  <text x="60" y="406" font-size="14" font-weight="700" fill="#0f172a">Commercial domain — child instance</text>
+  <text x="60" y="424" font-size="10.5" fill="#64748b">scpd (api + worker) · PostgreSQL · plugin host (subprocess)</text>
+  <g font-size="10.5">
+    <rect x="56" y="440" width="408" height="44" rx="6" fill="#fefce8" stroke="#a16207"/>
+    <text x="66" y="458" fill="#713f12">parent config — read-only replicas</text>
+    <text x="66" y="476" fill="#713f12">local policies may only add strictness (+ overlays)</text>
+    <rect x="56" y="494" width="408" height="44" rx="6" fill="#fefce8" stroke="#a16207"/>
+    <text x="66" y="512" fill="#713f12">gates: CEL policies · scans (Trivy · Snyk…) · tests</text>
+    <text x="66" y="530" fill="#713f12">approvals N-of-M + Ed25519 attestation · freezes</text>
+    <rect x="56" y="548" width="408" height="44" rx="6" fill="#fff7ed" stroke="#c2410c"/>
+    <text x="66" y="566" fill="#7c2d12">executors: GitHub · Argo CD · Terraform Mode 1</text>
+    <text x="66" y="584" fill="#7c2d12">managed-iac Mode 2 (runner image — no pipeline)</text>
+    <rect x="56" y="602" width="408" height="44" rx="6" fill="#f3f4f6" stroke="#374151"/>
+    <text x="66" y="620" fill="#4b5563">execution systems → GitHub Actions · Argo CD → K8s</text>
+    <text x="66" y="638" fill="#4b5563">org pipelines → cloud infra (observe · trigger · status · abort)</text>
+    <rect x="56" y="656" width="408" height="44" rx="6" fill="#f5f3ff" stroke="#6d28d9"/>
+    <text x="66" y="674" fill="#4c1d95">deploy: waves + gates · canary · fan-out / fan-in</text>
+    <text x="66" y="692" fill="#4c1d95">watchdog: stalled change → Decision + escalation</text>
+    <rect x="56" y="710" width="408" height="44" rx="6" fill="#fee2e2" stroke="#b91c1c"/>
+    <text x="66" y="728" fill="#7f1d1d">rollback: auto (canary · health · gate) or manual</text>
+    <text x="66" y="746" fill="#7f1d1d">→ prior revision · artifact digest · IaC state ref</text>
+    <rect x="56" y="764" width="408" height="44" rx="6" fill="#f0fdfa" stroke="#0f766e"/>
+    <text x="66" y="782" fill="#134e4a">journal: signs local objects with domain key</text>
+    <text x="66" y="800" fill="#134e4a">child-initiated: pull config · push status ↑</text>
+  </g>
+  <text x="260" y="832" text-anchor="middle" font-size="10.5" font-style="italic" fill="#64748b">fully operational when disconnected</text>
+
+  <!-- govcloud child -->
+  <rect x="560" y="380" width="440" height="470" rx="14" fill="#ffffff" stroke="#334155" stroke-width="2"/>
+  <text x="580" y="406" font-size="14" font-weight="700" fill="#0f172a">GovCloud / FedRAMP domain — child</text>
+  <text x="580" y="424" font-size="10.5" fill="#64748b">scpd (api + worker) · PostgreSQL · plugin host (subprocess)</text>
+  <g font-size="10.5">
+    <rect x="576" y="440" width="408" height="44" rx="6" fill="#fefce8" stroke="#a16207"/>
+    <text x="586" y="458" fill="#713f12">parent config — read-only replicas</text>
+    <text x="586" y="476" fill="#713f12">stricter local policy: security review required</text>
+    <rect x="576" y="494" width="408" height="44" rx="6" fill="#fefce8" stroke="#a16207"/>
+    <text x="586" y="512" fill="#713f12">gates: CEL policies · scans · tests · CAB (webhook)</text>
+    <text x="586" y="530" fill="#713f12">approvals: local security approver + attestation</text>
+    <rect x="576" y="548" width="408" height="44" rx="6" fill="#fff7ed" stroke="#c2410c"/>
+    <text x="586" y="566" fill="#7c2d12">executors: GitHub (gov) · Argo CD · Terraform M1</text>
+    <text x="586" y="584" fill="#7c2d12">managed-iac Mode 2 where no pipeline exists</text>
+    <rect x="576" y="602" width="408" height="44" rx="6" fill="#f3f4f6" stroke="#374151"/>
+    <text x="586" y="620" fill="#4b5563">execution systems → Argo CD → K8s (gov region)</text>
+    <text x="586" y="638" fill="#4b5563">pipelines → gov cloud infra</text>
+    <rect x="576" y="656" width="408" height="44" rx="6" fill="#f5f3ff" stroke="#6d28d9"/>
+    <text x="586" y="674" fill="#4c1d95">deploy: waves + gates (regional topology)</text>
+    <text x="586" y="692" fill="#4c1d95">fan-in validation before promotion onward</text>
+    <rect x="576" y="710" width="408" height="44" rx="6" fill="#fee2e2" stroke="#b91c1c"/>
+    <text x="586" y="728" fill="#7f1d1d">rollback: auto or manual — domain-local decision</text>
+    <text x="586" y="746" fill="#7f1d1d">campaign-scoped rollback supported</text>
+    <rect x="576" y="764" width="408" height="44" rx="6" fill="#f0fdfa" stroke="#0f766e"/>
+    <text x="586" y="782" fill="#134e4a">journal: signs local objects with domain key</text>
+    <text x="586" y="800" fill="#134e4a">child-initiated: pull config · push status ↑</text>
+  </g>
+  <text x="780" y="832" text-anchor="middle" font-size="10.5" font-style="italic" fill="#64748b">fully operational when disconnected</text>
+
+  <!-- air-gapped child -->
+  <rect x="1080" y="380" width="440" height="470" rx="14" fill="#ffffff" stroke="#334155" stroke-width="2" stroke-dasharray="8 5"/>
+  <text x="1100" y="406" font-size="14" font-weight="700" fill="#0f172a">Air-gapped domain — child (no network)</text>
+  <text x="1100" y="424" font-size="10.5" fill="#64748b">scpd (api + worker) · PostgreSQL · plugin host (subprocess)</text>
+  <g font-size="10.5">
+    <rect x="1096" y="440" width="408" height="44" rx="6" fill="#fefce8" stroke="#a16207"/>
+    <text x="1106" y="458" fill="#713f12">parent config via signed bundle import</text>
+    <text x="1106" y="476" fill="#713f12">hand-fill ⇒ provenance: manual — reconciled on import</text>
+    <rect x="1096" y="494" width="408" height="44" rx="6" fill="#fefce8" stroke="#a16207"/>
+    <text x="1106" y="512" fill="#713f12">gates: local policies (strictest) · offline scans</text>
+    <text x="1106" y="530" fill="#713f12">approvals: local approvers only + attestation</text>
+    <rect x="1096" y="548" width="408" height="44" rx="6" fill="#fff7ed" stroke="#c2410c"/>
+    <text x="1106" y="566" fill="#7c2d12">executors: Argo CD (offline registry) · managed-iac</text>
+    <text x="1106" y="584" fill="#7c2d12">artifacts arrive pre-verified by digest in the bundle</text>
+    <rect x="1096" y="602" width="408" height="44" rx="6" fill="#f3f4f6" stroke="#374151"/>
+    <text x="1106" y="620" fill="#4b5563">execution systems → Argo CD → K8s (isolated)</text>
+    <text x="1106" y="638" fill="#4b5563">isolated runner → on-prem infra</text>
+    <rect x="1096" y="656" width="408" height="44" rx="6" fill="#f5f3ff" stroke="#6d28d9"/>
+    <text x="1106" y="674" fill="#4c1d95">deploy: waves + gates — identical machinery</text>
+    <text x="1106" y="692" fill="#4c1d95">local UI · CLI · SDK · IaC all fully functional</text>
+    <rect x="1096" y="710" width="408" height="44" rx="6" fill="#fee2e2" stroke="#b91c1c"/>
+    <text x="1106" y="728" fill="#7f1d1d">rollback: local, no external dependency</text>
+    <text x="1106" y="746" fill="#7f1d1d">→ prior revision · state ref held locally</text>
+    <rect x="1096" y="764" width="408" height="44" rx="6" fill="#f0fdfa" stroke="#0f766e"/>
+    <text x="1106" y="782" fill="#134e4a">journal accumulates offline — export by bundle</text>
+    <text x="1106" y="800" fill="#134e4a">status · audit segments → media → parent</text>
+  </g>
+  <text x="1300" y="832" text-anchor="middle" font-size="10.5" font-style="italic" fill="#64748b">designed here first — the air gap is the design center</text>
+
+  <!-- promotion band -->
+  <text x="40" y="886" font-size="12.5" font-weight="700" fill="#b45309">Federated change promotion — a release topology whose waves are domains:</text>
+  <g font-size="10">
+    <rect x="40" y="898" width="440" height="76" rx="10" fill="#fffbeb" stroke="#b45309"/>
+    <text x="52" y="918" font-weight="700" fill="#92400e">1 · Change promoted out of Commercial</text>
+    <text x="52" y="936" fill="#92400e">export Promotion Bundle: change + provenance + control</text>
+    <text x="52" y="952" fill="#92400e">evidence + artifact digests + approval attestations (Ed25519)</text>
+    <rect x="560" y="898" width="440" height="76" rx="10" fill="#fffbeb" stroke="#b45309"/>
+    <text x="572" y="918" font-weight="700" fill="#92400e">2 · GovCloud re-gates locally</text>
+    <text x="572" y="936" fill="#92400e">verify signatures + attestations → instantiate local change</text>
+    <text x="572" y="952" fill="#92400e">(proposed) → local gates + approvals → waves → deploy → status ↑</text>
+    <rect x="1080" y="898" width="440" height="76" rx="10" fill="#fffbeb" stroke="#b45309"/>
+    <text x="1092" y="918" font-weight="700" fill="#92400e">3 · Air-gapped — same, by file</text>
+    <text x="1092" y="936" fill="#92400e">bundle crosses the gap on media → verify → local gates and</text>
+    <text x="1092" y="952" fill="#92400e">local approvals still decide → deploy → status returns by bundle</text>
+  </g>
+  <line x1="480" y1="936" x2="560" y2="936" stroke="#b45309" stroke-width="2.2" marker-end="url(#arrAmber)"/>
+  <text x="520" y="928" text-anchor="middle" font-size="9" fill="#b45309">mTLS</text>
+  <line x1="1000" y1="936" x2="1080" y2="936" stroke="#b45309" stroke-width="2.2" stroke-dasharray="6 4" marker-end="url(#arrAmber)"/>
+  <text x="1040" y="928" text-anchor="middle" font-size="9" fill="#b45309">file</text>
+
+  <!-- bottom notes -->
+  <rect x="40" y="994" width="480" height="44" rx="8" fill="#f8fafc" stroke="#64748b" stroke-dasharray="5 4"/>
+  <text x="52" y="1012" font-size="10" fill="#334155" font-weight="700">Approvals transfer as evidence — never authority.</text>
+  <text x="52" y="1028" font-size="10" fill="#475569">Every domain re-gates under its own (stricter-allowed) policy.</text>
+  <rect x="540" y="994" width="530" height="44" rx="8" fill="#f8fafc" stroke="#64748b" stroke-dasharray="5 4"/>
+  <text x="552" y="1012" font-size="10" fill="#334155" font-weight="700">Single-writer authority: every object owned by exactly one domain.</text>
+  <text x="552" y="1028" font-size="10" fill="#475569">Shared needs → overlays (annotates) · journal reserves base_revision / conflict.</text>
+  <rect x="1090" y="994" width="430" height="44" rx="8" fill="#f8fafc" stroke="#64748b" stroke-dasharray="5 4"/>
+  <text x="1102" y="1012" font-size="10" fill="#334155" font-weight="700">Legend: solid = mTLS (child-initiated) · dashed = air-gap file.</text>
+  <text x="1102" y="1028" font-size="10" fill="#475569">All exports Ed25519-signed + hash-chained; all imports verified.</text>
+</svg>

@@ -1,0 +1,210 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1560 1080" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="arrTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0f766e"/>
+    </marker>
+  </defs>
+  <rect width="1560" height="1080" fill="#ffffff"/>
+
+  <text x="40" y="44" font-size="22" font-weight="700" fill="#0f172a">CommanderSCP — Parent Instance (Global Coordination Layer)</text>
+  <text x="40" y="68" font-size="13" fill="#64748b">One scpd image · api + worker roles · PostgreSQL is the only required stateful dependency · same binary as every child</text>
+
+  <!-- clients row -->
+  <g font-size="11.5" fill="#1d4ed8">
+    <rect x="40" y="88" width="110" height="44" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
+    <text x="95" y="114" text-anchor="middle">Web UI (SPA)</text>
+    <rect x="158" y="88" width="90" height="44" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
+    <text x="203" y="114" text-anchor="middle">CLI — scp</text>
+    <rect x="256" y="88" width="90" height="44" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
+    <text x="301" y="114" text-anchor="middle">TS SDK</text>
+    <rect x="354" y="88" width="130" height="44" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
+    <text x="419" y="114" text-anchor="middle">IaC (CDK-style)</text>
+  </g>
+  <rect x="520" y="88" width="280" height="44" rx="8" fill="#f3f4f6" stroke="#64748b"/>
+  <text x="660" y="107" text-anchor="middle" font-size="11" fill="#374151">External IdP (OIDC + PKCE)</text>
+  <text x="660" y="122" text-anchor="middle" font-size="10" fill="#6b7280">Okta · Entra · Keycloak · Ping → api AuthN</text>
+
+  <line x1="262" y1="132" x2="262" y2="206" stroke="#475569" stroke-width="1.6" marker-end="url(#arr)"/>
+  <text x="272" y="164" font-size="10" fill="#475569">public /v1 API only</text>
+
+  <!-- instance outer -->
+  <rect x="40" y="168" width="1210" height="822" rx="14" fill="none" stroke="#334155" stroke-width="2"/>
+  <text x="60" y="192" font-size="13" font-weight="700" fill="#334155">scpd — parent instance · one container image · api / worker role flag</text>
+
+  <!-- api role -->
+  <rect x="64" y="210" width="350" height="452" rx="10" fill="#eff6ff" stroke="#1d4ed8"/>
+  <text x="76" y="234" font-size="13" font-weight="700" fill="#1d4ed8">api role — stateless · N replicas (HPA)</text>
+  <g font-size="11.5" fill="#1e3a8a">
+    <rect x="76" y="246" width="326" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#93c5fd"/>
+    <text x="86" y="273">AuthN: OIDC+PKCE · local · PAT · device flow</text>
+    <rect x="76" y="296" width="326" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#93c5fd"/>
+    <text x="86" y="323">AuthZ: RBAC · deny-override · inheritance (CTE)</text>
+    <rect x="76" y="346" width="326" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#93c5fd"/>
+    <text x="86" y="373">REST /v1 — Zod → OpenAPI 3.1 · org from token</text>
+    <rect x="76" y="396" width="326" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#93c5fd"/>
+    <text x="86" y="423">Graph queries: impact-of · owners-of · blast-radius</text>
+    <rect x="76" y="446" width="326" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#93c5fd"/>
+    <text x="86" y="473">Plan/apply diff engine — IaC desired state · drift</text>
+    <rect x="76" y="496" width="326" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#93c5fd"/>
+    <text x="86" y="523">Webhook ingress: verify sig → persist → process</text>
+    <rect x="76" y="546" width="326" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#93c5fd"/>
+    <text x="86" y="573">SSE /events/stream — live updates</text>
+    <rect x="76" y="596" width="326" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#93c5fd"/>
+    <text x="86" y="623">Static Web UI — bundled assets (air-gap clean)</text>
+  </g>
+
+  <!-- worker role -->
+  <rect x="444" y="210" width="380" height="452" rx="10" fill="#f5f3ff" stroke="#6d28d9"/>
+  <text x="456" y="234" font-size="13" font-weight="700" fill="#6d28d9">worker role — scales on queue depth · crash-resumable</text>
+  <g font-size="11.5" fill="#4c1d95">
+    <rect x="456" y="246" width="356" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#c4b5fd"/>
+    <text x="466" y="273">Coordination Engine — table-driven state machine</text>
+    <rect x="456" y="296" width="356" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#c4b5fd"/>
+    <text x="466" y="323">Plan compiler: topology → waves → gates (toposort)</text>
+    <rect x="456" y="346" width="356" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#c4b5fd"/>
+    <text x="466" y="373">Stuck-change watchdog: state SLA → Decision + alert</text>
+    <rect x="456" y="396" width="356" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#c4b5fd"/>
+    <text x="466" y="423">Governance: CEL policies (stricter-wins) · freezes</text>
+    <rect x="456" y="446" width="356" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#c4b5fd"/>
+    <text x="466" y="473">Approvals N-of-M → Ed25519 attestation at creation</text>
+    <rect x="456" y="496" width="356" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#c4b5fd"/>
+    <text x="466" y="523">Decision record on every verdict — explainability</text>
+    <rect x="456" y="546" width="356" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#c4b5fd"/>
+    <text x="466" y="573">Scheduler (pg-boss cron) · outbox relay → jobs · SSE</text>
+    <rect x="456" y="596" width="356" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#c4b5fd"/>
+    <text x="466" y="623">Reconcile: observe → compare → decide → coordinate</text>
+  </g>
+  <line x1="414" y1="520" x2="444" y2="520" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)"/>
+  <text x="429" y="510" text-anchor="middle" font-size="8.5" fill="#475569">outbox</text>
+
+  <!-- federation engine -->
+  <rect x="854" y="210" width="372" height="300" rx="10" fill="#f0fdfa" stroke="#0f766e"/>
+  <text x="866" y="234" font-size="13" font-weight="700" fill="#0f766e">Federation Engine — parent side</text>
+  <g font-size="11.5" fill="#134e4a">
+    <rect x="866" y="246" width="348" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#5eead4"/>
+    <text x="876" y="273">Sync-journal builder — outbox-derived · hash-chained</text>
+    <rect x="866" y="296" width="348" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#5eead4"/>
+    <text x="876" y="323">Ed25519 domain key — signs segments + attestations</text>
+    <rect x="866" y="346" width="348" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#5eead4"/>
+    <text x="876" y="373">Child key registry — exchanged at pairing · rotation</text>
+    <rect x="866" y="396" width="348" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#5eead4"/>
+    <text x="876" y="423">Child-initiated mTLS — pull config · push status</text>
+    <rect x="866" y="446" width="348" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#5eead4"/>
+    <text x="876" y="473">Bundle export/import — .scpbundle for air-gap</text>
+  </g>
+  <line x1="824" y1="300" x2="854" y2="300" stroke="#0f766e" stroke-width="1.4" marker-end="url(#arrTeal)"/>
+
+  <!-- global config authority -->
+  <rect x="854" y="524" width="372" height="148" rx="10" fill="#fefce8" stroke="#a16207"/>
+  <text x="866" y="546" font-size="12.5" font-weight="700" fill="#a16207">Authoritative global config — origin: parent</text>
+  <g font-size="11" fill="#713f12">
+    <rect x="866" y="558" width="118" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
+    <text x="925" y="577" text-anchor="middle">domain registry</text>
+    <rect x="992" y="558" width="96" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
+    <text x="1040" y="577" text-anchor="middle">org + teams</text>
+    <rect x="1096" y="558" width="112" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
+    <text x="1152" y="577" text-anchor="middle">global policies</text>
+    <rect x="866" y="596" width="136" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
+    <text x="934" y="615" text-anchor="middle">release topologies</text>
+    <rect x="1010" y="596" width="170" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
+    <text x="1095" y="615" text-anchor="middle">campaigns · initiatives</text>
+    <rect x="866" y="634" width="140" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
+    <text x="936" y="653" text-anchor="middle">control definitions</text>
+    <text x="1016" y="653" font-size="10.5" font-style="italic" fill="#a16207">single-writer · read-only at children</text>
+  </g>
+
+  <!-- plugin host (under worker/federation columns only) -->
+  <rect x="444" y="680" width="782" height="92" rx="10" fill="#fff7ed" stroke="#c2410c"/>
+  <text x="456" y="702" font-size="12.5" font-weight="700" fill="#c2410c">Plugin host — one subprocess per plugin · JSON-RPC over stdio · timeouts · restart with backoff</text>
+  <g font-size="11" fill="#7c2d12">
+    <rect x="456" y="712" width="110" height="34" rx="6" fill="#ffffff" opacity="0.8" stroke="#fed7aa"/>
+    <text x="511" y="733" text-anchor="middle">oidc identity</text>
+    <rect x="574" y="712" width="96" height="34" rx="6" fill="#ffffff" opacity="0.8" stroke="#fed7aa"/>
+    <text x="622" y="733" text-anchor="middle">local-auth</text>
+    <rect x="678" y="712" width="100" height="34" rx="6" fill="#ffffff" opacity="0.8" stroke="#fed7aa"/>
+    <text x="728" y="733" text-anchor="middle">smtp-notify</text>
+    <rect x="786" y="712" width="122" height="34" rx="6" fill="#ffffff" opacity="0.8" stroke="#fed7aa"/>
+    <text x="847" y="733" text-anchor="middle">webhook-notify</text>
+    <rect x="916" y="712" width="126" height="34" rx="6" fill="#ffffff" opacity="0.8" stroke="#fed7aa"/>
+    <text x="979" y="733" text-anchor="middle">webhook-control</text>
+    <text x="456" y="764" font-size="10.5" font-style="italic" fill="#9a3412">executor plugins typically run in child domains — see child-instance diagram</text>
+  </g>
+  <line x1="700" y1="662" x2="700" y2="678" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)"/>
+
+  <!-- postgres -->
+  <rect x="64" y="790" width="920" height="176" rx="10" fill="#f0fdf4" stroke="#15803d"/>
+  <text x="76" y="814" font-size="13" font-weight="700" fill="#15803d">PostgreSQL 16 — the system of record (only required stateful dependency)</text>
+  <g font-size="11" fill="#14532d">
+    <rect x="76" y="826" width="230" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
+    <text x="191" y="846" text-anchor="middle">objects + relationships (graph)</text>
+    <rect x="314" y="826" width="110" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
+    <text x="369" y="846" text-anchor="middle">type registry</text>
+    <rect x="432" y="826" width="150" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
+    <text x="507" y="846" text-anchor="middle">policies · topologies</text>
+    <rect x="590" y="826" width="230" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
+    <text x="705" y="846" text-anchor="middle">changes · campaigns · initiatives</text>
+    <rect x="76" y="866" width="90" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
+    <text x="121" y="886" text-anchor="middle">decisions</text>
+    <rect x="174" y="866" width="290" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
+    <text x="319" y="886" text-anchor="middle">audit chain — hash-linked · INSERT-only</text>
+    <rect x="472" y="866" width="70" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
+    <text x="507" y="886" text-anchor="middle">outbox</text>
+    <rect x="550" y="866" width="105" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
+    <text x="602" y="886" text-anchor="middle">pg-boss jobs</text>
+    <rect x="663" y="866" width="105" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
+    <text x="715" y="886" text-anchor="middle">sync journal</text>
+    <rect x="776" y="866" width="110" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
+    <text x="831" y="886" text-anchor="middle">role bindings</text>
+    <text x="76" y="946" font-size="10.5" font-style="italic" fill="#166534">org_id on every row + Row-Level Security · audit events written in the same transaction as the action</text>
+  </g>
+  <line x1="240" y1="664" x2="240" y2="788" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)" marker-start="url(#arr)"/>
+  <text x="250" y="730" font-size="9.5" fill="#475569">SQL · RLS</text>
+
+  <!-- nats + object storage -->
+  <rect x="1000" y="790" width="226" height="80" rx="10" fill="#f0fdfa" stroke="#0f766e" stroke-dasharray="6 4"/>
+  <text x="1113" y="820" text-anchor="middle" font-size="11.5" font-weight="700" fill="#0f766e">NATS JetStream (optional)</text>
+  <text x="1113" y="838" text-anchor="middle" font-size="10" fill="#134e4a">EventBus backend for high volume</text>
+  <text x="1113" y="854" text-anchor="middle" font-size="10" fill="#134e4a">never required</text>
+  <rect x="1000" y="882" width="226" height="84" rx="10" fill="#f0fdf4" stroke="#15803d"/>
+  <text x="1113" y="910" text-anchor="middle" font-size="11.5" font-weight="700" fill="#15803d">Object storage</text>
+  <text x="1113" y="928" text-anchor="middle" font-size="10" fill="#14532d">filesystem default · S3 optional</text>
+  <text x="1113" y="944" text-anchor="middle" font-size="10" fill="#14532d">bundles · evidence · audit anchors</text>
+
+  <!-- children (right) -->
+  <text x="1290" y="204" font-size="13" font-weight="700" fill="#334155">Child domain instances</text>
+  <rect x="1290" y="220" width="230" height="64" rx="10" fill="#f8fafc" stroke="#0f766e"/>
+  <text x="1405" y="246" text-anchor="middle" font-size="11.5" font-weight="700" fill="#0f172a">Commercial child</text>
+  <text x="1405" y="264" text-anchor="middle" font-size="10" fill="#475569">connected — pulls journal (mTLS)</text>
+  <text x="1405" y="300" text-anchor="middle" font-size="9.5" fill="#0f766e">config ↓ read-only · status ↑</text>
+  <rect x="1290" y="310" width="230" height="64" rx="10" fill="#f8fafc" stroke="#0f766e"/>
+  <text x="1405" y="336" text-anchor="middle" font-size="11.5" font-weight="700" fill="#0f172a">GovCloud / FedRAMP child</text>
+  <text x="1405" y="354" text-anchor="middle" font-size="10" fill="#475569">connected · stricter local policy</text>
+  <text x="1405" y="390" text-anchor="middle" font-size="9.5" fill="#0f766e">config ↓ read-only · status ↑</text>
+  <rect x="1290" y="400" width="230" height="64" rx="10" fill="#f8fafc" stroke="#0f766e" stroke-dasharray="6 4"/>
+  <text x="1405" y="426" text-anchor="middle" font-size="11.5" font-weight="700" fill="#0f172a">Air-gapped child</text>
+  <text x="1405" y="444" text-anchor="middle" font-size="10" fill="#475569">bundle files · removable media</text>
+  <text x="1405" y="480" text-anchor="middle" font-size="9.5" fill="#0f766e">.scpbundle ⇄ sneakernet · hand-fill</text>
+
+  <line x1="1250" y1="252" x2="1290" y2="252" stroke="#0f766e" stroke-width="1.8" marker-end="url(#arrTeal)" marker-start="url(#arrTeal)"/>
+  <line x1="1250" y1="342" x2="1290" y2="342" stroke="#0f766e" stroke-width="1.8" marker-end="url(#arrTeal)" marker-start="url(#arrTeal)"/>
+  <line x1="1250" y1="432" x2="1290" y2="432" stroke="#0f766e" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#arrTeal)" marker-start="url(#arrTeal)"/>
+
+  <rect x="1290" y="520" width="230" height="150" rx="10" fill="#f8fafc" stroke="#64748b" stroke-dasharray="5 4"/>
+  <text x="1302" y="544" font-size="11.5" font-weight="700" fill="#334155">Parent UI — cross-domain view</text>
+  <text x="1302" y="564" font-size="10.5" fill="#475569">every domain · sync freshness</text>
+  <text x="1302" y="582" font-size="10.5" fill="#475569">in-flight changes per domain</text>
+  <text x="1302" y="600" font-size="10.5" fill="#475569">campaign / initiative roll-up</text>
+  <text x="1302" y="618" font-size="10.5" fill="#475569">air-gapped: last-known + transfer status</text>
+  <text x="1302" y="642" font-size="10" font-style="italic" fill="#64748b">child-initiated only — parent never</text>
+  <text x="1302" y="658" font-size="10" font-style="italic" fill="#64748b">dials a child or edits its data</text>
+
+  <!-- legend -->
+  <line x1="40" y1="1024" x2="90" y2="1024" stroke="#0f766e" stroke-width="1.8"/>
+  <text x="98" y="1028" font-size="10.5" fill="#475569">connected sync — mTLS HTTPS journal pull</text>
+  <line x1="360" y1="1024" x2="410" y2="1024" stroke="#0f766e" stroke-width="1.8" stroke-dasharray="6 4"/>
+  <text x="418" y="1028" font-size="10.5" fill="#475569">air-gap file transfer (.scpbundle)</text>
+  <text x="660" y="1028" font-size="10.5" fill="#475569">every export Ed25519-signed + hash-chained · every import verified before apply</text>
+</svg>
