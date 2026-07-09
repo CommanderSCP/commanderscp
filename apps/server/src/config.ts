@@ -23,6 +23,13 @@ export interface ServerConfig {
   /** Base URL the server uses to call its own public API (UI SSR dogfoods the SDK). */
   internalBaseUrl: string;
   /**
+   * Boot-time demo seed (BUILD_AND_TEST.md §5.3, seed.ts's `loginAndSeedDemoData`) — off by
+   * default; the eval compose stack (`deploy/compose/docker-compose.yml`) turns it on. Never
+   * required for the platform to function: a failed/skipped seed only means the demo graph isn't
+   * there, never a boot failure (main.ts logs and continues).
+   */
+  seedDemo: boolean;
+  /**
    * Generic OIDC (Authorization Code + PKCE via `openid-client`) — DESIGN.md §7, M2 stage 2 Part
    * B. `undefined` (the default — unset `SCP_OIDC_ISSUER`) means OIDC is DISABLED: the
    * `/auth/oidc/*` routes 404 rather than crash, and local-auth keeps working unmodified
@@ -88,6 +95,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     bootstrapAdminUsername: env.SCP_BOOTSTRAP_ADMIN_USERNAME ?? "admin",
     cookieSecret: env.SCP_COOKIE_SECRET ?? randomSecret(),
     internalBaseUrl: env.SCP_INTERNAL_BASE_URL ?? `http://127.0.0.1:${port}/api/v1`,
+    seedDemo: env.SCP_SEED_DEMO === "true",
     oidc: loadOidcConfig(env)
   };
 }
