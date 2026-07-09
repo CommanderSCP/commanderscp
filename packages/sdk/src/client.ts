@@ -5,9 +5,48 @@ import {
   listServiceObjects as listServiceObjectsRequest,
   createServiceObject as createServiceObjectRequest,
   listServiceObjectsForOrg as listServiceObjectsForOrgRequest,
-  createServiceObjectForOrg as createServiceObjectForOrgRequest
+  createServiceObjectForOrg as createServiceObjectForOrgRequest,
+  createObjectType as createObjectTypeRequest,
+  listObjectTypes as listObjectTypesRequest,
+  createRelationshipType as createRelationshipTypeRequest,
+  listRelationshipTypes as listRelationshipTypesRequest,
+  createObject as createObjectRequest,
+  listObjects as listObjectsRequest,
+  getObject as getObjectRequest,
+  updateObject as updateObjectRequest,
+  deleteObject as deleteObjectRequest,
+  upsertObjectByUrn as upsertObjectByUrnRequest,
+  createRelationship as createRelationshipRequest,
+  listRelationships as listRelationshipsRequest,
+  getRelationship as getRelationshipRequest,
+  deleteRelationship as deleteRelationshipRequest,
+  graphQuery as graphQueryRequest,
+  graphTraverse as graphTraverseRequest,
+  listAuditEvents as listAuditEventsRequest
 } from "./generated/sdk.gen.js";
-import type { ServiceObject, ServiceObjectListResponse } from "@scp/schemas";
+import type {
+  AuditEvent,
+  AuditEventListResponse,
+  CreateObjectRequest,
+  CreateObjectTypeRequest,
+  CreateRelationshipRequest,
+  CreateRelationshipTypeRequest,
+  GraphObject,
+  GraphQueryResult,
+  NamedGraphQuery,
+  ObjectListResponse,
+  ObjectType,
+  ObjectTypeListResponse,
+  Relationship,
+  RelationshipListResponse,
+  RelationshipType,
+  RelationshipTypeListResponse,
+  ServiceObject,
+  ServiceObjectListResponse,
+  TraverseResult,
+  UpdateObjectRequest,
+  UpsertObjectRequest
+} from "@scp/schemas";
 import { ScpApiError } from "./errors.js";
 
 export interface ScpClientOptions {
@@ -49,10 +88,46 @@ export interface LoginResult {
   org: string;
 }
 
+export interface ListQuery {
+  cursor?: string;
+  limit?: number;
+}
+
+export interface ListObjectsQuery extends ListQuery {
+  domainId?: string;
+  includeDeleted?: boolean;
+}
+
+export interface ListRelationshipsQuery extends ListQuery {
+  fromId?: string;
+  toId?: string;
+  typeId?: string;
+}
+
+export interface GraphQueryParams {
+  objectId: string;
+  targetId?: string;
+  relTypes?: string[];
+  maxDepth?: number;
+}
+
+export interface TraverseParams {
+  objectId: string;
+  direction?: "out" | "in" | "both";
+  relTypes?: string[];
+  maxDepth?: number;
+}
+
+function idempotencyHeaders(idempotencyKey?: string): Record<string, string> | undefined {
+  return idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined;
+}
+
 /**
  * Thin handwritten layer over the `@hey-api/openapi-ts` generated core (DESIGN.md §15): token
- * management (auth) and a cursor-pagination iterator. The CLI and the server-rendered UI stub
- * consume only this class — never a raw `fetch` to the API.
+ * management (auth), a cursor-pagination iterator, and ergonomic namespaces over the M1 graph
+ * endpoints (type registry, generic objects-of-any-type, relationships, named graph queries,
+ * audit events). The CLI and the server-rendered UI stub consume only this class — never a raw
+ * `fetch` to the API, and every write that accepts an `Idempotency-Key` here too.
  */
 export class ScpClient {
   private readonly client: Client;
@@ -84,6 +159,10 @@ export class ScpClient {
     this.token = data.token;
     return data;
   }
+
+  // -----------------------------------------------------------------------------------------
+  // M0 legacy /objects/service (unchanged contract — DESIGN.md additive-only-within-v1)
+  // -----------------------------------------------------------------------------------------
 
   readonly objects = {
     service: {
@@ -126,6 +205,181 @@ export class ScpClient {
     let cursor: string | undefined;
     do {
       const page = await this.objects.service.list({ ...query, cursor }, opts);
+      for (const item of page.items) yield item;
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+  }
+
+  // -----------------------------------------------------------------------------------------
+  // Runtime type registry (DESIGN.md §4.1)
+  // -----------------------------------------------------------------------------------------
+
+  readonly typeRegistry = {
+    objectTypes: {
+      create: async (
+        req: CreateObjectTypeRequest,
+        opts: { idempotencyKey?: string } = {}
+      ): Promise<ObjectType> => {
+        const result = await createObjectTypeRequest({
+          client: this.client,
+          body: req,
+          headers: idempotencyHeaders(opts.idempotencyKey)
+        });
+        return unwrap(result);
+      },
+      list: async (query: ListQuery = {}): Promise<ObjectTypeListResponse> => {
+        const result = await listObjectTypesRequest({ client: this.client, query });
+        return unwrap(result);
+      }
+    },
+    relationshipTypes: {
+      create: async (
+        req: CreateRelationshipTypeRequest,
+        opts: { idempotencyKey?: string } = {}
+      ): Promise<RelationshipType> => {
+        const result = await createRelationshipTypeRequest({
+          client: this.client,
+          body: req,
+          headers: idempotencyHeaders(opts.idempotencyKey)
+        });
+        return unwrap(result);
+      },
+      list: async (query: ListQuery = {}): Promise<RelationshipTypeListResponse> => {
+        const result = await listRelationshipTypesRequest({ client: this.client, query });
+        return unwrap(result);
+      }
+    }
+  };
+
+  // -----------------------------------------------------------------------------------------
+  // Generic /objects/{type} — works for ANY registered type, built-in or org-defined
+  // (BUILD_AND_TEST.md §8 M1 DoD (b): usable through the SDK with no code changes).
+  // -----------------------------------------------------------------------------------------
+
+  /** Returns a small ergonomic client scoped to one object type, e.g. `client.object("service")`. */
+  object(type: string) {
+    return {
+      create: async (
+        req: CreateObjectRequest,
+        opts: { idempotencyKey?: string } = {}
+      ): Promise<GraphObject> => {
+        const result = await createObjectRequest({
+          client: this.client,
+          path: { type },
+          body: req,
+          headers: idempotencyHeaders(opts.idempotencyKey)
+        });
+        return unwrap(result);
+      },
+      list: async (query: ListObjectsQuery = {}): Promise<ObjectListResponse> => {
+        const result = await listObjectsRequest({ client: this.client, path: { type }, query });
+        return unwrap(result);
+      },
+      get: async (idOrUrn: string): Promise<GraphObject> => {
+        const result = await getObjectRequest({ client: this.client, path: { type, idOrUrn } });
+        return unwrap(result);
+      },
+      update: async (idOrUrn: string, req: UpdateObjectRequest): Promise<GraphObject> => {
+        const result = await updateObjectRequest({
+          client: this.client,
+          path: { type, idOrUrn },
+          body: req
+        });
+        return unwrap(result);
+      },
+      delete: async (idOrUrn: string): Promise<GraphObject> => {
+        const result = await deleteObjectRequest({ client: this.client, path: { type, idOrUrn } });
+        return unwrap(result);
+      },
+      upsertByUrn: async (urn: string, req: UpsertObjectRequest): Promise<GraphObject> => {
+        const result = await upsertObjectByUrnRequest({
+          client: this.client,
+          path: { type, urn },
+          body: req
+        });
+        return unwrap(result);
+      }
+    };
+  }
+
+  /** Pagination iterator over any object type. */
+  async *listAllObjects(
+    type: string,
+    query: Omit<ListObjectsQuery, "cursor"> = {}
+  ): AsyncGenerator<GraphObject> {
+    let cursor: string | undefined;
+    do {
+      const page = await this.object(type).list({ ...query, cursor });
+      for (const item of page.items) yield item;
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+  }
+
+  // -----------------------------------------------------------------------------------------
+  // Relationships
+  // -----------------------------------------------------------------------------------------
+
+  readonly relationships = {
+    create: async (
+      req: CreateRelationshipRequest,
+      opts: { idempotencyKey?: string } = {}
+    ): Promise<Relationship> => {
+      const result = await createRelationshipRequest({
+        client: this.client,
+        body: req,
+        headers: idempotencyHeaders(opts.idempotencyKey)
+      });
+      return unwrap(result);
+    },
+    list: async (query: ListRelationshipsQuery = {}): Promise<RelationshipListResponse> => {
+      const result = await listRelationshipsRequest({ client: this.client, query });
+      return unwrap(result);
+    },
+    get: async (id: string): Promise<Relationship> => {
+      const result = await getRelationshipRequest({ client: this.client, path: { id } });
+      return unwrap(result);
+    },
+    delete: async (id: string): Promise<Relationship> => {
+      const result = await deleteRelationshipRequest({ client: this.client, path: { id } });
+      return unwrap(result);
+    }
+  };
+
+  // -----------------------------------------------------------------------------------------
+  // Named graph queries + generic traverse (DESIGN.md §5)
+  // -----------------------------------------------------------------------------------------
+
+  readonly graph = {
+    query: async (name: NamedGraphQuery, params: GraphQueryParams): Promise<GraphQueryResult> => {
+      const result = await graphQueryRequest({
+        client: this.client,
+        path: { name },
+        query: params
+      });
+      return unwrap(result) as GraphQueryResult;
+    },
+    traverse: async (params: TraverseParams): Promise<TraverseResult> => {
+      const result = await graphTraverseRequest({ client: this.client, query: params });
+      return unwrap(result);
+    }
+  };
+
+  // -----------------------------------------------------------------------------------------
+  // Audit log
+  // -----------------------------------------------------------------------------------------
+
+  readonly auditEvents = {
+    list: async (query: ListQuery = {}): Promise<AuditEventListResponse> => {
+      const result = await listAuditEventsRequest({ client: this.client, query });
+      return unwrap(result);
+    }
+  };
+
+  /** Pagination iterator over the org's full audit chain, in chain order. */
+  async *listAllAuditEvents(): AsyncGenerator<AuditEvent> {
+    let cursor: string | undefined;
+    do {
+      const page = await this.auditEvents.list({ cursor });
       for (const item of page.items) yield item;
       cursor = page.nextCursor ?? undefined;
     } while (cursor);

@@ -65,6 +65,17 @@ export type ListServiceObjectsErrors = {
         instance?: string;
         decision_id?: string;
     };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
 };
 
 export type ListServiceObjectsError = ListServiceObjectsErrors[keyof ListServiceObjectsErrors];
@@ -90,6 +101,15 @@ export type ListServiceObjectsResponse = ListServiceObjectsResponses[keyof ListS
 export type CreateServiceObjectData = {
     body: {
         name: string;
+        id?: string;
+        urn?: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
     };
     path?: never;
     query?: never;
@@ -101,6 +121,39 @@ export type CreateServiceObjectErrors = {
      * Error
      */
     401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    422: {
         type: string;
         title: string;
         status: number;
@@ -187,6 +240,15 @@ export type ListServiceObjectsForOrgResponse = ListServiceObjectsForOrgResponses
 export type CreateServiceObjectForOrgData = {
     body: {
         name: string;
+        id?: string;
+        urn?: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
     };
     path: {
         org: string;
@@ -218,6 +280,28 @@ export type CreateServiceObjectForOrgErrors = {
         instance?: string;
         decision_id?: string;
     };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    422: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
 };
 
 export type CreateServiceObjectForOrgError = CreateServiceObjectForOrgErrors[keyof CreateServiceObjectForOrgErrors];
@@ -236,3 +320,1297 @@ export type CreateServiceObjectForOrgResponses = {
 };
 
 export type CreateServiceObjectForOrgResponse = CreateServiceObjectForOrgResponses[keyof CreateServiceObjectForOrgResponses];
+
+export type ListObjectTypesData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+    };
+    url: '/type-registry/object-types';
+};
+
+export type ListObjectTypesErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListObjectTypesError = ListObjectTypesErrors[keyof ListObjectTypesErrors];
+
+export type ListObjectTypesResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string | null;
+            displayName: string;
+            propertySchema: {
+                [key: string]: unknown;
+            } | null;
+            isBuiltin: boolean;
+            createdAt: string;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListObjectTypesResponse = ListObjectTypesResponses[keyof ListObjectTypesResponses];
+
+export type CreateObjectTypeData = {
+    body: {
+        id: string;
+        displayName: string;
+        propertySchema?: {
+            [key: string]: unknown;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/type-registry/object-types';
+};
+
+export type CreateObjectTypeErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateObjectTypeError = CreateObjectTypeErrors[keyof CreateObjectTypeErrors];
+
+export type CreateObjectTypeResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string | null;
+        displayName: string;
+        propertySchema: {
+            [key: string]: unknown;
+        } | null;
+        isBuiltin: boolean;
+        createdAt: string;
+    };
+};
+
+export type CreateObjectTypeResponse = CreateObjectTypeResponses[keyof CreateObjectTypeResponses];
+
+export type ListRelationshipTypesData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+    };
+    url: '/type-registry/relationship-types';
+};
+
+export type ListRelationshipTypesErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListRelationshipTypesError = ListRelationshipTypesErrors[keyof ListRelationshipTypesErrors];
+
+export type ListRelationshipTypesResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string | null;
+            displayName: string;
+            propertySchema: {
+                [key: string]: unknown;
+            } | null;
+            fromTypes: Array<string> | null;
+            toTypes: Array<string> | null;
+            cardinality: 'one_to_one' | 'one_to_many' | 'many_to_many';
+            isBuiltin: boolean;
+            createdAt: string;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListRelationshipTypesResponse = ListRelationshipTypesResponses[keyof ListRelationshipTypesResponses];
+
+export type CreateRelationshipTypeData = {
+    body: {
+        id: string;
+        displayName: string;
+        propertySchema?: {
+            [key: string]: unknown;
+        };
+        fromTypes?: Array<string>;
+        toTypes?: Array<string>;
+        cardinality: 'one_to_one' | 'one_to_many' | 'many_to_many';
+    };
+    path?: never;
+    query?: never;
+    url: '/type-registry/relationship-types';
+};
+
+export type CreateRelationshipTypeErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateRelationshipTypeError = CreateRelationshipTypeErrors[keyof CreateRelationshipTypeErrors];
+
+export type CreateRelationshipTypeResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string | null;
+        displayName: string;
+        propertySchema: {
+            [key: string]: unknown;
+        } | null;
+        fromTypes: Array<string> | null;
+        toTypes: Array<string> | null;
+        cardinality: 'one_to_one' | 'one_to_many' | 'many_to_many';
+        isBuiltin: boolean;
+        createdAt: string;
+    };
+};
+
+export type CreateRelationshipTypeResponse = CreateRelationshipTypeResponses[keyof CreateRelationshipTypeResponses];
+
+export type ListObjectsData = {
+    body?: never;
+    path: {
+        type: string;
+    };
+    query?: {
+        cursor?: string;
+        limit?: number;
+        domainId?: string;
+        includeDeleted?: boolean;
+    };
+    url: '/objects/{type}';
+};
+
+export type ListObjectsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListObjectsError = ListObjectsErrors[keyof ListObjectsErrors];
+
+export type ListObjectsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            typeId: string;
+            name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            version: number;
+            createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListObjectsResponse = ListObjectsResponses[keyof ListObjectsResponses];
+
+export type CreateObjectData = {
+    body: {
+        id?: string;
+        urn?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path: {
+        type: string;
+    };
+    query?: never;
+    url: '/objects/{type}';
+};
+
+export type CreateObjectErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateObjectError = CreateObjectErrors[keyof CreateObjectErrors];
+
+export type CreateObjectResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type CreateObjectResponse = CreateObjectResponses[keyof CreateObjectResponses];
+
+export type DeleteObjectData = {
+    body?: never;
+    path: {
+        type: string;
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/objects/{type}/{idOrUrn}';
+};
+
+export type DeleteObjectErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteObjectError = DeleteObjectErrors[keyof DeleteObjectErrors];
+
+export type DeleteObjectResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type DeleteObjectResponse = DeleteObjectResponses[keyof DeleteObjectResponses];
+
+export type GetObjectData = {
+    body?: never;
+    path: {
+        type: string;
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/objects/{type}/{idOrUrn}';
+};
+
+export type GetObjectErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetObjectError = GetObjectErrors[keyof GetObjectErrors];
+
+export type GetObjectResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type GetObjectResponse = GetObjectResponses[keyof GetObjectResponses];
+
+export type UpdateObjectData = {
+    body: {
+        name?: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+        version?: number;
+    };
+    path: {
+        type: string;
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/objects/{type}/{idOrUrn}';
+};
+
+export type UpdateObjectErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    412: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpdateObjectError = UpdateObjectErrors[keyof UpdateObjectErrors];
+
+export type UpdateObjectResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpdateObjectResponse = UpdateObjectResponses[keyof UpdateObjectResponses];
+
+export type UpsertObjectByUrnData = {
+    body: {
+        id?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path: {
+        type: string;
+        urn: string;
+    };
+    query?: never;
+    url: '/objects/{type}/{urn}';
+};
+
+export type UpsertObjectByUrnErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpsertObjectByUrnError = UpsertObjectByUrnErrors[keyof UpsertObjectByUrnErrors];
+
+export type UpsertObjectByUrnResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpsertObjectByUrnResponse = UpsertObjectByUrnResponses[keyof UpsertObjectByUrnResponses];
+
+export type ListRelationshipsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+        fromId?: string;
+        toId?: string;
+        typeId?: string;
+    };
+    url: '/relationships';
+};
+
+export type ListRelationshipsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListRelationshipsError = ListRelationshipsErrors[keyof ListRelationshipsErrors];
+
+export type ListRelationshipsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            typeId: string;
+            fromId: string;
+            toId: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            createdAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListRelationshipsResponse = ListRelationshipsResponses[keyof ListRelationshipsResponses];
+
+export type CreateRelationshipData = {
+    body: {
+        id?: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties?: {
+            [key: string]: unknown;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/relationships';
+};
+
+export type CreateRelationshipErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateRelationshipError = CreateRelationshipErrors[keyof CreateRelationshipErrors];
+
+export type CreateRelationshipResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        createdAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type CreateRelationshipResponse = CreateRelationshipResponses[keyof CreateRelationshipResponses];
+
+export type DeleteRelationshipData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/relationships/{id}';
+};
+
+export type DeleteRelationshipErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteRelationshipError = DeleteRelationshipErrors[keyof DeleteRelationshipErrors];
+
+export type DeleteRelationshipResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        createdAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type DeleteRelationshipResponse = DeleteRelationshipResponses[keyof DeleteRelationshipResponses];
+
+export type GetRelationshipData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/relationships/{id}';
+};
+
+export type GetRelationshipErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetRelationshipError = GetRelationshipErrors[keyof GetRelationshipErrors];
+
+export type GetRelationshipResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        createdAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type GetRelationshipResponse = GetRelationshipResponses[keyof GetRelationshipResponses];
+
+export type GraphQueryData = {
+    body?: never;
+    path: {
+        name: 'owners-of' | 'dependents-of' | 'consumers-of' | 'impact-of' | 'blast-radius' | 'paths-between' | 'domains-impacted';
+    };
+    query: {
+        objectId: string;
+        targetId?: string;
+        relTypes?: Array<string>;
+        maxDepth?: number;
+    };
+    url: '/graph/query/{name}';
+};
+
+export type GraphQueryErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GraphQueryError = GraphQueryErrors[keyof GraphQueryErrors];
+
+export type GraphQueryResponses = {
+    /**
+     * Success
+     */
+    200: {
+        query: 'owners-of' | 'dependents-of' | 'consumers-of' | 'impact-of' | 'blast-radius' | 'paths-between' | 'domains-impacted';
+        objects: Array<{
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            typeId: string;
+            name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            version: number;
+            createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+        }>;
+        counts?: {
+            [key: string]: number;
+        };
+        paths?: Array<Array<string>>;
+    };
+};
+
+export type GraphQueryResponse = GraphQueryResponses[keyof GraphQueryResponses];
+
+export type GraphTraverseData = {
+    body?: never;
+    path?: never;
+    query: {
+        objectId: string;
+        direction?: 'out' | 'in' | 'both';
+        relTypes?: Array<string>;
+        maxDepth?: number;
+    };
+    url: '/graph/traverse';
+};
+
+export type GraphTraverseErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GraphTraverseError = GraphTraverseErrors[keyof GraphTraverseErrors];
+
+export type GraphTraverseResponses = {
+    /**
+     * Success
+     */
+    200: {
+        objects: Array<{
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            typeId: string;
+            name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            version: number;
+            createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+        }>;
+        edges: Array<{
+            id: string;
+            typeId: string;
+            fromId: string;
+            toId: string;
+        }>;
+    };
+};
+
+export type GraphTraverseResponse = GraphTraverseResponses[keyof GraphTraverseResponses];
+
+export type ListAuditEventsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+    };
+    url: '/audit-events';
+};
+
+export type ListAuditEventsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListAuditEventsError = ListAuditEventsErrors[keyof ListAuditEventsErrors];
+
+export type ListAuditEventsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            actorId: string;
+            action: string;
+            subjectId: string | null;
+            beforeHash: string | null;
+            afterHash: string | null;
+            reason: string | null;
+            decisionId: string | null;
+            requestId: string;
+            occurredAt: string;
+            prevHash: string;
+            rowHash: string;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListAuditEventsResponse = ListAuditEventsResponses[keyof ListAuditEventsResponses];

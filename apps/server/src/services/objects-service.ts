@@ -1,84 +1,100 @@
-import { and, asc, eq, gt, or } from "drizzle-orm";
-import { v7 as uuidv7 } from "uuid";
-import type { ServiceObject, ServiceObjectListResponse } from "@scp/schemas";
+import type {
+  CreateServiceObjectRequest,
+  ServiceObject,
+  ServiceObjectListResponse
+} from "@scp/schemas";
 import type { AppDeps } from "../types.js";
-import { objects } from "../db/schema.js";
+import { withTenantTx } from "../db/tenant-tx.js";
+import { createObject, listObjects, resolveDomainId } from "../graph/objects-repo.js";
+import { authorize } from "../authz/resolve.js";
+import { withIdempotency } from "../idempotency.js";
+import type { GraphObject } from "@scp/schemas";
 
-export function encodeCursor(row: { createdAt: Date; id: string }): string {
-  return Buffer.from(
-    JSON.stringify({ createdAt: row.createdAt.toISOString(), id: row.id })
-  ).toString("base64url");
-}
+// Re-exported for backward compatibility — `objects-service.test.ts` (M0) imports these from
+// here; the codec itself now lives in `../pagination.ts` since every M1 list endpoint needs it.
+export { decodeCursor, encodeCursor } from "../pagination.js";
 
-export function decodeCursor(cursor: string): { createdAt: Date; id: string } | null {
-  try {
-    const parsed: unknown = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
-    if (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      "createdAt" in parsed &&
-      "id" in parsed &&
-      typeof (parsed as Record<string, unknown>).createdAt === "string" &&
-      typeof (parsed as Record<string, unknown>).id === "string"
-    ) {
-      const p = parsed as { createdAt: string; id: string };
-      return { createdAt: new Date(p.createdAt), id: p.id };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function toServiceObject(row: typeof objects.$inferSelect): ServiceObject {
+function toServiceObject(row: GraphObject): ServiceObject {
   return {
     id: row.id,
     orgId: row.orgId,
     type: "service",
     name: row.name,
-    createdAt: row.createdAt.toISOString()
+    createdAt: row.createdAt
   };
 }
 
+/**
+ * `POST/GET /api/v1/objects/service` (M0's contract, unchanged) — reimplemented on the M1 graph
+ * substrate (BUILD_AND_TEST.md §8 M1 item 10: "upgrading their implementation to the new
+ * substrate is expected"). A plain `service`-typed graph object under the hood, so anything
+ * created here is equally visible through the generic `/objects/{type}` endpoint family.
+ *
+ * RBAC-enforced (object:write) and Idempotency-Key-aware exactly like the generic create —
+ * Fastify's router prefers this literal static route over the parametric `/objects/:type` for
+ * the exact path `/objects/service`, so this is the ONLY handler that ever runs for that path;
+ * it must carry full parity (authorization, idempotency, domainId/properties/labels/custom
+ * id-urn support), not a stripped subset, or those capabilities would silently be unavailable
+ * for the 'service' type specifically.
+ */
 export async function createServiceObject(
   deps: AppDeps,
   orgId: string,
-  name: string
+  actorObjectId: string,
+  body: CreateServiceObjectRequest,
+  requestId: string,
+  idempotencyKey: string | undefined
 ): Promise<ServiceObject> {
-  const [row] = await deps.db
-    .insert(objects)
-    .values({ id: uuidv7(), orgId, type: "service", name })
-    .returning();
-  if (!row) throw new Error("failed to insert service object");
-  return toServiceObject(row);
+  const created = await withTenantTx(deps.db, orgId, async (tx) => {
+    const scopeObjectId = await resolveDomainId(tx, orgId, body.domainId ?? undefined);
+    await authorize(tx, {
+      orgId,
+      subjectObjectId: actorObjectId,
+      permission: "object:write",
+      scopeObjectId: scopeObjectId ?? orgId
+    });
+    const result = await withIdempotency(
+      tx,
+      { orgId, idempotencyKey, route: "POST /objects/service", requestBody: body },
+      async () => ({
+        status: 201,
+        body: await createObject(tx, {
+          orgId,
+          typeId: "service",
+          actorObjectId,
+          requestId,
+          id: body.id,
+          urn: body.urn,
+          name: body.name,
+          domainId: body.domainId,
+          properties: body.properties,
+          labels: body.labels
+        })
+      })
+    );
+    return result.body;
+  });
+  return toServiceObject(created);
 }
 
 export async function listServiceObjects(
   deps: AppDeps,
   orgId: string,
+  actorObjectId: string,
   query: { cursor?: string | undefined; limit: number }
 ): Promise<ServiceObjectListResponse> {
-  const cursor = query.cursor ? decodeCursor(query.cursor) : null;
-  const conditions = [eq(objects.orgId, orgId), eq(objects.type, "service")];
-  if (cursor) {
-    const cursorCondition = or(
-      gt(objects.createdAt, cursor.createdAt),
-      and(eq(objects.createdAt, cursor.createdAt), gt(objects.id, cursor.id))
-    );
-    if (cursorCondition) conditions.push(cursorCondition);
-  }
-
-  const rows = await deps.db
-    .select()
-    .from(objects)
-    .where(and(...conditions))
-    .orderBy(asc(objects.createdAt), asc(objects.id))
-    .limit(query.limit + 1);
-
-  const hasMore = rows.length > query.limit;
-  const page = hasMore ? rows.slice(0, query.limit) : rows;
-  const last = page[page.length - 1];
-  const nextCursor = hasMore && last ? encodeCursor(last) : null;
-
-  return { items: page.map(toServiceObject), nextCursor };
+  const page = await withTenantTx(deps.db, orgId, async (tx) => {
+    await authorize(tx, {
+      orgId,
+      subjectObjectId: actorObjectId,
+      permission: "object:read",
+      scopeObjectId: orgId
+    });
+    return listObjects(tx, orgId, "service", {
+      ...query,
+      domainId: undefined,
+      includeDeleted: false
+    });
+  });
+  return { items: page.items.map(toServiceObject), nextCursor: page.nextCursor };
 }

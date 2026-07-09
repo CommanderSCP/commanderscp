@@ -8,6 +8,27 @@
       "when": 1783562037400,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1783650000000,
+      "tag": "0001_graph_core",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783650000001,
+      "tag": "0002_rls_rbac_seed",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1783690000000,
+      "tag": "0003_runtime_roles",
+      "breakpoints": true
     }
   ]
 }

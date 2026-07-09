@@ -1,17 +1,21 @@
 import { createHash, randomBytes } from "node:crypto";
 import * as argon2 from "argon2";
 import { v7 as uuidv7 } from "uuid";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { orgs, sessions, users } from "../db/schema.js";
+import { orgs, roleBindings, roles, sessions, users } from "../db/schema.js";
+import { withTenantTx } from "../db/tenant-tx.js";
+import { createObject, getOrgRootObjectId } from "../graph/objects-repo.js";
 
-const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12h — fine for M0's local-auth bootstrap flow.
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12h — fine for M0/M1's local-auth bootstrap flow.
 
 export interface AuthContext {
   userId: string;
   orgId: string;
   orgName: string;
   username: string;
+  /** The graph `user` object this account maps to — the RBAC subject (DESIGN.md §7). */
+  subjectObjectId: string;
 }
 
 function hashToken(token: string): string {
@@ -28,24 +32,66 @@ function generateToken(): string {
  * logic lives directly in the server, behind the same argon2 bootstrap-admin behavior the
  * plugin will eventually provide.
  *
- * Idempotent: safe to call on every boot. Creates the seeded org + bootstrap admin only if
- * neither exists yet, and prints the one-time password to logs exactly once.
+ * Idempotent: safe to call on every boot. Creates the seeded org + graph root object + bootstrap
+ * admin (as both an auth row and a graph `user` object bound to the built-in Owner role at the
+ * org's root scope) only if they don't exist yet, and prints the one-time password once.
+ *
+ * Audit events written during bootstrap attribute `actorId = orgId` — a "system" placeholder,
+ * since no user (graph subject) exists yet at the point the org root object itself is created.
  */
+export interface BootstrapResult {
+  orgId: string;
+  /** Only set when this call actually created the admin (null if it already existed). */
+  oneTimePassword: string | null;
+}
+
 export async function ensureBootstrapAdmin(
   db: Db,
   opts: { orgName: string; adminUsername: string },
   log: { info: (msg: string) => void; warn: (msg: string) => void }
-): Promise<void> {
+): Promise<BootstrapResult> {
   const existingOrg = await db.query.orgs.findFirst({ where: eq(orgs.name, opts.orgName) });
   const org = existingOrg ?? (await createOrg(db, opts.orgName));
 
+  await ensureOrgRootObject(db, org.id);
+
+  // Scoped by org_id (not just username): usernames are only unique per-org
+  // (users_org_id_username_key), so two orgs may legitimately both have an "admin".
   const existingAdmin = await db.query.users.findFirst({
-    where: eq(users.username, opts.adminUsername)
+    where: and(eq(users.orgId, org.id), eq(users.username, opts.adminUsername))
   });
   if (existingAdmin) {
     log.info(`local-auth: bootstrap admin '${opts.adminUsername}' already exists, skipping.`);
-    return;
+    return { orgId: org.id, oneTimePassword: null };
   }
+
+  const userObjectId = await withTenantTx(db, org.id, async (tx) => {
+    const created = await createObject(tx, {
+      orgId: org.id,
+      typeId: "user",
+      actorObjectId: org.id, // system placeholder — see doc comment above
+      requestId: "bootstrap",
+      name: opts.adminUsername
+    });
+
+    const ownerRole = await tx.query.roles.findFirst({
+      where: and(isNull(roles.orgId), eq(roles.name, "Owner"))
+    });
+    if (!ownerRole) throw new Error("built-in 'Owner' role missing — did migrations run?");
+
+    const rootObjectId = await getOrgRootObjectId(tx, org.id);
+
+    await tx.insert(roleBindings).values({
+      id: uuidv7(),
+      orgId: org.id,
+      subjectId: created.id,
+      roleId: ownerRole.id,
+      scopeObjectId: rootObjectId,
+      effect: "allow"
+    });
+
+    return created.id;
+  });
 
   const oneTimePassword = randomBytes(18).toString("base64url");
   const passwordHash = await argon2.hash(oneTimePassword);
@@ -53,19 +99,43 @@ export async function ensureBootstrapAdmin(
     id: uuidv7(),
     orgId: org.id,
     username: opts.adminUsername,
-    passwordHash
+    passwordHash,
+    objectId: userObjectId
   });
 
   log.warn(
     `local-auth: created bootstrap admin '${opts.adminUsername}' in org '${opts.orgName}'. ` +
       `One-time password (not stored, shown once): ${oneTimePassword}`
   );
+
+  return { orgId: org.id, oneTimePassword };
 }
 
 async function createOrg(db: Db, name: string) {
   const [org] = await db.insert(orgs).values({ id: uuidv7(), name }).returning();
   if (!org) throw new Error(`failed to create bootstrap org '${name}'`);
   return org;
+}
+
+/** Every org gets exactly one root `organization` graph object — see graph/objects-repo.ts. */
+async function ensureOrgRootObject(db: Db, orgId: string): Promise<void> {
+  await withTenantTx(db, orgId, async (tx) => {
+    const existing = await tx.query.objects.findFirst({
+      where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
+        andOp(eqOp(t.orgId, orgId), eqOp(t.typeId, "organization"), isNullOp(t.domainId))
+    });
+    if (existing) return;
+
+    await createObject(tx, {
+      orgId,
+      typeId: "organization",
+      actorObjectId: orgId, // system placeholder — no user exists yet
+      requestId: "bootstrap",
+      id: orgId, // stable, predictable id for the org root object
+      name: orgId,
+      domainId: null
+    });
+  });
 }
 
 export interface LoginResult {
@@ -111,7 +181,13 @@ export async function verifyToken(db: Db, token: string): Promise<AuthContext | 
 
   const user = await db.query.users.findFirst({ where: eq(users.id, session.userId) });
   const org = await db.query.orgs.findFirst({ where: eq(orgs.id, session.orgId) });
-  if (!user || !org) return null;
+  if (!user || !org || !user.objectId) return null;
 
-  return { userId: user.id, orgId: org.id, orgName: org.name, username: user.username };
+  return {
+    userId: user.id,
+    orgId: org.id,
+    orgName: org.name,
+    username: user.username,
+    subjectObjectId: user.objectId
+  };
 }

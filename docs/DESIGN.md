@@ -366,6 +366,7 @@ CREATE TABLE role_bindings (
 
 - **Inheritance:** permission checks walk the containment path (component → service → domain → organization) with one recursive CTE and take the union of allows unless an explicit deny binding exists at a narrower scope — inheritance downward per charter, deny-override.
 - **Membership:** when a binding's subject is a group or team, the evaluator expands members through built-in `member_of` relationships (user/service-account → group/team) in the same recursive CTE — group membership is graph data, not a separate membership table.
+- **Relationship writes require write permission at both endpoints' scopes** — load-bearing for `member_of`, which feeds subject expansion.
 - **Ownership ≠ permissions:** ownership is an `owns` graph relationship (responsibility); permissions are role bindings (authority). They never merge — per the charter's critical distinction.
 - **Path to ReBAC:** scopes and subjects already *are* graph nodes, so v2 adds relationship-derived bindings ("team `owns` service ⇒ implied Approver on its changes") as new traversal rules in the same evaluator — a query change, not a re-architecture. No SpiceDB/OpenFGA (an extra stateful service self-hosters would have to run).
 

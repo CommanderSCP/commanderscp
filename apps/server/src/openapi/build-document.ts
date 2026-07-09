@@ -9,7 +9,9 @@ import type { CollectedRoute } from "./registry.js";
  * from `servers[0].url` and is meant to be combined with a *relative* operation path).
  */
 function toOpenApiPath(fastifyUrl: string): string {
-  const withoutPrefix = fastifyUrl.startsWith("/api/v1") ? fastifyUrl.slice("/api/v1".length) : fastifyUrl;
+  const withoutPrefix = fastifyUrl.startsWith("/api/v1")
+    ? fastifyUrl.slice("/api/v1".length)
+    : fastifyUrl;
   return withoutPrefix.replace(/:([A-Za-z0-9_]+)/g, "{$1}");
 }
 

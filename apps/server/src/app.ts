@@ -16,6 +16,12 @@ import "./openapi/registry.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerObjectRoutes } from "./routes/objects.js";
 import { registerUiRoutes } from "./routes/ui.js";
+import { registerTypeRegistryRoutes } from "./routes/type-registry.js";
+import { registerObjectRoutes as registerGenericObjectRoutes } from "./routes/objects-generic.js";
+import { registerRelationshipRoutes } from "./routes/relationships.js";
+import { registerGraphRoutes } from "./routes/graph.js";
+import { registerAuditEventRoutes } from "./routes/audit-events.js";
+import { registerEventStreamRoute } from "./routes/events.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -78,8 +84,14 @@ export async function buildApp(
   });
 
   registerAuthRoutes(app, deps);
-  registerObjectRoutes(app, deps);
+  registerObjectRoutes(app, deps); // M0 legacy /objects/service contract (unchanged)
   registerUiRoutes(app, deps);
+  registerTypeRegistryRoutes(app, deps);
+  registerGenericObjectRoutes(app, deps); // M1 generic /objects/{type}
+  registerRelationshipRoutes(app, deps);
+  registerGraphRoutes(app, deps);
+  registerAuditEventRoutes(app, deps);
+  registerEventStreamRoute(app, deps);
 
   app.get("/healthz", async () => ({ status: "ok" }));
 
