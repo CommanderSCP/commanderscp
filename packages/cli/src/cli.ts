@@ -19,7 +19,10 @@ import type {
   UpdateObjectRequest,
   UpsertObjectRequest
 } from "@scp/schemas";
-import { DesiredStateManifestSchema, verifyAuditChain } from "@scp/schemas";
+import { DesiredStateManifestSchema } from "@scp/schemas";
+// Node-only hashing (`node:crypto`) — deliberately a separate subpath from `@scp/schemas`'
+// default entry, which `apps/web` also imports (browser build) — see audit-chain.ts's module doc.
+import { verifyAuditChain } from "@scp/schemas/audit-chain";
 import { saveCredentials } from "./config-store.js";
 import { clientFromStoredCredentials, DEFAULT_BASE_URL } from "./client-factory.js";
 import { promptLine } from "./prompt.js";

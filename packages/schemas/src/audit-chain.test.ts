@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { AUDIT_GENESIS_HASH, computeRowHash, verifyAuditChain, type AuditEvent } from "./audit.js";
+import { AUDIT_GENESIS_HASH, computeRowHash, verifyAuditChain } from "./audit-chain.js";
+import type { AuditEvent } from "./audit.js";
 
 function baseEvent(overrides: Partial<AuditEvent> = {}): Omit<AuditEvent, "rowHash"> {
   return {
