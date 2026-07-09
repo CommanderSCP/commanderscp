@@ -2,11 +2,18 @@ name: Setup toolchain
 description: >
   Corepack-pinned pnpm + Node (per .nvmrc), dependency install, and a shared Turborepo cache.
   Every CI stage is a plain pnpm command (BUILD_AND_TEST.md §6); this composite action only
-  wires up the toolchain those commands run under.
+  wires up the toolchain those commands run under. Assumes nothing about the runner image:
+  Node comes from setup-node, pnpm from corepack, so it runs identically on GitHub-hosted
+  and bare self-hosted runners (some homelab runner images ship no Node at all).
 
 runs:
   using: composite
   steps:
+    - name: Setup Node (per .nvmrc — also provides corepack)
+      uses: actions/setup-node@v4
+      with:
+        node-version-file: ".nvmrc"
+
     - name: Enable corepack (pins pnpm from package.json#packageManager)
       shell: bash
       # --install-directory: hardened self-hosted runners run non-root and cannot
@@ -17,11 +24,13 @@ runs:
         corepack enable --install-directory "$RUNNER_TEMP/corepack-shims"
         echo "$RUNNER_TEMP/corepack-shims" >> "$GITHUB_PATH"
 
-    - name: Setup Node
-      uses: actions/setup-node@v4
+    - name: Restore pnpm store cache
+      uses: actions/cache@v4
       with:
-        node-version-file: ".nvmrc"
-        cache: "pnpm"
+        path: ~/.local/share/pnpm/store
+        key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+        restore-keys: |
+          pnpm-store-${{ runner.os }}-
 
     - name: Install dependencies
       shell: bash
