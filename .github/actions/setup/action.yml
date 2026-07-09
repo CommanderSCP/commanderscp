@@ -9,7 +9,13 @@ runs:
   steps:
     - name: Enable corepack (pins pnpm from package.json#packageManager)
       shell: bash
-      run: corepack enable
+      # --install-directory: hardened self-hosted runners run non-root and cannot
+      # symlink into /usr/bin (the corepack default). A user-writable shim dir on
+      # GITHUB_PATH works identically on GitHub-hosted and homelab ARC runners.
+      run: |
+        mkdir -p "$RUNNER_TEMP/corepack-shims"
+        corepack enable --install-directory "$RUNNER_TEMP/corepack-shims"
+        echo "$RUNNER_TEMP/corepack-shims" >> "$GITHUB_PATH"
 
     - name: Setup Node
       uses: actions/setup-node@v4
