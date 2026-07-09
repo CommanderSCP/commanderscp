@@ -1,0 +1,21 @@
+# Local dev loop (BUILD_AND_TEST.md §5.1): Postgres only, exposed on the host, app runs on the
+# host via `pnpm dev` for hot reload.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: scp
+      POSTGRES_PASSWORD: scp
+      POSTGRES_DB: scp
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scp -d scp"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    ports:
+      - "5432:5432"
+    volumes:
+      - scp-postgres-dev-data:/var/lib/postgresql/data
+
+volumes:
+  scp-postgres-dev-data:

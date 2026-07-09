@@ -1,0 +1,15 @@
+node_modules
+dist
+build
+.turbo
+coverage
+drizzle
+packages/sdk/src/generated
+apps/web/dist
+pnpm-lock.yaml
+tools/openapi/openapi.v1.json
+
+# Pre-existing project docs — out of scope for M0; not reformatted to keep the diff focused.
+CLAUDE.md
+PROJECT_CHARTER.md
+docs/

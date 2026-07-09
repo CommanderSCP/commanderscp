@@ -1,0 +1,25 @@
+{
+  "name": "@scp/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "scp": "dist/bin.js"
+  },
+  "scripts": {
+    "build": "tsc -b && chmod +x dist/bin.js",
+    "dev": "tsc -b -w",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@scp/schemas": "workspace:*",
+    "@scp/sdk": "workspace:*",
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "typescript": "~5.8.0",
+    "vitest": "^3.0.0"
+  }
+}

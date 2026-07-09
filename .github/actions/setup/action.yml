@@ -1,0 +1,30 @@
+name: Setup toolchain
+description: >
+  Corepack-pinned pnpm + Node (per .nvmrc), dependency install, and a shared Turborepo cache.
+  Every CI stage is a plain pnpm command (BUILD_AND_TEST.md §6); this composite action only
+  wires up the toolchain those commands run under.
+
+runs:
+  using: composite
+  steps:
+    - name: Enable corepack (pins pnpm from package.json#packageManager)
+      shell: bash
+      run: corepack enable
+
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version-file: ".nvmrc"
+        cache: "pnpm"
+
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
+
+    - name: Restore Turborepo cache
+      uses: actions/cache@v4
+      with:
+        path: .turbo
+        key: turbo-${{ runner.os }}-${{ github.sha }}
+        restore-keys: |
+          turbo-${{ runner.os }}-
