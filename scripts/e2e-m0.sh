@@ -2,7 +2,13 @@
 # M0 golden path (BUILD_AND_TEST.md §8 M0 definition of done): builds the image, brings up the
 # two-container compose stack, waits for health, then drives the *real* CLI against it:
 #   scp login -> scp object create service --name billing -> scp object list service
-# and finally curls the UI stub page and asserts the object is listed there too.
+# and finally asserts the object is visible through a second, independent path: a direct
+# authenticated GET against the public API (not the CLI that created it).
+#
+# This used to curl the M0 `/ui` server-rendered stub page and grep the raw HTML for the object's
+# name. Stage 4 retired that stub in favor of the real Web UI SPA served at `/` (apps/server/src/
+# app.ts) — a client-rendered React app, so there's no server-rendered HTML to grep for dynamic
+# content anymore. `GET /api/v1/objects/service` is the direct API-level equivalent assertion.
 #
 # Never touches the internet beyond what `docker build`/`pnpm install` already needed.
 
@@ -90,14 +96,14 @@ if ! echo "$LIST_OUTPUT" | grep -q '"billing"'; then
 fi
 echo "PASS: billing appears in 'scp object list service'"
 
-echo "==> curling the UI stub page and asserting the object is listed"
+echo "==> asserting billing is visible via a direct API call (independent of the CLI's own read)"
 TOKEN="$(node -e "console.log(JSON.parse(require('fs').readFileSync(process.env.SCP_CONFIG_DIR + '/credentials.json', 'utf8')).token)")"
-UI_HTML="$(curl -fsS -H "Authorization: Bearer $TOKEN" "$BASE_URL/ui")"
-if ! echo "$UI_HTML" | grep -q 'billing'; then
-  echo "FAIL: 'billing' not found on the UI stub page" >&2
-  echo "$UI_HTML" >&2
+API_OUTPUT="$(curl -fsS -H "Authorization: Bearer $TOKEN" "$BASE_URL/api/v1/objects/service")"
+if ! echo "$API_OUTPUT" | grep -q '"billing"'; then
+  echo "FAIL: 'billing' not found in GET /api/v1/objects/service" >&2
+  echo "$API_OUTPUT" >&2
   exit 1
 fi
-echo "PASS: billing appears on the UI stub page"
+echo "PASS: billing appears in GET /api/v1/objects/service"
 
 echo "==> M0 golden path e2e: ALL CHECKS PASSED"
