@@ -42,6 +42,21 @@ export async function buildTestServer(): Promise<TestServer> {
   };
 }
 
+export interface ListeningTestServer extends TestServer {
+  baseUrl: string;
+}
+
+/**
+ * Same as `buildTestServer`, but actually bound to a real loopback port (`app.inject()` doesn't
+ * open a socket) — needed for anything that speaks real HTTP to the server: the SDK's
+ * `fetch`-based client and the CLI subprocess (test-support/cli-runner.ts).
+ */
+export async function listenTestServer(): Promise<ListeningTestServer> {
+  const server = await buildTestServer();
+  const address = await server.app.listen({ port: 0, host: "127.0.0.1" });
+  return { ...server, baseUrl: `${address}/api/v1` };
+}
+
 export interface TestOrg {
   orgId: string;
   orgName: string;
