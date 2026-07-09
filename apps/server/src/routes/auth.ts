@@ -98,7 +98,8 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
     config: {
       openapi: {
         operationId: "logout",
-        summary: "End the calling session (no-op for PAT-authenticated calls) and clear the session cookie",
+        summary:
+          "End the calling session (no-op for PAT-authenticated calls) and clear the session cookie",
         tags: ["auth"]
       }
     },

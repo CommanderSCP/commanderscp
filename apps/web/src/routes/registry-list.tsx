@@ -84,7 +84,9 @@ export function RegistryListPage(): React.JSX.Element {
       )}
       {createMutation.isError && (
         <p className="text-sm text-red-600">
-          {createMutation.error instanceof Error ? createMutation.error.message : "Failed to create"}
+          {createMutation.error instanceof Error
+            ? createMutation.error.message
+            : "Failed to create"}
         </p>
       )}
 

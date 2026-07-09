@@ -99,7 +99,9 @@ async function readManifestFile(manifestPath: string): Promise<DesiredStateManif
   return DesiredStateManifestSchema.parse(parsed);
 }
 
-function diffEntryRow(entry: PlanObjectDiffEntry | PlanRelationshipDiffEntry): Record<string, string> {
+function diffEntryRow(
+  entry: PlanObjectDiffEntry | PlanRelationshipDiffEntry
+): Record<string, string> {
   if (entry.kind === "object") {
     return { kind: "object", action: entry.action, ref: entry.urn, reason: entry.reason };
   }
@@ -122,8 +124,12 @@ function printPlanResult(plan: Plan, output: OutputFormat): void {
     return;
   }
   const entries = [...plan.diff.objects, ...plan.diff.relationships];
-  printResult(entries, "table", (item) => diffEntryRow(item as PlanObjectDiffEntry | PlanRelationshipDiffEntry));
-  console.log(`\nPlan ${plan.id} (${plan.stackName}, status: ${plan.status}): ${summaryLine(plan.diff.summary)}`);
+  printResult(entries, "table", (item) =>
+    diffEntryRow(item as PlanObjectDiffEntry | PlanRelationshipDiffEntry)
+  );
+  console.log(
+    `\nPlan ${plan.id} (${plan.stackName}, status: ${plan.status}): ${summaryLine(plan.diff.summary)}`
+  );
 }
 
 /**

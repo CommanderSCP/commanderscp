@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
 import { ScpClient } from "@scp/sdk";
-import { adminCredentials, apiBaseUrl, baseUrl, enableGraphTestHook, loginAsAdmin } from "./fixtures.js";
+import {
+  adminCredentials,
+  apiBaseUrl,
+  baseUrl,
+  enableGraphTestHook,
+  loginAsAdmin
+} from "./fixtures.js";
 
 interface CyLike {
   nodes: () => { length: number };
@@ -16,7 +22,9 @@ interface CyLike {
  * `window.__cy` for exactly this purpose (routes/graph-explorer.tsx, gated so it's unreachable
  * outside a Playwright-controlled page — see fixtures.ts `enableGraphTestHook`).
  */
-test("graph explorer: renders nodes/edges for an object with a real relationship", async ({ page }) => {
+test("graph explorer: renders nodes/edges for an object with a real relationship", async ({
+  page
+}) => {
   const { username, password } = adminCredentials();
   const client = new ScpClient({ baseUrl: apiBaseUrl() });
   await client.login(username, password);
@@ -40,9 +48,7 @@ test("graph explorer: renders nodes/edges for an object with a real relationship
   await expect
     .poll(
       async () =>
-        page.evaluate(
-          () => (window as unknown as { __cy?: CyLike }).__cy?.nodes().length ?? -1
-        ),
+        page.evaluate(() => (window as unknown as { __cy?: CyLike }).__cy?.nodes().length ?? -1),
       { timeout: 10_000 }
     )
     .toBeGreaterThanOrEqual(2);

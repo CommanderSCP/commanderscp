@@ -89,35 +89,43 @@ export default tseslint.config(
           paths: [
             {
               name: "axios",
-              message: "apps/web talks to the API only via @scp/sdk's ScpClient — no HTTP client libraries."
+              message:
+                "apps/web talks to the API only via @scp/sdk's ScpClient — no HTTP client libraries."
             },
             {
               name: "node-fetch",
-              message: "apps/web talks to the API only via @scp/sdk's ScpClient — no HTTP client libraries."
+              message:
+                "apps/web talks to the API only via @scp/sdk's ScpClient — no HTTP client libraries."
             },
             {
               name: "ky",
-              message: "apps/web talks to the API only via @scp/sdk's ScpClient — no HTTP client libraries."
+              message:
+                "apps/web talks to the API only via @scp/sdk's ScpClient — no HTTP client libraries."
             },
             {
               name: "superagent",
-              message: "apps/web talks to the API only via @scp/sdk's ScpClient — no HTTP client libraries."
+              message:
+                "apps/web talks to the API only via @scp/sdk's ScpClient — no HTTP client libraries."
             },
             {
               name: "whatwg-fetch",
-              message: "apps/web talks to the API only via @scp/sdk's ScpClient — no fetch polyfills."
+              message:
+                "apps/web talks to the API only via @scp/sdk's ScpClient — no fetch polyfills."
             },
             {
               name: "@scp/server",
-              message: "apps/web/src may import only @scp/sdk and @scp/schemas — never the server directly."
+              message:
+                "apps/web/src may import only @scp/sdk and @scp/schemas — never the server directly."
             },
             {
               name: "@scp/cli",
-              message: "apps/web/src may import only @scp/sdk and @scp/schemas — never the CLI directly."
+              message:
+                "apps/web/src may import only @scp/sdk and @scp/schemas — never the CLI directly."
             },
             {
               name: "@scp/iac",
-              message: "apps/web/src may import only @scp/sdk and @scp/schemas — never @scp/iac directly."
+              message:
+                "apps/web/src may import only @scp/sdk and @scp/schemas — never @scp/iac directly."
             }
           ],
           patterns: [

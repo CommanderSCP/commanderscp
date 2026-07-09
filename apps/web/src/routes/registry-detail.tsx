@@ -170,8 +170,8 @@ export function RegistryDetailPage(): React.JSX.Element {
       )}
 
       <p className="text-xs text-slate-400">
-        &quot;Why?&quot; / Decision links aren&apos;t available yet — the Decision Engine lands in
-        a later milestone (M4).
+        &quot;Why?&quot; / Decision links aren&apos;t available yet — the Decision Engine lands in a
+        later milestone (M4).
       </p>
     </div>
   );

@@ -6,7 +6,13 @@ import type { NamedGraphQuery } from "@scp/schemas";
 import { client } from "../lib/client";
 import { REGISTRIES } from "../lib/registries";
 import { useIdOrUrnParam } from "../lib/use-route-params";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from "../components/ui/select";
 
 type QuerySelection = NamedGraphQuery | "traverse";
 
