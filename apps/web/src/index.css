@@ -1,0 +1,18 @@
+@import "tailwindcss";
+
+/*
+ * Air-gap requirement (CLAUDE.md, DESIGN.md §14): zero external requests. Tailwind's default
+ * `font-sans` stack is already the OS system-font stack (ui-sans-serif, system-ui, -apple-system,
+ * ...) — no `@import url(fonts.googleapis.com/...)`, no `<link>` to a remote stylesheet, no CDN
+ * anywhere in this file or index.html.
+ */
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  body {
+    @apply bg-slate-50 font-sans text-slate-900 antialiased;
+  }
+}
