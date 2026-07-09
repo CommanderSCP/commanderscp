@@ -8,3 +8,4 @@ export * from "./auth.js";
 export * from "./graph.js";
 export * from "./audit.js";
 export * from "./registries.js";
+export * from "./iac.js";
