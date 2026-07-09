@@ -20,6 +20,7 @@ function toRelationship(row: typeof relationships.$inferSelect): Relationship {
     fromId: row.fromId,
     toId: row.toId,
     properties: row.properties as Record<string, unknown>,
+    labels: row.labels as Record<string, unknown>,
     originDomainId: row.originDomainId,
     revision: row.revision,
     createdAt: row.createdAt.toISOString(),
@@ -91,6 +92,8 @@ export interface CreateRelationshipInput {
   fromId: string;
   toId: string;
   properties?: Record<string, unknown>;
+  /** Mirrors `objects.labels` (schema.ts doc) — IaC applies (`iac/plans-repo.ts`) set the `scp:managed-by`/`scp:stack` markers here. */
+  labels?: Record<string, unknown>;
 }
 
 export async function createRelationship(
@@ -99,6 +102,7 @@ export async function createRelationship(
 ): Promise<Relationship> {
   const type = await requireRelationshipType(tx, input.typeId);
   const properties = input.properties ?? {};
+  const labels = input.labels ?? {};
   validateProperties(type.propertySchema, properties, `rel:${type.id}`);
 
   const fromObj = await requireLiveObject(tx, input.orgId, input.fromId, "from");
@@ -124,7 +128,8 @@ export async function createRelationship(
     typeId: input.typeId,
     fromId: input.fromId,
     toId: input.toId,
-    properties
+    properties,
+    labels
   });
 
   let row: typeof relationships.$inferSelect | undefined;
@@ -138,6 +143,7 @@ export async function createRelationship(
         fromId: input.fromId,
         toId: input.toId,
         properties,
+        labels,
         originDomainId: input.orgId,
         revision: 1,
         contentHash

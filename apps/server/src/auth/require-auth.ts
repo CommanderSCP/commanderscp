@@ -1,6 +1,7 @@
 import type { FastifyRequest } from "fastify";
 import type { AppDeps } from "../types.js";
 import { verifyToken, type AuthContext } from "./local-auth.js";
+import { isPatToken, verifyPat } from "./pat.js";
 import { forbidden, unauthorized } from "../errors.js";
 
 export function extractToken(request: FastifyRequest): string | null {
@@ -16,11 +17,18 @@ export function extractToken(request: FastifyRequest): string | null {
   return null;
 }
 
-/** Org is always resolved from the token (DESIGN.md §6); path overrides only assert a match. */
+/**
+ * Org is always resolved from the token (DESIGN.md §6); path overrides only assert a match. The
+ * ONE seam that resolves a bearer/cookie value to an AuthContext — a `scp_pat_` prefixed token is
+ * a Personal Access Token (auth/pat.ts), anything else falls through to the existing local-auth
+ * session-token path (auth/local-auth.ts `verifyToken`, unchanged).
+ */
 export async function requireAuth(deps: AppDeps, request: FastifyRequest): Promise<AuthContext> {
   const token = extractToken(request);
   if (!token) throw unauthorized("missing bearer token or session cookie");
-  const auth = await verifyToken(deps.db, token);
+  const auth = isPatToken(token)
+    ? await verifyPat(deps.db, token)
+    : await verifyToken(deps.db, token);
   if (!auth) throw unauthorized("invalid or expired token");
   return auth;
 }

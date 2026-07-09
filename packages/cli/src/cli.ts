@@ -1,8 +1,28 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { Command } from "commander";
-import { ScpClient } from "@scp/sdk";
-import type { GraphObject, NamedGraphQuery, Relationship } from "@scp/schemas";
-import { verifyAuditChain } from "@scp/schemas";
+import { ScpApiError, ScpClient } from "@scp/sdk";
+import type { ListObjectsQuery, ListQuery } from "@scp/sdk";
+import type {
+  CreateObjectRequest,
+  DesiredStateManifest,
+  GraphObject,
+  NamedGraphQuery,
+  ObjectListResponse,
+  Pat,
+  Plan,
+  PlanDiffSummary,
+  PlanObjectDiffEntry,
+  PlanRelationshipDiffEntry,
+  Relationship,
+  RelationshipListResponse,
+  UpdateObjectRequest,
+  UpsertObjectRequest
+} from "@scp/schemas";
+import { DesiredStateManifestSchema } from "@scp/schemas";
+// Node-only hashing (`node:crypto`) — deliberately a separate subpath from `@scp/schemas`'
+// default entry, which `apps/web` also imports (browser build) — see audit-chain.ts's module doc.
+import { verifyAuditChain } from "@scp/schemas/audit-chain";
 import { saveCredentials } from "./config-store.js";
 import { clientFromStoredCredentials, DEFAULT_BASE_URL } from "./client-factory.js";
 import { promptLine } from "./prompt.js";
@@ -49,6 +69,413 @@ function relationshipRow(r: Relationship): Record<string, string> {
   return { id: r.id, type: r.typeId, from: r.fromId, to: r.toId };
 }
 
+function patRow(p: Pat): Record<string, string> {
+  return {
+    id: p.id,
+    name: p.name,
+    createdAt: p.createdAt,
+    expiresAt: p.expiresAt ?? "(none)",
+    revoked: p.revokedAt ? "yes" : "no",
+    lastUsedAt: p.lastUsedAt ?? "(never)"
+  };
+}
+
+// -------------------------------------------------------------------------------------
+// `@scp/iac` plan/apply (BUILD_AND_TEST.md §8 M2 item 4) — `scp plan` computes a diff
+// (dry run); `scp apply` does plan + apply in one shot, since that's the natural CLI UX and
+// what "`scp apply` twice = no-op the second time" means end to end, not two manual steps.
+// -------------------------------------------------------------------------------------
+
+async function readManifestFile(manifestPath: string): Promise<DesiredStateManifest> {
+  const raw = await readFile(manifestPath, "utf8");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(
+      `--manifest '${manifestPath}' is not valid JSON: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  return DesiredStateManifestSchema.parse(parsed);
+}
+
+function diffEntryRow(
+  entry: PlanObjectDiffEntry | PlanRelationshipDiffEntry
+): Record<string, string> {
+  if (entry.kind === "object") {
+    return { kind: "object", action: entry.action, ref: entry.urn, reason: entry.reason };
+  }
+  return {
+    kind: "relationship",
+    action: entry.action,
+    ref: `${entry.fromUrn} --${entry.typeId}--> ${entry.toUrn}`,
+    reason: entry.reason
+  };
+}
+
+function summaryLine(summary: PlanDiffSummary): string {
+  return `creates=${summary.creates} updates=${summary.updates} deletes=${summary.deletes} noops=${summary.noops}`;
+}
+
+/** Prints a plan (full diff with per-entry reasons) — `scp plan` and `scp plan-status`. */
+function printPlanResult(plan: Plan, output: OutputFormat): void {
+  if (output === "json") {
+    console.log(JSON.stringify(plan, null, 2));
+    return;
+  }
+  const entries = [...plan.diff.objects, ...plan.diff.relationships];
+  printResult(entries, "table", (item) =>
+    diffEntryRow(item as PlanObjectDiffEntry | PlanRelationshipDiffEntry)
+  );
+  console.log(
+    `\nPlan ${plan.id} (${plan.stackName}, status: ${plan.status}): ${summaryLine(plan.diff.summary)}`
+  );
+}
+
+/**
+ * Prints an apply summary — `--output json` gives a flat, machine-parseable
+ * `{creates,updates,deletes,noops}` shape (not just prose), which is what makes DoD (b)'s
+ * "`scp apply` twice = no-op" assertable from a test (plans.cli.integration.test.ts).
+ */
+function printApplyResult(plan: Plan, summary: PlanDiffSummary, output: OutputFormat): void {
+  if (output === "json") {
+    console.log(
+      JSON.stringify(
+        {
+          planId: plan.id,
+          stackName: plan.stackName,
+          status: plan.status,
+          creates: summary.creates,
+          updates: summary.updates,
+          deletes: summary.deletes,
+          noops: summary.noops
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
+  console.log(`Applied plan ${plan.id} (${plan.stackName}): ${summaryLine(summary)}`);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Drives the CLI side of the device authorization flow (BUILD_AND_TEST.md §8 M2 item 3): starts
+ * the request, prints the code+URL for the human to open in a browser, then polls at the
+ * server-suggested interval until a token, a denial, or expiry — capping total wait at the
+ * request's own `expiresIn`. `authorization_pending` is expected/normal while the human hasn't
+ * approved yet; every other device-flow error code is terminal.
+ */
+async function deviceLogin(
+  client: ScpClient
+): Promise<{ token: string; expiresAt: string; org: string }> {
+  const started = await client.deviceFlow.start();
+  console.log(`Open ${started.verificationUri} and enter code ${started.userCode}`);
+  console.log("Waiting for approval...");
+
+  const deadline = Date.now() + started.expiresIn * 1000;
+  while (Date.now() < deadline) {
+    await sleep(started.interval * 1000);
+    try {
+      return await client.deviceFlow.poll(started.deviceCode);
+    } catch (err) {
+      const code =
+        err instanceof ScpApiError && err.problem && "error" in err.problem
+          ? (err.problem as { error?: string }).error
+          : undefined;
+      if (code === "authorization_pending") continue;
+      if (code === "expired_token") {
+        throw new Error("device authorization request expired — run `scp login --device` again");
+      }
+      if (code === "access_denied") throw new Error("device authorization request was denied");
+      throw err;
+    }
+  }
+  throw new Error("device authorization timed out waiting for approval");
+}
+
+// -------------------------------------------------------------------------------------------
+// M2 typed registries (BUILD_AND_TEST.md §8 M2 item 1). All 8 resources — domain/service/
+// component/deployment-target/team/group/user/service-account — expose the exact same
+// create/list/get/update/delete/upsertByUrn shape (ScpClient.typedResource), and the 4
+// `owns`-eligible + 2 `consumes`/`depends_on`-eligible resources add ownership/edge methods on
+// top. These three factories build the `register`/`list`/`get`/`update`/`delete`/`upsert` and
+// `add-owner`/`add-consumes`/`add-depends-on` command families once, instead of hand-copying
+// them per resource — mirroring routes/typed-registries.ts and routes/ownership.ts server-side.
+// -------------------------------------------------------------------------------------------
+
+interface TypedResourceOps {
+  create(req: CreateObjectRequest, opts?: { idempotencyKey?: string }): Promise<GraphObject>;
+  list(query?: ListObjectsQuery): Promise<ObjectListResponse>;
+  get(idOrUrn: string): Promise<GraphObject>;
+  update(idOrUrn: string, req: UpdateObjectRequest): Promise<GraphObject>;
+  delete(idOrUrn: string): Promise<GraphObject>;
+  upsertByUrn(urn: string, req: UpsertObjectRequest): Promise<GraphObject>;
+}
+
+interface OwnerOps {
+  addOwner(
+    idOrUrn: string,
+    ownerIdOrUrn: string,
+    opts?: { idempotencyKey?: string }
+  ): Promise<Relationship>;
+  listOwners(idOrUrn: string, query?: ListQuery): Promise<RelationshipListResponse>;
+  removeOwner(idOrUrn: string, ownerIdOrUrn: string): Promise<Relationship>;
+}
+
+interface EdgeOps {
+  addConsumes(
+    idOrUrn: string,
+    targetIdOrUrn: string,
+    opts?: { idempotencyKey?: string }
+  ): Promise<Relationship>;
+  listConsumes(idOrUrn: string, query?: ListQuery): Promise<RelationshipListResponse>;
+  removeConsumes(idOrUrn: string, targetIdOrUrn: string): Promise<Relationship>;
+  addDependsOn(
+    idOrUrn: string,
+    targetIdOrUrn: string,
+    opts?: { idempotencyKey?: string }
+  ): Promise<Relationship>;
+  listDependsOn(idOrUrn: string, query?: ListQuery): Promise<RelationshipListResponse>;
+  removeDependsOn(idOrUrn: string, targetIdOrUrn: string): Promise<Relationship>;
+}
+
+interface BaseCliOpts {
+  baseUrl?: string;
+  output: OutputFormat;
+}
+
+/**
+ * Registers `scp <name> register|list|get|update|delete|upsert`, options mirroring `object
+ * create`/`object list`/etc. exactly. Returns the resource's top-level `Command` so callers can
+ * attach `add-owner`/`add-consumes`/`add-depends-on` families on top where applicable.
+ */
+function registerTypedResourceCrud(
+  program: Command,
+  name: string,
+  resourceOf: (client: ScpClient) => TypedResourceOps
+): Command {
+  const cmd = program.command(name).description(`Manage ${name} objects`);
+
+  cmd
+    .command("register")
+    .description(`Create a ${name}`)
+    .requiredOption("--name <name>", `${name} name`)
+    .option("--id <uuid>", "client-suppliable UUIDv7 id")
+    .option("--urn <urn>", "explicit URN (defaults to a derived one)")
+    .option("--domain-id <id>", "containing object id (defaults to the org root)")
+    .option("--properties <json>", "JSON object")
+    .option("--labels <json>", "JSON object")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          name: string;
+          id?: string;
+          urn?: string;
+          domainId?: string;
+          properties?: string;
+          labels?: string;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const created = await resourceOf(client).create(
+          {
+            name: opts.name,
+            id: opts.id,
+            urn: opts.urn,
+            domainId: opts.domainId,
+            properties: parseJsonOption(opts.properties, "--properties"),
+            labels: parseJsonOption(opts.labels, "--labels")
+          },
+          { idempotencyKey: randomUUID() }
+        );
+        printResult(created, opts.output, (item) => objectRow(item as GraphObject));
+      }
+    );
+
+  cmd
+    .command("list")
+    .description(`List ${name} objects`)
+    .option("--domain-id <id>", "filter by containing object id")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { domainId?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const page = await resourceOf(client).list({ domainId: opts.domainId, limit: 100 });
+      printResult(page.items, opts.output, (item) => objectRow(item as GraphObject));
+    });
+
+  cmd
+    .command("get <idOrUrn>")
+    .description(`Get a ${name} by id or URN`)
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrUrn: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const found = await resourceOf(client).get(idOrUrn);
+      printResult(found, opts.output, (item) => objectRow(item as GraphObject));
+    });
+
+  cmd
+    .command("update <idOrUrn>")
+    .description(`Partially update a ${name}`)
+    .option("--name <name>")
+    .option("--properties <json>", "JSON object (full replace)")
+    .option("--labels <json>", "JSON object (full replace)")
+    .option("--version <n>", "expected version (optimistic concurrency)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        idOrUrn: string,
+        opts: BaseCliOpts & {
+          name?: string;
+          properties?: string;
+          labels?: string;
+          version?: string;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const updated = await resourceOf(client).update(idOrUrn, {
+          name: opts.name,
+          properties: parseJsonOption(opts.properties, "--properties"),
+          labels: parseJsonOption(opts.labels, "--labels"),
+          version: opts.version ? Number(opts.version) : undefined
+        });
+        printResult(updated, opts.output, (item) => objectRow(item as GraphObject));
+      }
+    );
+
+  cmd
+    .command("delete <idOrUrn>")
+    .description(`Soft-delete a ${name}`)
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrUrn: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const deleted = await resourceOf(client).delete(idOrUrn);
+      printResult(deleted, opts.output, (item) => objectRow(item as GraphObject));
+    });
+
+  cmd
+    .command("upsert <urn>")
+    .description("Idempotent upsert-by-URN")
+    .requiredOption("--name <name>")
+    .option("--properties <json>", "JSON object")
+    .option("--labels <json>", "JSON object")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        urn: string,
+        opts: BaseCliOpts & { name: string; properties?: string; labels?: string }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const result = await resourceOf(client).upsertByUrn(urn, {
+          name: opts.name,
+          properties: parseJsonOption(opts.properties, "--properties"),
+          labels: parseJsonOption(opts.labels, "--labels")
+        });
+        printResult(result, opts.output, (item) => objectRow(item as GraphObject));
+      }
+    );
+
+  return cmd;
+}
+
+/** Adds `add-owner`/`list-owners`/`remove-owner` to an existing resource command. */
+function registerOwnerCommands(cmd: Command, resourceOf: (client: ScpClient) => OwnerOps): void {
+  cmd
+    .command("add-owner <idOrUrn>")
+    .description("Add an owner (owns) — owner may be a team, group, user, or service-account")
+    .requiredOption("--owner <ownerIdOrUrn>", "owner id or URN")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrUrn: string, opts: BaseCliOpts & { owner: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const created = await resourceOf(client).addOwner(idOrUrn, opts.owner, {
+        idempotencyKey: randomUUID()
+      });
+      printResult(created, opts.output, (item) => relationshipRow(item as Relationship));
+    });
+
+  cmd
+    .command("list-owners <idOrUrn>")
+    .description("List direct owners")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrUrn: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const page = await resourceOf(client).listOwners(idOrUrn, { limit: 100 });
+      printResult(page.items, opts.output, (item) => relationshipRow(item as Relationship));
+    });
+
+  cmd
+    .command("remove-owner <idOrUrn> <ownerIdOrUrn>")
+    .description("Remove an owner")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrUrn: string, ownerIdOrUrn: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const deleted = await resourceOf(client).removeOwner(idOrUrn, ownerIdOrUrn);
+      printResult(deleted, opts.output, (item) => relationshipRow(item as Relationship));
+    });
+}
+
+/** Adds `add-consumes|add-depends-on` (+ list/remove) to an existing resource command. */
+function registerEdgeCommands(
+  cmd: Command,
+  edge: "consumes" | "depends-on",
+  resourceOf: (client: ScpClient) => EdgeOps
+): void {
+  const relTypeId = edge === "consumes" ? "consumes" : "depends_on";
+  const add = (ops: EdgeOps) => (edge === "consumes" ? ops.addConsumes : ops.addDependsOn);
+  const list = (ops: EdgeOps) => (edge === "consumes" ? ops.listConsumes : ops.listDependsOn);
+  const remove = (ops: EdgeOps) => (edge === "consumes" ? ops.removeConsumes : ops.removeDependsOn);
+
+  cmd
+    .command(`add-${edge} <idOrUrn>`)
+    .description(`Add a '${relTypeId}' edge`)
+    .requiredOption("--target <targetIdOrUrn>", "target id or URN")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrUrn: string, opts: BaseCliOpts & { target: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const created = await add(resourceOf(client))(idOrUrn, opts.target, {
+        idempotencyKey: randomUUID()
+      });
+      printResult(created, opts.output, (item) => relationshipRow(item as Relationship));
+    });
+
+  cmd
+    .command(`list-${edge} <idOrUrn>`)
+    .description(`List direct outgoing '${relTypeId}' edges`)
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrUrn: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const page = await list(resourceOf(client))(idOrUrn, { limit: 100 });
+      printResult(page.items, opts.output, (item) => relationshipRow(item as Relationship));
+    });
+
+  cmd
+    .command(`remove-${edge} <idOrUrn> <targetIdOrUrn>`)
+    .description(`Remove a '${relTypeId}' edge`)
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrUrn: string, targetIdOrUrn: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const deleted = await remove(resourceOf(client))(idOrUrn, targetIdOrUrn);
+      printResult(deleted, opts.output, (item) => relationshipRow(item as Relationship));
+    });
+}
+
 export function buildProgram(): Command {
   const program = new Command();
   program.name("scp").description("CommanderSCP CLI").version("0.0.0");
@@ -58,22 +485,84 @@ export function buildProgram(): Command {
   // -------------------------------------------------------------------------------------
   program
     .command("login")
-    .description("Exchange local-auth credentials for a bearer token and store it")
+    .description("Exchange credentials for a bearer token and store it")
     .option("-u, --username <username>", "username", process.env.SCP_USERNAME)
     .option("-p, --password <password>", "password", process.env.SCP_PASSWORD)
+    .option(
+      "--device",
+      "use the device authorization flow instead of username+password (for headless hosts — DESIGN.md §7)"
+    )
     .option("--base-url <url>", "API base URL", DEFAULT_BASE_URL)
-    .action(async (opts: { username?: string; password?: string; baseUrl: string }) => {
-      const username = opts.username ?? (await promptLine("Username: "));
-      const password = opts.password ?? (await promptLine("Password: "));
-      const client = new ScpClient({ baseUrl: opts.baseUrl });
-      const result = await client.login(username, password);
-      await saveCredentials({
-        baseUrl: opts.baseUrl,
-        token: result.token,
-        org: result.org,
-        expiresAt: result.expiresAt
-      });
-      console.log(`Logged in as '${username}' (org: ${result.org}). Token stored.`);
+    .action(
+      async (opts: { username?: string; password?: string; device?: boolean; baseUrl: string }) => {
+        const client = new ScpClient({ baseUrl: opts.baseUrl });
+
+        if (opts.device) {
+          const result = await deviceLogin(client);
+          await saveCredentials({
+            baseUrl: opts.baseUrl,
+            token: result.token,
+            org: result.org,
+            expiresAt: result.expiresAt
+          });
+          console.log(`Logged in (org: ${result.org}) via device authorization. Token stored.`);
+          return;
+        }
+
+        const username = opts.username ?? (await promptLine("Username: "));
+        const password = opts.password ?? (await promptLine("Password: "));
+        const result = await client.login(username, password);
+        await saveCredentials({
+          baseUrl: opts.baseUrl,
+          token: result.token,
+          org: result.org,
+          expiresAt: result.expiresAt
+        });
+        console.log(`Logged in as '${username}' (org: ${result.org}). Token stored.`);
+      }
+    );
+
+  // -------------------------------------------------------------------------------------
+  // pat (Personal Access Tokens — BUILD_AND_TEST.md §8 M2 item 3)
+  // -------------------------------------------------------------------------------------
+  const patCmd = program.command("pat").description("Manage Personal Access Tokens");
+
+  patCmd
+    .command("create")
+    .description("Create a Personal Access Token — the token is printed ONCE, store it now")
+    .requiredOption("--name <name>", "label for the token")
+    .option("--expires-at <iso>", "ISO 8601 expiry datetime (no expiry if omitted)")
+    .option("--base-url <url>", "API base URL override")
+    .action(async (opts: { name: string; expiresAt?: string; baseUrl?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const created = await client.pats.create(opts.name, { expiresAt: opts.expiresAt });
+      console.log(
+        `Personal Access Token '${created.name}' created (id: ${created.id}).\n` +
+          "This token is shown ONLY ONCE and cannot be retrieved again — store it now:\n" +
+          created.token
+      );
+    });
+
+  patCmd
+    .command("list")
+    .description("List your Personal Access Tokens")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const page = await client.pats.list();
+      printResult(page.items, opts.output, (item) => patRow(item as Pat));
+    });
+
+  patCmd
+    .command("revoke <id>")
+    .description("Revoke a Personal Access Token")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const revoked = await client.pats.revoke(id);
+      printResult(revoked, opts.output, (item) => patRow(item as Pat));
     });
 
   // -------------------------------------------------------------------------------------
@@ -425,6 +914,35 @@ export function buildProgram(): Command {
     });
 
   // -------------------------------------------------------------------------------------
+  // M2 typed registries (BUILD_AND_TEST.md §8 M2 item 1): one top-level command per resource,
+  // same shape as `object`/`rel` above, built from the factories defined earlier in this file.
+  // -------------------------------------------------------------------------------------
+  const domainCmd = registerTypedResourceCrud(program, "domain", (c) => c.domains);
+  registerOwnerCommands(domainCmd, (c) => c.domains);
+
+  const serviceCmd = registerTypedResourceCrud(program, "service", (c) => c.services);
+  registerOwnerCommands(serviceCmd, (c) => c.services);
+  registerEdgeCommands(serviceCmd, "consumes", (c) => c.services);
+  registerEdgeCommands(serviceCmd, "depends-on", (c) => c.services);
+
+  const componentCmd = registerTypedResourceCrud(program, "component", (c) => c.components);
+  registerOwnerCommands(componentCmd, (c) => c.components);
+  registerEdgeCommands(componentCmd, "consumes", (c) => c.components);
+  registerEdgeCommands(componentCmd, "depends-on", (c) => c.components);
+
+  const deploymentTargetCmd = registerTypedResourceCrud(
+    program,
+    "deployment-target",
+    (c) => c.deploymentTargets
+  );
+  registerOwnerCommands(deploymentTargetCmd, (c) => c.deploymentTargets);
+
+  registerTypedResourceCrud(program, "team", (c) => c.teams);
+  registerTypedResourceCrud(program, "group", (c) => c.groups);
+  registerTypedResourceCrud(program, "user", (c) => c.users);
+  registerTypedResourceCrud(program, "service-account", (c) => c.serviceAccounts);
+
+  // -------------------------------------------------------------------------------------
   // graph (named queries + traverse — DESIGN.md §5)
   // -------------------------------------------------------------------------------------
   const graphCmd = program.command("graph").description("Run graph queries");
@@ -491,6 +1009,53 @@ export function buildProgram(): Command {
         printResult(result.objects, opts.output, (item) => objectRow(item as GraphObject));
       }
     );
+
+  // -------------------------------------------------------------------------------------
+  // plan / apply (`@scp/iac` server-side plan/apply — BUILD_AND_TEST.md §8 M2 item 4). A
+  // manifest file is what `@scp/iac`'s `synthToFile` writes (or any hand-authored/CI-generated
+  // JSON matching `DesiredStateManifestSchema`) — the CLI never imports/executes a user's IaC
+  // TypeScript program directly, only the synthesized manifest (DESIGN.md §15).
+  // -------------------------------------------------------------------------------------
+
+  program
+    .command("plan")
+    .description("Compute a desired-state diff for an @scp/iac manifest (dry run — does not apply)")
+    .requiredOption("--manifest <path>", "path to a synthesized DesiredStateManifest JSON file")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { manifest: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const manifest = await readManifestFile(opts.manifest);
+      const plan = await client.plans.create(manifest);
+      printPlanResult(plan, opts.output);
+    });
+
+  program
+    .command("apply")
+    .description(
+      "Plan and apply an @scp/iac manifest in one shot (POST /plans then apply) — applying an unchanged manifest again is a no-op"
+    )
+    .requiredOption("--manifest <path>", "path to a synthesized DesiredStateManifest JSON file")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { manifest: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const manifest = await readManifestFile(opts.manifest);
+      const plan = await client.plans.create(manifest);
+      const { plan: applied, summary } = await client.plans.apply(plan.id);
+      printApplyResult(applied, summary, opts.output);
+    });
+
+  program
+    .command("plan-status <id>")
+    .description("Get a previously computed plan by id")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const plan = await client.plans.get(id);
+      printPlanResult(plan, opts.output);
+    });
 
   // -------------------------------------------------------------------------------------
   // audit

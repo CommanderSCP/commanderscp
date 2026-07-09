@@ -37,6 +37,7 @@ export function computeRelationshipContentHash(input: {
   fromId: string;
   toId: string;
   properties: unknown;
+  labels: unknown;
 }): string {
   const canonical = JSON.stringify({
     id: input.id,
@@ -44,7 +45,8 @@ export function computeRelationshipContentHash(input: {
     typeId: input.typeId,
     fromId: input.fromId,
     toId: input.toId,
-    properties: input.properties
+    properties: input.properties,
+    labels: input.labels
   });
   return createHash("sha256").update(canonical).digest("hex");
 }

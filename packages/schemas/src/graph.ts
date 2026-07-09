@@ -157,6 +157,11 @@ export const RelationshipSchema = z.object({
   fromId: z.string().uuid(),
   toId: z.string().uuid(),
   properties: JsonRecordSchema,
+  // M2 stage 3 addition (BUILD_AND_TEST.md §8 M2 item 4): mirrors `objects.labels` so IaC's
+  // `scp:managed-by`/`scp:stack` pruning convention applies uniformly to relationships too
+  // (apps/server/src/iac/plan-diff.ts) — additive, backward-compatible (DESIGN.md "additive-only
+  // within v1"), defaults to `{}` for every relationship created before this milestone.
+  labels: JsonRecordSchema,
   originDomainId: z.string().uuid(),
   revision: z.number().int(),
   createdAt: z.string().datetime(),
@@ -169,7 +174,8 @@ export const CreateRelationshipRequestSchema = z.object({
   typeId: z.string().min(1),
   fromId: z.string().uuid(),
   toId: z.string().uuid(),
-  properties: JsonRecordSchema.optional()
+  properties: JsonRecordSchema.optional(),
+  labels: JsonRecordSchema.optional()
 });
 export type CreateRelationshipRequest = z.infer<typeof CreateRelationshipRequestSchema>;
 

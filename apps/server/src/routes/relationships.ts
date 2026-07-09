@@ -93,7 +93,8 @@ export function registerRelationshipRoutes(app: FastifyInstance, deps: AppDeps):
               typeId: request.body.typeId,
               fromId: request.body.fromId,
               toId: request.body.toId,
-              properties: request.body.properties
+              properties: request.body.properties,
+              labels: request.body.labels
             })
           })
         );

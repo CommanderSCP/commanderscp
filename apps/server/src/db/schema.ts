@@ -44,12 +44,20 @@ export const users = pgTable(
       .notNull()
       .references(() => orgs.id),
     username: text("username").notNull(),
-    passwordHash: text("password_hash").notNull(),
+    // NULL for OIDC-provisioned accounts (M2 stage 2, drizzle/0004_auth_expansion.sql) — those
+    // authenticate exclusively via the IdP, never a local password (auth/local-auth.ts `login()`
+    // treats NULL the same as a wrong password).
+    passwordHash: text("password_hash"),
     /** The graph `user` object representing this account (DESIGN.md §7 RBAC subject). */
     objectId: uuid("object_id"),
+    /** OIDC `sub` claim this account was JIT-provisioned from (auth/oidc.ts) — NULL for local-auth-only users. */
+    oidcSubject: text("oidc_subject"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
-  (table) => [unique("users_org_id_username_key").on(table.orgId, table.username)]
+  (table) => [
+    unique("users_org_id_username_key").on(table.orgId, table.username),
+    unique("users_org_id_oidc_subject_key").on(table.orgId, table.oidcSubject)
+  ]
 );
 
 export const sessions = pgTable("sessions", {
@@ -61,6 +69,60 @@ export const sessions = pgTable("sessions", {
     .notNull()
     .references(() => orgs.id),
   tokenHash: text("token_hash").notNull().unique(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+});
+
+/**
+ * Personal Access Tokens (M2 stage 2, BUILD_AND_TEST.md §8 M2 item 3) — auth substrate like
+ * orgs/users/sessions above (no RLS, see drizzle/0004_auth_expansion.sql). `tokenId` is an
+ * indexable CLEARTEXT lookup key: argon2's output is salted/non-comparable, so — unlike
+ * `sessions.tokenHash`'s SHA-256 equality lookup — a PAT can't be found by hashing the presented
+ * secret and matching it directly. The presented token is `scp_pat_<tokenId>.<secret>`;
+ * `tokenId` finds the row in O(1), then `tokenHash` (argon2 of `secret`) is verified
+ * (auth/pat.ts).
+ */
+export const personalAccessTokens = pgTable(
+  "personal_access_tokens",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    name: text("name").notNull(),
+    tokenId: text("token_id").notNull().unique(),
+    tokenHash: text("token_hash").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true })
+  },
+  (table) => [index("pat_org_user").on(table.orgId, table.userId)]
+);
+
+/**
+ * SCP's own RFC 8628-shaped device-authorization flow (M2 stage 2 Part C) — hosted by SCP itself,
+ * not a proxy to the upstream IdP's device grant, so it works identically for local-auth-only
+ * air-gapped orgs and OIDC-configured orgs alike (DESIGN.md §7 "headless jump boxes can't do
+ * browser redirects"). Auth substrate, no RLS — same treatment as orgs/users/sessions.
+ *
+ * `issuedToken` briefly holds a PLAINTEXT session token between approval and the CLI's next poll
+ * — acceptable because the row is short-lived (~10 min, `expiresAt`), single-use (claimed
+ * atomically and nulled out in the same update — auth/device-flow.ts `pollDeviceAuth`), and only
+ * reachable by whoever knows the long, unguessable `deviceCode` (never the short, human-typed
+ * `userCode`, which is deliberately low-entropy but short-lived + single-use).
+ */
+export const deviceAuthRequests = pgTable("device_auth_requests", {
+  id: uuid("id").primaryKey(),
+  deviceCodeHash: text("device_code_hash").notNull().unique(),
+  userCode: text("user_code").notNull().unique(),
+  status: text("status").notNull().default("pending"), // pending|approved|denied|expired|claimed
+  orgId: uuid("org_id").references(() => orgs.id), // set on approval
+  issuedToken: text("issued_token"), // plaintext, briefly — see doc comment above
+  issuedTokenExpiresAt: timestamp("issued_token_expires_at", { withTimezone: true }),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
 });
@@ -142,6 +204,10 @@ export const relationships = pgTable(
       .notNull()
       .references(() => objects.id),
     properties: jsonb("properties").notNull().default({}),
+    // M2 stage 3 addition (BUILD_AND_TEST.md §8 M2 item 4, drizzle/0005_plans.sql) — mirrors
+    // `objects.labels` so the `scp:managed-by`/`scp:stack` IaC pruning convention
+    // (apps/server/src/iac/plan-diff.ts) applies uniformly to relationships, not just objects.
+    labels: jsonb("labels").notNull().default({}),
     originDomainId: uuid("origin_domain_id").notNull(),
     revision: bigint("revision", { mode: "number" }).notNull().default(1),
     contentHash: text("content_hash").notNull(),
@@ -157,7 +223,8 @@ export const relationships = pgTable(
     ),
     index("rel_fwd").on(table.orgId, table.fromId, table.typeId),
     index("rel_rev").on(table.orgId, table.toId, table.typeId),
-    index("rel_created_cursor").on(table.orgId, table.createdAt, table.id)
+    index("rel_created_cursor").on(table.orgId, table.createdAt, table.id),
+    index("rel_labels").using("gin", sql`${table.labels} jsonb_path_ops`)
   ]
 );
 
@@ -246,6 +313,39 @@ export const outbox = pgTable(
     processedAt: timestamp("processed_at", { withTimezone: true })
   },
   (table) => [index("outbox_unprocessed").on(table.processedAt, table.createdAt)]
+);
+
+// -------------------------------------------------------------------------------------------
+// IaC plans (BUILD_AND_TEST.md §8 M2 item 4, DESIGN.md §15) — a `plans` table is a "projection
+// table for hot lifecycle state" (DESIGN.md §4.1): unlike M2 stage 1's typed registries (which
+// deliberately reused objects/relationships), a plan has its own lifecycle (pending -> applied,
+// or stale) and needs real columns for that, so it's a dedicated table referencing the graph only
+// loosely (via URNs inside `manifest`/`diff`, not a `object_id` FK — a single plan touches many
+// objects, not one). TENANT data (org_id-scoped, not auth substrate), so it needs the same RLS
+// treatment as objects/relationships — hand-authored in drizzle/0005_plans.sql, same pattern as
+// 0002_rls_rbac_seed.sql §2.
+// -------------------------------------------------------------------------------------------
+
+export const plans = pgTable(
+  "plans",
+  {
+    id: uuid("id").primaryKey(), // UUIDv7
+    orgId: uuid("org_id").notNull(),
+    /** The graph subject (user/service-account object id) who requested the plan — mirrors `audit_events.actor_id`. */
+    actorId: uuid("actor_id").notNull(),
+    stackName: text("stack_name").notNull(),
+    /** The exact submitted desired-state manifest, kept verbatim (DesiredStateManifest — @scp/schemas). */
+    manifest: jsonb("manifest").notNull(),
+    /** The computed typed diff at plan time (PlanDiff — @scp/schemas): create/update/delete/noop entries with reasons. */
+    diff: jsonb("diff").notNull(),
+    status: text("status").notNull().default("pending"), // 'pending' | 'applied' | 'stale'
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    appliedAt: timestamp("applied_at", { withTimezone: true })
+  },
+  (table) => [
+    index("plans_org_created").on(table.orgId, table.createdAt, table.id),
+    index("plans_org_stack").on(table.orgId, table.stackName)
+  ]
 );
 
 // -------------------------------------------------------------------------------------------

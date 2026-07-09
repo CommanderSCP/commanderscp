@@ -1,6 +1,9 @@
 import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
-import { AUDIT_GENESIS_HASH, computeRowHash, type AuditEvent } from "@scp/schemas";
+import type { AuditEvent } from "@scp/schemas";
+// Node-only hashing (`node:crypto`) — deliberately a separate subpath from `@scp/schemas`'
+// default entry, which `apps/web` also imports (browser build) — see audit-chain.ts's module doc.
+import { AUDIT_GENESIS_HASH, computeRowHash } from "@scp/schemas/audit-chain";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { auditEvents } from "../db/schema.js";
 

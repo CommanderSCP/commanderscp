@@ -144,6 +144,33 @@ export interface LoginResult {
   orgName: string;
 }
 
+export interface CreatedSession {
+  token: string;
+  expiresAt: Date;
+}
+
+/**
+ * Issues a new opaque bearer/session token for an already-authenticated `(userId, orgId)` pair —
+ * shared by every login path (local-auth `login()` below, OIDC `auth/oidc.ts`, device-flow
+ * approval `auth/device-flow.ts`) so token generation/hashing/expiry logic lives in exactly one
+ * place.
+ */
+export async function createSession(
+  db: Db,
+  params: { userId: string; orgId: string }
+): Promise<CreatedSession> {
+  const token = generateToken();
+  const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+  await db.insert(sessions).values({
+    id: uuidv7(),
+    userId: params.userId,
+    orgId: params.orgId,
+    tokenHash: hashToken(token),
+    expiresAt
+  });
+  return { token, expiresAt };
+}
+
 /** Verifies username/password and issues a new opaque bearer token (also usable as the UI cookie). */
 export async function login(
   db: Db,
@@ -153,23 +180,39 @@ export async function login(
   const user = await db.query.users.findFirst({ where: eq(users.username, username) });
   if (!user) return null;
 
+  // OIDC-provisioned accounts have no local password (db/schema.ts, drizzle/0004) — treat that
+  // identically to a wrong password rather than a different error path, so account existence
+  // isn't distinguishable from the response.
+  if (!user.passwordHash) return null;
+
   const valid = await argon2.verify(user.passwordHash, password).catch(() => false);
   if (!valid) return null;
 
   const org = await db.query.orgs.findFirst({ where: eq(orgs.id, user.orgId) });
   if (!org) return null;
 
-  const token = generateToken();
-  const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
-  await db.insert(sessions).values({
-    id: uuidv7(),
-    userId: user.id,
-    orgId: user.orgId,
-    tokenHash: hashToken(token),
-    expiresAt
-  });
+  const session = await createSession(db, { userId: user.id, orgId: user.orgId });
+  return { token: session.token, expiresAt: session.expiresAt, orgName: org.name };
+}
 
-  return { token, expiresAt, orgName: org.name };
+/**
+ * Resolves a `users.id` to its full auth context — shared by `verifyToken` below and PAT
+ * verification (auth/pat.ts), which both end at "I know the user row, now build the AuthContext"
+ * after their own distinct token-lookup step.
+ */
+export async function resolveAuthContext(db: Db, userId: string): Promise<AuthContext | null> {
+  const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  if (!user) return null;
+  const org = await db.query.orgs.findFirst({ where: eq(orgs.id, user.orgId) });
+  if (!org || !user.objectId) return null;
+
+  return {
+    userId: user.id,
+    orgId: org.id,
+    orgName: org.name,
+    username: user.username,
+    subjectObjectId: user.objectId
+  };
 }
 
 /** Resolves a bearer/cookie token to its auth context; org is always resolved from the token (DESIGN.md §6). */
@@ -179,15 +222,21 @@ export async function verifyToken(db: Db, token: string): Promise<AuthContext | 
   if (!session) return null;
   if (session.expiresAt.getTime() < Date.now()) return null;
 
-  const user = await db.query.users.findFirst({ where: eq(users.id, session.userId) });
-  const org = await db.query.orgs.findFirst({ where: eq(orgs.id, session.orgId) });
-  if (!user || !org || !user.objectId) return null;
+  return resolveAuthContext(db, session.userId);
+}
 
-  return {
-    userId: user.id,
-    orgId: org.id,
-    orgName: org.name,
-    username: user.username,
-    subjectObjectId: user.objectId
-  };
+/**
+ * `POST /auth/logout` (routes/auth.ts, M2 stage 4) — invalidates the session row a local-auth/
+ * OIDC session token resolves to, so it's rejected by `verifyToken` immediately, even if the
+ * client kept a copy. Expires it (UPDATE) rather than deleting the row: the runtime `scp_app`
+ * login role is only granted SELECT/INSERT/UPDATE on auth-substrate tables, never DELETE (PR #4
+ * security review, CRITICAL 3 — `drizzle/0002_rls_rbac_seed.sql` §1) — same externally-observable
+ * effect (the token stops working) without widening that grant for a "logout" nicety. No-op if
+ * the token doesn't match a live session — callers own deciding whether that's worth surfacing.
+ */
+export async function invalidateSessionByToken(db: Db, token: string): Promise<void> {
+  await db
+    .update(sessions)
+    .set({ expiresAt: new Date(0) })
+    .where(eq(sessions.tokenHash, hashToken(token)));
 }

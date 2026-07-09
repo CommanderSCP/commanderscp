@@ -6,6 +6,7 @@ import { provisionRuntimeRole, runtimeCredentials } from "./db/provision.js";
 import { ensureBootstrapAdmin } from "./auth/local-auth.js";
 import { startPgBoss } from "./events/pgboss.js";
 import { startOutboxRelay } from "./events/outbox-relay.js";
+import { loginAndSeedDemoData } from "./seed.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -29,7 +30,7 @@ async function main(): Promise<void> {
 
   const app = await buildApp({ db, config });
 
-  await ensureBootstrapAdmin(
+  const bootstrap = await ensureBootstrapAdmin(
     db,
     { orgName: config.bootstrapOrgName, adminUsername: config.bootstrapAdminUsername },
     { info: (msg) => app.log.info(msg), warn: (msg) => app.log.warn(msg) }
@@ -50,6 +51,19 @@ async function main(): Promise<void> {
 
   await app.listen({ port: config.port, host: config.host });
   app.log.info(`scp (${config.role}) listening on http://${config.host}:${config.port}`);
+
+  // BUILD_AND_TEST.md §5.3 — eval-stack demo data (SCP_SEED_DEMO, off by default; the compose
+  // eval stack turns it on). Needs the server actually listening (it talks to itself over HTTP,
+  // PUBLIC API ONLY — seed.ts module doc), hence after `app.listen` above, not before. A
+  // nice-to-have, not boot-critical: logged and swallowed on failure, never crashes the server.
+  if (config.seedDemo) {
+    await loginAndSeedDemoData(config, bootstrap, {
+      info: (msg) => app.log.info(msg),
+      warn: (msg) => app.log.warn(msg)
+    }).catch((err: unknown) => {
+      app.log.error({ err }, "demo seed failed — continuing (non-fatal, eval-only feature)");
+    });
+  }
 }
 
 main().catch((err: unknown) => {

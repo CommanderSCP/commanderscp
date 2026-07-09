@@ -1,5 +1,5 @@
 # Two-container evaluation stack (DESIGN.md §16, BUILD_AND_TEST.md §5.2): postgres:16 + scp
-# (api + worker + UI stub in one process, SCP_ROLE=all, local auth). `docker compose up`.
+# (api + worker + Web UI SPA in one process, SCP_ROLE=all, local auth). `docker compose up`.
 services:
   postgres:
     image: postgres:16
@@ -24,6 +24,8 @@ services:
       PORT: "8080"
       HOST: "0.0.0.0"
       DATABASE_URL: postgres://scp:scp@postgres:5432/scp
+      # BUILD_AND_TEST.md §5.3: demo data on by default for the eval stack.
+      SCP_SEED_DEMO: "true"
     ports:
       - "8080:8080"
     depends_on:

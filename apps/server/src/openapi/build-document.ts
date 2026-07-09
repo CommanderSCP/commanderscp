@@ -49,15 +49,25 @@ export function buildOpenApiDocument(routes: CollectedRoute[]): Record<string, u
 
     const responses: Record<string, unknown> = {};
     for (const [status, schema] of Object.entries(route.schema?.response ?? {})) {
-      responses[status] = {
-        description: status.startsWith("2") ? "Success" : "Error",
-        content: {
+      // `z.void()`/`z.undefined()` model a body-less response (e.g. 204 No Content) and can't be
+      // represented as JSON Schema (`z.toJSONSchema` throws) — OpenAPI 3.1 models "no body" as a
+      // response object with no `content` key at all, not an empty schema, so that's what a
+      // conversion failure here falls back to.
+      let content: Record<string, unknown> | undefined;
+      try {
+        content = {
           [status === "400" || status.startsWith("4")
             ? "application/problem+json"
             : "application/json"]: {
             schema: z.toJSONSchema(schema)
           }
-        }
+        };
+      } catch {
+        content = undefined;
+      }
+      responses[status] = {
+        description: status.startsWith("2") ? "Success" : "Error",
+        ...(content ? { content } : {})
       };
     }
 

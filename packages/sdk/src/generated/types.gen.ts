@@ -43,6 +43,337 @@ export type LoginResponses = {
 
 export type LoginResponse = LoginResponses[keyof LoginResponses];
 
+export type GetCurrentUserData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/auth/me';
+};
+
+export type GetCurrentUserErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetCurrentUserError = GetCurrentUserErrors[keyof GetCurrentUserErrors];
+
+export type GetCurrentUserResponses = {
+    /**
+     * Success
+     */
+    200: {
+        userId: string;
+        orgId: string;
+        orgName: string;
+        username: string;
+        subjectObjectId: string;
+    };
+};
+
+export type GetCurrentUserResponse = GetCurrentUserResponses[keyof GetCurrentUserResponses];
+
+export type LogoutData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/auth/logout';
+};
+
+export type LogoutErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type LogoutError = LogoutErrors[keyof LogoutErrors];
+
+export type LogoutResponses = {
+    /**
+     * Success
+     */
+    204: void;
+};
+
+export type LogoutResponse = LogoutResponses[keyof LogoutResponses];
+
+export type GetAuthConfigData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/auth/config';
+};
+
+export type GetAuthConfigResponses = {
+    /**
+     * Success
+     */
+    200: {
+        localAuthEnabled: true;
+        oidcEnabled: boolean;
+    };
+};
+
+export type GetAuthConfigResponse = GetAuthConfigResponses[keyof GetAuthConfigResponses];
+
+export type ListPatsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/auth/pats';
+};
+
+export type ListPatsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListPatsError = ListPatsErrors[keyof ListPatsErrors];
+
+export type ListPatsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            name: string;
+            createdAt: string;
+            expiresAt: string | null;
+            revokedAt: string | null;
+            lastUsedAt: string | null;
+        }>;
+    };
+};
+
+export type ListPatsResponse = ListPatsResponses[keyof ListPatsResponses];
+
+export type CreatePatData = {
+    body: {
+        name: string;
+        expiresAt?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/auth/pats';
+};
+
+export type CreatePatErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreatePatError = CreatePatErrors[keyof CreatePatErrors];
+
+export type CreatePatResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        name: string;
+        token: string;
+        createdAt: string;
+        expiresAt: string | null;
+    };
+};
+
+export type CreatePatResponse = CreatePatResponses[keyof CreatePatResponses];
+
+export type RevokePatData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/auth/pats/{id}';
+};
+
+export type RevokePatErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RevokePatError = RevokePatErrors[keyof RevokePatErrors];
+
+export type RevokePatResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        name: string;
+        createdAt: string;
+        expiresAt: string | null;
+        revokedAt: string | null;
+        lastUsedAt: string | null;
+    };
+};
+
+export type RevokePatResponse = RevokePatResponses[keyof RevokePatResponses];
+
+export type StartDeviceAuthData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/auth/device/start';
+};
+
+export type StartDeviceAuthResponses = {
+    /**
+     * Success
+     */
+    200: {
+        deviceCode: string;
+        userCode: string;
+        verificationUri: string;
+        expiresIn: number;
+        interval: number;
+    };
+};
+
+export type StartDeviceAuthResponse = StartDeviceAuthResponses[keyof StartDeviceAuthResponses];
+
+export type ApproveDeviceAuthData = {
+    body: {
+        userCode: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/auth/device/approve';
+};
+
+export type ApproveDeviceAuthErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ApproveDeviceAuthError = ApproveDeviceAuthErrors[keyof ApproveDeviceAuthErrors];
+
+export type ApproveDeviceAuthResponses = {
+    /**
+     * Success
+     */
+    200: {
+        approved: true;
+    };
+};
+
+export type ApproveDeviceAuthResponse = ApproveDeviceAuthResponses[keyof ApproveDeviceAuthResponses];
+
+export type PollDeviceAuthTokenData = {
+    body: {
+        deviceCode: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/auth/device/token';
+};
+
+export type PollDeviceAuthTokenErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+        error: 'authorization_pending' | 'expired_token' | 'access_denied' | 'invalid_grant';
+    };
+};
+
+export type PollDeviceAuthTokenError = PollDeviceAuthTokenErrors[keyof PollDeviceAuthTokenErrors];
+
+export type PollDeviceAuthTokenResponses = {
+    /**
+     * Success
+     */
+    200: {
+        token: string;
+        expiresAt: string;
+        org: string;
+    };
+};
+
+export type PollDeviceAuthTokenResponse = PollDeviceAuthTokenResponses[keyof PollDeviceAuthTokenResponses];
+
 export type ListServiceObjectsData = {
     body?: never;
     path?: never;
@@ -1154,6 +1485,9 @@ export type ListRelationshipsResponses = {
             properties: {
                 [key: string]: unknown;
             };
+            labels: {
+                [key: string]: unknown;
+            };
             originDomainId: string;
             revision: number;
             createdAt: string;
@@ -1172,6 +1506,9 @@ export type CreateRelationshipData = {
         fromId: string;
         toId: string;
         properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
             [key: string]: unknown;
         };
     };
@@ -1240,6 +1577,9 @@ export type CreateRelationshipResponses = {
         fromId: string;
         toId: string;
         properties: {
+            [key: string]: unknown;
+        };
+        labels: {
             [key: string]: unknown;
         };
         originDomainId: string;
@@ -1311,6 +1651,9 @@ export type DeleteRelationshipResponses = {
         properties: {
             [key: string]: unknown;
         };
+        labels: {
+            [key: string]: unknown;
+        };
         originDomainId: string;
         revision: number;
         createdAt: string;
@@ -1380,6 +1723,9 @@ export type GetRelationshipResponses = {
         properties: {
             [key: string]: unknown;
         };
+        labels: {
+            [key: string]: unknown;
+        };
         originDomainId: string;
         revision: number;
         createdAt: string;
@@ -1388,6 +1734,6046 @@ export type GetRelationshipResponses = {
 };
 
 export type GetRelationshipResponse = GetRelationshipResponses[keyof GetRelationshipResponses];
+
+export type ListDomainsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+        domainId?: string;
+        includeDeleted?: boolean;
+    };
+    url: '/domains';
+};
+
+export type ListDomainsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListDomainsError = ListDomainsErrors[keyof ListDomainsErrors];
+
+export type ListDomainsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            typeId: string;
+            name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            version: number;
+            createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListDomainsResponse = ListDomainsResponses[keyof ListDomainsResponses];
+
+export type CreateDomainData = {
+    body: {
+        id?: string;
+        urn?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/domains';
+};
+
+export type CreateDomainErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateDomainError = CreateDomainErrors[keyof CreateDomainErrors];
+
+export type CreateDomainResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type CreateDomainResponse = CreateDomainResponses[keyof CreateDomainResponses];
+
+export type DeleteDomainData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/domains/{idOrUrn}';
+};
+
+export type DeleteDomainErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteDomainError = DeleteDomainErrors[keyof DeleteDomainErrors];
+
+export type DeleteDomainResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type DeleteDomainResponse = DeleteDomainResponses[keyof DeleteDomainResponses];
+
+export type GetDomainData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/domains/{idOrUrn}';
+};
+
+export type GetDomainErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetDomainError = GetDomainErrors[keyof GetDomainErrors];
+
+export type GetDomainResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type GetDomainResponse = GetDomainResponses[keyof GetDomainResponses];
+
+export type UpdateDomainData = {
+    body: {
+        name?: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+        version?: number;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/domains/{idOrUrn}';
+};
+
+export type UpdateDomainErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    412: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpdateDomainError = UpdateDomainErrors[keyof UpdateDomainErrors];
+
+export type UpdateDomainResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpdateDomainResponse = UpdateDomainResponses[keyof UpdateDomainResponses];
+
+export type UpsertDomainByUrnData = {
+    body: {
+        id?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/domains/{urn}';
+};
+
+export type UpsertDomainByUrnErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpsertDomainByUrnError = UpsertDomainByUrnErrors[keyof UpsertDomainByUrnErrors];
+
+export type UpsertDomainByUrnResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpsertDomainByUrnResponse = UpsertDomainByUrnResponses[keyof UpsertDomainByUrnResponses];
+
+export type ListServicesData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+        domainId?: string;
+        includeDeleted?: boolean;
+    };
+    url: '/services';
+};
+
+export type ListServicesErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListServicesError = ListServicesErrors[keyof ListServicesErrors];
+
+export type ListServicesResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            typeId: string;
+            name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            version: number;
+            createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListServicesResponse = ListServicesResponses[keyof ListServicesResponses];
+
+export type CreateServiceData = {
+    body: {
+        id?: string;
+        urn?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/services';
+};
+
+export type CreateServiceErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateServiceError = CreateServiceErrors[keyof CreateServiceErrors];
+
+export type CreateServiceResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type CreateServiceResponse = CreateServiceResponses[keyof CreateServiceResponses];
+
+export type DeleteServiceData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/services/{idOrUrn}';
+};
+
+export type DeleteServiceErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteServiceError = DeleteServiceErrors[keyof DeleteServiceErrors];
+
+export type DeleteServiceResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type DeleteServiceResponse = DeleteServiceResponses[keyof DeleteServiceResponses];
+
+export type GetServiceData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/services/{idOrUrn}';
+};
+
+export type GetServiceErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetServiceError = GetServiceErrors[keyof GetServiceErrors];
+
+export type GetServiceResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type GetServiceResponse = GetServiceResponses[keyof GetServiceResponses];
+
+export type UpdateServiceData = {
+    body: {
+        name?: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+        version?: number;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/services/{idOrUrn}';
+};
+
+export type UpdateServiceErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    412: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpdateServiceError = UpdateServiceErrors[keyof UpdateServiceErrors];
+
+export type UpdateServiceResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpdateServiceResponse = UpdateServiceResponses[keyof UpdateServiceResponses];
+
+export type UpsertServiceByUrnData = {
+    body: {
+        id?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/services/{urn}';
+};
+
+export type UpsertServiceByUrnErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpsertServiceByUrnError = UpsertServiceByUrnErrors[keyof UpsertServiceByUrnErrors];
+
+export type UpsertServiceByUrnResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpsertServiceByUrnResponse = UpsertServiceByUrnResponses[keyof UpsertServiceByUrnResponses];
+
+export type ListComponentsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+        domainId?: string;
+        includeDeleted?: boolean;
+    };
+    url: '/components';
+};
+
+export type ListComponentsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListComponentsError = ListComponentsErrors[keyof ListComponentsErrors];
+
+export type ListComponentsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            typeId: string;
+            name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            version: number;
+            createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListComponentsResponse = ListComponentsResponses[keyof ListComponentsResponses];
+
+export type CreateComponentData = {
+    body: {
+        id?: string;
+        urn?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/components';
+};
+
+export type CreateComponentErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateComponentError = CreateComponentErrors[keyof CreateComponentErrors];
+
+export type CreateComponentResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type CreateComponentResponse = CreateComponentResponses[keyof CreateComponentResponses];
+
+export type DeleteComponentData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/components/{idOrUrn}';
+};
+
+export type DeleteComponentErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteComponentError = DeleteComponentErrors[keyof DeleteComponentErrors];
+
+export type DeleteComponentResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type DeleteComponentResponse = DeleteComponentResponses[keyof DeleteComponentResponses];
+
+export type GetComponentData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/components/{idOrUrn}';
+};
+
+export type GetComponentErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetComponentError = GetComponentErrors[keyof GetComponentErrors];
+
+export type GetComponentResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type GetComponentResponse = GetComponentResponses[keyof GetComponentResponses];
+
+export type UpdateComponentData = {
+    body: {
+        name?: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+        version?: number;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/components/{idOrUrn}';
+};
+
+export type UpdateComponentErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    412: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpdateComponentError = UpdateComponentErrors[keyof UpdateComponentErrors];
+
+export type UpdateComponentResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpdateComponentResponse = UpdateComponentResponses[keyof UpdateComponentResponses];
+
+export type UpsertComponentByUrnData = {
+    body: {
+        id?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/components/{urn}';
+};
+
+export type UpsertComponentByUrnErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpsertComponentByUrnError = UpsertComponentByUrnErrors[keyof UpsertComponentByUrnErrors];
+
+export type UpsertComponentByUrnResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpsertComponentByUrnResponse = UpsertComponentByUrnResponses[keyof UpsertComponentByUrnResponses];
+
+export type ListDeploymentTargetsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+        domainId?: string;
+        includeDeleted?: boolean;
+    };
+    url: '/deployment-targets';
+};
+
+export type ListDeploymentTargetsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListDeploymentTargetsError = ListDeploymentTargetsErrors[keyof ListDeploymentTargetsErrors];
+
+export type ListDeploymentTargetsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            typeId: string;
+            name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            version: number;
+            createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListDeploymentTargetsResponse = ListDeploymentTargetsResponses[keyof ListDeploymentTargetsResponses];
+
+export type CreateDeploymentTargetData = {
+    body: {
+        id?: string;
+        urn?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/deployment-targets';
+};
+
+export type CreateDeploymentTargetErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateDeploymentTargetError = CreateDeploymentTargetErrors[keyof CreateDeploymentTargetErrors];
+
+export type CreateDeploymentTargetResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type CreateDeploymentTargetResponse = CreateDeploymentTargetResponses[keyof CreateDeploymentTargetResponses];
+
+export type DeleteDeploymentTargetData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/deployment-targets/{idOrUrn}';
+};
+
+export type DeleteDeploymentTargetErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteDeploymentTargetError = DeleteDeploymentTargetErrors[keyof DeleteDeploymentTargetErrors];
+
+export type DeleteDeploymentTargetResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type DeleteDeploymentTargetResponse = DeleteDeploymentTargetResponses[keyof DeleteDeploymentTargetResponses];
+
+export type GetDeploymentTargetData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/deployment-targets/{idOrUrn}';
+};
+
+export type GetDeploymentTargetErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetDeploymentTargetError = GetDeploymentTargetErrors[keyof GetDeploymentTargetErrors];
+
+export type GetDeploymentTargetResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type GetDeploymentTargetResponse = GetDeploymentTargetResponses[keyof GetDeploymentTargetResponses];
+
+export type UpdateDeploymentTargetData = {
+    body: {
+        name?: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+        version?: number;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/deployment-targets/{idOrUrn}';
+};
+
+export type UpdateDeploymentTargetErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    412: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpdateDeploymentTargetError = UpdateDeploymentTargetErrors[keyof UpdateDeploymentTargetErrors];
+
+export type UpdateDeploymentTargetResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpdateDeploymentTargetResponse = UpdateDeploymentTargetResponses[keyof UpdateDeploymentTargetResponses];
+
+export type UpsertDeploymentTargetByUrnData = {
+    body: {
+        id?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/deployment-targets/{urn}';
+};
+
+export type UpsertDeploymentTargetByUrnErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpsertDeploymentTargetByUrnError = UpsertDeploymentTargetByUrnErrors[keyof UpsertDeploymentTargetByUrnErrors];
+
+export type UpsertDeploymentTargetByUrnResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpsertDeploymentTargetByUrnResponse = UpsertDeploymentTargetByUrnResponses[keyof UpsertDeploymentTargetByUrnResponses];
+
+export type ListTeamsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+        domainId?: string;
+        includeDeleted?: boolean;
+    };
+    url: '/teams';
+};
+
+export type ListTeamsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListTeamsError = ListTeamsErrors[keyof ListTeamsErrors];
+
+export type ListTeamsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            typeId: string;
+            name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            version: number;
+            createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListTeamsResponse = ListTeamsResponses[keyof ListTeamsResponses];
+
+export type CreateTeamData = {
+    body: {
+        id?: string;
+        urn?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/teams';
+};
+
+export type CreateTeamErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateTeamError = CreateTeamErrors[keyof CreateTeamErrors];
+
+export type CreateTeamResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type CreateTeamResponse = CreateTeamResponses[keyof CreateTeamResponses];
+
+export type DeleteTeamData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/teams/{idOrUrn}';
+};
+
+export type DeleteTeamErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteTeamError = DeleteTeamErrors[keyof DeleteTeamErrors];
+
+export type DeleteTeamResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type DeleteTeamResponse = DeleteTeamResponses[keyof DeleteTeamResponses];
+
+export type GetTeamData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/teams/{idOrUrn}';
+};
+
+export type GetTeamErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetTeamError = GetTeamErrors[keyof GetTeamErrors];
+
+export type GetTeamResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type GetTeamResponse = GetTeamResponses[keyof GetTeamResponses];
+
+export type UpdateTeamData = {
+    body: {
+        name?: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+        version?: number;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/teams/{idOrUrn}';
+};
+
+export type UpdateTeamErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    412: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpdateTeamError = UpdateTeamErrors[keyof UpdateTeamErrors];
+
+export type UpdateTeamResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpdateTeamResponse = UpdateTeamResponses[keyof UpdateTeamResponses];
+
+export type UpsertTeamByUrnData = {
+    body: {
+        id?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/teams/{urn}';
+};
+
+export type UpsertTeamByUrnErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpsertTeamByUrnError = UpsertTeamByUrnErrors[keyof UpsertTeamByUrnErrors];
+
+export type UpsertTeamByUrnResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpsertTeamByUrnResponse = UpsertTeamByUrnResponses[keyof UpsertTeamByUrnResponses];
+
+export type ListGroupsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+        domainId?: string;
+        includeDeleted?: boolean;
+    };
+    url: '/groups';
+};
+
+export type ListGroupsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListGroupsError = ListGroupsErrors[keyof ListGroupsErrors];
+
+export type ListGroupsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            typeId: string;
+            name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            version: number;
+            createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListGroupsResponse = ListGroupsResponses[keyof ListGroupsResponses];
+
+export type CreateGroupData = {
+    body: {
+        id?: string;
+        urn?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/groups';
+};
+
+export type CreateGroupErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateGroupError = CreateGroupErrors[keyof CreateGroupErrors];
+
+export type CreateGroupResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type CreateGroupResponse = CreateGroupResponses[keyof CreateGroupResponses];
+
+export type DeleteGroupData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/groups/{idOrUrn}';
+};
+
+export type DeleteGroupErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteGroupError = DeleteGroupErrors[keyof DeleteGroupErrors];
+
+export type DeleteGroupResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type DeleteGroupResponse = DeleteGroupResponses[keyof DeleteGroupResponses];
+
+export type GetGroupData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/groups/{idOrUrn}';
+};
+
+export type GetGroupErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetGroupError = GetGroupErrors[keyof GetGroupErrors];
+
+export type GetGroupResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type GetGroupResponse = GetGroupResponses[keyof GetGroupResponses];
+
+export type UpdateGroupData = {
+    body: {
+        name?: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+        version?: number;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/groups/{idOrUrn}';
+};
+
+export type UpdateGroupErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    412: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpdateGroupError = UpdateGroupErrors[keyof UpdateGroupErrors];
+
+export type UpdateGroupResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpdateGroupResponse = UpdateGroupResponses[keyof UpdateGroupResponses];
+
+export type UpsertGroupByUrnData = {
+    body: {
+        id?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/groups/{urn}';
+};
+
+export type UpsertGroupByUrnErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpsertGroupByUrnError = UpsertGroupByUrnErrors[keyof UpsertGroupByUrnErrors];
+
+export type UpsertGroupByUrnResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpsertGroupByUrnResponse = UpsertGroupByUrnResponses[keyof UpsertGroupByUrnResponses];
+
+export type ListUsersData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+        domainId?: string;
+        includeDeleted?: boolean;
+    };
+    url: '/users';
+};
+
+export type ListUsersErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListUsersError = ListUsersErrors[keyof ListUsersErrors];
+
+export type ListUsersResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            typeId: string;
+            name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            version: number;
+            createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListUsersResponse = ListUsersResponses[keyof ListUsersResponses];
+
+export type CreateUserData = {
+    body: {
+        id?: string;
+        urn?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/users';
+};
+
+export type CreateUserErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateUserError = CreateUserErrors[keyof CreateUserErrors];
+
+export type CreateUserResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type CreateUserResponse = CreateUserResponses[keyof CreateUserResponses];
+
+export type DeleteUserData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/users/{idOrUrn}';
+};
+
+export type DeleteUserErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteUserError = DeleteUserErrors[keyof DeleteUserErrors];
+
+export type DeleteUserResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type DeleteUserResponse = DeleteUserResponses[keyof DeleteUserResponses];
+
+export type GetUserData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/users/{idOrUrn}';
+};
+
+export type GetUserErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetUserError = GetUserErrors[keyof GetUserErrors];
+
+export type GetUserResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type GetUserResponse = GetUserResponses[keyof GetUserResponses];
+
+export type UpdateUserData = {
+    body: {
+        name?: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+        version?: number;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/users/{idOrUrn}';
+};
+
+export type UpdateUserErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    412: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpdateUserError = UpdateUserErrors[keyof UpdateUserErrors];
+
+export type UpdateUserResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpdateUserResponse = UpdateUserResponses[keyof UpdateUserResponses];
+
+export type UpsertUserByUrnData = {
+    body: {
+        id?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/users/{urn}';
+};
+
+export type UpsertUserByUrnErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpsertUserByUrnError = UpsertUserByUrnErrors[keyof UpsertUserByUrnErrors];
+
+export type UpsertUserByUrnResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpsertUserByUrnResponse = UpsertUserByUrnResponses[keyof UpsertUserByUrnResponses];
+
+export type ListServiceAccountsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+        domainId?: string;
+        includeDeleted?: boolean;
+    };
+    url: '/service-accounts';
+};
+
+export type ListServiceAccountsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListServiceAccountsError = ListServiceAccountsErrors[keyof ListServiceAccountsErrors];
+
+export type ListServiceAccountsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            typeId: string;
+            name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            version: number;
+            createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListServiceAccountsResponse = ListServiceAccountsResponses[keyof ListServiceAccountsResponses];
+
+export type CreateServiceAccountData = {
+    body: {
+        id?: string;
+        urn?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/service-accounts';
+};
+
+export type CreateServiceAccountErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateServiceAccountError = CreateServiceAccountErrors[keyof CreateServiceAccountErrors];
+
+export type CreateServiceAccountResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type CreateServiceAccountResponse = CreateServiceAccountResponses[keyof CreateServiceAccountResponses];
+
+export type DeleteServiceAccountData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/service-accounts/{idOrUrn}';
+};
+
+export type DeleteServiceAccountErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteServiceAccountError = DeleteServiceAccountErrors[keyof DeleteServiceAccountErrors];
+
+export type DeleteServiceAccountResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type DeleteServiceAccountResponse = DeleteServiceAccountResponses[keyof DeleteServiceAccountResponses];
+
+export type GetServiceAccountData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/service-accounts/{idOrUrn}';
+};
+
+export type GetServiceAccountErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetServiceAccountError = GetServiceAccountErrors[keyof GetServiceAccountErrors];
+
+export type GetServiceAccountResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type GetServiceAccountResponse = GetServiceAccountResponses[keyof GetServiceAccountResponses];
+
+export type UpdateServiceAccountData = {
+    body: {
+        name?: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+        version?: number;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/service-accounts/{idOrUrn}';
+};
+
+export type UpdateServiceAccountErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    412: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpdateServiceAccountError = UpdateServiceAccountErrors[keyof UpdateServiceAccountErrors];
+
+export type UpdateServiceAccountResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpdateServiceAccountResponse = UpdateServiceAccountResponses[keyof UpdateServiceAccountResponses];
+
+export type UpsertServiceAccountByUrnData = {
+    body: {
+        id?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/service-accounts/{urn}';
+};
+
+export type UpsertServiceAccountByUrnErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpsertServiceAccountByUrnError = UpsertServiceAccountByUrnErrors[keyof UpsertServiceAccountByUrnErrors];
+
+export type UpsertServiceAccountByUrnResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpsertServiceAccountByUrnResponse = UpsertServiceAccountByUrnResponses[keyof UpsertServiceAccountByUrnResponses];
+
+export type ListDomainOwnersData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: {
+        cursor?: string;
+        limit?: number;
+    };
+    url: '/domains/{idOrUrn}/owners';
+};
+
+export type ListDomainOwnersErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListDomainOwnersError = ListDomainOwnersErrors[keyof ListDomainOwnersErrors];
+
+export type ListDomainOwnersResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            typeId: string;
+            fromId: string;
+            toId: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            createdAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListDomainOwnersResponse = ListDomainOwnersResponses[keyof ListDomainOwnersResponses];
+
+export type AddDomainOwnerData = {
+    body: {
+        ownerIdOrUrn: string;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/domains/{idOrUrn}/owners';
+};
+
+export type AddDomainOwnerErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type AddDomainOwnerError = AddDomainOwnerErrors[keyof AddDomainOwnerErrors];
+
+export type AddDomainOwnerResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        createdAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type AddDomainOwnerResponse = AddDomainOwnerResponses[keyof AddDomainOwnerResponses];
+
+export type RemoveDomainOwnerData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+        ownerIdOrUrn: string;
+    };
+    query?: never;
+    url: '/domains/{idOrUrn}/owners/{ownerIdOrUrn}';
+};
+
+export type RemoveDomainOwnerErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RemoveDomainOwnerError = RemoveDomainOwnerErrors[keyof RemoveDomainOwnerErrors];
+
+export type RemoveDomainOwnerResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        createdAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type RemoveDomainOwnerResponse = RemoveDomainOwnerResponses[keyof RemoveDomainOwnerResponses];
+
+export type ListServiceOwnersData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: {
+        cursor?: string;
+        limit?: number;
+    };
+    url: '/services/{idOrUrn}/owners';
+};
+
+export type ListServiceOwnersErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListServiceOwnersError = ListServiceOwnersErrors[keyof ListServiceOwnersErrors];
+
+export type ListServiceOwnersResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            typeId: string;
+            fromId: string;
+            toId: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            createdAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListServiceOwnersResponse = ListServiceOwnersResponses[keyof ListServiceOwnersResponses];
+
+export type AddServiceOwnerData = {
+    body: {
+        ownerIdOrUrn: string;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/services/{idOrUrn}/owners';
+};
+
+export type AddServiceOwnerErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type AddServiceOwnerError = AddServiceOwnerErrors[keyof AddServiceOwnerErrors];
+
+export type AddServiceOwnerResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        createdAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type AddServiceOwnerResponse = AddServiceOwnerResponses[keyof AddServiceOwnerResponses];
+
+export type RemoveServiceOwnerData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+        ownerIdOrUrn: string;
+    };
+    query?: never;
+    url: '/services/{idOrUrn}/owners/{ownerIdOrUrn}';
+};
+
+export type RemoveServiceOwnerErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RemoveServiceOwnerError = RemoveServiceOwnerErrors[keyof RemoveServiceOwnerErrors];
+
+export type RemoveServiceOwnerResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        createdAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type RemoveServiceOwnerResponse = RemoveServiceOwnerResponses[keyof RemoveServiceOwnerResponses];
+
+export type ListComponentOwnersData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: {
+        cursor?: string;
+        limit?: number;
+    };
+    url: '/components/{idOrUrn}/owners';
+};
+
+export type ListComponentOwnersErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListComponentOwnersError = ListComponentOwnersErrors[keyof ListComponentOwnersErrors];
+
+export type ListComponentOwnersResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            typeId: string;
+            fromId: string;
+            toId: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            createdAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListComponentOwnersResponse = ListComponentOwnersResponses[keyof ListComponentOwnersResponses];
+
+export type AddComponentOwnerData = {
+    body: {
+        ownerIdOrUrn: string;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/components/{idOrUrn}/owners';
+};
+
+export type AddComponentOwnerErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type AddComponentOwnerError = AddComponentOwnerErrors[keyof AddComponentOwnerErrors];
+
+export type AddComponentOwnerResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        createdAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type AddComponentOwnerResponse = AddComponentOwnerResponses[keyof AddComponentOwnerResponses];
+
+export type RemoveComponentOwnerData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+        ownerIdOrUrn: string;
+    };
+    query?: never;
+    url: '/components/{idOrUrn}/owners/{ownerIdOrUrn}';
+};
+
+export type RemoveComponentOwnerErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RemoveComponentOwnerError = RemoveComponentOwnerErrors[keyof RemoveComponentOwnerErrors];
+
+export type RemoveComponentOwnerResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        createdAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type RemoveComponentOwnerResponse = RemoveComponentOwnerResponses[keyof RemoveComponentOwnerResponses];
+
+export type ListDeploymentTargetOwnersData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: {
+        cursor?: string;
+        limit?: number;
+    };
+    url: '/deployment-targets/{idOrUrn}/owners';
+};
+
+export type ListDeploymentTargetOwnersErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListDeploymentTargetOwnersError = ListDeploymentTargetOwnersErrors[keyof ListDeploymentTargetOwnersErrors];
+
+export type ListDeploymentTargetOwnersResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            typeId: string;
+            fromId: string;
+            toId: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            createdAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListDeploymentTargetOwnersResponse = ListDeploymentTargetOwnersResponses[keyof ListDeploymentTargetOwnersResponses];
+
+export type AddDeploymentTargetOwnerData = {
+    body: {
+        ownerIdOrUrn: string;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/deployment-targets/{idOrUrn}/owners';
+};
+
+export type AddDeploymentTargetOwnerErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type AddDeploymentTargetOwnerError = AddDeploymentTargetOwnerErrors[keyof AddDeploymentTargetOwnerErrors];
+
+export type AddDeploymentTargetOwnerResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        createdAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type AddDeploymentTargetOwnerResponse = AddDeploymentTargetOwnerResponses[keyof AddDeploymentTargetOwnerResponses];
+
+export type RemoveDeploymentTargetOwnerData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+        ownerIdOrUrn: string;
+    };
+    query?: never;
+    url: '/deployment-targets/{idOrUrn}/owners/{ownerIdOrUrn}';
+};
+
+export type RemoveDeploymentTargetOwnerErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RemoveDeploymentTargetOwnerError = RemoveDeploymentTargetOwnerErrors[keyof RemoveDeploymentTargetOwnerErrors];
+
+export type RemoveDeploymentTargetOwnerResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        createdAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type RemoveDeploymentTargetOwnerResponse = RemoveDeploymentTargetOwnerResponses[keyof RemoveDeploymentTargetOwnerResponses];
+
+export type ListServiceConsumesData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: {
+        cursor?: string;
+        limit?: number;
+    };
+    url: '/services/{idOrUrn}/consumes';
+};
+
+export type ListServiceConsumesErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListServiceConsumesError = ListServiceConsumesErrors[keyof ListServiceConsumesErrors];
+
+export type ListServiceConsumesResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            typeId: string;
+            fromId: string;
+            toId: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            createdAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListServiceConsumesResponse = ListServiceConsumesResponses[keyof ListServiceConsumesResponses];
+
+export type AddServiceConsumesData = {
+    body: {
+        targetIdOrUrn: string;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/services/{idOrUrn}/consumes';
+};
+
+export type AddServiceConsumesErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type AddServiceConsumesError = AddServiceConsumesErrors[keyof AddServiceConsumesErrors];
+
+export type AddServiceConsumesResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        createdAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type AddServiceConsumesResponse = AddServiceConsumesResponses[keyof AddServiceConsumesResponses];
+
+export type RemoveServiceConsumesData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+        targetIdOrUrn: string;
+    };
+    query?: never;
+    url: '/services/{idOrUrn}/consumes/{targetIdOrUrn}';
+};
+
+export type RemoveServiceConsumesErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RemoveServiceConsumesError = RemoveServiceConsumesErrors[keyof RemoveServiceConsumesErrors];
+
+export type RemoveServiceConsumesResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        createdAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type RemoveServiceConsumesResponse = RemoveServiceConsumesResponses[keyof RemoveServiceConsumesResponses];
+
+export type ListServiceDependsOnData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: {
+        cursor?: string;
+        limit?: number;
+    };
+    url: '/services/{idOrUrn}/depends-on';
+};
+
+export type ListServiceDependsOnErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListServiceDependsOnError = ListServiceDependsOnErrors[keyof ListServiceDependsOnErrors];
+
+export type ListServiceDependsOnResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            typeId: string;
+            fromId: string;
+            toId: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            createdAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListServiceDependsOnResponse = ListServiceDependsOnResponses[keyof ListServiceDependsOnResponses];
+
+export type AddServiceDependsOnData = {
+    body: {
+        targetIdOrUrn: string;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/services/{idOrUrn}/depends-on';
+};
+
+export type AddServiceDependsOnErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type AddServiceDependsOnError = AddServiceDependsOnErrors[keyof AddServiceDependsOnErrors];
+
+export type AddServiceDependsOnResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        createdAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type AddServiceDependsOnResponse = AddServiceDependsOnResponses[keyof AddServiceDependsOnResponses];
+
+export type RemoveServiceDependsOnData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+        targetIdOrUrn: string;
+    };
+    query?: never;
+    url: '/services/{idOrUrn}/depends-on/{targetIdOrUrn}';
+};
+
+export type RemoveServiceDependsOnErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RemoveServiceDependsOnError = RemoveServiceDependsOnErrors[keyof RemoveServiceDependsOnErrors];
+
+export type RemoveServiceDependsOnResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        createdAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type RemoveServiceDependsOnResponse = RemoveServiceDependsOnResponses[keyof RemoveServiceDependsOnResponses];
+
+export type ListComponentConsumesData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: {
+        cursor?: string;
+        limit?: number;
+    };
+    url: '/components/{idOrUrn}/consumes';
+};
+
+export type ListComponentConsumesErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListComponentConsumesError = ListComponentConsumesErrors[keyof ListComponentConsumesErrors];
+
+export type ListComponentConsumesResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            typeId: string;
+            fromId: string;
+            toId: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            createdAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListComponentConsumesResponse = ListComponentConsumesResponses[keyof ListComponentConsumesResponses];
+
+export type AddComponentConsumesData = {
+    body: {
+        targetIdOrUrn: string;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/components/{idOrUrn}/consumes';
+};
+
+export type AddComponentConsumesErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type AddComponentConsumesError = AddComponentConsumesErrors[keyof AddComponentConsumesErrors];
+
+export type AddComponentConsumesResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        createdAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type AddComponentConsumesResponse = AddComponentConsumesResponses[keyof AddComponentConsumesResponses];
+
+export type RemoveComponentConsumesData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+        targetIdOrUrn: string;
+    };
+    query?: never;
+    url: '/components/{idOrUrn}/consumes/{targetIdOrUrn}';
+};
+
+export type RemoveComponentConsumesErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RemoveComponentConsumesError = RemoveComponentConsumesErrors[keyof RemoveComponentConsumesErrors];
+
+export type RemoveComponentConsumesResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        createdAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type RemoveComponentConsumesResponse = RemoveComponentConsumesResponses[keyof RemoveComponentConsumesResponses];
+
+export type ListComponentDependsOnData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: {
+        cursor?: string;
+        limit?: number;
+    };
+    url: '/components/{idOrUrn}/depends-on';
+};
+
+export type ListComponentDependsOnErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListComponentDependsOnError = ListComponentDependsOnErrors[keyof ListComponentDependsOnErrors];
+
+export type ListComponentDependsOnResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            typeId: string;
+            fromId: string;
+            toId: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            createdAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListComponentDependsOnResponse = ListComponentDependsOnResponses[keyof ListComponentDependsOnResponses];
+
+export type AddComponentDependsOnData = {
+    body: {
+        targetIdOrUrn: string;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/components/{idOrUrn}/depends-on';
+};
+
+export type AddComponentDependsOnErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type AddComponentDependsOnError = AddComponentDependsOnErrors[keyof AddComponentDependsOnErrors];
+
+export type AddComponentDependsOnResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        createdAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type AddComponentDependsOnResponse = AddComponentDependsOnResponses[keyof AddComponentDependsOnResponses];
+
+export type RemoveComponentDependsOnData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+        targetIdOrUrn: string;
+    };
+    query?: never;
+    url: '/components/{idOrUrn}/depends-on/{targetIdOrUrn}';
+};
+
+export type RemoveComponentDependsOnErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RemoveComponentDependsOnError = RemoveComponentDependsOnErrors[keyof RemoveComponentDependsOnErrors];
+
+export type RemoveComponentDependsOnResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        createdAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type RemoveComponentDependsOnResponse = RemoveComponentDependsOnResponses[keyof RemoveComponentDependsOnResponses];
 
 export type GraphQueryData = {
     body?: never;
@@ -1614,3 +8000,410 @@ export type ListAuditEventsResponses = {
 };
 
 export type ListAuditEventsResponse = ListAuditEventsResponses[keyof ListAuditEventsResponses];
+
+export type CreatePlanData = {
+    body: {
+        manifest: {
+            stackName: string;
+            objects: Array<{
+                urn: string;
+                typeId: string;
+                name: string;
+                domainId?: string | null;
+                properties?: {
+                    [key: string]: unknown;
+                };
+                labels?: {
+                    [key: string]: unknown;
+                };
+            }>;
+            relationships: Array<{
+                typeId: string;
+                fromUrn: string;
+                toUrn: string;
+                properties?: {
+                    [key: string]: unknown;
+                };
+            }>;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/plans';
+};
+
+export type CreatePlanErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreatePlanError = CreatePlanErrors[keyof CreatePlanErrors];
+
+export type CreatePlanResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        actorId: string;
+        stackName: string;
+        manifest: {
+            stackName: string;
+            objects: Array<{
+                urn: string;
+                typeId: string;
+                name: string;
+                domainId?: string | null;
+                properties?: {
+                    [key: string]: unknown;
+                };
+                labels?: {
+                    [key: string]: unknown;
+                };
+            }>;
+            relationships: Array<{
+                typeId: string;
+                fromUrn: string;
+                toUrn: string;
+                properties?: {
+                    [key: string]: unknown;
+                };
+            }>;
+        };
+        diff: {
+            objects: Array<{
+                kind: 'object';
+                action: 'create' | 'update' | 'delete' | 'noop';
+                urn: string;
+                typeId: string;
+                reason: string;
+                target?: {
+                    urn: string;
+                    typeId: string;
+                    name: string;
+                    domainId: string | null;
+                    properties: {
+                        [key: string]: unknown;
+                    };
+                    labels: {
+                        [key: string]: unknown;
+                    };
+                };
+            }>;
+            relationships: Array<{
+                kind: 'relationship';
+                action: 'create' | 'delete' | 'noop';
+                typeId: string;
+                fromUrn: string;
+                toUrn: string;
+                reason: string;
+            }>;
+            summary: {
+                creates: number;
+                updates: number;
+                deletes: number;
+                noops: number;
+            };
+        };
+        status: 'pending' | 'applied' | 'stale';
+        createdAt: string;
+        appliedAt: string | null;
+    };
+};
+
+export type CreatePlanResponse = CreatePlanResponses[keyof CreatePlanResponses];
+
+export type GetPlanData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/plans/{id}';
+};
+
+export type GetPlanErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetPlanError = GetPlanErrors[keyof GetPlanErrors];
+
+export type GetPlanResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        actorId: string;
+        stackName: string;
+        manifest: {
+            stackName: string;
+            objects: Array<{
+                urn: string;
+                typeId: string;
+                name: string;
+                domainId?: string | null;
+                properties?: {
+                    [key: string]: unknown;
+                };
+                labels?: {
+                    [key: string]: unknown;
+                };
+            }>;
+            relationships: Array<{
+                typeId: string;
+                fromUrn: string;
+                toUrn: string;
+                properties?: {
+                    [key: string]: unknown;
+                };
+            }>;
+        };
+        diff: {
+            objects: Array<{
+                kind: 'object';
+                action: 'create' | 'update' | 'delete' | 'noop';
+                urn: string;
+                typeId: string;
+                reason: string;
+                target?: {
+                    urn: string;
+                    typeId: string;
+                    name: string;
+                    domainId: string | null;
+                    properties: {
+                        [key: string]: unknown;
+                    };
+                    labels: {
+                        [key: string]: unknown;
+                    };
+                };
+            }>;
+            relationships: Array<{
+                kind: 'relationship';
+                action: 'create' | 'delete' | 'noop';
+                typeId: string;
+                fromUrn: string;
+                toUrn: string;
+                reason: string;
+            }>;
+            summary: {
+                creates: number;
+                updates: number;
+                deletes: number;
+                noops: number;
+            };
+        };
+        status: 'pending' | 'applied' | 'stale';
+        createdAt: string;
+        appliedAt: string | null;
+    };
+};
+
+export type GetPlanResponse = GetPlanResponses[keyof GetPlanResponses];
+
+export type ApplyPlanData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/plans/{id}/apply';
+};
+
+export type ApplyPlanErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ApplyPlanError = ApplyPlanErrors[keyof ApplyPlanErrors];
+
+export type ApplyPlanResponses = {
+    /**
+     * Success
+     */
+    200: {
+        plan: {
+            id: string;
+            orgId: string;
+            actorId: string;
+            stackName: string;
+            manifest: {
+                stackName: string;
+                objects: Array<{
+                    urn: string;
+                    typeId: string;
+                    name: string;
+                    domainId?: string | null;
+                    properties?: {
+                        [key: string]: unknown;
+                    };
+                    labels?: {
+                        [key: string]: unknown;
+                    };
+                }>;
+                relationships: Array<{
+                    typeId: string;
+                    fromUrn: string;
+                    toUrn: string;
+                    properties?: {
+                        [key: string]: unknown;
+                    };
+                }>;
+            };
+            diff: {
+                objects: Array<{
+                    kind: 'object';
+                    action: 'create' | 'update' | 'delete' | 'noop';
+                    urn: string;
+                    typeId: string;
+                    reason: string;
+                    target?: {
+                        urn: string;
+                        typeId: string;
+                        name: string;
+                        domainId: string | null;
+                        properties: {
+                            [key: string]: unknown;
+                        };
+                        labels: {
+                            [key: string]: unknown;
+                        };
+                    };
+                }>;
+                relationships: Array<{
+                    kind: 'relationship';
+                    action: 'create' | 'delete' | 'noop';
+                    typeId: string;
+                    fromUrn: string;
+                    toUrn: string;
+                    reason: string;
+                }>;
+                summary: {
+                    creates: number;
+                    updates: number;
+                    deletes: number;
+                    noops: number;
+                };
+            };
+            status: 'pending' | 'applied' | 'stale';
+            createdAt: string;
+            appliedAt: string | null;
+        };
+        summary: {
+            creates: number;
+            updates: number;
+            deletes: number;
+            noops: number;
+        };
+    };
+};
+
+export type ApplyPlanResponse = ApplyPlanResponses[keyof ApplyPlanResponses];

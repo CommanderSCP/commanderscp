@@ -2,7 +2,7 @@
 
 import { client } from './client.gen.js';
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client/index.js';
-import type { CreateObjectData, CreateObjectErrors, CreateObjectResponses, CreateObjectTypeData, CreateObjectTypeErrors, CreateObjectTypeResponses, CreateRelationshipData, CreateRelationshipErrors, CreateRelationshipResponses, CreateRelationshipTypeData, CreateRelationshipTypeErrors, CreateRelationshipTypeResponses, CreateServiceObjectData, CreateServiceObjectErrors, CreateServiceObjectForOrgData, CreateServiceObjectForOrgErrors, CreateServiceObjectForOrgResponses, CreateServiceObjectResponses, DeleteObjectData, DeleteObjectErrors, DeleteObjectResponses, DeleteRelationshipData, DeleteRelationshipErrors, DeleteRelationshipResponses, GetObjectData, GetObjectErrors, GetObjectResponses, GetRelationshipData, GetRelationshipErrors, GetRelationshipResponses, GraphQueryData, GraphQueryErrors, GraphQueryResponses, GraphTraverseData, GraphTraverseErrors, GraphTraverseResponses, ListAuditEventsData, ListAuditEventsErrors, ListAuditEventsResponses, ListObjectsData, ListObjectsErrors, ListObjectsResponses, ListObjectTypesData, ListObjectTypesErrors, ListObjectTypesResponses, ListRelationshipsData, ListRelationshipsErrors, ListRelationshipsResponses, ListRelationshipTypesData, ListRelationshipTypesErrors, ListRelationshipTypesResponses, ListServiceObjectsData, ListServiceObjectsErrors, ListServiceObjectsForOrgData, ListServiceObjectsForOrgErrors, ListServiceObjectsForOrgResponses, ListServiceObjectsResponses, LoginData, LoginErrors, LoginResponses, UpdateObjectData, UpdateObjectErrors, UpdateObjectResponses, UpsertObjectByUrnData, UpsertObjectByUrnErrors, UpsertObjectByUrnResponses } from './types.gen.js';
+import type { AddComponentConsumesData, AddComponentConsumesErrors, AddComponentConsumesResponses, AddComponentDependsOnData, AddComponentDependsOnErrors, AddComponentDependsOnResponses, AddComponentOwnerData, AddComponentOwnerErrors, AddComponentOwnerResponses, AddDeploymentTargetOwnerData, AddDeploymentTargetOwnerErrors, AddDeploymentTargetOwnerResponses, AddDomainOwnerData, AddDomainOwnerErrors, AddDomainOwnerResponses, AddServiceConsumesData, AddServiceConsumesErrors, AddServiceConsumesResponses, AddServiceDependsOnData, AddServiceDependsOnErrors, AddServiceDependsOnResponses, AddServiceOwnerData, AddServiceOwnerErrors, AddServiceOwnerResponses, ApplyPlanData, ApplyPlanErrors, ApplyPlanResponses, ApproveDeviceAuthData, ApproveDeviceAuthErrors, ApproveDeviceAuthResponses, CreateComponentData, CreateComponentErrors, CreateComponentResponses, CreateDeploymentTargetData, CreateDeploymentTargetErrors, CreateDeploymentTargetResponses, CreateDomainData, CreateDomainErrors, CreateDomainResponses, CreateGroupData, CreateGroupErrors, CreateGroupResponses, CreateObjectData, CreateObjectErrors, CreateObjectResponses, CreateObjectTypeData, CreateObjectTypeErrors, CreateObjectTypeResponses, CreatePatData, CreatePatErrors, CreatePatResponses, CreatePlanData, CreatePlanErrors, CreatePlanResponses, CreateRelationshipData, CreateRelationshipErrors, CreateRelationshipResponses, CreateRelationshipTypeData, CreateRelationshipTypeErrors, CreateRelationshipTypeResponses, CreateServiceAccountData, CreateServiceAccountErrors, CreateServiceAccountResponses, CreateServiceData, CreateServiceErrors, CreateServiceObjectData, CreateServiceObjectErrors, CreateServiceObjectForOrgData, CreateServiceObjectForOrgErrors, CreateServiceObjectForOrgResponses, CreateServiceObjectResponses, CreateServiceResponses, CreateTeamData, CreateTeamErrors, CreateTeamResponses, CreateUserData, CreateUserErrors, CreateUserResponses, DeleteComponentData, DeleteComponentErrors, DeleteComponentResponses, DeleteDeploymentTargetData, DeleteDeploymentTargetErrors, DeleteDeploymentTargetResponses, DeleteDomainData, DeleteDomainErrors, DeleteDomainResponses, DeleteGroupData, DeleteGroupErrors, DeleteGroupResponses, DeleteObjectData, DeleteObjectErrors, DeleteObjectResponses, DeleteRelationshipData, DeleteRelationshipErrors, DeleteRelationshipResponses, DeleteServiceAccountData, DeleteServiceAccountErrors, DeleteServiceAccountResponses, DeleteServiceData, DeleteServiceErrors, DeleteServiceResponses, DeleteTeamData, DeleteTeamErrors, DeleteTeamResponses, DeleteUserData, DeleteUserErrors, DeleteUserResponses, GetAuthConfigData, GetAuthConfigResponses, GetComponentData, GetComponentErrors, GetComponentResponses, GetCurrentUserData, GetCurrentUserErrors, GetCurrentUserResponses, GetDeploymentTargetData, GetDeploymentTargetErrors, GetDeploymentTargetResponses, GetDomainData, GetDomainErrors, GetDomainResponses, GetGroupData, GetGroupErrors, GetGroupResponses, GetObjectData, GetObjectErrors, GetObjectResponses, GetPlanData, GetPlanErrors, GetPlanResponses, GetRelationshipData, GetRelationshipErrors, GetRelationshipResponses, GetServiceAccountData, GetServiceAccountErrors, GetServiceAccountResponses, GetServiceData, GetServiceErrors, GetServiceResponses, GetTeamData, GetTeamErrors, GetTeamResponses, GetUserData, GetUserErrors, GetUserResponses, GraphQueryData, GraphQueryErrors, GraphQueryResponses, GraphTraverseData, GraphTraverseErrors, GraphTraverseResponses, ListAuditEventsData, ListAuditEventsErrors, ListAuditEventsResponses, ListComponentConsumesData, ListComponentConsumesErrors, ListComponentConsumesResponses, ListComponentDependsOnData, ListComponentDependsOnErrors, ListComponentDependsOnResponses, ListComponentOwnersData, ListComponentOwnersErrors, ListComponentOwnersResponses, ListComponentsData, ListComponentsErrors, ListComponentsResponses, ListDeploymentTargetOwnersData, ListDeploymentTargetOwnersErrors, ListDeploymentTargetOwnersResponses, ListDeploymentTargetsData, ListDeploymentTargetsErrors, ListDeploymentTargetsResponses, ListDomainOwnersData, ListDomainOwnersErrors, ListDomainOwnersResponses, ListDomainsData, ListDomainsErrors, ListDomainsResponses, ListGroupsData, ListGroupsErrors, ListGroupsResponses, ListObjectsData, ListObjectsErrors, ListObjectsResponses, ListObjectTypesData, ListObjectTypesErrors, ListObjectTypesResponses, ListPatsData, ListPatsErrors, ListPatsResponses, ListRelationshipsData, ListRelationshipsErrors, ListRelationshipsResponses, ListRelationshipTypesData, ListRelationshipTypesErrors, ListRelationshipTypesResponses, ListServiceAccountsData, ListServiceAccountsErrors, ListServiceAccountsResponses, ListServiceConsumesData, ListServiceConsumesErrors, ListServiceConsumesResponses, ListServiceDependsOnData, ListServiceDependsOnErrors, ListServiceDependsOnResponses, ListServiceObjectsData, ListServiceObjectsErrors, ListServiceObjectsForOrgData, ListServiceObjectsForOrgErrors, ListServiceObjectsForOrgResponses, ListServiceObjectsResponses, ListServiceOwnersData, ListServiceOwnersErrors, ListServiceOwnersResponses, ListServicesData, ListServicesErrors, ListServicesResponses, ListTeamsData, ListTeamsErrors, ListTeamsResponses, ListUsersData, ListUsersErrors, ListUsersResponses, LoginData, LoginErrors, LoginResponses, LogoutData, LogoutErrors, LogoutResponses, PollDeviceAuthTokenData, PollDeviceAuthTokenErrors, PollDeviceAuthTokenResponses, RemoveComponentConsumesData, RemoveComponentConsumesErrors, RemoveComponentConsumesResponses, RemoveComponentDependsOnData, RemoveComponentDependsOnErrors, RemoveComponentDependsOnResponses, RemoveComponentOwnerData, RemoveComponentOwnerErrors, RemoveComponentOwnerResponses, RemoveDeploymentTargetOwnerData, RemoveDeploymentTargetOwnerErrors, RemoveDeploymentTargetOwnerResponses, RemoveDomainOwnerData, RemoveDomainOwnerErrors, RemoveDomainOwnerResponses, RemoveServiceConsumesData, RemoveServiceConsumesErrors, RemoveServiceConsumesResponses, RemoveServiceDependsOnData, RemoveServiceDependsOnErrors, RemoveServiceDependsOnResponses, RemoveServiceOwnerData, RemoveServiceOwnerErrors, RemoveServiceOwnerResponses, RevokePatData, RevokePatErrors, RevokePatResponses, StartDeviceAuthData, StartDeviceAuthResponses, UpdateComponentData, UpdateComponentErrors, UpdateComponentResponses, UpdateDeploymentTargetData, UpdateDeploymentTargetErrors, UpdateDeploymentTargetResponses, UpdateDomainData, UpdateDomainErrors, UpdateDomainResponses, UpdateGroupData, UpdateGroupErrors, UpdateGroupResponses, UpdateObjectData, UpdateObjectErrors, UpdateObjectResponses, UpdateServiceAccountData, UpdateServiceAccountErrors, UpdateServiceAccountResponses, UpdateServiceData, UpdateServiceErrors, UpdateServiceResponses, UpdateTeamData, UpdateTeamErrors, UpdateTeamResponses, UpdateUserData, UpdateUserErrors, UpdateUserResponses, UpsertComponentByUrnData, UpsertComponentByUrnErrors, UpsertComponentByUrnResponses, UpsertDeploymentTargetByUrnData, UpsertDeploymentTargetByUrnErrors, UpsertDeploymentTargetByUrnResponses, UpsertDomainByUrnData, UpsertDomainByUrnErrors, UpsertDomainByUrnResponses, UpsertGroupByUrnData, UpsertGroupByUrnErrors, UpsertGroupByUrnResponses, UpsertObjectByUrnData, UpsertObjectByUrnErrors, UpsertObjectByUrnResponses, UpsertServiceAccountByUrnData, UpsertServiceAccountByUrnErrors, UpsertServiceAccountByUrnResponses, UpsertServiceByUrnData, UpsertServiceByUrnErrors, UpsertServiceByUrnResponses, UpsertTeamByUrnData, UpsertTeamByUrnErrors, UpsertTeamByUrnResponses, UpsertUserByUrnData, UpsertUserByUrnErrors, UpsertUserByUrnResponses } from './types.gen.js';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -24,6 +24,99 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
 export const login = <ThrowOnError extends boolean = false>(options: Options<LoginData, ThrowOnError>): RequestResult<LoginResponses, LoginErrors, ThrowOnError> => (options.client ?? client).post<LoginResponses, LoginErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/auth/login',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * The calling user's own identity — how the Web UI discovers its session
+ */
+export const getCurrentUser = <ThrowOnError extends boolean = false>(options?: Options<GetCurrentUserData, ThrowOnError>): RequestResult<GetCurrentUserResponses, GetCurrentUserErrors, ThrowOnError> => (options?.client ?? client).get<GetCurrentUserResponses, GetCurrentUserErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/auth/me',
+    ...options
+});
+
+/**
+ * End the calling session (no-op for PAT-authenticated calls) and clear the session cookie
+ */
+export const logout = <ThrowOnError extends boolean = false>(options?: Options<LogoutData, ThrowOnError>): RequestResult<LogoutResponses, LogoutErrors, ThrowOnError> => (options?.client ?? client).post<LogoutResponses, LogoutErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/auth/logout',
+    ...options
+});
+
+/**
+ * Public auth configuration — which login methods this server offers
+ */
+export const getAuthConfig = <ThrowOnError extends boolean = false>(options?: Options<GetAuthConfigData, ThrowOnError>): RequestResult<GetAuthConfigResponses, unknown, ThrowOnError> => (options?.client ?? client).get<GetAuthConfigResponses, unknown, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/auth/config',
+    ...options
+});
+
+/**
+ * List the calling user's own Personal Access Tokens (metadata only)
+ */
+export const listPats = <ThrowOnError extends boolean = false>(options?: Options<ListPatsData, ThrowOnError>): RequestResult<ListPatsResponses, ListPatsErrors, ThrowOnError> => (options?.client ?? client).get<ListPatsResponses, ListPatsErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/auth/pats',
+    ...options
+});
+
+/**
+ * Create a Personal Access Token (the token is shown once, at creation)
+ */
+export const createPat = <ThrowOnError extends boolean = false>(options: Options<CreatePatData, ThrowOnError>): RequestResult<CreatePatResponses, CreatePatErrors, ThrowOnError> => (options.client ?? client).post<CreatePatResponses, CreatePatErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/auth/pats',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Revoke a Personal Access Token owned by the calling user
+ */
+export const revokePat = <ThrowOnError extends boolean = false>(options: Options<RevokePatData, ThrowOnError>): RequestResult<RevokePatResponses, RevokePatErrors, ThrowOnError> => (options.client ?? client).delete<RevokePatResponses, RevokePatErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/auth/pats/{id}',
+    ...options
+});
+
+/**
+ * Start a device authorization request (RFC 8628-shaped, SCP-hosted)
+ */
+export const startDeviceAuth = <ThrowOnError extends boolean = false>(options?: Options<StartDeviceAuthData, ThrowOnError>): RequestResult<StartDeviceAuthResponses, unknown, ThrowOnError> => (options?.client ?? client).post<StartDeviceAuthResponses, unknown, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/auth/device/start',
+    ...options
+});
+
+/**
+ * Approve a pending device authorization request (browser-authenticated human)
+ */
+export const approveDeviceAuth = <ThrowOnError extends boolean = false>(options: Options<ApproveDeviceAuthData, ThrowOnError>): RequestResult<ApproveDeviceAuthResponses, ApproveDeviceAuthErrors, ThrowOnError> => (options.client ?? client).post<ApproveDeviceAuthResponses, ApproveDeviceAuthErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/auth/device/approve',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Poll for the device authorization result (RFC 8628 token endpoint shape)
+ */
+export const pollDeviceAuthToken = <ThrowOnError extends boolean = false>(options: Options<PollDeviceAuthTokenData, ThrowOnError>): RequestResult<PollDeviceAuthTokenResponses, PollDeviceAuthTokenErrors, ThrowOnError> => (options.client ?? client).post<PollDeviceAuthTokenResponses, PollDeviceAuthTokenErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/auth/device/token',
     ...options,
     headers: {
         'Content-Type': 'application/json',
@@ -226,6 +319,782 @@ export const getRelationship = <ThrowOnError extends boolean = false>(options: O
 });
 
 /**
+ * List domains objects
+ */
+export const listDomains = <ThrowOnError extends boolean = false>(options?: Options<ListDomainsData, ThrowOnError>): RequestResult<ListDomainsResponses, ListDomainsErrors, ThrowOnError> => (options?.client ?? client).get<ListDomainsResponses, ListDomainsErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/domains',
+    ...options
+});
+
+/**
+ * Create a domains object
+ */
+export const createDomain = <ThrowOnError extends boolean = false>(options: Options<CreateDomainData, ThrowOnError>): RequestResult<CreateDomainResponses, CreateDomainErrors, ThrowOnError> => (options.client ?? client).post<CreateDomainResponses, CreateDomainErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/domains',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Soft-delete a domains object
+ */
+export const deleteDomain = <ThrowOnError extends boolean = false>(options: Options<DeleteDomainData, ThrowOnError>): RequestResult<DeleteDomainResponses, DeleteDomainErrors, ThrowOnError> => (options.client ?? client).delete<DeleteDomainResponses, DeleteDomainErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/domains/{idOrUrn}',
+    ...options
+});
+
+/**
+ * Get a domains object by id or URN
+ */
+export const getDomain = <ThrowOnError extends boolean = false>(options: Options<GetDomainData, ThrowOnError>): RequestResult<GetDomainResponses, GetDomainErrors, ThrowOnError> => (options.client ?? client).get<GetDomainResponses, GetDomainErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/domains/{idOrUrn}',
+    ...options
+});
+
+/**
+ * Partially update a domains object
+ */
+export const updateDomain = <ThrowOnError extends boolean = false>(options: Options<UpdateDomainData, ThrowOnError>): RequestResult<UpdateDomainResponses, UpdateDomainErrors, ThrowOnError> => (options.client ?? client).patch<UpdateDomainResponses, UpdateDomainErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/domains/{idOrUrn}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Idempotent upsert-by-URN for a domains object
+ */
+export const upsertDomainByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertDomainByUrnData, ThrowOnError>): RequestResult<UpsertDomainByUrnResponses, UpsertDomainByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertDomainByUrnResponses, UpsertDomainByUrnErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/domains/{urn}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * List services objects
+ */
+export const listServices = <ThrowOnError extends boolean = false>(options?: Options<ListServicesData, ThrowOnError>): RequestResult<ListServicesResponses, ListServicesErrors, ThrowOnError> => (options?.client ?? client).get<ListServicesResponses, ListServicesErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/services',
+    ...options
+});
+
+/**
+ * Create a services object
+ */
+export const createService = <ThrowOnError extends boolean = false>(options: Options<CreateServiceData, ThrowOnError>): RequestResult<CreateServiceResponses, CreateServiceErrors, ThrowOnError> => (options.client ?? client).post<CreateServiceResponses, CreateServiceErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/services',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Soft-delete a services object
+ */
+export const deleteService = <ThrowOnError extends boolean = false>(options: Options<DeleteServiceData, ThrowOnError>): RequestResult<DeleteServiceResponses, DeleteServiceErrors, ThrowOnError> => (options.client ?? client).delete<DeleteServiceResponses, DeleteServiceErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/services/{idOrUrn}',
+    ...options
+});
+
+/**
+ * Get a services object by id or URN
+ */
+export const getService = <ThrowOnError extends boolean = false>(options: Options<GetServiceData, ThrowOnError>): RequestResult<GetServiceResponses, GetServiceErrors, ThrowOnError> => (options.client ?? client).get<GetServiceResponses, GetServiceErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/services/{idOrUrn}',
+    ...options
+});
+
+/**
+ * Partially update a services object
+ */
+export const updateService = <ThrowOnError extends boolean = false>(options: Options<UpdateServiceData, ThrowOnError>): RequestResult<UpdateServiceResponses, UpdateServiceErrors, ThrowOnError> => (options.client ?? client).patch<UpdateServiceResponses, UpdateServiceErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/services/{idOrUrn}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Idempotent upsert-by-URN for a services object
+ */
+export const upsertServiceByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertServiceByUrnData, ThrowOnError>): RequestResult<UpsertServiceByUrnResponses, UpsertServiceByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertServiceByUrnResponses, UpsertServiceByUrnErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/services/{urn}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * List components objects
+ */
+export const listComponents = <ThrowOnError extends boolean = false>(options?: Options<ListComponentsData, ThrowOnError>): RequestResult<ListComponentsResponses, ListComponentsErrors, ThrowOnError> => (options?.client ?? client).get<ListComponentsResponses, ListComponentsErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/components',
+    ...options
+});
+
+/**
+ * Create a components object
+ */
+export const createComponent = <ThrowOnError extends boolean = false>(options: Options<CreateComponentData, ThrowOnError>): RequestResult<CreateComponentResponses, CreateComponentErrors, ThrowOnError> => (options.client ?? client).post<CreateComponentResponses, CreateComponentErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/components',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Soft-delete a components object
+ */
+export const deleteComponent = <ThrowOnError extends boolean = false>(options: Options<DeleteComponentData, ThrowOnError>): RequestResult<DeleteComponentResponses, DeleteComponentErrors, ThrowOnError> => (options.client ?? client).delete<DeleteComponentResponses, DeleteComponentErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/components/{idOrUrn}',
+    ...options
+});
+
+/**
+ * Get a components object by id or URN
+ */
+export const getComponent = <ThrowOnError extends boolean = false>(options: Options<GetComponentData, ThrowOnError>): RequestResult<GetComponentResponses, GetComponentErrors, ThrowOnError> => (options.client ?? client).get<GetComponentResponses, GetComponentErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/components/{idOrUrn}',
+    ...options
+});
+
+/**
+ * Partially update a components object
+ */
+export const updateComponent = <ThrowOnError extends boolean = false>(options: Options<UpdateComponentData, ThrowOnError>): RequestResult<UpdateComponentResponses, UpdateComponentErrors, ThrowOnError> => (options.client ?? client).patch<UpdateComponentResponses, UpdateComponentErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/components/{idOrUrn}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Idempotent upsert-by-URN for a components object
+ */
+export const upsertComponentByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertComponentByUrnData, ThrowOnError>): RequestResult<UpsertComponentByUrnResponses, UpsertComponentByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertComponentByUrnResponses, UpsertComponentByUrnErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/components/{urn}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * List deployment targets objects
+ */
+export const listDeploymentTargets = <ThrowOnError extends boolean = false>(options?: Options<ListDeploymentTargetsData, ThrowOnError>): RequestResult<ListDeploymentTargetsResponses, ListDeploymentTargetsErrors, ThrowOnError> => (options?.client ?? client).get<ListDeploymentTargetsResponses, ListDeploymentTargetsErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/deployment-targets',
+    ...options
+});
+
+/**
+ * Create a deployment targets object
+ */
+export const createDeploymentTarget = <ThrowOnError extends boolean = false>(options: Options<CreateDeploymentTargetData, ThrowOnError>): RequestResult<CreateDeploymentTargetResponses, CreateDeploymentTargetErrors, ThrowOnError> => (options.client ?? client).post<CreateDeploymentTargetResponses, CreateDeploymentTargetErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/deployment-targets',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Soft-delete a deployment targets object
+ */
+export const deleteDeploymentTarget = <ThrowOnError extends boolean = false>(options: Options<DeleteDeploymentTargetData, ThrowOnError>): RequestResult<DeleteDeploymentTargetResponses, DeleteDeploymentTargetErrors, ThrowOnError> => (options.client ?? client).delete<DeleteDeploymentTargetResponses, DeleteDeploymentTargetErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/deployment-targets/{idOrUrn}',
+    ...options
+});
+
+/**
+ * Get a deployment targets object by id or URN
+ */
+export const getDeploymentTarget = <ThrowOnError extends boolean = false>(options: Options<GetDeploymentTargetData, ThrowOnError>): RequestResult<GetDeploymentTargetResponses, GetDeploymentTargetErrors, ThrowOnError> => (options.client ?? client).get<GetDeploymentTargetResponses, GetDeploymentTargetErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/deployment-targets/{idOrUrn}',
+    ...options
+});
+
+/**
+ * Partially update a deployment targets object
+ */
+export const updateDeploymentTarget = <ThrowOnError extends boolean = false>(options: Options<UpdateDeploymentTargetData, ThrowOnError>): RequestResult<UpdateDeploymentTargetResponses, UpdateDeploymentTargetErrors, ThrowOnError> => (options.client ?? client).patch<UpdateDeploymentTargetResponses, UpdateDeploymentTargetErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/deployment-targets/{idOrUrn}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Idempotent upsert-by-URN for a deployment targets object
+ */
+export const upsertDeploymentTargetByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertDeploymentTargetByUrnData, ThrowOnError>): RequestResult<UpsertDeploymentTargetByUrnResponses, UpsertDeploymentTargetByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertDeploymentTargetByUrnResponses, UpsertDeploymentTargetByUrnErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/deployment-targets/{urn}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * List teams objects
+ */
+export const listTeams = <ThrowOnError extends boolean = false>(options?: Options<ListTeamsData, ThrowOnError>): RequestResult<ListTeamsResponses, ListTeamsErrors, ThrowOnError> => (options?.client ?? client).get<ListTeamsResponses, ListTeamsErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/teams',
+    ...options
+});
+
+/**
+ * Create a teams object
+ */
+export const createTeam = <ThrowOnError extends boolean = false>(options: Options<CreateTeamData, ThrowOnError>): RequestResult<CreateTeamResponses, CreateTeamErrors, ThrowOnError> => (options.client ?? client).post<CreateTeamResponses, CreateTeamErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/teams',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Soft-delete a teams object
+ */
+export const deleteTeam = <ThrowOnError extends boolean = false>(options: Options<DeleteTeamData, ThrowOnError>): RequestResult<DeleteTeamResponses, DeleteTeamErrors, ThrowOnError> => (options.client ?? client).delete<DeleteTeamResponses, DeleteTeamErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/teams/{idOrUrn}',
+    ...options
+});
+
+/**
+ * Get a teams object by id or URN
+ */
+export const getTeam = <ThrowOnError extends boolean = false>(options: Options<GetTeamData, ThrowOnError>): RequestResult<GetTeamResponses, GetTeamErrors, ThrowOnError> => (options.client ?? client).get<GetTeamResponses, GetTeamErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/teams/{idOrUrn}',
+    ...options
+});
+
+/**
+ * Partially update a teams object
+ */
+export const updateTeam = <ThrowOnError extends boolean = false>(options: Options<UpdateTeamData, ThrowOnError>): RequestResult<UpdateTeamResponses, UpdateTeamErrors, ThrowOnError> => (options.client ?? client).patch<UpdateTeamResponses, UpdateTeamErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/teams/{idOrUrn}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Idempotent upsert-by-URN for a teams object
+ */
+export const upsertTeamByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertTeamByUrnData, ThrowOnError>): RequestResult<UpsertTeamByUrnResponses, UpsertTeamByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertTeamByUrnResponses, UpsertTeamByUrnErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/teams/{urn}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * List groups objects
+ */
+export const listGroups = <ThrowOnError extends boolean = false>(options?: Options<ListGroupsData, ThrowOnError>): RequestResult<ListGroupsResponses, ListGroupsErrors, ThrowOnError> => (options?.client ?? client).get<ListGroupsResponses, ListGroupsErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/groups',
+    ...options
+});
+
+/**
+ * Create a groups object
+ */
+export const createGroup = <ThrowOnError extends boolean = false>(options: Options<CreateGroupData, ThrowOnError>): RequestResult<CreateGroupResponses, CreateGroupErrors, ThrowOnError> => (options.client ?? client).post<CreateGroupResponses, CreateGroupErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/groups',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Soft-delete a groups object
+ */
+export const deleteGroup = <ThrowOnError extends boolean = false>(options: Options<DeleteGroupData, ThrowOnError>): RequestResult<DeleteGroupResponses, DeleteGroupErrors, ThrowOnError> => (options.client ?? client).delete<DeleteGroupResponses, DeleteGroupErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/groups/{idOrUrn}',
+    ...options
+});
+
+/**
+ * Get a groups object by id or URN
+ */
+export const getGroup = <ThrowOnError extends boolean = false>(options: Options<GetGroupData, ThrowOnError>): RequestResult<GetGroupResponses, GetGroupErrors, ThrowOnError> => (options.client ?? client).get<GetGroupResponses, GetGroupErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/groups/{idOrUrn}',
+    ...options
+});
+
+/**
+ * Partially update a groups object
+ */
+export const updateGroup = <ThrowOnError extends boolean = false>(options: Options<UpdateGroupData, ThrowOnError>): RequestResult<UpdateGroupResponses, UpdateGroupErrors, ThrowOnError> => (options.client ?? client).patch<UpdateGroupResponses, UpdateGroupErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/groups/{idOrUrn}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Idempotent upsert-by-URN for a groups object
+ */
+export const upsertGroupByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertGroupByUrnData, ThrowOnError>): RequestResult<UpsertGroupByUrnResponses, UpsertGroupByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertGroupByUrnResponses, UpsertGroupByUrnErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/groups/{urn}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * List users objects
+ */
+export const listUsers = <ThrowOnError extends boolean = false>(options?: Options<ListUsersData, ThrowOnError>): RequestResult<ListUsersResponses, ListUsersErrors, ThrowOnError> => (options?.client ?? client).get<ListUsersResponses, ListUsersErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/users',
+    ...options
+});
+
+/**
+ * Create a users object
+ */
+export const createUser = <ThrowOnError extends boolean = false>(options: Options<CreateUserData, ThrowOnError>): RequestResult<CreateUserResponses, CreateUserErrors, ThrowOnError> => (options.client ?? client).post<CreateUserResponses, CreateUserErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/users',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Soft-delete a users object
+ */
+export const deleteUser = <ThrowOnError extends boolean = false>(options: Options<DeleteUserData, ThrowOnError>): RequestResult<DeleteUserResponses, DeleteUserErrors, ThrowOnError> => (options.client ?? client).delete<DeleteUserResponses, DeleteUserErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/users/{idOrUrn}',
+    ...options
+});
+
+/**
+ * Get a users object by id or URN
+ */
+export const getUser = <ThrowOnError extends boolean = false>(options: Options<GetUserData, ThrowOnError>): RequestResult<GetUserResponses, GetUserErrors, ThrowOnError> => (options.client ?? client).get<GetUserResponses, GetUserErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/users/{idOrUrn}',
+    ...options
+});
+
+/**
+ * Partially update a users object
+ */
+export const updateUser = <ThrowOnError extends boolean = false>(options: Options<UpdateUserData, ThrowOnError>): RequestResult<UpdateUserResponses, UpdateUserErrors, ThrowOnError> => (options.client ?? client).patch<UpdateUserResponses, UpdateUserErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/users/{idOrUrn}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Idempotent upsert-by-URN for a users object
+ */
+export const upsertUserByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertUserByUrnData, ThrowOnError>): RequestResult<UpsertUserByUrnResponses, UpsertUserByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertUserByUrnResponses, UpsertUserByUrnErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/users/{urn}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * List service accounts objects
+ */
+export const listServiceAccounts = <ThrowOnError extends boolean = false>(options?: Options<ListServiceAccountsData, ThrowOnError>): RequestResult<ListServiceAccountsResponses, ListServiceAccountsErrors, ThrowOnError> => (options?.client ?? client).get<ListServiceAccountsResponses, ListServiceAccountsErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/service-accounts',
+    ...options
+});
+
+/**
+ * Create a service accounts object
+ */
+export const createServiceAccount = <ThrowOnError extends boolean = false>(options: Options<CreateServiceAccountData, ThrowOnError>): RequestResult<CreateServiceAccountResponses, CreateServiceAccountErrors, ThrowOnError> => (options.client ?? client).post<CreateServiceAccountResponses, CreateServiceAccountErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/service-accounts',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Soft-delete a service accounts object
+ */
+export const deleteServiceAccount = <ThrowOnError extends boolean = false>(options: Options<DeleteServiceAccountData, ThrowOnError>): RequestResult<DeleteServiceAccountResponses, DeleteServiceAccountErrors, ThrowOnError> => (options.client ?? client).delete<DeleteServiceAccountResponses, DeleteServiceAccountErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/service-accounts/{idOrUrn}',
+    ...options
+});
+
+/**
+ * Get a service accounts object by id or URN
+ */
+export const getServiceAccount = <ThrowOnError extends boolean = false>(options: Options<GetServiceAccountData, ThrowOnError>): RequestResult<GetServiceAccountResponses, GetServiceAccountErrors, ThrowOnError> => (options.client ?? client).get<GetServiceAccountResponses, GetServiceAccountErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/service-accounts/{idOrUrn}',
+    ...options
+});
+
+/**
+ * Partially update a service accounts object
+ */
+export const updateServiceAccount = <ThrowOnError extends boolean = false>(options: Options<UpdateServiceAccountData, ThrowOnError>): RequestResult<UpdateServiceAccountResponses, UpdateServiceAccountErrors, ThrowOnError> => (options.client ?? client).patch<UpdateServiceAccountResponses, UpdateServiceAccountErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/service-accounts/{idOrUrn}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Idempotent upsert-by-URN for a service accounts object
+ */
+export const upsertServiceAccountByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertServiceAccountByUrnData, ThrowOnError>): RequestResult<UpsertServiceAccountByUrnResponses, UpsertServiceAccountByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertServiceAccountByUrnResponses, UpsertServiceAccountByUrnErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/service-accounts/{urn}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * List direct owners of a domains object
+ */
+export const listDomainOwners = <ThrowOnError extends boolean = false>(options: Options<ListDomainOwnersData, ThrowOnError>): RequestResult<ListDomainOwnersResponses, ListDomainOwnersErrors, ThrowOnError> => (options.client ?? client).get<ListDomainOwnersResponses, ListDomainOwnersErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/domains/{idOrUrn}/owners',
+    ...options
+});
+
+/**
+ * Add an owner to a domains object
+ */
+export const addDomainOwner = <ThrowOnError extends boolean = false>(options: Options<AddDomainOwnerData, ThrowOnError>): RequestResult<AddDomainOwnerResponses, AddDomainOwnerErrors, ThrowOnError> => (options.client ?? client).post<AddDomainOwnerResponses, AddDomainOwnerErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/domains/{idOrUrn}/owners',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Remove an owner from a domains object
+ */
+export const removeDomainOwner = <ThrowOnError extends boolean = false>(options: Options<RemoveDomainOwnerData, ThrowOnError>): RequestResult<RemoveDomainOwnerResponses, RemoveDomainOwnerErrors, ThrowOnError> => (options.client ?? client).delete<RemoveDomainOwnerResponses, RemoveDomainOwnerErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/domains/{idOrUrn}/owners/{ownerIdOrUrn}',
+    ...options
+});
+
+/**
+ * List direct owners of a services object
+ */
+export const listServiceOwners = <ThrowOnError extends boolean = false>(options: Options<ListServiceOwnersData, ThrowOnError>): RequestResult<ListServiceOwnersResponses, ListServiceOwnersErrors, ThrowOnError> => (options.client ?? client).get<ListServiceOwnersResponses, ListServiceOwnersErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/services/{idOrUrn}/owners',
+    ...options
+});
+
+/**
+ * Add an owner to a services object
+ */
+export const addServiceOwner = <ThrowOnError extends boolean = false>(options: Options<AddServiceOwnerData, ThrowOnError>): RequestResult<AddServiceOwnerResponses, AddServiceOwnerErrors, ThrowOnError> => (options.client ?? client).post<AddServiceOwnerResponses, AddServiceOwnerErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/services/{idOrUrn}/owners',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Remove an owner from a services object
+ */
+export const removeServiceOwner = <ThrowOnError extends boolean = false>(options: Options<RemoveServiceOwnerData, ThrowOnError>): RequestResult<RemoveServiceOwnerResponses, RemoveServiceOwnerErrors, ThrowOnError> => (options.client ?? client).delete<RemoveServiceOwnerResponses, RemoveServiceOwnerErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/services/{idOrUrn}/owners/{ownerIdOrUrn}',
+    ...options
+});
+
+/**
+ * List direct owners of a components object
+ */
+export const listComponentOwners = <ThrowOnError extends boolean = false>(options: Options<ListComponentOwnersData, ThrowOnError>): RequestResult<ListComponentOwnersResponses, ListComponentOwnersErrors, ThrowOnError> => (options.client ?? client).get<ListComponentOwnersResponses, ListComponentOwnersErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/components/{idOrUrn}/owners',
+    ...options
+});
+
+/**
+ * Add an owner to a components object
+ */
+export const addComponentOwner = <ThrowOnError extends boolean = false>(options: Options<AddComponentOwnerData, ThrowOnError>): RequestResult<AddComponentOwnerResponses, AddComponentOwnerErrors, ThrowOnError> => (options.client ?? client).post<AddComponentOwnerResponses, AddComponentOwnerErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/components/{idOrUrn}/owners',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Remove an owner from a components object
+ */
+export const removeComponentOwner = <ThrowOnError extends boolean = false>(options: Options<RemoveComponentOwnerData, ThrowOnError>): RequestResult<RemoveComponentOwnerResponses, RemoveComponentOwnerErrors, ThrowOnError> => (options.client ?? client).delete<RemoveComponentOwnerResponses, RemoveComponentOwnerErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/components/{idOrUrn}/owners/{ownerIdOrUrn}',
+    ...options
+});
+
+/**
+ * List direct owners of a deployment targets object
+ */
+export const listDeploymentTargetOwners = <ThrowOnError extends boolean = false>(options: Options<ListDeploymentTargetOwnersData, ThrowOnError>): RequestResult<ListDeploymentTargetOwnersResponses, ListDeploymentTargetOwnersErrors, ThrowOnError> => (options.client ?? client).get<ListDeploymentTargetOwnersResponses, ListDeploymentTargetOwnersErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/deployment-targets/{idOrUrn}/owners',
+    ...options
+});
+
+/**
+ * Add an owner to a deployment targets object
+ */
+export const addDeploymentTargetOwner = <ThrowOnError extends boolean = false>(options: Options<AddDeploymentTargetOwnerData, ThrowOnError>): RequestResult<AddDeploymentTargetOwnerResponses, AddDeploymentTargetOwnerErrors, ThrowOnError> => (options.client ?? client).post<AddDeploymentTargetOwnerResponses, AddDeploymentTargetOwnerErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/deployment-targets/{idOrUrn}/owners',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Remove an owner from a deployment targets object
+ */
+export const removeDeploymentTargetOwner = <ThrowOnError extends boolean = false>(options: Options<RemoveDeploymentTargetOwnerData, ThrowOnError>): RequestResult<RemoveDeploymentTargetOwnerResponses, RemoveDeploymentTargetOwnerErrors, ThrowOnError> => (options.client ?? client).delete<RemoveDeploymentTargetOwnerResponses, RemoveDeploymentTargetOwnerErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/deployment-targets/{idOrUrn}/owners/{ownerIdOrUrn}',
+    ...options
+});
+
+/**
+ * List direct outgoing 'consumes' edges from a services object
+ */
+export const listServiceConsumes = <ThrowOnError extends boolean = false>(options: Options<ListServiceConsumesData, ThrowOnError>): RequestResult<ListServiceConsumesResponses, ListServiceConsumesErrors, ThrowOnError> => (options.client ?? client).get<ListServiceConsumesResponses, ListServiceConsumesErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/services/{idOrUrn}/consumes',
+    ...options
+});
+
+/**
+ * Add a 'consumes' edge from a services object
+ */
+export const addServiceConsumes = <ThrowOnError extends boolean = false>(options: Options<AddServiceConsumesData, ThrowOnError>): RequestResult<AddServiceConsumesResponses, AddServiceConsumesErrors, ThrowOnError> => (options.client ?? client).post<AddServiceConsumesResponses, AddServiceConsumesErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/services/{idOrUrn}/consumes',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Remove a 'consumes' edge from a services object
+ */
+export const removeServiceConsumes = <ThrowOnError extends boolean = false>(options: Options<RemoveServiceConsumesData, ThrowOnError>): RequestResult<RemoveServiceConsumesResponses, RemoveServiceConsumesErrors, ThrowOnError> => (options.client ?? client).delete<RemoveServiceConsumesResponses, RemoveServiceConsumesErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/services/{idOrUrn}/consumes/{targetIdOrUrn}',
+    ...options
+});
+
+/**
+ * List direct outgoing 'depends_on' edges from a services object
+ */
+export const listServiceDependsOn = <ThrowOnError extends boolean = false>(options: Options<ListServiceDependsOnData, ThrowOnError>): RequestResult<ListServiceDependsOnResponses, ListServiceDependsOnErrors, ThrowOnError> => (options.client ?? client).get<ListServiceDependsOnResponses, ListServiceDependsOnErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/services/{idOrUrn}/depends-on',
+    ...options
+});
+
+/**
+ * Add a 'depends_on' edge from a services object
+ */
+export const addServiceDependsOn = <ThrowOnError extends boolean = false>(options: Options<AddServiceDependsOnData, ThrowOnError>): RequestResult<AddServiceDependsOnResponses, AddServiceDependsOnErrors, ThrowOnError> => (options.client ?? client).post<AddServiceDependsOnResponses, AddServiceDependsOnErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/services/{idOrUrn}/depends-on',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Remove a 'depends_on' edge from a services object
+ */
+export const removeServiceDependsOn = <ThrowOnError extends boolean = false>(options: Options<RemoveServiceDependsOnData, ThrowOnError>): RequestResult<RemoveServiceDependsOnResponses, RemoveServiceDependsOnErrors, ThrowOnError> => (options.client ?? client).delete<RemoveServiceDependsOnResponses, RemoveServiceDependsOnErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/services/{idOrUrn}/depends-on/{targetIdOrUrn}',
+    ...options
+});
+
+/**
+ * List direct outgoing 'consumes' edges from a components object
+ */
+export const listComponentConsumes = <ThrowOnError extends boolean = false>(options: Options<ListComponentConsumesData, ThrowOnError>): RequestResult<ListComponentConsumesResponses, ListComponentConsumesErrors, ThrowOnError> => (options.client ?? client).get<ListComponentConsumesResponses, ListComponentConsumesErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/components/{idOrUrn}/consumes',
+    ...options
+});
+
+/**
+ * Add a 'consumes' edge from a components object
+ */
+export const addComponentConsumes = <ThrowOnError extends boolean = false>(options: Options<AddComponentConsumesData, ThrowOnError>): RequestResult<AddComponentConsumesResponses, AddComponentConsumesErrors, ThrowOnError> => (options.client ?? client).post<AddComponentConsumesResponses, AddComponentConsumesErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/components/{idOrUrn}/consumes',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Remove a 'consumes' edge from a components object
+ */
+export const removeComponentConsumes = <ThrowOnError extends boolean = false>(options: Options<RemoveComponentConsumesData, ThrowOnError>): RequestResult<RemoveComponentConsumesResponses, RemoveComponentConsumesErrors, ThrowOnError> => (options.client ?? client).delete<RemoveComponentConsumesResponses, RemoveComponentConsumesErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/components/{idOrUrn}/consumes/{targetIdOrUrn}',
+    ...options
+});
+
+/**
+ * List direct outgoing 'depends_on' edges from a components object
+ */
+export const listComponentDependsOn = <ThrowOnError extends boolean = false>(options: Options<ListComponentDependsOnData, ThrowOnError>): RequestResult<ListComponentDependsOnResponses, ListComponentDependsOnErrors, ThrowOnError> => (options.client ?? client).get<ListComponentDependsOnResponses, ListComponentDependsOnErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/components/{idOrUrn}/depends-on',
+    ...options
+});
+
+/**
+ * Add a 'depends_on' edge from a components object
+ */
+export const addComponentDependsOn = <ThrowOnError extends boolean = false>(options: Options<AddComponentDependsOnData, ThrowOnError>): RequestResult<AddComponentDependsOnResponses, AddComponentDependsOnErrors, ThrowOnError> => (options.client ?? client).post<AddComponentDependsOnResponses, AddComponentDependsOnErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/components/{idOrUrn}/depends-on',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Remove a 'depends_on' edge from a components object
+ */
+export const removeComponentDependsOn = <ThrowOnError extends boolean = false>(options: Options<RemoveComponentDependsOnData, ThrowOnError>): RequestResult<RemoveComponentDependsOnResponses, RemoveComponentDependsOnErrors, ThrowOnError> => (options.client ?? client).delete<RemoveComponentDependsOnResponses, RemoveComponentDependsOnErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/components/{idOrUrn}/depends-on/{targetIdOrUrn}',
+    ...options
+});
+
+/**
  * Run a named graph query
  */
 export const graphQuery = <ThrowOnError extends boolean = false>(options: Options<GraphQueryData, ThrowOnError>): RequestResult<GraphQueryResponses, GraphQueryErrors, ThrowOnError> => (options.client ?? client).get<GraphQueryResponses, GraphQueryErrors, ThrowOnError>({
@@ -249,5 +1118,36 @@ export const graphTraverse = <ThrowOnError extends boolean = false>(options: Opt
 export const listAuditEvents = <ThrowOnError extends boolean = false>(options?: Options<ListAuditEventsData, ThrowOnError>): RequestResult<ListAuditEventsResponses, ListAuditEventsErrors, ThrowOnError> => (options?.client ?? client).get<ListAuditEventsResponses, ListAuditEventsErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/audit-events',
+    ...options
+});
+
+/**
+ * Compute a desired-state diff against the graph and persist it as a plan
+ */
+export const createPlan = <ThrowOnError extends boolean = false>(options: Options<CreatePlanData, ThrowOnError>): RequestResult<CreatePlanResponses, CreatePlanErrors, ThrowOnError> => (options.client ?? client).post<CreatePlanResponses, CreatePlanErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/plans',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Get a plan by id
+ */
+export const getPlan = <ThrowOnError extends boolean = false>(options: Options<GetPlanData, ThrowOnError>): RequestResult<GetPlanResponses, GetPlanErrors, ThrowOnError> => (options.client ?? client).get<GetPlanResponses, GetPlanErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/plans/{id}',
+    ...options
+});
+
+/**
+ * Apply a pending plan transactionally (create/update/delete objects + relationships)
+ */
+export const applyPlan = <ThrowOnError extends boolean = false>(options: Options<ApplyPlanData, ThrowOnError>): RequestResult<ApplyPlanResponses, ApplyPlanErrors, ThrowOnError> => (options.client ?? client).post<ApplyPlanResponses, ApplyPlanErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/plans/{id}/apply',
     ...options
 });

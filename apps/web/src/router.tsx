@@ -1,0 +1,97 @@
+import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
+import { RootLayout } from "./components/layout/RootLayout";
+import { AuthenticatedLayout } from "./components/layout/AuthenticatedLayout";
+import { LoginPage } from "./routes/login";
+import { DashboardPage } from "./routes/dashboard";
+import { DevicePage } from "./routes/device";
+import { PatsPage } from "./routes/pats";
+import { RegistryListPage } from "./routes/registry-list";
+import { RegistryDetailPage } from "./routes/registry-detail";
+import { GraphExplorerPage } from "./routes/graph-explorer";
+
+/**
+ * Code-based TanStack Router route tree (BUILD_AND_TEST.md §8 M2 item 2 — "TanStack Router...
+ * file-based or code-based, your call"). Code-based avoids depending on the `@tanstack/router-
+ * plugin` Vite plugin's generated `routeTree.gen.ts` — one fewer moving part for an air-gapped
+ * build (CLAUDE.md), at the cost of hand-listing routes here instead of inferring them from
+ * `src/routes/*`.
+ *
+ * `authenticatedLayoutRoute` is a PATHLESS layout route (no `path`, just an `id`) wrapping every
+ * page except `/login` in `<RequireAuth>` + `<AppShell>` — the standard TanStack Router pattern
+ * for "all these routes share a guard/chrome" without repeating it per page.
+ */
+const rootRoute = createRootRoute({ component: RootLayout });
+
+const loginRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/login",
+  component: LoginPage
+});
+
+const authenticatedLayoutRoute = createRoute({
+  id: "authenticated",
+  getParentRoute: () => rootRoute,
+  component: AuthenticatedLayout
+});
+
+const dashboardRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/",
+  component: DashboardPage
+});
+
+const deviceRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/device",
+  component: DevicePage,
+  validateSearch: (search: Record<string, unknown>): { user_code?: string } => ({
+    user_code: typeof search.user_code === "string" ? search.user_code : undefined
+  })
+});
+
+const patsRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/pats",
+  component: PatsPage
+});
+
+const graphExplorerRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/graph/$idOrUrn",
+  component: GraphExplorerPage
+});
+
+// Static segments (`/login`, `/device`, `/pats`, `/graph/...`) always out-rank the single dynamic
+// `$basePath` segment below at the same depth — standard router precedence — so those pages never
+// get shadowed by "an unknown registry named 'device'".
+const registryListRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/$basePath",
+  component: RegistryListPage
+});
+
+const registryDetailRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/$basePath/$idOrUrn",
+  component: RegistryDetailPage
+});
+
+const routeTree = rootRoute.addChildren([
+  loginRoute,
+  authenticatedLayoutRoute.addChildren([
+    dashboardRoute,
+    deviceRoute,
+    patsRoute,
+    graphExplorerRoute,
+    registryListRoute,
+    registryDetailRoute
+  ])
+]);
+
+export const router = createRouter({ routeTree, defaultPreload: "intent" });
+
+declare module "@tanstack/react-router" {
+  interface Register {
+    router: typeof router;
+  }
+}

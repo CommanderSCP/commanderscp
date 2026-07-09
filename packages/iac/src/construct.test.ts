@@ -1,0 +1,151 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+import { DesiredStateManifestSchema } from "@scp/schemas";
+import { App, Service, Stack, Team, synthToFile } from "./index.js";
+import { canonicalJson } from "./canonical.js";
+
+/**
+ * Example-based synth test for a realistic small stack (goal statement): two services, a team
+ * owning both, one `depends_on` the other. The fast-check property test
+ * (`construct.determinism.test.ts`) covers the general determinism guarantee; this test pins down
+ * the EXACT expected manifest shape for one concrete, readable case.
+ */
+describe("@scp/iac: example stack synth", () => {
+  it("two services + a team owning both + one depends_on the other", () => {
+    const app = new App();
+    const stack = new Stack(app, "billing-platform");
+
+    const billingApi = new Service(stack, "billing-api", {
+      name: "Billing API",
+      properties: { tier: "critical" }
+    });
+    const billingWorker = new Service(stack, "billing-worker", { name: "Billing Worker" });
+    const team = new Team(stack, "billing-team", { name: "Billing Team" });
+
+    team.owns(billingApi);
+    team.owns(billingWorker);
+    billingWorker.dependsOn(billingApi);
+
+    const manifest = stack.synth();
+
+    const billingApiUrn = "urn:scp:billing-platform:service:billing-api";
+    const billingWorkerUrn = "urn:scp:billing-platform:service:billing-worker";
+    const teamUrn = "urn:scp:billing-platform:team:billing-team";
+
+    expect(manifest).toEqual({
+      stackName: "billing-platform",
+      objects: [
+        {
+          urn: billingApiUrn,
+          typeId: "service",
+          name: "Billing API",
+          properties: { tier: "critical" },
+          labels: {}
+        },
+        {
+          urn: billingWorkerUrn,
+          typeId: "service",
+          name: "Billing Worker",
+          properties: {},
+          labels: {}
+        },
+        { urn: teamUrn, typeId: "team", name: "Billing Team", properties: {}, labels: {} }
+      ],
+      relationships: [
+        { typeId: "depends_on", fromUrn: billingWorkerUrn, toUrn: billingApiUrn },
+        { typeId: "owns", fromUrn: teamUrn, toUrn: billingApiUrn },
+        { typeId: "owns", fromUrn: teamUrn, toUrn: billingWorkerUrn }
+      ]
+    });
+
+    // The manifest is valid input for `POST /plans` — the interchange point with the server.
+    expect(DesiredStateManifestSchema.safeParse(manifest).success).toBe(true);
+  });
+
+  it("an external URN string target (outside this stack) is a valid relationship endpoint", () => {
+    const app = new App();
+    const stack = new Stack(app, "consumer-stack");
+    const service = new Service(stack, "checkout", { name: "Checkout" });
+    service.consumes("urn:scp:other-stack:service:payments");
+
+    const manifest = stack.synth();
+    expect(manifest.relationships).toEqual([
+      {
+        typeId: "consumes",
+        fromUrn: "urn:scp:consumer-stack:service:checkout",
+        toUrn: "urn:scp:other-stack:service:payments"
+      }
+    ]);
+  });
+
+  it("an explicit urn prop overrides the derived one", () => {
+    const app = new App();
+    const stack = new Stack(app, "explicit-urn-stack");
+    const svc = new Service(stack, "svc", { name: "Svc", urn: "urn:scp:custom:service:my-svc" });
+    expect(svc.urn).toBe("urn:scp:custom:service:my-svc");
+    expect(stack.synth().objects[0]?.urn).toBe("urn:scp:custom:service:my-svc");
+  });
+
+  it("re-synthesizing the same tree twice is byte-identical (pure synth)", () => {
+    const app = new App();
+    const stack = new Stack(app, "idempotent-stack");
+    new Service(stack, "svc", { name: "Svc", properties: { tier: "high" } });
+
+    expect(canonicalJson(stack.synth())).toBe(canonicalJson(stack.synth()));
+  });
+
+  it("App.synth() returns every stack's manifest, sorted by stack name", () => {
+    const app = new App();
+    const stackB = new Stack(app, "zzz-stack");
+    new Service(stackB, "svc-b", { name: "Svc B" });
+    const stackA = new Stack(app, "aaa-stack");
+    new Service(stackA, "svc-a", { name: "Svc A" });
+
+    const manifests = app.synth();
+    expect(manifests.map((m) => m.stackName)).toEqual(["aaa-stack", "zzz-stack"]);
+  });
+
+  it("synthToFile writes canonical JSON that round-trips through DesiredStateManifestSchema", async () => {
+    const app = new App();
+    const stack = new Stack(app, "file-stack");
+    new Service(stack, "svc", { name: "Svc", properties: { b: 2, a: 1 } });
+
+    const dir = await mkdtemp(path.join(os.tmpdir(), "scp-iac-test-"));
+    try {
+      const filePath = path.join(dir, "nested", "manifest.json");
+      await synthToFile(stack, filePath);
+      const raw = await readFile(filePath, "utf8");
+      const parsed = DesiredStateManifestSchema.parse(JSON.parse(raw));
+      expect(parsed.stackName).toBe("file-stack");
+      // Canonical (sorted-key) JSON — property keys come back alphabetically, regardless of the
+      // insertion order the caller used when constructing `properties`.
+      expect(raw.trimEnd()).toBe('{"objects":[{"labels":{},"name":"Svc","properties":{"a":1,"b":2},"typeId":"service","urn":"urn:scp:file-stack:service:svc"}],"relationships":[],"stackName":"file-stack"}');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("synthToFile rejects a multi-stack App (ambiguous which manifest to write)", async () => {
+    const app = new App();
+    const stackA = new Stack(app, "stack-a");
+    new Service(stackA, "svc", { name: "Svc" });
+    new Stack(app, "stack-b");
+
+    const dir = await mkdtemp(path.join(os.tmpdir(), "scp-iac-test-"));
+    try {
+      await expect(synthToFile(app, path.join(dir, "manifest.json"))).rejects.toThrow(
+        /exactly one stack/
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an empty stack name", () => {
+    const app = new App();
+    expect(() => new Stack(app, "")).toThrow();
+    expect(() => new Stack(app, "   ")).toThrow();
+  });
+});
