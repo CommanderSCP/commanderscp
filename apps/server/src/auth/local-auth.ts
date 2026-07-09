@@ -39,22 +39,30 @@ function generateToken(): string {
  * Audit events written during bootstrap attribute `actorId = orgId` — a "system" placeholder,
  * since no user (graph subject) exists yet at the point the org root object itself is created.
  */
+export interface BootstrapResult {
+  orgId: string;
+  /** Only set when this call actually created the admin (null if it already existed). */
+  oneTimePassword: string | null;
+}
+
 export async function ensureBootstrapAdmin(
   db: Db,
   opts: { orgName: string; adminUsername: string },
   log: { info: (msg: string) => void; warn: (msg: string) => void }
-): Promise<void> {
+): Promise<BootstrapResult> {
   const existingOrg = await db.query.orgs.findFirst({ where: eq(orgs.name, opts.orgName) });
   const org = existingOrg ?? (await createOrg(db, opts.orgName));
 
   await ensureOrgRootObject(db, org.id);
 
+  // Scoped by org_id (not just username): usernames are only unique per-org
+  // (users_org_id_username_key), so two orgs may legitimately both have an "admin".
   const existingAdmin = await db.query.users.findFirst({
-    where: eq(users.username, opts.adminUsername)
+    where: and(eq(users.orgId, org.id), eq(users.username, opts.adminUsername))
   });
   if (existingAdmin) {
     log.info(`local-auth: bootstrap admin '${opts.adminUsername}' already exists, skipping.`);
-    return;
+    return { orgId: org.id, oneTimePassword: null };
   }
 
   const userObjectId = await withTenantTx(db, org.id, async (tx) => {
@@ -99,6 +107,8 @@ export async function ensureBootstrapAdmin(
     `local-auth: created bootstrap admin '${opts.adminUsername}' in org '${opts.orgName}'. ` +
       `One-time password (not stored, shown once): ${oneTimePassword}`
   );
+
+  return { orgId: org.id, oneTimePassword };
 }
 
 async function createOrg(db: Db, name: string) {
