@@ -1,15 +1,18 @@
 # syntax=docker/dockerfile:1.7
 #
-# Single multi-stage image for the "scp" binary — server + worker + UI stub, local auth
-# (BUILD_AND_TEST.md §3.3, §5.2). `docker build -t scp:dev .` is the only server image build
-# command in the project; `docker compose -f deploy/compose/docker-compose.yml up` is the
-# two-container evaluation stack (postgres:16 + this image, SCP_ROLE=all).
+# Single multi-stage image for the "scp" binary — server + worker + Web UI v1 (React SPA, served
+# as static assets by apps/server — DESIGN.md §14), local auth (BUILD_AND_TEST.md §3.3, §5.2).
+# `docker build -t scp:dev .` is the only server image build command in the project;
+# `docker compose -f deploy/compose/docker-compose.yml up` is the two-container evaluation stack
+# (postgres:16 + this image, SCP_ROLE=all).
 #
-# M0 simplification (recorded deviation): copies the whole pruned workspace into the runtime
-# stage rather than selectively copying per-package dist/ output — apps/web has no real bundle
-# to serve yet (M0's UI stub is server-rendered directly by apps/server; the real SPA lands in
-# M2). Slimming this further (pnpm deploy / per-package dist copies) is good follow-up work, not
-# required for the walking skeleton.
+# Simplification (recorded deviation): copies the whole pruned workspace into the runtime stage
+# rather than selectively copying per-package dist/ output. `pnpm build` (turbo) builds every
+# workspace package including apps/web (`vite build` -> apps/web/dist, M2 stage 4), and the
+# `COPY --from=build /app /app` below picks that up along with every other package's dist/ —
+# apps/server's static mount (app.ts) then serves it directly from the copied
+# apps/web/dist. Slimming this further (pnpm deploy / per-package dist copies) is good follow-up
+# work, not required here.
 
 FROM node:22-bookworm-slim AS base
 RUN corepack enable && corepack prepare pnpm@10.12.1 --activate

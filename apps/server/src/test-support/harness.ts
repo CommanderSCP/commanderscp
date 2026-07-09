@@ -11,6 +11,9 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { roleBindings, roles, users } from "../db/schema.js";
 import { createObject } from "../graph/objects-repo.js";
 import { ensureBootstrapAdmin } from "../auth/local-auth.js";
+import { startPgBoss } from "../events/pgboss.js";
+import { startOutboxRelay, type OutboxRelayHandle } from "../events/outbox-relay.js";
+import type PgBoss from "pg-boss";
 import type { AppDeps } from "../types.js";
 
 /**
@@ -79,11 +82,40 @@ export interface ListeningTestServer extends TestServer {
  * Same as `buildTestServer`, but actually bound to a real loopback port (`app.inject()` doesn't
  * open a socket) — needed for anything that speaks real HTTP to the server: the SDK's
  * `fetch`-based client and the CLI subprocess (test-support/cli-runner.ts).
+ *
+ * `withEventRelay: true` additionally wires up the outbox relay + pg-boss (main.ts's `role ===
+ * "all" || "worker"` branch, unchanged logic) so events written by requests against this server
+ * actually reach `sseHub`/`GET /events/stream` — `buildApp` alone never starts either, so SSE
+ * stays silent without this. Off by default: most callers of `listenTestServer` don't need a
+ * live event pipeline, and pg-boss provisioning its own schema on every boot isn't free.
  */
-export async function listenTestServer(): Promise<ListeningTestServer> {
+export async function listenTestServer(
+  opts: { withEventRelay?: boolean } = {}
+): Promise<ListeningTestServer> {
   const server = await buildTestServer();
   const address = await server.app.listen({ port: 0, host: "127.0.0.1" });
-  return { ...server, baseUrl: `${address}/api/v1` };
+
+  let boss: PgBoss | undefined;
+  let relay: OutboxRelayHandle | undefined;
+  let relayPool: pg.Pool | undefined;
+  if (opts.withEventRelay) {
+    boss = await startPgBoss(server.deps.config.databaseUrl);
+    // A separate pool from the app's own `deps.db` connection — mirrors main.ts's `pool`, which
+    // the relay also owns independently of the request-serving pool.
+    relayPool = createPool(server.deps.config.runtimeDatabaseUrl);
+    relay = startOutboxRelay(relayPool, server.deps.config.runtimeDatabaseUrl, boss);
+  }
+
+  return {
+    ...server,
+    baseUrl: `${address}/api/v1`,
+    close: async () => {
+      await relay?.stop();
+      await boss?.stop({ graceful: false, timeout: 1000 }).catch(() => undefined);
+      await relayPool?.end();
+      await server.close();
+    }
+  };
 }
 
 export interface TestOrg {

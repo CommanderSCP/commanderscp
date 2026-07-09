@@ -1,4 +1,5 @@
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyInstance } from "fastify";
 import cookie from "@fastify/cookie";
@@ -18,7 +19,6 @@ import { registerPatRoutes } from "./routes/pats.js";
 import { registerOidcRoutes } from "./routes/oidc.js";
 import { registerDeviceFlowRoutes } from "./routes/device-flow.js";
 import { registerObjectRoutes } from "./routes/objects.js";
-import { registerUiRoutes } from "./routes/ui.js";
 import { registerTypeRegistryRoutes } from "./routes/type-registry.js";
 import { registerObjectRoutes as registerGenericObjectRoutes } from "./routes/objects-generic.js";
 import { registerRelationshipRoutes } from "./routes/relationships.js";
@@ -99,7 +99,6 @@ export async function buildApp(
   registerOidcRoutes(app, deps);
   registerDeviceFlowRoutes(app, deps);
   registerObjectRoutes(app, deps); // M0 legacy /objects/service contract (unchanged)
-  registerUiRoutes(app, deps);
   registerTypeRegistryRoutes(app, deps);
   registerGenericObjectRoutes(app, deps); // M1 generic /objects/{type}
   registerRelationshipRoutes(app, deps);
@@ -118,6 +117,50 @@ export async function buildApp(
   registerPlanRoutes(app, deps);
 
   app.get("/healthz", async () => ({ status: "ok" }));
+
+  // M2 stage 4 (BUILD_AND_TEST.md §8 M2 item 2, DESIGN.md §14): the built Web UI v1 SPA
+  // (apps/web/dist) — superseding the M0 `/ui` server-rendered stub, which is deleted (see
+  // routes/typed-registries.ts and friends for the real API this now talks to via @scp/sdk).
+  // `wildcard: false` makes this registration glob `apps/web/dist` once at boot and register one
+  // route per real file (e.g. `/assets/index-*.js`) instead of a dynamic wildcard — the SPA
+  // client-side-routing fallback below handles everything else. `decorateReply: false` avoids
+  // colliding with the `/static/` registration above, which already added `reply.sendFile`.
+  const webDistRoot = path.resolve(__dirname, "../../web/dist");
+  await app.register(fastifyStatic, {
+    root: webDistRoot,
+    prefix: "/",
+    wildcard: false,
+    decorateReply: false
+  });
+
+  const webIndexHtmlPath = path.join(webDistRoot, "index.html");
+  let cachedIndexHtml: string | undefined;
+
+  // Low-priority catch-all: find-my-way (Fastify's router) always prefers the exact/static
+  // routes @fastify/static just registered over this wildcard, for any request that lands here
+  // at all — so real built assets are served directly, and this only ever runs for SPA
+  // client-side routes (`/services`, `/graph/abc`, ...) that have no matching file on disk. The
+  // explicit `/api/`, `/static/`, `/healthz` guard is belt-and-braces on top of that route
+  // precedence, so an unmatched API path still 404s as JSON rather than getting served HTML.
+  app.get("/*", async (request, reply) => {
+    if (
+      request.url.startsWith("/api/") ||
+      request.url.startsWith("/static/") ||
+      request.url === "/healthz"
+    ) {
+      reply.callNotFound();
+      return;
+    }
+    try {
+      cachedIndexHtml ??= await readFile(webIndexHtmlPath, "utf8");
+    } catch {
+      reply
+        .status(503)
+        .send("Web UI is not built — run `pnpm --filter @scp/web build` (apps/web/dist missing).");
+      return;
+    }
+    reply.type("text/html").send(cachedIndexHtml);
+  });
 
   return app;
 }
