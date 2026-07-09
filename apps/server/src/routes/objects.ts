@@ -25,7 +25,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     url: "/api/v1/objects/service",
     schema: {
       body: CreateServiceObjectRequestSchema,
-      response: { 201: ServiceObjectSchema, 401: ProblemSchema }
+      response: { 201: ServiceObjectSchema, 401: ProblemSchema, 403: ProblemSchema }
     },
     config: {
       openapi: {
@@ -36,7 +36,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
-      const created = await createServiceObject(deps, auth.orgId, auth.subjectObjectId, request.body.name);
+      const created = await createServiceObject(deps, auth.orgId, auth.subjectObjectId, request.body, request.id);
       reply.status(201).send(created);
     }
   });
@@ -46,7 +46,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     url: "/api/v1/objects/service",
     schema: {
       querystring: CursorPageQuerySchema,
-      response: { 200: ServiceObjectListResponseSchema, 401: ProblemSchema }
+      response: { 200: ServiceObjectListResponseSchema, 401: ProblemSchema, 403: ProblemSchema }
     },
     config: {
       openapi: {
@@ -57,7 +57,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
-      const page = await listServiceObjects(deps, auth.orgId, request.query);
+      const page = await listServiceObjects(deps, auth.orgId, auth.subjectObjectId, request.query);
       reply.status(200).send(page);
     }
   });
@@ -80,7 +80,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       assertOrgMatch(auth, request.params.org);
-      const created = await createServiceObject(deps, auth.orgId, auth.subjectObjectId, request.body.name);
+      const created = await createServiceObject(deps, auth.orgId, auth.subjectObjectId, request.body, request.id);
       reply.status(201).send(created);
     }
   });
@@ -103,7 +103,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       assertOrgMatch(auth, request.params.org);
-      const page = await listServiceObjects(deps, auth.orgId, request.query);
+      const page = await listServiceObjects(deps, auth.orgId, auth.subjectObjectId, request.query);
       reply.status(200).send(page);
     }
   });

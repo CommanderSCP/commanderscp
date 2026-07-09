@@ -35,3 +35,16 @@ export const OrgParamSchema = z.object({
   org: z.string().min(1)
 });
 export type OrgParam = z.infer<typeof OrgParamSchema>;
+
+/**
+ * A query-string array parameter (e.g. `?relTypes=a&relTypes=b`). Most Node querystring parsers
+ * (including Fastify's default) only produce a real array when the key repeats 2+ times — a
+ * single `?relTypes=a` parses as the bare string `"a"`, which `z.array(z.string())` alone would
+ * reject. This normalizes both shapes before validating.
+ */
+export function stringArrayQueryParam() {
+  return z.preprocess(
+    (v) => (v === undefined || v === null ? undefined : Array.isArray(v) ? v : [v]),
+    z.array(z.string())
+  );
+}

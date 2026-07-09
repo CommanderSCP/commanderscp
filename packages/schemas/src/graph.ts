@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { cursorPageResponseSchema } from "./common.js";
+import { cursorPageResponseSchema, stringArrayQueryParam } from "./common.js";
 
 /**
  * Full graph model contract (DESIGN.md §4.1). Supersedes M0's single-purpose `ServiceObject`
@@ -205,7 +205,7 @@ export const GraphQueryRequestSchema = z.object({
   objectId: z.string().uuid(),
   /** Only used by `paths-between`. */
   targetId: z.string().uuid().optional(),
-  relTypes: z.array(z.string()).optional(),
+  relTypes: stringArrayQueryParam().optional(),
   maxDepth: z.coerce.number().int().min(1).max(10).default(10)
 });
 export type GraphQueryRequest = z.infer<typeof GraphQueryRequestSchema>;
@@ -223,7 +223,7 @@ export type GraphQueryResult = z.infer<typeof GraphQueryResultSchema>;
 export const TraverseRequestSchema = z.object({
   objectId: z.string().uuid(),
   direction: z.enum(["out", "in", "both"]).default("out"),
-  relTypes: z.array(z.string()).optional(),
+  relTypes: stringArrayQueryParam().optional(),
   maxDepth: z.coerce.number().int().min(1).max(10).default(3)
 });
 export type TraverseRequest = z.infer<typeof TraverseRequestSchema>;

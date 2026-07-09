@@ -65,6 +65,17 @@ export type ListServiceObjectsErrors = {
         instance?: string;
         decision_id?: string;
     };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
 };
 
 export type ListServiceObjectsError = ListServiceObjectsErrors[keyof ListServiceObjectsErrors];
@@ -90,6 +101,15 @@ export type ListServiceObjectsResponse = ListServiceObjectsResponses[keyof ListS
 export type CreateServiceObjectData = {
     body: {
         name: string;
+        id?: string;
+        urn?: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
     };
     path?: never;
     query?: never;
@@ -101,6 +121,17 @@ export type CreateServiceObjectErrors = {
      * Error
      */
     401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
         type: string;
         title: string;
         status: number;
@@ -187,6 +218,15 @@ export type ListServiceObjectsForOrgResponse = ListServiceObjectsForOrgResponses
 export type CreateServiceObjectForOrgData = {
     body: {
         name: string;
+        id?: string;
+        urn?: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
     };
     path: {
         org: string;

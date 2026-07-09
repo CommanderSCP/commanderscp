@@ -1,8 +1,8 @@
 import { sql } from "drizzle-orm";
 import type { TraverseRequest, TraverseResult } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { objects } from "../db/schema.js";
-import { toGraphObject } from "./objects-repo.js";
+import { mapRawObjectRow, type RawObjectRow } from "./raw-row-mappers.js";
+import { sqlIn, sqlInOrAlways } from "./sql-helpers.js";
 
 // A type alias (not `interface`) — drizzle's `execute<TRow extends Record<string, unknown>>`
 // constraint only structurally matches object type literals/aliases, not named interfaces.
@@ -26,6 +26,7 @@ export async function traverse(tx: TenantTx, orgId: string, req: TraverseRequest
   const relTypes = req.relTypes ?? null;
   const wantOut = req.direction === "out" || req.direction === "both";
   const wantIn = req.direction === "in" || req.direction === "both";
+  const walkTypeFilter = sqlInOrAlways("e.type_id", relTypes);
 
   const walkRows = await tx.execute<{ id: string }>(sql`
     WITH RECURSIVE edges AS (
@@ -42,7 +43,7 @@ export async function traverse(tx: TenantTx, orgId: string, req: TraverseRequest
       FROM walk w
       JOIN edges e ON e.src = w.id
       WHERE e.org_id = ${orgId}::uuid AND e.deleted_at IS NULL
-        AND (${relTypes}::text[] IS NULL OR e.type_id = ANY(${relTypes}::text[]))
+        AND ${walkTypeFilter}
         AND w.depth < ${req.maxDepth} AND NOT e.next_id = ANY(w.path)
     )
     SELECT DISTINCT id FROM walk
@@ -52,19 +53,19 @@ export async function traverse(tx: TenantTx, orgId: string, req: TraverseRequest
   if (visitedIds.length === 0) visitedIds.push(req.objectId);
 
   const [objRows, edgeRows] = await Promise.all([
-    tx.execute<typeof objects.$inferSelect>(sql`
-      SELECT * FROM objects WHERE org_id = ${orgId}::uuid AND id = ANY(${visitedIds}::uuid[]) AND deleted_at IS NULL
+    tx.execute<RawObjectRow>(sql`
+      SELECT * FROM objects WHERE org_id = ${orgId}::uuid AND ${sqlIn("id", visitedIds)} AND deleted_at IS NULL
     `),
     tx.execute<EdgeRow>(sql`
       SELECT id, type_id, from_id, to_id FROM relationships
       WHERE org_id = ${orgId}::uuid AND deleted_at IS NULL
-        AND from_id = ANY(${visitedIds}::uuid[]) AND to_id = ANY(${visitedIds}::uuid[])
-        AND (${relTypes}::text[] IS NULL OR type_id = ANY(${relTypes}::text[]))
+        AND ${sqlIn("from_id", visitedIds)} AND ${sqlIn("to_id", visitedIds)}
+        AND ${sqlInOrAlways("type_id", relTypes)}
     `)
   ]);
 
   return {
-    objects: objRows.rows.map(toGraphObject),
+    objects: objRows.rows.map(mapRawObjectRow),
     edges: edgeRows.rows.map((e) => ({ id: e.id, typeId: e.type_id, fromId: e.from_id, toId: e.to_id }))
   };
 }

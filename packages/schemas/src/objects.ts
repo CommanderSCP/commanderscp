@@ -17,7 +17,19 @@ export const ServiceObjectSchema = z.object({
 export type ServiceObject = z.infer<typeof ServiceObjectSchema>;
 
 export const CreateServiceObjectRequestSchema = z.object({
-  name: z.string().min(1).max(200)
+  name: z.string().min(1).max(200),
+  // Additive (DESIGN.md §6 "additive-only within v1") — M0 clients that send only `name` are
+  // unaffected. Added so `/objects/service` (kept at its M0 path/shape) has the same write
+  // capability as the generic `/objects/{type}` endpoint it's now a thin wrapper over
+  // (apps/server/src/services/objects-service.ts) — Fastify's router prefers this literal
+  // static route over the parametric `/objects/:type` for the exact path `/objects/service`,
+  // so without this, custom domainId/properties/labels/id/urn would be silently dropped for
+  // the 'service' type specifically.
+  id: z.string().uuid().optional(),
+  urn: z.string().optional(),
+  domainId: z.string().uuid().nullable().optional(),
+  properties: z.record(z.string(), z.unknown()).optional(),
+  labels: z.record(z.string(), z.unknown()).optional()
 });
 export type CreateServiceObjectRequest = z.infer<typeof CreateServiceObjectRequestSchema>;
 

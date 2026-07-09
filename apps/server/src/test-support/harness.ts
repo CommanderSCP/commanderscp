@@ -30,7 +30,7 @@ export async function buildTestServer(): Promise<TestServer> {
   const pool = createPool(config.databaseUrl);
   const db = createDb(pool);
   const deps: AppDeps = { db, config };
-  const app = await buildApp(deps, { logger: false });
+  const app = await buildApp(deps, { logger: process.env.SCP_TEST_VERBOSE === "true" });
   await app.ready();
   return {
     app,

@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, or } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { GraphObject } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -235,18 +235,31 @@ export interface UpdateObjectInput {
   expectedVersion?: number;
 }
 
+// Uses the drizzle query builder (not raw `tx.execute(sql...)`) specifically so the result is
+// auto-mapped from the DB's snake_case columns to `objects.$inferSelect`'s camelCase shape —
+// `tx.execute()` returns raw pg driver rows (literal column names, bigint columns as strings),
+// which is exactly right for the recursive-CTE named queries (graph/named-queries.ts,
+// graph/traverse.ts — genuinely need raw SQL) but wrong here, where a normal `SELECT ... FOR
+// UPDATE` maps 1:1 onto a query-builder call.
 async function lockObjectRow(
   tx: TenantTx,
   orgId: string,
   typeId: string,
   idOrUrn: string
 ): Promise<typeof objects.$inferSelect> {
-  const rows = await tx.execute<typeof objects.$inferSelect>(
-    isUuid(idOrUrn)
-      ? sql`SELECT * FROM objects WHERE org_id = ${orgId} AND type_id = ${typeId} AND id = ${idOrUrn} AND deleted_at IS NULL FOR UPDATE`
-      : sql`SELECT * FROM objects WHERE org_id = ${orgId} AND type_id = ${typeId} AND urn = ${idOrUrn} AND deleted_at IS NULL FOR UPDATE`
-  );
-  const row = rows.rows[0];
+  const rows = await tx
+    .select()
+    .from(objects)
+    .where(
+      and(
+        eq(objects.orgId, orgId),
+        eq(objects.typeId, typeId),
+        isUuid(idOrUrn) ? eq(objects.id, idOrUrn) : eq(objects.urn, idOrUrn),
+        isNull(objects.deletedAt)
+      )
+    )
+    .for("update");
+  const row = rows[0];
   if (!row) throw notFound(`${typeId} '${idOrUrn}' not found`);
   return row;
 }
@@ -340,10 +353,12 @@ export async function upsertObjectByUrn(
   tx: TenantTx,
   input: UpsertObjectByUrnInput
 ): Promise<{ object: GraphObject; created: boolean }> {
-  const existingRows = await tx.execute<typeof objects.$inferSelect>(
-    sql`SELECT * FROM objects WHERE org_id = ${input.orgId} AND urn = ${input.urn} FOR UPDATE`
-  );
-  const existing = existingRows.rows[0];
+  const existingRows = await tx
+    .select()
+    .from(objects)
+    .where(and(eq(objects.orgId, input.orgId), eq(objects.urn, input.urn)))
+    .for("update");
+  const existing = existingRows[0];
 
   if (!existing) {
     const created = await createObject(tx, {
