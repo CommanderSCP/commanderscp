@@ -204,6 +204,10 @@ export const relationships = pgTable(
       .notNull()
       .references(() => objects.id),
     properties: jsonb("properties").notNull().default({}),
+    // M2 stage 3 addition (BUILD_AND_TEST.md §8 M2 item 4, drizzle/0005_plans.sql) — mirrors
+    // `objects.labels` so the `scp:managed-by`/`scp:stack` IaC pruning convention
+    // (apps/server/src/iac/plan-diff.ts) applies uniformly to relationships, not just objects.
+    labels: jsonb("labels").notNull().default({}),
     originDomainId: uuid("origin_domain_id").notNull(),
     revision: bigint("revision", { mode: "number" }).notNull().default(1),
     contentHash: text("content_hash").notNull(),
@@ -219,7 +223,8 @@ export const relationships = pgTable(
     ),
     index("rel_fwd").on(table.orgId, table.fromId, table.typeId),
     index("rel_rev").on(table.orgId, table.toId, table.typeId),
-    index("rel_created_cursor").on(table.orgId, table.createdAt, table.id)
+    index("rel_created_cursor").on(table.orgId, table.createdAt, table.id),
+    index("rel_labels").using("gin", sql`${table.labels} jsonb_path_ops`)
   ]
 );
 
@@ -308,6 +313,39 @@ export const outbox = pgTable(
     processedAt: timestamp("processed_at", { withTimezone: true })
   },
   (table) => [index("outbox_unprocessed").on(table.processedAt, table.createdAt)]
+);
+
+// -------------------------------------------------------------------------------------------
+// IaC plans (BUILD_AND_TEST.md §8 M2 item 4, DESIGN.md §15) — a `plans` table is a "projection
+// table for hot lifecycle state" (DESIGN.md §4.1): unlike M2 stage 1's typed registries (which
+// deliberately reused objects/relationships), a plan has its own lifecycle (pending -> applied,
+// or stale) and needs real columns for that, so it's a dedicated table referencing the graph only
+// loosely (via URNs inside `manifest`/`diff`, not a `object_id` FK — a single plan touches many
+// objects, not one). TENANT data (org_id-scoped, not auth substrate), so it needs the same RLS
+// treatment as objects/relationships — hand-authored in drizzle/0005_plans.sql, same pattern as
+// 0002_rls_rbac_seed.sql §2.
+// -------------------------------------------------------------------------------------------
+
+export const plans = pgTable(
+  "plans",
+  {
+    id: uuid("id").primaryKey(), // UUIDv7
+    orgId: uuid("org_id").notNull(),
+    /** The graph subject (user/service-account object id) who requested the plan — mirrors `audit_events.actor_id`. */
+    actorId: uuid("actor_id").notNull(),
+    stackName: text("stack_name").notNull(),
+    /** The exact submitted desired-state manifest, kept verbatim (DesiredStateManifest — @scp/schemas). */
+    manifest: jsonb("manifest").notNull(),
+    /** The computed typed diff at plan time (PlanDiff — @scp/schemas): create/update/delete/noop entries with reasons. */
+    diff: jsonb("diff").notNull(),
+    status: text("status").notNull().default("pending"), // 'pending' | 'applied' | 'stale'
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    appliedAt: timestamp("applied_at", { withTimezone: true })
+  },
+  (table) => [
+    index("plans_org_created").on(table.orgId, table.createdAt, table.id),
+    index("plans_org_stack").on(table.orgId, table.stackName)
+  ]
 );
 
 // -------------------------------------------------------------------------------------------
