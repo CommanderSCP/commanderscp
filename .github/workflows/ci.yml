@@ -78,3 +78,40 @@ jobs:
       - uses: ./.github/actions/setup
       - run: pnpm build
       - run: bash scripts/e2e-m0.sh
+
+  e2e-web:
+    name: "8. E2E (Web UI, Playwright/Chromium, main only)"
+    # Same reason as e2e-m0: needs a real Docker daemon (compose) — the general runner has none.
+    runs-on: homelab-commanderscp-linux-docker-build
+    needs: [static-checks, codegen-drift, unit-tests]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: pnpm build
+      - run: pnpm --filter @scp/web build
+
+      # Playwright's Chromium is NOT baked into a versioned CI runner image yet — there is no
+      # `tools/ci-image` in this repo (checked). Standing up a full CI-image-build pipeline is out
+      # of scope for this stage and is tracked as follow-up work. This is the next-best, honestly
+      # documented approach instead: cache the downloaded browser (+ its OS-level deps) keyed on
+      # the resolved `@playwright/test` version, so it downloads once and is reused across runs.
+      # On a cache MISS (first run, cache eviction, or a Playwright version bump) `playwright
+      # install --with-deps` fetches Chromium and its OS packages from the network — a known,
+      # documented, TEMPORARY air-gap exception scoped to this one CI job only. Every other CI
+      # stage, and the product itself, makes zero runtime network calls (CLAUDE.md principle 5).
+      - name: Resolve @playwright/test version (cache key)
+        id: playwright-version
+        run: |
+          echo "version=$(node -p "require('./apps/web/node_modules/@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+
+      - name: Install Playwright's Chromium (network fetch on cache miss only)
+        run: npx --prefix apps/web playwright install --with-deps chromium
+
+      - run: bash scripts/e2e-web.sh
