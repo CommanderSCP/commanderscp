@@ -14,6 +14,9 @@ import { badRequest, ProblemError, sendProblem } from "./errors.js";
 import type { CollectedRoute } from "./openapi/registry.js";
 import "./openapi/registry.js";
 import { registerAuthRoutes } from "./routes/auth.js";
+import { registerPatRoutes } from "./routes/pats.js";
+import { registerOidcRoutes } from "./routes/oidc.js";
+import { registerDeviceFlowRoutes } from "./routes/device-flow.js";
 import { registerObjectRoutes } from "./routes/objects.js";
 import { registerUiRoutes } from "./routes/ui.js";
 import { registerTypeRegistryRoutes } from "./routes/type-registry.js";
@@ -89,6 +92,11 @@ export async function buildApp(
   });
 
   registerAuthRoutes(app, deps);
+  // M2 stage 2: AuthN expansion (BUILD_AND_TEST.md §8 M2 item 3) — PATs, generic OIDC, and the
+  // CLI device-authorization flow, alongside local-auth (unchanged) above.
+  registerPatRoutes(app, deps);
+  registerOidcRoutes(app, deps);
+  registerDeviceFlowRoutes(app, deps);
   registerObjectRoutes(app, deps); // M0 legacy /objects/service contract (unchanged)
   registerUiRoutes(app, deps);
   registerTypeRegistryRoutes(app, deps);

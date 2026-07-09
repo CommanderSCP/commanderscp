@@ -43,6 +43,248 @@ export type LoginResponses = {
 
 export type LoginResponse = LoginResponses[keyof LoginResponses];
 
+export type ListPatsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/auth/pats';
+};
+
+export type ListPatsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListPatsError = ListPatsErrors[keyof ListPatsErrors];
+
+export type ListPatsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            name: string;
+            createdAt: string;
+            expiresAt: string | null;
+            revokedAt: string | null;
+            lastUsedAt: string | null;
+        }>;
+    };
+};
+
+export type ListPatsResponse = ListPatsResponses[keyof ListPatsResponses];
+
+export type CreatePatData = {
+    body: {
+        name: string;
+        expiresAt?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/auth/pats';
+};
+
+export type CreatePatErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreatePatError = CreatePatErrors[keyof CreatePatErrors];
+
+export type CreatePatResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        name: string;
+        token: string;
+        createdAt: string;
+        expiresAt: string | null;
+    };
+};
+
+export type CreatePatResponse = CreatePatResponses[keyof CreatePatResponses];
+
+export type RevokePatData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/auth/pats/{id}';
+};
+
+export type RevokePatErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RevokePatError = RevokePatErrors[keyof RevokePatErrors];
+
+export type RevokePatResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        name: string;
+        createdAt: string;
+        expiresAt: string | null;
+        revokedAt: string | null;
+        lastUsedAt: string | null;
+    };
+};
+
+export type RevokePatResponse = RevokePatResponses[keyof RevokePatResponses];
+
+export type StartDeviceAuthData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/auth/device/start';
+};
+
+export type StartDeviceAuthResponses = {
+    /**
+     * Success
+     */
+    200: {
+        deviceCode: string;
+        userCode: string;
+        verificationUri: string;
+        expiresIn: number;
+        interval: number;
+    };
+};
+
+export type StartDeviceAuthResponse = StartDeviceAuthResponses[keyof StartDeviceAuthResponses];
+
+export type ApproveDeviceAuthData = {
+    body: {
+        userCode: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/auth/device/approve';
+};
+
+export type ApproveDeviceAuthErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ApproveDeviceAuthError = ApproveDeviceAuthErrors[keyof ApproveDeviceAuthErrors];
+
+export type ApproveDeviceAuthResponses = {
+    /**
+     * Success
+     */
+    200: {
+        approved: true;
+    };
+};
+
+export type ApproveDeviceAuthResponse = ApproveDeviceAuthResponses[keyof ApproveDeviceAuthResponses];
+
+export type PollDeviceAuthTokenData = {
+    body: {
+        deviceCode: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/auth/device/token';
+};
+
+export type PollDeviceAuthTokenErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+        error: 'authorization_pending' | 'expired_token' | 'access_denied' | 'invalid_grant';
+    };
+};
+
+export type PollDeviceAuthTokenError = PollDeviceAuthTokenErrors[keyof PollDeviceAuthTokenErrors];
+
+export type PollDeviceAuthTokenResponses = {
+    /**
+     * Success
+     */
+    200: {
+        token: string;
+        expiresAt: string;
+        org: string;
+    };
+};
+
+export type PollDeviceAuthTokenResponse = PollDeviceAuthTokenResponses[keyof PollDeviceAuthTokenResponses];
+
 export type ListServiceObjectsData = {
     body?: never;
     path?: never;

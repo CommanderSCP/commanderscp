@@ -24,3 +24,14 @@ export type {
   LoginData,
   LoginResponse
 } from "./generated/index.js";
+
+// M2 stage 2: AuthN expansion (BUILD_AND_TEST.md §8 M2 item 3) — re-exported so CLI/consumers
+// don't need a direct @scp/schemas dependency for these shapes.
+export type {
+  CreatePatRequest,
+  CreatePatResponse,
+  Pat,
+  PatListResponse,
+  DeviceStartResponse,
+  DeviceApproveResponse
+} from "@scp/schemas";

@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { Command } from "commander";
-import { ScpClient } from "@scp/sdk";
+import { ScpApiError, ScpClient } from "@scp/sdk";
 import type { ListObjectsQuery, ListQuery } from "@scp/sdk";
 import type {
   CreateObjectRequest,
   GraphObject,
   NamedGraphQuery,
   ObjectListResponse,
+  Pat,
   Relationship,
   RelationshipListResponse,
   UpdateObjectRequest,
@@ -57,6 +58,56 @@ function objectRow(o: GraphObject): Record<string, string> {
 
 function relationshipRow(r: Relationship): Record<string, string> {
   return { id: r.id, type: r.typeId, from: r.fromId, to: r.toId };
+}
+
+function patRow(p: Pat): Record<string, string> {
+  return {
+    id: p.id,
+    name: p.name,
+    createdAt: p.createdAt,
+    expiresAt: p.expiresAt ?? "(none)",
+    revoked: p.revokedAt ? "yes" : "no",
+    lastUsedAt: p.lastUsedAt ?? "(never)"
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Drives the CLI side of the device authorization flow (BUILD_AND_TEST.md §8 M2 item 3): starts
+ * the request, prints the code+URL for the human to open in a browser, then polls at the
+ * server-suggested interval until a token, a denial, or expiry — capping total wait at the
+ * request's own `expiresIn`. `authorization_pending` is expected/normal while the human hasn't
+ * approved yet; every other device-flow error code is terminal.
+ */
+async function deviceLogin(
+  client: ScpClient
+): Promise<{ token: string; expiresAt: string; org: string }> {
+  const started = await client.deviceFlow.start();
+  console.log(`Open ${started.verificationUri} and enter code ${started.userCode}`);
+  console.log("Waiting for approval...");
+
+  const deadline = Date.now() + started.expiresIn * 1000;
+  while (Date.now() < deadline) {
+    await sleep(started.interval * 1000);
+    try {
+      return await client.deviceFlow.poll(started.deviceCode);
+    } catch (err) {
+      const code =
+        err instanceof ScpApiError && err.problem && "error" in err.problem
+          ? (err.problem as { error?: string }).error
+          : undefined;
+      if (code === "authorization_pending") continue;
+      if (code === "expired_token") {
+        throw new Error("device authorization request expired — run `scp login --device` again");
+      }
+      if (code === "access_denied") throw new Error("device authorization request was denied");
+      throw err;
+    }
+  }
+  throw new Error("device authorization timed out waiting for approval");
 }
 
 // -------------------------------------------------------------------------------------------
@@ -346,22 +397,84 @@ export function buildProgram(): Command {
   // -------------------------------------------------------------------------------------
   program
     .command("login")
-    .description("Exchange local-auth credentials for a bearer token and store it")
+    .description("Exchange credentials for a bearer token and store it")
     .option("-u, --username <username>", "username", process.env.SCP_USERNAME)
     .option("-p, --password <password>", "password", process.env.SCP_PASSWORD)
+    .option(
+      "--device",
+      "use the device authorization flow instead of username+password (for headless hosts — DESIGN.md §7)"
+    )
     .option("--base-url <url>", "API base URL", DEFAULT_BASE_URL)
-    .action(async (opts: { username?: string; password?: string; baseUrl: string }) => {
-      const username = opts.username ?? (await promptLine("Username: "));
-      const password = opts.password ?? (await promptLine("Password: "));
-      const client = new ScpClient({ baseUrl: opts.baseUrl });
-      const result = await client.login(username, password);
-      await saveCredentials({
-        baseUrl: opts.baseUrl,
-        token: result.token,
-        org: result.org,
-        expiresAt: result.expiresAt
-      });
-      console.log(`Logged in as '${username}' (org: ${result.org}). Token stored.`);
+    .action(
+      async (opts: { username?: string; password?: string; device?: boolean; baseUrl: string }) => {
+        const client = new ScpClient({ baseUrl: opts.baseUrl });
+
+        if (opts.device) {
+          const result = await deviceLogin(client);
+          await saveCredentials({
+            baseUrl: opts.baseUrl,
+            token: result.token,
+            org: result.org,
+            expiresAt: result.expiresAt
+          });
+          console.log(`Logged in (org: ${result.org}) via device authorization. Token stored.`);
+          return;
+        }
+
+        const username = opts.username ?? (await promptLine("Username: "));
+        const password = opts.password ?? (await promptLine("Password: "));
+        const result = await client.login(username, password);
+        await saveCredentials({
+          baseUrl: opts.baseUrl,
+          token: result.token,
+          org: result.org,
+          expiresAt: result.expiresAt
+        });
+        console.log(`Logged in as '${username}' (org: ${result.org}). Token stored.`);
+      }
+    );
+
+  // -------------------------------------------------------------------------------------
+  // pat (Personal Access Tokens — BUILD_AND_TEST.md §8 M2 item 3)
+  // -------------------------------------------------------------------------------------
+  const patCmd = program.command("pat").description("Manage Personal Access Tokens");
+
+  patCmd
+    .command("create")
+    .description("Create a Personal Access Token — the token is printed ONCE, store it now")
+    .requiredOption("--name <name>", "label for the token")
+    .option("--expires-at <iso>", "ISO 8601 expiry datetime (no expiry if omitted)")
+    .option("--base-url <url>", "API base URL override")
+    .action(async (opts: { name: string; expiresAt?: string; baseUrl?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const created = await client.pats.create(opts.name, { expiresAt: opts.expiresAt });
+      console.log(
+        `Personal Access Token '${created.name}' created (id: ${created.id}).\n` +
+          "This token is shown ONLY ONCE and cannot be retrieved again — store it now:\n" +
+          created.token
+      );
+    });
+
+  patCmd
+    .command("list")
+    .description("List your Personal Access Tokens")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const page = await client.pats.list();
+      printResult(page.items, opts.output, (item) => patRow(item as Pat));
+    });
+
+  patCmd
+    .command("revoke <id>")
+    .description("Revoke a Personal Access Token")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const revoked = await client.pats.revoke(id);
+      printResult(revoked, opts.output, (item) => patRow(item as Pat));
     });
 
   // -------------------------------------------------------------------------------------

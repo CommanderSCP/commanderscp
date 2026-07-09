@@ -98,7 +98,15 @@ import {
   removeComponentConsumes as removeComponentConsumesRequest,
   addComponentDependsOn as addComponentDependsOnRequest,
   listComponentDependsOn as listComponentDependsOnRequest,
-  removeComponentDependsOn as removeComponentDependsOnRequest
+  removeComponentDependsOn as removeComponentDependsOnRequest,
+  // M2 stage 2: AuthN expansion (BUILD_AND_TEST.md §8 M2 item 3) — PATs + device authorization
+  // flow. Generic OIDC has no SDK surface — it's a browser-redirect flow (routes/oidc.ts).
+  createPat as createPatRequest,
+  listPats as listPatsRequest,
+  revokePat as revokePatRequest,
+  startDeviceAuth as startDeviceAuthRequest,
+  approveDeviceAuth as approveDeviceAuthRequest,
+  pollDeviceAuthToken as pollDeviceAuthTokenRequest
 } from "./generated/sdk.gen.js";
 import type {
   AuditEvent,
@@ -107,12 +115,17 @@ import type {
   CreateObjectTypeRequest,
   CreateRelationshipRequest,
   CreateRelationshipTypeRequest,
+  CreatePatResponse,
+  DeviceApproveResponse,
+  DeviceStartResponse,
   GraphObject,
   GraphQueryResult,
   NamedGraphQuery,
   ObjectListResponse,
   ObjectType,
   ObjectTypeListResponse,
+  Pat,
+  PatListResponse,
   Relationship,
   RelationshipListResponse,
   RelationshipType,
@@ -768,4 +781,54 @@ export class ScpClient {
       cursor = page.nextCursor ?? undefined;
     } while (cursor);
   }
+
+  // -----------------------------------------------------------------------------------------
+  // Personal Access Tokens (M2 stage 2 Part A, BUILD_AND_TEST.md §8 M2 item 3)
+  // -----------------------------------------------------------------------------------------
+
+  readonly pats = {
+    /** `token` in the response is shown ONCE — it cannot be retrieved again after this call returns. */
+    create: async (
+      name: string,
+      opts: { expiresAt?: string; idempotencyKey?: string } = {}
+    ): Promise<CreatePatResponse> => {
+      const result = await createPatRequest({
+        client: this.client,
+        body: { name, expiresAt: opts.expiresAt },
+        headers: idempotencyHeaders(opts.idempotencyKey)
+      });
+      return unwrap(result);
+    },
+    list: async (): Promise<PatListResponse> => {
+      const result = await listPatsRequest({ client: this.client });
+      return unwrap(result);
+    },
+    revoke: async (id: string): Promise<Pat> => {
+      const result = await revokePatRequest({ client: this.client, path: { id } });
+      return unwrap(result);
+    }
+  };
+
+  // -----------------------------------------------------------------------------------------
+  // OIDC device authorization flow (M2 stage 2 Part C) — `.poll()` is a SINGLE poll; callers own
+  // the retry/backoff loop (and can cancel it) rather than the SDK hiding it.
+  // -----------------------------------------------------------------------------------------
+
+  readonly deviceFlow = {
+    start: async (): Promise<DeviceStartResponse> => {
+      const result = await startDeviceAuthRequest({ client: this.client });
+      return unwrap(result);
+    },
+    approve: async (userCode: string): Promise<DeviceApproveResponse> => {
+      const result = await approveDeviceAuthRequest({ client: this.client, body: { userCode } });
+      return unwrap(result);
+    },
+    poll: async (deviceCode: string): Promise<LoginResult> => {
+      const result = await pollDeviceAuthTokenRequest({
+        client: this.client,
+        body: { deviceCode }
+      });
+      return unwrap(result);
+    }
+  };
 }
