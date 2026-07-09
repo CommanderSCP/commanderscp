@@ -2,6 +2,11 @@ import { createClient, createConfig } from "./generated/client/index.js";
 import type { Client } from "./generated/client/index.js";
 import {
   login as loginRequest,
+  // M2 stage 4 (BUILD_AND_TEST.md §8 M2 item 2) — how the Web UI discovers/ends its httpOnly
+  // cookie session, and whether to offer "Continue with SSO" (routes/auth.ts Part A additions).
+  getCurrentUser as getCurrentUserRequest,
+  logout as logoutRequest,
+  getAuthConfig as getAuthConfigRequest,
   listServiceObjects as listServiceObjectsRequest,
   createServiceObject as createServiceObjectRequest,
   listServiceObjectsForOrg as listServiceObjectsForOrgRequest,
@@ -116,11 +121,13 @@ import type {
   ApplyPlanResponse,
   AuditEvent,
   AuditEventListResponse,
+  AuthConfig,
   CreateObjectRequest,
   CreateObjectTypeRequest,
   CreateRelationshipRequest,
   CreateRelationshipTypeRequest,
   CreatePatResponse,
+  CurrentUser,
   DesiredStateManifest,
   DeviceApproveResponse,
   DeviceStartResponse,
@@ -171,6 +178,19 @@ function unwrap<TData>(result: ApiResult<TData>): TData {
     });
   }
   return result.data;
+}
+
+/** Like `unwrap`, but for genuinely body-less 2xx responses (e.g. `logout`'s 204) — `result.data`
+ * is expected to be `undefined` on success, so `unwrap`'s "empty response body" check would
+ * incorrectly reject it. */
+function unwrapVoid(result: ApiResult<unknown>): void {
+  if (result.error !== undefined) {
+    const problem = result.error as { title?: string; status?: number } & Record<string, unknown>;
+    throw new ScpApiError(problem.title ?? "CommanderSCP API error", {
+      status: typeof problem.status === "number" ? problem.status : result.response?.status,
+      problem: problem as never
+    });
+  }
 }
 
 export interface ListServiceObjectsQuery {
@@ -325,6 +345,31 @@ export class ScpClient {
     this.token = data.token;
     return data;
   }
+
+  // -----------------------------------------------------------------------------------------
+  // Web UI v1 session discovery (M2 stage 4, BUILD_AND_TEST.md §8 M2 item 2) — `login()` above
+  // stays where every existing caller (CLI, tests) already expects it; these three are new and
+  // namespaced so they read as a group at call sites (`client.auth.me()`, etc).
+  // -----------------------------------------------------------------------------------------
+
+  readonly auth = {
+    /** `GET /auth/me` — how the Web UI discovers "am I logged in" (it can't read the httpOnly
+     * `scp_session` cookie itself). 401s (via `unwrap`) if there's no live session/token. */
+    me: async (): Promise<CurrentUser> => {
+      const result = await getCurrentUserRequest({ client: this.client });
+      return unwrap(result) as CurrentUser;
+    },
+    /** `POST /auth/logout` — ends the calling session; no-op for PAT auth (routes/auth.ts). */
+    logout: async (): Promise<void> => {
+      const result = await logoutRequest({ client: this.client });
+      unwrapVoid(result);
+    },
+    /** `GET /auth/config` — public, no auth required. */
+    config: async (): Promise<AuthConfig> => {
+      const result = await getAuthConfigRequest({ client: this.client });
+      return unwrap(result) as AuthConfig;
+    }
+  };
 
   // -----------------------------------------------------------------------------------------
   // M0 legacy /objects/service (unchanged contract — DESIGN.md additive-only-within-v1)

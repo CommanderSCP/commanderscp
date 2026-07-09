@@ -16,6 +16,31 @@ export const LoginResponseSchema = z.object({
 export type LoginResponse = z.infer<typeof LoginResponseSchema>;
 
 // -------------------------------------------------------------------------------------------
+// Web UI v1 session discovery (M2 stage 4, BUILD_AND_TEST.md §8 M2 item 2) — the SPA cannot
+// read the httpOnly `scp_session` cookie itself, so `getCurrentUser`/`logout` give it an API
+// surface to discover "am I logged in" and to end its session; `getAuthConfig` is public (no
+// auth) so the login page can decide whether to offer "Continue with SSO" before the visitor
+// has any credentials at all.
+// -------------------------------------------------------------------------------------------
+
+/** `GET /auth/me` — mirrors `AuthContext` (auth/local-auth.ts) exactly. */
+export const CurrentUserSchema = z.object({
+  userId: z.string().uuid(),
+  orgId: z.string().uuid(),
+  orgName: z.string(),
+  username: z.string(),
+  subjectObjectId: z.string().uuid()
+});
+export type CurrentUser = z.infer<typeof CurrentUserSchema>;
+
+/** `GET /auth/config` — public, no auth required. */
+export const AuthConfigSchema = z.object({
+  localAuthEnabled: z.literal(true),
+  oidcEnabled: z.boolean()
+});
+export type AuthConfig = z.infer<typeof AuthConfigSchema>;
+
+// -------------------------------------------------------------------------------------------
 // Personal Access Tokens (M2 stage 2 Part A, BUILD_AND_TEST.md §8 M2 item 3) — hashed at rest,
 // never returned in plaintext after creation (routes/pats.ts, auth/pat.ts).
 // -------------------------------------------------------------------------------------------

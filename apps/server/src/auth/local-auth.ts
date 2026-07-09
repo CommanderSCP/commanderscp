@@ -224,3 +224,19 @@ export async function verifyToken(db: Db, token: string): Promise<AuthContext | 
 
   return resolveAuthContext(db, session.userId);
 }
+
+/**
+ * `POST /auth/logout` (routes/auth.ts, M2 stage 4) — invalidates the session row a local-auth/
+ * OIDC session token resolves to, so it's rejected by `verifyToken` immediately, even if the
+ * client kept a copy. Expires it (UPDATE) rather than deleting the row: the runtime `scp_app`
+ * login role is only granted SELECT/INSERT/UPDATE on auth-substrate tables, never DELETE (PR #4
+ * security review, CRITICAL 3 — `drizzle/0002_rls_rbac_seed.sql` §1) — same externally-observable
+ * effect (the token stops working) without widening that grant for a "logout" nicety. No-op if
+ * the token doesn't match a live session — callers own deciding whether that's worth surfacing.
+ */
+export async function invalidateSessionByToken(db: Db, token: string): Promise<void> {
+  await db
+    .update(sessions)
+    .set({ expiresAt: new Date(0) })
+    .where(eq(sessions.tokenHash, hashToken(token)));
+}
