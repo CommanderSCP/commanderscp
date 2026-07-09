@@ -1396,6 +1396,9 @@ export type ListRelationshipsResponses = {
             properties: {
                 [key: string]: unknown;
             };
+            labels: {
+                [key: string]: unknown;
+            };
             originDomainId: string;
             revision: number;
             createdAt: string;
@@ -1414,6 +1417,9 @@ export type CreateRelationshipData = {
         fromId: string;
         toId: string;
         properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
             [key: string]: unknown;
         };
     };
@@ -1482,6 +1488,9 @@ export type CreateRelationshipResponses = {
         fromId: string;
         toId: string;
         properties: {
+            [key: string]: unknown;
+        };
+        labels: {
             [key: string]: unknown;
         };
         originDomainId: string;
@@ -1553,6 +1562,9 @@ export type DeleteRelationshipResponses = {
         properties: {
             [key: string]: unknown;
         };
+        labels: {
+            [key: string]: unknown;
+        };
         originDomainId: string;
         revision: number;
         createdAt: string;
@@ -1620,6 +1632,9 @@ export type GetRelationshipResponses = {
         fromId: string;
         toId: string;
         properties: {
+            [key: string]: unknown;
+        };
+        labels: {
             [key: string]: unknown;
         };
         originDomainId: string;
@@ -5759,6 +5774,9 @@ export type ListDomainOwnersResponses = {
             properties: {
                 [key: string]: unknown;
             };
+            labels: {
+                [key: string]: unknown;
+            };
             originDomainId: string;
             revision: number;
             createdAt: string;
@@ -5854,6 +5872,9 @@ export type AddDomainOwnerResponses = {
         properties: {
             [key: string]: unknown;
         };
+        labels: {
+            [key: string]: unknown;
+        };
         originDomainId: string;
         revision: number;
         createdAt: string;
@@ -5922,6 +5943,9 @@ export type RemoveDomainOwnerResponses = {
         fromId: string;
         toId: string;
         properties: {
+            [key: string]: unknown;
+        };
+        labels: {
             [key: string]: unknown;
         };
         originDomainId: string;
@@ -5995,6 +6019,9 @@ export type ListServiceOwnersResponses = {
             fromId: string;
             toId: string;
             properties: {
+                [key: string]: unknown;
+            };
+            labels: {
                 [key: string]: unknown;
             };
             originDomainId: string;
@@ -6092,6 +6119,9 @@ export type AddServiceOwnerResponses = {
         properties: {
             [key: string]: unknown;
         };
+        labels: {
+            [key: string]: unknown;
+        };
         originDomainId: string;
         revision: number;
         createdAt: string;
@@ -6160,6 +6190,9 @@ export type RemoveServiceOwnerResponses = {
         fromId: string;
         toId: string;
         properties: {
+            [key: string]: unknown;
+        };
+        labels: {
             [key: string]: unknown;
         };
         originDomainId: string;
@@ -6233,6 +6266,9 @@ export type ListComponentOwnersResponses = {
             fromId: string;
             toId: string;
             properties: {
+                [key: string]: unknown;
+            };
+            labels: {
                 [key: string]: unknown;
             };
             originDomainId: string;
@@ -6330,6 +6366,9 @@ export type AddComponentOwnerResponses = {
         properties: {
             [key: string]: unknown;
         };
+        labels: {
+            [key: string]: unknown;
+        };
         originDomainId: string;
         revision: number;
         createdAt: string;
@@ -6398,6 +6437,9 @@ export type RemoveComponentOwnerResponses = {
         fromId: string;
         toId: string;
         properties: {
+            [key: string]: unknown;
+        };
+        labels: {
             [key: string]: unknown;
         };
         originDomainId: string;
@@ -6471,6 +6513,9 @@ export type ListDeploymentTargetOwnersResponses = {
             fromId: string;
             toId: string;
             properties: {
+                [key: string]: unknown;
+            };
+            labels: {
                 [key: string]: unknown;
             };
             originDomainId: string;
@@ -6568,6 +6613,9 @@ export type AddDeploymentTargetOwnerResponses = {
         properties: {
             [key: string]: unknown;
         };
+        labels: {
+            [key: string]: unknown;
+        };
         originDomainId: string;
         revision: number;
         createdAt: string;
@@ -6636,6 +6684,9 @@ export type RemoveDeploymentTargetOwnerResponses = {
         fromId: string;
         toId: string;
         properties: {
+            [key: string]: unknown;
+        };
+        labels: {
             [key: string]: unknown;
         };
         originDomainId: string;
@@ -6709,6 +6760,9 @@ export type ListServiceConsumesResponses = {
             fromId: string;
             toId: string;
             properties: {
+                [key: string]: unknown;
+            };
+            labels: {
                 [key: string]: unknown;
             };
             originDomainId: string;
@@ -6806,6 +6860,9 @@ export type AddServiceConsumesResponses = {
         properties: {
             [key: string]: unknown;
         };
+        labels: {
+            [key: string]: unknown;
+        };
         originDomainId: string;
         revision: number;
         createdAt: string;
@@ -6874,6 +6931,9 @@ export type RemoveServiceConsumesResponses = {
         fromId: string;
         toId: string;
         properties: {
+            [key: string]: unknown;
+        };
+        labels: {
             [key: string]: unknown;
         };
         originDomainId: string;
@@ -6947,6 +7007,9 @@ export type ListServiceDependsOnResponses = {
             fromId: string;
             toId: string;
             properties: {
+                [key: string]: unknown;
+            };
+            labels: {
                 [key: string]: unknown;
             };
             originDomainId: string;
@@ -7044,6 +7107,9 @@ export type AddServiceDependsOnResponses = {
         properties: {
             [key: string]: unknown;
         };
+        labels: {
+            [key: string]: unknown;
+        };
         originDomainId: string;
         revision: number;
         createdAt: string;
@@ -7112,6 +7178,9 @@ export type RemoveServiceDependsOnResponses = {
         fromId: string;
         toId: string;
         properties: {
+            [key: string]: unknown;
+        };
+        labels: {
             [key: string]: unknown;
         };
         originDomainId: string;
@@ -7185,6 +7254,9 @@ export type ListComponentConsumesResponses = {
             fromId: string;
             toId: string;
             properties: {
+                [key: string]: unknown;
+            };
+            labels: {
                 [key: string]: unknown;
             };
             originDomainId: string;
@@ -7282,6 +7354,9 @@ export type AddComponentConsumesResponses = {
         properties: {
             [key: string]: unknown;
         };
+        labels: {
+            [key: string]: unknown;
+        };
         originDomainId: string;
         revision: number;
         createdAt: string;
@@ -7350,6 +7425,9 @@ export type RemoveComponentConsumesResponses = {
         fromId: string;
         toId: string;
         properties: {
+            [key: string]: unknown;
+        };
+        labels: {
             [key: string]: unknown;
         };
         originDomainId: string;
@@ -7423,6 +7501,9 @@ export type ListComponentDependsOnResponses = {
             fromId: string;
             toId: string;
             properties: {
+                [key: string]: unknown;
+            };
+            labels: {
                 [key: string]: unknown;
             };
             originDomainId: string;
@@ -7520,6 +7601,9 @@ export type AddComponentDependsOnResponses = {
         properties: {
             [key: string]: unknown;
         };
+        labels: {
+            [key: string]: unknown;
+        };
         originDomainId: string;
         revision: number;
         createdAt: string;
@@ -7588,6 +7672,9 @@ export type RemoveComponentDependsOnResponses = {
         fromId: string;
         toId: string;
         properties: {
+            [key: string]: unknown;
+        };
+        labels: {
             [key: string]: unknown;
         };
         originDomainId: string;
@@ -7824,3 +7911,410 @@ export type ListAuditEventsResponses = {
 };
 
 export type ListAuditEventsResponse = ListAuditEventsResponses[keyof ListAuditEventsResponses];
+
+export type CreatePlanData = {
+    body: {
+        manifest: {
+            stackName: string;
+            objects: Array<{
+                urn: string;
+                typeId: string;
+                name: string;
+                domainId?: string | null;
+                properties?: {
+                    [key: string]: unknown;
+                };
+                labels?: {
+                    [key: string]: unknown;
+                };
+            }>;
+            relationships: Array<{
+                typeId: string;
+                fromUrn: string;
+                toUrn: string;
+                properties?: {
+                    [key: string]: unknown;
+                };
+            }>;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/plans';
+};
+
+export type CreatePlanErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreatePlanError = CreatePlanErrors[keyof CreatePlanErrors];
+
+export type CreatePlanResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        actorId: string;
+        stackName: string;
+        manifest: {
+            stackName: string;
+            objects: Array<{
+                urn: string;
+                typeId: string;
+                name: string;
+                domainId?: string | null;
+                properties?: {
+                    [key: string]: unknown;
+                };
+                labels?: {
+                    [key: string]: unknown;
+                };
+            }>;
+            relationships: Array<{
+                typeId: string;
+                fromUrn: string;
+                toUrn: string;
+                properties?: {
+                    [key: string]: unknown;
+                };
+            }>;
+        };
+        diff: {
+            objects: Array<{
+                kind: 'object';
+                action: 'create' | 'update' | 'delete' | 'noop';
+                urn: string;
+                typeId: string;
+                reason: string;
+                target?: {
+                    urn: string;
+                    typeId: string;
+                    name: string;
+                    domainId: string | null;
+                    properties: {
+                        [key: string]: unknown;
+                    };
+                    labels: {
+                        [key: string]: unknown;
+                    };
+                };
+            }>;
+            relationships: Array<{
+                kind: 'relationship';
+                action: 'create' | 'delete' | 'noop';
+                typeId: string;
+                fromUrn: string;
+                toUrn: string;
+                reason: string;
+            }>;
+            summary: {
+                creates: number;
+                updates: number;
+                deletes: number;
+                noops: number;
+            };
+        };
+        status: 'pending' | 'applied' | 'stale';
+        createdAt: string;
+        appliedAt: string | null;
+    };
+};
+
+export type CreatePlanResponse = CreatePlanResponses[keyof CreatePlanResponses];
+
+export type GetPlanData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/plans/{id}';
+};
+
+export type GetPlanErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetPlanError = GetPlanErrors[keyof GetPlanErrors];
+
+export type GetPlanResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        actorId: string;
+        stackName: string;
+        manifest: {
+            stackName: string;
+            objects: Array<{
+                urn: string;
+                typeId: string;
+                name: string;
+                domainId?: string | null;
+                properties?: {
+                    [key: string]: unknown;
+                };
+                labels?: {
+                    [key: string]: unknown;
+                };
+            }>;
+            relationships: Array<{
+                typeId: string;
+                fromUrn: string;
+                toUrn: string;
+                properties?: {
+                    [key: string]: unknown;
+                };
+            }>;
+        };
+        diff: {
+            objects: Array<{
+                kind: 'object';
+                action: 'create' | 'update' | 'delete' | 'noop';
+                urn: string;
+                typeId: string;
+                reason: string;
+                target?: {
+                    urn: string;
+                    typeId: string;
+                    name: string;
+                    domainId: string | null;
+                    properties: {
+                        [key: string]: unknown;
+                    };
+                    labels: {
+                        [key: string]: unknown;
+                    };
+                };
+            }>;
+            relationships: Array<{
+                kind: 'relationship';
+                action: 'create' | 'delete' | 'noop';
+                typeId: string;
+                fromUrn: string;
+                toUrn: string;
+                reason: string;
+            }>;
+            summary: {
+                creates: number;
+                updates: number;
+                deletes: number;
+                noops: number;
+            };
+        };
+        status: 'pending' | 'applied' | 'stale';
+        createdAt: string;
+        appliedAt: string | null;
+    };
+};
+
+export type GetPlanResponse = GetPlanResponses[keyof GetPlanResponses];
+
+export type ApplyPlanData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/plans/{id}/apply';
+};
+
+export type ApplyPlanErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ApplyPlanError = ApplyPlanErrors[keyof ApplyPlanErrors];
+
+export type ApplyPlanResponses = {
+    /**
+     * Success
+     */
+    200: {
+        plan: {
+            id: string;
+            orgId: string;
+            actorId: string;
+            stackName: string;
+            manifest: {
+                stackName: string;
+                objects: Array<{
+                    urn: string;
+                    typeId: string;
+                    name: string;
+                    domainId?: string | null;
+                    properties?: {
+                        [key: string]: unknown;
+                    };
+                    labels?: {
+                        [key: string]: unknown;
+                    };
+                }>;
+                relationships: Array<{
+                    typeId: string;
+                    fromUrn: string;
+                    toUrn: string;
+                    properties?: {
+                        [key: string]: unknown;
+                    };
+                }>;
+            };
+            diff: {
+                objects: Array<{
+                    kind: 'object';
+                    action: 'create' | 'update' | 'delete' | 'noop';
+                    urn: string;
+                    typeId: string;
+                    reason: string;
+                    target?: {
+                        urn: string;
+                        typeId: string;
+                        name: string;
+                        domainId: string | null;
+                        properties: {
+                            [key: string]: unknown;
+                        };
+                        labels: {
+                            [key: string]: unknown;
+                        };
+                    };
+                }>;
+                relationships: Array<{
+                    kind: 'relationship';
+                    action: 'create' | 'delete' | 'noop';
+                    typeId: string;
+                    fromUrn: string;
+                    toUrn: string;
+                    reason: string;
+                }>;
+                summary: {
+                    creates: number;
+                    updates: number;
+                    deletes: number;
+                    noops: number;
+                };
+            };
+            status: 'pending' | 'applied' | 'stale';
+            createdAt: string;
+            appliedAt: string | null;
+        };
+        summary: {
+            creates: number;
+            updates: number;
+            deletes: number;
+            noops: number;
+        };
+    };
+};
+
+export type ApplyPlanResponse = ApplyPlanResponses[keyof ApplyPlanResponses];

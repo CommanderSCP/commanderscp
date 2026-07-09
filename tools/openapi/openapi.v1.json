@@ -4878,6 +4878,13 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "labels": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
                   }
                 },
                 "required": [
@@ -4929,6 +4936,13 @@
                       },
                       "additionalProperties": {}
                     },
+                    "labels": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
                     "originDomainId": {
                       "type": "string",
                       "format": "uuid",
@@ -4964,6 +4978,7 @@
                     "fromId",
                     "toId",
                     "properties",
+                    "labels",
                     "originDomainId",
                     "revision",
                     "createdAt",
@@ -5253,6 +5268,13 @@
                             },
                             "additionalProperties": {}
                           },
+                          "labels": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "originDomainId": {
                             "type": "string",
                             "format": "uuid",
@@ -5288,6 +5310,7 @@
                           "fromId",
                           "toId",
                           "properties",
+                          "labels",
                           "originDomainId",
                           "revision",
                           "createdAt",
@@ -5467,6 +5490,13 @@
                       },
                       "additionalProperties": {}
                     },
+                    "labels": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
                     "originDomainId": {
                       "type": "string",
                       "format": "uuid",
@@ -5502,6 +5532,7 @@
                     "fromId",
                     "toId",
                     "properties",
+                    "labels",
                     "originDomainId",
                     "revision",
                     "createdAt",
@@ -5703,6 +5734,13 @@
                       },
                       "additionalProperties": {}
                     },
+                    "labels": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
                     "originDomainId": {
                       "type": "string",
                       "format": "uuid",
@@ -5738,6 +5776,7 @@
                     "fromId",
                     "toId",
                     "properties",
+                    "labels",
                     "originDomainId",
                     "revision",
                     "createdAt",
@@ -21201,6 +21240,13 @@
                       },
                       "additionalProperties": {}
                     },
+                    "labels": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
                     "originDomainId": {
                       "type": "string",
                       "format": "uuid",
@@ -21236,6 +21282,7 @@
                     "fromId",
                     "toId",
                     "properties",
+                    "labels",
                     "originDomainId",
                     "revision",
                     "createdAt",
@@ -21546,6 +21593,13 @@
                             },
                             "additionalProperties": {}
                           },
+                          "labels": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "originDomainId": {
                             "type": "string",
                             "format": "uuid",
@@ -21581,6 +21635,7 @@
                           "fromId",
                           "toId",
                           "properties",
+                          "labels",
                           "originDomainId",
                           "revision",
                           "createdAt",
@@ -21811,6 +21866,13 @@
                       },
                       "additionalProperties": {}
                     },
+                    "labels": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
                     "originDomainId": {
                       "type": "string",
                       "format": "uuid",
@@ -21846,6 +21908,7 @@
                     "fromId",
                     "toId",
                     "properties",
+                    "labels",
                     "originDomainId",
                     "revision",
                     "createdAt",
@@ -22069,6 +22132,13 @@
                       },
                       "additionalProperties": {}
                     },
+                    "labels": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
                     "originDomainId": {
                       "type": "string",
                       "format": "uuid",
@@ -22104,6 +22174,7 @@
                     "fromId",
                     "toId",
                     "properties",
+                    "labels",
                     "originDomainId",
                     "revision",
                     "createdAt",
@@ -22414,6 +22485,13 @@
                             },
                             "additionalProperties": {}
                           },
+                          "labels": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "originDomainId": {
                             "type": "string",
                             "format": "uuid",
@@ -22449,6 +22527,7 @@
                           "fromId",
                           "toId",
                           "properties",
+                          "labels",
                           "originDomainId",
                           "revision",
                           "createdAt",
@@ -22679,6 +22758,13 @@
                       },
                       "additionalProperties": {}
                     },
+                    "labels": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
                     "originDomainId": {
                       "type": "string",
                       "format": "uuid",
@@ -22714,6 +22800,7 @@
                     "fromId",
                     "toId",
                     "properties",
+                    "labels",
                     "originDomainId",
                     "revision",
                     "createdAt",
@@ -22937,6 +23024,13 @@
                       },
                       "additionalProperties": {}
                     },
+                    "labels": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
                     "originDomainId": {
                       "type": "string",
                       "format": "uuid",
@@ -22972,6 +23066,7 @@
                     "fromId",
                     "toId",
                     "properties",
+                    "labels",
                     "originDomainId",
                     "revision",
                     "createdAt",
@@ -23282,6 +23377,13 @@
                             },
                             "additionalProperties": {}
                           },
+                          "labels": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "originDomainId": {
                             "type": "string",
                             "format": "uuid",
@@ -23317,6 +23419,7 @@
                           "fromId",
                           "toId",
                           "properties",
+                          "labels",
                           "originDomainId",
                           "revision",
                           "createdAt",
@@ -23547,6 +23650,13 @@
                       },
                       "additionalProperties": {}
                     },
+                    "labels": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
                     "originDomainId": {
                       "type": "string",
                       "format": "uuid",
@@ -23582,6 +23692,7 @@
                     "fromId",
                     "toId",
                     "properties",
+                    "labels",
                     "originDomainId",
                     "revision",
                     "createdAt",
@@ -23805,6 +23916,13 @@
                       },
                       "additionalProperties": {}
                     },
+                    "labels": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
                     "originDomainId": {
                       "type": "string",
                       "format": "uuid",
@@ -23840,6 +23958,7 @@
                     "fromId",
                     "toId",
                     "properties",
+                    "labels",
                     "originDomainId",
                     "revision",
                     "createdAt",
@@ -24150,6 +24269,13 @@
                             },
                             "additionalProperties": {}
                           },
+                          "labels": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "originDomainId": {
                             "type": "string",
                             "format": "uuid",
@@ -24185,6 +24311,7 @@
                           "fromId",
                           "toId",
                           "properties",
+                          "labels",
                           "originDomainId",
                           "revision",
                           "createdAt",
@@ -24415,6 +24542,13 @@
                       },
                       "additionalProperties": {}
                     },
+                    "labels": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
                     "originDomainId": {
                       "type": "string",
                       "format": "uuid",
@@ -24450,6 +24584,7 @@
                     "fromId",
                     "toId",
                     "properties",
+                    "labels",
                     "originDomainId",
                     "revision",
                     "createdAt",
@@ -24673,6 +24808,13 @@
                       },
                       "additionalProperties": {}
                     },
+                    "labels": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
                     "originDomainId": {
                       "type": "string",
                       "format": "uuid",
@@ -24708,6 +24850,7 @@
                     "fromId",
                     "toId",
                     "properties",
+                    "labels",
                     "originDomainId",
                     "revision",
                     "createdAt",
@@ -25018,6 +25161,13 @@
                             },
                             "additionalProperties": {}
                           },
+                          "labels": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "originDomainId": {
                             "type": "string",
                             "format": "uuid",
@@ -25053,6 +25203,7 @@
                           "fromId",
                           "toId",
                           "properties",
+                          "labels",
                           "originDomainId",
                           "revision",
                           "createdAt",
@@ -25283,6 +25434,13 @@
                       },
                       "additionalProperties": {}
                     },
+                    "labels": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
                     "originDomainId": {
                       "type": "string",
                       "format": "uuid",
@@ -25318,6 +25476,7 @@
                     "fromId",
                     "toId",
                     "properties",
+                    "labels",
                     "originDomainId",
                     "revision",
                     "createdAt",
@@ -25541,6 +25700,13 @@
                       },
                       "additionalProperties": {}
                     },
+                    "labels": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
                     "originDomainId": {
                       "type": "string",
                       "format": "uuid",
@@ -25576,6 +25742,7 @@
                     "fromId",
                     "toId",
                     "properties",
+                    "labels",
                     "originDomainId",
                     "revision",
                     "createdAt",
@@ -25886,6 +26053,13 @@
                             },
                             "additionalProperties": {}
                           },
+                          "labels": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "originDomainId": {
                             "type": "string",
                             "format": "uuid",
@@ -25921,6 +26095,7 @@
                           "fromId",
                           "toId",
                           "properties",
+                          "labels",
                           "originDomainId",
                           "revision",
                           "createdAt",
@@ -26151,6 +26326,13 @@
                       },
                       "additionalProperties": {}
                     },
+                    "labels": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
                     "originDomainId": {
                       "type": "string",
                       "format": "uuid",
@@ -26186,6 +26368,7 @@
                     "fromId",
                     "toId",
                     "properties",
+                    "labels",
                     "originDomainId",
                     "revision",
                     "createdAt",
@@ -26409,6 +26592,13 @@
                       },
                       "additionalProperties": {}
                     },
+                    "labels": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
                     "originDomainId": {
                       "type": "string",
                       "format": "uuid",
@@ -26444,6 +26634,7 @@
                     "fromId",
                     "toId",
                     "properties",
+                    "labels",
                     "originDomainId",
                     "revision",
                     "createdAt",
@@ -26754,6 +26945,13 @@
                             },
                             "additionalProperties": {}
                           },
+                          "labels": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "originDomainId": {
                             "type": "string",
                             "format": "uuid",
@@ -26789,6 +26987,7 @@
                           "fromId",
                           "toId",
                           "properties",
+                          "labels",
                           "originDomainId",
                           "revision",
                           "createdAt",
@@ -27019,6 +27218,13 @@
                       },
                       "additionalProperties": {}
                     },
+                    "labels": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
                     "originDomainId": {
                       "type": "string",
                       "format": "uuid",
@@ -27054,6 +27260,7 @@
                     "fromId",
                     "toId",
                     "properties",
+                    "labels",
                     "originDomainId",
                     "revision",
                     "createdAt",
@@ -27277,6 +27484,13 @@
                       },
                       "additionalProperties": {}
                     },
+                    "labels": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
                     "originDomainId": {
                       "type": "string",
                       "format": "uuid",
@@ -27312,6 +27526,7 @@
                     "fromId",
                     "toId",
                     "properties",
+                    "labels",
                     "originDomainId",
                     "revision",
                     "createdAt",
@@ -27622,6 +27837,13 @@
                             },
                             "additionalProperties": {}
                           },
+                          "labels": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          },
                           "originDomainId": {
                             "type": "string",
                             "format": "uuid",
@@ -27657,6 +27879,7 @@
                           "fromId",
                           "toId",
                           "properties",
+                          "labels",
                           "originDomainId",
                           "revision",
                           "createdAt",
@@ -27887,6 +28110,13 @@
                       },
                       "additionalProperties": {}
                     },
+                    "labels": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
                     "originDomainId": {
                       "type": "string",
                       "format": "uuid",
@@ -27922,6 +28152,7 @@
                     "fromId",
                     "toId",
                     "properties",
+                    "labels",
                     "originDomainId",
                     "revision",
                     "createdAt",
@@ -28968,6 +29199,1692 @@
             }
           },
           "403": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/plans": {
+      "post": {
+        "operationId": "createPlan",
+        "summary": "Compute a desired-state diff against the graph and persist it as a plan",
+        "tags": [
+          "plans"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "manifest": {
+                    "type": "object",
+                    "properties": {
+                      "stackName": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "objects": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "urn": {
+                              "type": "string",
+                              "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                            },
+                            "typeId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "name": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 500
+                            },
+                            "domainId": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "format": "uuid",
+                                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "properties": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {}
+                            },
+                            "labels": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {}
+                            }
+                          },
+                          "required": [
+                            "urn",
+                            "typeId",
+                            "name"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "relationships": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "typeId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "fromUrn": {
+                              "type": "string",
+                              "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                            },
+                            "toUrn": {
+                              "type": "string",
+                              "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                            },
+                            "properties": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {}
+                            }
+                          },
+                          "required": [
+                            "typeId",
+                            "fromUrn",
+                            "toUrn"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "stackName",
+                      "objects",
+                      "relationships"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "manifest"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "orgId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "actorId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "stackName": {
+                      "type": "string"
+                    },
+                    "manifest": {
+                      "type": "object",
+                      "properties": {
+                        "stackName": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "objects": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "urn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "typeId": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 500
+                              },
+                              "domainId": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "format": "uuid",
+                                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "properties": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "labels": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              }
+                            },
+                            "required": [
+                              "urn",
+                              "typeId",
+                              "name"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "relationships": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "typeId": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "fromUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "toUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "properties": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              }
+                            },
+                            "required": [
+                              "typeId",
+                              "fromUrn",
+                              "toUrn"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "stackName",
+                        "objects",
+                        "relationships"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "diff": {
+                      "type": "object",
+                      "properties": {
+                        "objects": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "object"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "update",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "urn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "typeId": {
+                                "type": "string"
+                              },
+                              "reason": {
+                                "type": "string"
+                              },
+                              "target": {
+                                "type": "object",
+                                "properties": {
+                                  "urn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "typeId": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "domainId": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "format": "uuid",
+                                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "properties": {
+                                    "type": "object",
+                                    "propertyNames": {
+                                      "type": "string"
+                                    },
+                                    "additionalProperties": {}
+                                  },
+                                  "labels": {
+                                    "type": "object",
+                                    "propertyNames": {
+                                      "type": "string"
+                                    },
+                                    "additionalProperties": {}
+                                  }
+                                },
+                                "required": [
+                                  "urn",
+                                  "typeId",
+                                  "name",
+                                  "domainId",
+                                  "properties",
+                                  "labels"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "urn",
+                              "typeId",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "relationships": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "relationship"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "typeId": {
+                                "type": "string"
+                              },
+                              "fromUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "toUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "typeId",
+                              "fromUrn",
+                              "toUrn",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "summary": {
+                          "type": "object",
+                          "properties": {
+                            "creates": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "updates": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "deletes": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "noops": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "creates",
+                            "updates",
+                            "deletes",
+                            "noops"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "objects",
+                        "relationships",
+                        "summary"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "applied",
+                        "stale"
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                    },
+                    "appliedAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "orgId",
+                    "actorId",
+                    "stackName",
+                    "manifest",
+                    "diff",
+                    "status",
+                    "createdAt",
+                    "appliedAt"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/plans/{id}": {
+      "get": {
+        "operationId": "getPlan",
+        "summary": "Get a plan by id",
+        "tags": [
+          "plans"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "orgId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "actorId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "stackName": {
+                      "type": "string"
+                    },
+                    "manifest": {
+                      "type": "object",
+                      "properties": {
+                        "stackName": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "objects": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "urn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "typeId": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 500
+                              },
+                              "domainId": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "format": "uuid",
+                                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "properties": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "labels": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              }
+                            },
+                            "required": [
+                              "urn",
+                              "typeId",
+                              "name"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "relationships": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "typeId": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "fromUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "toUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "properties": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              }
+                            },
+                            "required": [
+                              "typeId",
+                              "fromUrn",
+                              "toUrn"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "stackName",
+                        "objects",
+                        "relationships"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "diff": {
+                      "type": "object",
+                      "properties": {
+                        "objects": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "object"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "update",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "urn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "typeId": {
+                                "type": "string"
+                              },
+                              "reason": {
+                                "type": "string"
+                              },
+                              "target": {
+                                "type": "object",
+                                "properties": {
+                                  "urn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "typeId": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "domainId": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "format": "uuid",
+                                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "properties": {
+                                    "type": "object",
+                                    "propertyNames": {
+                                      "type": "string"
+                                    },
+                                    "additionalProperties": {}
+                                  },
+                                  "labels": {
+                                    "type": "object",
+                                    "propertyNames": {
+                                      "type": "string"
+                                    },
+                                    "additionalProperties": {}
+                                  }
+                                },
+                                "required": [
+                                  "urn",
+                                  "typeId",
+                                  "name",
+                                  "domainId",
+                                  "properties",
+                                  "labels"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "urn",
+                              "typeId",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "relationships": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "relationship"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "typeId": {
+                                "type": "string"
+                              },
+                              "fromUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "toUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "typeId",
+                              "fromUrn",
+                              "toUrn",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "summary": {
+                          "type": "object",
+                          "properties": {
+                            "creates": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "updates": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "deletes": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "noops": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "creates",
+                            "updates",
+                            "deletes",
+                            "noops"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "objects",
+                        "relationships",
+                        "summary"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "applied",
+                        "stale"
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                    },
+                    "appliedAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "orgId",
+                    "actorId",
+                    "stackName",
+                    "manifest",
+                    "diff",
+                    "status",
+                    "createdAt",
+                    "appliedAt"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/plans/{id}/apply": {
+      "post": {
+        "operationId": "applyPlan",
+        "summary": "Apply a pending plan transactionally (create/update/delete objects + relationships)",
+        "tags": [
+          "plans"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "plan": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        "orgId": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        "actorId": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        "stackName": {
+                          "type": "string"
+                        },
+                        "manifest": {
+                          "type": "object",
+                          "properties": {
+                            "stackName": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "objects": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "urn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "typeId": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "name": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 500
+                                  },
+                                  "domainId": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "format": "uuid",
+                                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "properties": {
+                                    "type": "object",
+                                    "propertyNames": {
+                                      "type": "string"
+                                    },
+                                    "additionalProperties": {}
+                                  },
+                                  "labels": {
+                                    "type": "object",
+                                    "propertyNames": {
+                                      "type": "string"
+                                    },
+                                    "additionalProperties": {}
+                                  }
+                                },
+                                "required": [
+                                  "urn",
+                                  "typeId",
+                                  "name"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "relationships": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "typeId": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "fromUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "toUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "properties": {
+                                    "type": "object",
+                                    "propertyNames": {
+                                      "type": "string"
+                                    },
+                                    "additionalProperties": {}
+                                  }
+                                },
+                                "required": [
+                                  "typeId",
+                                  "fromUrn",
+                                  "toUrn"
+                                ],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": [
+                            "stackName",
+                            "objects",
+                            "relationships"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "diff": {
+                          "type": "object",
+                          "properties": {
+                            "objects": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "object"
+                                  },
+                                  "action": {
+                                    "type": "string",
+                                    "enum": [
+                                      "create",
+                                      "update",
+                                      "delete",
+                                      "noop"
+                                    ]
+                                  },
+                                  "urn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "typeId": {
+                                    "type": "string"
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  },
+                                  "target": {
+                                    "type": "object",
+                                    "properties": {
+                                      "urn": {
+                                        "type": "string",
+                                        "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                      },
+                                      "typeId": {
+                                        "type": "string"
+                                      },
+                                      "name": {
+                                        "type": "string"
+                                      },
+                                      "domainId": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string",
+                                            "format": "uuid",
+                                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "properties": {
+                                        "type": "object",
+                                        "propertyNames": {
+                                          "type": "string"
+                                        },
+                                        "additionalProperties": {}
+                                      },
+                                      "labels": {
+                                        "type": "object",
+                                        "propertyNames": {
+                                          "type": "string"
+                                        },
+                                        "additionalProperties": {}
+                                      }
+                                    },
+                                    "required": [
+                                      "urn",
+                                      "typeId",
+                                      "name",
+                                      "domainId",
+                                      "properties",
+                                      "labels"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "action",
+                                  "urn",
+                                  "typeId",
+                                  "reason"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "relationships": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "relationship"
+                                  },
+                                  "action": {
+                                    "type": "string",
+                                    "enum": [
+                                      "create",
+                                      "delete",
+                                      "noop"
+                                    ]
+                                  },
+                                  "typeId": {
+                                    "type": "string"
+                                  },
+                                  "fromUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "toUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "action",
+                                  "typeId",
+                                  "fromUrn",
+                                  "toUrn",
+                                  "reason"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "summary": {
+                              "type": "object",
+                              "properties": {
+                                "creates": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "updates": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "deletes": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "noops": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "required": [
+                                "creates",
+                                "updates",
+                                "deletes",
+                                "noops"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "objects",
+                            "relationships",
+                            "summary"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "applied",
+                            "stale"
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                        },
+                        "appliedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "orgId",
+                        "actorId",
+                        "stackName",
+                        "manifest",
+                        "diff",
+                        "status",
+                        "createdAt",
+                        "appliedAt"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "summary": {
+                      "type": "object",
+                      "properties": {
+                        "creates": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "updates": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "deletes": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "noops": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "creates",
+                        "updates",
+                        "deletes",
+                        "noops"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "plan",
+                    "summary"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "409": {
             "description": "Error",
             "content": {
               "application/problem+json": {
