@@ -7,12 +7,27 @@ import { createDb, createPool } from "../db/client.js";
 import { ensureBootstrapAdmin } from "../auth/local-auth.js";
 import type { AppDeps } from "../types.js";
 
-/** Set by test-support/global-setup.ts (Vitest `globalSetup` — process.env is shared with workers). */
+/**
+ * Admin/superuser URL — set by test-support/global-setup.ts (Vitest `globalSetup` — process.env
+ * is shared with workers). Tests use this only for privileged fixture surgery (e.g. the audit
+ * tamper test); the servers under test run on `testRuntimeDatabaseUrl()`.
+ */
 export function testDatabaseUrl(): string {
   const url = process.env.TEST_DATABASE_URL;
   if (!url) {
     throw new Error(
       "TEST_DATABASE_URL is unset — integration tests must run via `vitest.integration.config.ts` (globalSetup starts the Testcontainers postgres:16 instance)."
+    );
+  }
+  return url;
+}
+
+/** Least-privileged `scp_app` login-role URL — what the servers under test actually connect as. */
+export function testRuntimeDatabaseUrl(): string {
+  const url = process.env.TEST_RUNTIME_DATABASE_URL;
+  if (!url) {
+    throw new Error(
+      "TEST_RUNTIME_DATABASE_URL is unset — integration tests must run via `vitest.integration.config.ts` (globalSetup provisions the scp_app login role)."
     );
   }
   return url;
@@ -24,13 +39,18 @@ export interface TestServer {
   close(): Promise<void>;
 }
 
-/** Builds a Fastify app against the shared Testcontainers Postgres — migrations already applied by globalSetup. */
+/**
+ * Builds a Fastify app against the shared Testcontainers Postgres — migrations + runtime-role
+ * provisioning already applied by globalSetup. The pool connects as the real `scp_app` login
+ * role, exactly like production (main.ts phase 2) — never as the container's superuser.
+ */
 export async function buildTestServer(): Promise<TestServer> {
   const config = loadConfig({
     DATABASE_URL: testDatabaseUrl(),
+    SCP_RUNTIME_DATABASE_URL: testRuntimeDatabaseUrl(),
     SCP_COOKIE_SECRET: "test-cookie-secret-value"
   });
-  const pool = createPool(config.databaseUrl);
+  const pool = createPool(config.runtimeDatabaseUrl);
   const db = createDb(pool);
   const deps: AppDeps = { db, config };
   const app = await buildApp(deps, { logger: process.env.SCP_TEST_VERBOSE === "true" });
@@ -108,18 +128,19 @@ export async function createTestOrg(server: TestServer, label = "org"): Promise<
 }
 
 /**
- * A raw `pg.Client` connected as the least-privileged `scp_app` role (no BYPASSRLS), used by
- * adversarial RLS tests to probe the database directly — bypassing the application layer
- * entirely, per BUILD_AND_TEST.md §4.2 "attempt reads/writes across org_id with a mis-set/unset
- * app.current_org_id". Callers are responsible for calling `setOrgContext`/leaving it unset.
+ * A raw `pg.Client` that AUTHENTICATES as the least-privileged `scp_app` login role (no SET
+ * ROLE, no BYPASSRLS) — the exact identity the production runtime pool uses (PR #4 security
+ * review, CRITICAL 3). Used by adversarial RLS tests to probe the database directly, bypassing
+ * the application layer entirely, per BUILD_AND_TEST.md §4.2 "attempt reads/writes across
+ * org_id with a mis-set/unset app.current_org_id". Callers are responsible for calling
+ * `setOrgContext`/leaving it unset.
  */
 export class RawScpAppClient {
   private constructor(private readonly client: pg.Client) {}
 
   static async connect(): Promise<RawScpAppClient> {
-    const client = new pg.Client({ connectionString: testDatabaseUrl() });
+    const client = new pg.Client({ connectionString: testRuntimeDatabaseUrl() });
     await client.connect();
-    await client.query("SET ROLE scp_app");
     return new RawScpAppClient(client);
   }
 

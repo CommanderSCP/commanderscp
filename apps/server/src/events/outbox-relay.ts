@@ -30,12 +30,15 @@ interface OutboxRow {
  * all in one transaction per batch. Wakes immediately on the `scp_outbox_insert` NOTIFY
  * (drizzle/0002_rls_rbac_seed.sql's trigger fires post-commit) with a 1s poll as the fallback.
  *
- * Runs against the admin connection pool (not `withTenantTx`/`scp_app`) deliberately: this is an
- * internal system process relaying every org's events, not a tenant-facing API request, so it
- * needs cross-org visibility the RLS-restricted app role is designed to never have.
+ * The relay legitimately needs cross-org visibility (it fans out every org's events), but gets
+ * it through the narrowest possible mechanism (PR #4 security review, CRITICAL 3): it runs on
+ * the least-privileged runtime pool (`scp_app` login) and assumes the `scp_relay` role with
+ * `SET LOCAL ROLE` inside each transaction. `scp_relay` (drizzle/0003_runtime_roles.sql) is
+ * NOBYPASSRLS and is granted ONLY on `outbox` (SELECT + UPDATE, with a permissive policy on
+ * that one table) — it cannot read or write objects/relationships/role_bindings/audit_events.
  */
 export function startOutboxRelay(
-  adminPool: Pool,
+  runtimePool: Pool,
   listenConnectionString: string,
   boss: PgBoss
 ): OutboxRelayHandle {
@@ -43,9 +46,10 @@ export function startOutboxRelay(
 
   async function relayOnce(): Promise<void> {
     if (stopped) return;
-    const client = await adminPool.connect();
+    const client = await runtimePool.connect();
     try {
       await client.query("BEGIN");
+      await client.query("SET LOCAL ROLE scp_relay");
       const { rows } = await client.query<OutboxRow>(
         `SELECT * FROM outbox WHERE processed_at IS NULL ORDER BY created_at ASC LIMIT $1 FOR UPDATE SKIP LOCKED`,
         [BATCH_SIZE]

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
 import {
   buildTestServer,
   createTestOrg,
@@ -198,5 +199,212 @@ describe("RLS: adversarial cross-org probes", () => {
       headers: { authorization: `Bearer ${orgB.adminToken}` }
     });
     expect(get.statusCode).toBe(404);
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // PR #4 security review, CRITICAL 3: the runtime pool must BE the least-privileged login role
+  // (session-level), not a privileged user relying on a per-transaction SET ROLE.
+  // -------------------------------------------------------------------------------------------
+
+  it("the application's own pool authenticates as scp_app (session_user), not a superuser", async () => {
+    const result = await server.deps.db.execute(
+      sql`SELECT current_user, session_user, (SELECT rolsuper FROM pg_roles WHERE rolname = session_user) AS session_is_super`
+    );
+    const row = result.rows[0] as {
+      current_user: string;
+      session_user: string;
+      session_is_super: boolean;
+    };
+    expect(row.session_user).toBe("scp_app");
+    expect(row.current_user).toBe("scp_app");
+    expect(row.session_is_super).toBe(false);
+  });
+
+  it("runtime login role, no SET ROLE, no org context: every tenant table fails closed", async () => {
+    // RawScpAppClient now AUTHENTICATES as scp_app — this connection is exactly what a
+    // forgotten-withTenantTx code path would use. Prove the session really is the login role
+    // (not a privileged session_user that merely SET ROLE'd down), then probe every table.
+    const raw = await RawScpAppClient.connect();
+    const who = await raw.query<{ session_user: string; current_user: string }>(
+      "SELECT session_user, current_user"
+    );
+    expect(who.rows[0]?.session_user).toBe("scp_app");
+    expect(who.rows[0]?.current_user).toBe("scp_app");
+
+    for (const table of [
+      "objects",
+      "relationships",
+      "role_bindings",
+      "audit_events",
+      "outbox",
+      "idempotency_keys"
+    ]) {
+      const result = await raw.query(`SELECT * FROM ${table}`);
+      expect(result.rows, `${table} must be empty with no org context`).toHaveLength(0);
+    }
+    // Org-scoped registry/rbac tables may only show built-in (org_id IS NULL) rows.
+    for (const table of ["object_types", "relationship_types", "roles"]) {
+      const result = await raw.query<{ org_id: string | null }>(`SELECT org_id FROM ${table}`);
+      expect(
+        result.rows.every((r) => r.org_id === null),
+        `${table} must show only built-in rows with no org context`
+      ).toBe(true);
+    }
+    await raw.close();
+  });
+
+  it("scp_relay: SET LOCAL ROLE scp_relay reads outbox cross-org, but cannot touch other tenant tables", async () => {
+    const raw = await RawScpAppClient.connect();
+
+    // Trigger at least one outbox row for org A (any write does).
+    // (objectAId's create in beforeAll already wrote outbox rows for org A.)
+
+    // Plain scp_app (no relay role, no org context): outbox is invisible.
+    const plain = await raw.query("SELECT * FROM outbox");
+    expect(plain.rows).toHaveLength(0);
+
+    // Inside a transaction with SET LOCAL ROLE scp_relay: cross-org outbox rows are visible...
+    await raw.query("BEGIN");
+    await raw.query("SET LOCAL ROLE scp_relay");
+    const relayOutbox = await raw.query<{ org_id: string }>("SELECT org_id FROM outbox");
+    expect(relayOutbox.rows.length).toBeGreaterThan(0);
+    const orgs = new Set(relayOutbox.rows.map((r) => r.org_id));
+    expect(orgs.has(orgAId) || orgs.has(orgBId)).toBe(true);
+    await raw.query("ROLLBACK");
+
+    // ...but every other tenant table is a hard permission-denied (scp_relay has NO grants on
+    // them — stronger than RLS row-filtering). One transaction per probe: a denied statement
+    // aborts its transaction, so probes can't share one.
+    const relayProbe = async (statement: string, params?: unknown[]): Promise<void> => {
+      await raw.query("BEGIN");
+      await raw.query("SET LOCAL ROLE scp_relay");
+      await expect(raw.query(statement, params), `${statement} must be denied`).rejects.toThrow(
+        /permission denied/i
+      );
+      await raw.query("ROLLBACK");
+    };
+    for (const table of ["objects", "relationships", "role_bindings", "audit_events"]) {
+      await relayProbe(`SELECT * FROM ${table}`);
+    }
+    await relayProbe(
+      `INSERT INTO objects (id, org_id, domain_id, type_id, name, urn, origin_domain_id, content_hash)
+       VALUES ($1, $2, $2, 'service', 'relay-sneak', $3, $2, 'deadbeef')`,
+      [randomUUID(), orgAId, `urn:scp:${orgAId}:service:relay-sneak-${randomUUID()}`]
+    );
+    await raw.close();
+  });
+
+  it("scp_relay has no BYPASSRLS, no superuser, and no LOGIN", async () => {
+    const client = new pg.Client({ connectionString: testDatabaseUrl() });
+    await client.connect();
+    const result = await client.query<{
+      rolbypassrls: boolean;
+      rolsuper: boolean;
+      rolcanlogin: boolean;
+    }>("SELECT rolbypassrls, rolsuper, rolcanlogin FROM pg_roles WHERE rolname = 'scp_relay'");
+    await client.end();
+    expect(result.rows[0]?.rolbypassrls).toBe(false);
+    expect(result.rows[0]?.rolsuper).toBe(false);
+    expect(result.rows[0]?.rolcanlogin).toBe(false);
+  });
+
+  it("scp_app does NOT inherit scp_relay's permissive outbox policy (INHERIT FALSE membership)", async () => {
+    // Regression guard for the subtle leak the role split itself introduced in review: RLS
+    // policies naming a role also apply to members that INHERIT from it, so a plain
+    // `GRANT scp_relay TO scp_app` would have silently given every ordinary scp_app query
+    // cross-org outbox visibility. Membership is INHERIT FALSE — relay powers exist only
+    // inside an explicit SET LOCAL ROLE scp_relay transaction (previous test).
+    const raw = await RawScpAppClient.connect();
+    await raw.setOrgContext(orgBId);
+    const crossOrg = await raw.query("SELECT * FROM outbox WHERE org_id = $1", [orgAId]);
+    expect(crossOrg.rows).toHaveLength(0);
+    await raw.close();
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // PR #4 security review, MAJOR 4: role_bindings — the privilege-authority table — gets the
+  // same adversarial treatment as the data tables.
+  // -------------------------------------------------------------------------------------------
+
+  it("role_bindings: cross-org SELECT sees zero rows (wrong org context)", async () => {
+    const raw = await RawScpAppClient.connect();
+    await raw.setOrgContext(orgBId);
+    const result = await raw.query("SELECT * FROM role_bindings WHERE org_id = $1", [orgAId]);
+    await raw.close();
+    expect(result.rows).toHaveLength(0);
+  });
+
+  it("role_bindings: cross-org UPDATE affects zero rows (cannot flip another org's allow to deny)", async () => {
+    const raw = await RawScpAppClient.connect();
+    await raw.setOrgContext(orgBId);
+    const result = await raw.query("UPDATE role_bindings SET effect = 'deny' WHERE org_id = $1", [
+      orgAId
+    ]);
+    await raw.close();
+    expect(result.rowCount).toBe(0);
+  });
+
+  it("role_bindings: WITH CHECK blocks INSERTing a binding into another org (privilege grant forgery)", async () => {
+    const raw = await RawScpAppClient.connect();
+    await raw.setOrgContext(orgBId);
+    const role = await raw.query<{ id: string }>(
+      "SELECT id FROM roles WHERE org_id IS NULL AND name = 'Owner'"
+    );
+    const ownerRoleId = role.rows[0]?.id;
+    expect(ownerRoleId).toBeTruthy();
+    await expect(
+      raw.query(
+        `INSERT INTO role_bindings (id, org_id, subject_id, role_id, scope_object_id, effect)
+         VALUES ($1, $2, $3, $4, $5, 'allow')`,
+        [randomUUID(), orgAId, randomUUID(), ownerRoleId, objectAId]
+      )
+    ).rejects.toThrow(/row-level security|violates/i);
+    await raw.close();
+  });
+
+  it("role_bindings: unset org context fails closed for SELECT and INSERT", async () => {
+    const raw = await RawScpAppClient.connect();
+    const rows = await raw.query("SELECT * FROM role_bindings");
+    expect(rows.rows).toHaveLength(0);
+    const role = await raw.query<{ id: string }>(
+      "SELECT id FROM roles WHERE org_id IS NULL AND name = 'Viewer'"
+    );
+    await expect(
+      raw.query(
+        `INSERT INTO role_bindings (id, org_id, subject_id, role_id, scope_object_id, effect)
+         VALUES ($1, $2, $3, $4, $5, 'allow')`,
+        [randomUUID(), orgAId, randomUUID(), role.rows[0]?.id, objectAId]
+      )
+    ).rejects.toThrow(/row-level security|violates/i);
+    await raw.close();
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // PR #4 security review, MAJOR 5: relationship_types gets the same WITH CHECK write probes
+  // object_types already had.
+  // -------------------------------------------------------------------------------------------
+
+  it("cannot register a custom relationship type claiming org_id NULL (built-in) via WITH CHECK", async () => {
+    const raw = await RawScpAppClient.connect();
+    await raw.setOrgContext(orgAId);
+    await expect(
+      raw.query(
+        `INSERT INTO relationship_types (id, org_id, display_name) VALUES ($1, NULL, 'Sneaky Built-in Rel')`,
+        [`sneaky-rel-${randomUUID()}`]
+      )
+    ).rejects.toThrow(/row-level security/i);
+    await raw.close();
+  });
+
+  it("cannot register a relationship type into ANOTHER org via WITH CHECK", async () => {
+    const raw = await RawScpAppClient.connect();
+    await raw.setOrgContext(orgBId);
+    await expect(
+      raw.query(
+        `INSERT INTO relationship_types (id, org_id, display_name) VALUES ($1, $2, 'Cross-org Rel Type')`,
+        [`cross-rel-${randomUUID()}`, orgAId]
+      )
+    ).rejects.toThrow(/row-level security/i);
+    await raw.close();
   });
 });
