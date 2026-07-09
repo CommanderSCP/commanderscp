@@ -14,6 +14,11 @@ import tailwindcss from "@tailwindcss/vite";
  *
  * CLAUDE.md air-gap requirement: zero external requests baked into the bundle — no CDN script
  * tags, no remote font `@import`s. `@tailwindcss/vite` needs no separate `tailwind.config.js`.
+ *
+ * Vitest's own config lives in the sibling vitest.config.ts, not here — merging `test` into this
+ * file via `vitest/config`'s `defineConfig` pulls in a different bundled Vite version than the
+ * project's pinned `vite`, which trips a plugin-type mismatch under `tsc` for
+ * `@vitejs/plugin-react`/`@tailwindcss/vite`. Two small config files avoids that entirely.
  */
 export default defineConfig({
   plugins: [react(), tailwindcss()],
