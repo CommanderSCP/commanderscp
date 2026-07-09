@@ -1,9 +1,15 @@
 import { randomUUID } from "node:crypto";
 import pg from "pg";
+import * as argon2 from "argon2";
+import { v7 as uuidv7 } from "uuid";
+import { and, eq, isNull } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../app.js";
 import { loadConfig } from "../config.js";
 import { createDb, createPool } from "../db/client.js";
+import { withTenantTx } from "../db/tenant-tx.js";
+import { roleBindings, roles, users } from "../db/schema.js";
+import { createObject } from "../graph/objects-repo.js";
 import { ensureBootstrapAdmin } from "../auth/local-auth.js";
 import type { AppDeps } from "../types.js";
 
@@ -125,6 +131,87 @@ export async function createTestOrg(server: TestServer, label = "org"): Promise<
     adminPassword: result.oneTimePassword,
     adminToken: body.token
   };
+}
+
+export interface TestUserBinding {
+  /** Built-in role name: Viewer | Operator | Approver | Administrator | Owner. */
+  role: string;
+  /** Scope object id, or "self" for the user's own graph object. */
+  scope: string | "self";
+  effect?: "allow" | "deny";
+}
+
+export interface TestUser {
+  /** The graph `user` object id — the RBAC subject. */
+  objectId: string;
+  username: string;
+  password: string;
+  token: string;
+}
+
+/**
+ * Creates a NON-admin user in an existing test org: a graph `user` object (the RBAC subject),
+ * an auth row, the given role bindings, and a live bearer token via the real login API. This is
+ * how authz tests get subjects with narrow, deliberate permissions instead of the bootstrap
+ * admin's org-root Owner binding. (No user-management API exists yet in M1 — that's an M2 typed
+ * endpoint — so setup goes through the repo layer, inside the same tenant transaction machinery
+ * real requests use.)
+ */
+export async function createTestUser(
+  server: TestServer,
+  org: TestOrg,
+  bindings: TestUserBinding[]
+): Promise<TestUser> {
+  const username = `user-${randomUUID()}`;
+  const password = randomUUID();
+
+  const objectId = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+    const userObject = await createObject(tx, {
+      orgId: org.orgId,
+      typeId: "user",
+      actorObjectId: org.orgId,
+      requestId: "test-user-setup",
+      name: username
+    });
+
+    for (const binding of bindings) {
+      const role = await tx.query.roles.findFirst({
+        where: and(isNull(roles.orgId), eq(roles.name, binding.role))
+      });
+      if (!role) throw new Error(`built-in role '${binding.role}' not found`);
+      await tx.insert(roleBindings).values({
+        id: uuidv7(),
+        orgId: org.orgId,
+        subjectId: userObject.id,
+        roleId: role.id,
+        scopeObjectId: binding.scope === "self" ? userObject.id : binding.scope,
+        effect: binding.effect ?? "allow"
+      });
+    }
+
+    return userObject.id;
+  });
+
+  const passwordHash = await argon2.hash(password);
+  await server.deps.db.insert(users).values({
+    id: uuidv7(),
+    orgId: org.orgId,
+    username,
+    passwordHash,
+    objectId
+  });
+
+  const login = await server.app.inject({
+    method: "POST",
+    url: "/api/v1/auth/login",
+    payload: { username, password }
+  });
+  if (login.statusCode !== 200) {
+    throw new Error(`test user login failed: ${login.statusCode} ${login.body}`);
+  }
+  const body = login.json() as { token: string };
+
+  return { objectId, username, password, token: body.token };
 }
 
 /**

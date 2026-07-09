@@ -27,9 +27,14 @@ function idempotencyKey(request: FastifyRequest): string | undefined {
 
 /**
  * Generic `/relationships` endpoints (DESIGN.md §4.1, §6) enforcing endpoint-type and cardinality
- * constraints from the relationship type registry at write time. Write authorization is checked
- * at the `from` endpoint's scope (documented simplification — dual-endpoint authorization is an
- * M2+ concern once typed ownership conventions exist).
+ * constraints from the relationship type registry at write time.
+ *
+ * Relationship writes (create/delete) require `relationship:write` at BOTH endpoints' scopes
+ * (DESIGN.md §7; PR #4 security review, CRITICAL 1). This is load-bearing, not pedantry:
+ * `member_of` edges feed RBAC subject expansion (authz/resolve.ts), so a from-side-only check
+ * would let any subject with `relationship:write` somewhere add themselves `member_of` an
+ * arbitrary team/group and inherit its role bindings. Applied uniformly to every relationship
+ * type — a member_of-only carve-out would just invite the next type-specific escalation.
  */
 export function registerRelationshipRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
@@ -57,11 +62,18 @@ export function registerRelationshipRoutes(app: FastifyInstance, deps: AppDeps):
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // BOTH endpoints (see module doc — member_of privilege-escalation guard).
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "relationship:write",
           scopeObjectId: request.body.fromId
+        });
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "relationship:write",
+          scopeObjectId: request.body.toId
         });
         return withIdempotency(
           tx,
@@ -177,11 +189,19 @@ export function registerRelationshipRoutes(app: FastifyInstance, deps: AppDeps):
       const auth = await requireAuth(deps, request);
       const relationship = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const found = await getRelationship(tx, auth.orgId, request.params.id);
+        // BOTH endpoints (see module doc) — deleting a membership/governance edge is as
+        // security-relevant as creating one.
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "relationship:write",
           scopeObjectId: found.fromId
+        });
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "relationship:write",
+          scopeObjectId: found.toId
         });
         await deleteRelationship(tx, {
           orgId: auth.orgId,
