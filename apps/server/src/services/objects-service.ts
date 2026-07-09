@@ -1,56 +1,39 @@
-import { and, asc, eq, gt, or } from "drizzle-orm";
-import { v7 as uuidv7 } from "uuid";
 import type { ServiceObject, ServiceObjectListResponse } from "@scp/schemas";
 import type { AppDeps } from "../types.js";
-import { objects } from "../db/schema.js";
+import { withTenantTx } from "../db/tenant-tx.js";
+import { createObject, listObjects } from "../graph/objects-repo.js";
+import type { GraphObject } from "@scp/schemas";
 
-export function encodeCursor(row: { createdAt: Date; id: string }): string {
-  return Buffer.from(
-    JSON.stringify({ createdAt: row.createdAt.toISOString(), id: row.id })
-  ).toString("base64url");
-}
+// Re-exported for backward compatibility — `objects-service.test.ts` (M0) imports these from
+// here; the codec itself now lives in `../pagination.ts` since every M1 list endpoint needs it.
+export { decodeCursor, encodeCursor } from "../pagination.js";
 
-export function decodeCursor(cursor: string): { createdAt: Date; id: string } | null {
-  try {
-    const parsed: unknown = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
-    if (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      "createdAt" in parsed &&
-      "id" in parsed &&
-      typeof (parsed as Record<string, unknown>).createdAt === "string" &&
-      typeof (parsed as Record<string, unknown>).id === "string"
-    ) {
-      const p = parsed as { createdAt: string; id: string };
-      return { createdAt: new Date(p.createdAt), id: p.id };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function toServiceObject(row: typeof objects.$inferSelect): ServiceObject {
+function toServiceObject(row: GraphObject): ServiceObject {
   return {
     id: row.id,
     orgId: row.orgId,
     type: "service",
     name: row.name,
-    createdAt: row.createdAt.toISOString()
+    createdAt: row.createdAt
   };
 }
 
+/**
+ * `POST/GET /api/v1/objects/service` (M0's contract, unchanged) — reimplemented on the M1 graph
+ * substrate (BUILD_AND_TEST.md §8 M1 item 10: "upgrading their implementation to the new
+ * substrate is expected"). A plain `service`-typed graph object under the hood, so anything
+ * created here is equally visible through the generic `/objects/service` endpoint family.
+ */
 export async function createServiceObject(
   deps: AppDeps,
   orgId: string,
+  actorObjectId: string,
   name: string
 ): Promise<ServiceObject> {
-  const [row] = await deps.db
-    .insert(objects)
-    .values({ id: uuidv7(), orgId, type: "service", name })
-    .returning();
-  if (!row) throw new Error("failed to insert service object");
-  return toServiceObject(row);
+  const created = await withTenantTx(deps.db, orgId, (tx) =>
+    createObject(tx, { orgId, typeId: "service", actorObjectId, name, requestId: "m0-service-route" })
+  );
+  return toServiceObject(created);
 }
 
 export async function listServiceObjects(
@@ -58,27 +41,8 @@ export async function listServiceObjects(
   orgId: string,
   query: { cursor?: string | undefined; limit: number }
 ): Promise<ServiceObjectListResponse> {
-  const cursor = query.cursor ? decodeCursor(query.cursor) : null;
-  const conditions = [eq(objects.orgId, orgId), eq(objects.type, "service")];
-  if (cursor) {
-    const cursorCondition = or(
-      gt(objects.createdAt, cursor.createdAt),
-      and(eq(objects.createdAt, cursor.createdAt), gt(objects.id, cursor.id))
-    );
-    if (cursorCondition) conditions.push(cursorCondition);
-  }
-
-  const rows = await deps.db
-    .select()
-    .from(objects)
-    .where(and(...conditions))
-    .orderBy(asc(objects.createdAt), asc(objects.id))
-    .limit(query.limit + 1);
-
-  const hasMore = rows.length > query.limit;
-  const page = hasMore ? rows.slice(0, query.limit) : rows;
-  const last = page[page.length - 1];
-  const nextCursor = hasMore && last ? encodeCursor(last) : null;
-
-  return { items: page.map(toServiceObject), nextCursor };
+  const page = await withTenantTx(deps.db, orgId, (tx) =>
+    listObjects(tx, orgId, "service", { ...query, domainId: undefined, includeDeleted: false })
+  );
+  return { items: page.items.map(toServiceObject), nextCursor: page.nextCursor };
 }

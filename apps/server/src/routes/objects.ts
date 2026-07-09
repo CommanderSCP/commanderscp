@@ -36,7 +36,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
-      const created = await createServiceObject(deps, auth.orgId, request.body.name);
+      const created = await createServiceObject(deps, auth.orgId, auth.subjectObjectId, request.body.name);
       reply.status(201).send(created);
     }
   });
@@ -80,7 +80,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       assertOrgMatch(auth, request.params.org);
-      const created = await createServiceObject(deps, auth.orgId, request.body.name);
+      const created = await createServiceObject(deps, auth.orgId, auth.subjectObjectId, request.body.name);
       reply.status(201).send(created);
     }
   });

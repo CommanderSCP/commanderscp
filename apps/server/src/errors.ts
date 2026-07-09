@@ -37,6 +37,18 @@ export function badRequest(detail?: string): ProblemError {
   return new ProblemError(400, "Bad Request", { detail });
 }
 
+export function conflict(detail?: string): ProblemError {
+  return new ProblemError(409, "Conflict", { detail });
+}
+
+export function preconditionFailed(detail?: string): ProblemError {
+  return new ProblemError(412, "Precondition Failed", { detail });
+}
+
+export function unprocessable(detail?: string): ProblemError {
+  return new ProblemError(422, "Unprocessable Entity", { detail });
+}
+
 export function toProblem(request: FastifyRequest, err: ProblemError): Problem {
   return {
     type: err.type,
