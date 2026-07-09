@@ -2,7 +2,7 @@
 
 import { client } from './client.gen.js';
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client/index.js';
-import type { CreateServiceObjectData, CreateServiceObjectErrors, CreateServiceObjectForOrgData, CreateServiceObjectForOrgErrors, CreateServiceObjectForOrgResponses, CreateServiceObjectResponses, ListServiceObjectsData, ListServiceObjectsErrors, ListServiceObjectsForOrgData, ListServiceObjectsForOrgErrors, ListServiceObjectsForOrgResponses, ListServiceObjectsResponses, LoginData, LoginErrors, LoginResponses } from './types.gen.js';
+import type { CreateObjectData, CreateObjectErrors, CreateObjectResponses, CreateObjectTypeData, CreateObjectTypeErrors, CreateObjectTypeResponses, CreateRelationshipData, CreateRelationshipErrors, CreateRelationshipResponses, CreateRelationshipTypeData, CreateRelationshipTypeErrors, CreateRelationshipTypeResponses, CreateServiceObjectData, CreateServiceObjectErrors, CreateServiceObjectForOrgData, CreateServiceObjectForOrgErrors, CreateServiceObjectForOrgResponses, CreateServiceObjectResponses, DeleteObjectData, DeleteObjectErrors, DeleteObjectResponses, DeleteRelationshipData, DeleteRelationshipErrors, DeleteRelationshipResponses, GetObjectData, GetObjectErrors, GetObjectResponses, GetRelationshipData, GetRelationshipErrors, GetRelationshipResponses, GraphQueryData, GraphQueryErrors, GraphQueryResponses, GraphTraverseData, GraphTraverseErrors, GraphTraverseResponses, ListAuditEventsData, ListAuditEventsErrors, ListAuditEventsResponses, ListObjectsData, ListObjectsErrors, ListObjectsResponses, ListObjectTypesData, ListObjectTypesErrors, ListObjectTypesResponses, ListRelationshipsData, ListRelationshipsErrors, ListRelationshipsResponses, ListRelationshipTypesData, ListRelationshipTypesErrors, ListRelationshipTypesResponses, ListServiceObjectsData, ListServiceObjectsErrors, ListServiceObjectsForOrgData, ListServiceObjectsForOrgErrors, ListServiceObjectsForOrgResponses, ListServiceObjectsResponses, LoginData, LoginErrors, LoginResponses, UpdateObjectData, UpdateObjectErrors, UpdateObjectResponses, UpsertObjectByUrnData, UpsertObjectByUrnErrors, UpsertObjectByUrnResponses } from './types.gen.js';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -73,4 +73,181 @@ export const createServiceObjectForOrg = <ThrowOnError extends boolean = false>(
         'Content-Type': 'application/json',
         ...options.headers
     }
+});
+
+/**
+ * List object types (built-in + org-defined)
+ */
+export const listObjectTypes = <ThrowOnError extends boolean = false>(options?: Options<ListObjectTypesData, ThrowOnError>): RequestResult<ListObjectTypesResponses, ListObjectTypesErrors, ThrowOnError> => (options?.client ?? client).get<ListObjectTypesResponses, ListObjectTypesErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/type-registry/object-types',
+    ...options
+});
+
+/**
+ * Register a custom object type
+ */
+export const createObjectType = <ThrowOnError extends boolean = false>(options: Options<CreateObjectTypeData, ThrowOnError>): RequestResult<CreateObjectTypeResponses, CreateObjectTypeErrors, ThrowOnError> => (options.client ?? client).post<CreateObjectTypeResponses, CreateObjectTypeErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/type-registry/object-types',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * List relationship types (built-in + org-defined)
+ */
+export const listRelationshipTypes = <ThrowOnError extends boolean = false>(options?: Options<ListRelationshipTypesData, ThrowOnError>): RequestResult<ListRelationshipTypesResponses, ListRelationshipTypesErrors, ThrowOnError> => (options?.client ?? client).get<ListRelationshipTypesResponses, ListRelationshipTypesErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/type-registry/relationship-types',
+    ...options
+});
+
+/**
+ * Register a custom relationship type
+ */
+export const createRelationshipType = <ThrowOnError extends boolean = false>(options: Options<CreateRelationshipTypeData, ThrowOnError>): RequestResult<CreateRelationshipTypeResponses, CreateRelationshipTypeErrors, ThrowOnError> => (options.client ?? client).post<CreateRelationshipTypeResponses, CreateRelationshipTypeErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/type-registry/relationship-types',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * List graph objects of a type
+ */
+export const listObjects = <ThrowOnError extends boolean = false>(options: Options<ListObjectsData, ThrowOnError>): RequestResult<ListObjectsResponses, ListObjectsErrors, ThrowOnError> => (options.client ?? client).get<ListObjectsResponses, ListObjectsErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/objects/{type}',
+    ...options
+});
+
+/**
+ * Create a graph object
+ */
+export const createObject = <ThrowOnError extends boolean = false>(options: Options<CreateObjectData, ThrowOnError>): RequestResult<CreateObjectResponses, CreateObjectErrors, ThrowOnError> => (options.client ?? client).post<CreateObjectResponses, CreateObjectErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/objects/{type}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Soft-delete a graph object
+ */
+export const deleteObject = <ThrowOnError extends boolean = false>(options: Options<DeleteObjectData, ThrowOnError>): RequestResult<DeleteObjectResponses, DeleteObjectErrors, ThrowOnError> => (options.client ?? client).delete<DeleteObjectResponses, DeleteObjectErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/objects/{type}/{idOrUrn}',
+    ...options
+});
+
+/**
+ * Get a graph object by id or URN
+ */
+export const getObject = <ThrowOnError extends boolean = false>(options: Options<GetObjectData, ThrowOnError>): RequestResult<GetObjectResponses, GetObjectErrors, ThrowOnError> => (options.client ?? client).get<GetObjectResponses, GetObjectErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/objects/{type}/{idOrUrn}',
+    ...options
+});
+
+/**
+ * Partially update a graph object
+ */
+export const updateObject = <ThrowOnError extends boolean = false>(options: Options<UpdateObjectData, ThrowOnError>): RequestResult<UpdateObjectResponses, UpdateObjectErrors, ThrowOnError> => (options.client ?? client).patch<UpdateObjectResponses, UpdateObjectErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/objects/{type}/{idOrUrn}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Idempotent upsert-by-URN
+ */
+export const upsertObjectByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertObjectByUrnData, ThrowOnError>): RequestResult<UpsertObjectByUrnResponses, UpsertObjectByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertObjectByUrnResponses, UpsertObjectByUrnErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/objects/{type}/{urn}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * List relationships
+ */
+export const listRelationships = <ThrowOnError extends boolean = false>(options?: Options<ListRelationshipsData, ThrowOnError>): RequestResult<ListRelationshipsResponses, ListRelationshipsErrors, ThrowOnError> => (options?.client ?? client).get<ListRelationshipsResponses, ListRelationshipsErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/relationships',
+    ...options
+});
+
+/**
+ * Create a relationship
+ */
+export const createRelationship = <ThrowOnError extends boolean = false>(options: Options<CreateRelationshipData, ThrowOnError>): RequestResult<CreateRelationshipResponses, CreateRelationshipErrors, ThrowOnError> => (options.client ?? client).post<CreateRelationshipResponses, CreateRelationshipErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/relationships',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Soft-delete a relationship
+ */
+export const deleteRelationship = <ThrowOnError extends boolean = false>(options: Options<DeleteRelationshipData, ThrowOnError>): RequestResult<DeleteRelationshipResponses, DeleteRelationshipErrors, ThrowOnError> => (options.client ?? client).delete<DeleteRelationshipResponses, DeleteRelationshipErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/relationships/{id}',
+    ...options
+});
+
+/**
+ * Get a relationship by id
+ */
+export const getRelationship = <ThrowOnError extends boolean = false>(options: Options<GetRelationshipData, ThrowOnError>): RequestResult<GetRelationshipResponses, GetRelationshipErrors, ThrowOnError> => (options.client ?? client).get<GetRelationshipResponses, GetRelationshipErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/relationships/{id}',
+    ...options
+});
+
+/**
+ * Run a named graph query
+ */
+export const graphQuery = <ThrowOnError extends boolean = false>(options: Options<GraphQueryData, ThrowOnError>): RequestResult<GraphQueryResponses, GraphQueryErrors, ThrowOnError> => (options.client ?? client).get<GraphQueryResponses, GraphQueryErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/graph/query/{name}',
+    ...options
+});
+
+/**
+ * Bounded generic graph traversal
+ */
+export const graphTraverse = <ThrowOnError extends boolean = false>(options: Options<GraphTraverseData, ThrowOnError>): RequestResult<GraphTraverseResponses, GraphTraverseErrors, ThrowOnError> => (options.client ?? client).get<GraphTraverseResponses, GraphTraverseErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/graph/traverse',
+    ...options
+});
+
+/**
+ * List audit events (chain order)
+ */
+export const listAuditEvents = <ThrowOnError extends boolean = false>(options?: Options<ListAuditEventsData, ThrowOnError>): RequestResult<ListAuditEventsResponses, ListAuditEventsErrors, ThrowOnError> => (options?.client ?? client).get<ListAuditEventsResponses, ListAuditEventsErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/audit-events',
+    ...options
 });

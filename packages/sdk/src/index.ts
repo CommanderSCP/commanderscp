@@ -4,7 +4,16 @@
  * package; nothing may bypass the public API.
  */
 export { ScpClient } from "./client.js";
-export type { ScpClientOptions, ListServiceObjectsQuery, LoginResult } from "./client.js";
+export type {
+  ScpClientOptions,
+  ListServiceObjectsQuery,
+  LoginResult,
+  ListQuery,
+  ListObjectsQuery,
+  ListRelationshipsQuery,
+  GraphQueryParams,
+  TraverseParams
+} from "./client.js";
 export { ScpApiError } from "./errors.js";
 
 export type {

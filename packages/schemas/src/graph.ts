@@ -45,6 +45,7 @@ export const CreateObjectTypeRequestSchema = z.object({
 export type CreateObjectTypeRequest = z.infer<typeof CreateObjectTypeRequestSchema>;
 
 export const ObjectTypeListResponseSchema = cursorPageResponseSchema(ObjectTypeSchema);
+export type ObjectTypeListResponse = z.infer<typeof ObjectTypeListResponseSchema>;
 
 export const RelationshipTypeSchema = z.object({
   id: z.string().min(1).max(100),
@@ -74,6 +75,7 @@ export const CreateRelationshipTypeRequestSchema = z.object({
 export type CreateRelationshipTypeRequest = z.infer<typeof CreateRelationshipTypeRequestSchema>;
 
 export const RelationshipTypeListResponseSchema = cursorPageResponseSchema(RelationshipTypeSchema);
+export type RelationshipTypeListResponse = z.infer<typeof RelationshipTypeListResponseSchema>;
 
 // ---------------------------------------------------------------------------------------------
 // Objects
