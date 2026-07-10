@@ -8,6 +8,7 @@ import { hasRoleAtScope } from "../authz/resolve.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { computeObjectContentHash, computeRelationshipContentHash } from "../graph/content-hash.js";
 import { ensureInstanceKey, signAttestation, type SignedAttestation } from "./attestation.js";
+import { appendJournalEntry } from "../federation/journal-repo.js";
 
 /**
  * N-of-M approval quorum (DESIGN §10.2). SECURITY-SENSITIVE surfaces (M4 PR body flag: "approval
@@ -241,6 +242,23 @@ export async function castApprovalVote(tx: TenantTx, input: CastApprovalVoteInpu
     }
     throw err;
   }
+
+  // M6 (DESIGN §13): approvals-as-evidence ride the journal so a Promotion Bundle exported later
+  // can carry this attestation, and so a peer syncing with a `full`/`changes_only` scope can see
+  // it happened, WITHOUT it ever becoming authority anywhere but here (§13 "approvals transfer as
+  // evidence, never as authority" — this entry is read-only history, never replayed as a vote).
+  await appendJournalEntry(tx, {
+    orgId: input.orgId,
+    entryKind: "approval_evidence",
+    contentHash: attestation.record.approvedObjectContentHash,
+    payload: {
+      approvalRequestId: input.approvalRequestId,
+      changeObjectId: request.changeObjectId,
+      changeUrn: changeObject.urn,
+      voterObjectId: input.voterObjectId,
+      attestation
+    }
+  });
 
   // Idempotent upsert of the graph-visible `approves` relationship (voter -> change). A
   // pre-existing edge (from an earlier vote on a DIFFERENT approval request for the same change)

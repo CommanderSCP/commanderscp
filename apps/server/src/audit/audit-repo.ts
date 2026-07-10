@@ -6,6 +6,7 @@ import type { AuditEvent } from "@scp/schemas";
 import { AUDIT_GENESIS_HASH, computeRowHash } from "@scp/schemas/audit-chain";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { auditEvents } from "../db/schema.js";
+import { appendJournalEntry } from "../federation/journal-repo.js";
 
 export interface AppendAuditEventInput {
   orgId: string;
@@ -79,6 +80,18 @@ export async function appendAuditEvent(tx: TenantTx, input: AppendAuditEventInpu
     occurredAt,
     prevHash,
     rowHash
+  });
+
+  // M6 (DESIGN §13: "audit segments ride the federation journal, so cross-domain actions are
+  // audit-complete on both sides of a trust boundary"). Piggybacked on the ONE call site every
+  // audited action already funnels through, so every audit event — object/relationship/change/
+  // policy/approval/freeze/rollback mutations alike — automatically gets an `audit_segment`
+  // journal entry with zero additional call-site wiring anywhere else in the codebase.
+  await appendJournalEntry(tx, {
+    orgId: input.orgId,
+    entryKind: "audit_segment",
+    contentHash: rowHash,
+    payload: { auditEventId: id, action: input.action, subjectId, actorId: input.actorId, occurredAt: occurredAt.toISOString(), reason, decisionId }
   });
 }
 

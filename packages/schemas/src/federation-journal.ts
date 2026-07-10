@@ -29,7 +29,7 @@ export const JOURNAL_GENESIS_HASH = "0".repeat(64);
 /** Deterministic canonical string for the *content* of a journal entry (everything except
  *  `rowHash`/`signature`, which are derived from / computed over this). Field order fixed. */
 export function canonicalizeJournalEntry(
-  entry: Omit<SyncJournalEntry, "rowHash" | "signature">
+  entry: Omit<SyncJournalEntry, "rowHash" | "signature" | "createdAt">
 ): string {
   return JSON.stringify({
     id: entry.id,
@@ -47,7 +47,7 @@ export function canonicalizeJournalEntry(
 
 /** `row_hash = sha256(prev_hash || canonical(entry))`, hex-encoded — identical shape to
  *  `audit-chain.ts`'s `computeRowHash`. */
-export function computeJournalRowHash(entry: Omit<SyncJournalEntry, "rowHash" | "signature">): string {
+export function computeJournalRowHash(entry: Omit<SyncJournalEntry, "rowHash" | "signature" | "createdAt">): string {
   const hash = createHash("sha256");
   hash.update(entry.prevHash);
   hash.update(canonicalizeJournalEntry(entry));

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Change, ChangeState } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -6,6 +7,15 @@ import { badRequest, notFound } from "../errors.js";
 import { decodeCursor, encodeCursor } from "../pagination.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { insertDecision } from "./decisions-repo.js";
+import { appendJournalEntry } from "../federation/journal-repo.js";
+
+/** `change_status` journal entries aren't tied to a graph object's own `content_hash` (that one
+ *  covers the change's static metadata; this covers the lifecycle-state snapshot) — hashed
+ *  independently so a state-only change (e.g. a transition) still produces a distinct, verifiable
+ *  content_hash on its journal entry. */
+export function changeStatusContentHash(payload: Record<string, unknown>): string {
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+}
 
 export type ChangeRow = typeof changes.$inferSelect;
 type ObjectRow = typeof objects.$inferSelect;
@@ -59,6 +69,13 @@ export interface ProposeChangeInput {
   targets: string[];
   /** Set only when this Change IS a rollback of another change (coordination/rollback.ts). */
   rollbackOfObjectId?: string;
+  /** M6 (DESIGN §13): set when this Change was instantiated from a Promotion Bundle —
+   *  `federation/promotion-repo.ts`'s `importPromotionBundle` is the only caller that sets this.
+   *  The resulting Change is a genuinely LOCAL, locally-authoritative Change (its own graph object
+   *  originates at THIS domain) that must still pass every local policy/control/approval gate —
+   *  approvals carried in the bundle are evidence attached separately (imported_approval_evidence),
+   *  never a bypass of local governance. */
+  importedFromDomain?: string;
 }
 
 /**
@@ -119,6 +136,7 @@ export async function proposeChange(
       topologyObjectId: topologyObjectId ?? null,
       topologyVersion: topologyVersion ?? null,
       rollbackOfObjectId: input.rollbackOfObjectId ?? null,
+      importedFromDomain: input.importedFromDomain ?? null,
       stateEnteredAt: now,
       lastHeartbeatAt: now,
       createdAt: now,
@@ -126,6 +144,32 @@ export async function proposeChange(
     })
     .returning();
   if (!row) throw new Error("failed to insert changes projection row");
+
+  // M6 (DESIGN §13 journal entry kinds — richer than the generic `object_upsert` `createObject`
+  // above already wrote for this change's underlying graph object): a `change_status` snapshot
+  // carrying the full projection-row state, for peers syncing with a `changes_only` scope and for
+  // the parent cross-domain status view. Written even for an IMPORTED change (importedFromDomain
+  // set) — its LOCAL lifecycle from here on is this domain's own to report, distinct from the
+  // origin domain's own journal entry for the promotion itself.
+  {
+    const payload = {
+      objectId: object.id,
+      urn: object.urn,
+      name: object.name,
+      state: "proposed",
+      sourceKind: input.sourceKind ?? null,
+      sourceRef: input.sourceRef ?? null,
+      emergency: input.emergency ?? false,
+      importedFromDomain: input.importedFromDomain ?? null,
+      rollbackOfObjectId: input.rollbackOfObjectId ?? null
+    };
+    await appendJournalEntry(tx, {
+      orgId: input.orgId,
+      entryKind: "change_status",
+      contentHash: changeStatusContentHash(payload),
+      payload
+    });
+  }
 
   await insertDecision(tx, {
     orgId: input.orgId,

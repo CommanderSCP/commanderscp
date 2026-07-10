@@ -939,6 +939,13 @@ export const syncCursors = pgTable(
     peerDomainId: uuid("peer_domain_id").notNull(),
     originDomainId: uuid("origin_domain_id").notNull(),
     lastAppliedSeq: bigint("last_applied_seq", { mode: "number" }).notNull().default(0),
+    // The imported `rowHash` of the entry at `lastAppliedSeq` — SECURITY-SENSITIVE: this is what
+    // lets a RESUMED import verify true hash-chain continuity across separate import calls (not
+    // just internal-to-one-bundle contiguity). Without it, an attacker controlling a later bundle
+    // could splice in a fabricated sub-chain starting at `cursor + 1` with a `prevHash` that
+    // matches nothing real, and `verifyJournalChain` would have no prior tail to check it against.
+    // NULL until the first entry from this (peer, origin) pair is applied.
+    lastAppliedRowHash: text("last_applied_row_hash"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [uniqueIndex("sync_cursors_pk").on(table.orgId, table.peerDomainId, table.originDomainId)]

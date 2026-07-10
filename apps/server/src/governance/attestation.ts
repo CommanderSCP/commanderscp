@@ -2,7 +2,10 @@ import { generateKeyPairSync, sign as cryptoSign, verify as cryptoVerify } from 
 import { v7 as uuidv7 } from "uuid";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { instanceKeys } from "../db/schema.js";
-import { canonicalJson } from "../graph/objects-repo.js";
+// M6: imported from the shared `util/` module, NOT `graph/objects-repo.js` — that module now
+// transitively imports THIS one (via federation/journal-repo.js's `ensureInstanceKey`), so
+// importing back from it here would close an import cycle. See util/canonical-json.ts's doc.
+import { canonicalJson } from "../util/canonical-json.js";
 
 /**
  * Ed25519 approval attestation (DESIGN.md §10.2 "review decision": "every approval is

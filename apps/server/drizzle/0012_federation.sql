@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS "sync_cursors" (
   "peer_domain_id" uuid NOT NULL,
   "origin_domain_id" uuid NOT NULL,
   "last_applied_seq" bigint DEFAULT 0 NOT NULL,
+  "last_applied_row_hash" text,
   "updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
