@@ -493,6 +493,17 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       expect(vote.attestation.signature.length).toBeGreaterThan(0);
       expect(vote.attestation.record.approverSubjectId).toBe(vote.voterObjectId);
     }
+
+    // DESIGN §10.2: "approvals are recorded as `approves` relationships" — graph-visible, not
+    // just rows in the approval_votes projection table.
+    for (const voterObjectId of [approverA.objectId, approverB.objectId]) {
+      const approvesRels = await admin.relationships.list({
+        fromId: voterObjectId,
+        toId: change.id,
+        typeId: "approves"
+      });
+      expect(approvesRels.items.length).toBeGreaterThanOrEqual(1);
+    }
   });
 
   // -----------------------------------------------------------------------------------------
@@ -584,6 +595,93 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     await waitForValidating(nonMemberClient, changeAsNonMember.id);
     const promoted = await nonMemberClient.changes.promote(changeAsNonMember.id);
     expect(promoted.state).toBe("promoted");
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // Emergency changes (DESIGN §10.3) — SECURITY-SENSITIVE surface: only a permitted actor
+  // (change:emergency) may flag a change emergency; a flagged change follows a CONFIGURED
+  // emergencyPolicy set instead of the normal required policies, never a blanket bypass, and the
+  // bypass itself is visible in the Decision trail (never a silent allow indistinguishable from
+  // "no policy applied").
+  // -----------------------------------------------------------------------------------------
+
+  describe("emergency changes", () => {
+    it("an emergency change follows the configured emergencyPolicy (bypassing an otherwise-unsatisfiable normal required policy) while a non-emergency change against the SAME target stays blocked — both fully audited", async () => {
+      const org = await createTestOrg(server, "emergency");
+      const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+      const target = await admin.components.create({ name: "emergency-target" });
+
+      // Deliberately unsatisfiable in this test (nobody ever votes) — any change that gets past
+      // this one did so via the emergency bypass, not by chance.
+      await createPolicy(admin, org, {
+        name: "normal-required-gate",
+        urnSuffix: "emergency-normal",
+        enforcement: "required",
+        scopeObjectId: target.id,
+        requireApprovals: { count: 1, fromRole: "Owner", scope: target.id }
+      });
+
+      // The org's configured emergency policy for this scope — effect-free (vacuously satisfied)
+      // so an emergency change sails through once the normal policy above is swapped out for it.
+      await createPolicy(admin, org, {
+        name: "emergency-bypass-policy",
+        urnSuffix: "emergency-bypass",
+        enforcement: "required",
+        scopeObjectId: target.id,
+        emergencyPolicy: true
+      });
+
+      // Non-emergency change against the SAME target: the normal required policy applies (it is
+      // NOT filtered out for a non-emergency change) and can never be satisfied -> stays parked.
+      const normalChange = await admin.changes.propose({ name: "normal-change", targets: [target.id] });
+      await assertStaysExecuting(admin, normalChange.id, 4_000);
+
+      // Emergency change, proposed by a permitted actor (the bootstrap admin holds Owner, which
+      // has change:emergency per the M4 migration) -> gate-orchestrator.ts swaps in ONLY the
+      // configured emergencyPolicy set -> proceeds cleanly through both the wave boundary and the
+      // validating->promoted lifecycle edge.
+      const emergencyChange = await admin.changes.propose({
+        name: "emergency-change",
+        targets: [target.id],
+        emergency: true
+      });
+      await waitForValidating(admin, emergencyChange.id);
+      const promoted = await admin.changes.promote(emergencyChange.id);
+      expect(promoted.state).toBe("promoted");
+
+      // Fully audited: the bypass is a NAMED fact in the Decision trail, not a silent allow — a
+      // retrospective reader can tell this change went through the emergency path.
+      const explained = await admin.changes.explain(emergencyChange.id);
+      const emergencyDecision = explained.decisions.find((d) => {
+        const gate = (d.reasonTree as { gate?: { emergencyNote?: unknown } }).gate;
+        return typeof gate?.emergencyNote === "string";
+      });
+      expect(emergencyDecision).toBeDefined();
+      expect(String((emergencyDecision!.reasonTree as { gate: { emergencyNote: string } }).gate.emergencyNote)).toMatch(
+        /emergency/i
+      );
+    });
+
+    it("a non-permitted actor cannot flag a change emergency (403) — the SAME actor can still propose an ordinary change", async () => {
+      const org = await createTestOrg(server, "emergency-authz");
+      const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+      const target = await admin.components.create({ name: "emergency-authz-target" });
+
+      // Administrator: object:write (can propose ordinary changes) but deliberately NOT
+      // change:emergency (Owner-only per the M4 migration — the two highest-blast-radius bypass
+      // permissions, freeze:override and change:emergency, are never granted to Administrator).
+      const administrator = await createTestUser(server, org, [{ role: "Administrator", scope: org.orgId }]);
+      const administratorClient = new ScpClient({ baseUrl: server.baseUrl, token: administrator.token });
+
+      const err = await expectApiError(() =>
+        administratorClient.changes.propose({ name: "attempted-emergency", targets: [target.id], emergency: true })
+      );
+      expect(err.status).toBe(403);
+
+      const ordinary = await administratorClient.changes.propose({ name: "ordinary-change", targets: [target.id] });
+      expect(ordinary.emergency).toBe(false);
+    });
   });
 });
 
