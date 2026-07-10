@@ -94,6 +94,15 @@ describe("device authorization flow", () => {
     });
     expect(whoami.statusCode, whoami.body).toBe(200);
 
+    // ...and it authenticates as the approving user specifically (`/auth/me` echoes identity).
+    const me = await server.app.inject({
+      method: "GET",
+      url: "/api/v1/auth/me",
+      headers: authHeader(claimed.token)
+    });
+    expect(me.statusCode, me.body).toBe(200);
+    expect((me.json() as { username: string }).username).toBe(org.adminUsername);
+
     // Single-use: a second poll for the same device code fails.
     const secondPoll = await server.app.inject({
       method: "POST",
@@ -102,6 +111,87 @@ describe("device authorization flow", () => {
     });
     expect(secondPoll.statusCode).toBe(400);
     expect((secondPoll.json() as TokenErrorBody).error).toBe("invalid_grant");
+  });
+
+  it("never stores a usable bearer token at rest — not even transiently between approve and claim", async () => {
+    const org = await createTestOrg(server, "device-flow-no-token-at-rest");
+
+    const start = await server.app.inject({ method: "POST", url: "/api/v1/auth/device/start" });
+    const started = start.json() as StartBody;
+
+    // Poll before approval — the row exists (`pending`) but this only proves the "not yet
+    // approved" path, not the security property under test, so no bearer-probing here.
+    const approve = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/auth/device/approve",
+      headers: authHeader(org.adminToken),
+      payload: { userCode: started.userCode }
+    });
+    expect(approve.statusCode, approve.body).toBe(200);
+
+    // This is the exact window the security review flagged: approved, not yet claimed. Read the
+    // row directly, as a transient DB read/backup/replica lag would see it.
+    const row = await server.deps.db.query.deviceAuthRequests.findFirst({
+      where: (t, { eq: eqOp }) => eqOp(t.userCode, started.userCode)
+    });
+    expect(row).toBeDefined();
+    expect(row?.status).toBe("approved");
+    expect(row?.approvedByUserId).toBeTruthy();
+
+    // Schema-level: the plaintext-token columns don't exist anymore (drizzle/0006 dropped them).
+    expect(Object.keys(row ?? {})).not.toContain("issuedToken");
+    expect(Object.keys(row ?? {})).not.toContain("issuedTokenExpiresAt");
+
+    // Behavioral: every string-valued column on the row, tried as a bearer token, is rejected.
+    // This proves "no usable credential at rest" independent of any particular column name.
+    for (const [key, value] of Object.entries(row ?? {})) {
+      if (typeof value !== "string" || value.length === 0) continue;
+      const probe = await server.app.inject({
+        method: "GET",
+        url: "/api/v1/domains",
+        headers: authHeader(value)
+      });
+      expect(
+        probe.statusCode,
+        `column '${key}' (value '${value}') unexpectedly authenticated as a bearer token`
+      ).toBe(401);
+    }
+
+    // The flow still works end to end from here — claiming now is what actually mints the
+    // session, and it authenticates as the approver.
+    const poll = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/auth/device/token",
+      payload: { deviceCode: started.deviceCode }
+    });
+    expect(poll.statusCode, poll.body).toBe(200);
+    const claimed = poll.json() as TokenOkBody;
+
+    const me = await server.app.inject({
+      method: "GET",
+      url: "/api/v1/auth/me",
+      headers: authHeader(claimed.token)
+    });
+    expect(me.statusCode, me.body).toBe(200);
+    expect((me.json() as { username: string }).username).toBe(org.adminUsername);
+
+    // And post-claim, the row is `claimed` and still holds nothing bearer-shaped.
+    const claimedRow = await server.deps.db.query.deviceAuthRequests.findFirst({
+      where: (t, { eq: eqOp }) => eqOp(t.userCode, started.userCode)
+    });
+    expect(claimedRow?.status).toBe("claimed");
+    for (const [key, value] of Object.entries(claimedRow ?? {})) {
+      if (typeof value !== "string" || value.length === 0) continue;
+      const probe = await server.app.inject({
+        method: "GET",
+        url: "/api/v1/domains",
+        headers: authHeader(value)
+      });
+      expect(
+        probe.statusCode,
+        `post-claim column '${key}' unexpectedly authenticated as a bearer token`
+      ).toBe(401);
+    }
   });
 
   it("approving a nonexistent userCode 404s", async () => {
