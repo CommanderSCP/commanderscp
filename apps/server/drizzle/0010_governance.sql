@@ -224,7 +224,8 @@ UPDATE object_types SET property_schema = '{
         }
       }
     },
-    "emergencyPolicy": { "type": "boolean" }
+    "emergencyPolicy": { "type": "boolean" },
+    "autoRollbackOnFailure": { "type": "boolean" }
   }
 }'::jsonb
 WHERE id = 'policy';

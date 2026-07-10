@@ -4,10 +4,17 @@ import type { PluginHost, PluginHostInstanceConfig } from "../plugin-host/contra
 import { getControlBinding, insertControlRun, latestControlRun } from "./controls-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 
+// `control_bindings.plugin_module` is a free-form string at the schema layer
+// (CreateControlBindingRequestSchema — z.string().min(1)), so THIS check is the only thing
+// standing between an attacker-controlled binding and `host.start()` provisioning an arbitrary
+// module. Deliberately just the one real ControlPlugin module — "fake-executor" is an
+// ExecutorPlugin (subprocess-entry.ts's `loadPlugin`), not a ControlPlugin, so accepting it here
+// would only ever produce a safe-but-confusing RPC "unknown method 'evaluate'" failure; excluding
+// it keeps this allowlist an honest description of what a control binding can actually reach.
 const KNOWN_CONTROL_MODULES: PluginHostInstanceConfig["module"][] = ["webhook-control"];
 
 function isKnownPluginModule(value: string): value is PluginHostInstanceConfig["module"] {
-  return (KNOWN_CONTROL_MODULES as string[]).includes(value) || value === "fake-executor";
+  return (KNOWN_CONTROL_MODULES as string[]).includes(value);
 }
 
 /**
