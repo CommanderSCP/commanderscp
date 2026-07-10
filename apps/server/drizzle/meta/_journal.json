@@ -43,6 +43,13 @@
       "when": 1783710000000,
       "tag": "0005_plans",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1783720000000,
+      "tag": "0006_device_flow_defer_session",
+      "breakpoints": true
     }
   ]
 }

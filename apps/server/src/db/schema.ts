@@ -109,11 +109,13 @@ export const personalAccessTokens = pgTable(
  * air-gapped orgs and OIDC-configured orgs alike (DESIGN.md §7 "headless jump boxes can't do
  * browser redirects"). Auth substrate, no RLS — same treatment as orgs/users/sessions.
  *
- * `issuedToken` briefly holds a PLAINTEXT session token between approval and the CLI's next poll
- * — acceptable because the row is short-lived (~10 min, `expiresAt`), single-use (claimed
- * atomically and nulled out in the same update — auth/device-flow.ts `pollDeviceAuth`), and only
- * reachable by whoever knows the long, unguessable `deviceCode` (never the short, human-typed
- * `userCode`, which is deliberately low-entropy but short-lived + single-use).
+ * Session minting is DEFERRED to claim time (auth/device-flow.ts `pollDeviceAuth`, drizzle/0006):
+ * approval (`approveDeviceAuth`) only records WHO approved (`approvedByUserId`) and WHEN
+ * (`approvedAt`) — never a token. `createSession` (session.ts) is called for the first time
+ * inside the claiming poll's `FOR UPDATE` transaction, and the resulting plaintext bearer is
+ * returned exactly once, never persisted. This row therefore never holds a usable credential at
+ * any point in its lifecycle — matching every other credential in the system (sessions:
+ * SHA-256 hash; PATs: argon2 hash).
  */
 export const deviceAuthRequests = pgTable("device_auth_requests", {
   id: uuid("id").primaryKey(),
@@ -121,8 +123,9 @@ export const deviceAuthRequests = pgTable("device_auth_requests", {
   userCode: text("user_code").notNull().unique(),
   status: text("status").notNull().default("pending"), // pending|approved|denied|expired|claimed
   orgId: uuid("org_id").references(() => orgs.id), // set on approval
-  issuedToken: text("issued_token"), // plaintext, briefly — see doc comment above
-  issuedTokenExpiresAt: timestamp("issued_token_expires_at", { withTimezone: true }),
+  /** Set on approval; the user whose auth context the deferred session gets minted from at claim time. */
+  approvedByUserId: uuid("approved_by_user_id").references(() => users.id),
+  approvedAt: timestamp("approved_at", { withTimezone: true }),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
 });
