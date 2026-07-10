@@ -129,7 +129,32 @@ import {
   // M3: webhook ingress + source_mappings correlation config (routes/change-sources.ts).
   ingestChangeSourceWebhook as ingestChangeSourceWebhookRequest,
   createSourceMapping as createSourceMappingRequest,
-  listSourceMappings as listSourceMappingsRequest
+  listSourceMappings as listSourceMappingsRequest,
+  // M4 Governance Engine (BUILD_AND_TEST.md §8 M4, routes/typed-registries.ts +
+  // routes/governance.ts): Policy/Control typed-registry resources, control bindings/runs,
+  // approvals (N-of-M quorum), freezes, and the `scp policy evaluate` dry-run endpoint.
+  createPolicy as createPolicyRequest,
+  listPolicys as listPoliciesRequest,
+  getPolicy as getPolicyRequest,
+  updatePolicy as updatePolicyRequest,
+  deletePolicy as deletePolicyRequest,
+  upsertPolicyByUrn as upsertPolicyByUrnRequest,
+  createControl as createControlRequest,
+  listControls as listControlsRequest,
+  getControl as getControlRequest,
+  updateControl as updateControlRequest,
+  deleteControl as deleteControlRequest,
+  upsertControlByUrn as upsertControlByUrnRequest,
+  putControlBinding as putControlBindingRequest,
+  listChangeControlRuns as listChangeControlRunsRequest,
+  listApprovals as listApprovalsRequest,
+  getApproval as getApprovalRequest,
+  listApprovalVotes as listApprovalVotesRequest,
+  castApprovalVote as castApprovalVoteRequest,
+  createFreeze as createFreezeRequest,
+  listFreezes as listFreezesRequest,
+  getFreeze as getFreezeRequest,
+  policyEvaluate as policyEvaluateRequest
 } from "./generated/sdk.gen.js";
 import type {
   ApplyPlanResponse,
@@ -175,7 +200,20 @@ import type {
   CreateSourceMappingRequest,
   SourceMapping,
   SourceMappingListResponse,
-  WebhookIngressResponse
+  WebhookIngressResponse,
+  // M4 Governance Engine (BUILD_AND_TEST.md §8 M4).
+  ControlBinding,
+  CreateControlBindingRequest,
+  ControlRunListResponse,
+  ApprovalRequest,
+  ApprovalRequestListQuery,
+  ApprovalRequestListResponse,
+  ApprovalVote,
+  CastApprovalVoteRequest,
+  Freeze,
+  CreateFreezeRequest,
+  FreezeListResponse,
+  PolicyEvaluateResponse
 } from "@scp/schemas";
 import { ScpApiError } from "./errors.js";
 
@@ -966,9 +1004,16 @@ export class ScpClient {
       const result = await cancelChangeRequest({ client: this.client, path: { id }, body: { reason } });
       return unwrap(result);
     },
-    /** Promotes a change out of `validating` — the human approval gate before `promoted`. */
-    promote: async (id: string, reason?: string): Promise<Change> => {
-      const result = await promoteChangeRequest({ client: this.client, path: { id }, body: { reason } });
+    /** Promotes a change out of `validating` — the human approval gate before `promoted`.
+     *  `overrideFreeze` (DESIGN §10.3, M4) attempts to override an active freeze blocking this
+     *  transition — requires `freeze:override` permission AND `reason` to be set (the same
+     *  field doubles as the freeze override's mandatory reason). */
+    promote: async (id: string, reason?: string, overrideFreeze?: boolean): Promise<Change> => {
+      const result = await promoteChangeRequest({
+        client: this.client,
+        path: { id },
+        body: { reason, overrideFreeze }
+      });
       return unwrap(result);
     },
     /** Manually triggers a rollback — returns the NEW rollback Change (linked via
@@ -1019,4 +1064,86 @@ export class ScpClient {
       return unwrap(result);
     }
   };
+
+  // -----------------------------------------------------------------------------------------
+  // M4 Governance Engine (BUILD_AND_TEST.md §8 M4, DESIGN §10). Policy/Control documents reuse
+  // `typedResource` exactly like every other typed registry (routes/typed-registries.ts); control
+  // bindings/runs, approvals, freezes, and `policy evaluate` are their own thin wrappers.
+  // -----------------------------------------------------------------------------------------
+
+  readonly policies = this.typedResource({
+    create: createPolicyRequest,
+    list: listPoliciesRequest,
+    get: getPolicyRequest,
+    update: updatePolicyRequest,
+    del: deletePolicyRequest,
+    upsert: upsertPolicyByUrnRequest
+  });
+
+  readonly controls = {
+    ...this.typedResource({
+      create: createControlRequest,
+      list: listControlsRequest,
+      get: getControlRequest,
+      update: updateControlRequest,
+      del: deleteControlRequest,
+      upsert: upsertControlByUrnRequest
+    }),
+    /** Binds a Control to a ControlPlugin instance (DESIGN §10.2). */
+    putBinding: async (idOrUrn: string, req: CreateControlBindingRequest): Promise<ControlBinding> => {
+      const result = await putControlBindingRequest({ client: this.client, path: { idOrUrn }, body: req });
+      return unwrap(result);
+    }
+  };
+
+  readonly controlRuns = {
+    /** Persisted control outcomes + evidence for one Change (DESIGN §10.2/§10.4). */
+    listForChange: async (changeId: string): Promise<ControlRunListResponse> => {
+      const result = await listChangeControlRunsRequest({ client: this.client, path: { idOrUrn: changeId } });
+      return unwrap(result);
+    }
+  };
+
+  readonly approvals = {
+    list: async (query: ApprovalRequestListQuery): Promise<ApprovalRequestListResponse> => {
+      const result = await listApprovalsRequest({ client: this.client, query });
+      return unwrap(result);
+    },
+    get: async (id: string): Promise<ApprovalRequest> => {
+      const result = await getApprovalRequest({ client: this.client, path: { id } });
+      return unwrap(result);
+    },
+    listVotes: async (id: string): Promise<ApprovalVote[]> => {
+      const result = await listApprovalVotesRequest({ client: this.client, path: { id } });
+      return unwrap(result);
+    },
+    /** Casts a vote AS THE AUTHENTICATED CALLER — DESIGN §10.2 N-of-M quorum; there is no way to
+     *  vote on someone else's behalf through this API. */
+    vote: async (id: string, req: CastApprovalVoteRequest = {}): Promise<ApprovalVote> => {
+      const result = await castApprovalVoteRequest({ client: this.client, path: { id }, body: req });
+      return unwrap(result);
+    }
+  };
+
+  readonly freezes = {
+    create: async (req: CreateFreezeRequest): Promise<Freeze> => {
+      const result = await createFreezeRequest({ client: this.client, body: req });
+      return unwrap(result);
+    },
+    list: async (): Promise<FreezeListResponse> => {
+      const result = await listFreezesRequest({ client: this.client });
+      return unwrap(result);
+    },
+    get: async (id: string): Promise<Freeze> => {
+      const result = await getFreezeRequest({ client: this.client, path: { id } });
+      return unwrap(result);
+    }
+  };
+
+  /** `scp policy evaluate` — a dry-run gate check against a change's CURRENT state, no transition
+   *  attempted (DESIGN §10.1 explainability, reusing the exact orchestrator the real gates run). */
+  async policyEvaluate(changeId: string): Promise<PolicyEvaluateResponse> {
+    const result = await policyEvaluateRequest({ client: this.client, body: { changeId } });
+    return unwrap(result);
+  }
 }
