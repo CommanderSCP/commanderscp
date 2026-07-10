@@ -141,28 +141,11 @@ describe("scp_pgboss: schema-scoped role probe", () => {
     await raw.close();
   });
 
-  it("scp_pgboss CANNOT read or write public.changes — permission-denied (42501), if that table exists yet", async () => {
-    // `changes` (drizzle/0007_change_coordination.sql) is being added concurrently on this branch
-    // by another process; check for it defensively so this test doesn't hard-fail with a
-    // confusing "relation does not exist" error on a checkout that predates it landing.
-    const admin = new pg.Client({ connectionString: testDatabaseUrl() });
-    await admin.connect();
-    const exists = await admin.query<{ exists: boolean }>(
-      `SELECT EXISTS (
-         SELECT 1 FROM information_schema.tables
-         WHERE table_schema = 'public' AND table_name = 'changes'
-       ) AS exists`
-    );
-    await admin.end();
-
-    if (!exists.rows[0]?.exists) {
-      console.warn(
-        "[pgboss-role.integration.test] public.changes does not exist yet in this checkout — " +
-          "skipping the changes probe. Objects/relationships/role_bindings above are the primary proof."
-      );
-      return;
-    }
-
+  it("scp_pgboss CANNOT read or write public.changes — permission-denied (42501)", async () => {
+    // `changes` (drizzle/0007_change_coordination.sql, M3) is the coordination engine's tenant
+    // table — the same isolation guarantee proven for objects/relationships/role_bindings above
+    // must hold for it too (BUILD_AND_TEST.md §8 M3 DoD: "pg-boss-role probe proves the
+    // pgboss-schema role cannot touch tenant tables (objects/relationships/role_bindings/changes)").
     const raw = await RawScpPgBossClient.connect();
     await expect(raw.query("SELECT * FROM public.changes")).rejects.toMatchObject({
       code: "42501"

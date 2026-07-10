@@ -325,4 +325,113 @@ describe("coordination engine: crash resumption", () => {
       await server.close();
     }
   });
+
+  it("kills the fake-executor SUBPROCESS mid-wave — the worker survives, the plugin restarts with backoff, and the wave resumes", async () => {
+    const server = await buildTestServer();
+    const org = await createTestOrg(server, "kill-subprocess");
+    const stateDir = await mkdtemp(join(tmpdir(), "scp-kill-subprocess-test-"));
+    const statePath = join(stateDir, "fake-executor-state.json");
+
+    // A generous autoSucceedAfterMs (3s) gives a reliable window to observe the wave target
+    // mid-flight (triggered/observing) before the subprocess is killed out from under it. Small
+    // restart-backoff bounds keep this test fast rather than waiting out production-tuned delays.
+    const boss = await startPgBoss(server.deps.config.pgBossDatabaseUrl);
+    const host = new SubprocessPluginHost({
+      callTimeoutMs: 10_000,
+      restartBackoffBaseMs: 50,
+      maxRestartBackoffMs: 300
+    });
+    await host.start([
+      {
+        id: DEFAULT_EXECUTOR_INSTANCE_ID,
+        module: DEFAULT_EXECUTOR_MODULE,
+        orgId: "shared",
+        domainId: "shared",
+        config: { statePath, autoSucceedAfterMs: 3_000 }
+      }
+    ]);
+    const loop = await startReconcileLoop(boss, server.deps.db, host);
+
+    try {
+      const createTarget = await server.app.inject({
+        method: "POST",
+        url: "/api/v1/components",
+        headers: { authorization: `Bearer ${org.adminToken}` },
+        payload: { name: "kill-subprocess-target" }
+      });
+      expect(createTarget.statusCode).toBe(201);
+      const targetObjectId = createTarget.json().id as string;
+
+      const propose = await server.app.inject({
+        method: "POST",
+        url: "/api/v1/changes",
+        headers: { authorization: `Bearer ${org.adminToken}` },
+        payload: { name: "kill-subprocess change", targets: [targetObjectId] }
+      });
+      expect(propose.statusCode).toBe(201);
+      const changeId = propose.json().id as string;
+
+      await waitUntil(
+        async () => {
+          const targets = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+            tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, targetObjectId))
+          );
+          const t = targets[0];
+          return t && (t.status === "triggered" || t.status === "observing") ? t : undefined;
+        },
+        {
+          describe: "wave target reaches triggered/observing (mid-wave) before the subprocess is killed",
+          timeoutMs: 10_000
+        }
+      );
+
+      // The crash itself: simulate an OOM/segfault/operator `kill -9` of the fake-executor's REAL
+      // child process (host.ts's killInstanceForTest — the test-only seam that exists precisely
+      // because there's no OS-level access to the real PID from outside SubprocessPluginHost).
+      host.killInstanceForTest(DEFAULT_EXECUTOR_INSTANCE_ID);
+
+      // Direct proof of "the plugin restarts with backoff": an RPC call against the SAME `host`
+      // instance issued right after the kill has nothing to talk to until host.ts's
+      // restart-with-backoff timer respawns the child and it re-announces `ready` — `call()`'s
+      // built-in wait-for-ready + transparent retry (host.ts's module doc: "callers never see a
+      // dead subprocess, only a slower/retried call") is what makes this resolve successfully
+      // rather than throw or hang. It can ONLY resolve if a genuinely new child process came up.
+      const capabilities = await host.executor(DEFAULT_EXECUTOR_INSTANCE_ID).describeCapabilities();
+      expect(capabilities.supportsTrigger).toBe(true);
+
+      // "The worker survives": this is the SAME reconcile loop / pg-boss job that was running
+      // before the kill — never stopped, never replaced — driving the change the rest of the way.
+      // "The wave resumes": the target's in-flight run (its statePath-backed state survived the
+      // crash — fake-executor's own module doc) still completes and the change reaches
+      // 'validating' with no operator intervention beyond the eventual human promote below.
+      await waitUntil(
+        async () => {
+          const get = await server.app.inject({
+            method: "GET",
+            url: `/api/v1/changes/${changeId}`,
+            headers: { authorization: `Bearer ${org.adminToken}` }
+          });
+          return get.json().state === "validating" ? get.json() : undefined;
+        },
+        {
+          describe: `change ${changeId} reaches 'validating' after the plugin subprocess is killed and restarts`,
+          timeoutMs: 15_000
+        }
+      );
+
+      const promote = await server.app.inject({
+        method: "POST",
+        url: `/api/v1/changes/${changeId}/promote`,
+        headers: { authorization: `Bearer ${org.adminToken}` },
+        payload: {}
+      });
+      expect(promote.statusCode).toBe(200);
+      expect(promote.json().state).toBe("promoted");
+    } finally {
+      await loop.stop();
+      await host.stop();
+      await boss.stop({ graceful: false, timeout: 500 }).catch(() => undefined);
+      await server.close();
+    }
+  });
 });
