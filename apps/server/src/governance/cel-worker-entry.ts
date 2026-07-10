@@ -9,9 +9,16 @@
  *    no loops, no user-defined functions, no assignment) via Chevrotain and interprets the parsed
  *    AST directly; it never calls `eval`/`new Function`/`vm` on the input string, so a CEL
  *    expression cannot become executable JavaScript no matter what text it contains — an injection
- *    attempt like `"a".constructor.constructor('return process')()` is just an invalid/nonsensical
- *    CEL parse (dots may only navigate CEL identifiers/fields, not JS prototype chains) and fails
- *    or evaluates to an identifier-not-found error, never real JS execution.
+ *    attempt like `"a".constructor.constructor('return process')()` cannot spawn a Turing-complete
+ *    JS execution: CEL has no way to CALL a function it might resolve with attacker-controlled code.
+ *    (Note: cel-js implements member access as JS property access, so a `.constructor` traversal
+ *    MAY resolve to a live JS value rather than cleanly parse-erroring — the earlier claim that
+ *    "dots can't navigate JS prototype chains" was wrong. The guarantee does NOT rest on that.
+ *    Two things make it safe anyway: no host function is registered to invoke, AND every result
+ *    crosses back to the parent via `postMessage`'s structured clone, which STRIPS functions and
+ *    other non-cloneable/live values — nothing callable can ever return to the host. The unit
+ *    suite asserts exactly this: an escape attempt yields either a failed eval or an inert,
+ *    JSON-serializable value, never something callable.)
  *  - The THIRD argument to `evaluate()` (a "custom functions" map) is never passed here — this
  *    process registers zero host bindings, so even a syntactically valid CEL function call
  *    (`foo()`) has nothing to invoke. No `context` value this worker is ever given exposes `http`,

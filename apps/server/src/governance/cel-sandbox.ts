@@ -50,6 +50,20 @@ const DEFAULT_WORKER_ENTRY_PATH = path.resolve(
 export const CEL_MAX_EXPRESSION_LENGTH = 4096;
 export const CEL_MAX_NESTING_DEPTH = 48;
 export const CEL_DEFAULT_TIMEOUT_MS = 250;
+/** MAJOR #4: the EVALUATION CONTEXT is partly attacker-controlled — a change target's `labels`
+ *  and the graph owner/dependent id arrays flow in from graph objects any writer can set. cel-js's
+ *  `==`/`!=` do a deep structural compare, so a short expression like `subject.labels == {...}`
+ *  over a huge/deep labels object can burn the whole timeout budget (feeding the timeout path).
+ *  Bounding the serialized size AND the nesting depth of the context before it ever reaches a
+ *  worker caps per-eval cost independent of the expression. Generous vs. any real policy context
+ *  (DESIGN §10.1's shape is a handful of ids + a small labels map). */
+export const CEL_MAX_CONTEXT_BYTES = 64 * 1024;
+export const CEL_MAX_CONTEXT_DEPTH = 32;
+/** MAJOR #3: default worker-thread pool size. >1 so gate-evaluation contention (many changes
+ *  reconciling at once) can't serialize every CEL call behind one worker and push required
+ *  conditions toward the timeout path. Overridable per-instance (`poolSize`) and, for the shared
+ *  sandbox, via `SCP_CEL_POOL_SIZE`. */
+export const CEL_DEFAULT_POOL_SIZE = 2;
 
 export class CelSandboxError extends Error {
   constructor(message: string) {
@@ -85,6 +99,37 @@ export function checkStaticComplexity(expression: string): void {
       throw new CelSandboxError(`CEL expression exceeds max nesting depth (${CEL_MAX_NESTING_DEPTH})`);
     }
   }
+}
+
+/** Depth of the deepest nested object/array in `value`, short-circuiting once `limit` is exceeded
+ *  (so a maliciously deep structure can't make THIS check itself expensive). */
+function exceedsDepth(value: unknown, limit: number, depth = 0): boolean {
+  if (depth > limit) return true;
+  if (value === null || typeof value !== "object") return false;
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    if (exceedsDepth(child, limit, depth + 1)) return true;
+  }
+  return false;
+}
+
+/** Cheap rejection of a pathologically large/deep evaluation context (MAJOR #4) — returns an error
+ *  string to reject, or `null` if the context is within bounds. Returns an error (rather than
+ *  throwing) so an oversized attacker-controlled context flows through the normal fail-closed path
+ *  (a required policy blocks; advisory annotates) instead of crashing the caller. */
+export function checkContextComplexity(context: Record<string, unknown>): string | null {
+  if (exceedsDepth(context, CEL_MAX_CONTEXT_DEPTH)) {
+    return `CEL context exceeds max nesting depth (${CEL_MAX_CONTEXT_DEPTH})`;
+  }
+  let serializedLength: number;
+  try {
+    serializedLength = JSON.stringify(context).length;
+  } catch {
+    return "CEL context is not JSON-serializable"; // e.g. a cycle — reject rather than pass to the worker
+  }
+  if (serializedLength > CEL_MAX_CONTEXT_BYTES) {
+    return `CEL context exceeds max size (${serializedLength} > ${CEL_MAX_CONTEXT_BYTES} bytes)`;
+  }
+  return null;
 }
 
 export type CelEvalResult =
@@ -137,7 +182,7 @@ export class CelSandbox {
   constructor(options: CelSandboxOptions = {}) {
     this.opts = {
       timeoutMs: options.timeoutMs ?? CEL_DEFAULT_TIMEOUT_MS,
-      poolSize: options.poolSize ?? 1,
+      poolSize: Math.max(1, options.poolSize ?? CEL_DEFAULT_POOL_SIZE),
       workerEntryPath: options.workerEntryPath ?? DEFAULT_WORKER_ENTRY_PATH,
       readyTimeoutMs: options.readyTimeoutMs ?? 10_000
     };
@@ -244,6 +289,11 @@ export class CelSandbox {
    */
   async evaluate(expression: string, context: Record<string, unknown>): Promise<CelEvalResult> {
     checkStaticComplexity(expression);
+    // MAJOR #4: reject a pathologically large/deep (partly attacker-controlled) context BEFORE it
+    // reaches a worker, so a short expression can't exhaust the timeout budget via deep-equality
+    // over huge labels. Returns `{ok:false}` (not throw) so it fails closed for required policies.
+    const contextError = checkContextComplexity(context);
+    if (contextError) return { ok: false, error: contextError };
     if (this.stopped) return { ok: false, error: "CEL sandbox is stopped" };
 
     const entry = this.workers[this.nextWorkerIndex % this.workers.length]!;
@@ -285,9 +335,12 @@ export class CelSandbox {
 let sharedSandbox: CelSandbox | undefined;
 
 /** Process-wide default sandbox (governance/evaluate.ts's normal call path) — lazily created so
- *  no worker threads spin up for processes that never evaluate a policy (e.g. `openapi:emit`). */
+ *  no worker threads spin up for processes that never evaluate a policy (e.g. `openapi:emit`).
+ *  `SCP_CEL_POOL_SIZE` (default {@link CEL_DEFAULT_POOL_SIZE}) tunes the worker pool for higher
+ *  gate-evaluation concurrency (MAJOR #3). */
 export function getSharedCelSandbox(): CelSandbox {
-  sharedSandbox ??= new CelSandbox();
+  const envPool = Number.parseInt(process.env.SCP_CEL_POOL_SIZE ?? "", 10);
+  sharedSandbox ??= new CelSandbox(Number.isFinite(envPool) && envPool > 0 ? { poolSize: envPool } : {});
   return sharedSandbox;
 }
 
