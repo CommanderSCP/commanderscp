@@ -75,6 +75,21 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
           permission: "object:write",
           scopeObjectId: body.domainId ?? auth.orgId
         });
+        // DESIGN §10.3: "a change flagged emergency by a PERMITTED actor" — `object:write` alone
+        // is not enough to set `emergency: true`, since that flag is what lets
+        // `governance/gate-orchestrator.ts` swap in the (possibly gate-bypassing) emergency
+        // policy set instead of the normal required policies. Without this check, any subject who
+        // can propose a change at all could self-grant an emergency bypass — the exact
+        // "emergency-bypass authz" surface this milestone's security review targets. Only checked
+        // when the flag is actually being turned on; a normal (non-emergency) propose is unaffected.
+        if (body.emergency) {
+          await authorize(tx, {
+            orgId: auth.orgId,
+            subjectObjectId: auth.subjectObjectId,
+            permission: "change:emergency",
+            scopeObjectId: body.domainId ?? auth.orgId
+          });
+        }
         return proposeChange(tx, {
           orgId: auth.orgId,
           actorObjectId: auth.subjectObjectId,
