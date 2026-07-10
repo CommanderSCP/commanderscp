@@ -3,6 +3,7 @@ import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { v7 as uuidv7 } from "uuid";
 import {
   ChangeSourceEventParamSchema,
+  ChangeSourceWebhookBodySchema,
   CreateSourceMappingRequestSchema,
   ProblemSchema,
   SourceMappingListResponseSchema,
@@ -41,6 +42,7 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
     url: "/api/v1/change-sources/:sourceKind/webhook",
     schema: {
       params: ChangeSourceEventParamSchema,
+      body: ChangeSourceWebhookBodySchema,
       response: {
         202: WebhookIngressResponseSchema,
         401: ProblemSchema,
@@ -71,7 +73,7 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
           sourceKind: request.params.sourceKind,
           signatureVerified: false,
           headers: request.headers as Record<string, unknown>,
-          payload: (request.body ?? {}) as Record<string, unknown>
+          payload: request.body
         });
         return id;
       });

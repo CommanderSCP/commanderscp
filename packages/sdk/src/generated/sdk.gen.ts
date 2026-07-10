@@ -2,7 +2,7 @@
 
 import { client } from './client.gen.js';
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client/index.js';
-import type { AddComponentConsumesData, AddComponentConsumesErrors, AddComponentConsumesResponses, AddComponentDependsOnData, AddComponentDependsOnErrors, AddComponentDependsOnResponses, AddComponentOwnerData, AddComponentOwnerErrors, AddComponentOwnerResponses, AddDeploymentTargetOwnerData, AddDeploymentTargetOwnerErrors, AddDeploymentTargetOwnerResponses, AddDomainOwnerData, AddDomainOwnerErrors, AddDomainOwnerResponses, AddServiceConsumesData, AddServiceConsumesErrors, AddServiceConsumesResponses, AddServiceDependsOnData, AddServiceDependsOnErrors, AddServiceDependsOnResponses, AddServiceOwnerData, AddServiceOwnerErrors, AddServiceOwnerResponses, ApplyPlanData, ApplyPlanErrors, ApplyPlanResponses, ApproveDeviceAuthData, ApproveDeviceAuthErrors, ApproveDeviceAuthResponses, CreateComponentData, CreateComponentErrors, CreateComponentResponses, CreateDeploymentTargetData, CreateDeploymentTargetErrors, CreateDeploymentTargetResponses, CreateDomainData, CreateDomainErrors, CreateDomainResponses, CreateGroupData, CreateGroupErrors, CreateGroupResponses, CreateObjectData, CreateObjectErrors, CreateObjectResponses, CreateObjectTypeData, CreateObjectTypeErrors, CreateObjectTypeResponses, CreatePatData, CreatePatErrors, CreatePatResponses, CreatePlanData, CreatePlanErrors, CreatePlanResponses, CreateRelationshipData, CreateRelationshipErrors, CreateRelationshipResponses, CreateRelationshipTypeData, CreateRelationshipTypeErrors, CreateRelationshipTypeResponses, CreateServiceAccountData, CreateServiceAccountErrors, CreateServiceAccountResponses, CreateServiceData, CreateServiceErrors, CreateServiceObjectData, CreateServiceObjectErrors, CreateServiceObjectForOrgData, CreateServiceObjectForOrgErrors, CreateServiceObjectForOrgResponses, CreateServiceObjectResponses, CreateServiceResponses, CreateTeamData, CreateTeamErrors, CreateTeamResponses, CreateUserData, CreateUserErrors, CreateUserResponses, DeleteComponentData, DeleteComponentErrors, DeleteComponentResponses, DeleteDeploymentTargetData, DeleteDeploymentTargetErrors, DeleteDeploymentTargetResponses, DeleteDomainData, DeleteDomainErrors, DeleteDomainResponses, DeleteGroupData, DeleteGroupErrors, DeleteGroupResponses, DeleteObjectData, DeleteObjectErrors, DeleteObjectResponses, DeleteRelationshipData, DeleteRelationshipErrors, DeleteRelationshipResponses, DeleteServiceAccountData, DeleteServiceAccountErrors, DeleteServiceAccountResponses, DeleteServiceData, DeleteServiceErrors, DeleteServiceResponses, DeleteTeamData, DeleteTeamErrors, DeleteTeamResponses, DeleteUserData, DeleteUserErrors, DeleteUserResponses, GetAuthConfigData, GetAuthConfigResponses, GetComponentData, GetComponentErrors, GetComponentResponses, GetCurrentUserData, GetCurrentUserErrors, GetCurrentUserResponses, GetDeploymentTargetData, GetDeploymentTargetErrors, GetDeploymentTargetResponses, GetDomainData, GetDomainErrors, GetDomainResponses, GetGroupData, GetGroupErrors, GetGroupResponses, GetObjectData, GetObjectErrors, GetObjectResponses, GetPlanData, GetPlanErrors, GetPlanResponses, GetRelationshipData, GetRelationshipErrors, GetRelationshipResponses, GetServiceAccountData, GetServiceAccountErrors, GetServiceAccountResponses, GetServiceData, GetServiceErrors, GetServiceResponses, GetTeamData, GetTeamErrors, GetTeamResponses, GetUserData, GetUserErrors, GetUserResponses, GraphQueryData, GraphQueryErrors, GraphQueryResponses, GraphTraverseData, GraphTraverseErrors, GraphTraverseResponses, ListAuditEventsData, ListAuditEventsErrors, ListAuditEventsResponses, ListComponentConsumesData, ListComponentConsumesErrors, ListComponentConsumesResponses, ListComponentDependsOnData, ListComponentDependsOnErrors, ListComponentDependsOnResponses, ListComponentOwnersData, ListComponentOwnersErrors, ListComponentOwnersResponses, ListComponentsData, ListComponentsErrors, ListComponentsResponses, ListDeploymentTargetOwnersData, ListDeploymentTargetOwnersErrors, ListDeploymentTargetOwnersResponses, ListDeploymentTargetsData, ListDeploymentTargetsErrors, ListDeploymentTargetsResponses, ListDomainOwnersData, ListDomainOwnersErrors, ListDomainOwnersResponses, ListDomainsData, ListDomainsErrors, ListDomainsResponses, ListGroupsData, ListGroupsErrors, ListGroupsResponses, ListObjectsData, ListObjectsErrors, ListObjectsResponses, ListObjectTypesData, ListObjectTypesErrors, ListObjectTypesResponses, ListPatsData, ListPatsErrors, ListPatsResponses, ListRelationshipsData, ListRelationshipsErrors, ListRelationshipsResponses, ListRelationshipTypesData, ListRelationshipTypesErrors, ListRelationshipTypesResponses, ListServiceAccountsData, ListServiceAccountsErrors, ListServiceAccountsResponses, ListServiceConsumesData, ListServiceConsumesErrors, ListServiceConsumesResponses, ListServiceDependsOnData, ListServiceDependsOnErrors, ListServiceDependsOnResponses, ListServiceObjectsData, ListServiceObjectsErrors, ListServiceObjectsForOrgData, ListServiceObjectsForOrgErrors, ListServiceObjectsForOrgResponses, ListServiceObjectsResponses, ListServiceOwnersData, ListServiceOwnersErrors, ListServiceOwnersResponses, ListServicesData, ListServicesErrors, ListServicesResponses, ListTeamsData, ListTeamsErrors, ListTeamsResponses, ListUsersData, ListUsersErrors, ListUsersResponses, LoginData, LoginErrors, LoginResponses, LogoutData, LogoutErrors, LogoutResponses, PollDeviceAuthTokenData, PollDeviceAuthTokenErrors, PollDeviceAuthTokenResponses, RemoveComponentConsumesData, RemoveComponentConsumesErrors, RemoveComponentConsumesResponses, RemoveComponentDependsOnData, RemoveComponentDependsOnErrors, RemoveComponentDependsOnResponses, RemoveComponentOwnerData, RemoveComponentOwnerErrors, RemoveComponentOwnerResponses, RemoveDeploymentTargetOwnerData, RemoveDeploymentTargetOwnerErrors, RemoveDeploymentTargetOwnerResponses, RemoveDomainOwnerData, RemoveDomainOwnerErrors, RemoveDomainOwnerResponses, RemoveServiceConsumesData, RemoveServiceConsumesErrors, RemoveServiceConsumesResponses, RemoveServiceDependsOnData, RemoveServiceDependsOnErrors, RemoveServiceDependsOnResponses, RemoveServiceOwnerData, RemoveServiceOwnerErrors, RemoveServiceOwnerResponses, RevokePatData, RevokePatErrors, RevokePatResponses, StartDeviceAuthData, StartDeviceAuthResponses, UpdateComponentData, UpdateComponentErrors, UpdateComponentResponses, UpdateDeploymentTargetData, UpdateDeploymentTargetErrors, UpdateDeploymentTargetResponses, UpdateDomainData, UpdateDomainErrors, UpdateDomainResponses, UpdateGroupData, UpdateGroupErrors, UpdateGroupResponses, UpdateObjectData, UpdateObjectErrors, UpdateObjectResponses, UpdateServiceAccountData, UpdateServiceAccountErrors, UpdateServiceAccountResponses, UpdateServiceData, UpdateServiceErrors, UpdateServiceResponses, UpdateTeamData, UpdateTeamErrors, UpdateTeamResponses, UpdateUserData, UpdateUserErrors, UpdateUserResponses, UpsertComponentByUrnData, UpsertComponentByUrnErrors, UpsertComponentByUrnResponses, UpsertDeploymentTargetByUrnData, UpsertDeploymentTargetByUrnErrors, UpsertDeploymentTargetByUrnResponses, UpsertDomainByUrnData, UpsertDomainByUrnErrors, UpsertDomainByUrnResponses, UpsertGroupByUrnData, UpsertGroupByUrnErrors, UpsertGroupByUrnResponses, UpsertObjectByUrnData, UpsertObjectByUrnErrors, UpsertObjectByUrnResponses, UpsertServiceAccountByUrnData, UpsertServiceAccountByUrnErrors, UpsertServiceAccountByUrnResponses, UpsertServiceByUrnData, UpsertServiceByUrnErrors, UpsertServiceByUrnResponses, UpsertTeamByUrnData, UpsertTeamByUrnErrors, UpsertTeamByUrnResponses, UpsertUserByUrnData, UpsertUserByUrnErrors, UpsertUserByUrnResponses } from './types.gen.js';
+import type { AddComponentConsumesData, AddComponentConsumesErrors, AddComponentConsumesResponses, AddComponentDependsOnData, AddComponentDependsOnErrors, AddComponentDependsOnResponses, AddComponentOwnerData, AddComponentOwnerErrors, AddComponentOwnerResponses, AddDeploymentTargetOwnerData, AddDeploymentTargetOwnerErrors, AddDeploymentTargetOwnerResponses, AddDomainOwnerData, AddDomainOwnerErrors, AddDomainOwnerResponses, AddServiceConsumesData, AddServiceConsumesErrors, AddServiceConsumesResponses, AddServiceDependsOnData, AddServiceDependsOnErrors, AddServiceDependsOnResponses, AddServiceOwnerData, AddServiceOwnerErrors, AddServiceOwnerResponses, ApplyPlanData, ApplyPlanErrors, ApplyPlanResponses, ApproveDeviceAuthData, ApproveDeviceAuthErrors, ApproveDeviceAuthResponses, CancelChangeData, CancelChangeErrors, CancelChangeResponses, CreateComponentData, CreateComponentErrors, CreateComponentResponses, CreateDeploymentTargetData, CreateDeploymentTargetErrors, CreateDeploymentTargetResponses, CreateDomainData, CreateDomainErrors, CreateDomainResponses, CreateGroupData, CreateGroupErrors, CreateGroupResponses, CreateObjectData, CreateObjectErrors, CreateObjectResponses, CreateObjectTypeData, CreateObjectTypeErrors, CreateObjectTypeResponses, CreatePatData, CreatePatErrors, CreatePatResponses, CreatePlanData, CreatePlanErrors, CreatePlanResponses, CreateRelationshipData, CreateRelationshipErrors, CreateRelationshipResponses, CreateRelationshipTypeData, CreateRelationshipTypeErrors, CreateRelationshipTypeResponses, CreateServiceAccountData, CreateServiceAccountErrors, CreateServiceAccountResponses, CreateServiceData, CreateServiceErrors, CreateServiceObjectData, CreateServiceObjectErrors, CreateServiceObjectForOrgData, CreateServiceObjectForOrgErrors, CreateServiceObjectForOrgResponses, CreateServiceObjectResponses, CreateServiceResponses, CreateSourceMappingData, CreateSourceMappingErrors, CreateSourceMappingResponses, CreateTeamData, CreateTeamErrors, CreateTeamResponses, CreateUserData, CreateUserErrors, CreateUserResponses, DeleteComponentData, DeleteComponentErrors, DeleteComponentResponses, DeleteDeploymentTargetData, DeleteDeploymentTargetErrors, DeleteDeploymentTargetResponses, DeleteDomainData, DeleteDomainErrors, DeleteDomainResponses, DeleteGroupData, DeleteGroupErrors, DeleteGroupResponses, DeleteObjectData, DeleteObjectErrors, DeleteObjectResponses, DeleteRelationshipData, DeleteRelationshipErrors, DeleteRelationshipResponses, DeleteServiceAccountData, DeleteServiceAccountErrors, DeleteServiceAccountResponses, DeleteServiceData, DeleteServiceErrors, DeleteServiceResponses, DeleteTeamData, DeleteTeamErrors, DeleteTeamResponses, DeleteUserData, DeleteUserErrors, DeleteUserResponses, ExplainChangeData, ExplainChangeErrors, ExplainChangeResponses, GetAuthConfigData, GetAuthConfigResponses, GetChangeData, GetChangeErrors, GetChangeResponses, GetComponentData, GetComponentErrors, GetComponentResponses, GetCurrentUserData, GetCurrentUserErrors, GetCurrentUserResponses, GetDecisionData, GetDecisionErrors, GetDecisionResponses, GetDeploymentTargetData, GetDeploymentTargetErrors, GetDeploymentTargetResponses, GetDomainData, GetDomainErrors, GetDomainResponses, GetGroupData, GetGroupErrors, GetGroupResponses, GetObjectData, GetObjectErrors, GetObjectResponses, GetPlanData, GetPlanErrors, GetPlanResponses, GetRelationshipData, GetRelationshipErrors, GetRelationshipResponses, GetServiceAccountData, GetServiceAccountErrors, GetServiceAccountResponses, GetServiceData, GetServiceErrors, GetServiceResponses, GetTeamData, GetTeamErrors, GetTeamResponses, GetUserData, GetUserErrors, GetUserResponses, GraphQueryData, GraphQueryErrors, GraphQueryResponses, GraphTraverseData, GraphTraverseErrors, GraphTraverseResponses, IngestChangeSourceWebhookData, IngestChangeSourceWebhookErrors, IngestChangeSourceWebhookResponses, ListAuditEventsData, ListAuditEventsErrors, ListAuditEventsResponses, ListChangesData, ListChangesErrors, ListChangesResponses, ListComponentConsumesData, ListComponentConsumesErrors, ListComponentConsumesResponses, ListComponentDependsOnData, ListComponentDependsOnErrors, ListComponentDependsOnResponses, ListComponentOwnersData, ListComponentOwnersErrors, ListComponentOwnersResponses, ListComponentsData, ListComponentsErrors, ListComponentsResponses, ListDecisionsData, ListDecisionsErrors, ListDecisionsResponses, ListDeploymentTargetOwnersData, ListDeploymentTargetOwnersErrors, ListDeploymentTargetOwnersResponses, ListDeploymentTargetsData, ListDeploymentTargetsErrors, ListDeploymentTargetsResponses, ListDomainOwnersData, ListDomainOwnersErrors, ListDomainOwnersResponses, ListDomainsData, ListDomainsErrors, ListDomainsResponses, ListGroupsData, ListGroupsErrors, ListGroupsResponses, ListObjectsData, ListObjectsErrors, ListObjectsResponses, ListObjectTypesData, ListObjectTypesErrors, ListObjectTypesResponses, ListPatsData, ListPatsErrors, ListPatsResponses, ListRelationshipsData, ListRelationshipsErrors, ListRelationshipsResponses, ListRelationshipTypesData, ListRelationshipTypesErrors, ListRelationshipTypesResponses, ListServiceAccountsData, ListServiceAccountsErrors, ListServiceAccountsResponses, ListServiceConsumesData, ListServiceConsumesErrors, ListServiceConsumesResponses, ListServiceDependsOnData, ListServiceDependsOnErrors, ListServiceDependsOnResponses, ListServiceObjectsData, ListServiceObjectsErrors, ListServiceObjectsForOrgData, ListServiceObjectsForOrgErrors, ListServiceObjectsForOrgResponses, ListServiceObjectsResponses, ListServiceOwnersData, ListServiceOwnersErrors, ListServiceOwnersResponses, ListServicesData, ListServicesErrors, ListServicesResponses, ListSourceMappingsData, ListSourceMappingsErrors, ListSourceMappingsResponses, ListTeamsData, ListTeamsErrors, ListTeamsResponses, ListUsersData, ListUsersErrors, ListUsersResponses, LoginData, LoginErrors, LoginResponses, LogoutData, LogoutErrors, LogoutResponses, PollDeviceAuthTokenData, PollDeviceAuthTokenErrors, PollDeviceAuthTokenResponses, PromoteChangeData, PromoteChangeErrors, PromoteChangeResponses, ProposeChangeData, ProposeChangeErrors, ProposeChangeResponses, RemoveComponentConsumesData, RemoveComponentConsumesErrors, RemoveComponentConsumesResponses, RemoveComponentDependsOnData, RemoveComponentDependsOnErrors, RemoveComponentDependsOnResponses, RemoveComponentOwnerData, RemoveComponentOwnerErrors, RemoveComponentOwnerResponses, RemoveDeploymentTargetOwnerData, RemoveDeploymentTargetOwnerErrors, RemoveDeploymentTargetOwnerResponses, RemoveDomainOwnerData, RemoveDomainOwnerErrors, RemoveDomainOwnerResponses, RemoveServiceConsumesData, RemoveServiceConsumesErrors, RemoveServiceConsumesResponses, RemoveServiceDependsOnData, RemoveServiceDependsOnErrors, RemoveServiceDependsOnResponses, RemoveServiceOwnerData, RemoveServiceOwnerErrors, RemoveServiceOwnerResponses, RevokePatData, RevokePatErrors, RevokePatResponses, RollbackChangeData, RollbackChangeErrors, RollbackChangeResponses, StartDeviceAuthData, StartDeviceAuthResponses, UpdateComponentData, UpdateComponentErrors, UpdateComponentResponses, UpdateDeploymentTargetData, UpdateDeploymentTargetErrors, UpdateDeploymentTargetResponses, UpdateDomainData, UpdateDomainErrors, UpdateDomainResponses, UpdateGroupData, UpdateGroupErrors, UpdateGroupResponses, UpdateObjectData, UpdateObjectErrors, UpdateObjectResponses, UpdateServiceAccountData, UpdateServiceAccountErrors, UpdateServiceAccountResponses, UpdateServiceData, UpdateServiceErrors, UpdateServiceResponses, UpdateTeamData, UpdateTeamErrors, UpdateTeamResponses, UpdateUserData, UpdateUserErrors, UpdateUserResponses, UpsertComponentByUrnData, UpsertComponentByUrnErrors, UpsertComponentByUrnResponses, UpsertDeploymentTargetByUrnData, UpsertDeploymentTargetByUrnErrors, UpsertDeploymentTargetByUrnResponses, UpsertDomainByUrnData, UpsertDomainByUrnErrors, UpsertDomainByUrnResponses, UpsertGroupByUrnData, UpsertGroupByUrnErrors, UpsertGroupByUrnResponses, UpsertObjectByUrnData, UpsertObjectByUrnErrors, UpsertObjectByUrnResponses, UpsertServiceAccountByUrnData, UpsertServiceAccountByUrnErrors, UpsertServiceAccountByUrnResponses, UpsertServiceByUrnData, UpsertServiceByUrnErrors, UpsertServiceByUrnResponses, UpsertTeamByUrnData, UpsertTeamByUrnErrors, UpsertTeamByUrnResponses, UpsertUserByUrnData, UpsertUserByUrnErrors, UpsertUserByUrnResponses } from './types.gen.js';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -1150,4 +1150,136 @@ export const applyPlan = <ThrowOnError extends boolean = false>(options: Options
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/plans/{id}/apply',
     ...options
+});
+
+/**
+ * List changes
+ */
+export const listChanges = <ThrowOnError extends boolean = false>(options?: Options<ListChangesData, ThrowOnError>): RequestResult<ListChangesResponses, ListChangesErrors, ThrowOnError> => (options?.client ?? client).get<ListChangesResponses, ListChangesErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/changes',
+    ...options
+});
+
+/**
+ * Propose a Change against one or more targets (entry point of the lifecycle)
+ */
+export const proposeChange = <ThrowOnError extends boolean = false>(options: Options<ProposeChangeData, ThrowOnError>): RequestResult<ProposeChangeResponses, ProposeChangeErrors, ThrowOnError> => (options.client ?? client).post<ProposeChangeResponses, ProposeChangeErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/changes',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Get a change by id
+ */
+export const getChange = <ThrowOnError extends boolean = false>(options: Options<GetChangeData, ThrowOnError>): RequestResult<GetChangeResponses, GetChangeErrors, ThrowOnError> => (options.client ?? client).get<GetChangeResponses, GetChangeErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/changes/{id}',
+    ...options
+});
+
+/**
+ * The change, its compiled plan (if any), and every Decision made about it
+ */
+export const explainChange = <ThrowOnError extends boolean = false>(options: Options<ExplainChangeData, ThrowOnError>): RequestResult<ExplainChangeResponses, ExplainChangeErrors, ThrowOnError> => (options.client ?? client).get<ExplainChangeResponses, ExplainChangeErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/changes/{id}/explain',
+    ...options
+});
+
+/**
+ * Cancel a change
+ */
+export const cancelChange = <ThrowOnError extends boolean = false>(options: Options<CancelChangeData, ThrowOnError>): RequestResult<CancelChangeResponses, CancelChangeErrors, ThrowOnError> => (options.client ?? client).post<CancelChangeResponses, CancelChangeErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/changes/{id}/cancel',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Promote a change out of `validating` — the human approval gate before `promoted`
+ */
+export const promoteChange = <ThrowOnError extends boolean = false>(options: Options<PromoteChangeData, ThrowOnError>): RequestResult<PromoteChangeResponses, PromoteChangeErrors, ThrowOnError> => (options.client ?? client).post<PromoteChangeResponses, PromoteChangeErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/changes/{id}/promote',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Manually trigger a rollback of a change — creates and returns a NEW Change (linked via rollbackOfObjectId) that executes through the same plan/wave machinery
+ */
+export const rollbackChange = <ThrowOnError extends boolean = false>(options: Options<RollbackChangeData, ThrowOnError>): RequestResult<RollbackChangeResponses, RollbackChangeErrors, ThrowOnError> => (options.client ?? client).post<RollbackChangeResponses, RollbackChangeErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/changes/{id}/rollback',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * List Decision records
+ */
+export const listDecisions = <ThrowOnError extends boolean = false>(options?: Options<ListDecisionsData, ThrowOnError>): RequestResult<ListDecisionsResponses, ListDecisionsErrors, ThrowOnError> => (options?.client ?? client).get<ListDecisionsResponses, ListDecisionsErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/decisions',
+    ...options
+});
+
+/**
+ * Get a Decision record by id
+ */
+export const getDecision = <ThrowOnError extends boolean = false>(options: Options<GetDecisionData, ThrowOnError>): RequestResult<GetDecisionResponses, GetDecisionErrors, ThrowOnError> => (options.client ?? client).get<GetDecisionResponses, GetDecisionErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/decisions/{id}',
+    ...options
+});
+
+/**
+ * Persist a raw source-event payload (persist-then-process — coordination/webhook-processor.ts turns it into a Change on the next reconcile tick)
+ */
+export const ingestChangeSourceWebhook = <ThrowOnError extends boolean = false>(options: Options<IngestChangeSourceWebhookData, ThrowOnError>): RequestResult<IngestChangeSourceWebhookResponses, IngestChangeSourceWebhookErrors, ThrowOnError> => (options.client ?? client).post<IngestChangeSourceWebhookResponses, IngestChangeSourceWebhookErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/change-sources/{sourceKind}/webhook',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * List source_mappings for one source kind
+ */
+export const listSourceMappings = <ThrowOnError extends boolean = false>(options: Options<ListSourceMappingsData, ThrowOnError>): RequestResult<ListSourceMappingsResponses, ListSourceMappingsErrors, ThrowOnError> => (options.client ?? client).get<ListSourceMappingsResponses, ListSourceMappingsErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/change-sources/{sourceKind}/mappings',
+    ...options
+});
+
+/**
+ * Bind a repo/path pattern for this source kind to a component (DESIGN §9.2 correlation)
+ */
+export const createSourceMapping = <ThrowOnError extends boolean = false>(options: Options<CreateSourceMappingData, ThrowOnError>): RequestResult<CreateSourceMappingResponses, CreateSourceMappingErrors, ThrowOnError> => (options.client ?? client).post<CreateSourceMappingResponses, CreateSourceMappingErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/change-sources/{sourceKind}/mappings',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
 });

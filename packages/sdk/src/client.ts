@@ -115,7 +115,21 @@ import {
   // M2 stage 3: `@scp/iac` server-side plan/apply (BUILD_AND_TEST.md §8 M2 item 4).
   createPlan as createPlanRequest,
   getPlan as getPlanRequest,
-  applyPlan as applyPlanRequest
+  applyPlan as applyPlanRequest,
+  // M3: the Change lifecycle + Decision records (BUILD_AND_TEST.md §8 M3, routes/changes.ts).
+  proposeChange as proposeChangeRequest,
+  listChanges as listChangesRequest,
+  getChange as getChangeRequest,
+  explainChange as explainChangeRequest,
+  cancelChange as cancelChangeRequest,
+  promoteChange as promoteChangeRequest,
+  rollbackChange as rollbackChangeRequest,
+  listDecisions as listDecisionsRequest,
+  getDecision as getDecisionRequest,
+  // M3: webhook ingress + source_mappings correlation config (routes/change-sources.ts).
+  ingestChangeSourceWebhook as ingestChangeSourceWebhookRequest,
+  createSourceMapping as createSourceMappingRequest,
+  listSourceMappings as listSourceMappingsRequest
 } from "./generated/sdk.gen.js";
 import type {
   ApplyPlanResponse,
@@ -148,7 +162,20 @@ import type {
   ServiceObjectListResponse,
   TraverseResult,
   UpdateObjectRequest,
-  UpsertObjectRequest
+  UpsertObjectRequest,
+  // M3: the Change lifecycle + Decision records + change sources (BUILD_AND_TEST.md §8 M3).
+  Change,
+  ChangeListResponse,
+  ChangeListQuery,
+  ChangeExplainResponse,
+  CreateChangeRequest,
+  Decision,
+  DecisionListResponse,
+  DecisionListQuery,
+  CreateSourceMappingRequest,
+  SourceMapping,
+  SourceMappingListResponse,
+  WebhookIngressResponse
 } from "@scp/schemas";
 import { ScpApiError } from "./errors.js";
 
@@ -901,6 +928,94 @@ export class ScpClient {
     },
     apply: async (id: string): Promise<ApplyPlanResponse> => {
       const result = await applyPlanRequest({ client: this.client, path: { id } });
+      return unwrap(result);
+    }
+  };
+
+  // -----------------------------------------------------------------------------------------
+  // M3 Change Coordination Engine (BUILD_AND_TEST.md §8 M3, DESIGN §9/§10.4) —
+  // `scp change propose/promote/rollback/explain` (packages/cli) are thin callers of these,
+  // same layering as every other resource.
+  // -----------------------------------------------------------------------------------------
+
+  readonly changes = {
+    propose: async (
+      req: CreateChangeRequest,
+      opts: { idempotencyKey?: string } = {}
+    ): Promise<Change> => {
+      const result = await proposeChangeRequest({
+        client: this.client,
+        body: req,
+        headers: idempotencyHeaders(opts.idempotencyKey)
+      });
+      return unwrap(result);
+    },
+    list: async (query: ChangeListQuery = { limit: 20 }): Promise<ChangeListResponse> => {
+      const result = await listChangesRequest({ client: this.client, query });
+      return unwrap(result);
+    },
+    get: async (id: string): Promise<Change> => {
+      const result = await getChangeRequest({ client: this.client, path: { id } });
+      return unwrap(result);
+    },
+    explain: async (id: string): Promise<ChangeExplainResponse> => {
+      const result = await explainChangeRequest({ client: this.client, path: { id } });
+      return unwrap(result);
+    },
+    cancel: async (id: string, reason?: string): Promise<Change> => {
+      const result = await cancelChangeRequest({ client: this.client, path: { id }, body: { reason } });
+      return unwrap(result);
+    },
+    /** Promotes a change out of `validating` — the human approval gate before `promoted`. */
+    promote: async (id: string, reason?: string): Promise<Change> => {
+      const result = await promoteChangeRequest({ client: this.client, path: { id }, body: { reason } });
+      return unwrap(result);
+    },
+    /** Manually triggers a rollback — returns the NEW rollback Change (linked via
+     *  `rollbackOfObjectId`), not the original. */
+    rollback: async (id: string, reason: string): Promise<Change> => {
+      const result = await rollbackChangeRequest({ client: this.client, path: { id }, body: { reason } });
+      return unwrap(result);
+    }
+  };
+
+  readonly decisions = {
+    list: async (query: DecisionListQuery = { limit: 20 }): Promise<DecisionListResponse> => {
+      const result = await listDecisionsRequest({ client: this.client, query });
+      return unwrap(result);
+    },
+    get: async (id: string): Promise<Decision> => {
+      const result = await getDecisionRequest({ client: this.client, path: { id } });
+      return unwrap(result);
+    }
+  };
+
+  readonly changeSources = {
+    /** Persist-then-process webhook ingress (DESIGN §8) — `payload` is kept verbatim. */
+    webhook: async (
+      sourceKind: string,
+      payload: Record<string, unknown>
+    ): Promise<WebhookIngressResponse> => {
+      const result = await ingestChangeSourceWebhookRequest({
+        client: this.client,
+        path: { sourceKind },
+        body: payload
+      });
+      return unwrap(result);
+    },
+    createMapping: async (
+      sourceKind: string,
+      req: Omit<CreateSourceMappingRequest, "sourceKind">
+    ): Promise<SourceMapping> => {
+      const result = await createSourceMappingRequest({
+        client: this.client,
+        path: { sourceKind },
+        body: { ...req, sourceKind }
+      });
+      return unwrap(result);
+    },
+    listMappings: async (sourceKind: string): Promise<SourceMappingListResponse> => {
+      const result = await listSourceMappingsRequest({ client: this.client, path: { sourceKind } });
       return unwrap(result);
     }
   };

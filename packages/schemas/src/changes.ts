@@ -192,7 +192,16 @@ export type CreateSourceMappingRequest = z.infer<typeof CreateSourceMappingReque
 export const SourceMappingListResponseSchema = cursorPageResponseSchema(SourceMappingSchema);
 export type SourceMappingListResponse = z.infer<typeof SourceMappingListResponseSchema>;
 
-/** `POST /change-sources/{sourceKind}/webhook` body — an opaque, source-specific payload. */
+/**
+ * `POST /change-sources/{sourceKind}/webhook` body — a source-specific payload, kept verbatim
+ * (`change_source_events.payload`, DESIGN §8 persist-then-process). M3 ships no per-provider
+ * payload parsing (that's M7's real executor plugins); `coordination/webhook-processor.ts` reads
+ * only the small, documented, provider-agnostic correlation hint (`repo`/`path`/
+ * `correlationKey`) this schema's shape anticipates, but accepts (and persists) any JSON object.
+ */
+export const ChangeSourceWebhookBodySchema = z.record(z.string(), z.unknown());
+export type ChangeSourceWebhookBody = z.infer<typeof ChangeSourceWebhookBodySchema>;
+
 export const WebhookIngressResponseSchema = z.object({
   accepted: z.literal(true),
   eventId: z.string().uuid()
