@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { DesiredStateManifestSchema } from "@scp/schemas";
-import { App, Service, Stack, Team, synthToFile } from "./index.js";
+import { App, Campaign, Component, Initiative, ReleaseTopology, Service, Stack, Team, synthToFile } from "./index.js";
 import { canonicalJson } from "./canonical.js";
 
 /**
@@ -147,5 +147,137 @@ describe("@scp/iac: example stack synth", () => {
     const app = new App();
     expect(() => new Stack(app, "")).toThrow();
     expect(() => new Stack(app, "   ")).toThrow();
+  });
+});
+
+/**
+ * M5 constructs (Campaign, Initiative, ReleaseTopology) — same example-based style as above: the
+ * fast-check property test in `construct.determinism.test.ts` covers the general determinism
+ * guarantee, this file pins down the exact expected manifest shape.
+ */
+describe("@scp/iac: campaign/initiative/release-topology synth", () => {
+  it("a ReleaseTopology with a parallel wave and a sequential wave resolves construct-reference targets to URN strings", () => {
+    const app = new App();
+    const stack = new Stack(app, "release-platform");
+
+    const api = new Service(stack, "api", { name: "API" });
+    const worker = new Service(stack, "worker", { name: "Worker" });
+    const cache = new Component(stack, "cache", { name: "Cache" });
+
+    const topology = new ReleaseTopology(stack, "rollout-topology", {
+      name: "Rollout Topology",
+      waves: [
+        { mode: "parallel", targets: [api, worker], requiresFanIn: false },
+        { name: "cache-flush", mode: "sequential", targets: [cache] }
+      ]
+    });
+
+    const manifest = stack.synth();
+    const topologyObject = manifest.objects.find((o) => o.urn === topology.urn);
+
+    expect(topologyObject?.properties).toEqual({
+      waves: [
+        { mode: "parallel", targets: [api.urn, worker.urn], requiresFanIn: false },
+        { name: "cache-flush", mode: "sequential", targets: [cache.urn] }
+      ]
+    });
+  });
+
+  it("a Campaign resolves construct-reference targets to URNs and carries description/topology", () => {
+    const app = new App();
+    const stack = new Stack(app, "release-platform-2");
+
+    const api = new Service(stack, "api", { name: "API" });
+    const worker = new Service(stack, "worker", { name: "Worker" });
+
+    const campaign = new Campaign(stack, "q3-rollout", {
+      name: "Q3 Rollout",
+      targets: [api, worker],
+      description: "Roll out the Q3 release",
+      topology: "already-known-topology-object-id"
+    });
+
+    const manifest = stack.synth();
+    const campaignObject = manifest.objects.find((o) => o.urn === campaign.urn);
+
+    expect(campaignObject).toMatchObject({
+      typeId: "campaign",
+      name: "Q3 Rollout",
+      properties: {
+        targets: [api.urn, worker.urn],
+        description: "Roll out the Q3 release",
+        topologyObjectId: "already-known-topology-object-id"
+      }
+    });
+  });
+
+  it("a Campaign resolves a ReleaseTopology CONSTRUCT REFERENCE for `topology` to its URN, not just a raw string", () => {
+    const app = new App();
+    const stack = new Stack(app, "release-platform-3");
+
+    const api = new Service(stack, "api", { name: "API" });
+    const topology = new ReleaseTopology(stack, "canary-topology", {
+      name: "Canary",
+      waves: [{ mode: "parallel", targets: [api] }]
+    });
+    const campaign = new Campaign(stack, "q4-rollout", {
+      name: "Q4 Rollout",
+      targets: [api],
+      topology
+    });
+
+    const manifest = stack.synth();
+    const campaignObject = manifest.objects.find((o) => o.urn === campaign.urn);
+    expect(campaignObject?.properties).toMatchObject({ topologyObjectId: topology.urn });
+  });
+
+  it("a Campaign with no description/topology synthesizes only targets", () => {
+    const app = new App();
+    const stack = new Stack(app, "release-platform-3");
+    const api = new Service(stack, "api", { name: "API" });
+
+    const campaign = new Campaign(stack, "bare-campaign", { name: "Bare Campaign", targets: [api] });
+
+    const manifest = stack.synth();
+    expect(manifest.objects.find((o) => o.urn === campaign.urn)?.properties).toEqual({
+      targets: [api.urn]
+    });
+  });
+
+  it("an Initiative construct exposes NO membership-edge method — `coordinates` is system-managed (M5 CRITICAL)", () => {
+    const app = new App();
+    const stack = new Stack(app, "modernization-platform");
+
+    const svcA = new Service(stack, "svc-a", { name: "Svc A" });
+    const campaignA = new Campaign(stack, "campaign-a", { name: "Campaign A", targets: [svcA] });
+    const initiative = new Initiative(stack, "modernization", {
+      name: "Cloud Modernization",
+      description: "Multi-year modernization effort"
+    });
+
+    // `coordinates` is a system-managed relationship the server refuses on the IaC apply path
+    // (apps/server/src/graph/system-managed-relationships.ts) — so there is deliberately no
+    // `.coordinates()` synth method to declare initiative membership in IaC (it would only ever
+    // produce a manifest that 403s at apply). Initiative membership is added via the
+    // authority-checked `POST /initiatives/{id}/campaigns` API instead.
+    expect(
+      (initiative as unknown as { coordinates?: unknown }).coordinates
+    ).toBeUndefined();
+
+    const manifest = stack.synth();
+    // No `coordinates` edge is synthesizable — the manifest carries only the objects and any
+    // NON-system-managed edges (none here).
+    expect(manifest.relationships.filter((r) => r.typeId === "coordinates")).toEqual([]);
+    const initiativeObject = manifest.objects.find((o) => o.urn === initiative.urn);
+    expect(initiativeObject?.properties).toEqual({ description: "Multi-year modernization effort" });
+    expect(campaignA.urn).toBeTruthy(); // campaign is still a valid standalone construct
+    expect(DesiredStateManifestSchema.safeParse(manifest).success).toBe(true);
+  });
+
+  it("an Initiative with no description synthesizes empty properties", () => {
+    const app = new App();
+    const stack = new Stack(app, "modernization-platform-2");
+    new Initiative(stack, "bare-initiative", { name: "Bare Initiative" });
+    expect(stack.synth().objects[0]?.properties).toEqual({});
   });
 });

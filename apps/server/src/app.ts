@@ -36,6 +36,8 @@ import { registerEventStreamRoute } from "./routes/events.js";
 import { registerPlanRoutes } from "./routes/plans.js";
 import { registerChangeRoutes } from "./routes/changes.js";
 import { registerChangeSourceRoutes } from "./routes/change-sources.js";
+import { registerCampaignRoutes } from "./routes/campaigns.js";
+import { registerInitiativeRoutes } from "./routes/initiatives.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -136,6 +138,10 @@ export async function buildApp(
     registerTypedRegistryRoutes(app, deps, resource);
   }
   registerGovernanceRoutes(app, deps);
+  // M5: Campaigns & Initiatives (BUILD_AND_TEST.md §8 M5, DESIGN.md §9.5) — coordinate many
+  // Changes over the same M3/M4 machinery; no new engine, see coordination/campaign-status.ts.
+  registerCampaignRoutes(app, deps);
+  registerInitiativeRoutes(app, deps);
 
   app.get("/healthz", async () => ({ status: "ok" }));
 

@@ -10,6 +10,10 @@ import { RegistryDetailPage } from "./routes/registry-detail";
 import { GraphExplorerPage } from "./routes/graph-explorer";
 import { ChangeListPage } from "./routes/change-list";
 import { ChangeDetailPage } from "./routes/change-detail";
+import { CampaignListPage } from "./routes/campaign-list";
+import { CampaignDetailPage } from "./routes/campaign-detail";
+import { InitiativeListPage } from "./routes/initiative-list";
+import { InitiativeDetailPage } from "./routes/initiative-detail";
 
 /**
  * Code-based TanStack Router route tree (BUILD_AND_TEST.md §8 M2 item 2 — "TanStack Router...
@@ -75,9 +79,34 @@ const changeDetailRoute = createRoute({
   component: ChangeDetailPage
 });
 
-// Static segments (`/login`, `/device`, `/pats`, `/graph/...`, `/changes`, `/changes/...`) always
-// out-rank the single dynamic `$basePath` segment below at the same depth — standard router
-// precedence — so those pages never get shadowed by "an unknown registry named 'device'".
+const campaignListRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/campaigns",
+  component: CampaignListPage
+});
+
+const campaignDetailRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/campaigns/$id",
+  component: CampaignDetailPage
+});
+
+const initiativeListRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/initiatives",
+  component: InitiativeListPage
+});
+
+const initiativeDetailRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/initiatives/$id",
+  component: InitiativeDetailPage
+});
+
+// Static segments (`/login`, `/device`, `/pats`, `/graph/...`, `/changes`, `/changes/...`,
+// `/campaigns`, `/campaigns/...`, `/initiatives`, `/initiatives/...`) always out-rank the single
+// dynamic `$basePath` segment below at the same depth — standard router precedence — so those
+// pages never get shadowed by "an unknown registry named 'device'".
 const registryListRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/$basePath",
@@ -99,6 +128,10 @@ const routeTree = rootRoute.addChildren([
     graphExplorerRoute,
     changeListRoute,
     changeDetailRoute,
+    campaignListRoute,
+    campaignDetailRoute,
+    initiativeListRoute,
+    initiativeDetailRoute,
     registryListRoute,
     registryDetailRoute
   ])

@@ -204,7 +204,13 @@ export const NamedGraphQuerySchema = z.enum([
   "impact-of",
   "blast-radius",
   "paths-between",
-  "domains-impacted"
+  "domains-impacted",
+  // M5 (DESIGN.md §5/§9.5): initiative roll-up status is "DERIVED BY TRAVERSAL... not
+  // stored/duplicated state" — walks `coordinates` from an initiative to its member campaigns and
+  // returns each as an object plus `status:<derived-status>` tallies in `counts` (the same
+  // counts-by-tag shape `blast-radius`/`domains-impacted` already use), reusing
+  // `coordination/campaign-status.ts`'s pure aggregation for each campaign's own status.
+  "initiative-rollup"
 ]);
 export type NamedGraphQuery = z.infer<typeof NamedGraphQuerySchema>;
 

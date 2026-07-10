@@ -16,8 +16,12 @@ export {
   DeploymentTarget,
   Group,
   User,
-  ServiceAccount
+  ServiceAccount,
+  Campaign,
+  Initiative,
+  ReleaseTopology
 } from "./construct.js";
+export type { CampaignProps, InitiativeProps, ReleaseTopologyProps, ReleaseTopologyWaveSpec } from "./construct.js";
 export { deriveConstructUrn, slugify } from "./urn.js";
 export { canonicalJson } from "./canonical.js";
 

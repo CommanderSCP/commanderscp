@@ -745,6 +745,79 @@ export const instanceKeys = pgTable("instance_keys", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
 });
 
+// -------------------------------------------------------------------------------------------
+// M5 Campaigns & Initiatives (DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5). Hand-authored
+// grants/RLS/seed data in drizzle/0011_campaigns.sql (same pattern as 0002/0005/0007/0010).
+//
+// KEY DESIGN DECISION (documented at length in 0011's own header): a Campaign is NOT a second
+// transition-guarded state machine. `campaign`/`initiative` are graph objects (pre-seeded
+// built-in types, 0002 §5); what they need beyond the generic object model is exactly what a
+// Change needed — a compiled plan -> waves -> wave_targets shape, over the SAME
+// `coordination/plan-compiler.ts` pure function `change_plans`/`change_waves`/
+// `change_wave_targets` already use. `campaign_wave_targets` differs in one way: its unit of work
+// is an entire real M3 Change (`memberChangeObjectId`), not a direct executor trigger — see
+// `coordination/campaign-reconcile.ts`. Campaign STATUS is a pure derived aggregation
+// (`coordination/campaign-status.ts`), never a stored column here.
+// -------------------------------------------------------------------------------------------
+
+export const campaignPlans = pgTable(
+  "campaign_plans",
+  {
+    id: uuid("id").primaryKey(), // UUIDv7
+    orgId: uuid("org_id").notNull(),
+    campaignObjectId: uuid("campaign_object_id").notNull(),
+    topologyObjectId: uuid("topology_object_id"),
+    topologyVersion: bigint("topology_version", { mode: "number" }),
+    topologyDocument: jsonb("topology_document"),
+    status: text("status").notNull().default("active"), // active|completed|aborted
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [index("campaign_plans_org_campaign").on(table.orgId, table.campaignObjectId)]
+);
+
+export const campaignWaves = pgTable(
+  "campaign_waves",
+  {
+    id: uuid("id").primaryKey(), // UUIDv7
+    orgId: uuid("org_id").notNull(),
+    planId: uuid("plan_id").notNull(),
+    waveIndex: bigint("wave_index", { mode: "number" }).notNull(),
+    name: text("name"),
+    requiresFanIn: boolean("requires_fan_in").notNull().default(true),
+    // pending|blocked|running|succeeded|failed|skipped — 'blocked' is campaign-specific (not a
+    // change_waves status): set when this wave's boundary gate returns a "block" verdict, so the
+    // campaign's derived status can distinguish "still waiting to even start" from "actively
+    // blocked by a policy/control" without a second Decision query (coordination/campaign-status.ts).
+    status: text("status").notNull().default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true })
+  },
+  (table) => [index("campaign_waves_org_plan").on(table.orgId, table.planId, table.waveIndex)]
+);
+
+export const campaignWaveTargets = pgTable(
+  "campaign_wave_targets",
+  {
+    id: uuid("id").primaryKey(), // UUIDv7
+    orgId: uuid("org_id").notNull(),
+    waveId: uuid("wave_id").notNull(),
+    targetObjectId: uuid("target_object_id").notNull(),
+    /** Set once the campaign reconciler proposes this target's member Change — DESIGN §9.5 /
+     *  this milestone's spec: "Member changes are real Changes linked to the campaign via
+     *  coordinates relationships." */
+    memberChangeObjectId: uuid("member_change_object_id"),
+    status: text("status").notNull().default("pending"), // pending|change_proposed|succeeded|failed
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    index("campaign_wave_targets_org_wave").on(table.orgId, table.waveId),
+    index("campaign_wave_targets_org_target").on(table.orgId, table.targetObjectId),
+    index("campaign_wave_targets_org_member_change").on(table.orgId, table.memberChangeObjectId)
+  ]
+);
+
 export const idempotencyKeys = pgTable(
   "idempotency_keys",
   {

@@ -7778,7 +7778,7 @@ export type RemoveComponentDependsOnResponse = RemoveComponentDependsOnResponses
 export type GraphQueryData = {
     body?: never;
     path: {
-        name: 'owners-of' | 'dependents-of' | 'consumers-of' | 'impact-of' | 'blast-radius' | 'paths-between' | 'domains-impacted';
+        name: 'owners-of' | 'dependents-of' | 'consumers-of' | 'impact-of' | 'blast-radius' | 'paths-between' | 'domains-impacted' | 'initiative-rollup';
     };
     query: {
         objectId: string;
@@ -7832,7 +7832,7 @@ export type GraphQueryResponses = {
      * Success
      */
     200: {
-        query: 'owners-of' | 'dependents-of' | 'consumers-of' | 'impact-of' | 'blast-radius' | 'paths-between' | 'domains-impacted';
+        query: 'owners-of' | 'dependents-of' | 'consumers-of' | 'impact-of' | 'blast-radius' | 'paths-between' | 'domains-impacted' | 'initiative-rollup';
         objects: Array<{
             id: string;
             orgId: string;
@@ -11096,3 +11096,708 @@ export type PolicyEvaluateResponses = {
 };
 
 export type PolicyEvaluateResponse = PolicyEvaluateResponses[keyof PolicyEvaluateResponses];
+
+export type ListCampaignsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+        status?: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
+    };
+    url: '/campaigns';
+};
+
+export type ListCampaignsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListCampaignsError = ListCampaignsErrors[keyof ListCampaignsErrors];
+
+export type ListCampaignsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            urn: string;
+            name: string;
+            description: string | null;
+            targets: Array<string>;
+            topologyObjectId: string | null;
+            topologyVersion: number | null;
+            status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
+            createdAt: string;
+            updatedAt: string;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListCampaignsResponse = ListCampaignsResponses[keyof ListCampaignsResponses];
+
+export type ProposeCampaignData = {
+    body: {
+        name: string;
+        id?: string;
+        urn?: string;
+        domainId?: string | null;
+        description?: string;
+        labels?: {
+            [key: string]: unknown;
+        };
+        topology?: string;
+        targets: Array<string>;
+    };
+    path?: never;
+    query?: never;
+    url: '/campaigns';
+};
+
+export type ProposeCampaignErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ProposeCampaignError = ProposeCampaignErrors[keyof ProposeCampaignErrors];
+
+export type ProposeCampaignResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        urn: string;
+        name: string;
+        description: string | null;
+        targets: Array<string>;
+        topologyObjectId: string | null;
+        topologyVersion: number | null;
+        status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
+        createdAt: string;
+        updatedAt: string;
+    };
+};
+
+export type ProposeCampaignResponse = ProposeCampaignResponses[keyof ProposeCampaignResponses];
+
+export type GetCampaignData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/campaigns/{id}';
+};
+
+export type GetCampaignErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetCampaignError = GetCampaignErrors[keyof GetCampaignErrors];
+
+export type GetCampaignResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        urn: string;
+        name: string;
+        description: string | null;
+        targets: Array<string>;
+        topologyObjectId: string | null;
+        topologyVersion: number | null;
+        status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
+        createdAt: string;
+        updatedAt: string;
+    };
+};
+
+export type GetCampaignResponse = GetCampaignResponses[keyof GetCampaignResponses];
+
+export type ExplainCampaignData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/campaigns/{id}/explain';
+};
+
+export type ExplainCampaignErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ExplainCampaignError = ExplainCampaignErrors[keyof ExplainCampaignErrors];
+
+export type ExplainCampaignResponses = {
+    /**
+     * Success
+     */
+    200: {
+        campaign: {
+            id: string;
+            orgId: string;
+            urn: string;
+            name: string;
+            description: string | null;
+            targets: Array<string>;
+            topologyObjectId: string | null;
+            topologyVersion: number | null;
+            status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
+            createdAt: string;
+            updatedAt: string;
+        };
+        plan: {
+            id: string;
+            campaignObjectId: string;
+            topologyObjectId: string | null;
+            topologyVersion: number | null;
+            status: string;
+            createdAt: string;
+            waves: Array<{
+                id: string;
+                planId: string;
+                waveIndex: number;
+                name: string | null;
+                requiresFanIn: boolean;
+                status: string;
+                createdAt: string;
+                startedAt: string | null;
+                completedAt: string | null;
+                targets: Array<{
+                    id: string;
+                    waveId: string;
+                    targetObjectId: string;
+                    targetUrn?: string;
+                    targetName?: string;
+                    memberChangeObjectId: string | null;
+                    status: string;
+                    createdAt: string;
+                    updatedAt: string;
+                }>;
+            }>;
+        } | null;
+        decisions: Array<{
+            id: string;
+            orgId: string;
+            kind: string;
+            subjectId: string;
+            verdict: string;
+            inputContext: {
+                [key: string]: unknown;
+            };
+            reasonTree: {
+                [key: string]: unknown;
+            };
+            createdAt: string;
+        }>;
+    };
+};
+
+export type ExplainCampaignResponse = ExplainCampaignResponses[keyof ExplainCampaignResponses];
+
+export type RollbackCampaignData = {
+    body: {
+        reason: string;
+    };
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/campaigns/{id}/rollback';
+};
+
+export type RollbackCampaignErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RollbackCampaignError = RollbackCampaignErrors[keyof RollbackCampaignErrors];
+
+export type RollbackCampaignResponses = {
+    /**
+     * Success
+     */
+    200: {
+        rolledBack: Array<{
+            originalChangeObjectId: string;
+            rollbackChange: {
+                id: string;
+                orgId: string;
+                urn: string;
+                name: string;
+                state: 'proposed' | 'evaluated' | 'coordinated' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
+                sourceKind: string | null;
+                sourceRef: {
+                    [key: string]: unknown;
+                } | null;
+                correlationKey: string | null;
+                emergency: boolean;
+                importedFromDomain: string | null;
+                topologyObjectId: string | null;
+                topologyVersion: number | null;
+                rollbackOfObjectId: string | null;
+                rollbackTriggerReason: string | null;
+                stateEnteredAt: string;
+                lastHeartbeatAt: string;
+                watchdogFlaggedAt: string | null;
+                properties: {
+                    [key: string]: unknown;
+                };
+                createdAt: string;
+                updatedAt: string;
+            };
+        }>;
+        skipped: Array<{
+            originalChangeObjectId: string;
+            reason: string;
+        }>;
+    };
+};
+
+export type RollbackCampaignResponse = RollbackCampaignResponses[keyof RollbackCampaignResponses];
+
+export type ListInitiativesData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+    };
+    url: '/initiatives';
+};
+
+export type ListInitiativesErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListInitiativesError = ListInitiativesErrors[keyof ListInitiativesErrors];
+
+export type ListInitiativesResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            urn: string;
+            name: string;
+            description: string | null;
+            createdAt: string;
+            updatedAt: string;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListInitiativesResponse = ListInitiativesResponses[keyof ListInitiativesResponses];
+
+export type ProposeInitiativeData = {
+    body: {
+        name: string;
+        id?: string;
+        urn?: string;
+        domainId?: string | null;
+        description?: string;
+        labels?: {
+            [key: string]: unknown;
+        };
+        campaigns: Array<string>;
+    };
+    path?: never;
+    query?: never;
+    url: '/initiatives';
+};
+
+export type ProposeInitiativeErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ProposeInitiativeError = ProposeInitiativeErrors[keyof ProposeInitiativeErrors];
+
+export type ProposeInitiativeResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        urn: string;
+        name: string;
+        description: string | null;
+        createdAt: string;
+        updatedAt: string;
+    };
+};
+
+export type ProposeInitiativeResponse = ProposeInitiativeResponses[keyof ProposeInitiativeResponses];
+
+export type GetInitiativeData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/initiatives/{id}';
+};
+
+export type GetInitiativeErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetInitiativeError = GetInitiativeErrors[keyof GetInitiativeErrors];
+
+export type GetInitiativeResponses = {
+    /**
+     * Success
+     */
+    200: {
+        initiative: {
+            id: string;
+            orgId: string;
+            urn: string;
+            name: string;
+            description: string | null;
+            createdAt: string;
+            updatedAt: string;
+        };
+        campaigns: Array<{
+            campaign: {
+                id: string;
+                orgId: string;
+                urn: string;
+                name: string;
+                description: string | null;
+                targets: Array<string>;
+                topologyObjectId: string | null;
+                topologyVersion: number | null;
+                status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
+                createdAt: string;
+                updatedAt: string;
+            };
+            status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
+        }>;
+        rollupStatus: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
+    };
+};
+
+export type GetInitiativeResponse = GetInitiativeResponses[keyof GetInitiativeResponses];
+
+export type AddInitiativeCampaignData = {
+    body: {
+        campaign: string;
+    };
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/initiatives/{id}/campaigns';
+};
+
+export type AddInitiativeCampaignErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type AddInitiativeCampaignError = AddInitiativeCampaignErrors[keyof AddInitiativeCampaignErrors];
+
+export type AddInitiativeCampaignResponses = {
+    /**
+     * Success
+     */
+    204: void;
+};
+
+export type AddInitiativeCampaignResponse = AddInitiativeCampaignResponses[keyof AddInitiativeCampaignResponses];

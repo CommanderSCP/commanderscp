@@ -91,6 +91,18 @@ jobs:
       - run: pnpm build
       - run: bash scripts/e2e-m4.sh
 
+  e2e-m5:
+    name: "8b. E2E (M5 campaigns & initiatives golden path, main only)"
+    # Same reason as e2e-m0/e2e-m4: needs a real Docker daemon (compose) — the general runner has none.
+    runs-on: homelab-commanderscp-linux-docker-build
+    needs: [static-checks, codegen-drift, unit-tests]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: pnpm build
+      - run: bash scripts/e2e-m5.sh
+
   e2e-web:
     name: "9. E2E (Web UI, Playwright/Chromium, main only)"
     # Same reason as e2e-m0: needs a real Docker daemon (compose) — the general runner has none.
