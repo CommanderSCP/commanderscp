@@ -14,6 +14,11 @@ import { createSession } from "./local-auth.js";
  * OIDC-configured or local-auth-only/air-gapped. The `verificationUri` points at SCP's own web
  * UI/API; the human approves there using whatever auth method (local or OIDC) they already have a
  * browser session for (routes/device-flow.ts `approve`, behind `requireAuth`).
+ *
+ * Session minting is deferred to claim time (`pollDeviceAuth`), not done at approval
+ * (`approveDeviceAuth`): the `device_auth_requests` row must never hold a usable bearer token at
+ * rest, matching every other credential in the system (sessions: SHA-256 hash; PATs: argon2
+ * hash) — see the doc comments on those two functions and drizzle/0006_device_flow_defer_session.sql.
  */
 
 const DEVICE_TTL_MS = 10 * 60 * 1000; // 10 min — request itself expires
@@ -77,10 +82,12 @@ export async function startDeviceAuth(db: Db): Promise<StartedDeviceAuth> {
 
 /**
  * `POST /auth/device/approve` — REQUIRES requireAuth (the already-logged-in human approving from
- * their own browser/UI session). Issues a new session token exactly like local-auth's session
- * creation and parks it in `issuedToken` until the CLI's next poll claims it (single-use, see
- * `pollDeviceAuth`). Returns `false` if no matching PENDING, unexpired request exists — callers
- * should turn that into a 404 without more detail (don't leak which case it was).
+ * their own browser/UI session). Deliberately does NOT mint a session here: it records only WHO
+ * approved (`approvedByUserId`) and WHEN (`approvedAt`), so the device row never holds a usable
+ * credential. The actual session is minted later, at claim time, inside `pollDeviceAuth`'s
+ * `FOR UPDATE` transaction (single-use, see below). Returns `false` if no matching PENDING,
+ * unexpired request exists — callers should turn that into a 404 without more detail (don't leak
+ * which case it was).
  */
 export async function approveDeviceAuth(
   db: Db,
@@ -93,15 +100,13 @@ export async function approveDeviceAuth(
     return false;
   }
 
-  const session = await createSession(db, { userId: params.userId, orgId: params.orgId });
-
   const [updated] = await db
     .update(deviceAuthRequests)
     .set({
       status: "approved",
       orgId: params.orgId,
-      issuedToken: session.token,
-      issuedTokenExpiresAt: session.expiresAt
+      approvedByUserId: params.userId,
+      approvedAt: new Date()
     })
     .where(eq(deviceAuthRequests.id, pending.id))
     .returning({ id: deviceAuthRequests.id });
@@ -121,9 +126,13 @@ export type DeviceTokenResult =
  * vocabulary (`authorization_pending`/`expired_token`/`access_denied`/`invalid_grant`) so the CLI
  * can branch predictably (routes/device-flow.ts documents the response shape in a schema).
  *
- * Single-use: an `approved` request is atomically flipped to `claimed` and `issuedToken` is
- * nulled out in the same update, inside one transaction with the read — a second poll after a
- * successful claim always sees `claimed` and gets `invalid_grant`, never a replayed token.
+ * Single-use AND the point where a session first comes into existence: once a row is confirmed
+ * `approved` (and only then, under the `FOR UPDATE` lock taken below — no other poller can be
+ * concurrently inspecting the same row), this mints the session via `createSession` and, in the
+ * same transaction, flips the row to `claimed`. The device row itself never stores the resulting
+ * plaintext bearer — it exists only in this function's return value, handed to the caller exactly
+ * once. A second poll after a successful claim always sees `claimed` and gets `invalid_grant`,
+ * never a replayed token or a second minted session.
  */
 export async function pollDeviceAuth(db: Db, deviceCode: string): Promise<DeviceTokenResult> {
   const deviceCodeHash = hashDeviceCode(deviceCode);
@@ -152,15 +161,14 @@ export async function pollDeviceAuth(db: Db, deviceCode: string): Promise<Device
     if (row.status === "pending") return { kind: "error", error: "authorization_pending" };
     if (row.status === "denied") return { kind: "error", error: "access_denied" };
 
-    if (row.status === "approved" && row.issuedToken && row.issuedTokenExpiresAt && row.orgId) {
-      const token = row.issuedToken;
-      const expiresAt = row.issuedTokenExpiresAt;
+    if (row.status === "approved" && row.approvedByUserId && row.orgId) {
       const orgId = row.orgId;
+      const session = await createSession(tx, { userId: row.approvedByUserId, orgId });
       await tx
         .update(deviceAuthRequests)
-        .set({ status: "claimed", issuedToken: null })
+        .set({ status: "claimed" })
         .where(eq(deviceAuthRequests.id, row.id));
-      return { kind: "ok", token, expiresAt, orgId };
+      return { kind: "ok", token: session.token, expiresAt: session.expiresAt, orgId };
     }
 
     return { kind: "error", error: "invalid_grant" };

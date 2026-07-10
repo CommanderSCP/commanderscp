@@ -4,7 +4,7 @@ import { v7 as uuidv7 } from "uuid";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { orgs, roleBindings, roles, sessions, users } from "../db/schema.js";
-import { withTenantTx } from "../db/tenant-tx.js";
+import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { createObject, getOrgRootObjectId } from "../graph/objects-repo.js";
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12h — fine for M0/M1's local-auth bootstrap flow.
@@ -151,12 +151,15 @@ export interface CreatedSession {
 
 /**
  * Issues a new opaque bearer/session token for an already-authenticated `(userId, orgId)` pair —
- * shared by every login path (local-auth `login()` below, OIDC `auth/oidc.ts`, device-flow
- * approval `auth/device-flow.ts`) so token generation/hashing/expiry logic lives in exactly one
- * place.
+ * shared by every login path (local-auth `login()` below, OIDC `auth/oidc.ts`, device-flow claim
+ * `auth/device-flow.ts` `pollDeviceAuth`) so token generation/hashing/expiry logic lives in
+ * exactly one place. Accepts either the top-level `Db` or a `TenantTx`/plain transaction handle
+ * so callers that must mint the session atomically inside a wider transaction (device-flow's
+ * claim, which mints the session only once the row is confirmed claimable under `FOR UPDATE`)
+ * can pass their `tx` straight through instead of opening a second, unrelated transaction.
  */
 export async function createSession(
-  db: Db,
+  db: Db | TenantTx,
   params: { userId: string; orgId: string }
 ): Promise<CreatedSession> {
   const token = generateToken();
