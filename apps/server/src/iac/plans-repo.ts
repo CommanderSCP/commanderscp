@@ -16,6 +16,7 @@ import {
 import { createRelationship, deleteRelationship, listRelationships } from "../graph/relationships-repo.js";
 import { isGovernanceManagedObjectType } from "../governance/governance-managed-types.js";
 import { assertPolicyScopeWithinAuthority } from "../governance/policy-scope-authz.js";
+import { assertCampaignTargetsWithinAuthority } from "../coordination/campaign-scope-authz.js";
 import {
   computePlanDiff,
   managedLabels,
@@ -355,6 +356,18 @@ export async function prepareApplyChecks(
           properties: entry.target?.properties
         });
       }
+      // M5 (BUILD_AND_TEST.md §8 M5 security note): the IaC-apply-path twin of
+      // `routes/objects-generic.ts`'s `campaign` block — a manifest declaring a `campaign` object
+      // is a free-form `typeId` just like `policy` is, so this apply path must independently bind
+      // its DECLARED `properties.targets` to the actor's own authority (same fail-closed shape as
+      // the policy-scope check right above), not rely on `POST /campaigns` having done so.
+      if (entry.typeId === "campaign") {
+        await assertCampaignTargetsWithinAuthority(tx, {
+          orgId,
+          actorObjectId,
+          properties: entry.target?.properties
+        });
+      }
       continue;
     }
     const found = await getObjectByIdOrUrn(tx, orgId, entry.typeId, entry.urn);
@@ -363,6 +376,13 @@ export async function prepareApplyChecks(
       checks.push({ permission: writePermissionFor(entry.typeId), scopeObjectId: found.id });
       if (entry.typeId === "policy" && entry.action === "update") {
         await assertPolicyScopeWithinAuthority(tx, {
+          orgId,
+          actorObjectId,
+          properties: entry.target?.properties
+        });
+      }
+      if (entry.typeId === "campaign" && entry.action === "update") {
+        await assertCampaignTargetsWithinAuthority(tx, {
           orgId,
           actorObjectId,
           properties: entry.target?.properties

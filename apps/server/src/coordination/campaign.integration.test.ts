@@ -1,7 +1,9 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpApiError, ScpClient } from "@scp/sdk";
+import type { DesiredStateManifest } from "@scp/schemas";
 import {
   createTestOrg,
   createTestUser,
@@ -32,10 +34,7 @@ interface TestWebhookServer {
 async function startTestWebhookServer(): Promise<TestWebhookServer> {
   const server = createServer((req, res) => {
     const outcome = (req.headers["x-test-outcome"] as string | undefined) ?? "pass";
-    let raw = "";
-    req.on("data", (chunk: Buffer) => {
-      raw += chunk.toString("utf8");
-    });
+    req.on("data", () => undefined);
     req.on("end", () => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ status: outcome, evidence: { via: "test-webhook" } }));
@@ -284,5 +283,93 @@ describe("campaigns & initiatives (M5)", () => {
       viewerClient.initiatives.propose({ name: "should be forbidden", campaigns: [campaign.id] })
     );
     expect(err.status).toBe(403);
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // M5 security note (BUILD_AND_TEST.md §8 M5): "if a new authority-scoped object type is
+  // introduced, it needs the governance-managed-types treatment (generic-endpoint block +
+  // plan-apply scope check)". `campaign.properties.targets` is exactly such a DECLARED-authority
+  // field (coordination/campaign-scope-authz.ts) — mirrors governance.integration.test.ts's own
+  // "generic /objects/policy... both exploits are blocked" + "IaC plan/apply enforces the same...
+  // scope-authority binding" pair of tests, applied to `campaign` instead of `policy`.
+  // -----------------------------------------------------------------------------------------
+
+  it("SECURITY: the generic /api/v1/objects/campaign endpoint refuses every write verb, even for the org-root admin", async () => {
+    const restrictedTarget = await admin.components.create({ name: "camp-generic-bypass-target" });
+
+    // Exploit: an actor with object:write ONLY at a domain they own tries the generic endpoint to
+    // plant a campaign targeting an object OUTSIDE their authority — proposeCampaign's per-target
+    // check would catch this at /campaigns, so the exploit specifically targets the endpoint that
+    // (before this fix) skipped it entirely.
+    const domain = await admin.domains.create({ name: "camp-generic-bypass-domain" });
+    const narrowActor = await createTestUser(server, org, [{ role: "Administrator", scope: domain.id }]);
+    const narrowClient = new ScpClient({ baseUrl: server.baseUrl, token: narrowActor.token });
+    const exploit = await expectApiError(() =>
+      narrowClient.object("campaign").create({
+        name: "sneaky-campaign-via-generic",
+        domainId: domain.id,
+        properties: { targets: [restrictedTarget.id] }
+      })
+    );
+    expect(exploit.status).toBe(403);
+
+    // Unconditional type-level block — even the org-root admin (who has full authority over the
+    // target) is refused via this path, proving it's not a permission gap.
+    const adminExploit = await expectApiError(() =>
+      admin.object("campaign").create({ name: "still-refused", properties: { targets: [restrictedTarget.id] } })
+    );
+    expect(adminExploit.status).toBe(403);
+
+    // PATCH/PUT/DELETE refused too, for a campaign that legitimately exists via /campaigns.
+    const legit = await admin.campaigns.propose({ name: "legit-for-generic-block-test", targets: [restrictedTarget.id] });
+    await expect(
+      admin.object("campaign").update(legit.id, { properties: { targets: [restrictedTarget.id] } })
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(admin.object("campaign").delete(legit.id)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("SECURITY: IaC plan/apply binds a campaign manifest's declared targets to the actor's own authority", async () => {
+    const restrictedTarget = await admin.components.create({ name: "camp-iac-bypass-target" });
+    const ownDomain = await admin.domains.create({ name: "camp-iac-bypass-own-domain" });
+    const ownTarget = await admin.components.create({ name: "camp-iac-bypass-own-target", domainId: ownDomain.id });
+
+    const narrowActor = await createTestUser(server, org, [
+      { role: "Viewer", scope: org.orgId }, // POST /plans needs object:read at org root
+      { role: "Administrator", scope: ownDomain.id }
+    ]);
+    const narrowClient = new ScpClient({ baseUrl: server.baseUrl, token: narrowActor.token });
+
+    const stackName = `camp-iac-bypass-${randomUUID().slice(0, 8)}`;
+    const campaignUrn = `urn:scp:${stackName}:campaign:evil`;
+    function manifestFor(targets: string[]): DesiredStateManifest {
+      return {
+        stackName,
+        objects: [
+          {
+            urn: campaignUrn,
+            typeId: "campaign",
+            name: "campaign-via-iac",
+            domainId: ownDomain.id,
+            properties: { targets }
+          }
+        ],
+        relationships: []
+      };
+    }
+
+    // Exploit: the manifest's OWN domainId (ownDomain) passes the create-time containment check,
+    // but `targets` names an object outside the actor's authority — must still be refused.
+    const evilPlan = await narrowClient.plans.create(manifestFor([restrictedTarget.id]));
+    await expect(narrowClient.plans.apply(evilPlan.id)).rejects.toMatchObject({ status: 403 });
+    await expect(admin.object("campaign").get(campaignUrn)).rejects.toMatchObject({ status: 404 });
+
+    // Non-regression: the SAME actor's apply succeeds when every declared target IS within their
+    // authority — IaC still legitimately manages campaigns, just under the same binding
+    // `POST /campaigns` enforces.
+    const legitPlan = await narrowClient.plans.create(manifestFor([ownTarget.id]));
+    const { summary } = await narrowClient.plans.apply(legitPlan.id);
+    expect(summary).toMatchObject({ creates: 1 });
+    const created = await admin.object("campaign").get(campaignUrn);
+    expect(created.properties).toMatchObject({ targets: [ownTarget.id] });
   });
 });
