@@ -16,6 +16,7 @@ import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
+import { forbidden } from "../errors.js";
 import { withIdempotency } from "../idempotency.js";
 import {
   createObject,
@@ -26,6 +27,7 @@ import {
   updateObject,
   upsertObjectByUrn
 } from "../graph/objects-repo.js";
+import { isGovernanceManagedObjectType } from "../governance/governance-managed-types.js";
 
 function idempotencyKey(request: FastifyRequest): string | undefined {
   const header = request.headers["idempotency-key"];
@@ -33,10 +35,36 @@ function idempotencyKey(request: FastifyRequest): string | undefined {
 }
 
 /**
+ * Governance-owned object types (`policy`, `control`) are refused here entirely — mirrors
+ * `assertNotSystemManagedRelationship` (routes/relationships.ts) blocking `approves` edges from
+ * the generic `/relationships` endpoint. Without this, the generic `/objects/{type}` endpoints
+ * created/updated the SAME `policy`/`control` graph objects the typed `/policies`/`/controls`
+ * routes do (routes/typed-registries.ts), but checked only generic `object:write` — skipping both
+ * the `policy:write` permission gate AND `assertPolicyScopeWithinAuthority`'s binding of a
+ * policy's DECLARED scope to the author's own authority (CRITICAL #1b). That gap let a
+ * component-scoped Administrator publish an org-wide policy through this endpoint, and let ANY
+ * actor holding bare `object:write` (e.g. an Operator with zero `policy:write` anywhere) create an
+ * org-wide `required` policy demanding an unreachable approval quorum — a live governance-bypass
+ * DoS. Checked before the transaction even opens: no DB round trip is needed to reject a request
+ * this endpoint will never legitimately serve.
+ */
+function assertNotGovernanceManagedObjectType(type: string): void {
+  if (isGovernanceManagedObjectType(type)) {
+    throw forbidden(
+      `object type '${type}' is governance-managed and cannot be created, updated, or deleted via ` +
+        `the generic /api/v1/objects/${type} endpoint — use /api/v1/policies or /api/v1/controls, ` +
+        `which enforce 'policy:write' and (for policies) the scope-authority binding`
+    );
+  }
+}
+
+/**
  * Generic `/objects/{type}` endpoints over the full graph model (DESIGN.md §4.1, §6) — works for
  * ANY registered object type, built-in or org-defined via the type registry, with no special
- * casing (BUILD_AND_TEST.md §8 M1 DoD (b)). `PUT .../{urn}` is the idempotent upsert-by-URN path;
- * every `POST` accepts `Idempotency-Key` for replay-safe retries.
+ * casing (BUILD_AND_TEST.md §8 M1 DoD (b)) EXCEPT the governance-owned `policy`/`control` types,
+ * which every write verb below refuses outright (`assertNotGovernanceManagedObjectType` — security
+ * fast-follow after PR #9). `PUT .../{urn}` is the idempotent upsert-by-URN path; every `POST`
+ * accepts `Idempotency-Key` for replay-safe retries.
  *
  * Scope decision (documented): list operations check `object:read` at the org-root scope
  * (listing spans arbitrary containment, so a single finer-grained scope isn't meaningful without
@@ -66,6 +94,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const { type } = request.params;
+      assertNotGovernanceManagedObjectType(type);
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const scopeObjectId = await resolveDomainId(
           tx,
@@ -200,6 +229,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const { type, idOrUrn } = request.params;
+      assertNotGovernanceManagedObjectType(type);
       const object = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const found = await getObjectByIdOrUrn(tx, auth.orgId, type, idOrUrn);
         await authorize(tx, {
@@ -247,6 +277,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const { type, idOrUrn } = request.params;
+      assertNotGovernanceManagedObjectType(type);
       const object = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const found = await getObjectByIdOrUrn(tx, auth.orgId, type, idOrUrn);
         await authorize(tx, {
@@ -292,6 +323,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const { type, urn } = request.params;
+      assertNotGovernanceManagedObjectType(type);
       const { object, created } = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const existing = await tx.query.objects.findFirst({
           where: (t, { eq, and }) => and(eq(t.orgId, auth.orgId), eq(t.urn, urn))

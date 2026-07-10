@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpApiError, ScpClient } from "@scp/sdk";
+import type { DesiredStateManifest } from "@scp/schemas";
 import {
   createTestOrg,
   createTestUser,
@@ -429,6 +430,173 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       properties: { enforcement: "advisory" }
     });
     expect(adminOrgWide.id).toBeTruthy();
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // Security fast-follow after PR #9's adversarial review: CRITICAL #1b's scope-authority binding
+  // was only wired into the TYPED `/policies` route. The generic `/objects/{type}` endpoint and
+  // the IaC plan/apply path both create/mutate the exact same `policy`/`control` graph objects but
+  // checked only generic `object:write` (never `policy:write`, never
+  // `assertPolicyScopeWithinAuthority`) — a live governance bypass reachable by (a) a
+  // component-scoped Administrator (the same actor the test above blocks on the typed route), and
+  // (b) an Operator holding ZERO `policy:write` anywhere, planting an org-wide `required` policy
+  // demanding an unreachable approval quorum (an org-wide governance DoS any non-Viewer role could
+  // trigger).
+  // -----------------------------------------------------------------------------------------
+
+  it("the generic /api/v1/objects/policy (and /control) endpoint refuses every write verb — both exploits are blocked", async () => {
+    const org = await createTestOrg(server, "generic-policy-bypass");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+    const domain = await admin.domains.create({ name: "gpb-domain" });
+    const component = await admin.components.create({ name: "gpb-component", domainId: domain.id });
+
+    // Exploit (a): a component-scoped Administrator — holds 'policy:write' ONLY at `component` —
+    // tries the generic endpoint instead of the typed route CRITICAL #1b already blocks.
+    const author = await createTestUser(server, org, [{ role: "Administrator", scope: component.id }]);
+    const authorClient = new ScpClient({ baseUrl: server.baseUrl, token: author.token });
+    const exploitA = await expectApiError(() =>
+      authorClient.object("policy").create({
+        name: "sneaky-org-wide-via-generic",
+        domainId: component.id,
+        properties: { enforcement: "required", effects: [{ requireControls: ["x"] }] }
+      })
+    );
+    expect(exploitA.status).toBe(403);
+
+    // Exploit (b): an Operator holding ZERO 'policy:write' anywhere plants an org-wide `required`
+    // policy demanding an unreachable approval quorum, via the generic endpoint.
+    const operator = await createTestUser(server, org, [{ role: "Operator", scope: org.orgId }]);
+    const operatorClient = new ScpClient({ baseUrl: server.baseUrl, token: operator.token });
+    const exploitB = await expectApiError(() =>
+      operatorClient.object("policy").create({
+        name: "dos-policy-via-generic",
+        properties: {
+          enforcement: "required",
+          effects: [{ requireApprovals: { count: 99, fromRole: "NonexistentRole" } }]
+        }
+      })
+    );
+    expect(exploitB.status).toBe(403);
+
+    // `control` gets the same treatment — the generic endpoint checked only `object:write`, never
+    // `policy:write`, so even a plain Operator could fabricate a control definition.
+    const exploitControl = await expectApiError(() =>
+      operatorClient
+        .object("control")
+        .create({ name: "fake-control-via-generic", properties: { category: "security" } })
+    );
+    expect(exploitControl.status).toBe(403);
+
+    // PATCH/PUT/DELETE are refused too, even for the ORG-ROOT OWNER who would otherwise have every
+    // permission needed — proves this is an unconditional type-level block, not a permission gap.
+    const legitPolicy = await admin.policies.create({
+      name: "legit-for-generic-block-test",
+      properties: { enforcement: "advisory" }
+    });
+    await expect(
+      admin.object("policy").update(legitPolicy.id, { properties: { enforcement: "recommended" } })
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(
+      admin.object("policy").upsertByUrn(legitPolicy.urn, {
+        name: legitPolicy.name,
+        properties: { enforcement: "recommended" }
+      })
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(admin.object("policy").delete(legitPolicy.id)).rejects.toMatchObject({ status: 403 });
+
+    // The policy is untouched by any of the blocked calls — still 'advisory', still live.
+    const stillLegit = await admin.policies.get(legitPolicy.id);
+    expect(stillLegit.properties).toMatchObject({ enforcement: "advisory" });
+  });
+
+  it("IaC plan/apply enforces the same 'policy:write' + scope-authority binding as the typed route — a plain Operator's apply is blocked, and a component-scoped Administrator cannot smuggle an org-wide policy through a manifest", async () => {
+    const org = await createTestOrg(server, "iac-policy-bypass");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+    const domain = await admin.domains.create({ name: "iac-pb-domain" });
+    const component = await admin.components.create({ name: "iac-pb-component", domainId: domain.id });
+
+    const stackName = `stack-${randomUUID().slice(0, 8)}`;
+    const policyUrn = `urn:scp:${stackName}:policy:evil`;
+    // `domainId: component.id` on every variant here matters: it's what makes the object's own
+    // CONTAINMENT check pass (the author genuinely holds 'policy:write' at `component`) so the
+    // test isolates the DECLARED-scope-authority check specifically — exactly how the typed-route
+    // CRITICAL #1b test above is built (it sets `domainId: component.id` on every attempt too).
+    function manifestWithPolicy(scope?: Record<string, unknown>): DesiredStateManifest {
+      return {
+        stackName,
+        objects: [
+          {
+            urn: policyUrn,
+            typeId: "policy",
+            name: "evil-policy-via-iac",
+            domainId: component.id,
+            properties: {
+              ...(scope ? { scope } : {}),
+              enforcement: "required",
+              effects: [{ requireApprovals: { count: 99, fromRole: "NonexistentRole" } }]
+            }
+          }
+        ],
+        relationships: []
+      };
+    }
+
+    // Exploit (b, via IaC): an Operator holding ZERO 'policy:write' anywhere plans and attempts to
+    // apply an org-wide `required` policy. `POST /plans` (diff computation) only needs
+    // `object:read`, so the plan itself computes fine — the block must land at apply time.
+    const operator = await createTestUser(server, org, [{ role: "Operator", scope: org.orgId }]);
+    const operatorClient = new ScpClient({ baseUrl: server.baseUrl, token: operator.token });
+    const opPlan = await operatorClient.plans.create(manifestWithPolicy());
+    await expect(operatorClient.plans.apply(opPlan.id)).rejects.toMatchObject({ status: 403 });
+    await expect(admin.object("policy").get(policyUrn)).rejects.toMatchObject({ status: 404 });
+
+    // Exploit (a, via IaC): a component-scoped Administrator (holds 'policy:write' ONLY at
+    // `component`) tries an org-wide (unscoped) policy through a manifest apply. Also bound as a
+    // Viewer at the ORG ROOT — `POST /plans` checks `object:read` at org root regardless of
+    // manifest content (routes/plans.ts's own documented scope decision, unrelated to this fix),
+    // so without this second binding the actor couldn't reach `/plans` at all and the test
+    // wouldn't isolate the `policy:write`/scope-authority variable this fix is actually about.
+    // Viewer grants no write permission of any kind, so the actor's WRITE authority stays exactly
+    // 'policy:write' at `component` and nothing broader.
+    const author = await createTestUser(server, org, [
+      { role: "Viewer", scope: org.orgId },
+      { role: "Administrator", scope: component.id }
+    ]);
+    const authorClient = new ScpClient({ baseUrl: server.baseUrl, token: author.token });
+    const orgWidePlan = await authorClient.plans.create(manifestWithPolicy());
+    await expect(authorClient.plans.apply(orgWidePlan.id)).rejects.toMatchObject({ status: 403 });
+    await expect(admin.object("policy").get(policyUrn)).rejects.toMatchObject({ status: 404 });
+
+    // Non-regression: the SAME author's apply succeeds for a policy scoped to their OWN component —
+    // IaC still legitimately manages policy objects, just under the same authority binding the
+    // typed route enforces.
+    const scopedPlan = await authorClient.plans.create(manifestWithPolicy({ objectRef: component.id }));
+    const { summary } = await authorClient.plans.apply(scopedPlan.id);
+    expect(summary).toMatchObject({ creates: 1 });
+    const created = await admin.object("policy").get(policyUrn);
+    expect(created.properties).toMatchObject({ scope: { objectRef: component.id } });
+
+    // `control` objects get the same 'policy:write' gate in the IaC path too (not just
+    // 'object:write') — a plain Operator can't fabricate one through a manifest apply either.
+    const controlStackName = `${stackName}-control`;
+    const controlUrn = `urn:scp:${controlStackName}:control:fake`;
+    const controlManifest: DesiredStateManifest = {
+      stackName: controlStackName,
+      objects: [
+        {
+          urn: controlUrn,
+          typeId: "control",
+          name: "fake-control-via-iac",
+          properties: { category: "security" }
+        }
+      ],
+      relationships: []
+    };
+    const controlPlan = await operatorClient.plans.create(controlManifest);
+    await expect(operatorClient.plans.apply(controlPlan.id)).rejects.toMatchObject({ status: 403 });
+    await expect(admin.object("control").get(controlUrn)).rejects.toMatchObject({ status: 404 });
   });
 
   // -----------------------------------------------------------------------------------------

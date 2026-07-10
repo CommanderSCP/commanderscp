@@ -14,6 +14,8 @@ import {
   updateObject
 } from "../graph/objects-repo.js";
 import { createRelationship, deleteRelationship, listRelationships } from "../graph/relationships-repo.js";
+import { isGovernanceManagedObjectType } from "../governance/governance-managed-types.js";
+import { assertPolicyScopeWithinAuthority } from "../governance/policy-scope-authz.js";
 import {
   computePlanDiff,
   managedLabels,
@@ -298,6 +300,14 @@ export interface ObjectResolution {
   scopeObjectId: string;
 }
 
+/** `object:write` for every ordinary type; `policy:write` for the governance-owned `policy`/
+ *  `control` types — mirrors `routes/typed-registries.ts`'s `writePermission` gate so the IaC
+ *  apply path can never authorize a governance-object write with a weaker permission than the
+ *  typed `/policies`/`/controls` routes require (security fast-follow after PR #9). */
+function writePermissionFor(typeId: string): Permission {
+  return isGovernanceManagedObjectType(typeId) ? "policy:write" : "object:write";
+}
+
 /**
  * Resolves, for every non-noop diff entry, which permission + scope `authorize()` must allow.
  * Object creates check `object:write` at the resolved target domain (mirrors
@@ -307,10 +317,27 @@ export interface ObjectResolution {
  * here too, not just on the generic endpoint). An endpoint not covered by any object diff entry in
  * this plan (an "external" URN reference, or a plain pre-existing dependency) is resolved via a
  * live lookup and must already exist — `getObjectByIdOrUrnAnyType` 404s otherwise.
+ *
+ * **Governance carve-out (security fast-follow after PR #9's adversarial review):** a manifest can
+ * declare `policy`/`control` objects like any other type — `typeId` is a free-form string
+ * (`ManifestObjectSchema`), so nothing before this function stops a caller from including one. The
+ * ORIGINAL code checked only `object:write` here, meaning an actor with no `policy:write` anywhere
+ * could plant a `policy`/`control` object through `POST /plans` + `.../apply` even though both the
+ * typed `/policies` route AND (after this fix) the generic `/objects/policy` endpoint refuse that.
+ * Worse, for `policy` specifically, the DECLARED `properties.scope` was never bound to the actor's
+ * own authority — a narrow-scope actor's apply could plant an org-wide `required` policy, the exact
+ * CRITICAL #1b vector `assertPolicyScopeWithinAuthority` closes on the typed route. Fixed here by
+ * (a) using `policy:write` instead of `object:write` for these types (`writePermissionFor`), and
+ * (b) calling `assertPolicyScopeWithinAuthority` for every `policy` create/update, exactly like
+ * `routes/typed-registries.ts`'s POST/PATCH/PUT handlers do. Thrown eagerly (not deferred into the
+ * `checks` array the caller drains after this returns) — still fully fail-closed: an uncaught throw
+ * here aborts `prepareApplyChecks` before `executePlanDiff` ever runs, inside the same transaction
+ * the route handler opened, so nothing partially applies.
  */
 export async function prepareApplyChecks(
   tx: TenantTx,
   orgId: string,
+  actorObjectId: string,
   diff: PlanDiff
 ): Promise<{ checks: ScopeCheck[]; objectResolutions: Map<string, ObjectResolution> }> {
   const objectResolutions = new Map<string, ObjectResolution>();
@@ -320,13 +347,27 @@ export async function prepareApplyChecks(
     if (entry.action === "create") {
       const scopeObjectId = entry.target?.domainId ?? orgId;
       objectResolutions.set(entry.urn, { scopeObjectId });
-      checks.push({ permission: "object:write", scopeObjectId });
+      checks.push({ permission: writePermissionFor(entry.typeId), scopeObjectId });
+      if (entry.typeId === "policy") {
+        await assertPolicyScopeWithinAuthority(tx, {
+          orgId,
+          actorObjectId,
+          properties: entry.target?.properties
+        });
+      }
       continue;
     }
     const found = await getObjectByIdOrUrn(tx, orgId, entry.typeId, entry.urn);
     objectResolutions.set(entry.urn, { id: found.id, scopeObjectId: found.id });
     if (entry.action !== "noop") {
-      checks.push({ permission: "object:write", scopeObjectId: found.id });
+      checks.push({ permission: writePermissionFor(entry.typeId), scopeObjectId: found.id });
+      if (entry.typeId === "policy" && entry.action === "update") {
+        await assertPolicyScopeWithinAuthority(tx, {
+          orgId,
+          actorObjectId,
+          properties: entry.target?.properties
+        });
+      }
     }
   }
 
