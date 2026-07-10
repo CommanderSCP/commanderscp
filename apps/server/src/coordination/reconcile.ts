@@ -27,6 +27,7 @@ import { processChangeSourceEvents } from "./webhook-processor.js";
 import { matchPoliciesForTargets } from "../governance/policy-resolve.js";
 import { resolvePolicies } from "../governance/policy-model.js";
 import { prewarmGovernanceForChange } from "../governance/gate-orchestrator.js";
+import { reconcileCampaignsOrgTick } from "./campaign-reconcile.js";
 
 /**
  * The resumable reconciliation loop (DESIGN.md §9.3/§9.4, BUILD_AND_TEST.md §8 M3): "pg-boss
@@ -611,6 +612,14 @@ export async function reconcileOrgTick(db: Db, orgId: string, host: PluginHost, 
   await advanceCoordinatedChanges(db, orgId, gateDeps);
   await advanceExecutingChanges(db, orgId, host, sandbox);
   await advanceValidatingChanges(db, orgId, host, sandbox);
+  // M5 (DESIGN §9.5): campaigns fan out into real M3 Changes above already progress through the
+  // exact same steps this tick just ran — this only sequences WHICH wave's member changes get
+  // proposed next (coordination/campaign-reconcile.ts's module doc).
+  try {
+    await reconcileCampaignsOrgTick(db, orgId, host, sandbox);
+  } catch (err) {
+    console.error(`[reconcile] org ${orgId} campaign reconciliation failed:`, err);
+  }
 }
 
 export interface ReconcileLoopHandle {

@@ -8,6 +8,16 @@ import type {
 import type { TenantTx } from "../db/tenant-tx.js";
 import { mapRawObjectRow, type RawObjectRow } from "./raw-row-mappers.js";
 import { sqlIn, sqlInOrAlways } from "./sql-helpers.js";
+// M5 layering note (DESIGN.md §5/§9.5): `initiative-rollup` is the one named query whose
+// implementation reaches into `coordination/` rather than staying pure graph traversal — an
+// initiative's roll-up status is genuinely a coordination-engine concept (derived from campaign
+// wave/member-change state, `coordination/campaign-status.ts`), not something expressible as a
+// relationship/object traversal alone. Kept here (rather than a parallel dispatcher) because the
+// charter's contract is "the intelligence questions become canned, parameterized API queries at
+// `/graph/query/{name}`" — duplicating that surface for one query would be the worse trade.
+import { toGraphObject } from "./objects-repo.js";
+import { campaignsCoordinatedByInitiative } from "../coordination/initiative-repo.js";
+import { getCampaignStatus } from "../coordination/campaign-repo.js";
 
 /**
  * Named graph queries (DESIGN.md §5): depth-limited recursive CTEs over indexed adjacency,
@@ -230,6 +240,20 @@ export async function runNamedQuery(
         params.maxDepth
       );
       return { query: name, objects: objs, paths };
+    }
+    case "initiative-rollup": {
+      // DESIGN §9.5: "roll-up status DERIVED BY TRAVERSAL... not stored/duplicated state" — walks
+      // `coordinates` from the initiative to its member campaigns (org-scoped by construction,
+      // same as every query in this file) and tallies each campaign's own PURE derived status
+      // (coordination/campaign-status.ts) into `counts`, the same "counts by tag" shape
+      // `blast-radius`/`domains-impacted` already use above.
+      const campaignRows = await campaignsCoordinatedByInitiative(tx, orgId, params.objectId);
+      const counts: Record<string, number> = {};
+      for (const row of campaignRows) {
+        const status = await getCampaignStatus(tx, orgId, row.id);
+        counts[`status:${status}`] = (counts[`status:${status}`] ?? 0) + 1;
+      }
+      return { query: name, objects: campaignRows.map(toGraphObject), counts };
     }
   }
 }
