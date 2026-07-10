@@ -186,7 +186,7 @@ export async function listenTestServer(
           config: { statePath: join(stateDir, "fake-executor-state.json"), autoSucceedAfterMs: 50 }
         }
       ]);
-      reconcileLoop = await startReconcileLoop(boss, server.deps.db, pluginHost);
+      reconcileLoop = await startReconcileLoop(boss, server.deps.db, pluginHost, server.deps.celSandbox!);
       watchdogLoop = await startWatchdogLoop(boss, server.deps.db, {
         intervalSeconds: opts.watchdogIntervalSeconds
       });

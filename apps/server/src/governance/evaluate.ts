@@ -135,16 +135,11 @@ export async function evaluateGovernance(
         });
       }
       for (const approval of policy.requireApprovals) {
-        // Effect index within the ORIGINAL contributing policy document that declared this
-        // requireApprovals effect is not tracked at the merged level (merging can combine
-        // several contributors' approvals effects) — approval_requests are materialized per
-        // CONTRIBUTOR (governance/approvals-repo.ts), keyed by that contributor's own
-        // (policyObjectId, policyVersion, effectIndex), so the lookup here is keyed the same way
-        // via the merged `EffectivePolicy`'s primary (deepest) contributor for stability.
-        const primary = policy.contributors[0];
-        const key = primary
-          ? effectKey(primary.policyObjectId, primary.policyVersion, policy.contributors.indexOf(primary))
-          : `${policy.name}::approvals`;
+        // Keyed by the WINNING contributor's own document coordinates (policy-model.ts's
+        // `EffectiveApprovalRequirement`) — exactly what `governance/approvals-repo.ts`
+        // materializes `approval_requests` rows under, so this lookup and that materialization
+        // always agree on the same key for the same requirement.
+        const key = effectKey(approval.originPolicyObjectId, approval.originPolicyVersion, approval.originEffectIndex);
         const status = context.approvals[key];
         effects.push({
           kind: "requireApprovals",

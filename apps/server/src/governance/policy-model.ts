@@ -92,6 +92,28 @@ export interface MatchedPolicy {
    *  value"): which ancestor object's scope declaration matched, and how. */
   matchedAt: { objectId: string; depth: number; via: "objectRef" | "selector" | "group" | "unscoped" };
   emergencyPolicy: boolean;
+  /** DESIGN §9.4: "Triggers: automatic (gate/control failure policy...) or manual" — when true,
+   *  a wave-target failure under this policy's scope triggers an automatic rollback
+   *  (coordination/reconcile.ts) instead of parking for a manual `scp change rollback`. */
+  autoRollbackOnFailure: boolean;
+}
+
+/**
+ * A merged requireApprovals requirement, carrying its WINNING contributor's own document
+ * coordinates (`originPolicyObjectId`/`originPolicyVersion`/`originEffectIndex` — the position of
+ * this exact effect within THAT contributor's own `properties.effects` array). This is what lets
+ * `governance/approvals-repo.ts` materialize one `approval_requests` row per distinct requirement
+ * keyed by (policy, policy version, effect index) — the same dedup key whether this requirement
+ * came from a single policy or was raised by a stricter local override (the winning contributor's
+ * coordinates are stable across repeated resolution as long as nothing edits the documents).
+ */
+export interface EffectiveApprovalRequirement {
+  count: number;
+  fromRole: string;
+  scope: string;
+  originPolicyObjectId: string;
+  originPolicyVersion: number;
+  originEffectIndex: number;
 }
 
 /** One name-group's merged, effective requirement — what actually gets enforced. */
@@ -99,11 +121,12 @@ export interface EffectivePolicy {
   name: string;
   enforcement: PolicyEnforcement;
   requireControls: string[];
-  requireApprovals: Array<{ count: number; fromRole: string; scope: string }>;
+  requireApprovals: EffectiveApprovalRequirement[];
   /** Every instance that contributed to this effective policy, deepest-scope-first — the reason
    *  tree renders this so "why is this required" always shows every contributing level. */
   contributors: MatchedPolicy[];
   emergencyPolicy: boolean;
+  autoRollbackOnFailure: boolean;
 }
 
 /**
@@ -127,23 +150,30 @@ export function resolvePolicies(matches: MatchedPolicy[]): EffectivePolicy[] {
 
     let enforcement: PolicyEnforcement = "advisory";
     const requireControls = new Set<string>();
-    const approvalsByKey = new Map<string, { count: number; fromRole: string; scope: string }>();
+    const approvalsByKey = new Map<string, EffectiveApprovalRequirement>();
     let emergencyPolicy = false;
+    let autoRollbackOnFailure = false;
 
     for (const m of sorted) {
       enforcement = stricterEnforcement(enforcement, m.enforcement);
       emergencyPolicy = emergencyPolicy || m.emergencyPolicy;
-      for (const effect of m.effects) {
+      autoRollbackOnFailure = autoRollbackOnFailure || m.autoRollbackOnFailure;
+      m.effects.forEach((effect, effectIndex) => {
         if (isRequireControlsEffect(effect)) {
           for (const c of effect.requireControls) requireControls.add(c);
         } else if (isRequireApprovalsEffect(effect)) {
           const key = `${effect.requireApprovals.fromRole}::${effect.requireApprovals.scope}`;
           const existing = approvalsByKey.get(key);
           if (!existing || effect.requireApprovals.count > existing.count) {
-            approvalsByKey.set(key, { ...effect.requireApprovals });
+            approvalsByKey.set(key, {
+              ...effect.requireApprovals,
+              originPolicyObjectId: m.policyObjectId,
+              originPolicyVersion: m.policyVersion,
+              originEffectIndex: effectIndex
+            });
           }
         }
-      }
+      });
     }
 
     effective.push({
@@ -152,7 +182,8 @@ export function resolvePolicies(matches: MatchedPolicy[]): EffectivePolicy[] {
       requireControls: [...requireControls].sort(),
       requireApprovals: [...approvalsByKey.values()],
       contributors: sorted,
-      emergencyPolicy
+      emergencyPolicy,
+      autoRollbackOnFailure
     });
   }
 

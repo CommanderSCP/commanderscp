@@ -25,6 +25,7 @@ import { DEFAULT_EXECUTOR_INSTANCE_ID, DEFAULT_EXECUTOR_MODULE } from "./executo
 import { runWatchdogSweep, WATCHDOG_SLA_MS } from "./watchdog.js";
 import { markChangeReconcileBlocked, proposeChange } from "./changes-repo.js";
 import { transitionChange } from "./transition.js";
+import { getSharedCelSandbox } from "../governance/cel-sandbox.js";
 import { compileAndPersistPlan } from "./plan-service.js";
 import { markWaveTerminal } from "./wave-targets-repo.js";
 import { createInMemoryFakeHost, withFailOnceAfterRealTrigger } from "./test-support/fake-plugin-host.js";
@@ -315,7 +316,7 @@ describe("coordination engine: crash resumption", () => {
         (targetRef) => targetRef === targetObjectId,
         () => resolveFaulted()
       );
-      const loop1 = await startReconcileLoop(boss1, server.deps.db, host1);
+      const loop1 = await startReconcileLoop(boss1, server.deps.db, host1, getSharedCelSandbox());
 
       // The target is left EXACTLY mid-flight: the real trigger() call already fired (a genuine
       // side effect against the real subprocess), but the injected fault meant reconcile.ts never
@@ -365,7 +366,7 @@ describe("coordination engine: crash resumption", () => {
           config: { statePath, autoSucceedAfterMs: 50 }
         }
       ]);
-      const loop2 = await startReconcileLoop(boss2, server.deps.db, host2);
+      const loop2 = await startReconcileLoop(boss2, server.deps.db, host2, getSharedCelSandbox());
 
       try {
         await waitUntil(
@@ -434,7 +435,7 @@ describe("coordination engine: crash resumption", () => {
         config: { statePath, autoSucceedAfterMs: 3_000 }
       }
     ]);
-    const loop = await startReconcileLoop(boss, server.deps.db, host);
+    const loop = await startReconcileLoop(boss, server.deps.db, host, getSharedCelSandbox());
 
     try {
       const createTarget = await server.app.inject({
@@ -588,7 +589,7 @@ describe("coordination engine: trigger idempotency across a same-tick crash (CRI
 
     // Tick 1: reconcileOrgTick walks BOTH freshly-proposed changes all the way to `executing` and
     // attempts to trigger their (only) wave target, all inside this one call.
-    await reconcileOrgTick(server.deps.db, org.orgId, host);
+    await reconcileOrgTick(server.deps.db, org.orgId, host, getSharedCelSandbox());
 
     const targetsAfterTick1 = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.select().from(changeWaveTargets)
@@ -613,7 +614,7 @@ describe("coordination engine: trigger idempotency across a same-tick crash (CRI
 
     // Tick 2: A's target (still `triggering`) is retried with the SAME idempotencyKey; nothing
     // faults it this time, so it commits.
-    await reconcileOrgTick(server.deps.db, org.orgId, host);
+    await reconcileOrgTick(server.deps.db, org.orgId, host, getSharedCelSandbox());
 
     const targetsAfterTick2 = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.select().from(changeWaveTargets)
@@ -681,13 +682,17 @@ describe("coordination engine: reconcile batch fairness (MAJOR #6)", () => {
         name: `parked-change-${index}`,
         targets: [targetObject.id]
       });
-      await transitionChange(tx, {
-        orgId: org.orgId,
-        changeObjectId: change.id,
-        toState: "evaluated",
-        actorObjectId: org.orgId,
-        requestId: "batch-fairness-test"
-      });
+      await transitionChange(
+        tx,
+        {
+          orgId: org.orgId,
+          changeObjectId: change.id,
+          toState: "evaluated",
+          actorObjectId: org.orgId,
+          requestId: "batch-fairness-test"
+        },
+        { sandbox: getSharedCelSandbox(), host: null }
+      );
       const plan = await compileAndPersistPlan(tx, {
         orgId: org.orgId,
         changeObjectId: change.id,
@@ -695,20 +700,28 @@ describe("coordination engine: reconcile batch fairness (MAJOR #6)", () => {
         topologyObjectId: null,
         topologyVersion: null
       });
-      await transitionChange(tx, {
-        orgId: org.orgId,
-        changeObjectId: change.id,
-        toState: "coordinated",
-        actorObjectId: org.orgId,
-        requestId: "batch-fairness-test"
-      });
-      await transitionChange(tx, {
-        orgId: org.orgId,
-        changeObjectId: change.id,
-        toState: "executing",
-        actorObjectId: org.orgId,
-        requestId: "batch-fairness-test"
-      });
+      await transitionChange(
+        tx,
+        {
+          orgId: org.orgId,
+          changeObjectId: change.id,
+          toState: "coordinated",
+          actorObjectId: org.orgId,
+          requestId: "batch-fairness-test"
+        },
+        { sandbox: getSharedCelSandbox(), host: null }
+      );
+      await transitionChange(
+        tx,
+        {
+          orgId: org.orgId,
+          changeObjectId: change.id,
+          toState: "executing",
+          actorObjectId: org.orgId,
+          requestId: "batch-fairness-test"
+        },
+        { sandbox: getSharedCelSandbox(), host: null }
+      );
       await markWaveTerminal(tx, org.orgId, plan.waves[0]!.id, "failed");
       await markChangeReconcileBlocked(tx, org.orgId, change.id);
       return change.id;
@@ -745,7 +758,7 @@ describe("coordination engine: reconcile batch fairness (MAJOR #6)", () => {
     const host = createInMemoryFakeHost({ autoSucceedAfterMs: 60_000 });
     // One tick walks the fresh change proposed -> ... -> executing -> triggered, all inline —
     // exactly like the CRITICAL #2 test above relies on.
-    await reconcileOrgTick(server.deps.db, org.orgId, host);
+    await reconcileOrgTick(server.deps.db, org.orgId, host, getSharedCelSandbox());
 
     const targets = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, freshTargetId))

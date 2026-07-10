@@ -62,6 +62,7 @@ interface PolicyCandidate {
     condition?: string;
     effects?: PolicyEffect[];
     emergencyPolicy?: boolean;
+    autoRollbackOnFailure?: boolean;
   };
 }
 
@@ -153,6 +154,7 @@ export async function matchPoliciesForTargets(tx: TenantTx, input: MatchPolicies
     const effects = candidate.properties.effects ?? [];
     const condition = candidate.properties.condition;
     const emergencyPolicy = candidate.properties.emergencyPolicy ?? false;
+    const autoRollbackOnFailure = candidate.properties.autoRollbackOnFailure ?? false;
 
     const record = (objectId: string, depth: number, via: MatchedPolicy["matchedAt"]["via"]): void => {
       const key = `${candidate.id}::${objectId}`;
@@ -165,7 +167,8 @@ export async function matchPoliciesForTargets(tx: TenantTx, input: MatchPolicies
         condition,
         effects,
         matchedAt: { objectId, depth, via },
-        emergencyPolicy
+        emergencyPolicy,
+        autoRollbackOnFailure
       });
     };
 

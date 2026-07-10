@@ -76,9 +76,13 @@ export type ChangeListResponse = z.infer<typeof ChangeListResponseSchema>;
 
 export const ChangeIdParamSchema = z.object({ id: z.string().uuid() });
 
-/** `POST /changes/{id}:cancel` and other reason-carrying transition triggers. */
+/** `POST /changes/{id}:cancel` and other reason-carrying transition triggers. `overrideFreeze`
+ *  (DESIGN §10.3, M4): attempts to override an active freeze blocking this transition — requires
+ *  `freeze:override` permission AND a non-empty `reason` (the same field, doing double duty as
+ *  the freeze override's mandatory reason). */
 export const ChangeTransitionRequestSchema = z.object({
-  reason: z.string().optional()
+  reason: z.string().optional(),
+  overrideFreeze: z.boolean().optional()
 });
 export type ChangeTransitionRequest = z.infer<typeof ChangeTransitionRequestSchema>;
 

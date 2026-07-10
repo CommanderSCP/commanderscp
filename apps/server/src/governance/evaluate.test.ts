@@ -27,7 +27,8 @@ function effective(overrides: Partial<EffectivePolicy> & { name: string }): Effe
     condition: undefined,
     effects: [],
     matchedAt: { objectId: "org", depth: 0, via: "unscoped" },
-    emergencyPolicy: false
+    emergencyPolicy: false,
+    autoRollbackOnFailure: false
   };
   return {
     enforcement: "required",
@@ -35,6 +36,7 @@ function effective(overrides: Partial<EffectivePolicy> & { name: string }): Effe
     requireApprovals: [],
     contributors: [contributor],
     emergencyPolicy: false,
+    autoRollbackOnFailure: false,
     ...overrides
   };
 }
@@ -97,7 +99,8 @@ describe("evaluateGovernance", () => {
       condition: 'subject.labels.env == "staging"', // false — subject is env=prod in baseContext
       effects: [{ requireControls: ["scan"] }],
       matchedAt: { objectId: "org", depth: 0, via: "unscoped" },
-      emergencyPolicy: false
+      emergencyPolicy: false,
+    autoRollbackOnFailure: false
     };
     const [policy] = resolvePolicies([contributor]);
     const result = await evaluateGovernance(sandbox(), [policy!], baseContext());
@@ -114,7 +117,8 @@ describe("evaluateGovernance", () => {
       condition: 'subject.labels.env == "prod"', // true
       effects: [{ requireControls: ["scan"] }],
       matchedAt: { objectId: "org", depth: 0, via: "unscoped" },
-      emergencyPolicy: false
+      emergencyPolicy: false,
+    autoRollbackOnFailure: false
     };
     const [policy] = resolvePolicies([contributor]);
     const result = await evaluateGovernance(sandbox(), [policy!], baseContext());
@@ -131,7 +135,8 @@ describe("evaluateGovernance", () => {
       condition: "this is : not valid CEL {{",
       effects: [{ requireControls: ["scan"] }],
       matchedAt: { objectId: "org", depth: 0, via: "unscoped" },
-      emergencyPolicy: false
+      emergencyPolicy: false,
+    autoRollbackOnFailure: false
     };
     const [policy] = resolvePolicies([contributor]);
     const result = await evaluateGovernance(sandbox(), [policy!], baseContext());
@@ -148,7 +153,8 @@ describe("evaluateGovernance", () => {
       condition: undefined,
       effects: [{ requireApprovals: { count: 2, fromRole: "Approver", scope: "org" } }],
       matchedAt: { objectId: "org", depth: 0, via: "unscoped" },
-      emergencyPolicy: false
+      emergencyPolicy: false,
+    autoRollbackOnFailure: false
     };
     const [policy] = resolvePolicies([contributor]);
     const key = "policy-approval::1::0";

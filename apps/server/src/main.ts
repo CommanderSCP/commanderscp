@@ -13,6 +13,7 @@ import { loginAndSeedDemoData } from "./seed.js";
 import { SubprocessPluginHost } from "./plugin-host/host.js";
 import { startReconcileLoop } from "./coordination/reconcile.js";
 import { startWatchdogLoop } from "./coordination/watchdog.js";
+import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
 import {
   DEFAULT_EXECUTOR_INSTANCE_ID,
   DEFAULT_EXECUTOR_MODULE,
@@ -89,7 +90,7 @@ async function main(): Promise<void> {
         config: { statePath: path.join(os.tmpdir(), "scpd-fake-executor-state.json") }
       }
     ]);
-    const reconcileLoop = await startReconcileLoop(boss, db, pluginHost);
+    const reconcileLoop = await startReconcileLoop(boss, db, pluginHost, getSharedCelSandbox());
     // CRITICAL #1 fix (PR #7 review): the stuck-change watchdog sweep (DESIGN.md §9.4) had no
     // production caller at all before this — scheduled here the same way the reconcile loop is,
     // one queue per capability, both under the same `role === "all" || "worker"` guard.

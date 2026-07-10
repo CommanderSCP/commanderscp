@@ -7,7 +7,7 @@ import { notFound } from "../errors.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { eventBus } from "../events/event-bus.js";
 import { findEdge, isLegalTransition } from "./transitions.js";
-import { evaluateLifecycleGate } from "./gates.js";
+import { evaluateLifecycleGate, type GateDeps } from "./gates.js";
 import { insertDecision } from "./decisions-repo.js";
 
 type ChangeRow = typeof changes.$inferSelect;
@@ -26,6 +26,10 @@ export interface TransitionChangeInput {
   reason?: string | null;
   /** Extra context merged into the Decision's `input_context` (e.g. rollback trigger metadata). */
   extraInputContext?: Record<string, unknown>;
+  /** Explicit freeze-override intent (DESIGN §10.3: mandatory reason + `freeze:override`
+   *  permission, checked by `governance/gate-orchestrator.ts`). `reason` here doubles as the
+   *  override's mandatory reason — routes/changes.ts requires both to be present together. */
+  overrideFreeze?: { reason: string } | undefined;
 }
 
 export type TransitionResult =
@@ -56,7 +60,8 @@ export type TransitionResult =
  */
 export async function transitionChange(
   tx: TenantTx,
-  input: TransitionChangeInput
+  input: TransitionChangeInput,
+  gateDeps: GateDeps
 ): Promise<TransitionResult> {
   const rows = await tx
     .select()
@@ -106,7 +111,20 @@ export async function transitionChange(
     };
   }
 
-  const gate = await evaluateLifecycleGate(tx, input.orgId, fromState, toState);
+  const gate = await evaluateLifecycleGate(
+    tx,
+    {
+      orgId: input.orgId,
+      fromState,
+      toState,
+      changeObjectId: input.changeObjectId,
+      actorObjectId: input.actorObjectId,
+      emergency: existing.emergency,
+      isRollback: existing.rollbackOfObjectId !== null,
+      overrideFreeze: input.overrideFreeze
+    },
+    gateDeps
+  );
   const decision = await insertDecision(tx, {
     orgId: input.orgId,
     kind: "transition",
@@ -126,6 +144,23 @@ export async function transitionChange(
         ? { summary: `transition '${fromState}' -> '${toState}' allowed`, gate: gate.reasonTree }
         : { summary: `transition '${fromState}' -> '${toState}' blocked by gate`, gate: gate.reasonTree }
   });
+
+  // DESIGN §10.3: freeze override is ALWAYS a high-severity, mandatory-reason audit event —
+  // written even though the transition itself allows, in the SAME transaction as everything else
+  // this guarded function does, so an override can never happen without its own permanent record.
+  if (gate.freezeOverride) {
+    await appendAuditEvent(tx, {
+      orgId: input.orgId,
+      actorId: input.actorObjectId,
+      action: "freeze.override",
+      subjectId: gate.freezeOverride.freezeId,
+      beforeHash: null,
+      afterHash: null,
+      reason: gate.freezeOverride.reason,
+      decisionId: decision.id,
+      requestId: input.requestId
+    });
+  }
 
   if (gate.verdict === "block") {
     await appendAuditEvent(tx, {

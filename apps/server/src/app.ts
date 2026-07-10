@@ -11,6 +11,7 @@ import {
 } from "fastify-type-provider-zod";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import type { AppDeps } from "./types.js";
+import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
 import { badRequest, ProblemError, sendProblem } from "./errors.js";
 import type { CollectedRoute } from "./openapi/registry.js";
 import "./openapi/registry.js";
@@ -50,6 +51,11 @@ export async function buildApp(
   deps: AppDeps,
   options: BuildAppOptions = {}
 ): Promise<FastifyInstance> {
+  // M4: every request-serving process needs a CEL sandbox for gate evaluation (types.ts's doc
+  // comment on `AppDeps.celSandbox`) — defaulted here so every pre-M4 `buildApp({db, config})`
+  // call site keeps compiling and behaving identically.
+  deps.celSandbox ??= getSharedCelSandbox();
+
   const app = Fastify({
     logger: options.logger ?? true
   }).withTypeProvider<ZodTypeProvider>();

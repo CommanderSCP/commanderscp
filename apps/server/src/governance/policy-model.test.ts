@@ -16,6 +16,7 @@ function matched(overrides: Partial<MatchedPolicy> & { name: string }): MatchedP
     effects: [],
     matchedAt: { objectId: "org-root", depth: 0, via: "unscoped" },
     emergencyPolicy: false,
+    autoRollbackOnFailure: false,
     ...overrides
   };
 }
@@ -137,7 +138,8 @@ describe("resolvePolicies — stricter-wins resolution matrix (table-driven)", (
         matchedAt: { objectId: "domain", depth: 1, via: "objectRef" }
       })
     ]);
-    expect(effective!.requireApprovals).toEqual([{ count: 2, fromRole: "Approver", scope: "org" }]);
+    expect(effective!.requireApprovals).toHaveLength(1);
+    expect(effective!.requireApprovals[0]).toMatchObject({ count: 2, fromRole: "Approver", scope: "org" });
   });
 
   it("DIFFERENT (fromRole, scope) requireApprovals pairs stay as SEPARATE entries (not merged)", () => {
