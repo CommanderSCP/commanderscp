@@ -2,8 +2,14 @@ import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ScpApiError, type Change, type ChangeState, type ChangeWave, type ChangeWaveTarget, type Decision } from "@scp/sdk";
+// M4 governance types: @scp/schemas, not @scp/sdk — @scp/sdk's index.ts only re-exports the M3
+// (and earlier) wire types; M4 never added ApprovalRequest/Freeze/etc. there. Importing
+// @scp/schemas directly here is within bounds (eslint.config.mjs's own restricted-imports rule:
+// "apps/web/src may import only @scp/sdk and @scp/schemas"), matching how packages/cli/src/cli.ts
+// already sources these exact same types.
+import type { ApprovalRequest } from "@scp/schemas";
 import { client } from "../lib/client";
-import { changeDetailKey, changeListKey } from "../lib/query-client";
+import { changeApprovalsKey, changeDetailKey, changeListKey } from "../lib/query-client";
 import { useIdParam } from "../lib/use-route-params";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge, type BadgeProps } from "../components/ui/badge";
@@ -297,6 +303,32 @@ export function ChangeDetailPage(): React.JSX.Element {
     onError: () => invalidate()
   });
 
+  const approvalsKey = changeApprovalsKey(id ?? "");
+  // DESIGN §10.2: "approval control instances materialize as approval tasks — actionable via
+  // API, UI, and CLI." `GET /approvals` is always scoped to one changeId (routes/governance.ts),
+  // so this lives on the change detail view rather than a standalone approvals page.
+  const approvalsQuery = useQuery({
+    queryKey: approvalsKey,
+    queryFn: () => client.approvals.list({ changeId: id!, limit: 20 }),
+    enabled: !!id,
+    refetchInterval: 5000
+  });
+
+  const [voteError, setVoteError] = useState<string | null>(null);
+  const voteMutation = useMutation({
+    mutationFn: (approvalId: string) => client.approvals.vote(approvalId),
+    onSuccess: async () => {
+      setVoteError(null);
+      await queryClient.invalidateQueries({ queryKey: approvalsKey });
+      // A vote can be the one that satisfies quorum and unblocks a gate — refetch the change/
+      // decision timeline too, not just the approval list.
+      await invalidate();
+    },
+    onError: (err: unknown) => {
+      setVoteError(err instanceof Error ? err.message : "Failed to cast vote");
+    }
+  });
+
   if (!id) {
     return <p className="text-sm text-red-600">Not found.</p>;
   }
@@ -460,6 +492,52 @@ export function ChangeDetailPage(): React.JSX.Element {
           )}
         </CardContent>
       </Card>
+
+      {approvalsQuery.data && approvalsQuery.data.items.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Approvals</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {voteError && (
+              <p className="mb-2 text-sm text-red-600" data-testid="vote-error">
+                {voteError}
+              </p>
+            )}
+            <ul className="flex flex-col gap-3" data-testid="approval-list">
+              {approvalsQuery.data.items.map((approval: ApprovalRequest) => (
+                <li
+                  key={approval.id}
+                  className="flex items-center justify-between gap-3 rounded border border-slate-200 p-3 text-sm"
+                  data-testid="approval-row"
+                >
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-slate-900">
+                        {approval.voteCount} / {approval.requiredCount} from {approval.fromRole}
+                      </span>
+                      <Badge variant={approval.status === "satisfied" ? "success" : "outline"}>
+                        {approval.status}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-xs text-slate-500">Requested {formatDate(approval.createdAt)}</p>
+                  </div>
+                  {approval.status !== "satisfied" && (
+                    <Button
+                      size="sm"
+                      onClick={() => voteMutation.mutate(approval.id)}
+                      disabled={voteMutation.isPending}
+                      data-testid="approve-button"
+                    >
+                      {voteMutation.isPending ? "Voting…" : "Approve"}
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
 
       {controlRuns.length > 0 && (
         <Card>

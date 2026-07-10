@@ -37,5 +37,12 @@ export function changeDetailKey(id: string): unknown[] {
   return ["change", "detail", id];
 }
 
+/** Query key for a change's approval requests (M4, DESIGN §10.2 — approvals materialize per
+ *  change; `GET /approvals` is always scoped to one `changeId`, so this lives on the change
+ *  detail view rather than a standalone approvals list page). */
+export function changeApprovalsKey(changeId: string): unknown[] {
+  return ["change", "approvals", changeId];
+}
+
 export const authMeKey = ["auth", "me"];
 export const authConfigKey = ["auth", "config"];
