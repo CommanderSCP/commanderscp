@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "./auth-context";
-import { registryDetailKey, registryListKey } from "./query-client";
+import { changeDetailKey, changeListKey, registryDetailKey, registryListKey } from "./query-client";
 import { REGISTRIES } from "./registries";
 
 export interface RelayedEvent {
@@ -16,6 +16,12 @@ export interface RelayedEvent {
 }
 
 const OBJECT_EVENT_TYPES = ["scp.object.created", "scp.object.updated", "scp.object.deleted"];
+
+// M3: `scp.change.transitioned` (coordination/transition.ts) fires on every guarded state change
+// (propose/evaluate/coordinate/execute/validate/promote/cancel/rollback). It does NOT fire for
+// intra-wave/target progress within a state (the reconciliation loop updates those rows directly,
+// no outbox event) — change-detail.tsx additionally polls via `refetchInterval` to catch that.
+const CHANGE_EVENT_TYPES = ["scp.change.transitioned"];
 
 // ---------------------------------------------------------------------------------------------
 // Tiny external store (React 18 `useSyncExternalStore`) for the dashboard's "last few SSE
@@ -88,13 +94,34 @@ export function useEventStream(): void {
       }
     };
 
+    const onChangeEvent = (event: MessageEvent<string>): void => {
+      let payload: RelayedEvent | undefined;
+      try {
+        payload = JSON.parse(event.data) as RelayedEvent;
+      } catch {
+        return;
+      }
+      if (payload) pushActivityEvent(payload);
+
+      void queryClient.invalidateQueries({ queryKey: changeListKey() });
+      if (payload?.subject) {
+        void queryClient.invalidateQueries({ queryKey: changeDetailKey(payload.subject) });
+      }
+    };
+
     for (const type of OBJECT_EVENT_TYPES) {
       source.addEventListener(type, onObjectEvent);
+    }
+    for (const type of CHANGE_EVENT_TYPES) {
+      source.addEventListener(type, onChangeEvent);
     }
 
     return () => {
       for (const type of OBJECT_EVENT_TYPES) {
         source.removeEventListener(type, onObjectEvent);
+      }
+      for (const type of CHANGE_EVENT_TYPES) {
+        source.removeEventListener(type, onChangeEvent);
       }
       source.close();
     };

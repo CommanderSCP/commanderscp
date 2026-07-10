@@ -27,5 +27,15 @@ export function registryDetailKey(basePath: string, idOrUrn: string): unknown[] 
   return ["registry", basePath, "detail", idOrUrn];
 }
 
+/** Query key for the Changes list view (M3, BUILD_AND_TEST.md §8 M3 UI requirement). */
+export function changeListKey(): unknown[] {
+  return ["change", "list"];
+}
+
+/** Query key for a single change's `:explain` detail view (change + plan/waves + decisions). */
+export function changeDetailKey(id: string): unknown[] {
+  return ["change", "detail", id];
+}
+
 export const authMeKey = ["auth", "me"];
 export const authConfigKey = ["auth", "config"];

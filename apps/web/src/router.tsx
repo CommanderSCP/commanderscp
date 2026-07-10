@@ -8,6 +8,8 @@ import { PatsPage } from "./routes/pats";
 import { RegistryListPage } from "./routes/registry-list";
 import { RegistryDetailPage } from "./routes/registry-detail";
 import { GraphExplorerPage } from "./routes/graph-explorer";
+import { ChangeListPage } from "./routes/change-list";
+import { ChangeDetailPage } from "./routes/change-detail";
 
 /**
  * Code-based TanStack Router route tree (BUILD_AND_TEST.md §8 M2 item 2 — "TanStack Router...
@@ -61,9 +63,21 @@ const graphExplorerRoute = createRoute({
   component: GraphExplorerPage
 });
 
-// Static segments (`/login`, `/device`, `/pats`, `/graph/...`) always out-rank the single dynamic
-// `$basePath` segment below at the same depth — standard router precedence — so those pages never
-// get shadowed by "an unknown registry named 'device'".
+const changeListRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/changes",
+  component: ChangeListPage
+});
+
+const changeDetailRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/changes/$id",
+  component: ChangeDetailPage
+});
+
+// Static segments (`/login`, `/device`, `/pats`, `/graph/...`, `/changes`, `/changes/...`) always
+// out-rank the single dynamic `$basePath` segment below at the same depth — standard router
+// precedence — so those pages never get shadowed by "an unknown registry named 'device'".
 const registryListRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/$basePath",
@@ -83,6 +97,8 @@ const routeTree = rootRoute.addChildren([
     deviceRoute,
     patsRoute,
     graphExplorerRoute,
+    changeListRoute,
+    changeDetailRoute,
     registryListRoute,
     registryDetailRoute
   ])

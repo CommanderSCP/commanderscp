@@ -382,3 +382,36 @@ export class RawScpPgBossClient {
     await this.client.end();
   }
 }
+
+/**
+ * Polls `check()` until it returns truthy or `timeoutMs` elapses (then throws, the last-seen
+ * error folded into the failure message). The M3 coordination engine (coordination/reconcile.ts)
+ * advances changes asynchronously off a ~1s self-scheduling pg-boss tick — every coordination
+ * integration test that asserts "eventually the change reaches state X" polls for it with this
+ * rather than a fixed `sleep`, so the suite is exactly as slow as the engine actually is and
+ * never flaky-fast on a loaded CI box.
+ */
+export async function waitUntil<T>(
+  check: () => Promise<T | undefined | null | false>,
+  opts: { timeoutMs?: number; intervalMs?: number; describe: string }
+): Promise<T> {
+  const timeoutMs = opts.timeoutMs ?? 15_000;
+  const intervalMs = opts.intervalMs ?? 100;
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  for (;;) {
+    try {
+      const result = await check();
+      if (result) return result;
+    } catch (err) {
+      lastError = err;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `waitUntil timed out after ${timeoutMs}ms waiting for: ${opts.describe}` +
+          (lastError ? ` — last error: ${lastError instanceof Error ? lastError.message : String(lastError)}` : "")
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
