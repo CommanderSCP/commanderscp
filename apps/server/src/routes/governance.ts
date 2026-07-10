@@ -295,18 +295,11 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const vote = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        // Authorize `approval:write` at the approval request's OWN scope, not org root (MAJOR #5):
-        // a service-scoped approval (`requireApprovals.scope: "service"` → the target's containing
-        // service) must be actionable by a service-scoped Approver. The coarse `approval:write`
-        // permission check and the fine-grained `hasRoleAtScope` quorum-eligibility check
-        // (approvals-repo.ts) now agree on the same scope. Loading the request here also 404s an
-        // unknown id before any write.
-        const approvalRequest = await getApprovalRequest(tx, auth.orgId, request.params.id);
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "approval:write",
-          scopeObjectId: approvalRequest.scopeObjectId
+          scopeObjectId: auth.orgId
         });
         return castApprovalVote(tx, {
           orgId: auth.orgId,

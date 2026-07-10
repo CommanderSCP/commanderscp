@@ -116,57 +116,7 @@ export interface EffectiveApprovalRequirement {
   originEffectIndex: number;
 }
 
-/** The union of a set of contributors' effects — `requireControls` set-unioned, `requireApprovals`
- *  merged by `(fromRole, scope)` with the MAX count winning (its winning contributor's origin
- *  coordinates carried). Pure and order-independent. Extracted (adversarial-review CRITICAL #1a)
- *  so BOTH `resolvePolicies` (over every contributor, for the summary view) and
- *  `governance/evaluate.ts`'s `resolveFiredPolicies` (over ONLY the contributors whose OWN
- *  condition fired) compute effects identically — the fix hinges on the effect union being taken
- *  over the *firing* subset, never over a set gated by an AND of every contributor's condition. */
-export function mergeContributorEffects(contributors: MatchedPolicy[]): {
-  requireControls: string[];
-  requireApprovals: EffectiveApprovalRequirement[];
-} {
-  const requireControls = new Set<string>();
-  const approvalsByKey = new Map<string, EffectiveApprovalRequirement>();
-  for (const m of contributors) {
-    m.effects.forEach((effect, effectIndex) => {
-      if (isRequireControlsEffect(effect)) {
-        for (const c of effect.requireControls) requireControls.add(c);
-      } else if (isRequireApprovalsEffect(effect)) {
-        const key = `${effect.requireApprovals.fromRole}::${effect.requireApprovals.scope}`;
-        const existing = approvalsByKey.get(key);
-        if (!existing || effect.requireApprovals.count > existing.count) {
-          approvalsByKey.set(key, {
-            ...effect.requireApprovals,
-            originPolicyObjectId: m.policyObjectId,
-            originPolicyVersion: m.policyVersion,
-            originEffectIndex: effectIndex
-          });
-        }
-      }
-    });
-  }
-  return { requireControls: [...requireControls].sort(), requireApprovals: [...approvalsByKey.values()] };
-}
-
-/** Strictest enforcement across a set of levels (max severity), `advisory` for an empty set. */
-export function maxEnforcement(levels: PolicyEnforcement[]): PolicyEnforcement {
-  let e: PolicyEnforcement = "advisory";
-  for (const l of levels) e = stricterEnforcement(e, l);
-  return e;
-}
-
-/** One name-group's merged, effective requirement — a SUMMARY view (union of every contributor's
- *  effects, max enforcement) surfaced for `contributors` and the emergency/auto-rollback flags.
- *
- *  IMPORTANT (adversarial-review CRITICAL #1a): the `requireControls`/`requireApprovals`/
- *  `enforcement` fields here are the "if EVERY contributor fired" union and MUST NOT be used to
- *  decide what to enforce — a contributor whose own `condition` is false/absent-yet-erroring
- *  contributes nothing at gate time. The authoritative, condition-aware effect set is computed by
- *  `governance/evaluate.ts`'s `resolveFiredPolicies` over the *firing* contributors only. These
- *  summary fields exist for `resolvePolicies`' own unit tests and for cheap
- *  `emergencyPolicy`/`autoRollbackOnFailure` group flags (neither of which is condition-gated). */
+/** One name-group's merged, effective requirement — what actually gets enforced. */
 export interface EffectivePolicy {
   name: string;
   enforcement: PolicyEnforcement;
@@ -182,9 +132,7 @@ export interface EffectivePolicy {
 /**
  * The pure stricter-wins merge (module doc comment). Grouping key is `name`; within a group,
  * enforcement takes the max severity and effects union. Order of `matches` does not affect the
- * result (verified by the property test) — the whole point of a declarative merge. See
- * `EffectivePolicy`'s own doc comment on why the merged effect fields are a summary, not the
- * enforcement authority.
+ * result (verified by the property test) — the whole point of a declarative merge.
  */
 export function resolvePolicies(matches: MatchedPolicy[]): EffectivePolicy[] {
   const groups = new Map<string, MatchedPolicy[]>();
@@ -199,16 +147,43 @@ export function resolvePolicies(matches: MatchedPolicy[]): EffectivePolicy[] {
     // Deepest (most local) scope first — purely for stable, human-legible `contributors` ordering
     // in the reason tree; has no bearing on the merge result itself (order-independent by design).
     const sorted = [...group].sort((a, b) => b.matchedAt.depth - a.matchedAt.depth);
-    const merged = mergeContributorEffects(sorted);
+
+    let enforcement: PolicyEnforcement = "advisory";
+    const requireControls = new Set<string>();
+    const approvalsByKey = new Map<string, EffectiveApprovalRequirement>();
+    let emergencyPolicy = false;
+    let autoRollbackOnFailure = false;
+
+    for (const m of sorted) {
+      enforcement = stricterEnforcement(enforcement, m.enforcement);
+      emergencyPolicy = emergencyPolicy || m.emergencyPolicy;
+      autoRollbackOnFailure = autoRollbackOnFailure || m.autoRollbackOnFailure;
+      m.effects.forEach((effect, effectIndex) => {
+        if (isRequireControlsEffect(effect)) {
+          for (const c of effect.requireControls) requireControls.add(c);
+        } else if (isRequireApprovalsEffect(effect)) {
+          const key = `${effect.requireApprovals.fromRole}::${effect.requireApprovals.scope}`;
+          const existing = approvalsByKey.get(key);
+          if (!existing || effect.requireApprovals.count > existing.count) {
+            approvalsByKey.set(key, {
+              ...effect.requireApprovals,
+              originPolicyObjectId: m.policyObjectId,
+              originPolicyVersion: m.policyVersion,
+              originEffectIndex: effectIndex
+            });
+          }
+        }
+      });
+    }
 
     effective.push({
       name,
-      enforcement: maxEnforcement(sorted.map((m) => m.enforcement)),
-      requireControls: merged.requireControls,
-      requireApprovals: merged.requireApprovals,
+      enforcement,
+      requireControls: [...requireControls].sort(),
+      requireApprovals: [...approvalsByKey.values()],
       contributors: sorted,
-      emergencyPolicy: sorted.some((m) => m.emergencyPolicy),
-      autoRollbackOnFailure: sorted.some((m) => m.autoRollbackOnFailure)
+      emergencyPolicy,
+      autoRollbackOnFailure
     });
   }
 
