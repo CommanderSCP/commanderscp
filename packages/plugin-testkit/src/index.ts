@@ -19,6 +19,9 @@
  */
 import { describe, expect, it } from "vitest";
 import type {
+  ControlOutcomeStatus,
+  ControlPlugin,
+  ControlRequest,
   ExecutorCapabilities,
   ExecutorEvent,
   ExecutorPlugin,
@@ -119,6 +122,61 @@ export function runExecutorConformanceSuite(
         expect(() => new Date(event.occurredAt).toISOString()).not.toThrow();
         expect(typeof event.correlation).toBe("object");
       }
+    });
+  });
+}
+
+// -------------------------------------------------------------------------------------------
+// ControlPlugin conformance (DESIGN.md §10.2, BUILD_AND_TEST.md §8 M4 item 2) — M4's first real
+// implementation to conform against (`@scp/plugin-webhook-control`). Same generic-shape-only
+// discipline as the executor suite above: every assertion checks only what the `ControlPlugin`
+// contract itself promises (a well-formed `ControlOutcome`), never webhook-control-specific
+// behavior, so a future real control plugin can reuse this suite unchanged.
+// -------------------------------------------------------------------------------------------
+
+const KNOWN_CONTROL_STATUSES: ControlOutcomeStatus[] = [
+  "pass",
+  "fail",
+  "warning",
+  "skipped",
+  "timed_out",
+  "expired"
+];
+
+export interface ControlConformanceFixture {
+  plugin: ControlPlugin;
+  ctx: PluginContext;
+  /** A representative request `evaluate()` should handle without throwing. */
+  request: ControlRequest;
+}
+
+/**
+ * Runs the `ControlPlugin` conformance suite against a fresh plugin+ctx+request built by
+ * `factory` — called once per `it()`, mirroring `runExecutorConformanceSuite`'s per-test
+ * isolation.
+ */
+export function runControlConformanceSuite(
+  name: string,
+  factory: () => Promise<ControlConformanceFixture>
+): void {
+  describe(`ControlPlugin conformance: ${name}`, () => {
+    it("evaluate() returns a well-formed ControlOutcome — never throws", async () => {
+      const { plugin, ctx, request } = await factory();
+      const outcome = await plugin.evaluate(ctx, request);
+      expect(KNOWN_CONTROL_STATUSES).toContain(outcome.status);
+      if (outcome.evidence !== undefined) {
+        expect(typeof outcome.evidence).toBe("object");
+        expect(outcome.evidence).not.toBeNull();
+      }
+      if (outcome.detail !== undefined) {
+        expect(typeof outcome.detail).toBe("string");
+      }
+    });
+
+    it("evaluate() ALWAYS carries an evidence payload (DESIGN §10.2: outcomes are 'always with an evidence payload')", async () => {
+      const { plugin, ctx, request } = await factory();
+      const outcome = await plugin.evaluate(ctx, request);
+      expect(outcome.evidence).toBeDefined();
     });
   });
 }

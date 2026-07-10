@@ -40,13 +40,20 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   AbortResult,
+  ControlOutcome,
+  ControlRequest,
   Cursor,
   ExecutionStatus,
   ExecutorCapabilities,
   ExternalRunRef,
   TriggerIntent
 } from "@scp/plugin-api";
-import type { ExecutorPluginClient, PluginHost, PluginHostInstanceConfig } from "./contract.js";
+import type {
+  ControlPluginClient,
+  ExecutorPluginClient,
+  PluginHost,
+  PluginHostInstanceConfig
+} from "./contract.js";
 import {
   encodeMessage,
   isErrorResponse,
@@ -287,6 +294,15 @@ export class SubprocessPluginHost implements PluginHost {
       status: (ref: ExternalRunRef) => call<ExecutionStatus>("status", { ref }),
       abort: (ref: ExternalRunRef) => call<AbortResult>("abort", { ref }),
       describeCapabilities: () => call<ExecutorCapabilities>("describeCapabilities")
+    };
+  }
+
+  /** M4 counterpart to `executor()` — same host, same instance registry, one RPC method. */
+  control(instanceId: string): ControlPluginClient {
+    const call = <T>(method: string, params?: unknown): Promise<T> =>
+      this.call(instanceId, method, params) as Promise<T>;
+    return {
+      evaluate: (req: ControlRequest) => call<ControlOutcome>("evaluate", { req })
     };
   }
 

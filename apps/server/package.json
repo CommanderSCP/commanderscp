@@ -23,6 +23,7 @@
     "@nats-io/transport-node": "^3.4.0",
     "@scp/plugin-api": "workspace:*",
     "@scp/plugin-fake-executor": "workspace:*",
+    "@scp/plugin-webhook-control": "workspace:*",
     "@scp/schemas": "workspace:*",
     "@scp/sdk": "workspace:*",
     "ajv": "^8.17.0",

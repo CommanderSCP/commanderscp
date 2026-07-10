@@ -1,6 +1,6 @@
 import type { PluginContext } from "@scp/plugin-api";
 import { createFakeExecutorPlugin } from "@scp/plugin-fake-executor";
-import type { ExecutorPluginClient, PluginHost } from "../../plugin-host/contract.js";
+import type { ControlPluginClient, ExecutorPluginClient, PluginHost } from "../../plugin-host/contract.js";
 
 /**
  * An in-process `PluginHost` for coordination-engine tests that need a fast, deterministic
@@ -41,6 +41,9 @@ export function createInMemoryFakeHost(config?: unknown): PluginHost {
     },
     executor(_instanceId: string): ExecutorPluginClient {
       return client;
+    },
+    control(_instanceId: string): ControlPluginClient {
+      throw new Error("createInMemoryFakeHost: no ControlPlugin fixture wired — this test only drives ExecutorPlugin");
     }
   };
 }
@@ -87,6 +90,7 @@ export function withFailOnceAfterRealTrigger(
   const host: PluginHost = {
     start: (configs) => inner.start(configs),
     stop: () => inner.stop(),
+    control: (instanceId) => inner.control(instanceId),
     executor(instanceId) {
       const real = inner.executor(instanceId);
       return {

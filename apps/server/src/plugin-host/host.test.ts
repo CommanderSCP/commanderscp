@@ -90,6 +90,33 @@ describe("SubprocessPluginHost: child environment (CRITICAL #3)", () => {
   });
 });
 
+describe("SubprocessPluginHost: ControlPlugin instances (M4)", () => {
+  it("loads a 'webhook-control' module and answers evaluate() over the real subprocess boundary", async () => {
+    host = new SubprocessPluginHost({ callTimeoutMs: 10_000 });
+    await host.start([
+      {
+        id: "control-probe",
+        module: "webhook-control",
+        orgId: "org-1",
+        domainId: "domain-1",
+        // No 'url' configured — the plugin fails closed rather than throwing (index.test.ts covers
+        // the full HTTP-mapping matrix in-process); this test's job is only to prove the SUBPROCESS
+        // boundary (spawn, module resolution, JSON-RPC round trip) works end to end for a
+        // ControlPlugin instance, mirroring the executor env-probe test above.
+        config: {}
+      }
+    ]);
+
+    const outcome = await host.control("control-probe").evaluate({
+      changeId: "change-1",
+      controlId: "control-1",
+      context: {}
+    });
+    expect(outcome.status).toBe("fail");
+    expect(outcome.evidence).toBeDefined();
+  });
+});
+
 describe("SubprocessPluginHost: unbounded stdout line guard (CRITICAL #4)", () => {
   it("kills (and restarts-with-backoff) a child that streams bytes on stdout without ever sending a newline, instead of buffering it forever", async () => {
     const stderrChunks: string[] = [];

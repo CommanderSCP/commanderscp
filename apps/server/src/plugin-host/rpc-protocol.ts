@@ -16,7 +16,16 @@
  * corrupt the RPC stream host.ts is parsing.
  */
 
-export type RpcMethod = "observe" | "trigger" | "status" | "abort" | "describeCapabilities";
+export type RpcMethod =
+  | "observe"
+  | "trigger"
+  | "status"
+  | "abort"
+  | "describeCapabilities"
+  // M4: ControlPlugin's sole method (DESIGN.md §11's ControlPlugin interface) — same host, same
+  // wire framing, dispatched by subprocess-entry.ts based on which kind of plugin this instance
+  // loaded.
+  | "evaluate";
 
 export interface RpcRequest {
   jsonrpc: "2.0";
