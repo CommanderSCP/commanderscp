@@ -211,6 +211,26 @@ describe("@scp/iac: campaign/initiative/release-topology synth", () => {
     });
   });
 
+  it("a Campaign resolves a ReleaseTopology CONSTRUCT REFERENCE for `topology` to its URN, not just a raw string", () => {
+    const app = new App();
+    const stack = new Stack(app, "release-platform-3");
+
+    const api = new Service(stack, "api", { name: "API" });
+    const topology = new ReleaseTopology(stack, "canary-topology", {
+      name: "Canary",
+      waves: [{ mode: "parallel", targets: [api] }]
+    });
+    const campaign = new Campaign(stack, "q4-rollout", {
+      name: "Q4 Rollout",
+      targets: [api],
+      topology
+    });
+
+    const manifest = stack.synth();
+    const campaignObject = manifest.objects.find((o) => o.urn === campaign.urn);
+    expect(campaignObject?.properties).toMatchObject({ topologyObjectId: topology.urn });
+  });
+
   it("a Campaign with no description/topology synthesizes only targets", () => {
     const app = new App();
     const stack = new Stack(app, "release-platform-3");
