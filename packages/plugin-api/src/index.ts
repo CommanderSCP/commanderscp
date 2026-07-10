@@ -109,6 +109,17 @@ export interface TriggerIntent {
   targetRef?: string;
   parameters?: Record<string, unknown>;
   priorStateRef?: unknown;
+  /**
+   * Stable across retries of the SAME logical trigger attempt (PR #7 review, CRITICAL #2: the
+   * engine derives this deterministically from the wave-target row's own id, so it is IDENTICAL
+   * every time coordination/reconcile.ts re-calls `trigger()` for that target — including after a
+   * crash/resume where the engine can't tell whether the previous call's side effect actually
+   * fired before the process died). A real executor plugin uses this to de-duplicate: the SAME key
+   * must return the SAME `ExternalRunRef` without firing the automation a second time; a
+   * DIFFERENT key is a genuinely new run. Optional only because `TriggerIntent` predates this
+   * field and hand-constructed test intents may omit it — the engine itself always sets it.
+   */
+  idempotencyKey?: string;
 }
 
 export interface ExternalRunRef {

@@ -383,6 +383,18 @@ export const changes = pgTable(
     stateEnteredAt: timestamp("state_entered_at", { withTimezone: true }).notNull().defaultNow(),
     lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }).notNull().defaultNow(),
     watchdogFlaggedAt: timestamp("watchdog_flagged_at", { withTimezone: true }),
+    /**
+     * MAJOR #6 fix (PR #7 review — "batch starvation"): set by `coordination/reconcile.ts` when
+     * an `executing` change's active wave has `failed` and is awaiting an operator's manual
+     * cancel/rollback (M3 has no auto-retry). That branch never otherwise touches `changes` at
+     * all, so `updated_at` would sit frozen forever and — under `listChangeRowsInStates`'s
+     * oldest-`updated_at`-first, capped batch — 25+ such parked changes would sort ahead of every
+     * newer, genuinely-progressing `executing` change and starve it out of every batch
+     * indefinitely. `listChangeRowsInStates` filters this column `IS NULL`, so a parked change
+     * simply stops occupying batch slots until an operator acts (via the API directly, never
+     * through this batch listing — see reconcile.ts's doc comment on the `failed` branch).
+     */
+    reconcileBlockedAt: timestamp("reconcile_blocked_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
@@ -551,7 +563,7 @@ export const changeWaveTargets = pgTable(
     executorRef: jsonb("executor_ref"), // ExternalRunRef once triggered
     /** Captured before trigger — what a rollback of this wave target would restore (DESIGN §9.4). */
     priorStateRef: jsonb("prior_state_ref"),
-    status: text("status").notNull().default("pending"), // pending|triggered|observing|succeeded|failed|aborted
+    status: text("status").notNull().default("pending"), // pending|triggering|triggered|observing|succeeded|failed|aborted
     attempt: bigint("attempt", { mode: "number" }).notNull().default(0),
     lastObservedAt: timestamp("last_observed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

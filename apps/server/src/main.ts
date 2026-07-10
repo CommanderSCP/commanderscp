@@ -12,6 +12,7 @@ import { connectNatsFanout, type NatsFanoutHandle } from "./events/nats-fanout.j
 import { loginAndSeedDemoData } from "./seed.js";
 import { SubprocessPluginHost } from "./plugin-host/host.js";
 import { startReconcileLoop } from "./coordination/reconcile.js";
+import { startWatchdogLoop } from "./coordination/watchdog.js";
 import {
   DEFAULT_EXECUTOR_INSTANCE_ID,
   DEFAULT_EXECUTOR_MODULE,
@@ -67,7 +68,10 @@ async function main(): Promise<void> {
       config.eventBus.backend === "nats"
         ? await connectNatsFanout(config.eventBus.natsUrl!)
         : undefined;
-    const relay = startOutboxRelay(pool, config.runtimeDatabaseUrl, boss, natsFanout);
+    const relay = startOutboxRelay(pool, config.runtimeDatabaseUrl, boss, {
+      eventBusBackend: config.eventBus.backend,
+      natsFanout
+    });
 
     // M3 coordination engine (BUILD_AND_TEST.md §8 M3, DESIGN.md §9.3/§9.4): the subprocess
     // plugin host + the resumable reconciliation loop. One shared fake-executor plugin instance
@@ -86,9 +90,14 @@ async function main(): Promise<void> {
       }
     ]);
     const reconcileLoop = await startReconcileLoop(boss, db, pluginHost);
+    // CRITICAL #1 fix (PR #7 review): the stuck-change watchdog sweep (DESIGN.md §9.4) had no
+    // production caller at all before this — scheduled here the same way the reconcile loop is,
+    // one queue per capability, both under the same `role === "all" || "worker"` guard.
+    const watchdogLoop = await startWatchdogLoop(boss, db);
 
     app.addHook("onClose", async () => {
       await reconcileLoop.stop();
+      await watchdogLoop.stop();
       await pluginHost.stop();
       await relay.stop();
       await boss.stop({ graceful: false, timeout: 1000 }).catch(() => undefined);

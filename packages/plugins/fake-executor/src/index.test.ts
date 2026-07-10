@@ -119,6 +119,38 @@ describe("FakeExecutorPlugin (unit, in-memory state)", () => {
     expect(statusB.phase).toBe("failed"); // forced target stays failed deterministically
   });
 
+  it("trigger() with the same idempotencyKey dedupes: same externalId, no version bump; a different key mints a new run", async () => {
+    const plugin = createFakeExecutorPlugin();
+    const ctx = testCtx();
+
+    const first = await plugin.trigger(ctx, { kind: "sync", targetRef: "svc-a", idempotencyKey: "wave-target-1" });
+    const firstStatus = await plugin.status(ctx, first);
+    expect(firstStatus.stateRef).toBe("v0");
+
+    // Same key again (simulates the engine retrying after a crash between trigger() and its own
+    // result-commit) — must return the IDENTICAL externalId and NOT bump the version.
+    const retry = await plugin.trigger(ctx, { kind: "sync", targetRef: "svc-a", idempotencyKey: "wave-target-1" });
+    expect(retry.externalId).toBe(first.externalId);
+    const retryStatus = await plugin.status(ctx, retry);
+    expect(retryStatus.stateRef).toBe("v0");
+
+    // A genuinely different key (a different wave target) mints a fresh run, bumping the version.
+    const second = await plugin.trigger(ctx, { kind: "sync", targetRef: "svc-a", idempotencyKey: "wave-target-2" });
+    expect(second.externalId).not.toBe(first.externalId);
+    const secondStatus = await plugin.status(ctx, second);
+    expect(secondStatus.stateRef).toBe("v1");
+  });
+
+  it("trigger() calls with no idempotencyKey at all never dedupe against each other (pre-existing behavior preserved)", async () => {
+    const plugin = createFakeExecutorPlugin();
+    const ctx = testCtx();
+    const ref0 = await plugin.trigger(ctx, { kind: "sync", targetRef: "svc-a" });
+    const ref1 = await plugin.trigger(ctx, { kind: "sync", targetRef: "svc-a" });
+    expect(ref1.externalId).not.toBe(ref0.externalId);
+    const status1 = await plugin.status(ctx, ref1);
+    expect(status1.stateRef).toBe("v1");
+  });
+
   it("status() on a ref that was never triggered returns pending rather than throwing", async () => {
     const plugin = createFakeExecutorPlugin();
     const ctx = testCtx();

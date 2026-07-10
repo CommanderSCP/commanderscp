@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Change, ChangeState } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changes, objects } from "../db/schema.js";
@@ -180,6 +180,12 @@ export async function getChangeRow(tx: TenantTx, orgId: string, id: string): Pro
  * change currently sitting in one of `states`, oldest-updated first (so a sweep drains the
  * longest-waiting changes first rather than starving them behind a churny newer one), capped at
  * `limit` per tick so one org with a huge backlog can't starve every other org's sweep turn.
+ *
+ * MAJOR #6 fix (PR #7 review — "batch starvation"): excludes changes `markChangeReconcileBlocked`
+ * has parked (an `executing` change whose active wave failed and is awaiting an operator's manual
+ * cancel/rollback — see reconcile.ts's `failed` branch). `reconcile_blocked_at` is only ever set
+ * while a change is `executing`, so this filter is a no-op for every other state and safe to apply
+ * unconditionally rather than needing a state-specific variant of this query.
  */
 export async function listChangeRowsInStates(
   tx: TenantTx,
@@ -192,9 +198,31 @@ export async function listChangeRowsInStates(
     .select({ change: changes, object: objects })
     .from(changes)
     .innerJoin(objects, eq(changes.objectId, objects.id))
-    .where(and(eq(changes.orgId, orgId), inArray(changes.state, states)))
+    .where(
+      and(eq(changes.orgId, orgId), inArray(changes.state, states), isNull(changes.reconcileBlockedAt))
+    )
     .orderBy(asc(changes.updatedAt))
     .limit(limit);
+}
+
+/** Marks an `executing` change as parked awaiting operator action (MAJOR #6 fix — see
+ *  `listChangeRowsInStates`'s doc comment). Idempotent: a no-op if already parked, so calling it
+ *  every tick a change's active wave is still `failed` never generates redundant writes. */
+export async function markChangeReconcileBlocked(
+  tx: TenantTx,
+  orgId: string,
+  changeObjectId: string
+): Promise<void> {
+  await tx
+    .update(changes)
+    .set({ reconcileBlockedAt: new Date(), updatedAt: new Date() })
+    .where(
+      and(
+        eq(changes.orgId, orgId),
+        eq(changes.objectId, changeObjectId),
+        isNull(changes.reconcileBlockedAt)
+      )
+    );
 }
 
 /** Reads the target object ids `proposeChange` stashed under `properties.targets` at creation time. */

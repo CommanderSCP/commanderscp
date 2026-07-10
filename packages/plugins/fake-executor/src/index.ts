@@ -55,6 +55,9 @@ interface TargetState {
   externalId: string;
   /** Set by `abort()`; once true, `status()` never lets the auto-succeed timer override the phase. */
   terminal: boolean;
+  /** `TriggerIntent.idempotencyKey` of the trigger that produced this state, when the caller set
+   *  one — see `trigger()`'s dedup check below (PR #7 review, CRITICAL #2). */
+  lastIdempotencyKey?: string;
 }
 
 interface FakeExecutorState {
@@ -144,6 +147,24 @@ export class FakeExecutorPlugin implements ExecutorPlugin {
     const targetRef = intent.targetRef ?? DEFAULT_TARGET_KEY;
     const state = await this.loadState(ctx.config);
     const existing = state.targets[targetRef];
+
+    // Idempotency dedup (PR #7 review, CRITICAL #2): the engine re-calls trigger() with the SAME
+    // idempotencyKey when it can't tell whether a prior attempt's call actually reached us before
+    // the caller crashed/retried. Recognizing a repeat is what makes that safe to do — no second
+    // real run, no version bump, just the same answer as last time. Only engages when the caller
+    // actually sent a key (falsy `intent.idempotencyKey` never matches `undefined ===
+    // undefined`... it would, so the truthiness check below is required — an intent that never
+    // sets idempotencyKey must always mint a fresh run, exactly like before this field existed).
+    if (intent.idempotencyKey && existing?.lastIdempotencyKey === intent.idempotencyKey) {
+      ctx.logger.info("fake-executor: trigger deduped by idempotencyKey", {
+        targetRef,
+        kind: intent.kind,
+        idempotencyKey: intent.idempotencyKey,
+        externalId: existing.externalId
+      });
+      return { externalId: existing.externalId, url: `fake-executor://${targetRef}/${existing.externalId}` };
+    }
+
     const isRollback = intent.kind === "rollback";
     const version = isRollback ? coercePriorStateRef(intent.priorStateRef) : (existing?.version ?? -1) + 1;
     const externalId = mintExternalId(targetRef);
@@ -153,7 +174,8 @@ export class FakeExecutorPlugin implements ExecutorPlugin {
       phase: "running",
       triggeredAt: Date.now(),
       externalId,
-      terminal: false
+      terminal: false,
+      lastIdempotencyKey: intent.idempotencyKey
     };
     await this.saveState(ctx.config, state);
 

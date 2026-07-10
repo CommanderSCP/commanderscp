@@ -9,18 +9,25 @@ import {
   buildTestServer,
   createTestOrg,
   listenTestServer,
+  RawScpPgBossClient,
   waitUntil,
   type ListeningTestServer,
   type TestOrg,
   type TestServer
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { changeWaveTargets } from "../db/schema.js";
+import { changes, changeWaveTargets } from "../db/schema.js";
+import { createObject } from "../graph/objects-repo.js";
 import { SubprocessPluginHost } from "../plugin-host/host.js";
-import { startReconcileLoop } from "./reconcile.js";
+import { RECONCILE_QUEUE, reconcileOrgTick, startReconcileLoop } from "./reconcile.js";
 import { startPgBoss } from "../events/pgboss.js";
 import { DEFAULT_EXECUTOR_INSTANCE_ID, DEFAULT_EXECUTOR_MODULE } from "./executor-config.js";
-import { runWatchdogSweep } from "./watchdog.js";
+import { runWatchdogSweep, WATCHDOG_SLA_MS } from "./watchdog.js";
+import { markChangeReconcileBlocked, proposeChange } from "./changes-repo.js";
+import { transitionChange } from "./transition.js";
+import { compileAndPersistPlan } from "./plan-service.js";
+import { markWaveTerminal } from "./wave-targets-repo.js";
+import { createInMemoryFakeHost, withFailOnceAfterRealTrigger } from "./test-support/fake-plugin-host.js";
 
 /**
  * The M3 coordination-engine end-to-end suite (BUILD_AND_TEST.md §8 M3 DoD): full fake-executor
@@ -220,7 +227,25 @@ describe("coordination engine: watchdog", () => {
 });
 
 describe("coordination engine: crash resumption", () => {
-  it("kills the worker (reconcile loop + plugin host) mid-wave — a freshly started worker resumes purely from Postgres state, with no shared in-memory handoff", async () => {
+  /**
+   * MAJOR #7 fix (PR #7 review — "the 'kill the worker mid-wave' resume test doesn't crash
+   * anything"): the old version of this test called GRACEFUL `loop.stop()`/`host.stop()` only
+   * AFTER the target was already durably `triggered`/`observing` — by that point there was nothing
+   * left to resume; deleting all of `reconcile.ts`'s crash-resumption logic would still pass this
+   * test. This version injects a REAL fault (`withFailOnceAfterRealTrigger`, wrapping the REAL
+   * `SubprocessPluginHost` — the actual subprocess, actual JSON-RPC, actual fake-executor state
+   * file, nothing faked except the one injected throw) that lets the target's `trigger()` call
+   * genuinely fire against the real fake-executor subprocess and THEN throws, before worker #1's
+   * tick ever reaches its own result-commit — the target is left durably `triggering`, mid-flight,
+   * not post-commit. Worker #1 is torn down at EXACTLY that moment (no further ticks get a chance
+   * to self-heal it), and a brand new worker #2 — sharing nothing in memory — must resume it: same
+   * `externalId` (no duplicate trigger), wave completes, change promotes. This also directly
+   * guards CRITICAL #2 (duplicate/lost trigger calls): if `reconcile.ts` regressed to its old
+   * single-big-transaction design (or dropped the `triggering`-status resume path), worker #2
+   * would either never notice the stuck target (this test times out) or fire a genuinely SECOND
+   * real trigger with a different idempotencyKey (the externalId assertion below would fail).
+   */
+  it("kills the worker (reconcile loop + plugin host) mid-wave, via a real fault injected between trigger() firing and its result-commit — a freshly started worker resumes purely from Postgres state, with no duplicate trigger and no shared in-memory handoff", async () => {
     const server = await buildTestServer();
     const org = await createTestOrg(server, "kill-worker");
     const stateDir = await mkdtemp(join(tmpdir(), "scp-kill-worker-test-"));
@@ -245,11 +270,29 @@ describe("coordination engine: crash resumption", () => {
       expect(propose.statusCode).toBe(201);
       const changeId = propose.json().id as string;
 
-      // "Worker" #1 — long autoSucceedAfterMs (2s) so the test can reliably observe the wave
-      // target mid-flight (triggered, not yet succeeded) before killing everything.
+      // This whole file shares ONE Postgres/pgboss schema across every describe block, and
+      // `RECONCILE_QUEUE` is a single global queue name every `startReconcileLoop` call
+      // (including earlier describes' already-finished loops) sends jobs to. A prior test's final
+      // self-rescheduled tick can still be sitting in `pgboss.job`, not yet due, when THAT test's
+      // `boss.stop()` ran — `stop()` only stops ITS OWN worker from fetching further, it doesn't
+      // cancel jobs already queued. Left alone, THIS test's worker #1 would be eligible to pick
+      // that stale job up too, running an extra tick this test doesn't control the timing of and
+      // defeating "torn down before it can retry." Purged here so this test starts from a clean
+      // queue — a test-hygiene concern specific to this shared-queue-name suite design, not
+      // anything `reconcile.ts` itself needs to guard against in production (one `scpd` process
+      // owns the queue there).
+      const pgBossRaw = await RawScpPgBossClient.connect();
+      await pgBossRaw
+        .query(`DELETE FROM pgboss.job WHERE name = $1`, [RECONCILE_QUEUE])
+        .catch(() => undefined); // pgboss schema/tables may not exist yet if this is the first test to use pg-boss.
+      await pgBossRaw.close();
+
+      // "Worker" #1 — REAL subprocess plugin host, wrapped so the target's first real trigger()
+      // call fires for real against the actual fake-executor subprocess and THEN throws, before
+      // reconcile.ts ever gets to commit that fact.
       const boss1 = await startPgBoss(server.deps.config.pgBossDatabaseUrl);
-      const host1 = new SubprocessPluginHost({ callTimeoutMs: 5_000 });
-      await host1.start([
+      const realHost1 = new SubprocessPluginHost({ callTimeoutMs: 5_000 });
+      await realHost1.start([
         {
           id: DEFAULT_EXECUTOR_INSTANCE_ID,
           module: DEFAULT_EXECUTOR_MODULE,
@@ -258,30 +301,59 @@ describe("coordination engine: crash resumption", () => {
           config: { statePath, autoSucceedAfterMs: 2_000 }
         }
       ]);
+      // `onFault` resolves the instant the injected throw fires — used below to tear worker #1
+      // down IMMEDIATELY, rather than polling DB state for the 'triggering' status. Polling can't
+      // reliably win the race against the loop's own 1s-later retry on a loaded CI box (worker #1
+      // would just self-heal before the poll ever observes the mid-flight state); reacting to the
+      // fault synchronously, from within the exact same tick that caused it, always beats it.
+      let resolveFaulted!: () => void;
+      const faulted = new Promise<void>((resolve) => {
+        resolveFaulted = resolve;
+      });
+      const { host: host1, calls } = withFailOnceAfterRealTrigger(
+        realHost1,
+        (targetRef) => targetRef === targetObjectId,
+        () => resolveFaulted()
+      );
       const loop1 = await startReconcileLoop(boss1, server.deps.db, host1);
 
-      await waitUntil(
-        async () => {
-          const targets = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-            tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, targetObjectId))
-          );
-          const t = targets[0];
-          return t && (t.status === "triggered" || t.status === "observing") ? t : undefined;
-        },
-        { describe: "wave target reaches triggered/observing (mid-wave)", timeoutMs: 10_000 }
-      );
+      // The target is left EXACTLY mid-flight: the real trigger() call already fired (a genuine
+      // side effect against the real subprocess), but the injected fault meant reconcile.ts never
+      // reached its own result-commit — status stays 'triggering', not 'triggered'.
+      await faulted;
 
-      // Simulate a full worker crash: nothing resumes this change until a NEW worker starts.
+      // `calls` logs EVERY trigger() this host ever makes, across every org (see
+      // `withFailOnceAfterRealTrigger`'s doc comment) — this shared-database suite's `boss1` will
+      // legitimately also advance unrelated leftover work from other already-finished describe
+      // blocks (e.g. the plain "watchdog" suite above deliberately leaves a change parked in
+      // `proposed` with no loop of its own ever touching it — `runReconcileSweep` doesn't know or
+      // care that it "belongs" to a different test). Scope to THIS test's own target before
+      // asserting anything.
+      const ourCalls = calls.filter((c) => c.targetRef === targetObjectId);
+      expect(ourCalls).toHaveLength(1); // the real trigger() call genuinely fired, exactly once so far.
+      const idempotencyKey = ourCalls[0]!.idempotencyKey;
+      expect(idempotencyKey).toBeTruthy();
+      const externalIdFromWorker1 = ourCalls[0]!.externalId;
+
+      // Simulate a full worker crash AT THIS EXACT MOMENT — nothing resumes this change until a
+      // NEW worker starts. Torn down as the very next thing after the fault fires, so worker #1's
+      // own next tick (1s later) never gets a chance to retry and self-heal it first.
       await loop1.stop();
-      await host1.stop();
+      await realHost1.stop();
       await boss1.stop({ graceful: false, timeout: 500 }).catch(() => undefined);
+
+      const stillTriggering = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, targetObjectId))
+      );
+      expect(stillTriggering[0]!.status).toBe("triggering");
+      expect(stillTriggering[0]!.executorRef).toBeNull(); // never recorded — that's the crash.
 
       // "Worker" #2 — a BRAND NEW reconcile loop + plugin host, sharing nothing in memory with
       // worker #1 (fresh instances, this process never held any per-change state to begin with —
-      // `coordination/reconcile.ts`'s whole design). The SAME `statePath` is what lets the fake
-      // executor (standing in for a real external system, which of course doesn't forget a
-      // deployment because SCP's worker restarted) answer correctly for the ref worker #1 left
-      // in flight.
+      // `coordination/reconcile.ts`'s whole design). No fault wrapper this time. The SAME
+      // `statePath` is what lets the fake executor (standing in for a real external system, which
+      // of course doesn't forget a deployment because SCP's worker restarted) answer correctly for
+      // the ref worker #1's real (but never-recorded) trigger() call left in flight.
       const boss2 = await startPgBoss(server.deps.config.pgBossDatabaseUrl);
       const host2 = new SubprocessPluginHost({ callTimeoutMs: 5_000 });
       await host2.start([
@@ -307,6 +379,18 @@ describe("coordination engine: crash resumption", () => {
           },
           { describe: `change ${changeId} reaches 'validating' after worker restart`, timeoutMs: 15_000 }
         );
+
+        // The resumed target was recorded with the SAME externalId worker #1's crashed-but-fired
+        // real call produced — dedup, not a second real trigger. The fake-executor's own version
+        // counter (asserted below) is the independent, harder-to-fake proof of that.
+        const resumedTarget = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+          tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, targetObjectId))
+        );
+        expect(resumedTarget[0]!.status).not.toBe("triggering");
+        const resumedRef = resumedTarget[0]!.executorRef as unknown as ExternalRunRef;
+        expect(resumedRef.externalId).toBe(externalIdFromWorker1);
+        const liveStatus = await host2.executor(DEFAULT_EXECUTOR_INSTANCE_ID).status(resumedRef);
+        expect(liveStatus.stateRef).toBe("v0"); // NOT v1 — would be v1 if a second real run fired.
 
         const promote = await server.app.inject({
           method: "POST",
@@ -434,4 +518,327 @@ describe("coordination engine: crash resumption", () => {
       await server.close();
     }
   });
+});
+
+/**
+ * CRITICAL #2 (PR #7 review — "duplicate/lost external trigger() calls", the most serious
+ * finding): the old code called `plugin.trigger()` and then wrote its result INTO the same
+ * still-open, whole-org transaction as every other change in the tick — so ANY later failure in
+ * that tick rolled back the DB record of an already-fired trigger, and the next tick re-fired it,
+ * with no way for the executor to tell the two calls apart. It also meant one change's failure
+ * could roll back a sibling change's already-committed progress in the same tick.
+ *
+ * This suite proves the fix using a fast, deterministic in-process fake host
+ * (`createInMemoryFakeHost`) wrapped with a fault injector (`withFailOnceAfterRealTrigger`) that
+ * lets the REAL trigger() fire (a genuine side effect against the fake executor) and THEN throws —
+ * simulating a crash/tick-abort in the exact window `triggerWaveTarget`'s doc comment describes.
+ */
+describe("coordination engine: trigger idempotency across a same-tick crash (CRITICAL #2)", () => {
+  let server: TestServer;
+  let org: TestOrg;
+
+  beforeAll(async () => {
+    server = await buildTestServer();
+    org = await createTestOrg(server, "idempotency");
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  it("a fault injected right after trigger() fires for real is retried with the SAME idempotencyKey — the executor dedupes to one real run — and a sibling change's same-tick progress is unaffected", async () => {
+    const createTargetA = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/components",
+      headers: { authorization: `Bearer ${org.adminToken}` },
+      payload: { name: "idem-target-a" }
+    });
+    const createTargetB = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/components",
+      headers: { authorization: `Bearer ${org.adminToken}` },
+      payload: { name: "idem-target-b" }
+    });
+    expect(createTargetA.statusCode).toBe(201);
+    expect(createTargetB.statusCode).toBe(201);
+    const targetAId = createTargetA.json().id as string;
+    const targetBId = createTargetB.json().id as string;
+
+    const proposeA = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/changes",
+      headers: { authorization: `Bearer ${org.adminToken}` },
+      payload: { name: "idem change A", targets: [targetAId] }
+    });
+    const proposeB = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/changes",
+      headers: { authorization: `Bearer ${org.adminToken}` },
+      payload: { name: "idem change B", targets: [targetBId] }
+    });
+    expect(proposeA.statusCode).toBe(201);
+    expect(proposeB.statusCode).toBe(201);
+
+    // Long auto-succeed so neither target settles mid-test purely from the clock — this test cares
+    // about the trigger/claim state machine, not wave completion.
+    const { host, calls } = withFailOnceAfterRealTrigger(
+      createInMemoryFakeHost({ autoSucceedAfterMs: 60_000 }),
+      (targetRef) => targetRef === targetAId // only A's target gets faulted; B must sail through.
+    );
+
+    // Tick 1: reconcileOrgTick walks BOTH freshly-proposed changes all the way to `executing` and
+    // attempts to trigger their (only) wave target, all inside this one call.
+    await reconcileOrgTick(server.deps.db, org.orgId, host);
+
+    const targetsAfterTick1 = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(changeWaveTargets)
+    );
+    const targetARow1 = targetsAfterTick1.find((t) => t.targetObjectId === targetAId);
+    const targetBRow1 = targetsAfterTick1.find((t) => t.targetObjectId === targetBId);
+    expect(targetARow1).toBeDefined();
+    expect(targetBRow1).toBeDefined();
+
+    // A's trigger fired for real once, then the injected fault prevented it from ever being
+    // recorded — it's stuck exactly where CRITICAL #2 says a crash-before-commit leaves it.
+    expect(targetARow1!.status).toBe("triggering");
+    expect(targetARow1!.executorRef).toBeNull();
+
+    // B's trigger, in the SAME reconcileOrgTick call, committed cleanly — proof A's fault never
+    // rolled back or blocked B's progress in the same tick. Under the OLD single-big-transaction
+    // design this assertion would fail: A's uncaught throw would have unwound the whole org's one
+    // transaction, taking B's write down with it (and leaving B's already-fired trigger() call
+    // duplicated on the next tick too).
+    expect(targetBRow1!.status).toBe("triggered");
+    expect(targetBRow1!.executorRef).not.toBeNull();
+
+    // Tick 2: A's target (still `triggering`) is retried with the SAME idempotencyKey; nothing
+    // faults it this time, so it commits.
+    await reconcileOrgTick(server.deps.db, org.orgId, host);
+
+    const targetsAfterTick2 = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(changeWaveTargets)
+    );
+    const targetARow2 = targetsAfterTick2.find((t) => t.targetObjectId === targetAId);
+    expect(targetARow2).toBeDefined();
+    expect(targetARow2!.status).toBe("triggered");
+    expect(targetARow2!.executorRef).not.toBeNull();
+
+    // The executor genuinely observed TWO real trigger() calls for A (the faulted attempt + the
+    // retry) carrying the IDENTICAL idempotencyKey both times, and its dedup contract collapsed
+    // them into one logical run: the same externalId both times, version bumped exactly once.
+    const aCalls = calls.filter((c) => c.targetRef === targetAId);
+    expect(aCalls).toHaveLength(2);
+    expect(aCalls[0]!.idempotencyKey).toBeTruthy();
+    expect(aCalls[1]!.idempotencyKey).toBe(aCalls[0]!.idempotencyKey);
+    expect(aCalls[1]!.externalId).toBe(aCalls[0]!.externalId);
+
+    const executorRef = targetARow2!.executorRef as unknown as ExternalRunRef;
+    expect(executorRef.externalId).toBe(aCalls[0]!.externalId);
+    const liveStatus: ExecutionStatus = await host.executor(DEFAULT_EXECUTOR_INSTANCE_ID).status(executorRef);
+    // v0, not v1 — a mutation that broke the dedup contract (e.g. re-minting a fresh run on every
+    // retry) would bump this.
+    expect(liveStatus.stateRef).toBe("v0");
+  });
+});
+
+/**
+ * MAJOR #6 (PR #7 review — "batch starvation"): `listChangeRowsInStates` orders `executing`
+ * changes oldest-`updated_at`-first, capped at `BATCH_LIMIT` (25). A change parked in `executing`
+ * with a `failed` wave never otherwise touches `changes` again on its own, so `updated_at` stays
+ * frozen — 25+ such parked changes would sort ahead of every newer, genuinely-progressing
+ * `executing` change and starve it out of every batch forever.
+ */
+describe("coordination engine: reconcile batch fairness (MAJOR #6)", () => {
+  let server: TestServer;
+  let org: TestOrg;
+
+  beforeAll(async () => {
+    server = await buildTestServer();
+    org = await createTestOrg(server, "batch-fairness");
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  /** Fabricates an `executing` change whose sole wave has already `failed`, and marks it parked
+   *  exactly like `reconcileExecutingChange`'s `failed` branch does — directly via the repo layer
+   *  (not by running the fake executor to an actual failure) so this test is precisely about the
+   *  BATCH LISTING'S exclusion filter, not wave-failure detection (covered elsewhere). */
+  async function createParkedExecutingChange(index: number): Promise<string> {
+    return withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const targetObject = await createObject(tx, {
+        orgId: org.orgId,
+        typeId: "component",
+        actorObjectId: org.orgId,
+        requestId: "batch-fairness-test",
+        name: `parked-target-${index}`
+      });
+      const { change, targetObjectIds } = await proposeChange(tx, {
+        orgId: org.orgId,
+        actorObjectId: org.orgId,
+        requestId: "batch-fairness-test",
+        name: `parked-change-${index}`,
+        targets: [targetObject.id]
+      });
+      await transitionChange(tx, {
+        orgId: org.orgId,
+        changeObjectId: change.id,
+        toState: "evaluated",
+        actorObjectId: org.orgId,
+        requestId: "batch-fairness-test"
+      });
+      const plan = await compileAndPersistPlan(tx, {
+        orgId: org.orgId,
+        changeObjectId: change.id,
+        targetObjectIds,
+        topologyObjectId: null,
+        topologyVersion: null
+      });
+      await transitionChange(tx, {
+        orgId: org.orgId,
+        changeObjectId: change.id,
+        toState: "coordinated",
+        actorObjectId: org.orgId,
+        requestId: "batch-fairness-test"
+      });
+      await transitionChange(tx, {
+        orgId: org.orgId,
+        changeObjectId: change.id,
+        toState: "executing",
+        actorObjectId: org.orgId,
+        requestId: "batch-fairness-test"
+      });
+      await markWaveTerminal(tx, org.orgId, plan.waves[0]!.id, "failed");
+      await markChangeReconcileBlocked(tx, org.orgId, change.id);
+      return change.id;
+    });
+  }
+
+  it("25+ parked (failed-wave) executing changes do not prevent a newer executing change from being reconciled", async () => {
+    const PARKED_COUNT = 26; // one more than BATCH_LIMIT (25) — the minimal reproducer.
+    for (let i = 0; i < PARKED_COUNT; i++) {
+      await createParkedExecutingChange(i);
+    }
+
+    // A fresh change, created strictly AFTER (and therefore with a strictly newer `updated_at`
+    // than) every parked change above — under the pre-fix ordering (oldest-`updated_at`-first, no
+    // exclusion), the 26 parked changes would occupy every one of the 25 batch slots forever and
+    // this one would never be reached.
+    const createFreshTarget = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/components",
+      headers: { authorization: `Bearer ${org.adminToken}` },
+      payload: { name: "fresh-target" }
+    });
+    expect(createFreshTarget.statusCode).toBe(201);
+    const freshTargetId = createFreshTarget.json().id as string;
+
+    const proposeFresh = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/changes",
+      headers: { authorization: `Bearer ${org.adminToken}` },
+      payload: { name: "fresh change", targets: [freshTargetId] }
+    });
+    expect(proposeFresh.statusCode).toBe(201);
+
+    const host = createInMemoryFakeHost({ autoSucceedAfterMs: 60_000 });
+    // One tick walks the fresh change proposed -> ... -> executing -> triggered, all inline —
+    // exactly like the CRITICAL #2 test above relies on.
+    await reconcileOrgTick(server.deps.db, org.orgId, host);
+
+    const targets = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, freshTargetId))
+    );
+    expect(targets).toHaveLength(1);
+    expect(targets[0]!.status).toBe("triggered");
+  }, 30_000);
+});
+
+/**
+ * CRITICAL #1 (PR #7 review — "watchdog never runs in production"): `runWatchdogSweep` had no
+ * non-test caller; `main.ts` scheduled the reconcile loop but never the watchdog. This proves the
+ * sweep actually executes on a RUNNING WORKER (via `listenTestServer`'s `withReconcileLoop`, which
+ * now also starts `startWatchdogLoop` — see harness.ts's doc comment) rather than only when called
+ * directly, the way the pre-existing "coordination engine: watchdog" suite above does.
+ */
+describe("coordination engine: watchdog scheduled on the running worker (CRITICAL #1)", () => {
+  it("the scheduled watchdog loop, started as part of the worker (not called directly by the test), flags a stalled change and writes a Decision", async () => {
+    const server = await listenTestServer({
+      withEventRelay: true,
+      withReconcileLoop: true,
+      pluginHostOptions: { callTimeoutMs: 5_000 },
+      // A short interval isn't needed for the FIRST sweep (startWatchdogLoop fires one immediately
+      // on start), but keeps this test fast if it ever needs a second one.
+      watchdogIntervalSeconds: 2
+    });
+    const org = await createTestOrg(server, "watchdog-scheduled");
+
+    try {
+      // A normal change, let the ACTIVE reconcile loop (also running on this "worker") drive it
+      // all the way to `validating` — a stable resting state the loop never advances past on its
+      // own (a human `scp change promote` is required). That's what makes this different from
+      // just backdating a freshly-proposed change: with the reconcile loop genuinely running
+      // alongside the watchdog, a change left in `proposed` would just get advanced normally
+      // before the watchdog ever got a look at it. `validating` is where a real, actively-managed
+      // worker can genuinely leave a change stalled.
+      const createTarget = await server.app.inject({
+        method: "POST",
+        url: "/api/v1/components",
+        headers: { authorization: `Bearer ${org.adminToken}` },
+        payload: { name: "watchdog-scheduled-target" }
+      });
+      expect(createTarget.statusCode).toBe(201);
+      const targetId = createTarget.json().id as string;
+
+      const propose = await server.app.inject({
+        method: "POST",
+        url: "/api/v1/changes",
+        headers: { authorization: `Bearer ${org.adminToken}` },
+        payload: { name: "will stall in validating (scheduled sweep)", targets: [targetId] }
+      });
+      expect(propose.statusCode).toBe(201);
+      const changeId = propose.json().id as string;
+
+      await waitUntil(
+        async () => {
+          const get = await server.app.inject({
+            method: "GET",
+            url: `/api/v1/changes/${changeId}`,
+            headers: { authorization: `Bearer ${org.adminToken}` }
+          });
+          return get.json().state === "validating" ? get.json() : undefined;
+        },
+        { describe: `change ${changeId} reaches 'validating'`, timeoutMs: 15_000 }
+      );
+
+      // Backdate past the `validating` SLA (24h) so the very next scheduled sweep flags it.
+      const longAgo = new Date(Date.now() - (WATCHDOG_SLA_MS.validating + 60_000));
+      await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        tx.update(changes).set({ stateEnteredAt: longAgo }).where(eq(changes.objectId, changeId))
+      );
+
+      // Never calls runWatchdogSweep directly — only the scheduled loop, wired up exactly like
+      // main.ts wires it, is allowed to produce this Decision.
+      await waitUntil(
+        async () => {
+          const explain = await server.app.inject({
+            method: "GET",
+            url: `/api/v1/changes/${changeId}/explain`,
+            headers: { authorization: `Bearer ${org.adminToken}` }
+          });
+          if (explain.statusCode !== 200) return undefined;
+          const body = explain.json() as { decisions: { kind: string; verdict: string }[] };
+          const watchdogDecision = body.decisions.find((d) => d.kind === "watchdog");
+          return watchdogDecision ? watchdogDecision : undefined;
+        },
+        {
+          describe: `change ${changeId} gets a 'watchdog' Decision from the SCHEDULED sweep`,
+          timeoutMs: 20_000
+        }
+      );
+    } finally {
+      await server.close();
+    }
+  }, 40_000);
 });

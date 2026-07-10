@@ -1,7 +1,9 @@
 import { and, eq, isNull, lt } from "drizzle-orm";
+import type PgBoss from "pg-boss";
 import type { ChangeState } from "@scp/schemas";
-import type { TenantTx } from "../db/tenant-tx.js";
-import { changes } from "../db/schema.js";
+import type { Db } from "../db/client.js";
+import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
+import { changes, orgs } from "../db/schema.js";
 import { insertDecision } from "./decisions-repo.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
@@ -103,10 +105,22 @@ export async function runWatchdogSweep(
         }
       });
 
+      // MINOR #9 fix (PR #7 review): guarded on `state` + `watchdog_flagged_at IS NULL` — without
+      // this, a change that progressed (clearing the flag and moving to a new state via
+      // `transitionChange`) in the window between the SELECT above and this UPDATE would have its
+      // flag stomped back on by a sweep that already decided (based on now-stale data) that it was
+      // stalled, re-flagging a change that just made real progress.
       await tx
         .update(changes)
         .set({ watchdogFlaggedAt: now })
-        .where(eq(changes.objectId, change.objectId));
+        .where(
+          and(
+            eq(changes.orgId, orgId),
+            eq(changes.objectId, change.objectId),
+            eq(changes.state, state),
+            isNull(changes.watchdogFlaggedAt)
+          )
+        );
 
       await appendAuditEvent(tx, {
         orgId,
@@ -134,4 +148,76 @@ export async function runWatchdogSweep(
   }
 
   return flags;
+}
+
+// -------------------------------------------------------------------------------------------
+// pg-boss wiring (CRITICAL #1 fix, PR #7 review: "watchdog never runs in production" —
+// `runWatchdogSweep` had no non-test caller; `main.ts` scheduled the reconcile loop but never
+// this). Mirrors `coordination/reconcile.ts`'s `startReconcileLoop` shape exactly: a lightweight,
+// self-re-scheduling pg-boss job that, on every firing, sweeps every org with the same tenant
+// scoping (`withTenantTx` per org) the reconcile loop uses. A much longer interval than the
+// reconcile tick's 1s is deliberate — the shortest watchdog SLA (`proposed`/`evaluated`/
+// `coordinated`, 5 minutes) makes sub-minute sweep granularity pointless — but the shape (one
+// queue, one singleton-keyed re-send) is identical on purpose: same failure-isolation guarantees,
+// same crash-resumption story, no new machinery to reason about.
+// -------------------------------------------------------------------------------------------
+
+export const WATCHDOG_QUEUE = "coordination-watchdog-sweep";
+export const WATCHDOG_SWEEP_INTERVAL_SECONDS = 60;
+
+/** One full sweep: every org, one `runWatchdogSweep` each, same tenant scoping as the reconcile
+ *  loop's `runReconcileSweep`. Errors in one org's sweep are caught and logged so they never take
+ *  down the sweep (or the pg-boss job) for every other org. */
+export async function runWatchdogSweepForAllOrgs(db: Db): Promise<void> {
+  const orgRows = await db.select({ id: orgs.id }).from(orgs);
+  for (const org of orgRows) {
+    try {
+      await withTenantTx(db, org.id, (tx) => runWatchdogSweep(tx, org.id, { requestId: "watchdog-sweep" }));
+    } catch (err) {
+      console.error(`[watchdog] org ${org.id} sweep failed:`, err);
+    }
+  }
+}
+
+export interface WatchdogLoopHandle {
+  stop(): Promise<void>;
+}
+
+export async function startWatchdogLoop(
+  boss: PgBoss,
+  db: Db,
+  opts: { intervalSeconds?: number } = {}
+): Promise<WatchdogLoopHandle> {
+  const intervalSeconds = opts.intervalSeconds ?? WATCHDOG_SWEEP_INTERVAL_SECONDS;
+  let stopped = false;
+  // `stop()` awaits whichever sweep is currently in flight — same reasoning as
+  // `reconcile.ts`'s `startReconcileLoop`: without draining an already-running sweep, a caller
+  // that closes `db`'s pool right after `stop()` resolves can race an in-flight sweep's own
+  // queries against a torn-down pool, and (in tests) a straggling sweep can outlive its own test
+  // server and reach into a later test's orgs.
+  let inFlightSweep: Promise<void> | undefined;
+  await boss.createQueue(WATCHDOG_QUEUE);
+  await boss.work(WATCHDOG_QUEUE, async () => {
+    if (stopped) return;
+    const sweep = runWatchdogSweepForAllOrgs(db);
+    inFlightSweep = sweep;
+    try {
+      await sweep;
+    } finally {
+      inFlightSweep = undefined;
+    }
+    if (stopped) return;
+    await boss.send(
+      WATCHDOG_QUEUE,
+      {},
+      { startAfter: intervalSeconds, singletonKey: "tick", singletonSeconds: intervalSeconds }
+    );
+  });
+  await boss.send(WATCHDOG_QUEUE, {});
+  return {
+    async stop() {
+      stopped = true;
+      await inFlightSweep;
+    }
+  };
 }

@@ -21,6 +21,7 @@ import type PgBoss from "pg-boss";
 import type { AppDeps } from "../types.js";
 import { SubprocessPluginHost, type PluginHostOptions } from "../plugin-host/host.js";
 import { startReconcileLoop, type ReconcileLoopHandle } from "../coordination/reconcile.js";
+import { startWatchdogLoop, type WatchdogLoopHandle } from "../coordination/watchdog.js";
 import {
   DEFAULT_EXECUTOR_INSTANCE_ID,
   DEFAULT_EXECUTOR_MODULE,
@@ -130,11 +131,16 @@ export interface ListeningTestServer extends TestServer {
  *
  * `withReconcileLoop: true` (requires `withEventRelay: true` — the loop needs `boss`) starts the
  * M3 coordination engine exactly as main.ts does: a `SubprocessPluginHost` with one fake-executor
- * instance, plus the self-re-scheduling reconcile tick. `pluginHostOptions` lets a test tighten
- * timeouts/backoff (the production defaults are tuned for real workloads, not fast test
- * iteration) and `reconcileTickIntervalOverrideMs` isn't exposed — tests instead just poll
- * (`waitUntil`, coordination.integration.test.ts) since `RECONCILE_TICK_INTERVAL_SECONDS` (1s) is
- * already fast enough not to dominate test runtime.
+ * instance, the self-re-scheduling reconcile tick, AND (CRITICAL #1 fix, PR #7 review) the
+ * watchdog sweep loop — main.ts starts both under the same `role === "all" || "worker"` guard, so
+ * this mirrors that exactly rather than needing a separate flag. `pluginHostOptions` lets a test
+ * tighten timeouts/backoff (the production defaults are tuned for real workloads, not fast test
+ * iteration); `watchdogIntervalSeconds` similarly overrides the production default (60s) for tests
+ * that want more than one real sweep within a reasonable test timeout — the loop's very first
+ * sweep still fires immediately on start regardless, so most tests need neither.
+ * `reconcileTickIntervalOverrideMs` isn't exposed — tests instead just poll (`waitUntil`,
+ * coordination.integration.test.ts) since `RECONCILE_TICK_INTERVAL_SECONDS` (1s) is already fast
+ * enough not to dominate test runtime.
  */
 export async function listenTestServer(
   opts: {
@@ -142,6 +148,7 @@ export async function listenTestServer(
     natsUrl?: string;
     withReconcileLoop?: boolean;
     pluginHostOptions?: PluginHostOptions;
+    watchdogIntervalSeconds?: number;
   } = {}
 ): Promise<ListeningTestServer> {
   const server = await buildTestServer();
@@ -153,6 +160,7 @@ export async function listenTestServer(
   let natsFanout: NatsFanoutHandle | undefined;
   let pluginHost: SubprocessPluginHost | undefined;
   let reconcileLoop: ReconcileLoopHandle | undefined;
+  let watchdogLoop: WatchdogLoopHandle | undefined;
   if (opts.withEventRelay) {
     boss = await startPgBoss(server.deps.config.pgBossDatabaseUrl);
     if (opts.natsUrl) {
@@ -161,7 +169,10 @@ export async function listenTestServer(
     // A separate pool from the app's own `deps.db` connection — mirrors main.ts's `pool`, which
     // the relay also owns independently of the request-serving pool.
     relayPool = createPool(server.deps.config.runtimeDatabaseUrl);
-    relay = startOutboxRelay(relayPool, server.deps.config.runtimeDatabaseUrl, boss, natsFanout);
+    relay = startOutboxRelay(relayPool, server.deps.config.runtimeDatabaseUrl, boss, {
+      eventBusBackend: opts.natsUrl ? "nats" : "postgres",
+      natsFanout
+    });
 
     if (opts.withReconcileLoop) {
       const stateDir = await mkdtemp(join(tmpdir(), "scp-test-fake-executor-"));
@@ -176,6 +187,9 @@ export async function listenTestServer(
         }
       ]);
       reconcileLoop = await startReconcileLoop(boss, server.deps.db, pluginHost);
+      watchdogLoop = await startWatchdogLoop(boss, server.deps.db, {
+        intervalSeconds: opts.watchdogIntervalSeconds
+      });
     }
   }
 
@@ -185,6 +199,7 @@ export async function listenTestServer(
     pluginHost,
     close: async () => {
       await reconcileLoop?.stop();
+      await watchdogLoop?.stop();
       await pluginHost?.stop();
       await relay?.stop();
       await boss?.stop({ graceful: false, timeout: 1000 }).catch(() => undefined);
