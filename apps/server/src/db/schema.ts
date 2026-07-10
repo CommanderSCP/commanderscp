@@ -579,6 +579,172 @@ export const changeWaveTargets = pgTable(
 // Idempotency-Key replay (DESIGN.md §6)
 // -------------------------------------------------------------------------------------------
 
+// -------------------------------------------------------------------------------------------
+// M4 Governance Engine (DESIGN.md §10, BUILD_AND_TEST.md §8 M4). Hand-authored grants/RLS in
+// drizzle/0010_governance.sql (same pattern as 0002/0005/0007). Policies and Controls themselves
+// are NOT new tables — they are graph objects of the pre-seeded `policy`/`control` types
+// (0002 §5), managed through typed-registry endpoints exactly like `release-topology` (0007 §9):
+// the document lives in `objects.properties`, and the document's own version is `objects.version`
+// (bumped on every update) — the same pinning pattern `change_plans.topology_version` already
+// uses. What DOES need new projection tables is everything with real lifecycle/quorum state that
+// the graph's generic model has no place for: control run evidence, approval quorum, and freezes.
+// -------------------------------------------------------------------------------------------
+
+/**
+ * Binds an abstract `control` graph object to a concrete ControlPlugin implementation (DESIGN
+ * §10.2: "ControlPlugin implementations are bindings — swapping Trivy for Snyk... changes a
+ * binding, never a policy"). `pluginModule`/`pluginInstanceId` feed the exact same
+ * `PluginHostInstanceConfig` shape the M3 executor plugin host already uses
+ * (plugin-host/contract.ts) — control plugins run under the identical subprocess host, just a
+ * different `PluginHost.control(instanceId)` client (plugin-host/contract.ts, host.ts).
+ */
+export const controlBindings = pgTable(
+  "control_bindings",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    controlObjectId: uuid("control_object_id").notNull(),
+    pluginModule: text("plugin_module").notNull(), // 'webhook-control' (M4) | future control plugins
+    pluginInstanceId: text("plugin_instance_id").notNull(),
+    config: jsonb("config").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    unique("control_bindings_org_control_key").on(table.orgId, table.controlObjectId),
+    index("control_bindings_org").on(table.orgId)
+  ]
+);
+
+/**
+ * Persisted control outcomes (DESIGN §10.2: "always with an evidence payload (persisted,
+ * referenced by Decisions)"). One row per control evaluation attempt against one change at one
+ * gate point; `decisionId` links back to the gate Decision that consulted this outcome.
+ */
+export const controlRuns = pgTable(
+  "control_runs",
+  {
+    id: uuid("id").primaryKey(), // UUIDv7
+    orgId: uuid("org_id").notNull(),
+    controlObjectId: uuid("control_object_id").notNull(),
+    changeObjectId: uuid("change_object_id").notNull(),
+    gateKind: text("gate_kind").notNull(), // 'lifecycle_edge' | 'wave_boundary'
+    gateRef: jsonb("gate_ref").notNull(), // {fromState,toState} or {waveIndex,topologyObjectId}
+    status: text("status").notNull(), // pass|fail|warning|skipped|timed_out|expired
+    evidence: jsonb("evidence").notNull().default({}),
+    detail: text("detail"),
+    decisionId: uuid("decision_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    index("control_runs_org_change").on(table.orgId, table.changeObjectId, table.createdAt),
+    index("control_runs_org_control").on(table.orgId, table.controlObjectId)
+  ]
+);
+
+/**
+ * A materialized N-of-M approval requirement (DESIGN §10.2: "approval control instances
+ * materialize as approval tasks"), one row per (change, firing policy, policy version, effect)
+ * — re-derived idempotently by governance/gate evaluation every time it runs (the unique key
+ * below makes creation an upsert-shaped no-op on repeat). `policyVersion` pins the exact
+ * `objects.version` of the policy that was in force when this request was created, so the
+ * requirement stays reconstructible even if the policy document is edited later (DESIGN §10.4).
+ */
+export const approvalRequests = pgTable(
+  "approval_requests",
+  {
+    id: uuid("id").primaryKey(), // UUIDv7
+    orgId: uuid("org_id").notNull(),
+    changeObjectId: uuid("change_object_id").notNull(),
+    policyObjectId: uuid("policy_object_id").notNull(),
+    policyVersion: bigint("policy_version", { mode: "number" }).notNull(),
+    effectIndex: bigint("effect_index", { mode: "number" }).notNull(),
+    requiredCount: bigint("required_count", { mode: "number" }).notNull(),
+    fromRole: text("from_role").notNull(),
+    scopeObjectId: uuid("scope_object_id").notNull(),
+    status: text("status").notNull().default("pending"), // pending|satisfied
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    satisfiedAt: timestamp("satisfied_at", { withTimezone: true }),
+    satisfiedDecisionId: uuid("satisfied_decision_id")
+  },
+  (table) => [
+    unique("approval_requests_dedup_key").on(
+      table.orgId,
+      table.changeObjectId,
+      table.policyObjectId,
+      table.policyVersion,
+      table.effectIndex
+    ),
+    index("approval_requests_org_change").on(table.orgId, table.changeObjectId)
+  ]
+);
+
+/**
+ * One individual approval vote (DESIGN §10.2 "approval attestation"). The unique key is the
+ * DB-enforced core of N-of-M quorum integrity — SECURITY-SENSITIVE (BUILD_AND_TEST.md §8 M4):
+ * it makes "the same actor voting twice" a constraint violation, not just an application-layer
+ * check that a bug could bypass. `attestation` holds the Ed25519-signed canonical record
+ * (governance/attestation.ts) binding voter + approved object + decision id + timestamp
+ * (DESIGN §10.2), independent of this row's own columns so the signed payload is self-contained
+ * and portable (it is exactly what a future federation Promotion Bundle carries — DESIGN §13).
+ */
+export const approvalVotes = pgTable(
+  "approval_votes",
+  {
+    id: uuid("id").primaryKey(), // UUIDv7
+    orgId: uuid("org_id").notNull(),
+    approvalRequestId: uuid("approval_request_id").notNull(),
+    voterObjectId: uuid("voter_object_id").notNull(),
+    decisionId: uuid("decision_id"),
+    attestation: jsonb("attestation").notNull(),
+    votedAt: timestamp("voted_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    unique("approval_votes_no_double_vote").on(table.orgId, table.approvalRequestId, table.voterObjectId),
+    index("approval_votes_org_request").on(table.orgId, table.approvalRequestId)
+  ]
+);
+
+/**
+ * Freeze windows (DESIGN §10.3): "a built-in policy effect with time windows and scope
+ * (org/domain/service/component)." A dedicated projection table (not a graph object) because a
+ * freeze's only state is a time window + scope + reason — no benefit to the generic object model
+ * here, and `/freezes` is its own top-level API resource per DESIGN §6.
+ */
+export const freezes = pgTable(
+  "freezes",
+  {
+    id: uuid("id").primaryKey(), // UUIDv7
+    orgId: uuid("org_id").notNull(),
+    scopeObjectId: uuid("scope_object_id").notNull(),
+    name: text("name"),
+    startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
+    endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
+    reason: text("reason").notNull(),
+    createdByActorId: uuid("created_by_actor_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    index("freezes_org_scope").on(table.orgId, table.scopeObjectId),
+    index("freezes_org_window").on(table.orgId, table.startsAt, table.endsAt)
+  ]
+);
+
+/**
+ * Singleton Ed25519 keypair this instance signs approval attestations with (DESIGN §10.2: "the
+ * domain instance signs (Ed25519 domain key)"). Generated once on first boot
+ * (governance/attestation.ts `ensureInstanceKey`), same trust tier as `SCP_COOKIE_SECRET` — a
+ * server-side secret, never sent to clients. A single fixed-id row (no org scoping, no RLS):
+ * DESIGN's "domain key" is one key per SCP INSTANCE (= federation domain), not per tenant org;
+ * multi-org attestation verification is out of M4 scope (no federation yet — M6).
+ */
+export const instanceKeys = pgTable("instance_keys", {
+  id: uuid("id").primaryKey(),
+  publicKey: text("public_key").notNull(),
+  privateKey: text("private_key").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+});
+
 export const idempotencyKeys = pgTable(
   "idempotency_keys",
   {
