@@ -368,6 +368,70 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
   });
 
   // -----------------------------------------------------------------------------------------
+  // CRITICAL #1b (adversarial review): a policy's DECLARED scope is bound to the author's own
+  // `policy:write` authority — a component-scoped author cannot publish an org-wide (or
+  // higher-scope) policy, which was the planting vector that made #1a exploitable.
+  // -----------------------------------------------------------------------------------------
+
+  it("a component-scoped policy author cannot declare an org-wide (or org-root-scoped) policy — only one bounded to their own component", async () => {
+    const org = await createTestOrg(server, "scope-authority");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+    const domain = await admin.domains.create({ name: "sa-domain" });
+    const component = await admin.components.create({ name: "sa-component", domainId: domain.id });
+
+    // Administrator holds 'policy:write' (M4 migration) — bind it at the COMPONENT only, so this
+    // author's policy authority is exactly that component and below.
+    const author = await createTestUser(server, org, [{ role: "Administrator", scope: component.id }]);
+    const authorClient = new ScpClient({ baseUrl: server.baseUrl, token: author.token });
+
+    // (a) org-wide (UNSCOPED) policy, even placed at their own component → 403 (needs org-root authority).
+    const orgWide = await expectApiError(() =>
+      authorClient.policies.create({
+        name: "sneaky-org-wide",
+        domainId: component.id,
+        properties: { enforcement: "required", effects: [{ requireControls: ["x"] }] }
+      })
+    );
+    expect(orgWide.status).toBe(403);
+
+    // (b) a policy scoped to the ORG ROOT via objectRef → 403 (needs policy:write at org root).
+    const orgScoped = await expectApiError(() =>
+      authorClient.policies.create({
+        name: "sneaky-org-scoped",
+        domainId: component.id,
+        properties: { scope: { objectRef: org.orgId }, enforcement: "required" }
+      })
+    );
+    expect(orgScoped.status).toBe(403);
+
+    // (c) a label-selector policy (org-wide blast radius) → 403.
+    const selectorScoped = await expectApiError(() =>
+      authorClient.policies.create({
+        name: "sneaky-selector",
+        domainId: component.id,
+        properties: { scope: { selector: { labels: { env: "prod" } } }, enforcement: "required" }
+      })
+    );
+    expect(selectorScoped.status).toBe(403);
+
+    // (d) a policy scoped to their OWN component → allowed.
+    const componentScoped = await authorClient.policies.create({
+      name: "legit-component-policy",
+      domainId: component.id,
+      properties: { scope: { objectRef: component.id }, enforcement: "required" }
+    });
+    expect(componentScoped.id).toBeTruthy();
+
+    // Sanity: the admin (org-root Owner) CAN still create an org-wide policy.
+    const adminOrgWide = await admin.policies.create({
+      name: "legit-org-wide",
+      properties: { enforcement: "advisory" }
+    });
+    expect(adminOrgWide.id).toBeTruthy();
+  });
+
+  // -----------------------------------------------------------------------------------------
   // Required control blocks promote; hybrid gate (scan AND approval — either missing blocks);
   // control outcomes + evidence persisted and referenced by the Decision (joined by
   // controlObjectId — see routes/changes.ts's explain handler / control_runs.decision_id's own

@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
+import type { TenantTx } from "../db/tenant-tx.js";
 import {
   CreateObjectRequestSchema,
   GraphObjectSchema,
@@ -25,6 +26,7 @@ import {
   updateObject,
   upsertObjectByUrn
 } from "../graph/objects-repo.js";
+import { assertPolicyScopeWithinAuthority } from "../governance/policy-scope-authz.js";
 
 function idempotencyKey(request: FastifyRequest): string | undefined {
   const header = request.headers["idempotency-key"];
@@ -44,6 +46,14 @@ export interface TypedRegistryConfig {
    *  pre-M4 resource is unaffected. */
   writePermission?: Permission;
   readPermission?: Permission;
+  /** Extra write-time validation beyond the generic `writePermission` check (adversarial review
+   *  CRITICAL #1b): for `policy`, binds the DECLARED `properties.scope` to the actor's own
+   *  authority so a component-scoped author can't publish an org-wide policy. Called inside the
+   *  write tx (POST/PATCH-with-properties/PUT) after the permission check; throws to reject. */
+  validateWrite?: (
+    tx: TenantTx,
+    args: { orgId: string; actorObjectId: string; properties: Record<string, unknown> | undefined }
+  ) => Promise<void>;
 }
 
 /**
@@ -72,7 +82,14 @@ export const TYPED_REGISTRY_RESOURCES: TypedRegistryConfig[] = [
  * than the generic 'object:write' (DESIGN §7's example role bindings name it explicitly).
  */
 export const GOVERNANCE_TYPED_REGISTRY_RESOURCES: TypedRegistryConfig[] = [
-  { typeId: "policy", basePath: "policies", resourceName: "Policy", writePermission: "policy:write" },
+  {
+    typeId: "policy",
+    basePath: "policies",
+    resourceName: "Policy",
+    writePermission: "policy:write",
+    // CRITICAL #1b: bind the policy's DECLARED scope to the author's own authority.
+    validateWrite: assertPolicyScopeWithinAuthority
+  },
   { typeId: "control", basePath: "controls", resourceName: "Control", writePermission: "policy:write" }
 ];
 
@@ -137,6 +154,11 @@ export function registerTypedRegistryRoutes(
           subjectObjectId: auth.subjectObjectId,
           permission: writePermission,
           scopeObjectId: scopeObjectId ?? auth.orgId
+        });
+        await config.validateWrite?.(tx, {
+          orgId: auth.orgId,
+          actorObjectId: auth.subjectObjectId,
+          properties: request.body.properties
         });
         return withIdempotency(
           tx,
@@ -266,6 +288,16 @@ export function registerTypedRegistryRoutes(
           permission: writePermission,
           scopeObjectId: found.id
         });
+        // Only re-validate scope authority when this PATCH actually replaces `properties`
+        // (updateObject replaces wholesale when provided); a PATCH that omits properties leaves
+        // the already-validated scope untouched.
+        if (request.body.properties !== undefined) {
+          await config.validateWrite?.(tx, {
+            orgId: auth.orgId,
+            actorObjectId: auth.subjectObjectId,
+            properties: request.body.properties
+          });
+        }
         return updateObject(tx, {
           orgId: auth.orgId,
           typeId,
@@ -363,6 +395,11 @@ export function registerTypedRegistryRoutes(
           subjectObjectId: auth.subjectObjectId,
           permission: writePermission,
           scopeObjectId
+        });
+        await config.validateWrite?.(tx, {
+          orgId: auth.orgId,
+          actorObjectId: auth.subjectObjectId,
+          properties: request.body.properties
         });
         return upsertObjectByUrn(tx, {
           orgId: auth.orgId,
