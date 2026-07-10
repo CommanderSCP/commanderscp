@@ -124,7 +124,7 @@ export async function proposeInitiative(
     urn: input.urn,
     name: input.name,
     domainId: input.domainId,
-    properties: { description: input.description ?? null },
+    properties: input.description !== undefined ? { description: input.description } : {},
     labels: input.labels
   });
 

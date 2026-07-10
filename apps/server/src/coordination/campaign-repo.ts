@@ -116,9 +116,8 @@ export async function proposeCampaign(
     domainId: input.domainId,
     properties: {
       targets: targetObjectIds,
-      description: input.description ?? null,
-      topologyObjectId: topologyObjectId ?? null,
-      topologyVersion: topologyVersion ?? null
+      ...(input.description !== undefined ? { description: input.description } : {}),
+      ...(topologyObjectId !== undefined ? { topologyObjectId, topologyVersion } : {})
     },
     labels: input.labels
   });
