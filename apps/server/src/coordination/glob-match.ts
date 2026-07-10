@@ -1,0 +1,16 @@
+/**
+ * A minimal glob matcher for `source_mappings.repo_pattern`/`path_pattern` (DESIGN.md §9.2).
+ * Deliberately tiny rather than a new dependency (CLAUDE.md priority 1, Simplicity): supports
+ * `*` (any run of characters except `/`) and `**` (any run of characters including `/`) —
+ * enough to express "org/repo-*" or "services/**\/Dockerfile" style patterns without a glob
+ * library.
+ */
+export function globMatch(pattern: string, value: string): boolean {
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  // A single alternation-ordered replace — `**` is tried before `*` at every position, so there
+  // is no intermediate placeholder character needed (an earlier version used a `\x00` sentinel
+  // byte here, which both tripped eslint's `no-control-regex` rule and made this file look like
+  // binary content to git/most editors).
+  const regexSource = escaped.replace(/\*\*|\*/g, (match) => (match === "**" ? ".*" : "[^/]*"));
+  return new RegExp(`^${regexSource}$`).test(value);
+}

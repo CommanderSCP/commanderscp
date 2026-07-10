@@ -14,6 +14,11 @@ export function useIdOrUrnParam(): string | undefined {
   return (useParams({ strict: false }) as { idOrUrn?: string }).idOrUrn;
 }
 
+/** `/changes/$id` (M3) — Changes are addressed by id only, never by URN. */
+export function useIdParam(): string | undefined {
+  return (useParams({ strict: false }) as { id?: string }).id;
+}
+
 export function useUserCodeSearch(): string | undefined {
   return (useSearch({ strict: false }) as { user_code?: string }).user_code;
 }

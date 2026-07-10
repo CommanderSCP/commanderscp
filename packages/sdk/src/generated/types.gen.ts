@@ -8407,3 +8407,989 @@ export type ApplyPlanResponses = {
 };
 
 export type ApplyPlanResponse = ApplyPlanResponses[keyof ApplyPlanResponses];
+
+export type ListChangesData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+        state?: 'proposed' | 'evaluated' | 'coordinated' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
+    };
+    url: '/changes';
+};
+
+export type ListChangesErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListChangesError = ListChangesErrors[keyof ListChangesErrors];
+
+export type ListChangesResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            urn: string;
+            name: string;
+            state: 'proposed' | 'evaluated' | 'coordinated' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
+            sourceKind: string | null;
+            sourceRef: {
+                [key: string]: unknown;
+            } | null;
+            correlationKey: string | null;
+            emergency: boolean;
+            importedFromDomain: string | null;
+            topologyObjectId: string | null;
+            topologyVersion: number | null;
+            rollbackOfObjectId: string | null;
+            rollbackTriggerReason: string | null;
+            stateEnteredAt: string;
+            lastHeartbeatAt: string;
+            watchdogFlaggedAt: string | null;
+            properties: {
+                [key: string]: unknown;
+            };
+            createdAt: string;
+            updatedAt: string;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListChangesResponse = ListChangesResponses[keyof ListChangesResponses];
+
+export type ProposeChangeData = {
+    body: {
+        name: string;
+        id?: string;
+        urn?: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+        sourceKind?: string;
+        sourceRef?: {
+            [key: string]: unknown;
+        };
+        correlationKey?: string;
+        emergency?: boolean;
+        topology?: string;
+        targets: Array<string>;
+    };
+    path?: never;
+    query?: never;
+    url: '/changes';
+};
+
+export type ProposeChangeErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ProposeChangeError = ProposeChangeErrors[keyof ProposeChangeErrors];
+
+export type ProposeChangeResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        urn: string;
+        name: string;
+        state: 'proposed' | 'evaluated' | 'coordinated' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
+        sourceKind: string | null;
+        sourceRef: {
+            [key: string]: unknown;
+        } | null;
+        correlationKey: string | null;
+        emergency: boolean;
+        importedFromDomain: string | null;
+        topologyObjectId: string | null;
+        topologyVersion: number | null;
+        rollbackOfObjectId: string | null;
+        rollbackTriggerReason: string | null;
+        stateEnteredAt: string;
+        lastHeartbeatAt: string;
+        watchdogFlaggedAt: string | null;
+        properties: {
+            [key: string]: unknown;
+        };
+        createdAt: string;
+        updatedAt: string;
+    };
+};
+
+export type ProposeChangeResponse = ProposeChangeResponses[keyof ProposeChangeResponses];
+
+export type GetChangeData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/changes/{id}';
+};
+
+export type GetChangeErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetChangeError = GetChangeErrors[keyof GetChangeErrors];
+
+export type GetChangeResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        urn: string;
+        name: string;
+        state: 'proposed' | 'evaluated' | 'coordinated' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
+        sourceKind: string | null;
+        sourceRef: {
+            [key: string]: unknown;
+        } | null;
+        correlationKey: string | null;
+        emergency: boolean;
+        importedFromDomain: string | null;
+        topologyObjectId: string | null;
+        topologyVersion: number | null;
+        rollbackOfObjectId: string | null;
+        rollbackTriggerReason: string | null;
+        stateEnteredAt: string;
+        lastHeartbeatAt: string;
+        watchdogFlaggedAt: string | null;
+        properties: {
+            [key: string]: unknown;
+        };
+        createdAt: string;
+        updatedAt: string;
+    };
+};
+
+export type GetChangeResponse = GetChangeResponses[keyof GetChangeResponses];
+
+export type ExplainChangeData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/changes/{id}/explain';
+};
+
+export type ExplainChangeErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ExplainChangeError = ExplainChangeErrors[keyof ExplainChangeErrors];
+
+export type ExplainChangeResponses = {
+    /**
+     * Success
+     */
+    200: {
+        change: {
+            id: string;
+            orgId: string;
+            urn: string;
+            name: string;
+            state: 'proposed' | 'evaluated' | 'coordinated' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
+            sourceKind: string | null;
+            sourceRef: {
+                [key: string]: unknown;
+            } | null;
+            correlationKey: string | null;
+            emergency: boolean;
+            importedFromDomain: string | null;
+            topologyObjectId: string | null;
+            topologyVersion: number | null;
+            rollbackOfObjectId: string | null;
+            rollbackTriggerReason: string | null;
+            stateEnteredAt: string;
+            lastHeartbeatAt: string;
+            watchdogFlaggedAt: string | null;
+            properties: {
+                [key: string]: unknown;
+            };
+            createdAt: string;
+            updatedAt: string;
+        };
+        plan: {
+            id: string;
+            changeObjectId: string;
+            topologyObjectId: string | null;
+            topologyVersion: number | null;
+            status: string;
+            createdAt: string;
+            waves: Array<{
+                id: string;
+                planId: string;
+                waveIndex: number;
+                name: string | null;
+                requiresFanIn: boolean;
+                status: string;
+                createdAt: string;
+                startedAt: string | null;
+                completedAt: string | null;
+                targets: Array<{
+                    id: string;
+                    waveId: string;
+                    targetObjectId: string;
+                    targetUrn?: string;
+                    targetName?: string;
+                    executorPluginId: string | null;
+                    executorRef: {
+                        [key: string]: unknown;
+                    } | null;
+                    status: string;
+                    attempt: number;
+                    lastObservedAt: string | null;
+                    createdAt: string;
+                    updatedAt: string;
+                }>;
+            }>;
+        } | null;
+        decisions: Array<{
+            id: string;
+            orgId: string;
+            kind: string;
+            subjectId: string;
+            verdict: string;
+            inputContext: {
+                [key: string]: unknown;
+            };
+            reasonTree: {
+                [key: string]: unknown;
+            };
+            createdAt: string;
+        }>;
+    };
+};
+
+export type ExplainChangeResponse = ExplainChangeResponses[keyof ExplainChangeResponses];
+
+export type CancelChangeData = {
+    body: {
+        reason?: string;
+    };
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/changes/{id}/cancel';
+};
+
+export type CancelChangeErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CancelChangeError = CancelChangeErrors[keyof CancelChangeErrors];
+
+export type CancelChangeResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        urn: string;
+        name: string;
+        state: 'proposed' | 'evaluated' | 'coordinated' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
+        sourceKind: string | null;
+        sourceRef: {
+            [key: string]: unknown;
+        } | null;
+        correlationKey: string | null;
+        emergency: boolean;
+        importedFromDomain: string | null;
+        topologyObjectId: string | null;
+        topologyVersion: number | null;
+        rollbackOfObjectId: string | null;
+        rollbackTriggerReason: string | null;
+        stateEnteredAt: string;
+        lastHeartbeatAt: string;
+        watchdogFlaggedAt: string | null;
+        properties: {
+            [key: string]: unknown;
+        };
+        createdAt: string;
+        updatedAt: string;
+    };
+};
+
+export type CancelChangeResponse = CancelChangeResponses[keyof CancelChangeResponses];
+
+export type PromoteChangeData = {
+    body: {
+        reason?: string;
+    };
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/changes/{id}/promote';
+};
+
+export type PromoteChangeErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PromoteChangeError = PromoteChangeErrors[keyof PromoteChangeErrors];
+
+export type PromoteChangeResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        urn: string;
+        name: string;
+        state: 'proposed' | 'evaluated' | 'coordinated' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
+        sourceKind: string | null;
+        sourceRef: {
+            [key: string]: unknown;
+        } | null;
+        correlationKey: string | null;
+        emergency: boolean;
+        importedFromDomain: string | null;
+        topologyObjectId: string | null;
+        topologyVersion: number | null;
+        rollbackOfObjectId: string | null;
+        rollbackTriggerReason: string | null;
+        stateEnteredAt: string;
+        lastHeartbeatAt: string;
+        watchdogFlaggedAt: string | null;
+        properties: {
+            [key: string]: unknown;
+        };
+        createdAt: string;
+        updatedAt: string;
+    };
+};
+
+export type PromoteChangeResponse = PromoteChangeResponses[keyof PromoteChangeResponses];
+
+export type RollbackChangeData = {
+    body: {
+        reason: string;
+    };
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/changes/{id}/rollback';
+};
+
+export type RollbackChangeErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RollbackChangeError = RollbackChangeErrors[keyof RollbackChangeErrors];
+
+export type RollbackChangeResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        urn: string;
+        name: string;
+        state: 'proposed' | 'evaluated' | 'coordinated' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
+        sourceKind: string | null;
+        sourceRef: {
+            [key: string]: unknown;
+        } | null;
+        correlationKey: string | null;
+        emergency: boolean;
+        importedFromDomain: string | null;
+        topologyObjectId: string | null;
+        topologyVersion: number | null;
+        rollbackOfObjectId: string | null;
+        rollbackTriggerReason: string | null;
+        stateEnteredAt: string;
+        lastHeartbeatAt: string;
+        watchdogFlaggedAt: string | null;
+        properties: {
+            [key: string]: unknown;
+        };
+        createdAt: string;
+        updatedAt: string;
+    };
+};
+
+export type RollbackChangeResponse = RollbackChangeResponses[keyof RollbackChangeResponses];
+
+export type ListDecisionsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+        subjectId?: string;
+    };
+    url: '/decisions';
+};
+
+export type ListDecisionsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListDecisionsError = ListDecisionsErrors[keyof ListDecisionsErrors];
+
+export type ListDecisionsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            kind: string;
+            subjectId: string;
+            verdict: string;
+            inputContext: {
+                [key: string]: unknown;
+            };
+            reasonTree: {
+                [key: string]: unknown;
+            };
+            createdAt: string;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListDecisionsResponse = ListDecisionsResponses[keyof ListDecisionsResponses];
+
+export type GetDecisionData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/decisions/{id}';
+};
+
+export type GetDecisionErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetDecisionError = GetDecisionErrors[keyof GetDecisionErrors];
+
+export type GetDecisionResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        kind: string;
+        subjectId: string;
+        verdict: string;
+        inputContext: {
+            [key: string]: unknown;
+        };
+        reasonTree: {
+            [key: string]: unknown;
+        };
+        createdAt: string;
+    };
+};
+
+export type GetDecisionResponse = GetDecisionResponses[keyof GetDecisionResponses];
+
+export type IngestChangeSourceWebhookData = {
+    body: {
+        [key: string]: unknown;
+    };
+    path: {
+        sourceKind: string;
+    };
+    query?: never;
+    url: '/change-sources/{sourceKind}/webhook';
+};
+
+export type IngestChangeSourceWebhookErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type IngestChangeSourceWebhookError = IngestChangeSourceWebhookErrors[keyof IngestChangeSourceWebhookErrors];
+
+export type IngestChangeSourceWebhookResponses = {
+    /**
+     * Success
+     */
+    202: {
+        accepted: true;
+        eventId: string;
+    };
+};
+
+export type IngestChangeSourceWebhookResponse = IngestChangeSourceWebhookResponses[keyof IngestChangeSourceWebhookResponses];
+
+export type ListSourceMappingsData = {
+    body?: never;
+    path: {
+        sourceKind: string;
+    };
+    query?: never;
+    url: '/change-sources/{sourceKind}/mappings';
+};
+
+export type ListSourceMappingsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListSourceMappingsError = ListSourceMappingsErrors[keyof ListSourceMappingsErrors];
+
+export type ListSourceMappingsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            sourceKind: string;
+            repoPattern: string | null;
+            pathPattern: string | null;
+            componentObjectId: string;
+            createdAt: string;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListSourceMappingsResponse = ListSourceMappingsResponses[keyof ListSourceMappingsResponses];
+
+export type CreateSourceMappingData = {
+    body: {
+        sourceKind: string;
+        repoPattern?: string;
+        pathPattern?: string;
+        component: string;
+    };
+    path: {
+        sourceKind: string;
+    };
+    query?: never;
+    url: '/change-sources/{sourceKind}/mappings';
+};
+
+export type CreateSourceMappingErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateSourceMappingError = CreateSourceMappingErrors[keyof CreateSourceMappingErrors];
+
+export type CreateSourceMappingResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        sourceKind: string;
+        repoPattern: string | null;
+        pathPattern: string | null;
+        componentObjectId: string;
+        createdAt: string;
+    };
+};
+
+export type CreateSourceMappingResponse = CreateSourceMappingResponses[keyof CreateSourceMappingResponses];

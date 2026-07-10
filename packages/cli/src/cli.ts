@@ -4,7 +4,11 @@ import { Command } from "commander";
 import { ScpApiError, ScpClient } from "@scp/sdk";
 import type { ListObjectsQuery, ListQuery } from "@scp/sdk";
 import type {
+  Change,
+  ChangeExplainResponse,
+  ChangeState,
   CreateObjectRequest,
+  Decision,
   DesiredStateManifest,
   GraphObject,
   NamedGraphQuery,
@@ -77,6 +81,44 @@ function patRow(p: Pat): Record<string, string> {
     expiresAt: p.expiresAt ?? "(none)",
     revoked: p.revokedAt ? "yes" : "no",
     lastUsedAt: p.lastUsedAt ?? "(never)"
+  };
+}
+
+/** Compact row for `scp change list` — mirrors `objectRow`'s style. */
+function changeRow(c: Change): Record<string, string> {
+  return {
+    id: c.id,
+    name: c.name,
+    state: c.state,
+    sourceKind: c.sourceKind ?? "",
+    correlationKey: c.correlationKey ?? "",
+    createdAt: c.createdAt
+  };
+}
+
+/** Fuller row for single-Change commands (propose/get/cancel/promote/rollback). */
+function changeDetailRow(c: Change): Record<string, string> {
+  return {
+    id: c.id,
+    name: c.name,
+    urn: c.urn,
+    state: c.state,
+    sourceKind: c.sourceKind ?? "",
+    correlationKey: c.correlationKey ?? "",
+    rollbackOfObjectId: c.rollbackOfObjectId ?? "",
+    emergency: c.emergency ? "yes" : "no",
+    createdAt: c.createdAt,
+    updatedAt: c.updatedAt
+  };
+}
+
+function decisionRow(d: Decision): Record<string, string> {
+  return {
+    id: d.id,
+    kind: d.kind,
+    subjectId: d.subjectId,
+    verdict: d.verdict,
+    createdAt: d.createdAt
   };
 }
 
@@ -157,6 +199,46 @@ function printApplyResult(plan: Plan, summary: PlanDiffSummary, output: OutputFo
     return;
   }
   console.log(`Applied plan ${plan.id} (${plan.stackName}): ${summaryLine(summary)}`);
+}
+
+/**
+ * Prints a Change's compiled plan (waves/targets) and every Decision made about it, in order —
+ * the CLI's window into the coordination engine's reasoning (BUILD_AND_TEST.md §8 M3 DoD:
+ * "`scp change explain` renders" the Decision record). Deviates from `printResult`/`printTable`
+ * (which assume flat rows), same as `printPlanResult`/`printApplyResult` above and for the same
+ * reason — this shape (a change, an optional plan tree, an ordered decision list) isn't a table.
+ */
+function printExplainResult(result: ChangeExplainResponse, output: OutputFormat): void {
+  if (output === "json") {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  const { change, plan, decisions } = result;
+  console.log(`Change ${change.id} '${change.name}' — state: ${change.state}`);
+
+  if (plan) {
+    console.log(`\nPlan ${plan.id} (status: ${plan.status}):`);
+    for (const wave of plan.waves) {
+      const label = wave.name ? `${wave.waveIndex} (${wave.name})` : String(wave.waveIndex);
+      console.log(`  Wave ${label} — ${wave.status}`);
+      for (const target of wave.targets) {
+        const ref = target.targetUrn ?? target.targetName ?? target.targetObjectId;
+        console.log(`    - ${ref}: ${target.status}`);
+      }
+    }
+  } else {
+    console.log("\n(no plan compiled yet)");
+  }
+
+  console.log(`\nDecisions (${decisions.length}):`);
+  for (const decision of decisions) {
+    const summary =
+      typeof decision.reasonTree["summary"] === "string"
+        ? (decision.reasonTree["summary"] as string)
+        : JSON.stringify(decision.reasonTree);
+    console.log(`  [${decision.createdAt}] ${decision.kind} -> ${decision.verdict}: ${summary}`);
+  }
 }
 
 function sleep(ms: number): Promise<void> {
@@ -1055,6 +1137,165 @@ export function buildProgram(): Command {
       const client = await clientFromStoredCredentials(opts);
       const plan = await client.plans.get(id);
       printPlanResult(plan, opts.output);
+    });
+
+  // -------------------------------------------------------------------------------------
+  // change / decision (M3 Change Coordination Engine — DESIGN.md §9, §10.4, BUILD_AND_TEST.md
+  // §8 M3). `scp change propose` submits a Change against >=1 target object (usually
+  // components/services/deployment-targets); the engine compiles a wave plan from their
+  // `depends_on` edges (or an explicit `--topology`), gates each state transition behind policy
+  // Decisions, and executes waves via executor plugins. `scp change explain` is the CLI's window
+  // into that reasoning — the compiled plan's waves/targets plus every Decision made about the
+  // change, in order. `decision get/list` are read-only: Decisions are written by the
+  // coordination engine itself (policy/guard verdicts), never created directly via the CLI.
+  // -------------------------------------------------------------------------------------
+  const changeCmd = program.command("change").description("Manage Changes (DESIGN.md §9 lifecycle)");
+
+  changeCmd
+    .command("propose")
+    .description("Propose a new Change")
+    .requiredOption("--name <name>", "change name")
+    .requiredOption("--targets <list>", "comma-separated object ids/URNs this change targets")
+    .option("--topology <idOrUrn>", "release-topology object id or URN to compile the plan against")
+    .option("--source-kind <kind>", "originating source kind (e.g. github, argocd)")
+    .option("--correlation-key <key>", "correlation key for grouping related changes")
+    .option("--emergency", "mark this change as an emergency (DESIGN.md §9)")
+    .option("--properties <json>", "JSON object")
+    .option("--labels <json>", "JSON object")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          name: string;
+          targets: string;
+          topology?: string;
+          sourceKind?: string;
+          correlationKey?: string;
+          emergency?: boolean;
+          properties?: string;
+          labels?: string;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const created = await client.changes.propose(
+          {
+            name: opts.name,
+            targets: parseList(opts.targets) ?? [],
+            topology: opts.topology,
+            sourceKind: opts.sourceKind,
+            correlationKey: opts.correlationKey,
+            emergency: opts.emergency,
+            properties: parseJsonOption(opts.properties, "--properties"),
+            labels: parseJsonOption(opts.labels, "--labels")
+          },
+          { idempotencyKey: randomUUID() }
+        );
+        printResult(created, opts.output, (item) => changeDetailRow(item as Change));
+      }
+    );
+
+  changeCmd
+    .command("list")
+    .description("List Changes")
+    .option(
+      "--state <state>",
+      "filter by state (proposed|evaluated|coordinated|executing|validating|promoted|cancelled|rolled_back)"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { state?: ChangeState }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const page = await client.changes.list({ state: opts.state, limit: 100 });
+      printResult(page.items, opts.output, (item) => changeRow(item as Change));
+    });
+
+  changeCmd
+    .command("get <id>")
+    .description("Get a Change by id")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const found = await client.changes.get(id);
+      printResult(found, opts.output, (item) => changeDetailRow(item as Change));
+    });
+
+  changeCmd
+    .command("explain <id>")
+    .description("Explain a Change — its compiled plan (waves/targets) and every Decision made about it")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.changes.explain(id);
+      printExplainResult(result, opts.output);
+    });
+
+  changeCmd
+    .command("cancel <id>")
+    .description("Cancel a Change")
+    .option("--reason <text>", "reason for cancelling")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts & { reason?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const cancelled = await client.changes.cancel(id, opts.reason);
+      printResult(cancelled, opts.output, (item) => changeDetailRow(item as Change));
+    });
+
+  changeCmd
+    .command("promote <id>")
+    .description("Promote a Change out of `validating` — the human approval gate before `promoted`")
+    .option("--reason <text>", "reason for promoting")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts & { reason?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const promoted = await client.changes.promote(id, opts.reason);
+      printResult(promoted, opts.output, (item) => changeDetailRow(item as Change));
+    });
+
+  changeCmd
+    .command("rollback <id>")
+    .description(
+      "Roll back a Change — creates and returns a NEW rollback Change linked via rollbackOfObjectId"
+    )
+    .requiredOption("--reason <text>", "reason for the rollback (required — DESIGN.md §9.4)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts & { reason: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const rollback = await client.changes.rollback(id, opts.reason);
+      if (opts.output === "table") {
+        console.log(`Rollback change created (of ${id}):`);
+      }
+      printResult(rollback, opts.output, (item) => changeDetailRow(item as Change));
+    });
+
+  const decisionCmd = program.command("decision").description("Inspect Decision records");
+
+  decisionCmd
+    .command("get <id>")
+    .description("Get a Decision by id")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const found = await client.decisions.get(id);
+      printResult(found, opts.output, (item) => decisionRow(item as Decision));
+    });
+
+  decisionCmd
+    .command("list")
+    .description("List Decisions")
+    .option("--subject-id <id>", "filter by subject (e.g. a Change) id")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { subjectId?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const page = await client.decisions.list({ subjectId: opts.subjectId, limit: 100 });
+      printResult(page.items, opts.output, (item) => decisionRow(item as Decision));
     });
 
   // -------------------------------------------------------------------------------------

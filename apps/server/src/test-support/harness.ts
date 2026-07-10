@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import pg from "pg";
 import * as argon2 from "argon2";
 import { v7 as uuidv7 } from "uuid";
@@ -13,8 +16,18 @@ import { createObject } from "../graph/objects-repo.js";
 import { ensureBootstrapAdmin } from "../auth/local-auth.js";
 import { startPgBoss } from "../events/pgboss.js";
 import { startOutboxRelay, type OutboxRelayHandle } from "../events/outbox-relay.js";
+import { connectNatsFanout, type NatsFanoutHandle } from "../events/nats-fanout.js";
 import type PgBoss from "pg-boss";
 import type { AppDeps } from "../types.js";
+import { SubprocessPluginHost, type PluginHostOptions } from "../plugin-host/host.js";
+import { startReconcileLoop, type ReconcileLoopHandle } from "../coordination/reconcile.js";
+import { startWatchdogLoop, type WatchdogLoopHandle } from "../coordination/watchdog.js";
+import {
+  DEFAULT_EXECUTOR_INSTANCE_ID,
+  DEFAULT_EXECUTOR_MODULE,
+  SHARED_PLUGIN_INSTANCE_DOMAIN_ID,
+  SHARED_PLUGIN_INSTANCE_ORG_ID
+} from "../coordination/executor-config.js";
 
 /**
  * Admin/superuser URL — set by test-support/global-setup.ts (Vitest `globalSetup` — process.env
@@ -42,6 +55,21 @@ export function testRuntimeDatabaseUrl(): string {
   return url;
 }
 
+/**
+ * Schema-scoped `scp_pgboss` login-role URL — what pg-boss connects as under test (M3 tracked
+ * security follow-up), and what `pgboss-role.integration.test.ts` connects as directly to probe
+ * it.
+ */
+export function testPgBossDatabaseUrl(): string {
+  const url = process.env.TEST_PGBOSS_DATABASE_URL;
+  if (!url) {
+    throw new Error(
+      "TEST_PGBOSS_DATABASE_URL is unset — integration tests must run via `vitest.integration.config.ts` (globalSetup provisions the scp_pgboss login role)."
+    );
+  }
+  return url;
+}
+
 export interface TestServer {
   app: FastifyInstance;
   deps: AppDeps;
@@ -57,6 +85,7 @@ export async function buildTestServer(): Promise<TestServer> {
   const config = loadConfig({
     DATABASE_URL: testDatabaseUrl(),
     SCP_RUNTIME_DATABASE_URL: testRuntimeDatabaseUrl(),
+    SCP_PGBOSS_DATABASE_URL: testPgBossDatabaseUrl(),
     SCP_COOKIE_SECRET: "test-cookie-secret-value"
   });
   const pool = createPool(config.runtimeDatabaseUrl);
@@ -76,6 +105,11 @@ export async function buildTestServer(): Promise<TestServer> {
 
 export interface ListeningTestServer extends TestServer {
   baseUrl: string;
+  /** Only set when `opts.withReconcileLoop` — the plugin host driving whatever fake-executor
+   *  instance the reconciliation loop triggers wave targets against. Integration tests use this
+   *  directly (e.g. `pluginHost` internals via `killExecutorSubprocess` below) to exercise the
+   *  plugin-host isolation DoD scenario. */
+  pluginHost?: SubprocessPluginHost;
 }
 
 /**
@@ -88,9 +122,34 @@ export interface ListeningTestServer extends TestServer {
  * actually reach `sseHub`/`GET /events/stream` — `buildApp` alone never starts either, so SSE
  * stays silent without this. Off by default: most callers of `listenTestServer` don't need a
  * live event pipeline, and pg-boss provisioning its own schema on every boot isn't free.
+ *
+ * `natsUrl` mirrors main.ts's `config.eventBus.backend === "nats"` branch: when set (only the
+ * NATS-backend half of events/event-bus.integration.test.ts's shared suite passes this), the
+ * relay ALSO fans relayed outbox rows out to a real JetStream stream, exactly as it would in
+ * production with `SCP_EVENT_BUS_BACKEND=nats`. `undefined` (every other caller) leaves the relay
+ * exactly as it's always behaved — no NATS connection is ever attempted.
+ *
+ * `withReconcileLoop: true` (requires `withEventRelay: true` — the loop needs `boss`) starts the
+ * M3 coordination engine exactly as main.ts does: a `SubprocessPluginHost` with one fake-executor
+ * instance, the self-re-scheduling reconcile tick, AND (CRITICAL #1 fix, PR #7 review) the
+ * watchdog sweep loop — main.ts starts both under the same `role === "all" || "worker"` guard, so
+ * this mirrors that exactly rather than needing a separate flag. `pluginHostOptions` lets a test
+ * tighten timeouts/backoff (the production defaults are tuned for real workloads, not fast test
+ * iteration); `watchdogIntervalSeconds` similarly overrides the production default (60s) for tests
+ * that want more than one real sweep within a reasonable test timeout — the loop's very first
+ * sweep still fires immediately on start regardless, so most tests need neither.
+ * `reconcileTickIntervalOverrideMs` isn't exposed — tests instead just poll (`waitUntil`,
+ * coordination.integration.test.ts) since `RECONCILE_TICK_INTERVAL_SECONDS` (1s) is already fast
+ * enough not to dominate test runtime.
  */
 export async function listenTestServer(
-  opts: { withEventRelay?: boolean } = {}
+  opts: {
+    withEventRelay?: boolean;
+    natsUrl?: string;
+    withReconcileLoop?: boolean;
+    pluginHostOptions?: PluginHostOptions;
+    watchdogIntervalSeconds?: number;
+  } = {}
 ): Promise<ListeningTestServer> {
   const server = await buildTestServer();
   const address = await server.app.listen({ port: 0, host: "127.0.0.1" });
@@ -98,21 +157,54 @@ export async function listenTestServer(
   let boss: PgBoss | undefined;
   let relay: OutboxRelayHandle | undefined;
   let relayPool: pg.Pool | undefined;
+  let natsFanout: NatsFanoutHandle | undefined;
+  let pluginHost: SubprocessPluginHost | undefined;
+  let reconcileLoop: ReconcileLoopHandle | undefined;
+  let watchdogLoop: WatchdogLoopHandle | undefined;
   if (opts.withEventRelay) {
-    boss = await startPgBoss(server.deps.config.databaseUrl);
+    boss = await startPgBoss(server.deps.config.pgBossDatabaseUrl);
+    if (opts.natsUrl) {
+      natsFanout = await connectNatsFanout(opts.natsUrl);
+    }
     // A separate pool from the app's own `deps.db` connection — mirrors main.ts's `pool`, which
     // the relay also owns independently of the request-serving pool.
     relayPool = createPool(server.deps.config.runtimeDatabaseUrl);
-    relay = startOutboxRelay(relayPool, server.deps.config.runtimeDatabaseUrl, boss);
+    relay = startOutboxRelay(relayPool, server.deps.config.runtimeDatabaseUrl, boss, {
+      eventBusBackend: opts.natsUrl ? "nats" : "postgres",
+      natsFanout
+    });
+
+    if (opts.withReconcileLoop) {
+      const stateDir = await mkdtemp(join(tmpdir(), "scp-test-fake-executor-"));
+      pluginHost = new SubprocessPluginHost(opts.pluginHostOptions);
+      await pluginHost.start([
+        {
+          id: DEFAULT_EXECUTOR_INSTANCE_ID,
+          module: DEFAULT_EXECUTOR_MODULE,
+          orgId: SHARED_PLUGIN_INSTANCE_ORG_ID,
+          domainId: SHARED_PLUGIN_INSTANCE_DOMAIN_ID,
+          config: { statePath: join(stateDir, "fake-executor-state.json"), autoSucceedAfterMs: 50 }
+        }
+      ]);
+      reconcileLoop = await startReconcileLoop(boss, server.deps.db, pluginHost);
+      watchdogLoop = await startWatchdogLoop(boss, server.deps.db, {
+        intervalSeconds: opts.watchdogIntervalSeconds
+      });
+    }
   }
 
   return {
     ...server,
     baseUrl: `${address}/api/v1`,
+    pluginHost,
     close: async () => {
+      await reconcileLoop?.stop();
+      await watchdogLoop?.stop();
+      await pluginHost?.stop();
       await relay?.stop();
       await boss?.stop({ graceful: false, timeout: 1000 }).catch(() => undefined);
       await relayPool?.end();
+      await natsFanout?.close().catch(() => undefined);
       await server.close();
     }
   };
@@ -278,5 +370,63 @@ export class RawScpAppClient {
 
   async close(): Promise<void> {
     await this.client.end();
+  }
+}
+
+/**
+ * A raw `pg.Client` that AUTHENTICATES as the schema-scoped `scp_pgboss` login role — the exact
+ * identity pg-boss itself connects as (M3 tracked security follow-up, drizzle/0008_pgboss_role
+ * .sql). Used by `pgboss-role.integration.test.ts` to probe the database directly: proving the
+ * role can operate inside the `pgboss` schema, and proving it has NO grant at all on `public`'s
+ * tenant tables (objects/relationships/role_bindings/changes).
+ */
+export class RawScpPgBossClient {
+  private constructor(private readonly client: pg.Client) {}
+
+  static async connect(): Promise<RawScpPgBossClient> {
+    const client = new pg.Client({ connectionString: testPgBossDatabaseUrl() });
+    await client.connect();
+    return new RawScpPgBossClient(client);
+  }
+
+  async query<T extends pg.QueryResultRow = pg.QueryResultRow>(text: string, params?: unknown[]) {
+    return this.client.query<T>(text, params);
+  }
+
+  async close(): Promise<void> {
+    await this.client.end();
+  }
+}
+
+/**
+ * Polls `check()` until it returns truthy or `timeoutMs` elapses (then throws, the last-seen
+ * error folded into the failure message). The M3 coordination engine (coordination/reconcile.ts)
+ * advances changes asynchronously off a ~1s self-scheduling pg-boss tick — every coordination
+ * integration test that asserts "eventually the change reaches state X" polls for it with this
+ * rather than a fixed `sleep`, so the suite is exactly as slow as the engine actually is and
+ * never flaky-fast on a loaded CI box.
+ */
+export async function waitUntil<T>(
+  check: () => Promise<T | undefined | null | false>,
+  opts: { timeoutMs?: number; intervalMs?: number; describe: string }
+): Promise<T> {
+  const timeoutMs = opts.timeoutMs ?? 15_000;
+  const intervalMs = opts.intervalMs ?? 100;
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  for (;;) {
+    try {
+      const result = await check();
+      if (result) return result;
+    } catch (err) {
+      lastError = err;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `waitUntil timed out after ${timeoutMs}ms waiting for: ${opts.describe}` +
+          (lastError ? ` — last error: ${lastError instanceof Error ? lastError.message : String(lastError)}` : "")
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
 }

@@ -352,6 +352,230 @@ export const plans = pgTable(
 );
 
 // -------------------------------------------------------------------------------------------
+// M3 Change Coordination Engine (DESIGN.md §9, §10.4, BUILD_AND_TEST.md §8 M3). Hand-authored
+// grants/RLS/seed data in drizzle/0007_change_coordination.sql (same pattern as 0002/0005).
+//
+// `changes` is the projection table DESIGN §9.1 specifies verbatim, plus M3 additions: watchdog
+// bookkeeping (`state_entered_at`/`last_heartbeat_at`/`watchdog_flagged_at` — §9.4), the
+// compiled-plan's topology pin, and rollback linkage (a rollback is its OWN Change row,
+// `rollback_of_object_id` pointing at the change it reverts — §9.4).
+// -------------------------------------------------------------------------------------------
+
+export const changes = pgTable(
+  "changes",
+  {
+    objectId: uuid("object_id").primaryKey(), // references objects(id) — FK added in migration
+    orgId: uuid("org_id").notNull(),
+    state: text("state").notNull().default("proposed"),
+    sourceKind: text("source_kind"), // github|argocd|terraform|manual|federation|rollback
+    sourceRef: jsonb("source_ref"), // {repo, ref, commit, run_url, workspace, artifact_digest, ...}
+    correlationKey: text("correlation_key"),
+    emergency: boolean("emergency").notNull().default(false),
+    importedFromDomain: uuid("imported_from_domain"),
+    /** The release-topology object (+ its document version, pinned) this change compiled against. */
+    topologyObjectId: uuid("topology_object_id"),
+    topologyVersion: bigint("topology_version", { mode: "number" }),
+    /** Set when this Change IS a rollback — DESIGN §9.4 "a rollback is its own Change, linked to the original". */
+    rollbackOfObjectId: uuid("rollback_of_object_id"),
+    rollbackTriggerReason: text("rollback_trigger_reason"),
+    // Watchdog (DESIGN §9.4): `state_entered_at` resets on every legal transition; the sweep
+    // flags changes with no progress within their per-state SLA (coordination/watchdog.ts).
+    stateEnteredAt: timestamp("state_entered_at", { withTimezone: true }).notNull().defaultNow(),
+    lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }).notNull().defaultNow(),
+    watchdogFlaggedAt: timestamp("watchdog_flagged_at", { withTimezone: true }),
+    /**
+     * MAJOR #6 fix (PR #7 review — "batch starvation"): set by `coordination/reconcile.ts` when
+     * an `executing` change's active wave has `failed` and is awaiting an operator's manual
+     * cancel/rollback (M3 has no auto-retry). That branch never otherwise touches `changes` at
+     * all, so `updated_at` would sit frozen forever and — under `listChangeRowsInStates`'s
+     * oldest-`updated_at`-first, capped batch — 25+ such parked changes would sort ahead of every
+     * newer, genuinely-progressing `executing` change and starve it out of every batch
+     * indefinitely. `listChangeRowsInStates` filters this column `IS NULL`, so a parked change
+     * simply stops occupying batch slots until an operator acts (via the API directly, never
+     * through this batch listing — see reconcile.ts's doc comment on the `failed` branch).
+     */
+    reconcileBlockedAt: timestamp("reconcile_blocked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    index("changes_org_state").on(table.orgId, table.state),
+    index("changes_org_state_entered").on(table.orgId, table.state, table.stateEnteredAt),
+    index("changes_rollback_of").on(table.orgId, table.rollbackOfObjectId),
+    index("changes_org_created").on(table.orgId, table.createdAt, table.objectId)
+  ]
+);
+
+/**
+ * Legal lifecycle edges — DESIGN §9.1 "Legal transitions are data". This table mirrors
+ * `coordination/transitions.ts`'s `LEGAL_TRANSITIONS` constant exactly (seeded in the migration,
+ * cross-checked by an integration test) so the state machine's shape is queryable data, not just
+ * an in-process constant — while `coordination/transition.ts`'s guarded transition function uses
+ * the pure TS function as its legality gate (BUILD_AND_TEST.md §4.1: "anything testable as a pure
+ * function must be written as a pure function" — the exhaustive unit test needs no Docker).
+ */
+export const stateTransitions = pgTable(
+  "state_transitions",
+  {
+    fromState: text("from_state").notNull(),
+    toState: text("to_state").notNull(),
+    trigger: text("trigger").notNull()
+  },
+  (table) => [uniqueIndex("state_transitions_pk").on(table.fromState, table.toState)]
+);
+
+/**
+ * The gate-binding SEAM (BUILD_AND_TEST.md §8 M3 item 1: "gates are minimal here — M4 adds
+ * policy/controls; model the binding seam now"). Nothing in M3 writes rows here (no API exposes
+ * it yet — that's M4's policy engine); `coordination/gates.ts` queries it and, finding none,
+ * always returns an `allow` verdict. The shape exists so M4 can bind real controls to a
+ * lifecycle edge or a wave boundary without redesigning the guarded transition function.
+ */
+export const gateBindings = pgTable(
+  "gate_bindings",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    scopeKind: text("scope_kind").notNull(), // 'lifecycle_edge' | 'wave_boundary'
+    fromState: text("from_state"),
+    toState: text("to_state"),
+    topologyObjectId: uuid("topology_object_id"),
+    waveIndex: bigint("wave_index", { mode: "number" }),
+    controlRefs: jsonb("control_refs").notNull().default([]),
+    enforcement: text("enforcement").notNull().default("required"), // advisory|recommended|required
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [index("gate_bindings_org_edge").on(table.orgId, table.fromState, table.toState)]
+);
+
+/**
+ * Decision records (DESIGN §10.4) — the explainability funnel. Every engine verdict (lifecycle
+ * transition, gate check, watchdog flag, rollback trigger, plan compile) persists exactly one of
+ * these with its full input context and a structured reason tree, independent of whether the
+ * verdict allowed or blocked anything.
+ */
+export const decisions = pgTable(
+  "decisions",
+  {
+    id: uuid("id").primaryKey(), // UUIDv7
+    orgId: uuid("org_id").notNull(),
+    kind: text("kind").notNull(), // gate|policy|freeze|rollback_trigger|plan_diff|promotion|transition|watchdog
+    subjectId: uuid("subject_id").notNull(), // the change/plan/etc decided about
+    verdict: text("verdict").notNull(), // allow|block|warn|rollback|escalate|...
+    inputContext: jsonb("input_context").notNull(),
+    reasonTree: jsonb("reason_tree").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    index("decisions_org_subject").on(table.orgId, table.subjectId, table.createdAt),
+    index("decisions_org_created").on(table.orgId, table.createdAt, table.id)
+  ]
+);
+
+/**
+ * Correlation (DESIGN §9.2): repo/path pattern -> component, matched against executor event
+ * correlation hints (repo, path, commit SHA, artifact digest, labels, explicit correlation key).
+ */
+export const sourceMappings = pgTable(
+  "source_mappings",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    sourceKind: text("source_kind").notNull(), // github|argocd|terraform|manual|...
+    repoPattern: text("repo_pattern"), // glob, matched against source_ref.repo
+    pathPattern: text("path_pattern"), // glob, matched against source_ref.path (optional)
+    componentObjectId: uuid("component_object_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [index("source_mappings_org_source").on(table.orgId, table.sourceKind)]
+);
+
+/**
+ * Webhook ingress: persist-then-process (DESIGN §8 "Webhook ingestion: raw payload persisted
+ * first (signature-verified), then processed as an event — replayable and auditable"). The route
+ * handler only verifies the signature and inserts a row; `coordination/webhook-processor.ts`
+ * (invoked via pg-boss, same tick loop as reconciliation) turns unprocessed rows into Changes.
+ */
+export const changeSourceEvents = pgTable(
+  "change_source_events",
+  {
+    id: uuid("id").primaryKey(), // UUIDv7 — doubles as an idempotency key for re-delivery
+    orgId: uuid("org_id").notNull(),
+    sourceKind: text("source_kind").notNull(),
+    signatureVerified: boolean("signature_verified").notNull().default(false),
+    headers: jsonb("headers").notNull(),
+    payload: jsonb("payload").notNull(),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+    resultingChangeObjectId: uuid("resulting_change_object_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [index("change_source_events_unprocessed").on(table.processedAt, table.createdAt)]
+);
+
+/**
+ * Plan -> waves -> wave_targets ROWS (DESIGN §9.3) — the compiled execution shape of a Change.
+ * Named `change_*` to avoid colliding with M2's unrelated `plans` table (`@scp/iac` desired-state
+ * plan/apply). `topology_document` is a snapshot of the release topology at compile time (not a
+ * live FK dereference) so a later topology edit never retroactively changes an in-flight plan —
+ * consistent with DESIGN §10.1's "policies are versioned documents" pinning pattern.
+ */
+export const changePlans = pgTable(
+  "change_plans",
+  {
+    id: uuid("id").primaryKey(), // UUIDv7
+    orgId: uuid("org_id").notNull(),
+    changeObjectId: uuid("change_object_id").notNull(),
+    topologyObjectId: uuid("topology_object_id"),
+    topologyVersion: bigint("topology_version", { mode: "number" }),
+    topologyDocument: jsonb("topology_document"),
+    status: text("status").notNull().default("compiled"), // compiled|active|completed|aborted
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [index("change_plans_org_change").on(table.orgId, table.changeObjectId)]
+);
+
+export const changeWaves = pgTable(
+  "change_waves",
+  {
+    id: uuid("id").primaryKey(), // UUIDv7
+    orgId: uuid("org_id").notNull(),
+    planId: uuid("plan_id").notNull(),
+    waveIndex: bigint("wave_index", { mode: "number" }).notNull(),
+    name: text("name"),
+    /** Fan-in gate (DESIGN §9.3): true unless the topology explicitly marks a wave as not gated. */
+    requiresFanIn: boolean("requires_fan_in").notNull().default(true),
+    status: text("status").notNull().default("pending"), // pending|running|succeeded|failed|skipped
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true })
+  },
+  (table) => [index("change_waves_org_plan").on(table.orgId, table.planId, table.waveIndex)]
+);
+
+export const changeWaveTargets = pgTable(
+  "change_wave_targets",
+  {
+    id: uuid("id").primaryKey(), // UUIDv7
+    orgId: uuid("org_id").notNull(),
+    waveId: uuid("wave_id").notNull(),
+    targetObjectId: uuid("target_object_id").notNull(),
+    executorPluginId: text("executor_plugin_id"),
+    executorRef: jsonb("executor_ref"), // ExternalRunRef once triggered
+    /** Captured before trigger — what a rollback of this wave target would restore (DESIGN §9.4). */
+    priorStateRef: jsonb("prior_state_ref"),
+    status: text("status").notNull().default("pending"), // pending|triggering|triggered|observing|succeeded|failed|aborted
+    attempt: bigint("attempt", { mode: "number" }).notNull().default(0),
+    lastObservedAt: timestamp("last_observed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    index("change_wave_targets_org_wave").on(table.orgId, table.waveId),
+    index("change_wave_targets_org_target").on(table.orgId, table.targetObjectId)
+  ]
+);
+
+// -------------------------------------------------------------------------------------------
 // Idempotency-Key replay (DESIGN.md §6)
 // -------------------------------------------------------------------------------------------
 

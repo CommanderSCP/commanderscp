@@ -16,6 +16,17 @@ export interface ServerConfig {
    * override with SCP_RUNTIME_DATABASE_URL when the role is managed externally.
    */
   runtimeDatabaseUrl: string;
+  /**
+   * The connection pg-boss itself uses to manage its own `pgboss` schema (job/queue tables) —
+   * authenticates as the schema-scoped `scp_pgboss` login role (NOSUPERUSER, NOBYPASSRLS, owns
+   * only the `pgboss` schema, no grants on `public` at all — drizzle/0008_pgboss_role.sql). M3
+   * tracked security follow-up: pg-boss previously ran on `databaseUrl` (the admin/superuser
+   * connection) to perform its internal schema migrations at boot; this closes that gap the same
+   * way `runtimeDatabaseUrl` closed it for the request-serving pool. Defaults to `databaseUrl`
+   * with the user swapped to `scp_pgboss` (same password); override with
+   * SCP_PGBOSS_DATABASE_URL when the role is managed externally.
+   */
+  pgBossDatabaseUrl: string;
   role: "all" | "api" | "worker";
   bootstrapOrgName: string;
   bootstrapAdminUsername: string;
@@ -45,6 +56,19 @@ export interface ServerConfig {
     /** Must exactly match what's registered at the IdP. */
     redirectUri: string;
     scopes: string;
+  };
+  /**
+   * `EventBus` backend toggle (DESIGN.md §8 "Scaling insurance", BUILD_AND_TEST.md M3 item 8).
+   * `"postgres"` (the default — `SCP_EVENT_BUS_BACKEND` unset) is the untouched, zero-new-dependency
+   * path: the transactional outbox relay fans out to pg-boss + SSE only, exactly as it always has.
+   * `"nats"` is an explicit opt-in that ALSO fans relayed outbox events out to NATS JetStream
+   * (events/nats-fanout.ts) — never a *required* dependency (CLAUDE.md principle 4). `publish()`
+   * itself (events/event-bus.ts) is identical for both backends; see that file's doc comment.
+   */
+  eventBus: {
+    backend: "postgres" | "nats";
+    /** Required when `backend === "nats"`; validated below. e.g. `nats://localhost:4222`. */
+    natsUrl?: string;
   };
 }
 
@@ -81,6 +105,27 @@ function loadOidcConfig(env: NodeJS.ProcessEnv): ServerConfig["oidc"] {
   };
 }
 
+/**
+ * `postgres` (SCP_EVENT_BUS_BACKEND unset) is the default — no NATS connection is ever attempted.
+ * Opting into `nats` without `SCP_NATS_URL` is a misconfiguration worth failing loudly at boot
+ * (mirrors `loadOidcConfig` above) rather than silently falling back to Postgres-only fan-out or
+ * deferring the failure to the first missed event. Actual reachability isn't checked here (this
+ * function does no I/O) — that happens when the relay connects the JetStream client at boot
+ * (main.ts) / per-test (test-support/harness.ts), where a failed `connect()` is likewise left to
+ * throw rather than being caught and swallowed.
+ */
+function loadEventBusConfig(env: NodeJS.ProcessEnv): ServerConfig["eventBus"] {
+  const backend = env.SCP_EVENT_BUS_BACKEND ?? "postgres";
+  if (backend !== "postgres" && backend !== "nats") {
+    throw new Error(`SCP_EVENT_BUS_BACKEND must be "postgres" or "nats" (got "${backend}")`);
+  }
+  const natsUrl = env.SCP_NATS_URL;
+  if (backend === "nats" && !natsUrl) {
+    throw new Error("SCP_EVENT_BUS_BACKEND=nats requires SCP_NATS_URL to be set");
+  }
+  return { backend, natsUrl };
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const port = Number(env.PORT ?? 8080);
   const host = env.HOST ?? "0.0.0.0";
@@ -90,12 +135,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     host,
     databaseUrl,
     runtimeDatabaseUrl: env.SCP_RUNTIME_DATABASE_URL ?? deriveRuntimeDatabaseUrl(databaseUrl),
+    pgBossDatabaseUrl:
+      env.SCP_PGBOSS_DATABASE_URL ?? deriveRuntimeDatabaseUrl(databaseUrl, "scp_pgboss"),
     role: (env.SCP_ROLE as ServerConfig["role"] | undefined) ?? "all",
     bootstrapOrgName: env.SCP_BOOTSTRAP_ORG ?? "default",
     bootstrapAdminUsername: env.SCP_BOOTSTRAP_ADMIN_USERNAME ?? "admin",
     cookieSecret: env.SCP_COOKIE_SECRET ?? randomSecret(),
     internalBaseUrl: env.SCP_INTERNAL_BASE_URL ?? `http://127.0.0.1:${port}/api/v1`,
     seedDemo: env.SCP_SEED_DEMO === "true",
-    oidc: loadOidcConfig(env)
+    oidc: loadOidcConfig(env),
+    eventBus: loadEventBusConfig(env)
   };
 }

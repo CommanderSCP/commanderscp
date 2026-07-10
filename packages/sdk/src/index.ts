@@ -39,3 +39,23 @@ export type {
 // M2 stage 3: `@scp/iac` server-side plan/apply (BUILD_AND_TEST.md §8 M2 item 4).
 export type { ApplyPlanResponse, DesiredStateManifest, Plan, PlanDiff } from "@scp/schemas";
 export { DesiredStateManifestSchema } from "@scp/schemas";
+
+// M3: the Change lifecycle + Decision records + change sources (BUILD_AND_TEST.md §8 M3).
+export type {
+  Change,
+  ChangeState,
+  ChangeListQuery,
+  ChangeListResponse,
+  ChangePlan,
+  ChangeWave,
+  ChangeWaveTarget,
+  ChangeExplainResponse,
+  CreateChangeRequest,
+  Decision,
+  DecisionListQuery,
+  DecisionListResponse,
+  CreateSourceMappingRequest,
+  SourceMapping,
+  SourceMappingListResponse,
+  WebhookIngressResponse
+} from "@scp/schemas";

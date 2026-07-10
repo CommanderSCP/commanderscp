@@ -37,8 +37,10 @@ export function badRequest(detail?: string): ProblemError {
   return new ProblemError(400, "Bad Request", { detail });
 }
 
-export function conflict(detail?: string): ProblemError {
-  return new ProblemError(409, "Conflict", { detail });
+/** `decisionId` lets guarded-transition blocks (coordination/transition.ts) carry `decision_id`
+ *  on the 409 they turn into — DESIGN.md §6/§10.4: "every blocked response carries a decision_id". */
+export function conflict(detail?: string, opts: { decisionId?: string } = {}): ProblemError {
+  return new ProblemError(409, "Conflict", { detail, decisionId: opts.decisionId });
 }
 
 export function preconditionFailed(detail?: string): ProblemError {
