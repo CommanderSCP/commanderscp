@@ -311,7 +311,7 @@ export function ChangeDetailPage(): React.JSX.Element {
     );
   }
 
-  const { change, plan, decisions } = explainQuery.data;
+  const { change, plan, decisions, controlRuns } = explainQuery.data;
   const canCancel = CANCELLABLE_STATES.includes(change.state);
   const canPromote = PROMOTABLE_STATES.includes(change.state);
   const canRollback = ROLLBACKABLE_STATES.includes(change.state);
@@ -460,6 +460,43 @@ export function ChangeDetailPage(): React.JSX.Element {
           )}
         </CardContent>
       </Card>
+
+      {controlRuns.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Control runs</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {/* Evidence lives here, not on the Decision above — the Decision only ever carries
+                the outcome STATUS per control (reasonTree.policies[].effects[].detail); joined by
+                controlObjectId, this is the other half of "explain reconstructs policy version +
+                control outcome + evidence" (DESIGN §10.4). */}
+            <ul className="flex flex-col gap-3" data-testid="control-run-list">
+              {controlRuns.map((run) => (
+                <li
+                  key={run.id}
+                  className="rounded border border-slate-200 p-3 text-sm"
+                  data-testid="control-run-row"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-xs text-slate-900">{run.controlObjectId}</span>
+                    <Badge variant={run.status === "pass" ? "success" : run.status === "warning" ? "info" : "destructive"}>
+                      {run.status}
+                    </Badge>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-500">{formatDate(run.createdAt)}</p>
+                  {run.detail && <p className="mt-1 text-slate-600">{run.detail}</p>}
+                  {Object.keys(run.evidence).length > 0 && (
+                    <pre className="mt-1 overflow-x-auto rounded bg-slate-50 p-2 text-xs text-slate-600">
+                      {JSON.stringify(run.evidence, null, 2)}
+                    </pre>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
 
       <TransitionReasonDialog
         open={cancelOpen}

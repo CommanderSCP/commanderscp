@@ -8789,6 +8789,18 @@ export type ExplainChangeResponses = {
             };
             createdAt: string;
         }>;
+        controlRuns: Array<{
+            id: string;
+            controlObjectId: string;
+            changeObjectId: string;
+            status: 'pass' | 'fail' | 'warning' | 'skipped' | 'timed_out' | 'expired';
+            evidence: {
+                [key: string]: unknown;
+            };
+            detail: string | null;
+            decisionId: string | null;
+            createdAt: string;
+        }>;
     };
 };
 

@@ -25,6 +25,7 @@ import type { GateDeps } from "../coordination/gates.js";
 import { triggerRollback } from "../coordination/rollback.js";
 import { getLatestPlanForChange } from "../coordination/plan-service.js";
 import { getDecision, listDecisions, listDecisionsForSubject } from "../coordination/decisions-repo.js";
+import { listControlRunsForChange } from "../governance/controls-repo.js";
 import { conflict } from "../errors.js";
 
 /**
@@ -186,11 +187,26 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
           scopeObjectId: auth.orgId
         });
         const change = await getChange(tx, auth.orgId, request.params.id);
-        const [plan, decisions] = await Promise.all([
+        const [plan, decisions, controlRuns] = await Promise.all([
           getLatestPlanForChange(tx, auth.orgId, request.params.id),
-          listDecisionsForSubject(tx, auth.orgId, request.params.id)
+          listDecisionsForSubject(tx, auth.orgId, request.params.id),
+          listControlRunsForChange(tx, auth.orgId, request.params.id)
         ]);
-        return { change, plan, decisions };
+        return {
+          change,
+          plan,
+          decisions,
+          controlRuns: controlRuns.map((r) => ({
+            id: r.id,
+            controlObjectId: r.controlObjectId,
+            changeObjectId: r.changeObjectId,
+            status: r.status,
+            evidence: r.evidence,
+            detail: r.detail,
+            decisionId: r.decisionId,
+            createdAt: r.createdAt.toISOString()
+          }))
+        };
       });
       reply.status(200).send(result);
     }

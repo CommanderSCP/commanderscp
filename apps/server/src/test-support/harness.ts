@@ -149,6 +149,13 @@ export async function listenTestServer(
     withReconcileLoop?: boolean;
     pluginHostOptions?: PluginHostOptions;
     watchdogIntervalSeconds?: number;
+    /** Merged into the shared fake-executor instance's config (default is just `{statePath,
+     *  autoSucceedAfterMs: 50}`) — lets a test set `FakeExecutorConfig.forcePhase` to
+     *  deterministically fail a specific, test-known target object id (create the target with an
+     *  explicit `id:` so it's known before the server — and therefore the plugin instance — ever
+     *  boots). Used by governance.integration.test.ts's M4 automatic-rollback-on-failure suite;
+     *  every other caller leaves this unset and gets ordinary auto-succeeding targets. */
+    fakeExecutorConfig?: Record<string, unknown>;
   } = {}
 ): Promise<ListeningTestServer> {
   const server = await buildTestServer();
@@ -183,7 +190,11 @@ export async function listenTestServer(
           module: DEFAULT_EXECUTOR_MODULE,
           orgId: SHARED_PLUGIN_INSTANCE_ORG_ID,
           domainId: SHARED_PLUGIN_INSTANCE_DOMAIN_ID,
-          config: { statePath: join(stateDir, "fake-executor-state.json"), autoSucceedAfterMs: 50 }
+          config: {
+            statePath: join(stateDir, "fake-executor-state.json"),
+            autoSucceedAfterMs: 50,
+            ...opts.fakeExecutorConfig
+          }
         }
       ]);
       reconcileLoop = await startReconcileLoop(boss, server.deps.db, pluginHost, server.deps.celSandbox!);

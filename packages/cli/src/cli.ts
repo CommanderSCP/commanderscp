@@ -267,7 +267,7 @@ function printExplainResult(result: ChangeExplainResponse, output: OutputFormat)
     return;
   }
 
-  const { change, plan, decisions } = result;
+  const { change, plan, decisions, controlRuns } = result;
   console.log(`Change ${change.id} '${change.name}' — state: ${change.state}`);
 
   if (plan) {
@@ -291,6 +291,20 @@ function printExplainResult(result: ChangeExplainResponse, output: OutputFormat)
         ? (decision.reasonTree["summary"] as string)
         : JSON.stringify(decision.reasonTree);
     console.log(`  [${decision.createdAt}] ${decision.kind} -> ${decision.verdict}: ${summary}`);
+  }
+
+  // DESIGN §10.4 / BUILD_AND_TEST M4 flagship E2E: "explain reconstructs policy version + control
+  // outcome + evidence" — the Decisions above already carry policy version + outcome status
+  // (reasonTree.policies[].contributingPolicyVersions / effects[].detail), but the actual evidence
+  // payload only ever lives on the control_run row itself, joined by controlObjectId.
+  if (controlRuns.length > 0) {
+    console.log(`\nControl runs (${controlRuns.length}):`);
+    for (const run of controlRuns) {
+      console.log(`  [${run.createdAt}] control ${run.controlObjectId} -> ${run.status}${run.detail ? `: ${run.detail}` : ""}`);
+      if (Object.keys(run.evidence).length > 0) {
+        console.log(`    evidence: ${JSON.stringify(run.evidence)}`);
+      }
+    }
   }
 }
 
