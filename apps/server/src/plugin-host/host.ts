@@ -56,8 +56,24 @@ import {
   type RpcMessage
 } from "./rpc-protocol.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_SUBPROCESS_ENTRY_PATH = path.resolve(__dirname, "subprocess-entry.js");
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+/**
+ * When THIS module is itself executing as compiled JS (production `node dist/main.js`), the
+ * compiled sibling `subprocess-entry.js` sits right next to it. But when this module is executing
+ * as TS source directly — `tsx watch src/main.ts` in dev, or vitest's on-the-fly TS transform for
+ * every `*.test.ts` — there is no compiled sibling to find, and the correct default is to run the
+ * `.ts` entry point through the same `tsx` loader this process itself is already running under
+ * (see `spawnInstance`'s `--import tsx` below). `import.meta.url` reliably keeps the ORIGINAL
+ * source extension under both tsx and vite-node, so checking it is a robust signal, not a
+ * heuristic — this is NOT a "which file happens to exist on disk" check (dist/ can be stale or
+ * absent in dev) but a "how was I, this very module, loaded" check.
+ */
+const RUNNING_FROM_SOURCE = __filename.endsWith(".ts");
+const DEFAULT_SUBPROCESS_ENTRY_PATH = path.resolve(
+  __dirname,
+  RUNNING_FROM_SOURCE ? "subprocess-entry.ts" : "subprocess-entry.js"
+);
 
 export interface PluginHostOptions {
   /** Per-call RPC budget (ms), including any wait-for-ready + one transparent retry. Default 10s. */
@@ -221,9 +237,18 @@ export class SubprocessPluginHost implements PluginHost {
       SCP_PLUGIN_DOMAIN_ID: instance.config.domainId,
       SCP_PLUGIN_CONFIG_JSON: JSON.stringify(instance.config.config ?? {})
     };
+    // A `.ts` entry path (dev/test — see the module-level comment on `RUNNING_FROM_SOURCE`, or an
+    // explicit test override) needs the `tsx` loader registered; the compiled `.js` production
+    // path needs nothing extra. `tsx` resolves from node_modules exactly like any other import, so
+    // this works whether the child's cwd is the repo root (tests) or apps/server (`pnpm dev`).
+    const entryIsTypeScript = this.opts.subprocessEntryPath.endsWith(".ts");
     const child = spawn(
       this.opts.nodeExecutable,
-      [`--max-old-space-size=${this.opts.maxOldSpaceMb}`, this.opts.subprocessEntryPath],
+      [
+        `--max-old-space-size=${this.opts.maxOldSpaceMb}`,
+        ...(entryIsTypeScript ? ["--import", "tsx"] : []),
+        this.opts.subprocessEntryPath
+      ],
       { env, stdio: ["pipe", "pipe", "pipe"] }
     ) as ChildProcessWithoutNullStreams;
 
