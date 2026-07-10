@@ -176,6 +176,11 @@ export const objects = pgTable(
     originDomainId: uuid("origin_domain_id").notNull(),
     revision: bigint("revision", { mode: "number" }).notNull().default(1),
     contentHash: text("content_hash").notNull(),
+    // M6 (DESIGN.md §13): NULL = normally authored/imported-and-confirmed row. 'manual' = a
+    // hand-filled shadow copy of a parent-origin object entered via `scp federation hand-fill`
+    // for an air-gapped child with no bundle transport available yet — unverified until a signed
+    // bundle later arrives and `federation/reconcile.ts` confirms or replaces it (DESIGN §13).
+    provenance: text("provenance"),
     // lifecycle
     version: bigint("version", { mode: "number" }).notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -816,6 +821,166 @@ export const campaignWaveTargets = pgTable(
     index("campaign_wave_targets_org_target").on(table.orgId, table.targetObjectId),
     index("campaign_wave_targets_org_member_change").on(table.orgId, table.memberChangeObjectId)
   ]
+);
+
+// -------------------------------------------------------------------------------------------
+// M6 Federation (DESIGN.md §13, BUILD_AND_TEST.md §8 M6). Hand-authored grants/RLS in
+// drizzle/0012_federation.sql (same pattern as 0002/0007/0010/0011).
+//
+// SCOPING DECISION (M6 PR body): DESIGN.md's federation "domain" means a whole SCP instance (a
+// Domain Control Plane) — a different concept from the pre-existing `domain` OBJECT TYPE (an
+// org-internal containment node under which services/components live). This schema keeps
+// federation identity/peers/journal ORG-SCOPED (one federation self-identity + peer set per org,
+// same `org_isolation` RLS every other tenant table gets) rather than instance-wide the way
+// `instance_keys` is, because the sync journal is derived from the per-org outbox/audit stream
+// and every row it carries (`objects`/`relationships`/`changes`/policy/approval rows) is already
+// org_id-scoped end to end. Per the charter ("MSPs needing hard isolation run one instance per
+// customer"), one org per instance is the expected shape, so this collapses to one federation
+// domain per instance in practice — nothing in the M6 DoD depends on the distinction. The Ed25519
+// key that SIGNS journal segments/bundles is nonetheless the SAME instance-wide `instance_keys`
+// singleton `governance/attestation.ts` already manages (one Ed25519 identity per SCP instance
+// signs both approval attestations and, as of M6, federation material — DESIGN §13: "SCP performs
+// all signing and validation itself").
+// -------------------------------------------------------------------------------------------
+
+/** This org's own federation identity within this instance — a singleton row per org, created
+ *  lazily on first federation use (`federation/self-repo.ts` `ensureFederationSelf`). `role` is
+ *  set explicitly by the operator (`scp federation init --role parent|child`), never inferred. */
+export const federationSelf = pgTable("federation_self", {
+  orgId: uuid("org_id").primaryKey(),
+  domainId: uuid("domain_id").notNull().unique(), // this domain's own stable identity (UUIDv7, generated once, never reused)
+  name: text("name").notNull(),
+  role: text("role").notNull().default("unset"), // 'unset' | 'parent' | 'child'
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+});
+
+/** Known peer domains (DESIGN §13 "peer pairing"), one row per paired remote domain. `syncScope`
+ *  is configurable per peer (§13: full graph / policies-only / changes-only / status-only /
+ *  label-selector custom). Pairing is always initiated by dialing OUT (§13 child-initiated-only)
+ *  or, for air-gapped peers, by an out-of-band exchange of each side's public identity
+ *  (`scp federation pair`) — never a live handshake the parent initiates. */
+export const federationPeers = pgTable(
+  "federation_peers",
+  {
+    id: uuid("id").primaryKey(), // = the peer's own federation_self.domainId
+    orgId: uuid("org_id").notNull(),
+    name: text("name").notNull(),
+    role: text("role").notNull(), // as seen from here: 'parent' | 'child'
+    baseUrl: text("base_url"), // set on a child's record of its parent — what federation-https dials
+    syncScope: jsonb("sync_scope").notNull().default({ mode: "full" }),
+    pairedAt: timestamp("paired_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    unique("federation_peers_org_id_key").on(table.orgId, table.id),
+    index("federation_peers_org").on(table.orgId)
+  ]
+);
+
+/** Peer public-key history (rotation via signed journal events, DESIGN §13). Exactly one row per
+ *  peer has `supersededAt IS NULL` (the current key) at any time — `federation-repo.ts` enforces
+ *  this invariant on rotation rather than a DB constraint (a partial unique index would need a
+ *  fixed sentinel for "current", which `NULL` already conveys unambiguously per peer). */
+export const federationPeerKeys = pgTable(
+  "federation_peer_keys",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    peerDomainId: uuid("peer_domain_id").notNull(),
+    publicKey: text("public_key").notNull(), // base64 SPKI DER
+    effectiveFrom: timestamp("effective_from", { withTimezone: true }).notNull().defaultNow(),
+    supersededAt: timestamp("superseded_at", { withTimezone: true })
+  },
+  (table) => [
+    index("federation_peer_keys_org_peer").on(table.orgId, table.peerDomainId, table.supersededAt)
+  ]
+);
+
+/** The append-only Sync Journal (DESIGN §13 core) — every row hash-chained AND Ed25519-signed,
+ *  monotonic `sequence` PER (org, origin domain) — see the scoping decision above. Stamps
+ *  `(origin_domain_id, sequence, content_hash)` per DESIGN §13, plus the two v1-unused reserved
+ *  fields (`baseRevision`, `conflict`) the overlay decision insures against a future format
+ *  break. `seq` (identity) is a DB-internal insertion-order tiebreaker only, mirroring
+ *  `audit_events.seq` — never part of the signed/hashed payload. */
+export const syncJournal = pgTable(
+  "sync_journal",
+  {
+    seq: bigint("seq", { mode: "number" }).generatedAlwaysAsIdentity().notNull(),
+    id: uuid("id").primaryKey(), // UUIDv7
+    orgId: uuid("org_id").notNull(),
+    originDomainId: uuid("origin_domain_id").notNull(),
+    sequence: bigint("sequence", { mode: "number" }).notNull(), // per (org, originDomainId) monotonic — DESIGN §13
+    // object_upsert | object_tombstone | relationship_upsert | relationship_tombstone |
+    // change_status | policy_upsert | approval_evidence | audit_segment | key_rotation
+    entryKind: text("entry_kind").notNull(),
+    payload: jsonb("payload").notNull(),
+    contentHash: text("content_hash").notNull(),
+    baseRevision: bigint("base_revision", { mode: "number" }), // reserved, v1-unused (DESIGN §13)
+    conflict: text("conflict"), // reserved, v1-unused (DESIGN §13)
+    prevHash: text("prev_hash").notNull(),
+    rowHash: text("row_hash").notNull(),
+    signature: text("signature").notNull(), // base64 Ed25519 signature over rowHash, by originDomainId's key
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    unique("sync_journal_origin_sequence_key").on(table.orgId, table.originDomainId, table.sequence),
+    index("sync_journal_org_origin_seq").on(table.orgId, table.originDomainId, table.sequence)
+  ]
+);
+
+/** Per-peer resumable cursors (DESIGN §13: "per-domain monotonic sequence cursors make
+ *  replication idempotent and resumable"). Tracks, for each (peer, origin domain) pair consumed
+ *  from, the last sequence number durably applied on THIS side — an interrupted transfer resumes
+ *  from here; re-applying an already-seen sequence is a no-op. */
+export const syncCursors = pgTable(
+  "sync_cursors",
+  {
+    orgId: uuid("org_id").notNull(),
+    peerDomainId: uuid("peer_domain_id").notNull(),
+    originDomainId: uuid("origin_domain_id").notNull(),
+    lastAppliedSeq: bigint("last_applied_seq", { mode: "number" }).notNull().default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [uniqueIndex("sync_cursors_pk").on(table.orgId, table.peerDomainId, table.originDomainId)]
+);
+
+/** Bundle-transfer tracking (DESIGN §13: "export created -> transfer submitted -> confirmed when
+ *  a returned bundle carries the child's import cursor"). One row per `.scpbundle` this side
+ *  produced or consumed. */
+export const bundleTransfers = pgTable(
+  "bundle_transfers",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    peerDomainId: uuid("peer_domain_id").notNull(),
+    direction: text("direction").notNull(), // 'export' | 'import'
+    kind: text("kind").notNull().default("sync"), // 'sync' | 'promotion'
+    status: text("status").notNull().default("created"), // created|submitted|confirmed
+    sinceSequence: bigint("since_sequence", { mode: "number" }),
+    throughSequence: bigint("through_sequence", { mode: "number" }),
+    checksum: text("checksum"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true })
+  },
+  (table) => [index("bundle_transfers_org_peer").on(table.orgId, table.peerDomainId, table.createdAt)]
+);
+
+/** Imported-approval EVIDENCE (DESIGN §13: "approvals transfer as evidence, never as authority").
+ *  Deliberately a separate table from `approval_votes` — these rows are never counted toward a
+ *  LOCAL `approval_requests` quorum; they are read-only, attestation-validated proof attached to
+ *  an imported Change for `scp change explain`/UI display only. */
+export const importedApprovalEvidence = pgTable(
+  "imported_approval_evidence",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    changeObjectId: uuid("change_object_id").notNull(), // the LOCAL imported change
+    originDomainId: uuid("origin_domain_id").notNull(), // whose approval this was
+    attestation: jsonb("attestation").notNull(), // the SignedAttestation exactly as received
+    verified: boolean("verified").notNull(), // did validation pass against the origin's registered key?
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [index("imported_approval_evidence_org_change").on(table.orgId, table.changeObjectId)]
 );
 
 export const idempotencyKeys = pgTable(
