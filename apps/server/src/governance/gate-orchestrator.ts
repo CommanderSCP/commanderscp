@@ -2,8 +2,8 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import type { CelSandbox } from "./cel-sandbox.js";
 import { matchPoliciesForTargets } from "./policy-resolve.js";
-import { resolvePolicies, type EffectivePolicy } from "./policy-model.js";
-import { evaluateGovernance, type PolicyEvaluationContext } from "./evaluate.js";
+import { resolvePolicies } from "./policy-model.js";
+import { buildCelContext, evaluateFiredPolicies, resolveFiredPolicies, type PolicyEvaluationContext } from "./evaluate.js";
 import { ensureControlRuns, readExistingControlOutcomes } from "./control-runner.js";
 import { materializeApprovalRequest, quorumStatus } from "./approvals-repo.js";
 import { activeFreezesForScopes, type FreezeRow } from "./freezes-repo.js";
@@ -121,6 +121,59 @@ async function graphFactsFor(tx: TenantTx, orgId: string, targetObjectId: string
   };
 }
 
+/** Scope-KIND keyword → the `object_types.id` an ancestor of that kind carries. `organization`
+ *  is special-cased to the org root object below (whose id === orgId). */
+const APPROVAL_SCOPE_KEYWORDS: Record<string, "organization" | "domain" | "service" | "component"> = {
+  organization: "organization",
+  org: "organization",
+  domain: "domain",
+  service: "service",
+  component: "component"
+};
+
+/**
+ * Resolves a `requireApprovals.scope` value (MAJOR #5). DESIGN §10.1's own example writes a scope
+ * KIND keyword (`"scope":"service"`), meaning "someone holding `fromRole` at the change target's
+ * containing object of that kind"; an author may equally pass a literal object id/urn. Returns the
+ * concrete object id the approval quorum's `hasRoleAtScope` check will run against, or `null` when
+ * the scope can't be resolved (unknown keyword, a keyword with no ancestor of that kind on the
+ * target's chain, or a literal ref that doesn't resolve) — the caller treats `null` as an
+ * UNSATISFIABLE required approval (fail closed), never a raw `::uuid` cast crash and never a pass.
+ */
+export async function resolveApprovalScope(
+  tx: TenantTx,
+  orgId: string,
+  primaryTargetId: string | undefined,
+  scope: string
+): Promise<string | null> {
+  const keyword = APPROVAL_SCOPE_KEYWORDS[scope.trim().toLowerCase()];
+  if (keyword) {
+    if (keyword === "organization") return orgId; // org root object id === orgId (bootstrap invariant)
+    // Walk the primary target's containment chain, nearest first, for an object of the given kind.
+    if (!primaryTargetId) return null;
+    let current: string | null = primaryTargetId;
+    let guard = 0;
+    while (current && guard < 11) {
+      const obj: { id: string; typeId: string; domainId: string | null } | undefined =
+        await tx.query.objects.findFirst({
+          where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.orgId, orgId), eqOp(t.id, current as string))
+        });
+      if (!obj) return null;
+      if (obj.typeId === keyword) return obj.id;
+      current = obj.domainId;
+      guard += 1;
+    }
+    return null;
+  }
+  // Not a keyword — must be a literal object id or urn. Validate it resolves to a real object.
+  try {
+    const obj = await getObjectByIdOrUrnAnyType(tx, orgId, scope);
+    return obj.id;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Runs (never blocks, never writes a Decision) every required control a change's targets'
  * effective policies reference, and materializes every requireApprovals effect's approval
@@ -145,29 +198,33 @@ export async function prewarmGovernanceForChange(
     targetObjectIds: input.targetObjectIds,
     actorObjectId: input.actorObjectId
   });
-  const allEffectivePolicies = resolvePolicies(matches);
+  const effectivePolicies = resolvePolicies(matches);
+  if (effectivePolicies.length === 0) return;
 
-  // Only pre-warm policies whose CEL condition actually fires — determined with an EMPTY
-  // controlOutcomes/approvals context (irrelevant to firing; `evaluate.ts`'s `fired` flag depends
-  // only on the condition, never on effect satisfaction), so this never wastes a control
-  // invocation or materializes a bogus approval task for a policy that wouldn't apply anyway.
+  // Determine the FIRING set (each contributor's own condition, independently — evaluate.ts's
+  // `resolveFiredPolicies`), then pre-run/materialize only what firing policies actually require.
+  // Uses the SAME subject + graph facts the real gate does (graphFactsFor) so prewarm and the
+  // eventual host-less lifecycle gate agree on which conditions fired — otherwise a control the
+  // real gate needs but prewarm never ran would starve the promote gate (which only READS).
   const primaryTarget = input.targetObjectIds[0];
   const subjectObject = primaryTarget ? await getObjectByIdOrUrnAnyType(tx, input.orgId, primaryTarget).catch(() => null) : null;
-  const probe = await evaluateGovernance(sandbox, allEffectivePolicies, {
+  const graphFacts = primaryTarget
+    ? await graphFactsFor(tx, input.orgId, primaryTarget)
+    : { ownerIds: [], dependentIds: [], domainIds: [] };
+  const celContext = buildCelContext({
     change: { id: input.changeObjectId, emergency: false, targets: input.targetObjectIds, sourceKind: null, correlationKey: null },
     subject: subjectObject
       ? { id: subjectObject.id, typeId: subjectObject.typeId, name: subjectObject.name, labels: subjectObject.labels }
       : null,
-    graph: { ownerIds: [], dependentIds: [], domainIds: [] },
+    graph: graphFacts,
     controlOutcomes: {},
     approvals: {},
     time: new Date().toISOString(),
     actor: { id: input.actorObjectId }
   });
-  const firedNames = new Set(probe.policies.filter((p) => p.fired).map((p) => p.name));
-  const effectivePolicies = allEffectivePolicies.filter((p) => firedNames.has(p.name));
-  const allControlIds = [...new Set(effectivePolicies.flatMap((p) => p.requireControls))];
+  const fired = (await resolveFiredPolicies(sandbox, effectivePolicies, celContext)).filter((fp) => fp.fired);
 
+  const allControlIds = [...new Set(fired.flatMap((fp) => fp.requireControls))];
   if (allControlIds.length > 0) {
     await ensureControlRuns(tx, host, {
       orgId: input.orgId,
@@ -179,8 +236,10 @@ export async function prewarmGovernanceForChange(
     });
   }
 
-  for (const policy of effectivePolicies) {
-    for (const req of policy.requireApprovals) {
+  for (const fp of fired) {
+    for (const req of fp.requireApprovals) {
+      const scopeObjectId = await resolveApprovalScope(tx, input.orgId, primaryTarget, req.scope);
+      if (!scopeObjectId) continue; // unresolvable scope — the gate itself fails it closed (MAJOR #5)
       await materializeApprovalRequest(tx, {
         orgId: input.orgId,
         changeObjectId: input.changeObjectId,
@@ -189,7 +248,7 @@ export async function prewarmGovernanceForChange(
         effectIndex: req.originEffectIndex,
         requiredCount: req.count,
         fromRole: req.fromRole,
-        scopeObjectId: req.scope
+        scopeObjectId
       });
     }
   }
@@ -239,12 +298,30 @@ export async function evaluateGovernanceGate(
     }
   }
 
-  // Every required control referenced by a fired policy must have a fresh outcome; every
-  // requireApprovals effect must have its approval_requests row materialized so it's visible via
-  // GET /approvals independent of whether THIS gate check is the one that satisfies it.
-  const allControlIds = [...new Set(effectivePolicies.flatMap((p) => p.requireControls))];
   const primaryTarget = ctx.targetObjectIds[0];
+  const subjectObject = primaryTarget ? await getObjectByIdOrUrnAnyType(tx, ctx.orgId, primaryTarget).catch(() => null) : null;
+  const graphFacts = primaryTarget
+    ? await graphFactsFor(tx, ctx.orgId, primaryTarget)
+    : { ownerIds: [], dependentIds: [], domainIds: [] };
+  const celContext = buildCelContext({
+    change: { id: ctx.changeObjectId, emergency: ctx.emergency, targets: ctx.targetObjectIds, sourceKind: null, correlationKey: null },
+    subject: subjectObject
+      ? { id: subjectObject.id, typeId: subjectObject.typeId, name: subjectObject.name, labels: subjectObject.labels }
+      : null,
+    graph: graphFacts,
+    controlOutcomes: {},
+    approvals: {},
+    time: now.toISOString(),
+    actor: { id: ctx.actorObjectId }
+  });
 
+  // Phase 1: per-contributor condition evaluation (CRITICAL #1a) — a false/erroring contributor's
+  // condition can NEVER drop a firing higher-scope required contributor's effects. Fail-closed for
+  // a required contributor whose condition errors (MAJOR #3) is baked into `resolveFiredPolicies`.
+  const fired = await resolveFiredPolicies(sandbox, effectivePolicies, celContext);
+
+  // Only run/materialize what the FIRING policies require (never the "if everything fired" summary).
+  const allControlIds = [...new Set(fired.filter((fp) => fp.fired).flatMap((fp) => fp.requireControls))];
   const controlOutcomes = host
     ? await ensureControlRuns(tx, host, {
         orgId: ctx.orgId,
@@ -257,8 +334,19 @@ export async function evaluateGovernanceGate(
     : await readExistingControlOutcomes(tx, ctx.orgId, ctx.changeObjectId, allControlIds);
 
   const approvals: PolicyEvaluationContext["approvals"] = {};
-  for (const policy of effectivePolicies) {
-    for (const req of policy.requireApprovals) {
+  for (const fp of fired) {
+    if (!fp.fired) continue;
+    for (const req of fp.requireApprovals) {
+      const key = `${req.originPolicyObjectId}::${req.originPolicyVersion}::${req.originEffectIndex}`;
+      // MAJOR #5: `req.scope` may be a scope-KIND keyword (DESIGN §10.1's `"scope":"service"`) or a
+      // literal object id/urn. Resolve it to a concrete object; an unresolvable scope is
+      // fail-CLOSED (the required approval can never be satisfied → blocks), NEVER a raw ::uuid
+      // Postgres crash and NEVER a silent pass.
+      const scopeObjectId = await resolveApprovalScope(tx, ctx.orgId, primaryTarget, req.scope);
+      if (!scopeObjectId) {
+        approvals[key] = { satisfied: false, count: 0, required: req.count };
+        continue;
+      }
       const request = await materializeApprovalRequest(tx, {
         orgId: ctx.orgId,
         changeObjectId: ctx.changeObjectId,
@@ -267,37 +355,22 @@ export async function evaluateGovernanceGate(
         effectIndex: req.originEffectIndex,
         requiredCount: req.count,
         fromRole: req.fromRole,
-        scopeObjectId: req.scope
+        scopeObjectId
       });
-      const status = await quorumStatus(tx, ctx.orgId, request);
-      approvals[`${req.originPolicyObjectId}::${req.originPolicyVersion}::${req.originEffectIndex}`] = status;
+      approvals[key] = await quorumStatus(tx, ctx.orgId, request);
     }
   }
 
-  const subjectObject = primaryTarget ? await getObjectByIdOrUrnAnyType(tx, ctx.orgId, primaryTarget).catch(() => null) : null;
-  const graphFacts = primaryTarget
-    ? await graphFactsFor(tx, ctx.orgId, primaryTarget)
-    : { ownerIds: [], dependentIds: [], domainIds: [] };
-
-  const context: PolicyEvaluationContext = {
-    change: { id: ctx.changeObjectId, emergency: ctx.emergency, targets: ctx.targetObjectIds, sourceKind: null, correlationKey: null },
-    subject: subjectObject
-      ? { id: subjectObject.id, typeId: subjectObject.typeId, name: subjectObject.name, labels: subjectObject.labels }
-      : null,
-    graph: graphFacts,
-    controlOutcomes,
-    approvals,
-    time: now.toISOString(),
-    actor: { id: ctx.actorObjectId }
-  };
-
-  const result = await evaluateGovernance(sandbox, effectivePolicies as EffectivePolicy[], context);
+  // Phase 2: pure satisfaction check against the now-gathered outcomes/quorum, using the SAME
+  // firing set (no second CEL eval — no race where a re-eval fires differently).
+  const result = evaluateFiredPolicies(fired, { controlOutcomes, approvals });
 
   return {
     verdict: result.verdict === "block" ? "block" : "allow",
     inputContext: {
       matchedPolicyCount: matches.length,
       effectivePolicyCount: effectivePolicies.length,
+      firedPolicyCount: fired.filter((fp) => fp.fired).length,
       ...(emergencyNote ? { emergency: emergencyNote } : {}),
       ...(freezeCheck.override ? { freezeOverride: freezeCheck.override } : {})
     },
