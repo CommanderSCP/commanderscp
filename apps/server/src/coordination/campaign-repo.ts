@@ -1,7 +1,7 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Campaign, CampaignStatus } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { campaignWaveTargets, changes, objects } from "../db/schema.js";
+import { campaignPlans, campaignWaves, campaignWaveTargets, changes, objects } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
 import { decodeCursor, encodeCursor } from "../pagination.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
@@ -259,4 +259,35 @@ export async function memberChangeIdsForCampaign(tx: TenantTx, orgId: string, wa
     .from(campaignWaveTargets)
     .where(and(eq(campaignWaveTargets.orgId, orgId), eq(campaignWaveTargets.waveId, waveId)))
     .orderBy(asc(campaignWaveTargets.createdAt));
+}
+
+/**
+ * The AUTHORITATIVE campaign membership (M5 CRITICAL, adversarial review) — the member Changes a
+ * campaign's own plan compiler actually proposed, read straight from `campaign_wave_targets`
+ * (joined via `campaign_plans` on `campaign_object_id`), NOT from raw `coordinates` graph edges.
+ * This is the ONLY membership `campaign-rollback.ts` trusts: a `coordinates` edge is a
+ * system-managed relationship (creatable only via authority-checked internal paths — see
+ * `graph/system-managed-relationships.ts`), but sourcing rollback membership from the plan tables
+ * instead of the edges means even a stray/legacy/pre-existing `coordinates` edge (a migration
+ * artifact, a future bug) can NEVER inject a rollback target. Each row carries the member Change's
+ * object id AND the wave target's own `target_object_id`, so the caller can re-verify the acting
+ * actor's authority over each reverted target's scope (belt-and-suspenders).
+ */
+export async function authoritativeCampaignMembers(
+  tx: TenantTx,
+  orgId: string,
+  campaignObjectId: string
+): Promise<{ memberChangeObjectId: string; targetObjectId: string }[]> {
+  const rows = await tx
+    .select({
+      memberChangeObjectId: campaignWaveTargets.memberChangeObjectId,
+      targetObjectId: campaignWaveTargets.targetObjectId
+    })
+    .from(campaignWaveTargets)
+    .innerJoin(campaignWaves, eq(campaignWaveTargets.waveId, campaignWaves.id))
+    .innerJoin(campaignPlans, eq(campaignWaves.planId, campaignPlans.id))
+    .where(and(eq(campaignWaveTargets.orgId, orgId), eq(campaignPlans.campaignObjectId, campaignObjectId)));
+  return rows
+    .filter((r): r is { memberChangeObjectId: string; targetObjectId: string } => r.memberChangeObjectId !== null)
+    .map((r) => ({ memberChangeObjectId: r.memberChangeObjectId, targetObjectId: r.targetObjectId }));
 }

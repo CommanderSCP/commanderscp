@@ -12,6 +12,9 @@ import {
   type ListeningTestServer,
   type TestOrg
 } from "../test-support/harness.js";
+import { withTenantTx } from "../db/tenant-tx.js";
+import { createRelationship } from "../graph/relationships-repo.js";
+import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 
 /**
  * Campaign & Initiative integration suite (BUILD_AND_TEST.md §8 M5 DoD, Testcontainers
@@ -211,16 +214,16 @@ describe("campaigns & initiatives (M5)", () => {
     expect(memberExplain.decisions.some((d) => d.kind === "rollback_trigger")).toBe(true);
   }, 60_000);
 
-  it("initiative roll-up traversal aggregates member campaign statuses and is org-scoped", async () => {
-    const solo = await admin.components.create({ name: "camp-solo-target" });
-    const campaign = await admin.campaigns.propose({ name: "solo-target campaign", targets: [solo.id] });
-
+  it("initiative roll-up traversal aggregates MULTIPLE campaigns with MIXED statuses (real graph query), via both propose-with-campaigns and add-campaign, and is org-scoped", async () => {
+    // Campaign 1 -> completed (its member change promoted).
+    const t1 = await admin.components.create({ name: "camp-rollup-completed-target" });
+    const completedCampaign = await admin.campaigns.propose({ name: "rollup-completed campaign", targets: [t1.id] });
     const memberChangeId = await waitUntil(
       async () => {
-        const e = await admin.campaigns.explain(campaign.id);
+        const e = await admin.campaigns.explain(completedCampaign.id);
         return e.plan?.waves[0]?.targets[0]?.memberChangeObjectId ?? undefined;
       },
-      { describe: "solo campaign's member change is proposed", timeoutMs: 20_000 }
+      { describe: "completed campaign's member change is proposed", timeoutMs: 20_000 }
     );
     await waitUntil(async () => (await admin.changes.get(memberChangeId)).state === "validating" || undefined, {
       describe: `member change ${memberChangeId} reaches 'validating'`,
@@ -228,22 +231,44 @@ describe("campaigns & initiatives (M5)", () => {
     });
     await admin.changes.promote(memberChangeId);
     await waitUntil(
-      async () => (await admin.campaigns.get(campaign.id)).status === "completed" || undefined,
-      { describe: `campaign ${campaign.id} reaches 'completed'`, timeoutMs: 20_000 }
+      async () => (await admin.campaigns.get(completedCampaign.id)).status === "completed" || undefined,
+      { describe: `campaign ${completedCampaign.id} reaches 'completed'`, timeoutMs: 20_000 }
     );
 
-    const initiative = await admin.initiatives.propose({ name: "solo initiative", campaigns: [campaign.id] });
+    // Campaign 2 -> blocked (a required-but-failing control gates its only wave).
+    const t2 = await admin.components.create({ name: "camp-rollup-blocked-target" });
+    const failingControl = await createFailingControl(admin, org, "rollup-fail", webhook.url);
+    await requireControlOn(admin, org, "rollup-fail-policy", t2.id, failingControl.id);
+    const blockedCampaign = await admin.campaigns.propose({ name: "rollup-blocked campaign", targets: [t2.id] });
+    await waitUntil(
+      async () => (await admin.campaigns.get(blockedCampaign.id)).status === "blocked" || undefined,
+      { describe: `campaign ${blockedCampaign.id} reaches 'blocked'`, timeoutMs: 20_000 }
+    );
+
+    // Initiative created with campaign 1 up front; campaign 2 added via the DEDICATED,
+    // authority-checked `POST /initiatives/{id}/campaigns` path (regression: this is the ONLY
+    // remaining way to create an initiative->campaign `coordinates` edge now that the generic
+    // endpoint and IaC apply both refuse it).
+    const initiative = await admin.initiatives.propose({
+      name: "mixed-status initiative",
+      campaigns: [completedCampaign.id]
+    });
+    await admin.initiatives.addCampaign(initiative.id, { campaign: blockedCampaign.id });
+
     const rollup = await admin.initiatives.get(initiative.id);
-    expect(rollup.campaigns).toHaveLength(1);
-    expect(rollup.campaigns[0]!.status).toBe("completed");
-    expect(rollup.rollupStatus).toBe("completed");
+    expect(rollup.campaigns).toHaveLength(2);
+    const statusById = new Map(rollup.campaigns.map((c) => [c.campaign.id, c.status]));
+    expect(statusById.get(completedCampaign.id)).toBe("completed");
+    expect(statusById.get(blockedCampaign.id)).toBe("blocked");
+    // blocked outranks completed in the roll-up priority (campaign-status.ts's ROLLUP_PRIORITY).
+    expect(rollup.rollupStatus).toBe("blocked");
 
     // The SAME derivation is reachable as a genuine named graph query (DESIGN §5/§9.5 — "derived
     // by traversal, a named graph query over the existing engine"), org-scoped like every other
-    // named query (runs inside the caller's tenant tx / RLS).
+    // named query — now aggregating TWO campaigns with MIXED statuses through the real traversal.
     const graphResult = await admin.graph.query("initiative-rollup", { objectId: initiative.id });
-    expect(graphResult.objects.map((o) => o.id)).toEqual([campaign.id]);
-    expect(graphResult.counts).toEqual({ "status:completed": 1 });
+    expect(new Set(graphResult.objects.map((o) => o.id))).toEqual(new Set([completedCampaign.id, blockedCampaign.id]));
+    expect(graphResult.counts).toEqual({ "status:completed": 1, "status:blocked": 1 });
 
     // Cross-tenant leakage check: a second org's admin can never see the first org's initiative
     // or its roll-up, even by id (RLS org_isolation — the same defense-in-depth every other M1
@@ -252,7 +277,7 @@ describe("campaigns & initiatives (M5)", () => {
     const otherAdmin = new ScpClient({ baseUrl: server.baseUrl, token: otherOrg.adminToken });
     const err = await expectApiError(() => otherAdmin.initiatives.get(initiative.id));
     expect(err.status).toBe(404);
-  }, 40_000);
+  }, 50_000);
 
   it("SECURITY: a campaign cannot coordinate a target the actor lacks authority over (both closed write paths)", async () => {
     const restrictedTarget = await admin.components.create({ name: "camp-restricted-target" });
@@ -420,4 +445,106 @@ describe("campaigns & initiatives (M5)", () => {
     expect(waves[0]!.targets.map((t) => t.targetObjectId)).toEqual([infra.id]);
     expect(waves[1]!.targets.map((t) => t.targetObjectId)).toEqual([app.id]);
   });
+
+  // -----------------------------------------------------------------------------------------
+  // M5 CRITICAL (adversarial review of PR #12): campaign/initiative membership must NOT be
+  // injectable through the unprotected `coordinates` graph edge. `coordinates` is now
+  // system-managed (`graph/system-managed-relationships.ts`) — refused on BOTH the generic
+  // `POST /relationships` endpoint and the IaC apply path — and campaign rollback sources
+  // membership from the authoritative `campaign_wave_targets`, never raw edges.
+  // -----------------------------------------------------------------------------------------
+
+  it("SECURITY: the generic POST /relationships endpoint refuses a `coordinates` edge (system-managed, 403)", async () => {
+    const target = await admin.components.create({ name: "camp-coord-block-target" });
+    const campaign = await admin.campaigns.propose({ name: "coord-block campaign", targets: [target.id] });
+    const someChange = await admin.changes.propose({ name: "coord-block unrelated change", targets: [target.id] });
+
+    // An actor could hold org-wide relationship:write (e.g. an Operator) — the type-level block
+    // fires regardless, BEFORE any endpoint authority/type check, exactly like `approves`.
+    const err = await expectApiError(() =>
+      admin.relationships.create({ typeId: "coordinates", fromId: campaign.id, toId: someChange.id })
+    );
+    expect(err.status).toBe(403);
+  });
+
+  it("SECURITY: an IaC manifest declaring a raw `coordinates` relationship is refused at apply (403)", async () => {
+    const target = await admin.components.create({ name: "camp-iac-coord-target" });
+    const campaign = await admin.campaigns.propose({ name: "iac-coord campaign", targets: [target.id] });
+
+    const stackName = `camp-iac-coord-${randomUUID().slice(0, 8)}`;
+    const manifest: DesiredStateManifest = {
+      stackName,
+      objects: [],
+      // A hand-written manifest could declare any typeId on a relationship entry — must be refused
+      // the same way the generic endpoint refuses it (campaign membership goes through the
+      // authority-checked `campaign.properties.targets`, never a raw `coordinates` edge).
+      relationships: [{ typeId: "coordinates", fromUrn: campaign.urn, toUrn: target.urn }]
+    };
+    const plan = await admin.plans.create(manifest);
+    await expect(admin.plans.apply(plan.id)).rejects.toMatchObject({ status: 403 });
+    // No `coordinates` edge was created.
+    const edges = await admin.relationships.list({ fromId: campaign.id, typeId: "coordinates", limit: 20 });
+    expect(edges.items).toHaveLength(0);
+  });
+
+  it("SECURITY: campaign rollback IGNORES a stray/injected `coordinates` edge — only true plan-compiled members are reverted", async () => {
+    // The TRUE member: a campaign targeting its own object, promoted (a real, plan-compiled,
+    // rollback-eligible member).
+    const trueTarget = await admin.components.create({ name: "camp-stray-true-target" });
+    const campaign = await admin.campaigns.propose({ name: "stray-edge campaign", targets: [trueTarget.id] });
+    const trueMemberChangeId = await waitUntil(
+      async () => {
+        const e = await admin.campaigns.explain(campaign.id);
+        return e.plan?.waves[0]?.targets[0]?.memberChangeObjectId ?? undefined;
+      },
+      { describe: "true member change proposed", timeoutMs: 20_000 }
+    );
+    await waitUntil(async () => (await admin.changes.get(trueMemberChangeId)).state === "validating" || undefined, {
+      describe: `true member ${trueMemberChangeId} reaches 'validating'`,
+      timeoutMs: 20_000
+    });
+    await admin.changes.promote(trueMemberChangeId);
+
+    // The INJECTED member: a completely unrelated Change, driven to a rollback-eligible state
+    // ('validating'), then linked to the victim campaign by a stray `coordinates` edge written
+    // straight through the repo (bypassing the now-guarded HTTP endpoint) — exactly simulating a
+    // legacy/migrated/future-bug edge that the type-level HTTP+IaC blocks can't retroactively
+    // prevent. If campaign rollback trusted raw `coordinates` edges (the pre-fix behavior), this
+    // change WOULD be swept into the rollback.
+    const injectedTarget = await admin.components.create({ name: "camp-stray-injected-target" });
+    const injectedChange = await admin.changes.propose({ name: "injected-not-a-member", targets: [injectedTarget.id] });
+    await waitUntil(async () => (await admin.changes.get(injectedChange.id)).state === "validating" || undefined, {
+      describe: `injected change ${injectedChange.id} reaches 'validating'`,
+      timeoutMs: 20_000
+    });
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      createRelationship(tx, {
+        orgId: org.orgId,
+        actorObjectId: SYSTEM_ACTOR_ID,
+        requestId: "test-stray-edge-injection",
+        typeId: "coordinates",
+        fromId: campaign.id,
+        toId: injectedChange.id
+      })
+    );
+
+    // Roll back the campaign.
+    const rollbackResult = await admin.campaigns.rollback(campaign.id, "stray-edge test: revert true members only");
+
+    // The TRUE member is rolled back; the INJECTED change is NOT in the rolledBack set...
+    const rolledBackIds = rollbackResult.rolledBack.map((r) => r.originalChangeObjectId);
+    expect(rolledBackIds).toContain(trueMemberChangeId);
+    expect(rolledBackIds).not.toContain(injectedChange.id);
+    // ...and is not even mentioned in `skipped` (it's simply not a member — never enumerated).
+    expect(rollbackResult.skipped.map((s) => s.originalChangeObjectId)).not.toContain(injectedChange.id);
+
+    // ...and the injected change never leaves 'validating' (never rolled_back) — the definitive
+    // proof it was never touched.
+    await waitUntil(async () => (await admin.changes.get(trueMemberChangeId)).state === "rolled_back" || undefined, {
+      describe: `true member ${trueMemberChangeId} reaches 'rolled_back'`,
+      timeoutMs: 20_000
+    });
+    const injectedState = (await admin.changes.get(injectedChange.id)).state;
+    expect(injectedState).toBe("validating");
+  }, 60_000);
 });

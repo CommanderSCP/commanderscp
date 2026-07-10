@@ -244,31 +244,33 @@ describe("@scp/iac: campaign/initiative/release-topology synth", () => {
     });
   });
 
-  it("Initiative.coordinates(campaign) chained twice produces two coordinates relationships", () => {
+  it("an Initiative construct exposes NO membership-edge method — `coordinates` is system-managed (M5 CRITICAL)", () => {
     const app = new App();
     const stack = new Stack(app, "modernization-platform");
 
     const svcA = new Service(stack, "svc-a", { name: "Svc A" });
-    const svcB = new Service(stack, "svc-b", { name: "Svc B" });
     const campaignA = new Campaign(stack, "campaign-a", { name: "Campaign A", targets: [svcA] });
-    const campaignB = new Campaign(stack, "campaign-b", { name: "Campaign B", targets: [svcB] });
-
     const initiative = new Initiative(stack, "modernization", {
       name: "Cloud Modernization",
       description: "Multi-year modernization effort"
     });
-    initiative.coordinates(campaignA).coordinates(campaignB);
+
+    // `coordinates` is a system-managed relationship the server refuses on the IaC apply path
+    // (apps/server/src/graph/system-managed-relationships.ts) — so there is deliberately no
+    // `.coordinates()` synth method to declare initiative membership in IaC (it would only ever
+    // produce a manifest that 403s at apply). Initiative membership is added via the
+    // authority-checked `POST /initiatives/{id}/campaigns` API instead.
+    expect(
+      (initiative as unknown as { coordinates?: unknown }).coordinates
+    ).toBeUndefined();
 
     const manifest = stack.synth();
+    // No `coordinates` edge is synthesizable — the manifest carries only the objects and any
+    // NON-system-managed edges (none here).
+    expect(manifest.relationships.filter((r) => r.typeId === "coordinates")).toEqual([]);
     const initiativeObject = manifest.objects.find((o) => o.urn === initiative.urn);
     expect(initiativeObject?.properties).toEqual({ description: "Multi-year modernization effort" });
-
-    const coordinatesRels = manifest.relationships.filter((r) => r.typeId === "coordinates");
-    expect(coordinatesRels).toEqual([
-      { typeId: "coordinates", fromUrn: initiative.urn, toUrn: campaignA.urn },
-      { typeId: "coordinates", fromUrn: initiative.urn, toUrn: campaignB.urn }
-    ]);
-
+    expect(campaignA.urn).toBeTruthy(); // campaign is still a valid standalone construct
     expect(DesiredStateManifestSchema.safeParse(manifest).success).toBe(true);
   });
 

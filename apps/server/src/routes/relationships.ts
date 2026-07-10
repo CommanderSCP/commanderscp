@@ -20,6 +20,7 @@ import {
   getRelationship,
   listRelationships
 } from "../graph/relationships-repo.js";
+import { isSystemManagedRelationshipType } from "../graph/system-managed-relationships.js";
 
 function idempotencyKey(request: FastifyRequest): string | undefined {
   const header = request.headers["idempotency-key"];
@@ -27,20 +28,17 @@ function idempotencyKey(request: FastifyRequest): string | undefined {
 }
 
 /**
- * Relationship types the ENGINE owns end to end — the generic `/relationships` write endpoints
- * must never let a client create or delete them directly (adversarial review MAJOR #7). `approves`
- * edges are DESIGN §10.2 approval EVIDENCE; a fabricated one is a graph-visible fake "X approved
- * this" that undermines evidentiary integrity (it can't forge real quorum — that's DB-vote-backed
- * — but the edge is surfaced as evidence). Only the approval-vote path (approvals-repo.ts's
- * `castApprovalVote`) may create an `approves` edge, and only a rollback of the underlying vote
- * could ever remove one. Enforced with 403, at BOTH create and delete.
+ * The generic `/relationships` write endpoints must never let a client create or delete an
+ * engine-owned relationship type directly (adversarial review MAJOR #7 for `approves`; M5 CRITICAL
+ * for `coordinates`). The full rationale — and why the dedicated authority-checked paths that
+ * legitimately create these edges still work (they call `createRelationship` directly, never this
+ * guarded HTTP route) — lives in `graph/system-managed-relationships.ts`. Enforced with 403, at
+ * BOTH create and delete.
  */
-const SYSTEM_MANAGED_RELATIONSHIP_TYPES = new Set(["approves"]);
-
 function assertNotSystemManagedRelationship(typeId: string): void {
-  if (SYSTEM_MANAGED_RELATIONSHIP_TYPES.has(typeId)) {
+  if (isSystemManagedRelationshipType(typeId)) {
     throw forbidden(
-      `relationship type '${typeId}' is system-managed (created only by the approval-vote path) and cannot be created or deleted via /relationships`
+      `relationship type '${typeId}' is system-managed (created only by the engine's own authority-checked paths — e.g. approval voting, or campaign/initiative membership) and cannot be created or deleted via /relationships`
     );
   }
 }

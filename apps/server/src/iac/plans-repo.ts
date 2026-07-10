@@ -3,7 +3,7 @@ import { v7 as uuidv7 } from "uuid";
 import type { DesiredStateManifest, Plan, PlanDiff, PlanStatus } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects, plans, relationships } from "../db/schema.js";
-import { conflict, notFound } from "../errors.js";
+import { conflict, forbidden, notFound } from "../errors.js";
 import type { Permission } from "../authz/resolve.js";
 import {
   createObject,
@@ -15,6 +15,7 @@ import {
 } from "../graph/objects-repo.js";
 import { createRelationship, deleteRelationship, listRelationships } from "../graph/relationships-repo.js";
 import { isGovernanceManagedObjectType } from "../governance/governance-managed-types.js";
+import { isSystemManagedRelationshipType } from "../graph/system-managed-relationships.js";
 import { assertPolicyScopeWithinAuthority } from "../governance/policy-scope-authz.js";
 import { assertCampaignTargetsWithinAuthority } from "../coordination/campaign-scope-authz.js";
 import {
@@ -402,6 +403,23 @@ export async function prepareApplyChecks(
 
   for (const entry of diff.relationships) {
     if (entry.action === "noop") continue;
+    // M5 CRITICAL (adversarial review): a manifest can declare any `typeId` on a relationship entry
+    // (`ManifestRelationshipSchema`), so this apply path — exactly like the generic
+    // `POST /relationships` endpoint (`routes/relationships.ts`) — must refuse an engine-owned
+    // system-managed type (`coordinates`/`approves`) outright. Otherwise IaC apply becomes a second
+    // injection vector for a `coordinates` membership edge that only needs `relationship:write`,
+    // bypassing the authority-checked campaign/initiative membership paths
+    // (`graph/system-managed-relationships.ts` has the full rationale). Legitimate campaign IaC
+    // membership goes exclusively through the authority-checked `campaign.properties.targets`
+    // declaration (`assertCampaignTargetsWithinAuthority`, above); initiative IaC membership is not
+    // supported (add members via `POST /initiatives/{id}/campaigns` / `scp initiative add-campaign`,
+    // which run the both-endpoint authority check).
+    if (isSystemManagedRelationshipType(entry.typeId)) {
+      throw forbidden(
+        `relationship type '${entry.typeId}' is system-managed and cannot be created or deleted via an IaC plan/apply — ` +
+          `campaign membership is declared through a campaign's authority-checked 'targets', not a raw 'coordinates' edge`
+      );
+    }
     const from = await resolveEndpoint(entry.fromUrn);
     const to = await resolveEndpoint(entry.toUrn);
     checks.push({ permission: "relationship:write", scopeObjectId: from.scopeObjectId });

@@ -156,8 +156,9 @@ describe("@scp/iac: synth determinism (fast-check)", () => {
  * join `RESOURCE_CTORS` above — each needs its own typed props (`waves`, `targets`, `topology`)
  * rather than plain `ResourceProps` — so this is a small dedicated tree builder instead, varying
  * both the random content (names, wave mode/fan-in, descriptions) and, within real dependency
- * constraints (a Campaign's targets must exist before the Campaign does; an Initiative's
- * `.coordinates()` calls need their Campaigns to exist first), the construction order.
+ * constraints (a Campaign's targets must exist before the Campaign does), the construction order.
+ * (An `Initiative` carries no synth-declarable membership — `coordinates` is system-managed, added
+ * via API only — so it's a standalone object here, same as any other resource construct.)
  */
 interface CampaignTreeSpec {
   stackName: string;
@@ -181,9 +182,8 @@ const campaignTreeSpecArb: fc.Arbitrary<CampaignTreeSpec> = fc.record({
 
 /** Builds a stack with 2 services, a topology and campaign referencing them (built in either
  *  `"topology-first"` or `"campaign-first"` order — both legal, since neither depends on the
- *  other), and an initiative coordinating the campaign — every construction order a real IaC
- *  author could legally choose, given `Campaign`/`ReleaseTopology` need the services to exist
- *  first and `Initiative.coordinates()` needs the campaign to exist first. */
+ *  other), and a standalone initiative — every construction order a real IaC author could legally
+ *  choose, given `Campaign`/`ReleaseTopology` need the services to exist first. */
 function buildCampaignTree(spec: CampaignTreeSpec, serviceOrder: ["a", "b"] | ["b", "a"], topologyOrder: "topology-first" | "campaign-first"): Stack {
   const app = new App();
   const stack = new Stack(app, spec.stackName);
@@ -219,11 +219,14 @@ function buildCampaignTree(spec: CampaignTreeSpec, serviceOrder: ["a", "b"] | ["
     buildTopology();
   }
 
-  const initiative = new Initiative(stack, "initiative", {
+  // Standalone — `coordinates` (initiative -> campaign membership) is system-managed and NOT
+  // synth-declarable in IaC (M5 CRITICAL); membership is added via the authority-checked
+  // `POST /initiatives/{id}/campaigns` API. `campaign` is still referenced above (its targets).
+  void campaign;
+  new Initiative(stack, "initiative", {
     name: "Initiative",
     description: spec.initiativeDescription
   });
-  initiative.coordinates(campaign);
 
   return stack;
 }
