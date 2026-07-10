@@ -9,8 +9,12 @@ import { insertDecision } from "./decisions-repo.js";
 
 type ChangeRow = typeof changes.$inferSelect;
 type ObjectRow = typeof objects.$inferSelect;
+/** The minimal object shape `toChangeShape` actually reads — satisfied by both a raw `ObjectRow`
+ *  (joined-query callers below) and a `GraphObject` (createObject's return shape in `proposeChange`,
+ *  which has ISO-string dates and no `contentHash`) without forcing either side to convert. */
+type ObjectLike = Pick<ObjectRow, "id" | "urn" | "name"> & { properties: unknown };
 
-export function toChangeShape(change: ChangeRow, object: ObjectRow): Change {
+export function toChangeShape(change: ChangeRow, object: ObjectLike): Change {
   return {
     id: object.id,
     orgId: change.orgId,

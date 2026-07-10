@@ -62,6 +62,9 @@ importers:
       '@scp/plugin-api':
         specifier: workspace:*
         version: link:../../packages/plugin-api
+      '@scp/plugin-fake-executor':
+        specifier: workspace:*
+        version: link:../../packages/plugins/fake-executor
       '@scp/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas

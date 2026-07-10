@@ -10,6 +10,7 @@
     { "path": "../../packages/schemas" },
     { "path": "../../packages/sdk" },
     { "path": "../../packages/iac" },
-    { "path": "../../packages/plugin-api" }
+    { "path": "../../packages/plugin-api" },
+    { "path": "../../packages/plugins/fake-executor" }
   ]
 }
