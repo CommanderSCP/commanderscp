@@ -306,6 +306,68 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
   });
 
   // -----------------------------------------------------------------------------------------
+  // CRITICAL #1a (adversarial review): a lower-scope same-named policy with a FALSE/broken
+  // condition must NOT neutralize a higher-scope required policy's effects. The pre-fix evaluator
+  // ANDed every contributor's condition, so one false condition zeroed the whole merged policy.
+  // -----------------------------------------------------------------------------------------
+
+  it("a second same-named policy with a FALSE condition does NOT weaken a higher-scope required policy — the required control still gates (block persists)", async () => {
+    const org = await createTestOrg(server, "condition-bypass");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+    const domain = await admin.domains.create({ name: "cb-domain" });
+    const component = await admin.components.create({ name: "cb-component", domainId: domain.id });
+    const realControl = await createWebhookControl(admin, org, {
+      urnSuffix: "cb-real-scan",
+      webhookUrl: webhook.url,
+      outcome: "pass"
+    });
+
+    // Org-level REQUIRED, unconditional, requiring a real (satisfiable) control.
+    await createPolicy(admin, org, {
+      name: "prod-security",
+      urnSuffix: "cb-org",
+      enforcement: "required",
+      scopeObjectId: org.orgId,
+      requireControlIds: [realControl.id]
+    });
+    // A second same-named policy scoped to the component with an always-false condition and no
+    // controls — the "neutralizer". Must NOT drop the org's required control.
+    await createPolicy(admin, org, {
+      name: "prod-security",
+      urnSuffix: "cb-neutralizer",
+      enforcement: "advisory",
+      scopeObjectId: component.id,
+      condition: "1 == 2"
+    });
+
+    const change = await admin.changes.propose({ name: "cb-change", targets: [component.id] });
+
+    // Before the control passes, the gate must BLOCK (the org required control is unsatisfied) —
+    // i.e. the false-condition contributor did NOT neutralize it. Assert via a dry-run evaluate
+    // that the required control effect is present and unsatisfied.
+    const evalResult = await admin.policyEvaluate(change.id);
+    const entry = (evalResult.reasonTree as { policies: Array<Record<string, unknown>> }).policies.find(
+      (p) => p.name === "prod-security"
+    );
+    expect(entry).toBeDefined();
+    expect(entry!.fired).toBe(true);
+    expect(entry!.enforcement).toBe("required");
+    const realControlEffect = (
+      entry!.effects as Array<{ kind: string; detail: Record<string, unknown> }>
+    ).find((e) => e.kind === "requireControls" && e.detail.controlObjectId === realControl.id);
+    expect(realControlEffect).toBeDefined();
+
+    // And end-to-end: the change only reaches 'validating' once the REAL required control passes
+    // (proving the required effect genuinely gated the wave, not silently dropped). The control
+    // returns pass, so it eventually clears.
+    await waitForControlRun(admin, change.id, realControl.id, "pass");
+    await waitForValidating(admin, change.id);
+    const promoted = await admin.changes.promote(change.id);
+    expect(promoted.state).toBe("promoted");
+  });
+
+  // -----------------------------------------------------------------------------------------
   // Required control blocks promote; hybrid gate (scan AND approval — either missing blocks);
   // control outcomes + evidence persisted and referenced by the Decision (joined by
   // controlObjectId — see routes/changes.ts's explain handler / control_runs.decision_id's own
@@ -504,6 +566,48 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       });
       expect(approvesRels.items.length).toBeGreaterThanOrEqual(1);
     }
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // MAJOR #5 (adversarial review): a requireApprovals.scope written as a scope-KIND keyword
+  // (DESIGN §10.1's own example `"scope":"service"`) must resolve to the change target's
+  // containing service — NOT crash the reconcile tick with a raw `::uuid` cast (22P02).
+  // -----------------------------------------------------------------------------------------
+
+  it("requireApprovals scope written as the DESIGN keyword 'service' resolves to the target's containing service (no 22P02 crash) and gates a service-level Approver's vote", async () => {
+    const org = await createTestOrg(server, "scope-keyword");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+    const service = await admin.services.create({ name: "sk-service" });
+    const component = await admin.components.create({ name: "sk-component", domainId: service.id });
+
+    await createPolicy(admin, org, {
+      name: "service-approval",
+      urnSuffix: "scope-keyword",
+      enforcement: "required",
+      scopeObjectId: component.id,
+      // The DESIGN §10.1 example scope KIND keyword — not a uuid.
+      requireApprovals: { count: 1, fromRole: "Approver", scope: "service" }
+    });
+
+    const change = await admin.changes.propose({ name: "sk-change", targets: [component.id] });
+
+    // The approval request materializes with scopeObjectId resolved to the SERVICE (not the raw
+    // string "service"), so an Approver bound at the service is eligible.
+    const approvalRequest = await waitForApprovalRequest(admin, change.id);
+    expect(approvalRequest.scopeObjectId).toBe(service.id);
+
+    const serviceApprover = await createTestUser(server, org, [{ role: "Approver", scope: service.id }]);
+    const serviceApproverClient = new ScpClient({ baseUrl: server.baseUrl, token: serviceApprover.token });
+    await serviceApproverClient.approvals.vote(approvalRequest.id);
+    const satisfied = await admin.approvals.get(approvalRequest.id);
+    expect(satisfied.status).toBe("satisfied");
+
+    // The change proceeds all the way to promoted — proving the whole path (materialize with
+    // resolved scope → eligible vote → quorum) worked, and never crashed a gate tick.
+    await waitForValidating(admin, change.id);
+    const promoted = await admin.changes.promote(change.id);
+    expect(promoted.state).toBe("promoted");
   });
 
   // -----------------------------------------------------------------------------------------
