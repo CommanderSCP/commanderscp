@@ -1,9 +1,15 @@
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Change, ChangeState, ChangeWave, ChangeWaveTarget, Decision } from "@scp/sdk";
+import { ScpApiError, type Change, type ChangeState, type ChangeWave, type ChangeWaveTarget, type Decision } from "@scp/sdk";
+// M4 governance types: @scp/schemas, not @scp/sdk — @scp/sdk's index.ts only re-exports the M3
+// (and earlier) wire types; M4 never added ApprovalRequest/Freeze/etc. there. Importing
+// @scp/schemas directly here is within bounds (eslint.config.mjs's own restricted-imports rule:
+// "apps/web/src may import only @scp/sdk and @scp/schemas"), matching how packages/cli/src/cli.ts
+// already sources these exact same types.
+import type { ApprovalRequest } from "@scp/schemas";
 import { client } from "../lib/client";
-import { changeDetailKey, changeListKey } from "../lib/query-client";
+import { changeApprovalsKey, changeDetailKey, changeListKey } from "../lib/query-client";
 import { useIdParam } from "../lib/use-route-params";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge, type BadgeProps } from "../components/ui/badge";
@@ -115,6 +121,32 @@ function decisionSummary(decision: Decision): string {
   return JSON.stringify(decision.reasonTree);
 }
 
+/** Every gate/policy block surfaces as a 4xx carrying `decision_id` (DESIGN §6/§10.4) — this is
+ *  the UI's one "Why?" plumbing point: pull it back out of a thrown `ScpApiError` so a failed
+ *  promote/cancel/rollback can link straight to the Decision record that explains it, instead of
+ *  just showing an opaque error string. */
+function decisionIdOf(error: unknown): string | undefined {
+  return error instanceof ScpApiError ? error.problem?.decision_id : undefined;
+}
+
+/** Anchors to the matching row already rendered in the Decisions timeline below (never a
+ *  separate page — every Decision this change could ever be blocked by is already in that list)
+ *  and gives it a moment of highlight so "Why?" visibly lands somewhere. */
+function WhyLink({ decisionId }: { decisionId: string }): React.JSX.Element {
+  return (
+    <a
+      href={`#decision-${decisionId}`}
+      className="font-medium text-red-700 underline hover:text-red-900"
+      data-testid="why-link"
+      onClick={() => {
+        document.getElementById(`decision-${decisionId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }}
+    >
+      Why?
+    </a>
+  );
+}
+
 /**
  * Small reusable dialog for the two reason-carrying transitions (cancel/rollback). `reasonRequired`
  * drives client-side enforcement of `RollbackChangeRequestSchema`'s `reason: z.string().min(1)`
@@ -128,6 +160,7 @@ function TransitionReasonDialog({
   reasonRequired,
   pending,
   errorMessage,
+  errorDecisionId,
   onOpenChange,
   onSubmit,
   submitLabel,
@@ -139,6 +172,7 @@ function TransitionReasonDialog({
   reasonRequired: boolean;
   pending: boolean;
   errorMessage: string | null;
+  errorDecisionId?: string | undefined;
   onOpenChange: (open: boolean) => void;
   onSubmit: (reason: string) => void;
   submitLabel: string;
@@ -182,7 +216,17 @@ function TransitionReasonDialog({
               data-testid={`${testIdPrefix}-reason-input`}
             />
           </div>
-          {errorMessage && <p className="text-sm text-red-600">{errorMessage}</p>}
+          {errorMessage && (
+            <p className="text-sm text-red-600">
+              {errorMessage}
+              {errorDecisionId && (
+                <>
+                  {" "}
+                  <WhyLink decisionId={errorDecisionId} />
+                </>
+              )}
+            </p>
+          )}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
@@ -234,14 +278,19 @@ export function ChangeDetailPage(): React.JSX.Element {
     onSuccess: async () => {
       setCancelOpen(false);
       await invalidate();
-    }
+    },
+    // A blocked cancel still wrote a Decision (coordination/transition.ts always writes exactly
+    // one, allow or block) — refetch so the "Why?" link below resolves to a row that's actually
+    // in the timeline, not one still sitting behind a stale cached explain() response.
+    onError: () => invalidate()
   });
 
   const promoteMutation = useMutation({
     mutationFn: () => client.changes.promote(id!),
     onSuccess: async () => {
       await invalidate();
-    }
+    },
+    onError: () => invalidate()
   });
 
   const rollbackMutation = useMutation({
@@ -250,6 +299,33 @@ export function ChangeDetailPage(): React.JSX.Element {
       setRollbackOpen(false);
       await invalidate();
       await navigate({ to: "/changes/$id", params: { id: created.id } });
+    },
+    onError: () => invalidate()
+  });
+
+  const approvalsKey = changeApprovalsKey(id ?? "");
+  // DESIGN §10.2: "approval control instances materialize as approval tasks — actionable via
+  // API, UI, and CLI." `GET /approvals` is always scoped to one changeId (routes/governance.ts),
+  // so this lives on the change detail view rather than a standalone approvals page.
+  const approvalsQuery = useQuery({
+    queryKey: approvalsKey,
+    queryFn: () => client.approvals.list({ changeId: id!, limit: 20 }),
+    enabled: !!id,
+    refetchInterval: 5000
+  });
+
+  const [voteError, setVoteError] = useState<string | null>(null);
+  const voteMutation = useMutation({
+    mutationFn: (approvalId: string) => client.approvals.vote(approvalId),
+    onSuccess: async () => {
+      setVoteError(null);
+      await queryClient.invalidateQueries({ queryKey: approvalsKey });
+      // A vote can be the one that satisfies quorum and unblocks a gate — refetch the change/
+      // decision timeline too, not just the approval list.
+      await invalidate();
+    },
+    onError: (err: unknown) => {
+      setVoteError(err instanceof Error ? err.message : "Failed to cast vote");
     }
   });
 
@@ -267,7 +343,7 @@ export function ChangeDetailPage(): React.JSX.Element {
     );
   }
 
-  const { change, plan, decisions } = explainQuery.data;
+  const { change, plan, decisions, controlRuns } = explainQuery.data;
   const canCancel = CANCELLABLE_STATES.includes(change.state);
   const canPromote = PROMOTABLE_STATES.includes(change.state);
   const canRollback = ROLLBACKABLE_STATES.includes(change.state);
@@ -334,10 +410,14 @@ export function ChangeDetailPage(): React.JSX.Element {
       </div>
 
       {promoteMutation.isError && (
-        <p className="text-sm text-red-600">
-          {promoteMutation.error instanceof Error
-            ? promoteMutation.error.message
-            : "Failed to promote"}
+        <p className="text-sm text-red-600" data-testid="promote-error">
+          {promoteMutation.error instanceof Error ? promoteMutation.error.message : "Failed to promote"}
+          {decisionIdOf(promoteMutation.error) && (
+            <>
+              {" "}
+              <WhyLink decisionId={decisionIdOf(promoteMutation.error)!} />
+            </>
+          )}
         </p>
       )}
 
@@ -380,26 +460,121 @@ export function ChangeDetailPage(): React.JSX.Element {
             <p className="text-sm text-slate-500">No decisions recorded yet.</p>
           ) : (
             <ul className="flex flex-col gap-3" data-testid="decision-timeline">
-              {decisions.map((decision) => (
-                <li
-                  key={decision.id}
-                  className="rounded border border-slate-200 p-3 text-sm"
-                  data-testid="decision-row"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium text-slate-900">{decision.kind}</span>
-                    <Badge variant={decision.verdict === "allow" ? "success" : "destructive"}>
-                      {decision.verdict}
-                    </Badge>
-                  </div>
-                  <p className="mt-1 text-xs text-slate-500">{formatDate(decision.createdAt)}</p>
-                  <p className="mt-1 text-slate-600">{decisionSummary(decision)}</p>
-                </li>
-              ))}
+              {decisions.map((decision) => {
+                // Whichever blocked action (if any) is currently displaying a "Why?" link that
+                // points here — highlighted so following the link visibly lands on its target,
+                // not just scrolls the page with no feedback.
+                const isLinkedFromError =
+                  decision.id === decisionIdOf(promoteMutation.error) ||
+                  decision.id === decisionIdOf(cancelMutation.error) ||
+                  decision.id === decisionIdOf(rollbackMutation.error);
+                return (
+                  <li
+                    key={decision.id}
+                    id={`decision-${decision.id}`}
+                    className={`rounded border p-3 text-sm ${
+                      isLinkedFromError ? "border-red-400 ring-2 ring-red-300" : "border-slate-200"
+                    }`}
+                    data-testid="decision-row"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium text-slate-900">{decision.kind}</span>
+                      <Badge variant={decision.verdict === "allow" ? "success" : "destructive"}>
+                        {decision.verdict}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-xs text-slate-500">{formatDate(decision.createdAt)}</p>
+                    <p className="mt-1 text-slate-600">{decisionSummary(decision)}</p>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </CardContent>
       </Card>
+
+      {approvalsQuery.data && approvalsQuery.data.items.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Approvals</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {voteError && (
+              <p className="mb-2 text-sm text-red-600" data-testid="vote-error">
+                {voteError}
+              </p>
+            )}
+            <ul className="flex flex-col gap-3" data-testid="approval-list">
+              {approvalsQuery.data.items.map((approval: ApprovalRequest) => (
+                <li
+                  key={approval.id}
+                  className="flex items-center justify-between gap-3 rounded border border-slate-200 p-3 text-sm"
+                  data-testid="approval-row"
+                >
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-slate-900">
+                        {approval.voteCount} / {approval.requiredCount} from {approval.fromRole}
+                      </span>
+                      <Badge variant={approval.status === "satisfied" ? "success" : "outline"}>
+                        {approval.status}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-xs text-slate-500">Requested {formatDate(approval.createdAt)}</p>
+                  </div>
+                  {approval.status !== "satisfied" && (
+                    <Button
+                      size="sm"
+                      onClick={() => voteMutation.mutate(approval.id)}
+                      disabled={voteMutation.isPending}
+                      data-testid="approve-button"
+                    >
+                      {voteMutation.isPending ? "Voting…" : "Approve"}
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
+
+      {controlRuns.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Control runs</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {/* Evidence lives here, not on the Decision above — the Decision only ever carries
+                the outcome STATUS per control (reasonTree.policies[].effects[].detail); joined by
+                controlObjectId, this is the other half of "explain reconstructs policy version +
+                control outcome + evidence" (DESIGN §10.4). */}
+            <ul className="flex flex-col gap-3" data-testid="control-run-list">
+              {controlRuns.map((run) => (
+                <li
+                  key={run.id}
+                  className="rounded border border-slate-200 p-3 text-sm"
+                  data-testid="control-run-row"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-xs text-slate-900">{run.controlObjectId}</span>
+                    <Badge variant={run.status === "pass" ? "success" : run.status === "warning" ? "info" : "destructive"}>
+                      {run.status}
+                    </Badge>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-500">{formatDate(run.createdAt)}</p>
+                  {run.detail && <p className="mt-1 text-slate-600">{run.detail}</p>}
+                  {Object.keys(run.evidence).length > 0 && (
+                    <pre className="mt-1 overflow-x-auto rounded bg-slate-50 p-2 text-xs text-slate-600">
+                      {JSON.stringify(run.evidence, null, 2)}
+                    </pre>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
 
       <TransitionReasonDialog
         open={cancelOpen}
@@ -414,6 +589,7 @@ export function ChangeDetailPage(): React.JSX.Element {
               : "Failed to cancel"
             : null
         }
+        errorDecisionId={decisionIdOf(cancelMutation.error)}
         onOpenChange={setCancelOpen}
         onSubmit={(reason) => cancelMutation.mutate(reason)}
         submitLabel="Cancel change"
@@ -433,6 +609,7 @@ export function ChangeDetailPage(): React.JSX.Element {
               : "Failed to roll back"
             : null
         }
+        errorDecisionId={decisionIdOf(rollbackMutation.error)}
         onOpenChange={setRollbackOpen}
         onSubmit={(reason) => rollbackMutation.mutate(reason)}
         submitLabel="Roll back"

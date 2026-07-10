@@ -71,6 +71,13 @@
       "when": 1783750000000,
       "tag": "0009_reconcile_blocked_at",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1783760000000,
+      "tag": "0010_governance",
+      "breakpoints": true
     }
   ]
 }

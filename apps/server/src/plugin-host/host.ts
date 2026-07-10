@@ -40,13 +40,20 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   AbortResult,
+  ControlOutcome,
+  ControlRequest,
   Cursor,
   ExecutionStatus,
   ExecutorCapabilities,
   ExternalRunRef,
   TriggerIntent
 } from "@scp/plugin-api";
-import type { ExecutorPluginClient, PluginHost, PluginHostInstanceConfig } from "./contract.js";
+import type {
+  ControlPluginClient,
+  ExecutorPluginClient,
+  PluginHost,
+  PluginHostInstanceConfig
+} from "./contract.js";
 import {
   encodeMessage,
   isErrorResponse,
@@ -238,23 +245,35 @@ export class SubprocessPluginHost implements PluginHost {
     };
   }
 
+  /**
+   * Idempotent per instance id (M4 addition — DESIGN §10.2's control bindings have no
+   * plugin-instance-configuration API yet, same gap `executor-config.ts` documents for
+   * executors, so `governance/control-runner.ts` provisions a control's plugin instance
+   * ON DEMAND from whatever `control_bindings` row it finds, calling `start()` again every time
+   * it might be needed). A config whose `id` is ALREADY registered is silently skipped rather
+   * than re-spawned — re-spawning would leak the previous child process (never killed) while a
+   * fresh one takes its place under the same id, and would race any in-flight call against it.
+   * Main.ts's own single boot-time `start()` call is unaffected (every id it passes is new).
+   */
   async start(configs: PluginHostInstanceConfig[]): Promise<void> {
     await Promise.all(
-      configs.map(async (config) => {
-        const instance: Instance = {
-          config,
-          ready: false,
-          readyWaiters: [],
-          nextRequestId: 1,
-          pending: new Map(),
-          restartAttempts: 0,
-          spawnedAt: 0,
-          stopped: false
-        };
-        this.instances.set(config.id, instance);
-        this.spawnInstance(instance);
-        await this.waitForReady(instance, this.opts.callTimeoutMs);
-      })
+      configs
+        .filter((config) => !this.instances.has(config.id))
+        .map(async (config) => {
+          const instance: Instance = {
+            config,
+            ready: false,
+            readyWaiters: [],
+            nextRequestId: 1,
+            pending: new Map(),
+            restartAttempts: 0,
+            spawnedAt: 0,
+            stopped: false
+          };
+          this.instances.set(config.id, instance);
+          this.spawnInstance(instance);
+          await this.waitForReady(instance, this.opts.callTimeoutMs);
+        })
     );
   }
 
@@ -287,6 +306,15 @@ export class SubprocessPluginHost implements PluginHost {
       status: (ref: ExternalRunRef) => call<ExecutionStatus>("status", { ref }),
       abort: (ref: ExternalRunRef) => call<AbortResult>("abort", { ref }),
       describeCapabilities: () => call<ExecutorCapabilities>("describeCapabilities")
+    };
+  }
+
+  /** M4 counterpart to `executor()` — same host, same instance registry, one RPC method. */
+  control(instanceId: string): ControlPluginClient {
+    const call = <T>(method: string, params?: unknown): Promise<T> =>
+      this.call(instanceId, method, params) as Promise<T>;
+    return {
+      evaluate: (req: ControlRequest) => call<ControlOutcome>("evaluate", { req })
     };
   }
 
@@ -373,7 +401,9 @@ export class SubprocessPluginHost implements PluginHost {
     });
 
     child.on("error", (err) => {
-      process.stderr.write(`[plugin-host] instance '${instance.config.id}' spawn error: ${err.message}\n`);
+      process.stderr.write(
+        `[plugin-host] instance '${instance.config.id}' spawn error: ${err.message}\n`
+      );
     });
   }
 
@@ -402,7 +432,9 @@ export class SubprocessPluginHost implements PluginHost {
     try {
       msg = parseMessage(line);
     } catch {
-      process.stderr.write(`[plugin-host] instance '${instance.config.id}': unparsable line on stdout, ignoring\n`);
+      process.stderr.write(
+        `[plugin-host] instance '${instance.config.id}': unparsable line on stdout, ignoring\n`
+      );
       return;
     }
 
@@ -437,11 +469,16 @@ export class SubprocessPluginHost implements PluginHost {
 
   private waitForReady(instance: Instance, timeoutMs: number): Promise<void> {
     if (instance.ready) return Promise.resolve();
-    if (instance.stopped) return Promise.reject(new Error(`plugin instance '${instance.config.id}' is stopped`));
+    if (instance.stopped)
+      return Promise.reject(new Error(`plugin instance '${instance.config.id}' is stopped`));
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         instance.readyWaiters = instance.readyWaiters.filter((w) => w !== onReady);
-        reject(new Error(`plugin instance '${instance.config.id}' did not become ready within ${timeoutMs}ms`));
+        reject(
+          new Error(
+            `plugin instance '${instance.config.id}' did not become ready within ${timeoutMs}ms`
+          )
+        );
       }, timeoutMs);
       const onReady = (): void => {
         clearTimeout(timer);
@@ -457,7 +494,12 @@ export class SubprocessPluginHost implements PluginHost {
 
   /** One RPC attempt against whatever child is currently running for `instance` — does not wait
    *  for readiness and does not retry; `call()` composes this with `waitForReady`/retry. */
-  private sendOnce(instance: Instance, method: string, params: unknown, timeoutMs: number): Promise<unknown> {
+  private sendOnce(
+    instance: Instance,
+    method: string,
+    params: unknown,
+    timeoutMs: number
+  ): Promise<unknown> {
     const child = instance.child;
     if (!child || !instance.ready) {
       return Promise.reject(new PluginInstanceCrashedError(instance.config.id));
@@ -470,7 +512,11 @@ export class SubprocessPluginHost implements PluginHost {
         // exit handler reclaims it and restart-with-backoff kicks in, converting "hung forever"
         // into "will come back". `sendOnce`'s caller (`call`) still only sees a timeout error.
         instance.child?.kill("SIGKILL");
-        reject(new Error(`plugin '${instance.config.id}' call '${method}' timed out after ${timeoutMs}ms`));
+        reject(
+          new Error(
+            `plugin '${instance.config.id}' call '${method}' timed out after ${timeoutMs}ms`
+          )
+        );
       }, timeoutMs);
       instance.pending.set(id, { resolve, reject, timer });
       child.stdin.write(encodeMessage({ jsonrpc: "2.0", id, method, params }));
@@ -493,7 +539,9 @@ export class SubprocessPluginHost implements PluginHost {
     for (;;) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
-        throw new Error(`plugin '${instanceId}' call '${method}' timed out (deadline exceeded across restarts)`);
+        throw new Error(
+          `plugin '${instanceId}' call '${method}' timed out (deadline exceeded across restarts)`
+        );
       }
       if (instance.stopped) throw new Error(`plugin instance '${instanceId}' is stopped`);
 
@@ -507,7 +555,9 @@ export class SubprocessPluginHost implements PluginHost {
 
       const remainingAfterReady = deadline - Date.now();
       if (remainingAfterReady <= 0) {
-        throw new Error(`plugin '${instanceId}' call '${method}' timed out waiting for the instance to be ready`);
+        throw new Error(
+          `plugin '${instanceId}' call '${method}' timed out waiting for the instance to be ready`
+        );
       }
 
       try {

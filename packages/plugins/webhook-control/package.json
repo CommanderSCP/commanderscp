@@ -11,7 +11,11 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run --passWithNoTests"
   },
+  "dependencies": {
+    "@scp/plugin-api": "workspace:*"
+  },
   "devDependencies": {
+    "@scp/plugin-testkit": "workspace:*",
     "typescript": "~5.8.0",
     "vitest": "^3.0.0"
   }

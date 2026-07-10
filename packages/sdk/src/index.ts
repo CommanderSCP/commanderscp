@@ -59,3 +59,29 @@ export type {
   SourceMappingListResponse,
   WebhookIngressResponse
 } from "@scp/schemas";
+
+// M4: Governance Engine — control runs/bindings, approvals (N-of-M quorum), freezes, and `scp
+// policy evaluate`'s dry-run response (BUILD_AND_TEST.md §8 M4). Policy/Control documents
+// themselves are plain typed-registry `GraphObject`s (already covered by the M2 exports above) —
+// this only adds the projection-table resources that have no graph-object equivalent. Until this
+// commit these were only ever re-exported informally (packages/cli/src/cli.ts imported them
+// straight from @scp/schemas — allowed by eslint's own restricted-imports rule, but not what
+// `@scp/sdk`'s own module doc above promises for a THIRD-PARTY consumer of this package).
+export type {
+  ControlOutcomeStatus,
+  ControlRun,
+  ControlRunListResponse,
+  CreateControlBindingRequest,
+  ControlBinding,
+  ApprovalRequest,
+  ApprovalRequestListQuery,
+  ApprovalRequestListResponse,
+  Attestation,
+  ApprovalVote,
+  CastApprovalVoteRequest,
+  Freeze,
+  CreateFreezeRequest,
+  FreezeListResponse,
+  PolicyEvaluateRequest,
+  PolicyEvaluateResponse
+} from "@scp/schemas";

@@ -26,6 +26,8 @@
  */
 import { createInterface } from "node:readline";
 import type {
+  ControlPlugin,
+  ControlRequest,
   Cursor,
   ExecutorPlugin,
   ExternalRunRef,
@@ -38,19 +40,26 @@ import type {
 } from "@scp/plugin-api";
 import { encodeMessage, parseMessage, type RpcRequest } from "./rpc-protocol.js";
 
-async function loadPlugin(moduleName: string): Promise<ExecutorPlugin> {
+type LoadedPlugin = { kind: "executor"; plugin: ExecutorPlugin } | { kind: "control"; plugin: ControlPlugin };
+
+/**
+ * Static module map (DESIGN.md §11: "No runtime hot-loading, ever") — grows as M4/M7 ship more
+ * in-repo plugins, never by loosening this to a dynamic/unchecked import. `kind` on the returned
+ * union drives `dispatch()`'s method routing below (executor methods vs. `evaluate`).
+ */
+async function loadPlugin(moduleName: string): Promise<LoadedPlugin> {
   switch (moduleName) {
     case "fake-executor": {
       const mod = await import("@scp/plugin-fake-executor");
-      return mod.createFakeExecutorPlugin();
+      return { kind: "executor", plugin: mod.createFakeExecutorPlugin() };
+    }
+    case "webhook-control": {
+      const mod = await import("@scp/plugin-webhook-control");
+      return { kind: "control", plugin: mod.createWebhookControlPlugin() };
     }
     default:
-      // M3 only ever configures "fake-executor" (contract.ts's `PluginHostInstanceConfig.module`
-      // is typed to that one literal today) — a real module map grows here as M7 ships
-      // GitHub/ArgoCD/etc. plugins, never by loosening this to a dynamic/unchecked import
-      // (DESIGN.md §11: "No runtime hot-loading, ever").
       throw new Error(
-        `subprocess-entry: unknown SCP_PLUGIN_MODULE "${moduleName}" — only "fake-executor" resolves in M3`
+        `subprocess-entry: unknown SCP_PLUGIN_MODULE "${moduleName}" — only "fake-executor"/"webhook-control" resolve`
       );
   }
 }
@@ -115,7 +124,14 @@ function requireEnv(name: string): string {
   return value;
 }
 
-async function dispatch(plugin: ExecutorPlugin, ctx: PluginContext, method: string, params: unknown): Promise<unknown> {
+async function dispatch(loaded: LoadedPlugin, ctx: PluginContext, method: string, params: unknown): Promise<unknown> {
+  if (loaded.kind === "control") {
+    if (method !== "evaluate") throw new Error(`unknown method "${method}" for a ControlPlugin instance`);
+    const p = params as { req: ControlRequest };
+    return loaded.plugin.evaluate(ctx, p.req);
+  }
+
+  const plugin = loaded.plugin;
   switch (method) {
     case "observe": {
       const p = (params ?? {}) as { since?: Cursor };
@@ -136,7 +152,7 @@ async function dispatch(plugin: ExecutorPlugin, ctx: PluginContext, method: stri
     case "describeCapabilities":
       return plugin.describeCapabilities();
     default:
-      throw new Error(`unknown method "${method}"`);
+      throw new Error(`unknown method "${method}" for an ExecutorPlugin instance`);
   }
 }
 

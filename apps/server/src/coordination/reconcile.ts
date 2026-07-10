@@ -4,8 +4,11 @@ import type { Db } from "../db/client.js";
 import { orgs } from "../db/schema.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import type { PluginHost } from "../plugin-host/contract.js";
+import type { CelSandbox } from "../governance/cel-sandbox.js";
+import type { GateDeps } from "./gates.js";
 import { listChangeRowsInStates, markChangeReconcileBlocked, targetObjectIdsOf, type ChangeRow } from "./changes-repo.js";
 import { transitionChange } from "./transition.js";
+import { triggerRollback } from "./rollback.js";
 import { compileAndPersistPlan, getLatestPlanForChange } from "./plan-service.js";
 import {
   claimWaveTargetForTriggering,
@@ -21,6 +24,9 @@ import { insertDecision } from "./decisions-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import { DEFAULT_EXECUTOR_INSTANCE_ID } from "./executor-config.js";
 import { processChangeSourceEvents } from "./webhook-processor.js";
+import { matchPoliciesForTargets } from "../governance/policy-resolve.js";
+import { resolvePolicies } from "../governance/policy-model.js";
+import { prewarmGovernanceForChange } from "../governance/gate-orchestrator.js";
 
 /**
  * The resumable reconciliation loop (DESIGN.md §9.3/§9.4, BUILD_AND_TEST.md §8 M3): "pg-boss
@@ -68,19 +74,23 @@ function logChangeError(orgId: string, change: ChangeRow, step: string, err: unk
 // state machinery is entirely inside `advanceExecutingChanges` below.
 // -------------------------------------------------------------------------------------------
 
-async function advanceProposedChanges(db: Db, orgId: string): Promise<void> {
+async function advanceProposedChanges(db: Db, orgId: string, gateDeps: GateDeps): Promise<void> {
   const rows = await withTenantTx(db, orgId, (tx) => listChangeRowsInStates(tx, orgId, ["proposed"], BATCH_LIMIT));
   for (const { change } of rows) {
     try {
       await withTenantTx(db, orgId, (tx) =>
-        transitionChange(tx, {
-          orgId,
-          changeObjectId: change.objectId,
-          toState: "evaluated",
-          actorObjectId: SYSTEM_ACTOR_ID,
-          requestId: "reconcile",
-          reason: "auto: no policy/control evaluation exists before M4 — nothing blocks this edge yet"
-        })
+        transitionChange(
+          tx,
+          {
+            orgId,
+            changeObjectId: change.objectId,
+            toState: "evaluated",
+            actorObjectId: SYSTEM_ACTOR_ID,
+            requestId: "reconcile",
+            reason: "auto: proposed->evaluated is not governance-gated (M4 — coordination/gates.ts's module doc)"
+          },
+          gateDeps
+        )
       );
     } catch (err) {
       logChangeError(orgId, change, "proposed->evaluated", err);
@@ -88,7 +98,7 @@ async function advanceProposedChanges(db: Db, orgId: string): Promise<void> {
   }
 }
 
-async function advanceEvaluatedChanges(db: Db, orgId: string): Promise<void> {
+async function advanceEvaluatedChanges(db: Db, orgId: string, gateDeps: GateDeps): Promise<void> {
   const rows = await withTenantTx(db, orgId, (tx) => listChangeRowsInStates(tx, orgId, ["evaluated"], BATCH_LIMIT));
   for (const { change, object } of rows) {
     try {
@@ -102,29 +112,36 @@ async function advanceEvaluatedChanges(db: Db, orgId: string): Promise<void> {
             topologyObjectId: change.topologyObjectId,
             topologyVersion: change.topologyVersion
           });
-          await transitionChange(tx, {
-            orgId,
-            changeObjectId: change.objectId,
-            toState: "coordinated",
-            actorObjectId: SYSTEM_ACTOR_ID,
-            requestId: "reconcile",
-            reason: "auto: plan compiled (waves derived from depends_on / release topology)"
-          });
+          await transitionChange(
+            tx,
+            {
+              orgId,
+              changeObjectId: change.objectId,
+              toState: "coordinated",
+              actorObjectId: SYSTEM_ACTOR_ID,
+              requestId: "reconcile",
+              reason: "auto: plan compiled (waves derived from depends_on / release topology)"
+            },
+            gateDeps
+          );
         } catch (err) {
-          // A cycle, an unknown target, or a topology/dependency conflict (plan-compiler.ts) — M3
-          // has no "blocked" state to sit in (that's a governance/M4 concept), so an unsalvageable
-          // plan auto-cancels the change with the compiler's own reason attached, rather than
-          // leaving it stuck in `evaluated` forever with no path forward. Same transaction as the
-          // failed compile attempt, so either both roll back together or the cancel commits clean.
+          // A cycle, an unknown target, or a topology/dependency conflict (plan-compiler.ts)
+          // auto-cancels the change with the compiler's own reason attached, rather than leaving
+          // it stuck in `evaluated` forever with no path forward. Same transaction as the failed
+          // compile attempt, so either both roll back together or the cancel commits clean.
           const message = err instanceof Error ? err.message : String(err);
-          await transitionChange(tx, {
-            orgId,
-            changeObjectId: change.objectId,
-            toState: "cancelled",
-            actorObjectId: SYSTEM_ACTOR_ID,
-            requestId: "reconcile",
-            reason: `auto-cancelled: plan compilation failed — ${message}`
-          });
+          await transitionChange(
+            tx,
+            {
+              orgId,
+              changeObjectId: change.objectId,
+              toState: "cancelled",
+              actorObjectId: SYSTEM_ACTOR_ID,
+              requestId: "reconcile",
+              reason: `auto-cancelled: plan compilation failed — ${message}`
+            },
+            gateDeps
+          );
         }
       });
     } catch (err) {
@@ -133,22 +150,56 @@ async function advanceEvaluatedChanges(db: Db, orgId: string): Promise<void> {
   }
 }
 
-async function advanceCoordinatedChanges(db: Db, orgId: string): Promise<void> {
+async function advanceCoordinatedChanges(db: Db, orgId: string, gateDeps: GateDeps): Promise<void> {
   const rows = await withTenantTx(db, orgId, (tx) => listChangeRowsInStates(tx, orgId, ["coordinated"], BATCH_LIMIT));
   for (const { change } of rows) {
     try {
       await withTenantTx(db, orgId, (tx) =>
-        transitionChange(tx, {
-          orgId,
-          changeObjectId: change.objectId,
-          toState: "executing",
-          actorObjectId: SYSTEM_ACTOR_ID,
-          requestId: "reconcile",
-          reason: "auto: beginning wave execution"
-        })
+        transitionChange(
+          tx,
+          {
+            orgId,
+            changeObjectId: change.objectId,
+            toState: "executing",
+            actorObjectId: SYSTEM_ACTOR_ID,
+            requestId: "reconcile",
+            reason: "auto: beginning wave execution"
+          },
+          gateDeps
+        )
       );
     } catch (err) {
       logChangeError(orgId, change, "coordinated->executing", err);
+    }
+  }
+}
+
+// -------------------------------------------------------------------------------------------
+// validating: no state transition happens here automatically (that edge is human-only —
+// coordination/gates.ts's module doc) — but a required control referenced by a policy bound to
+// the `validating->promoted` edge needs to actually RUN somewhere, and the promote route itself
+// is host-less (DESIGN §16's api/worker split). This is that "somewhere": every tick, ensure
+// every fired policy's required controls have a fresh outcome and every requireApprovals effect
+// has a materialized approval_requests row, so a human's `scp change promote` — and `GET
+// /approvals` — see up-to-date state without ever needing this process to hold a live PluginHost.
+// -------------------------------------------------------------------------------------------
+
+async function advanceValidatingChanges(db: Db, orgId: string, host: PluginHost, sandbox: CelSandbox): Promise<void> {
+  const rows = await withTenantTx(db, orgId, (tx) => listChangeRowsInStates(tx, orgId, ["validating"], BATCH_LIMIT));
+  for (const { change, object } of rows) {
+    try {
+      const targetObjectIds = targetObjectIdsOf(object.properties as Record<string, unknown>);
+      if (targetObjectIds.length === 0) continue;
+      await withTenantTx(db, orgId, (tx) =>
+        prewarmGovernanceForChange(tx, sandbox, host, {
+          orgId,
+          changeObjectId: change.objectId,
+          targetObjectIds,
+          actorObjectId: SYSTEM_ACTOR_ID
+        })
+      );
+    } catch (err) {
+      logChangeError(orgId, change, "validating-governance-prewarm", err);
     }
   }
 }
@@ -158,11 +209,11 @@ async function advanceCoordinatedChanges(db: Db, orgId: string): Promise<void> {
 // first (lowest waveIndex) wave not yet `succeeded`/`skipped`.
 // -------------------------------------------------------------------------------------------
 
-async function advanceExecutingChanges(db: Db, orgId: string, host: PluginHost): Promise<void> {
+async function advanceExecutingChanges(db: Db, orgId: string, host: PluginHost, sandbox: CelSandbox): Promise<void> {
   const rows = await withTenantTx(db, orgId, (tx) => listChangeRowsInStates(tx, orgId, ["executing"], BATCH_LIMIT));
   for (const { change } of rows) {
     try {
-      await reconcileExecutingChange(db, orgId, change, host);
+      await reconcileExecutingChange(db, orgId, change, host, sandbox);
     } catch (err) {
       logChangeError(orgId, change, "executing-advance", err);
     }
@@ -173,8 +224,10 @@ async function reconcileExecutingChange(
   db: Db,
   orgId: string,
   change: ChangeRow,
-  host: PluginHost
+  host: PluginHost,
+  sandbox: CelSandbox
 ): Promise<void> {
+  const gateDeps: GateDeps = { sandbox, host };
   const plan = await withTenantTx(db, orgId, (tx) => getLatestPlanForChange(tx, orgId, change.objectId));
   if (!plan || plan.waves.length === 0) {
     // Shouldn't happen — `coordinated` never advances to `executing` without a compiled plan of
@@ -186,28 +239,71 @@ async function reconcileExecutingChange(
   const activeWave = plan.waves.find((w) => w.status !== "succeeded" && w.status !== "skipped");
 
   if (!activeWave) {
-    await withTenantTx(db, orgId, (tx) => completeExecution(tx, orgId, change));
+    await withTenantTx(db, orgId, (tx) => completeExecution(tx, orgId, change, gateDeps));
     return;
   }
 
   if (activeWave.status === "failed") {
-    // MAJOR #6 (PR #7 review): M3 has no automatic rollback/cancel-on-failure trigger (DESIGN
-    // §9.4 lists that as a policy trigger — explicitly M4 scope), so the change sits here
-    // indefinitely awaiting an operator's manual cancel/rollback (the watchdog's per-state SLA
-    // eventually flags it too). Recording that explicitly — instead of silently no-op'ing forever
-    // the way this branch used to — is what lets `listChangeRowsInStates` exclude it from future
-    // batches: a parked change never touches `changes.updated_at` again on its own, so under
-    // oldest-updated-first batching it would otherwise sort ahead of every genuinely progressing
-    // `executing` change forever once enough parked changes pile up. An operator's cancel/rollback
-    // goes through `transitionChange` directly from the route handlers, never through this batch
-    // listing, so parking here never blocks them from unsticking it.
+    // MAJOR #6 (PR #7 review) / M4 (BUILD_AND_TEST.md §8 "automatic rollback triggers on gate/
+    // control failure now become real"): whether a failed wave auto-rolls-back or parks for a
+    // manual `scp change rollback` is now a POLICY CONFIGURATION (DESIGN §9.4's own framing —
+    // "Human-assisted / fully-automated / emergency-override are all just policy configs"), not a
+    // fixed engine behavior. A failed wave's targets are re-resolved against the policy engine
+    // for an `autoRollbackOnFailure: true` effective policy (policy-model.ts); if one fires, this
+    // triggers the SAME `triggerRollback` a human's `POST /changes/{id}/rollback` call does — one
+    // rollback per original change, guarded against re-triggering by checking for an existing
+    // non-terminal rollback of this change first (an idempotent-in-effect check, not a DB unique
+    // constraint, since a change can legitimately be rolled back more than once across its
+    // lifetime — just never twice for the SAME failure without the first attempt having already
+    // resolved). No qualifying policy -> unchanged M3 behavior: park for a human.
+    //
+    // A ROLLBACK change's OWN wave failing is deliberately EXEMPT from this — the same "no
+    // automatic caller could ever satisfy it" reasoning coordination/gates.ts's `isRollback`
+    // check documents for the validating->promoted edge applies here too, just for a different
+    // failure mode: an `autoRollbackOnFailure` policy scoped to a target whose rollback ALSO
+    // fails (a target broken enough that even restoring prior state doesn't work) would otherwise
+    // recurse — trigger a rollback-of-the-rollback, whose own wave targets the SAME broken
+    // target, fails the SAME way, and triggers a rollback-of-that, forever. A rollback change's
+    // failed wave always just parks for a human, exactly like "no qualifying policy" below.
+    const failedWaveTargetIds = activeWave.targets.map((t) => t.targetObjectId);
+    const autoRollback =
+      change.rollbackOfObjectId === null &&
+      (await withTenantTx(db, orgId, (tx) => shouldAutoRollback(tx, orgId, failedWaveTargetIds, change.objectId)));
+    if (autoRollback) {
+      try {
+        await withTenantTx(db, orgId, (tx) =>
+          triggerRollback(tx, {
+            orgId,
+            originalChangeObjectId: change.objectId,
+            actorObjectId: SYSTEM_ACTOR_ID,
+            requestId: "reconcile",
+            reason: `automatic: wave ${activeWave.waveIndex} failed and an autoRollbackOnFailure policy applies`,
+            trigger: "automatic"
+          })
+        );
+      } catch (err) {
+        logChangeError(orgId, change, "auto-rollback-trigger", err);
+      }
+    }
     await withTenantTx(db, orgId, (tx) => markChangeReconcileBlocked(tx, orgId, change.objectId));
     return;
   }
 
   if (activeWave.status === "pending") {
     const gateOutcome = await withTenantTx(db, orgId, async (tx) => {
-      const gate = await evaluateWaveGate(tx, orgId, plan.topologyObjectId, activeWave.waveIndex);
+      const gate = await evaluateWaveGate(
+        tx,
+        {
+          orgId,
+          changeObjectId: change.objectId,
+          actorObjectId: SYSTEM_ACTOR_ID,
+          emergency: change.emergency,
+          topologyObjectId: plan.topologyObjectId,
+          waveIndex: activeWave.waveIndex,
+          targetObjectIds: activeWave.targets.map((t) => t.targetObjectId)
+        },
+        gateDeps
+      );
       await insertDecision(tx, {
         orgId,
         kind: "gate",
@@ -400,38 +496,83 @@ async function triggerWaveTarget(
  *  rolling new state out does — so it auto-promotes itself and then, per DESIGN §9.4 / this
  *  module's rollback.ts sibling, transitions the ORIGINAL change to `rolled_back` in the same
  *  transaction. */
-async function completeExecution(tx: TenantTx, orgId: string, change: ChangeRow): Promise<void> {
-  const validated = await transitionChange(tx, {
-    orgId,
-    changeObjectId: change.objectId,
-    toState: "validating",
-    actorObjectId: SYSTEM_ACTOR_ID,
-    requestId: "reconcile",
-    reason: "auto: every wave succeeded"
-  });
+async function completeExecution(tx: TenantTx, orgId: string, change: ChangeRow, gateDeps: GateDeps): Promise<void> {
+  const validated = await transitionChange(
+    tx,
+    {
+      orgId,
+      changeObjectId: change.objectId,
+      toState: "validating",
+      actorObjectId: SYSTEM_ACTOR_ID,
+      requestId: "reconcile",
+      reason: "auto: every wave succeeded"
+    },
+    gateDeps
+  );
   if (validated.verdict !== "allow") return;
 
   if (!change.rollbackOfObjectId) return; // forward change — waits for a human `scp change promote`.
 
-  const promoted = await transitionChange(tx, {
-    orgId,
-    changeObjectId: change.objectId,
-    toState: "promoted",
-    actorObjectId: SYSTEM_ACTOR_ID,
-    requestId: "reconcile",
-    reason: "auto: rollback changes need no human promotion gate"
-  });
+  const promoted = await transitionChange(
+    tx,
+    {
+      orgId,
+      changeObjectId: change.objectId,
+      toState: "promoted",
+      actorObjectId: SYSTEM_ACTOR_ID,
+      requestId: "reconcile",
+      reason: "auto: rollback changes need no human promotion gate"
+    },
+    gateDeps
+  );
   if (promoted.verdict !== "allow") return;
 
-  await transitionChange(tx, {
-    orgId,
-    changeObjectId: change.rollbackOfObjectId,
-    toState: "rolled_back",
-    actorObjectId: SYSTEM_ACTOR_ID,
-    requestId: "reconcile",
-    reason: `rollback change ${change.objectId} promoted`,
-    extraInputContext: { rollbackChangeObjectId: change.objectId }
+  await transitionChange(
+    tx,
+    {
+      orgId,
+      changeObjectId: change.rollbackOfObjectId,
+      toState: "rolled_back",
+      actorObjectId: SYSTEM_ACTOR_ID,
+      requestId: "reconcile",
+      reason: `rollback change ${change.objectId} promoted`,
+      extraInputContext: { rollbackChangeObjectId: change.objectId }
+    },
+    gateDeps
+  );
+}
+
+/**
+ * Whether a failed wave's targets are covered by an effective `autoRollbackOnFailure` policy
+ * (module doc comment on the "failed" branch above), AND no non-terminal rollback of this change
+ * already exists (avoids re-triggering a second rollback every tick while the first one is still
+ * in flight — `listChangeRowsInStates`'s `reconcile_blocked_at` guard already stops this SAME
+ * change from being re-visited, but that column is set AFTER this check in the same tick, so this
+ * extra guard covers the one-tick window and remains correct if that ordering ever changes).
+ */
+async function shouldAutoRollback(
+  tx: TenantTx,
+  orgId: string,
+  targetObjectIds: string[],
+  originalChangeObjectId: string
+): Promise<boolean> {
+  const existingRollback = await tx.query.changes.findFirst({
+    where: (t, { eq: eqOp, and: andOp, notInArray }) =>
+      andOp(
+        eqOp(t.orgId, orgId),
+        eqOp(t.rollbackOfObjectId, originalChangeObjectId),
+        notInArray(t.state, ["cancelled", "rolled_back"])
+      )
   });
+  if (existingRollback) return false;
+
+  const matches = await matchPoliciesForTargets(tx, {
+    orgId,
+    targetObjectIds,
+    actorObjectId: SYSTEM_ACTOR_ID
+  });
+  const effective = resolvePolicies(matches);
+  return effective.some((p) => p.autoRollbackOnFailure);
 }
 
 // -------------------------------------------------------------------------------------------
@@ -440,11 +581,11 @@ async function completeExecution(tx: TenantTx, orgId: string, change: ChangeRow)
 
 /** One full sweep: every org, one `reconcileOrgTick` each. Errors in one org's tick are caught
  *  and logged so they never take down the sweep (or the pg-boss job) for every other org. */
-export async function runReconcileSweep(db: Db, host: PluginHost): Promise<void> {
+export async function runReconcileSweep(db: Db, host: PluginHost, sandbox: CelSandbox): Promise<void> {
   const orgRows = await db.select({ id: orgs.id }).from(orgs);
   for (const org of orgRows) {
     try {
-      await reconcileOrgTick(db, org.id, host);
+      await reconcileOrgTick(db, org.id, host, sandbox);
     } catch (err) {
       console.error(`[reconcile] org ${org.id} tick failed:`, err);
     }
@@ -458,16 +599,18 @@ export async function runReconcileSweep(db: Db, host: PluginHost): Promise<void>
  * Changes — no external plugin calls), so it keeps its single-transaction-per-tick shape; it's
  * still wrapped in try/catch here so one bad webhook row can never take down the rest of the tick.
  */
-export async function reconcileOrgTick(db: Db, orgId: string, host: PluginHost): Promise<void> {
+export async function reconcileOrgTick(db: Db, orgId: string, host: PluginHost, sandbox: CelSandbox): Promise<void> {
+  const gateDeps: GateDeps = { sandbox, host };
   try {
     await withTenantTx(db, orgId, (tx) => processChangeSourceEvents(tx, orgId));
   } catch (err) {
     console.error(`[reconcile] org ${orgId} change-source-event processing failed:`, err);
   }
-  await advanceProposedChanges(db, orgId);
-  await advanceEvaluatedChanges(db, orgId);
-  await advanceCoordinatedChanges(db, orgId);
-  await advanceExecutingChanges(db, orgId, host);
+  await advanceProposedChanges(db, orgId, gateDeps);
+  await advanceEvaluatedChanges(db, orgId, gateDeps);
+  await advanceCoordinatedChanges(db, orgId, gateDeps);
+  await advanceExecutingChanges(db, orgId, host, sandbox);
+  await advanceValidatingChanges(db, orgId, host, sandbox);
 }
 
 export interface ReconcileLoopHandle {
@@ -493,14 +636,15 @@ export interface ReconcileLoopHandle {
 export async function startReconcileLoop(
   boss: PgBoss,
   db: Db,
-  host: PluginHost
+  host: PluginHost,
+  sandbox: CelSandbox
 ): Promise<ReconcileLoopHandle> {
   let stopped = false;
   let inFlightTick: Promise<void> | undefined;
   await boss.createQueue(RECONCILE_QUEUE);
   await boss.work(RECONCILE_QUEUE, async () => {
     if (stopped) return;
-    const tick = runReconcileSweep(db, host);
+    const tick = runReconcileSweep(db, host, sandbox);
     inFlightTick = tick;
     try {
       await tick;

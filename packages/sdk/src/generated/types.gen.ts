@@ -8789,6 +8789,18 @@ export type ExplainChangeResponses = {
             };
             createdAt: string;
         }>;
+        controlRuns: Array<{
+            id: string;
+            controlObjectId: string;
+            changeObjectId: string;
+            status: 'pass' | 'fail' | 'warning' | 'skipped' | 'timed_out' | 'expired';
+            evidence: {
+                [key: string]: unknown;
+            };
+            detail: string | null;
+            decisionId: string | null;
+            createdAt: string;
+        }>;
     };
 };
 
@@ -8797,6 +8809,7 @@ export type ExplainChangeResponse = ExplainChangeResponses[keyof ExplainChangeRe
 export type CancelChangeData = {
     body: {
         reason?: string;
+        overrideFreeze?: boolean;
     };
     path: {
         id: string;
@@ -8891,6 +8904,7 @@ export type CancelChangeResponse = CancelChangeResponses[keyof CancelChangeRespo
 export type PromoteChangeData = {
     body: {
         reason?: string;
+        overrideFreeze?: boolean;
     };
     path: {
         id: string;
@@ -9393,3 +9407,1692 @@ export type CreateSourceMappingResponses = {
 };
 
 export type CreateSourceMappingResponse = CreateSourceMappingResponses[keyof CreateSourceMappingResponses];
+
+export type ListPolicysData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+        domainId?: string;
+        includeDeleted?: boolean;
+    };
+    url: '/policies';
+};
+
+export type ListPolicysErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListPolicysError = ListPolicysErrors[keyof ListPolicysErrors];
+
+export type ListPolicysResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            typeId: string;
+            name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            version: number;
+            createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListPolicysResponse = ListPolicysResponses[keyof ListPolicysResponses];
+
+export type CreatePolicyData = {
+    body: {
+        id?: string;
+        urn?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/policies';
+};
+
+export type CreatePolicyErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreatePolicyError = CreatePolicyErrors[keyof CreatePolicyErrors];
+
+export type CreatePolicyResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type CreatePolicyResponse = CreatePolicyResponses[keyof CreatePolicyResponses];
+
+export type DeletePolicyData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/policies/{idOrUrn}';
+};
+
+export type DeletePolicyErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeletePolicyError = DeletePolicyErrors[keyof DeletePolicyErrors];
+
+export type DeletePolicyResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type DeletePolicyResponse = DeletePolicyResponses[keyof DeletePolicyResponses];
+
+export type GetPolicyData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/policies/{idOrUrn}';
+};
+
+export type GetPolicyErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetPolicyError = GetPolicyErrors[keyof GetPolicyErrors];
+
+export type GetPolicyResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type GetPolicyResponse = GetPolicyResponses[keyof GetPolicyResponses];
+
+export type UpdatePolicyData = {
+    body: {
+        name?: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+        version?: number;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/policies/{idOrUrn}';
+};
+
+export type UpdatePolicyErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    412: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpdatePolicyError = UpdatePolicyErrors[keyof UpdatePolicyErrors];
+
+export type UpdatePolicyResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpdatePolicyResponse = UpdatePolicyResponses[keyof UpdatePolicyResponses];
+
+export type UpsertPolicyByUrnData = {
+    body: {
+        id?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/policies/{urn}';
+};
+
+export type UpsertPolicyByUrnErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpsertPolicyByUrnError = UpsertPolicyByUrnErrors[keyof UpsertPolicyByUrnErrors];
+
+export type UpsertPolicyByUrnResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpsertPolicyByUrnResponse = UpsertPolicyByUrnResponses[keyof UpsertPolicyByUrnResponses];
+
+export type ListControlsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+        domainId?: string;
+        includeDeleted?: boolean;
+    };
+    url: '/controls';
+};
+
+export type ListControlsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListControlsError = ListControlsErrors[keyof ListControlsErrors];
+
+export type ListControlsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            typeId: string;
+            name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            version: number;
+            createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListControlsResponse = ListControlsResponses[keyof ListControlsResponses];
+
+export type CreateControlData = {
+    body: {
+        id?: string;
+        urn?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/controls';
+};
+
+export type CreateControlErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateControlError = CreateControlErrors[keyof CreateControlErrors];
+
+export type CreateControlResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type CreateControlResponse = CreateControlResponses[keyof CreateControlResponses];
+
+export type DeleteControlData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/controls/{idOrUrn}';
+};
+
+export type DeleteControlErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteControlError = DeleteControlErrors[keyof DeleteControlErrors];
+
+export type DeleteControlResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type DeleteControlResponse = DeleteControlResponses[keyof DeleteControlResponses];
+
+export type GetControlData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/controls/{idOrUrn}';
+};
+
+export type GetControlErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetControlError = GetControlErrors[keyof GetControlErrors];
+
+export type GetControlResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type GetControlResponse = GetControlResponses[keyof GetControlResponses];
+
+export type UpdateControlData = {
+    body: {
+        name?: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+        version?: number;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/controls/{idOrUrn}';
+};
+
+export type UpdateControlErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    412: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpdateControlError = UpdateControlErrors[keyof UpdateControlErrors];
+
+export type UpdateControlResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpdateControlResponse = UpdateControlResponses[keyof UpdateControlResponses];
+
+export type UpsertControlByUrnData = {
+    body: {
+        id?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/controls/{urn}';
+};
+
+export type UpsertControlByUrnErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpsertControlByUrnError = UpsertControlByUrnErrors[keyof UpsertControlByUrnErrors];
+
+export type UpsertControlByUrnResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpsertControlByUrnResponse = UpsertControlByUrnResponses[keyof UpsertControlByUrnResponses];
+
+export type PutControlBindingData = {
+    body: {
+        pluginModule: string;
+        pluginInstanceId: string;
+        config?: {
+            [key: string]: unknown;
+        };
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/controls/{idOrUrn}/binding';
+};
+
+export type PutControlBindingErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutControlBindingError = PutControlBindingErrors[keyof PutControlBindingErrors];
+
+export type PutControlBindingResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        controlObjectId: string;
+        pluginModule: string;
+        pluginInstanceId: string;
+        config: unknown;
+    };
+};
+
+export type PutControlBindingResponse = PutControlBindingResponses[keyof PutControlBindingResponses];
+
+export type ListChangeControlRunsData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/changes/{idOrUrn}/control-runs';
+};
+
+export type ListChangeControlRunsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListChangeControlRunsError = ListChangeControlRunsErrors[keyof ListChangeControlRunsErrors];
+
+export type ListChangeControlRunsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            controlObjectId: string;
+            changeObjectId: string;
+            status: 'pass' | 'fail' | 'warning' | 'skipped' | 'timed_out' | 'expired';
+            evidence: {
+                [key: string]: unknown;
+            };
+            detail: string | null;
+            decisionId: string | null;
+            createdAt: string;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListChangeControlRunsResponse = ListChangeControlRunsResponses[keyof ListChangeControlRunsResponses];
+
+export type ListApprovalsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+        changeId?: string;
+    };
+    url: '/approvals';
+};
+
+export type ListApprovalsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListApprovalsError = ListApprovalsErrors[keyof ListApprovalsErrors];
+
+export type ListApprovalsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            changeObjectId: string;
+            policyObjectId: string;
+            policyVersion: number;
+            effectIndex: number;
+            requiredCount: number;
+            fromRole: string;
+            scopeObjectId: string;
+            status: 'pending' | 'satisfied';
+            createdAt: string;
+            satisfiedAt: string | null;
+            voteCount: number;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListApprovalsResponse = ListApprovalsResponses[keyof ListApprovalsResponses];
+
+export type GetApprovalData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/approvals/{id}';
+};
+
+export type GetApprovalErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetApprovalError = GetApprovalErrors[keyof GetApprovalErrors];
+
+export type GetApprovalResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        changeObjectId: string;
+        policyObjectId: string;
+        policyVersion: number;
+        effectIndex: number;
+        requiredCount: number;
+        fromRole: string;
+        scopeObjectId: string;
+        status: 'pending' | 'satisfied';
+        createdAt: string;
+        satisfiedAt: string | null;
+        voteCount: number;
+    };
+};
+
+export type GetApprovalResponse = GetApprovalResponses[keyof GetApprovalResponses];
+
+export type ListApprovalVotesData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/approvals/{id}/votes';
+};
+
+export type ListApprovalVotesErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListApprovalVotesError = ListApprovalVotesErrors[keyof ListApprovalVotesErrors];
+
+export type ListApprovalVotesResponses = {
+    /**
+     * Success
+     */
+    200: Array<{
+        id: string;
+        approvalRequestId: string;
+        voterObjectId: string;
+        decisionId: string | null;
+        attestation: {
+            record: {
+                approverSubjectId: string;
+                approverIdpSubject: string | null;
+                approvedObjectUrn: string;
+                approvedObjectContentHash: string;
+                decisionId: string | null;
+                timestamp: string;
+            };
+            signature: string;
+            publicKey: string;
+        };
+        votedAt: string;
+    }>;
+};
+
+export type ListApprovalVotesResponse = ListApprovalVotesResponses[keyof ListApprovalVotesResponses];
+
+export type CastApprovalVoteData = {
+    body: {
+        voterIdpSubject?: string;
+    };
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/approvals/{id}/votes';
+};
+
+export type CastApprovalVoteErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CastApprovalVoteError = CastApprovalVoteErrors[keyof CastApprovalVoteErrors];
+
+export type CastApprovalVoteResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        approvalRequestId: string;
+        voterObjectId: string;
+        decisionId: string | null;
+        attestation: {
+            record: {
+                approverSubjectId: string;
+                approverIdpSubject: string | null;
+                approvedObjectUrn: string;
+                approvedObjectContentHash: string;
+                decisionId: string | null;
+                timestamp: string;
+            };
+            signature: string;
+            publicKey: string;
+        };
+        votedAt: string;
+    };
+};
+
+export type CastApprovalVoteResponse = CastApprovalVoteResponses[keyof CastApprovalVoteResponses];
+
+export type ListFreezesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/freezes';
+};
+
+export type ListFreezesErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListFreezesError = ListFreezesErrors[keyof ListFreezesErrors];
+
+export type ListFreezesResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            scopeObjectId: string;
+            name: string | null;
+            startsAt: string;
+            endsAt: string;
+            reason: string;
+            createdByActorId: string;
+            createdAt: string;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListFreezesResponse = ListFreezesResponses[keyof ListFreezesResponses];
+
+export type CreateFreezeData = {
+    body: {
+        scopeObjectId: string;
+        name?: string;
+        startsAt: string;
+        endsAt: string;
+        reason: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/freezes';
+};
+
+export type CreateFreezeErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateFreezeError = CreateFreezeErrors[keyof CreateFreezeErrors];
+
+export type CreateFreezeResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        scopeObjectId: string;
+        name: string | null;
+        startsAt: string;
+        endsAt: string;
+        reason: string;
+        createdByActorId: string;
+        createdAt: string;
+    };
+};
+
+export type CreateFreezeResponse = CreateFreezeResponses[keyof CreateFreezeResponses];
+
+export type GetFreezeData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/freezes/{id}';
+};
+
+export type GetFreezeErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetFreezeError = GetFreezeErrors[keyof GetFreezeErrors];
+
+export type GetFreezeResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        scopeObjectId: string;
+        name: string | null;
+        startsAt: string;
+        endsAt: string;
+        reason: string;
+        createdByActorId: string;
+        createdAt: string;
+    };
+};
+
+export type GetFreezeResponse = GetFreezeResponses[keyof GetFreezeResponses];
+
+export type PolicyEvaluateData = {
+    body: {
+        changeId: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/policy-evaluate';
+};
+
+export type PolicyEvaluateErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PolicyEvaluateError = PolicyEvaluateErrors[keyof PolicyEvaluateErrors];
+
+export type PolicyEvaluateResponses = {
+    /**
+     * Success
+     */
+    200: {
+        verdict: 'allow' | 'block';
+        reasonTree: {
+            [key: string]: unknown;
+        };
+        inputContext: {
+            [key: string]: unknown;
+        };
+    };
+};
+
+export type PolicyEvaluateResponse = PolicyEvaluateResponses[keyof PolicyEvaluateResponses];

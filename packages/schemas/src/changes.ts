@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CursorPageQuerySchema, cursorPageResponseSchema } from "./common.js";
+import { ControlRunSchema } from "./governance.js";
 
 /**
  * M3 Change Coordination Engine wire contract (DESIGN.md §9, §10.4, BUILD_AND_TEST.md §8 M3).
@@ -76,9 +77,13 @@ export type ChangeListResponse = z.infer<typeof ChangeListResponseSchema>;
 
 export const ChangeIdParamSchema = z.object({ id: z.string().uuid() });
 
-/** `POST /changes/{id}:cancel` and other reason-carrying transition triggers. */
+/** `POST /changes/{id}:cancel` and other reason-carrying transition triggers. `overrideFreeze`
+ *  (DESIGN §10.3, M4): attempts to override an active freeze blocking this transition — requires
+ *  `freeze:override` permission AND a non-empty `reason` (the same field, doing double duty as
+ *  the freeze override's mandatory reason). */
 export const ChangeTransitionRequestSchema = z.object({
-  reason: z.string().optional()
+  reason: z.string().optional(),
+  overrideFreeze: z.boolean().optional()
 });
 export type ChangeTransitionRequest = z.infer<typeof ChangeTransitionRequestSchema>;
 
@@ -158,11 +163,17 @@ export const ChangePlanSchema = z.object({
 });
 export type ChangePlan = z.infer<typeof ChangePlanSchema>;
 
-/** `GET /changes/{id}:explain` — the change, its compiled plan (if any), and every Decision made about it. */
+/** `GET /changes/{id}:explain` — the change, its compiled plan (if any), every Decision made
+ *  about it, and every control run evidence persisted against it (DESIGN §10.4: a Decision's
+ *  reasonTree names WHICH control fired and what its outcome status was — `contributingPolicyVersions`
+ *  and each `requireControls` effect's `detail.controlObjectId`/`detail.outcome` — but the actual
+ *  EVIDENCE payload only ever lives on `control_runs`; M4 adds this array so `scp change explain`
+ *  can reconstruct "policy version + control outcome + evidence" end to end, not just the first two). */
 export const ChangeExplainResponseSchema = z.object({
   change: ChangeSchema,
   plan: ChangePlanSchema.nullable(),
-  decisions: z.array(DecisionSchema)
+  decisions: z.array(DecisionSchema),
+  controlRuns: z.array(ControlRunSchema)
 });
 export type ChangeExplainResponse = z.infer<typeof ChangeExplainResponseSchema>;
 

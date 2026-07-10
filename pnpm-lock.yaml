@@ -65,6 +65,9 @@ importers:
       '@scp/plugin-fake-executor':
         specifier: workspace:*
         version: link:../../packages/plugins/fake-executor
+      '@scp/plugin-webhook-control':
+        specifier: workspace:*
+        version: link:../../packages/plugins/webhook-control
       '@scp/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas
@@ -370,7 +373,14 @@ importers:
         version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
 
   packages/plugins/webhook-control:
+    dependencies:
+      '@scp/plugin-api':
+        specifier: workspace:*
+        version: link:../../plugin-api
     devDependencies:
+      '@scp/plugin-testkit':
+        specifier: workspace:*
+        version: link:../../plugin-testkit
       typescript:
         specifier: ~5.8.0
         version: 5.8.3

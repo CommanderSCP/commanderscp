@@ -25,6 +25,16 @@ export interface TriggerRollbackInput {
   actorObjectId: string;
   requestId: string;
   reason: string;
+  /** DESIGN §9.4: "Triggers: automatic (gate/control failure policy...) or manual" — the
+   *  rollback_trigger Decision's `inputContext.trigger` records WHICH, so the audit/explain trail
+   *  can actually distinguish an operator's `scp change rollback` from
+   *  `coordination/reconcile.ts`'s `autoRollbackOnFailure` policy firing, rather than every
+   *  rollback reading as "manual" regardless of who/what triggered it. Explicit per call site
+   *  (routes/changes.ts passes "manual", reconcile.ts passes "automatic") rather than inferred
+   *  from `actorObjectId` — inferring from "is this the system actor" would silently mislabel any
+   *  future system-triggered-but-still-effectively-manual path (e.g. an API automation acting as
+   *  a service account). Defaults to "manual" so pre-M4 callers/tests need no changes. */
+  trigger?: "manual" | "automatic";
 }
 
 export async function triggerRollback(
@@ -56,20 +66,24 @@ export async function triggerRollback(
     rollbackOfObjectId: input.originalChangeObjectId
   });
 
+  const trigger = input.trigger ?? "manual";
   await insertDecision(tx, {
     orgId: input.orgId,
     kind: "rollback_trigger",
     subjectId: input.originalChangeObjectId,
     verdict: "rollback",
     inputContext: {
-      trigger: "manual",
+      trigger,
       actorId: input.actorObjectId,
       reason: input.reason,
       rollbackChangeObjectId: rollbackChange.id,
       originalState: original.state
     },
     reasonTree: {
-      summary: `manual rollback triggered by operator: ${input.reason}`,
+      summary:
+        trigger === "automatic"
+          ? `automatic rollback triggered by policy: ${input.reason}`
+          : `manual rollback triggered by operator: ${input.reason}`,
       rollbackChange: rollbackChange.id
     }
   });

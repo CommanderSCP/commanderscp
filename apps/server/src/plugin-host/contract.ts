@@ -1,5 +1,7 @@
 import type {
   AbortResult,
+  ControlOutcome,
+  ControlRequest,
   Cursor,
   ExecutionStatus,
   ExecutorCapabilities,
@@ -28,11 +30,22 @@ export interface ExecutorPluginClient {
   describeCapabilities(): Promise<ExecutorCapabilities>;
 }
 
+/**
+ * ControlPlugin's client shape (DESIGN.md §11 `ControlPlugin`), M4's counterpart to
+ * `ExecutorPluginClient` above — same subprocess host, same timeout/restart-with-backoff
+ * guarantees, one method.
+ */
+export interface ControlPluginClient {
+  evaluate(req: ControlRequest): Promise<ControlOutcome>;
+}
+
 export interface PluginHostInstanceConfig {
-  /** Stable id referenced by `change_wave_targets.executor_plugin_id`. */
+  /** Stable id referenced by `change_wave_targets.executor_plugin_id` (executor instances) or
+   *  `control_bindings.plugin_instance_id` (control instances, M4). */
   id: string;
-  /** Which in-repo plugin module the spawned subprocess loads. */
-  module: "fake-executor";
+  /** Which in-repo plugin module the spawned subprocess loads. `webhook-control` is M4's
+   *  escape-hatch ControlPlugin (DESIGN §10.2); every other value is an ExecutorPlugin module. */
+  module: "fake-executor" | "webhook-control";
   orgId: string;
   domainId: string;
   config?: unknown;
@@ -42,4 +55,5 @@ export interface PluginHost {
   start(instances: PluginHostInstanceConfig[]): Promise<void>;
   stop(): Promise<void>;
   executor(instanceId: string): ExecutorPluginClient;
+  control(instanceId: string): ControlPluginClient;
 }

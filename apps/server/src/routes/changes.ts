@@ -21,9 +21,11 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { getChange, listChanges, proposeChange } from "../coordination/changes-repo.js";
 import { transitionChange } from "../coordination/transition.js";
+import type { GateDeps } from "../coordination/gates.js";
 import { triggerRollback } from "../coordination/rollback.js";
 import { getLatestPlanForChange } from "../coordination/plan-service.js";
 import { getDecision, listDecisions, listDecisionsForSubject } from "../coordination/decisions-repo.js";
+import { listControlRunsForChange } from "../governance/controls-repo.js";
 import { conflict } from "../errors.js";
 
 /**
@@ -44,6 +46,11 @@ import { conflict } from "../errors.js";
  */
 export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
+  // `host: null` — this route runs on the request-serving (`role=api`) tier, which has no
+  // `PluginHost` (coordination/gates.ts's module doc, DESIGN §16's api/worker split). The only
+  // lifecycle edge this file ever governance-evaluates (`validating->promoted`) only ever READS
+  // already-persisted control_runs — never triggers one inline — so this is safe by construction.
+  const gateDeps: GateDeps = { sandbox: deps.celSandbox!, host: null };
 
   typed.route({
     method: "POST",
@@ -69,6 +76,21 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
           permission: "object:write",
           scopeObjectId: body.domainId ?? auth.orgId
         });
+        // DESIGN §10.3: "a change flagged emergency by a PERMITTED actor" — `object:write` alone
+        // is not enough to set `emergency: true`, since that flag is what lets
+        // `governance/gate-orchestrator.ts` swap in the (possibly gate-bypassing) emergency
+        // policy set instead of the normal required policies. Without this check, any subject who
+        // can propose a change at all could self-grant an emergency bypass — the exact
+        // "emergency-bypass authz" surface this milestone's security review targets. Only checked
+        // when the flag is actually being turned on; a normal (non-emergency) propose is unaffected.
+        if (body.emergency) {
+          await authorize(tx, {
+            orgId: auth.orgId,
+            subjectObjectId: auth.subjectObjectId,
+            permission: "change:emergency",
+            scopeObjectId: body.domainId ?? auth.orgId
+          });
+        }
         return proposeChange(tx, {
           orgId: auth.orgId,
           actorObjectId: auth.subjectObjectId,
@@ -165,11 +187,26 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
           scopeObjectId: auth.orgId
         });
         const change = await getChange(tx, auth.orgId, request.params.id);
-        const [plan, decisions] = await Promise.all([
+        const [plan, decisions, controlRuns] = await Promise.all([
           getLatestPlanForChange(tx, auth.orgId, request.params.id),
-          listDecisionsForSubject(tx, auth.orgId, request.params.id)
+          listDecisionsForSubject(tx, auth.orgId, request.params.id),
+          listControlRunsForChange(tx, auth.orgId, request.params.id)
         ]);
-        return { change, plan, decisions };
+        return {
+          change,
+          plan,
+          decisions,
+          controlRuns: controlRuns.map((r) => ({
+            id: r.id,
+            controlObjectId: r.controlObjectId,
+            changeObjectId: r.changeObjectId,
+            status: r.status,
+            evidence: r.evidence,
+            detail: r.detail,
+            decisionId: r.decisionId,
+            createdAt: r.createdAt.toISOString()
+          }))
+        };
       });
       reply.status(200).send(result);
     }
@@ -206,14 +243,18 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
           permission: "object:write",
           scopeObjectId: auth.orgId
         });
-        const result = await transitionChange(tx, {
-          orgId: auth.orgId,
-          changeObjectId: request.params.id,
-          toState: "cancelled",
-          actorObjectId: auth.subjectObjectId,
-          requestId: request.id,
-          reason: request.body.reason ?? null
-        });
+        const result = await transitionChange(
+          tx,
+          {
+            orgId: auth.orgId,
+            changeObjectId: request.params.id,
+            toState: "cancelled",
+            actorObjectId: auth.subjectObjectId,
+            requestId: request.id,
+            reason: request.body.reason ?? null
+          },
+          gateDeps
+        );
         if (result.verdict === "block") return { blocked: result.blockedReason, decisionId: result.decision.id };
         return { change: await getChange(tx, auth.orgId, request.params.id) };
       });
@@ -254,14 +295,19 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
           permission: "object:write",
           scopeObjectId: auth.orgId
         });
-        const result = await transitionChange(tx, {
-          orgId: auth.orgId,
-          changeObjectId: request.params.id,
-          toState: "promoted",
-          actorObjectId: auth.subjectObjectId,
-          requestId: request.id,
-          reason: request.body.reason ?? null
-        });
+        const result = await transitionChange(
+          tx,
+          {
+            orgId: auth.orgId,
+            changeObjectId: request.params.id,
+            toState: "promoted",
+            actorObjectId: auth.subjectObjectId,
+            requestId: request.id,
+            reason: request.body.reason ?? null,
+            overrideFreeze: request.body.overrideFreeze ? { reason: request.body.reason ?? "" } : undefined
+          },
+          gateDeps
+        );
         if (result.verdict === "block") return { blocked: result.blockedReason, decisionId: result.decision.id };
         return { change: await getChange(tx, auth.orgId, request.params.id) };
       });
@@ -308,7 +354,8 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
           originalChangeObjectId: request.params.id,
           actorObjectId: auth.subjectObjectId,
           requestId: request.id,
-          reason: request.body.reason
+          reason: request.body.reason,
+          trigger: "manual"
         });
       });
       reply.status(201).send(rollbackChange);

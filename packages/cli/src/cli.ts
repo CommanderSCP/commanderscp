@@ -4,12 +4,15 @@ import { Command } from "commander";
 import { ScpApiError, ScpClient } from "@scp/sdk";
 import type { ListObjectsQuery, ListQuery } from "@scp/sdk";
 import type {
+  ApprovalRequest,
+  ApprovalVote,
   Change,
   ChangeExplainResponse,
   ChangeState,
   CreateObjectRequest,
   Decision,
   DesiredStateManifest,
+  Freeze,
   GraphObject,
   NamedGraphQuery,
   ObjectListResponse,
@@ -18,6 +21,7 @@ import type {
   PlanDiffSummary,
   PlanObjectDiffEntry,
   PlanRelationshipDiffEntry,
+  PolicyEvaluateResponse,
   Relationship,
   RelationshipListResponse,
   UpdateObjectRequest,
@@ -123,6 +127,55 @@ function decisionRow(d: Decision): Record<string, string> {
 }
 
 // -------------------------------------------------------------------------------------
+// M4 Governance Engine (BUILD_AND_TEST.md §8 M4, DESIGN.md §10) — row formatters for
+// approvals/freezes; policies/controls reuse `objectRow` (they're typed-registry resources).
+// -------------------------------------------------------------------------------------
+
+function approvalRow(a: ApprovalRequest): Record<string, string> {
+  return {
+    id: a.id,
+    changeObjectId: a.changeObjectId,
+    fromRole: a.fromRole,
+    votes: `${a.voteCount}/${a.requiredCount}`,
+    status: a.status,
+    createdAt: a.createdAt
+  };
+}
+
+function approvalVoteRow(v: ApprovalVote): Record<string, string> {
+  return {
+    id: v.id,
+    voterObjectId: v.voterObjectId,
+    votedAt: v.votedAt,
+    signature: `${v.attestation.signature.slice(0, 16)}...`
+  };
+}
+
+function freezeRow(f: Freeze): Record<string, string> {
+  return {
+    id: f.id,
+    scopeObjectId: f.scopeObjectId,
+    name: f.name ?? "",
+    startsAt: f.startsAt,
+    endsAt: f.endsAt,
+    reason: f.reason
+  };
+}
+
+function printPolicyEvaluateResult(result: PolicyEvaluateResponse, output: OutputFormat): void {
+  if (output === "json") {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  console.log(`Verdict: ${result.verdict}`);
+  const summary =
+    typeof result.reasonTree["summary"] === "string"
+      ? (result.reasonTree["summary"] as string)
+      : JSON.stringify(result.reasonTree);
+  console.log(summary);
+}
+
+// -------------------------------------------------------------------------------------
 // `@scp/iac` plan/apply (BUILD_AND_TEST.md §8 M2 item 4) — `scp plan` computes a diff
 // (dry run); `scp apply` does plan + apply in one shot, since that's the natural CLI UX and
 // what "`scp apply` twice = no-op the second time" means end to end, not two manual steps.
@@ -214,7 +267,7 @@ function printExplainResult(result: ChangeExplainResponse, output: OutputFormat)
     return;
   }
 
-  const { change, plan, decisions } = result;
+  const { change, plan, decisions, controlRuns } = result;
   console.log(`Change ${change.id} '${change.name}' — state: ${change.state}`);
 
   if (plan) {
@@ -238,6 +291,20 @@ function printExplainResult(result: ChangeExplainResponse, output: OutputFormat)
         ? (decision.reasonTree["summary"] as string)
         : JSON.stringify(decision.reasonTree);
     console.log(`  [${decision.createdAt}] ${decision.kind} -> ${decision.verdict}: ${summary}`);
+  }
+
+  // DESIGN §10.4 / BUILD_AND_TEST M4 flagship E2E: "explain reconstructs policy version + control
+  // outcome + evidence" — the Decisions above already carry policy version + outcome status
+  // (reasonTree.policies[].contributingPolicyVersions / effects[].detail), but the actual evidence
+  // payload only ever lives on the control_run row itself, joined by controlObjectId.
+  if (controlRuns.length > 0) {
+    console.log(`\nControl runs (${controlRuns.length}):`);
+    for (const run of controlRuns) {
+      console.log(`  [${run.createdAt}] control ${run.controlObjectId} -> ${run.status}${run.detail ? `: ${run.detail}` : ""}`);
+      if (Object.keys(run.evidence).length > 0) {
+        console.log(`    evidence: ${JSON.stringify(run.evidence)}`);
+      }
+    }
   }
 }
 
@@ -1247,12 +1314,13 @@ export function buildProgram(): Command {
   changeCmd
     .command("promote <id>")
     .description("Promote a Change out of `validating` — the human approval gate before `promoted`")
-    .option("--reason <text>", "reason for promoting")
+    .option("--reason <text>", "reason for promoting (also the mandatory reason for --override-freeze)")
+    .option("--override-freeze", "override an active freeze blocking this transition (requires freeze:override + --reason — DESIGN §10.3)")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
-    .action(async (id: string, opts: BaseCliOpts & { reason?: string }) => {
+    .action(async (id: string, opts: BaseCliOpts & { reason?: string; overrideFreeze?: boolean }) => {
       const client = await clientFromStoredCredentials(opts);
-      const promoted = await client.changes.promote(id, opts.reason);
+      const promoted = await client.changes.promote(id, opts.reason, opts.overrideFreeze);
       printResult(promoted, opts.output, (item) => changeDetailRow(item as Change));
     });
 
@@ -1322,6 +1390,150 @@ export function buildProgram(): Command {
         `FAILED: audit chain broken at event ${result.brokenAt?.id} — ${result.brokenAt?.reason} (${result.eventCount} events checked).`
       );
       process.exitCode = 1;
+    });
+
+  // -------------------------------------------------------------------------------------
+  // M4 Governance Engine (BUILD_AND_TEST.md §8 M4, DESIGN.md §10): policy/control documents
+  // (typed-registry resources — same CRUD family as domains/services/etc.), approvals (N-of-M
+  // quorum), freezes, and `scp policy evaluate`'s dry-run gate check.
+  // -------------------------------------------------------------------------------------
+  registerTypedResourceCrud(program, "policy", (c) => c.policies);
+  const controlCmd = registerTypedResourceCrud(program, "control", (c) => c.controls);
+
+  controlCmd
+    .command("bind <idOrUrn>")
+    .description("Bind a Control to a ControlPlugin instance (DESIGN §10.2)")
+    .requiredOption("--plugin-module <module>", "e.g. webhook-control")
+    .requiredOption("--plugin-instance-id <id>", "stable plugin-host instance id")
+    .option("--config <json>", "JSON object — plugin instance config (e.g. webhook url)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        idOrUrn: string,
+        opts: BaseCliOpts & { pluginModule: string; pluginInstanceId: string; config?: string }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const binding = await client.controls.putBinding(idOrUrn, {
+          pluginModule: opts.pluginModule,
+          pluginInstanceId: opts.pluginInstanceId,
+          config: parseJsonOption(opts.config, "--config")
+        });
+        printResult(binding, opts.output, (item) => {
+          const b = item as { id: string; pluginModule: string; pluginInstanceId: string };
+          return { id: b.id, pluginModule: b.pluginModule, pluginInstanceId: b.pluginInstanceId };
+        });
+      }
+    );
+
+  const approvalCmd = program.command("approval").description("Manage approval requests (DESIGN §10.2 — N-of-M quorum)");
+
+  approvalCmd
+    .command("list")
+    .description("List approval requests for a change")
+    .requiredOption("--change-id <id>", "change id or URN")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { changeId: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const page = await client.approvals.list({ changeId: opts.changeId, limit: 100 });
+      printResult(page.items, opts.output, (item) => approvalRow(item as ApprovalRequest));
+    });
+
+  approvalCmd
+    .command("get <id>")
+    .description("Get an approval request by id")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const found = await client.approvals.get(id);
+      printResult(found, opts.output, (item) => approvalRow(item as ApprovalRequest));
+    });
+
+  approvalCmd
+    .command("votes <id>")
+    .description("List votes cast on an approval request")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const votes = await client.approvals.listVotes(id);
+      printResult(votes, opts.output, (item) => approvalVoteRow(item as ApprovalVote));
+    });
+
+  approvalCmd
+    .command("approve <id>")
+    .description("Cast your vote on an approval request — always self-attested, one vote per subject")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const vote = await client.approvals.vote(id);
+      printResult(vote, opts.output, (item) => approvalVoteRow(item as ApprovalVote));
+    });
+
+  const freezeCmd = program.command("freeze").description("Manage freeze windows (DESIGN §10.3)");
+
+  freezeCmd
+    .command("create")
+    .description("Declare a freeze window over a scope")
+    .requiredOption("--scope <idOrUrn>", "the org/domain/service/component this freeze covers")
+    .requiredOption("--starts-at <iso>", "ISO 8601 start")
+    .requiredOption("--ends-at <iso>", "ISO 8601 end")
+    .requiredOption("--reason <text>", "mandatory reason")
+    .option("--name <name>", "human-readable label")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & { scope: string; startsAt: string; endsAt: string; reason: string; name?: string }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const freeze = await client.freezes.create({
+          scopeObjectId: opts.scope,
+          startsAt: opts.startsAt,
+          endsAt: opts.endsAt,
+          reason: opts.reason,
+          name: opts.name
+        });
+        printResult(freeze, opts.output, (item) => freezeRow(item as Freeze));
+      }
+    );
+
+  freezeCmd
+    .command("list")
+    .description("List freeze windows")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const page = await client.freezes.list();
+      printResult(page.items, opts.output, (item) => freezeRow(item as Freeze));
+    });
+
+  freezeCmd
+    .command("get <id>")
+    .description("Get a freeze by id")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const found = await client.freezes.get(id);
+      printResult(found, opts.output, (item) => freezeRow(item as Freeze));
+    });
+
+  const policyCmd = program.commands.find((c) => c.name() === "policy")!;
+  policyCmd
+    .command("evaluate <changeId>")
+    .description("Dry-run governance evaluation for a change — verdict + reason tree, no transition attempted")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (changeId: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.policyEvaluate(changeId);
+      printPolicyEvaluateResult(result, opts.output);
+      if (result.verdict === "block") process.exitCode = 1;
     });
 
   return program;

@@ -11,6 +11,7 @@
     { "path": "../../packages/sdk" },
     { "path": "../../packages/iac" },
     { "path": "../../packages/plugin-api" },
-    { "path": "../../packages/plugins/fake-executor" }
+    { "path": "../../packages/plugins/fake-executor" },
+    { "path": "../../packages/plugins/webhook-control" }
   ]
 }
