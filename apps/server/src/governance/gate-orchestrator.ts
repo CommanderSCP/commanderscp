@@ -121,6 +121,80 @@ async function graphFactsFor(tx: TenantTx, orgId: string, targetObjectId: string
   };
 }
 
+/**
+ * Runs (never blocks, never writes a Decision) every required control a change's targets'
+ * effective policies reference, and materializes every requireApprovals effect's approval
+ * request — so that by the time a HUMAN calls `POST /changes/{id}/promote` (the host-less
+ * lifecycle-edge gate, `coordination/gates.ts`'s module doc), the outcomes it needs to READ
+ * already exist. Called by `coordination/reconcile.ts` once per tick for every change sitting in
+ * `validating` (the only state a required-control-bearing policy could otherwise starve forever,
+ * since nothing else ever calls `evaluate()` for those controls). Deliberately does NOT insert a
+ * Decision on every tick — that's reserved for an actual gate verdict a transition attempt
+ * consulted (module doc's "never a silent pass" applies to CONTROL OUTCOMES, not to this
+ * warm-up's own bookkeeping) — a change sitting in `validating` for hours would otherwise pollute
+ * the Decision log with one redundant "still blocked" entry per ~1s tick.
+ */
+export async function prewarmGovernanceForChange(
+  tx: TenantTx,
+  sandbox: CelSandbox,
+  host: PluginHost,
+  input: { orgId: string; changeObjectId: string; targetObjectIds: string[]; actorObjectId: string }
+): Promise<void> {
+  const matches = await matchPoliciesForTargets(tx, {
+    orgId: input.orgId,
+    targetObjectIds: input.targetObjectIds,
+    actorObjectId: input.actorObjectId
+  });
+  const allEffectivePolicies = resolvePolicies(matches);
+
+  // Only pre-warm policies whose CEL condition actually fires — determined with an EMPTY
+  // controlOutcomes/approvals context (irrelevant to firing; `evaluate.ts`'s `fired` flag depends
+  // only on the condition, never on effect satisfaction), so this never wastes a control
+  // invocation or materializes a bogus approval task for a policy that wouldn't apply anyway.
+  const primaryTarget = input.targetObjectIds[0];
+  const subjectObject = primaryTarget ? await getObjectByIdOrUrnAnyType(tx, input.orgId, primaryTarget).catch(() => null) : null;
+  const probe = await evaluateGovernance(sandbox, allEffectivePolicies, {
+    change: { id: input.changeObjectId, emergency: false, targets: input.targetObjectIds, sourceKind: null, correlationKey: null },
+    subject: subjectObject
+      ? { id: subjectObject.id, typeId: subjectObject.typeId, name: subjectObject.name, labels: subjectObject.labels }
+      : null,
+    graph: { ownerIds: [], dependentIds: [], domainIds: [] },
+    controlOutcomes: {},
+    approvals: {},
+    time: new Date().toISOString(),
+    actor: { id: input.actorObjectId }
+  });
+  const firedNames = new Set(probe.policies.filter((p) => p.fired).map((p) => p.name));
+  const effectivePolicies = allEffectivePolicies.filter((p) => firedNames.has(p.name));
+  const allControlIds = [...new Set(effectivePolicies.flatMap((p) => p.requireControls))];
+
+  if (allControlIds.length > 0) {
+    await ensureControlRuns(tx, host, {
+      orgId: input.orgId,
+      changeObjectId: input.changeObjectId,
+      controlObjectIds: allControlIds,
+      gateKind: "lifecycle_edge",
+      gateRef: { fromState: "validating", toState: "promoted" },
+      context: { changeId: input.changeObjectId, targetObjectIds: input.targetObjectIds }
+    });
+  }
+
+  for (const policy of effectivePolicies) {
+    for (const req of policy.requireApprovals) {
+      await materializeApprovalRequest(tx, {
+        orgId: input.orgId,
+        changeObjectId: input.changeObjectId,
+        policyObjectId: req.originPolicyObjectId,
+        policyVersion: req.originPolicyVersion,
+        effectIndex: req.originEffectIndex,
+        requiredCount: req.count,
+        fromRole: req.fromRole,
+        scopeObjectId: req.scope
+      });
+    }
+  }
+}
+
 export async function evaluateGovernanceGate(
   tx: TenantTx,
   sandbox: CelSandbox,

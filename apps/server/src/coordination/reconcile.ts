@@ -26,6 +26,7 @@ import { DEFAULT_EXECUTOR_INSTANCE_ID } from "./executor-config.js";
 import { processChangeSourceEvents } from "./webhook-processor.js";
 import { matchPoliciesForTargets } from "../governance/policy-resolve.js";
 import { resolvePolicies } from "../governance/policy-model.js";
+import { prewarmGovernanceForChange } from "../governance/gate-orchestrator.js";
 
 /**
  * The resumable reconciliation loop (DESIGN.md §9.3/§9.4, BUILD_AND_TEST.md §8 M3): "pg-boss
@@ -169,6 +170,36 @@ async function advanceCoordinatedChanges(db: Db, orgId: string, gateDeps: GateDe
       );
     } catch (err) {
       logChangeError(orgId, change, "coordinated->executing", err);
+    }
+  }
+}
+
+// -------------------------------------------------------------------------------------------
+// validating: no state transition happens here automatically (that edge is human-only —
+// coordination/gates.ts's module doc) — but a required control referenced by a policy bound to
+// the `validating->promoted` edge needs to actually RUN somewhere, and the promote route itself
+// is host-less (DESIGN §16's api/worker split). This is that "somewhere": every tick, ensure
+// every fired policy's required controls have a fresh outcome and every requireApprovals effect
+// has a materialized approval_requests row, so a human's `scp change promote` — and `GET
+// /approvals` — see up-to-date state without ever needing this process to hold a live PluginHost.
+// -------------------------------------------------------------------------------------------
+
+async function advanceValidatingChanges(db: Db, orgId: string, host: PluginHost, sandbox: CelSandbox): Promise<void> {
+  const rows = await withTenantTx(db, orgId, (tx) => listChangeRowsInStates(tx, orgId, ["validating"], BATCH_LIMIT));
+  for (const { change, object } of rows) {
+    try {
+      const targetObjectIds = targetObjectIdsOf(object.properties as Record<string, unknown>);
+      if (targetObjectIds.length === 0) continue;
+      await withTenantTx(db, orgId, (tx) =>
+        prewarmGovernanceForChange(tx, sandbox, host, {
+          orgId,
+          changeObjectId: change.objectId,
+          targetObjectIds,
+          actorObjectId: SYSTEM_ACTOR_ID
+        })
+      );
+    } catch (err) {
+      logChangeError(orgId, change, "validating-governance-prewarm", err);
     }
   }
 }
@@ -569,6 +600,7 @@ export async function reconcileOrgTick(db: Db, orgId: string, host: PluginHost, 
   await advanceEvaluatedChanges(db, orgId, gateDeps);
   await advanceCoordinatedChanges(db, orgId, gateDeps);
   await advanceExecutingChanges(db, orgId, host, sandbox);
+  await advanceValidatingChanges(db, orgId, host, sandbox);
 }
 
 export interface ReconcileLoopHandle {
