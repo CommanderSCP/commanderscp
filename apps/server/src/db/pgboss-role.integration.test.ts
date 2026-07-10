@@ -99,62 +99,118 @@ describe("scp_pgboss: schema-scoped role probe", () => {
     await raw.close();
   });
 
-  it("scp_pgboss CANNOT read or write public.objects — hard permission-denied (42501), not an RLS-emptied result", async () => {
-    const raw = await RawScpPgBossClient.connect();
-    await expect(raw.query("SELECT * FROM public.objects")).rejects.toMatchObject({
-      code: "42501"
-    });
-    await expect(
-      raw.query(
-        `INSERT INTO public.objects (id, org_id, domain_id, type_id, name, urn, origin_domain_id, content_hash)
-         VALUES (gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 'service', 'probe', 'urn:probe', gen_random_uuid(), 'deadbeef')`
-      )
-    ).rejects.toMatchObject({ code: "42501" });
-    await raw.close();
-  });
+  /**
+   * MINOR #10 fix (PR #7 review): the probe previously covered only 4 tables
+   * (objects/relationships/role_bindings/changes) and only SELECT/INSERT. `scp_pgboss` has NO
+   * grant at all on `public` (0008's §2 — "the absence of a GRANT here IS the enforcement"), so
+   * the isolation guarantee is identical across every tenant table and every DML verb; this
+   * extends the probe to the REST of the M3 tenant surface (decisions, change_waves,
+   * change_wave_targets, gate_bindings, source_mappings, change_source_events, change_plans,
+   * outbox, audit_events) and to UPDATE/DELETE, not just SELECT/INSERT.
+   *
+   * Data-driven rather than one repetitive `it` per table x verb: `insert` is a syntactically
+   * valid statement satisfying each table's NOT NULL columns (values are throwaway — the point is
+   * proving the ACL check rejects the statement before any constraint/data question is even
+   * reached); UPDATE/DELETE use `org_id`, present and NOT NULL on every one of these tables, so a
+   * single WHERE shape works uniformly without needing each table's actual primary key column
+   * (`changes`' PK is `object_id`, not `id` — deliberately not assumed here).
+   */
+  const TENANT_TABLES: { table: string; insert: string }[] = [
+    {
+      table: "objects",
+      insert: `INSERT INTO public.objects (id, org_id, domain_id, type_id, name, urn, origin_domain_id, content_hash)
+                VALUES (gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 'service', 'probe', 'urn:probe', gen_random_uuid(), 'deadbeef')`
+    },
+    {
+      table: "relationships",
+      insert: `INSERT INTO public.relationships (id, org_id, type_id, from_id, to_id, origin_domain_id, content_hash)
+                VALUES (gen_random_uuid(), gen_random_uuid(), 'depends_on', gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 'deadbeef')`
+    },
+    {
+      table: "role_bindings",
+      insert: `INSERT INTO public.role_bindings (id, org_id, subject_id, role_id, scope_object_id)
+                VALUES (gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid())`
+    },
+    {
+      // No separate `id` column — the coordination engine's `changes` projection table is keyed
+      // by `object_id` (drizzle/0007_change_coordination.sql).
+      table: "changes",
+      insert: `INSERT INTO public.changes (object_id, org_id) VALUES (gen_random_uuid(), gen_random_uuid())`
+    },
+    {
+      table: "decisions",
+      insert: `INSERT INTO public.decisions (id, org_id, kind, subject_id, verdict, input_context, reason_tree)
+                VALUES (gen_random_uuid(), gen_random_uuid(), 'gate', gen_random_uuid(), 'allow', '{}'::jsonb, '{}'::jsonb)`
+    },
+    {
+      table: "change_waves",
+      insert: `INSERT INTO public.change_waves (id, org_id, plan_id, wave_index)
+                VALUES (gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 0)`
+    },
+    {
+      table: "change_wave_targets",
+      insert: `INSERT INTO public.change_wave_targets (id, org_id, wave_id, target_object_id)
+                VALUES (gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid())`
+    },
+    {
+      table: "gate_bindings",
+      insert: `INSERT INTO public.gate_bindings (id, org_id, scope_kind)
+                VALUES (gen_random_uuid(), gen_random_uuid(), 'lifecycle_edge')`
+    },
+    {
+      table: "source_mappings",
+      insert: `INSERT INTO public.source_mappings (id, org_id, source_kind, component_object_id)
+                VALUES (gen_random_uuid(), gen_random_uuid(), 'github', gen_random_uuid())`
+    },
+    {
+      table: "change_source_events",
+      insert: `INSERT INTO public.change_source_events (id, org_id, source_kind, headers, payload)
+                VALUES (gen_random_uuid(), gen_random_uuid(), 'github', '{}'::jsonb, '{}'::jsonb)`
+    },
+    {
+      table: "change_plans",
+      insert: `INSERT INTO public.change_plans (id, org_id, change_object_id)
+                VALUES (gen_random_uuid(), gen_random_uuid(), gen_random_uuid())`
+    },
+    {
+      table: "outbox",
+      insert: `INSERT INTO public.outbox (id, org_id, type, source, data)
+                VALUES (gen_random_uuid(), gen_random_uuid(), 'scp.probe.test', '/probe', '{}'::jsonb)`
+    },
+    {
+      table: "audit_events",
+      insert: `INSERT INTO public.audit_events (id, org_id, actor_id, action, request_id, prev_hash, row_hash)
+                VALUES (gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 'probe.action', 'probe-request', 'deadbeef', 'deadbeef')`
+    }
+  ];
 
-  it("scp_pgboss CANNOT read or write public.relationships — permission-denied (42501)", async () => {
-    const raw = await RawScpPgBossClient.connect();
-    await expect(raw.query("SELECT * FROM public.relationships")).rejects.toMatchObject({
-      code: "42501"
+  describe.each(TENANT_TABLES)("scp_pgboss CANNOT touch public.$table — permission-denied (42501)", ({ table, insert }) => {
+    it("SELECT is permission-denied, not an RLS-emptied result", async () => {
+      const raw = await RawScpPgBossClient.connect();
+      await expect(raw.query(`SELECT * FROM public.${table}`)).rejects.toMatchObject({ code: "42501" });
+      await raw.close();
     });
-    await expect(
-      raw.query(
-        `INSERT INTO public.relationships (id, org_id, type_id, from_id, to_id, origin_domain_id, content_hash)
-         VALUES (gen_random_uuid(), gen_random_uuid(), 'depends_on', gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 'deadbeef')`
-      )
-    ).rejects.toMatchObject({ code: "42501" });
-    await raw.close();
-  });
 
-  it("scp_pgboss CANNOT read or write public.role_bindings — permission-denied (42501)", async () => {
-    const raw = await RawScpPgBossClient.connect();
-    await expect(raw.query("SELECT * FROM public.role_bindings")).rejects.toMatchObject({
-      code: "42501"
+    it("INSERT is permission-denied", async () => {
+      const raw = await RawScpPgBossClient.connect();
+      await expect(raw.query(insert)).rejects.toMatchObject({ code: "42501" });
+      await raw.close();
     });
-    await expect(
-      raw.query(
-        `INSERT INTO public.role_bindings (id, org_id, subject_id, role_id, scope_object_id)
-         VALUES (gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid())`
-      )
-    ).rejects.toMatchObject({ code: "42501" });
-    await raw.close();
-  });
 
-  it("scp_pgboss CANNOT read or write public.changes — permission-denied (42501)", async () => {
-    // `changes` (drizzle/0007_change_coordination.sql, M3) is the coordination engine's tenant
-    // table — the same isolation guarantee proven for objects/relationships/role_bindings above
-    // must hold for it too (BUILD_AND_TEST.md §8 M3 DoD: "pg-boss-role probe proves the
-    // pgboss-schema role cannot touch tenant tables (objects/relationships/role_bindings/changes)").
-    const raw = await RawScpPgBossClient.connect();
-    await expect(raw.query("SELECT * FROM public.changes")).rejects.toMatchObject({
-      code: "42501"
+    it("UPDATE is permission-denied", async () => {
+      const raw = await RawScpPgBossClient.connect();
+      await expect(
+        raw.query(`UPDATE public.${table} SET org_id = org_id WHERE org_id = gen_random_uuid()`)
+      ).rejects.toMatchObject({ code: "42501" });
+      await raw.close();
     });
-    await expect(
-      raw.query(
-        `INSERT INTO public.changes (object_id, org_id) VALUES (gen_random_uuid(), gen_random_uuid())`
-      )
-    ).rejects.toMatchObject({ code: "42501" });
-    await raw.close();
+
+    it("DELETE is permission-denied", async () => {
+      const raw = await RawScpPgBossClient.connect();
+      await expect(
+        raw.query(`DELETE FROM public.${table} WHERE org_id = gen_random_uuid()`)
+      ).rejects.toMatchObject({ code: "42501" });
+      await raw.close();
+    });
   });
 });
