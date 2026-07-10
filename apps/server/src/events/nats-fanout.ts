@@ -32,7 +32,9 @@ import type { RelayedEvent } from "./sse-hub.js";
  * that window (DESIGN.md §8: "at-least-once delivery; handlers are idempotent, keyed by event id").
  */
 
-const STREAM_NAME = "SCP_EVENTS";
+/** Exported for events/event-bus.integration.test.ts, which binds a real JetStream consumer to
+ *  this stream to observe delivery/de-dup end to end rather than re-deriving the name. */
+export const STREAM_NAME = "SCP_EVENTS";
 const STREAM_SUBJECTS = ["scp.events.>"];
 /** Generous relative to the relay's 1s poll/retry cadence — covers redelivery after a crash mid-batch. */
 const DUPLICATE_WINDOW_MS = 2 * 60_000;

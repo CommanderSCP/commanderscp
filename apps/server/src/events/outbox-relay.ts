@@ -56,6 +56,17 @@ export function startOutboxRelay(
   natsFanout?: NatsFanoutHandle
 ): OutboxRelayHandle {
   let stopped = false;
+  // Tracks every relayOnce() call currently in flight (there can be more than one: the 1s poll
+  // timer, the LISTEN/NOTIFY handler, and the initial kick-off below all fire independently — see
+  // `trigger()`). `stop()` awaits this set before returning, which is the actual fix for a real
+  // shutdown-race bug: without it, a caller that calls `stop()` then immediately closes
+  // `runtimePool` (main.ts's onClose hook, test-support/harness.ts's close()) could tear down the
+  // pool out from under a relayOnce() that was still mid-query, producing
+  // "TypeError: Cannot destructure property 'rows' of ... as it is undefined" — `client.query()`
+  // resolving to `undefined` instead of rejecting, a rare-but-real pg behavior when the
+  // connection is destroyed mid-flight. See the defensive `result?.rows` guard below too — belt
+  // and braces, since ordering discipline alone can't prove every possible teardown interleaving.
+  const inFlight = new Set<Promise<void>>();
 
   async function relayOnce(): Promise<void> {
     if (stopped) return;
@@ -63,10 +74,16 @@ export function startOutboxRelay(
     try {
       await client.query("BEGIN");
       await client.query("SET LOCAL ROLE scp_relay");
-      const { rows } = await client.query<OutboxRow>(
+      const result = await client.query<OutboxRow>(
         `SELECT * FROM outbox WHERE processed_at IS NULL ORDER BY created_at ASC LIMIT $1 FOR UPDATE SKIP LOCKED`,
         [BATCH_SIZE]
       );
+      // Defensive guard (see `inFlight` doc comment above): a client torn down mid-query by pool
+      // shutdown has been observed to resolve `query()` with `undefined` rather than rejecting.
+      // Treat that as "no rows this pass" instead of crashing — nothing is lost, since the
+      // row(s) are simply left unprocessed and picked up by the next relayOnce() (or, if the
+      // process really is shutting down, by the relay after restart).
+      const rows = result?.rows ?? [];
       for (const row of rows) {
         await boss.send(DOMAIN_EVENTS_QUEUE, {
           id: row.id,
@@ -100,26 +117,50 @@ export function startOutboxRelay(
     }
   }
 
+  /** Fires relayOnce() and tracks it in `inFlight` so `stop()` can await it — every trigger
+   *  source (NOTIFY, the poll timer, the initial kick-off) goes through this instead of calling
+   *  relayOnce() directly. Synchronous up to its `stopped` check, so once `stop()` sets `stopped`
+   *  no new relayOnce() can start afterward (JS's single-threaded run-to-completion semantics: no
+   *  interleaving is possible between `stop()`'s synchronous prefix and any event-loop callback
+   *  that calls `trigger()`). */
+  function trigger(): void {
+    if (stopped) return;
+    const call = relayOnce().finally(() => {
+      inFlight.delete(call);
+    });
+    inFlight.add(call);
+  }
+
   const listenClient = new Client({ connectionString: listenConnectionString });
   listenClient
     .connect()
     .then(async () => {
       await listenClient.query("LISTEN scp_outbox_insert");
       listenClient.on("notification", () => {
-        void relayOnce();
+        trigger();
       });
     })
     .catch((err: unknown) => console.error("[outbox-relay] LISTEN setup failed", err));
   listenClient.on("error", (err) => console.error("[outbox-relay] LISTEN connection error", err));
 
-  const timer = setInterval(() => void relayOnce(), POLL_INTERVAL_MS);
-  void relayOnce();
+  const timer = setInterval(() => trigger(), POLL_INTERVAL_MS);
+  trigger();
 
   return {
+    /**
+     * Stops the relay deterministically: no new relayOnce() can start after this is called, AND
+     * every already-in-flight relayOnce() has settled by the time this resolves. Callers
+     * (main.ts's onClose hook, test-support/harness.ts's close()) rely on that ordering to close
+     * `runtimePool` immediately afterward without racing a query against a torn-down client —
+     * this is what actually fixes the shutdown-race bug described on `inFlight` above; the
+     * `result?.rows` guard in relayOnce() is the belt-and-braces backstop for any interleaving
+     * this ordering doesn't cover.
+     */
     async stop() {
       stopped = true;
       clearInterval(timer);
       await listenClient.end().catch(() => undefined);
+      await Promise.allSettled(inFlight);
     }
   };
 }
