@@ -12,6 +12,7 @@ import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
+import { forbidden } from "../errors.js";
 import { withIdempotency } from "../idempotency.js";
 import {
   createRelationship,
@@ -23,6 +24,25 @@ import {
 function idempotencyKey(request: FastifyRequest): string | undefined {
   const header = request.headers["idempotency-key"];
   return typeof header === "string" ? header : undefined;
+}
+
+/**
+ * Relationship types the ENGINE owns end to end — the generic `/relationships` write endpoints
+ * must never let a client create or delete them directly (adversarial review MAJOR #7). `approves`
+ * edges are DESIGN §10.2 approval EVIDENCE; a fabricated one is a graph-visible fake "X approved
+ * this" that undermines evidentiary integrity (it can't forge real quorum — that's DB-vote-backed
+ * — but the edge is surfaced as evidence). Only the approval-vote path (approvals-repo.ts's
+ * `castApprovalVote`) may create an `approves` edge, and only a rollback of the underlying vote
+ * could ever remove one. Enforced with 403, at BOTH create and delete.
+ */
+const SYSTEM_MANAGED_RELATIONSHIP_TYPES = new Set(["approves"]);
+
+function assertNotSystemManagedRelationship(typeId: string): void {
+  if (SYSTEM_MANAGED_RELATIONSHIP_TYPES.has(typeId)) {
+    throw forbidden(
+      `relationship type '${typeId}' is system-managed (created only by the approval-vote path) and cannot be created or deleted via /relationships`
+    );
+  }
 }
 
 /**
@@ -62,6 +82,8 @@ export function registerRelationshipRoutes(app: FastifyInstance, deps: AppDeps):
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // MAJOR #7: refuse to fabricate a system-managed edge (e.g. `approves`) via this endpoint.
+        assertNotSystemManagedRelationship(request.body.typeId);
         // BOTH endpoints (see module doc — member_of privilege-escalation guard).
         await authorize(tx, {
           orgId: auth.orgId,
@@ -190,6 +212,9 @@ export function registerRelationshipRoutes(app: FastifyInstance, deps: AppDeps):
       const auth = await requireAuth(deps, request);
       const relationship = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const found = await getRelationship(tx, auth.orgId, request.params.id);
+        // MAJOR #7: a system-managed edge (e.g. `approves`) is engine-owned — no hand-deleting
+        // approval evidence through the generic endpoint.
+        assertNotSystemManagedRelationship(found.typeId);
         // BOTH endpoints (see module doc) — deleting a membership/governance edge is as
         // security-relevant as creating one.
         await authorize(tx, {

@@ -633,6 +633,51 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
   });
 
   // -----------------------------------------------------------------------------------------
+  // MAJOR #7 (adversarial review): `approves` edges are DESIGN §10.2 approval EVIDENCE and are
+  // system-managed — the generic /relationships endpoint must refuse to fabricate one (a
+  // graph-visible fake "X approved this"), so approval evidence only ever derives from the
+  // DB-vote-backed approval-vote path.
+  // -----------------------------------------------------------------------------------------
+
+  it("the generic /relationships endpoint refuses to create OR delete a system-managed 'approves' edge (403) — even for an org-root Owner", async () => {
+    const org = await createTestOrg(server, "approves-guard");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+    const a = await admin.components.create({ name: "ag-from" });
+    const b = await admin.components.create({ name: "ag-to" });
+
+    // Even the bootstrap admin (org-root Owner) cannot fabricate one — it's engine-owned, not a
+    // permission question.
+    const createErr = await expectApiError(() =>
+      admin.relationships.create({ typeId: "approves", fromId: a.id, toId: b.id })
+    );
+    expect(createErr.status).toBe(403);
+    expect(JSON.stringify(createErr.problem)).toMatch(/system-managed/i);
+
+    // A legitimate `approves` edge (from a real vote) also cannot be hand-deleted via the generic
+    // endpoint. Produce one via the real vote path, then attempt to delete it.
+    const target = await admin.components.create({ name: "ag-target" });
+    await createPolicy(admin, org, {
+      name: "approves-guard-policy",
+      urnSuffix: "approves-guard",
+      enforcement: "required",
+      scopeObjectId: target.id,
+      requireApprovals: { count: 1, fromRole: "Approver", scope: org.orgId }
+    });
+    const change = await admin.changes.propose({ name: "ag-change", targets: [target.id] });
+    const approvalRequest = await waitForApprovalRequest(admin, change.id);
+    const approver = await createTestUser(server, org, [{ role: "Approver", scope: org.orgId }]);
+    const approverClient = new ScpClient({ baseUrl: server.baseUrl, token: approver.token });
+    await approverClient.approvals.vote(approvalRequest.id);
+
+    const edges = await admin.relationships.list({ fromId: approver.objectId, toId: change.id, typeId: "approves" });
+    expect(edges.items.length).toBeGreaterThanOrEqual(1);
+    const deleteErr = await expectApiError(() => admin.relationships.delete(edges.items[0]!.id));
+    expect(deleteErr.status).toBe(403);
+    expect(JSON.stringify(deleteErr.problem)).toMatch(/system-managed/i);
+  });
+
+  // -----------------------------------------------------------------------------------------
   // MAJOR #5 (adversarial review): a requireApprovals.scope written as a scope-KIND keyword
   // (DESIGN §10.1's own example `"scope":"service"`) must resolve to the change target's
   // containing service — NOT crash the reconcile tick with a raw `::uuid` cast (22P02).
