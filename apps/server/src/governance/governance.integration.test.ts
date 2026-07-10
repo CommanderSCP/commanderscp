@@ -675,11 +675,13 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
   });
 
   // -----------------------------------------------------------------------------------------
-  // Freezes: block, mandatory reason, unauthorized-override 403, authorized override succeeds +
+  // Freezes: block, mandatory reason, and — MAJOR #6 — a REJECTED override (unauthorized / no
+  // reason) is now routed through the Decision+audit path (409 carrying decision_id, an audited
+  // rejected-transition Decision), NOT a rolled-back raw 403. Authorized override succeeds and
   // audits with the reason. SECURITY-SENSITIVE surface.
   // -----------------------------------------------------------------------------------------
 
-  it("freeze blocks promote; override without permission is 403; override without a reason is 403; authorized override with a reason succeeds and writes an audited, Decision-linked freeze.override event", async () => {
+  it("freeze blocks promote; a rejected override (unauthorized / no-reason) carries decision_id + is audited (MAJOR #6); authorized override with a reason succeeds and writes an audited, Decision-linked freeze.override event", async () => {
     const org = await createTestOrg(server, "freeze");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
@@ -701,17 +703,25 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     expect(blocked.problem?.decision_id).toBeTruthy();
 
     // Administrator has 'freeze:write' (M4 migration) but deliberately NOT 'freeze:override' —
-    // the two highest-blast-radius bypass permissions are Owner-only.
+    // the two highest-blast-radius bypass permissions are Owner-only. MAJOR #6: an unauthorized
+    // override is now a 409 carrying decision_id (a real, audited rejected-transition Decision),
+    // not a bare 403 that leaves no trace.
     const administrator = await createTestUser(server, org, [{ role: "Administrator", scope: org.orgId }]);
     const administratorClient = new ScpClient({ baseUrl: server.baseUrl, token: administrator.token });
     const unauthorizedOverride = await expectApiError(() =>
       administratorClient.changes.promote(change.id, "let me through please", true)
     );
-    expect(unauthorizedOverride.status).toBe(403);
+    expect(unauthorizedOverride.status).toBe(409);
+    expect(unauthorizedOverride.problem?.decision_id).toBeTruthy();
+    // The rejected override left an audited Decision naming the rejection.
+    const rejectDecision = await admin.decisions.get(unauthorizedOverride.problem!.decision_id!);
+    expect(rejectDecision.verdict).toBe("block");
+    expect(JSON.stringify(rejectDecision.reasonTree)).toMatch(/override rejected/i);
 
-    // Owner HAS 'freeze:override' but omits the mandatory reason — still 403.
+    // Owner HAS 'freeze:override' but omits the mandatory reason — also a rejected-override 409.
     const missingReason = await expectApiError(() => admin.changes.promote(change.id, undefined, true));
-    expect(missingReason.status).toBe(403);
+    expect(missingReason.status).toBe(409);
+    expect(missingReason.problem?.decision_id).toBeTruthy();
 
     // Owner, with a reason, succeeds.
     const promoted = await admin.changes.promote(change.id, "hotfix approved by incident commander", true);
@@ -726,6 +736,61 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const decision = await admin.decisions.get(overrideEvent!.decisionId!);
     expect(decision.verdict).toBe("allow");
     expect(decision.kind).toBe("transition");
+    // The rejected attempts were also audited as blocked transitions (MAJOR #6 — nothing rolls
+    // back silently): at least one `change.transition.blocked` event exists for this change.
+    const blockedEvents = auditPage.items.filter((e) => e.action === "change.transition.blocked");
+    expect(blockedEvents.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // CRITICAL #2 (adversarial review): a narrow-scope override must NOT slip a change past a
+  // BROADER simultaneous freeze the actor has no authority over. `activeFreezesForScopes` can
+  // return several; only checking the first one was the bypass.
+  // -----------------------------------------------------------------------------------------
+
+  it("a narrow-scope freeze:override does NOT bypass a broader simultaneous freeze the actor lacks authority over — every active freeze must be individually overridden", async () => {
+    const org = await createTestOrg(server, "multi-freeze");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+    const service = await admin.services.create({ name: "mf-service" });
+    const component = await admin.components.create({ name: "mf-component", domainId: service.id });
+    const change = await admin.changes.propose({ name: "mf-change", targets: [component.id] });
+    await waitForValidating(admin, change.id);
+
+    const now = Date.now();
+    const startsAt = new Date(now - 60_000).toISOString();
+    const endsAt = new Date(now + 3_600_000).toISOString();
+    // TWO simultaneous freezes over the change's scope: a narrow one at the component, a broader
+    // one at the org root.
+    await admin.freezes.create({ scopeObjectId: component.id, name: "component-freeze", startsAt, endsAt, reason: "narrow" });
+    await admin.freezes.create({ scopeObjectId: org.orgId, name: "org-freeze", startsAt, endsAt, reason: "broad org-wide freeze" });
+
+    // An actor who can PROMOTE (Administrator at org root grants object:write, the route-level
+    // permission the promote endpoint checks — but NOT freeze:override, which is Owner-only) AND
+    // holds freeze:override ONLY at the component (Owner bound there). So they can override the
+    // component freeze but have no authority over the broader org-root freeze.
+    const narrowOverrider = await createTestUser(server, org, [
+      { role: "Administrator", scope: org.orgId },
+      { role: "Owner", scope: component.id }
+    ]);
+    const narrowClient = new ScpClient({ baseUrl: server.baseUrl, token: narrowOverrider.token });
+
+    // Their override covers the component freeze but NOT the org-root freeze → still blocked.
+    // (Also needs object:write to attempt the promote transition at all — Owner grants it.)
+    const stillBlocked = await expectApiError(() =>
+      narrowClient.changes.promote(change.id, "I can only override the component freeze", true)
+    );
+    expect(stillBlocked.status).toBe(409);
+    expect(stillBlocked.problem?.decision_id).toBeTruthy();
+
+    // The org-root Owner (admin) holds freeze:override at org root, which covers BOTH freezes via
+    // containment → the override succeeds and BOTH freezes are individually audited.
+    const promoted = await admin.changes.promote(change.id, "incident: overriding both freezes", true);
+    expect(promoted.state).toBe("promoted");
+
+    const auditPage = await admin.auditEvents.list({ limit: 200 });
+    const overrideEvents = auditPage.items.filter((e) => e.action === "freeze.override");
+    expect(overrideEvents.length).toBeGreaterThanOrEqual(2); // one per overridden freeze
   });
 
   // -----------------------------------------------------------------------------------------

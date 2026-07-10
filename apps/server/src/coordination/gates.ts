@@ -47,7 +47,9 @@ export interface GateVerdict {
   verdict: "allow" | "block";
   reasonTree: Record<string, unknown>;
   inputContext: Record<string, unknown>;
-  freezeOverride?: { freezeId: string; reason: string } | undefined;
+  /** Every active freeze this transition overrode (CRITICAL #2 — possibly several) —
+   *  transition.ts writes one high-severity `freeze.override` audit event per entry. */
+  freezeOverrides?: { freezeId: string; reason: string; scopeObjectId: string }[] | undefined;
 }
 
 function allowVerdict(reason: string, extra: Record<string, unknown> = {}): GateVerdict {
@@ -135,7 +137,7 @@ export async function evaluateLifecycleGate(
     verdict: outcome.verdict,
     inputContext: { ...outcome.inputContext, fromState: ctx.fromState, toState: ctx.toState, explicitGatesBound: explicitlyBound.length },
     reasonTree: outcome.reasonTree,
-    freezeOverride: outcome.freezeOverride
+    freezeOverrides: outcome.freezeOverrides
   };
 }
 

@@ -8,7 +8,6 @@ import { ensureControlRuns, readExistingControlOutcomes } from "./control-runner
 import { materializeApprovalRequest, quorumStatus } from "./approvals-repo.js";
 import { activeFreezesForScopes, type FreezeRow } from "./freezes-repo.js";
 import { hasPermission } from "../authz/resolve.js";
-import { forbidden } from "../errors.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 
 /**
@@ -36,20 +35,30 @@ export interface GateContext {
   gateKind: "lifecycle_edge" | "wave_boundary";
   gateRef: Record<string, unknown>;
   /** Set when the caller is attempting an explicit freeze override (mandatory reason —
-   *  DESIGN §10.3). Authorization (`freeze:override`) is checked HERE, before anything else, and
-   *  throws 403 on failure — an unauthorized override attempt is a hard authz error, not a
-   *  governance "block" verdict (BUILD_AND_TEST.md §8 M4: "unauthorized override 403"). */
+   *  DESIGN §10.3). Every ACTIVE freeze over the change's scope must be individually overridden by
+   *  an actor holding `freeze:override` at THAT freeze's own scope (CRITICAL #2). A rejected
+   *  override (missing reason, or unauthorized for some active freeze) is NOT thrown — it becomes a
+   *  "block" verdict so `coordination/transition.ts` writes the Decision + audit with a resolvable
+   *  `decision_id`, exactly like every other block path (MAJOR #6). */
   overrideFreeze?: { reason: string } | undefined;
+}
+
+/** One active freeze successfully overridden — `coordination/transition.ts` writes one
+ *  high-severity `freeze.override` audit event per entry (DESIGN §10.3). */
+export interface FreezeOverride {
+  freezeId: string;
+  reason: string;
+  scopeObjectId: string;
 }
 
 export interface GateOutcome {
   verdict: "allow" | "block";
   reasonTree: Record<string, unknown>;
   inputContext: Record<string, unknown>;
-  /** Set when an active freeze was overridden — the caller (coordination/transition.ts) writes
-   *  the mandatory high-severity audit event for this (DESIGN §10.3: "producing a high-severity
-   *  audit event + Decision"). */
-  freezeOverride?: { freezeId: string; reason: string } | undefined;
+  /** Every active freeze that was overridden (CRITICAL #2 — possibly several) — the caller writes
+   *  one mandatory high-severity audit event each (DESIGN §10.3). Empty/undefined when nothing was
+   *  overridden. */
+  freezeOverrides?: FreezeOverride[] | undefined;
 }
 
 async function containmentScopeIdsForTargets(tx: TenantTx, orgId: string, targetObjectIds: string[]): Promise<string[]> {
@@ -71,33 +80,58 @@ async function containmentScopeIdsForTargets(tx: TenantTx, orgId: string, target
   return [...ids];
 }
 
+/**
+ * CRITICAL #2 / MAJOR #6: the change proceeds only if EVERY active freeze over its scope is
+ * INDIVIDUALLY overridden by an actor holding `freeze:override` at THAT freeze's own scope, with a
+ * non-empty reason. `activeFreezesForScopes` has no ORDER BY and can return several — checking only
+ * `active[0]` let a narrow-scope override holder slip a change past a broader freeze they had no
+ * authority over. Never throws: a rejected override (no override requested, missing reason, or
+ * unauthorized for some freeze) returns `blocked` so the caller writes a Decision + audit with a
+ * resolvable `decision_id` (the freeze-block Decision), instead of a raw `forbidden()` that rolls
+ * that record back.
+ */
 async function checkFreeze(
   tx: TenantTx,
   ctx: GateContext,
   now: Date
-): Promise<{ blocked: FreezeRow | null; override: { freezeId: string; reason: string } | null }> {
+): Promise<
+  | { blocked: null; overrides: FreezeOverride[] }
+  | { blocked: { freeze: FreezeRow; reason: string }; overrides: null }
+> {
   const scopeIds = await containmentScopeIdsForTargets(tx, ctx.orgId, ctx.targetObjectIds);
   const active = await activeFreezesForScopes(tx, ctx.orgId, scopeIds, now);
-  if (active.length === 0) return { blocked: null, override: null };
+  if (active.length === 0) return { blocked: null, overrides: [] };
 
-  const freeze = active[0]!;
-  if (!ctx.overrideFreeze) return { blocked: freeze, override: null };
-
-  if (!ctx.overrideFreeze.reason.trim()) {
-    throw forbidden("freeze override requires a non-empty reason");
+  const overrides: FreezeOverride[] = [];
+  for (const freeze of active) {
+    const label = freeze.name ?? freeze.id;
+    if (!ctx.overrideFreeze) {
+      return { blocked: { freeze, reason: `active freeze '${label}' (${freeze.reason})` }, overrides: null };
+    }
+    if (!ctx.overrideFreeze.reason.trim()) {
+      return {
+        blocked: { freeze, reason: `freeze override of '${label}' requires a non-empty reason` },
+        overrides: null
+      };
+    }
+    const authorized = await hasPermission(tx, {
+      orgId: ctx.orgId,
+      subjectObjectId: ctx.actorObjectId,
+      permission: "freeze:override",
+      scopeObjectId: freeze.scopeObjectId
+    });
+    if (!authorized) {
+      return {
+        blocked: {
+          freeze,
+          reason: `subject '${ctx.actorObjectId}' lacks 'freeze:override' at scope '${freeze.scopeObjectId}' — cannot override freeze '${label}'`
+        },
+        overrides: null
+      };
+    }
+    overrides.push({ freezeId: freeze.id, reason: ctx.overrideFreeze.reason, scopeObjectId: freeze.scopeObjectId });
   }
-  const authorized = await hasPermission(tx, {
-    orgId: ctx.orgId,
-    subjectObjectId: ctx.actorObjectId,
-    permission: "freeze:override",
-    scopeObjectId: freeze.scopeObjectId
-  });
-  if (!authorized) {
-    throw forbidden(
-      `subject '${ctx.actorObjectId}' lacks 'freeze:override' at scope '${freeze.scopeObjectId}' — cannot override freeze '${freeze.id}'`
-    );
-  }
-  return { blocked: null, override: { freezeId: freeze.id, reason: ctx.overrideFreeze.reason } };
+  return { blocked: null, overrides };
 }
 
 /** Every graph fact `governance/evaluate.ts`'s context carries beyond the target itself — MVP
@@ -264,12 +298,19 @@ export async function evaluateGovernanceGate(
 
   const freezeCheck = await checkFreeze(tx, ctx, now);
   if (freezeCheck.blocked) {
+    // Both a plain freeze block and a REJECTED override (missing reason / unauthorized for some
+    // active freeze) land here as a "block" verdict — the caller (transition.ts) writes the
+    // Decision + audit with `decision_id`, never a rolled-back raw 403 (MAJOR #6).
+    const { freeze, reason } = freezeCheck.blocked;
     return {
       verdict: "block",
-      inputContext: { freeze: { id: freezeCheck.blocked.id, endsAt: freezeCheck.blocked.endsAt.toISOString() } },
+      inputContext: {
+        freeze: { id: freeze.id, scopeObjectId: freeze.scopeObjectId, endsAt: freeze.endsAt.toISOString() },
+        ...(ctx.overrideFreeze ? { overrideRejected: reason } : {})
+      },
       reasonTree: {
-        summary: `blocked by active freeze '${freezeCheck.blocked.name ?? freezeCheck.blocked.id}' (${freezeCheck.blocked.reason})`,
-        freeze: freezeCheck.blocked
+        summary: ctx.overrideFreeze ? `freeze override rejected: ${reason}` : `blocked by ${reason}`,
+        freeze: { id: freeze.id, name: freeze.name, scopeObjectId: freeze.scopeObjectId, reason: freeze.reason }
       }
     };
   }
@@ -365,6 +406,7 @@ export async function evaluateGovernanceGate(
   // firing set (no second CEL eval — no race where a re-eval fires differently).
   const result = evaluateFiredPolicies(fired, { controlOutcomes, approvals });
 
+  const freezeOverrides = freezeCheck.overrides;
   return {
     verdict: result.verdict === "block" ? "block" : "allow",
     inputContext: {
@@ -372,9 +414,9 @@ export async function evaluateGovernanceGate(
       effectivePolicyCount: effectivePolicies.length,
       firedPolicyCount: fired.filter((fp) => fp.fired).length,
       ...(emergencyNote ? { emergency: emergencyNote } : {}),
-      ...(freezeCheck.override ? { freezeOverride: freezeCheck.override } : {})
+      ...(freezeOverrides.length > 0 ? { freezeOverrides } : {})
     },
     reasonTree: { ...result.reasonTree, ...(emergencyNote ? { emergencyNote } : {}) },
-    freezeOverride: freezeCheck.override ?? undefined
+    freezeOverrides: freezeOverrides.length > 0 ? freezeOverrides : undefined
   };
 }
