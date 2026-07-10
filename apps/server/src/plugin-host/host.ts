@@ -89,10 +89,73 @@ export interface PluginHostOptions {
   stabilityWindowMs?: number;
   /** Node's `--max-old-space-size` for every spawned child, in MB. Default 256. */
   maxOldSpaceMb?: number;
+  /** CRITICAL #4 (PR #7 review): max bytes a single stdout "line" (bytes between two `\n`s) may
+   *  accumulate to before the host treats the child as faulty and kills it — readline itself has
+   *  no such cap, so an unbounded/no-newline stream would otherwise grow the PARENT's memory
+   *  forever. Default 4MB (generous for any real JSON-RPC message this protocol carries). */
+  maxLineBytes?: number;
   /** Overridable for tests only — defaults to the real compiled subprocess-entry.js next to this file. */
   subprocessEntryPath?: string;
   /** Overridable for tests only — defaults to `process.execPath` (the real `node` binary). */
   nodeExecutable?: string;
+}
+
+/**
+ * CRITICAL #3 (PR #7 review): the previous `{ ...process.env, SCP_PLUGIN_* }` spread handed every
+ * plugin subprocess the FULL parent environment — `DATABASE_URL` (the admin/superuser connection,
+ * main.ts phase 1), `SCP_COOKIE_SECRET`, `SCP_OIDC_CLIENT_SECRET`, `SCP_RUNTIME_DATABASE_URL`, all
+ * of it. A plugin is untrusted, host-mediated code (DESIGN.md §11: "JSON-serializable args/results
+ * only, an injected scoped context") — it should never be able to read `process.env` and connect
+ * to Postgres as the admin role, bypassing RLS entirely. This allowlists only the handful of
+ * variables a Node child genuinely needs to boot and run `tsx`/module resolution: `PATH` (module
+ * resolution / any tool the loader shells out to), and the tmp/home dirs a couple of Node/esbuild
+ * internals fall back to when unset. Every `SCP_PLUGIN_*` config var the plugin actually needs is
+ * passed explicitly by the caller below — never inherited.
+ */
+function minimalChildEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of ["PATH", "HOME", "TMPDIR", "TMP", "TEMP"]) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
+}
+
+/**
+ * CRITICAL #4 (PR #7 review): `readline.createInterface` has no built-in cap on how many bytes it
+ * will accumulate while waiting for the next `\n` — a plugin that streams bytes without ever
+ * emitting a newline (buggy, hung, or malicious) would otherwise grow the PARENT process's memory
+ * without bound, defeating DESIGN.md §11's "a crashed or hung plugin cannot take down the worker."
+ *
+ * A plain byte-counting tracker rather than an intermediate `Transform` piped in front of
+ * readline: Node readable streams happily deliver each chunk to MULTIPLE `'data'` listeners, so
+ * this taps the exact same chunks readline consumes, independently, with none of the destroy/
+ * unpipe race conditions a Transform-in-the-pipe-chain approach has to fight when it needs to
+ * abort mid-stream. `record()` tracks bytes seen since the last `\n` — across chunk boundaries,
+ * and at every `\n` found WITHIN a single chunk (not just the chunk's tail), so one pathologically
+ * oversized embedded line can't slip through just because the chunk happens to end on a newline —
+ * and returns `true` the moment that count exceeds `maxBytes`. The caller (`spawnInstance`) reacts
+ * by killing the child directly, routing through the exact same exit handler — and therefore the
+ * same restart-with-backoff recovery — as a crash or a call timeout.
+ */
+function createLineLengthTracker(maxBytes: number): { record(chunk: Buffer): boolean } {
+  let sinceNewline = 0;
+  return {
+    record(chunk: Buffer): boolean {
+      let searchStart = 0;
+      for (;;) {
+        const idx = chunk.indexOf(0x0a, searchStart); // '\n'
+        if (idx === -1) {
+          sinceNewline += chunk.length - searchStart;
+          return sinceNewline > maxBytes;
+        }
+        sinceNewline += idx - searchStart;
+        if (sinceNewline > maxBytes) return true;
+        sinceNewline = 0;
+        searchStart = idx + 1;
+      }
+    }
+  };
 }
 
 const DEFAULTS: Required<
@@ -103,13 +166,15 @@ const DEFAULTS: Required<
     | "maxRestartBackoffMs"
     | "stabilityWindowMs"
     | "maxOldSpaceMb"
+    | "maxLineBytes"
   >
 > = {
   callTimeoutMs: 10_000,
   restartBackoffBaseMs: 200,
   maxRestartBackoffMs: 10_000,
   stabilityWindowMs: 5_000,
-  maxOldSpaceMb: 256
+  maxOldSpaceMb: 256,
+  maxLineBytes: 4 * 1024 * 1024
 };
 
 /** Thrown internally when a child exits while a call to it is in flight — `call()` catches this
@@ -155,6 +220,7 @@ export class SubprocessPluginHost implements PluginHost {
       | "maxRestartBackoffMs"
       | "stabilityWindowMs"
       | "maxOldSpaceMb"
+      | "maxLineBytes"
     >
   > & { subprocessEntryPath: string; nodeExecutable: string };
   private readonly instances = new Map<string, Instance>();
@@ -166,6 +232,7 @@ export class SubprocessPluginHost implements PluginHost {
       maxRestartBackoffMs: options.maxRestartBackoffMs ?? DEFAULTS.maxRestartBackoffMs,
       stabilityWindowMs: options.stabilityWindowMs ?? DEFAULTS.stabilityWindowMs,
       maxOldSpaceMb: options.maxOldSpaceMb ?? DEFAULTS.maxOldSpaceMb,
+      maxLineBytes: options.maxLineBytes ?? DEFAULTS.maxLineBytes,
       subprocessEntryPath: options.subprocessEntryPath ?? DEFAULT_SUBPROCESS_ENTRY_PATH,
       nodeExecutable: options.nodeExecutable ?? process.execPath
     };
@@ -230,7 +297,7 @@ export class SubprocessPluginHost implements PluginHost {
   private spawnInstance(instance: Instance): void {
     if (instance.stopped) return;
     const env: NodeJS.ProcessEnv = {
-      ...process.env,
+      ...minimalChildEnv(),
       SCP_PLUGIN_MODULE: instance.config.module,
       SCP_PLUGIN_INSTANCE_ID: instance.config.id,
       SCP_PLUGIN_ORG_ID: instance.config.orgId,
@@ -255,6 +322,20 @@ export class SubprocessPluginHost implements PluginHost {
     instance.child = child;
     instance.ready = false;
     instance.spawnedAt = Date.now();
+
+    // CRITICAL #4: taps the same raw chunks readline consumes (see createLineLengthTracker's doc
+    // comment) and kills the child the instant an unbounded/no-newline stream crosses maxLineBytes
+    // — a plugin can't grow the PARENT's memory by simply never sending '\n'.
+    const lineTracker = createLineLengthTracker(this.opts.maxLineBytes);
+    let lineLimitTripped = false;
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (lineLimitTripped || !lineTracker.record(chunk)) return;
+      lineLimitTripped = true;
+      process.stderr.write(
+        `[plugin-host] instance '${instance.config.id}' exceeded max line size (${this.opts.maxLineBytes} bytes) without a newline on stdout — killing as faulty\n`
+      );
+      instance.child?.kill("SIGKILL");
+    });
 
     const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
     instance.rl = rl;
