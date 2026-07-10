@@ -2,7 +2,7 @@ import type { ControlOutcomeStatus } from "@scp/plugin-api";
 import type { TenantTx } from "../db/tenant-tx.js";
 import type { PluginHost, PluginHostInstanceConfig } from "../plugin-host/contract.js";
 import { getControlBinding, insertControlRun, latestControlRun } from "./controls-repo.js";
-import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { getObjectByIdOrUrnAnyType, isUuid } from "../graph/objects-repo.js";
 
 // `control_bindings.plugin_module` is a free-form string at the schema layer
 // (CreateControlBindingRequestSchema — z.string().min(1)), so THIS check is the only thing
@@ -51,6 +51,20 @@ export async function ensureControlRun(
   host: PluginHost,
   input: EnsureControlRunInput
 ): Promise<ControlOutcomeStatus> {
+  if (!isUuid(input.controlObjectId)) {
+    // A policy's `requireControls` entry that isn't even a well-formed object id (a stale
+    // reference, a hand-authored-JSON typo — `control_bindings`/`control_runs` both key on a
+    // `uuid` column, so this could never correspond to a real binding or a real graph object
+    // either way) must fail closed exactly like "no binding configured" below, NOT reach the
+    // database with a value Postgres will reject as 22P02 (invalid input syntax for type uuid).
+    // Before this check, that raw DB error propagated out of `evaluateWaveGate` uncaught, which
+    // wedged the offending change's wave-boundary gate every reconcile tick forever (caught only
+    // by reconcile.ts's outermost per-change try/catch, which just logs and retries — the SAME
+    // crash, forever). No `control_runs` row is written here (unlike "no binding configured") —
+    // there is no valid uuid to write one under.
+    return "fail";
+  }
+
   if (!input.force) {
     const existing = await latestControlRun(tx, input.orgId, input.changeObjectId, input.controlObjectId);
     if (existing) return existing.status;
@@ -158,6 +172,10 @@ export async function readExistingControlOutcomes(
 ): Promise<Record<string, ControlOutcomeStatus>> {
   const outcomes: Record<string, ControlOutcomeStatus> = {};
   for (const controlObjectId of controlObjectIds) {
+    // Same "fail closed, never hit Postgres with a non-uuid" guard as ensureControlRun's — a
+    // malformed reference just never has an entry in the returned map, which evaluate.ts already
+    // treats as unsatisfied (this function's own doc comment above).
+    if (!isUuid(controlObjectId)) continue;
     const run = await latestControlRun(tx, orgId, changeObjectId, controlObjectId);
     if (run) outcomes[controlObjectId] = run.status;
   }

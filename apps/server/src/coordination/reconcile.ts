@@ -256,10 +256,19 @@ async function reconcileExecutingChange(
     // constraint, since a change can legitimately be rolled back more than once across its
     // lifetime — just never twice for the SAME failure without the first attempt having already
     // resolved). No qualifying policy -> unchanged M3 behavior: park for a human.
+    //
+    // A ROLLBACK change's OWN wave failing is deliberately EXEMPT from this — the same "no
+    // automatic caller could ever satisfy it" reasoning coordination/gates.ts's `isRollback`
+    // check documents for the validating->promoted edge applies here too, just for a different
+    // failure mode: an `autoRollbackOnFailure` policy scoped to a target whose rollback ALSO
+    // fails (a target broken enough that even restoring prior state doesn't work) would otherwise
+    // recurse — trigger a rollback-of-the-rollback, whose own wave targets the SAME broken
+    // target, fails the SAME way, and triggers a rollback-of-that, forever. A rollback change's
+    // failed wave always just parks for a human, exactly like "no qualifying policy" below.
     const failedWaveTargetIds = activeWave.targets.map((t) => t.targetObjectId);
-    const autoRollback = await withTenantTx(db, orgId, (tx) =>
-      shouldAutoRollback(tx, orgId, failedWaveTargetIds, change.objectId)
-    );
+    const autoRollback =
+      change.rollbackOfObjectId === null &&
+      (await withTenantTx(db, orgId, (tx) => shouldAutoRollback(tx, orgId, failedWaveTargetIds, change.objectId)));
     if (autoRollback) {
       try {
         await withTenantTx(db, orgId, (tx) =>

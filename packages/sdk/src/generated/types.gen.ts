@@ -10498,7 +10498,7 @@ export type ListChangeControlRunsData = {
         idOrUrn: string;
     };
     query?: never;
-    url: '/changes/{id}/control-runs';
+    url: '/changes/{idOrUrn}/control-runs';
 };
 
 export type ListChangeControlRunsErrors = {

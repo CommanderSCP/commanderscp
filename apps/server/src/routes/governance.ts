@@ -99,7 +99,7 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
 
   typed.route({
     method: "GET",
-    url: "/api/v1/changes/:id/control-runs",
+    url: "/api/v1/changes/:idOrUrn/control-runs",
     schema: {
       params: RegistryIdOrUrnParamSchema,
       response: { 200: ControlRunListResponseSchema, 401: ProblemSchema, 403: ProblemSchema }

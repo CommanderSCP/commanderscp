@@ -39393,7 +39393,7 @@
         ]
       }
     },
-    "/changes/{id}/control-runs": {
+    "/changes/{idOrUrn}/control-runs": {
       "get": {
         "operationId": "listChangeControlRuns",
         "summary": "List control run outcomes + evidence for a change (DESIGN §10.2/§10.4)",

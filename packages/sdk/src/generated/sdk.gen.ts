@@ -1434,7 +1434,7 @@ export const putControlBinding = <ThrowOnError extends boolean = false>(options:
  */
 export const listChangeControlRuns = <ThrowOnError extends boolean = false>(options: Options<ListChangeControlRunsData, ThrowOnError>): RequestResult<ListChangeControlRunsResponses, ListChangeControlRunsErrors, ThrowOnError> => (options.client ?? client).get<ListChangeControlRunsResponses, ListChangeControlRunsErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
-    url: '/changes/{id}/control-runs',
+    url: '/changes/{idOrUrn}/control-runs',
     ...options
 });
 
