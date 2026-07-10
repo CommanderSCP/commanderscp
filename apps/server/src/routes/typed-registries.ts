@@ -14,7 +14,7 @@ import {
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { authorize } from "../authz/resolve.js";
+import { authorize, type Permission } from "../authz/resolve.js";
 import { withIdempotency } from "../idempotency.js";
 import {
   createObject,
@@ -38,6 +38,12 @@ export interface TypedRegistryConfig {
   basePath: string;
   /** Singular PascalCase resource name driving operationIds, e.g. 'Domain', 'ServiceAccount'. */
   resourceName: string;
+  /** M4: policies/controls gate writes behind their own permission ('policy:write') rather than
+   *  the generic 'object:write' every other typed resource uses (DESIGN §7's example role
+   *  bindings name 'policy:write' explicitly) — defaults to 'object:write'/'object:read' so every
+   *  pre-M4 resource is unaffected. */
+  writePermission?: Permission;
+  readPermission?: Permission;
 }
 
 /**
@@ -54,6 +60,20 @@ export const TYPED_REGISTRY_RESOURCES: TypedRegistryConfig[] = [
   { typeId: "group", basePath: "groups", resourceName: "Group" },
   { typeId: "user", basePath: "users", resourceName: "User" },
   { typeId: "service-account", basePath: "service-accounts", resourceName: "ServiceAccount" }
+];
+
+/**
+ * M4 governance resources (BUILD_AND_TEST.md §8 M4 item 1/2): Policy and Control documents are
+ * graph objects of the pre-seeded `policy`/`control` types (0002_rls_rbac_seed.sql §5), managed
+ * through this exact same typed-registry machinery — versioned via `objects.version` (bumped on
+ * every update, pinned into Decisions — DESIGN §10.1/§10.4), scope/enforcement/condition/effects
+ * validated at write time by the Ajv property-schema path (drizzle/0010_governance.sql §5). The
+ * only difference from `TYPED_REGISTRY_RESOURCES` above: writes require 'policy:write' rather
+ * than the generic 'object:write' (DESIGN §7's example role bindings name it explicitly).
+ */
+export const GOVERNANCE_TYPED_REGISTRY_RESOURCES: TypedRegistryConfig[] = [
+  { typeId: "policy", basePath: "policies", resourceName: "Policy", writePermission: "policy:write" },
+  { typeId: "control", basePath: "controls", resourceName: "Control", writePermission: "policy:write" }
 ];
 
 /**
@@ -80,6 +100,8 @@ export function registerTypedRegistryRoutes(
 ): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
   const { typeId, basePath, resourceName } = config;
+  const writePermission: Permission = config.writePermission ?? "object:write";
+  const readPermission: Permission = config.readPermission ?? "object:read";
   const base = `/api/v1/${basePath}`;
   const label = basePath.replace(/-/g, " ");
 
@@ -113,7 +135,7 @@ export function registerTypedRegistryRoutes(
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          permission: "object:write",
+          permission: writePermission,
           scopeObjectId: scopeObjectId ?? auth.orgId
         });
         return withIdempotency(
@@ -167,7 +189,7 @@ export function registerTypedRegistryRoutes(
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          permission: "object:read",
+          permission: readPermission,
           scopeObjectId: auth.orgId
         });
         return listObjects(tx, auth.orgId, typeId, request.query);
@@ -203,7 +225,7 @@ export function registerTypedRegistryRoutes(
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          permission: "object:read",
+          permission: readPermission,
           scopeObjectId: found.id
         });
         return found;
@@ -241,7 +263,7 @@ export function registerTypedRegistryRoutes(
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          permission: "object:write",
+          permission: writePermission,
           scopeObjectId: found.id
         });
         return updateObject(tx, {
@@ -288,7 +310,7 @@ export function registerTypedRegistryRoutes(
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          permission: "object:write",
+          permission: writePermission,
           scopeObjectId: found.id
         });
         await deleteObject(tx, {
@@ -339,7 +361,7 @@ export function registerTypedRegistryRoutes(
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          permission: "object:write",
+          permission: writePermission,
           scopeObjectId
         });
         return upsertObjectByUrn(tx, {

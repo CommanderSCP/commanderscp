@@ -191,6 +191,22 @@ export class CelSandbox {
       if (idx !== -1) this.workers[idx] = this.spawnWorker();
     });
 
+    // CRITICAL, and CRITICALLY ORDERED LAST: unlike timers, `Worker` handles keep the Node event
+    // loop alive by default — an idle CEL sandbox (nothing ever calls `evaluate()` again) would
+    // otherwise hang ANY process that constructed one forever, including short-lived ones that
+    // never call `stop()` explicitly (`openapi-emit.ts`, `scp` CLI subcommands that boot
+    // `buildApp` for schema purposes, a test that forgets teardown). `unref()` means this worker
+    // never by itself keeps the process alive; the process stays alive for as long as something
+    // ELSE needs it to (the Fastify listener, an in-flight `evaluate()` call's pending promise,
+    // ...), which is exactly what every other caller of this class actually wants. MUST be called
+    // AFTER `worker.on("message", ...)` is attached above, not before: Node's `Worker` re-refs
+    // its underlying message port the moment a `"message"` listener is registered on it,
+    // independent of any earlier `unref()` call — calling `unref()` before the listener existed
+    // (this function's original, buggy ordering) silently leaves the worker ref'd anyway and
+    // hangs process exit forever. Verified against real `node:worker_threads` behavior, not just
+    // reasoned about — see this commit's PR description for the reproducer.
+    worker.unref();
+
     return entry;
   }
 

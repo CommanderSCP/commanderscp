@@ -24,9 +24,11 @@ import { registerTypeRegistryRoutes } from "./routes/type-registry.js";
 import { registerObjectRoutes as registerGenericObjectRoutes } from "./routes/objects-generic.js";
 import { registerRelationshipRoutes } from "./routes/relationships.js";
 import {
+  GOVERNANCE_TYPED_REGISTRY_RESOURCES,
   registerTypedRegistryRoutes,
   TYPED_REGISTRY_RESOURCES
 } from "./routes/typed-registries.js";
+import { registerGovernanceRoutes } from "./routes/governance.js";
 import { registerOwnershipRoutes } from "./routes/ownership.js";
 import { registerGraphRoutes } from "./routes/graph.js";
 import { registerAuditEventRoutes } from "./routes/audit-events.js";
@@ -128,6 +130,12 @@ export async function buildApp(
   registerChangeRoutes(app, deps);
   // M3: webhook ingress (persist-then-process) + source_mappings correlation config.
   registerChangeSourceRoutes(app, deps);
+  // M4: Policy/Control typed-registry resources (routes/typed-registries.ts's module doc) +
+  // control bindings/runs, approvals, freezes, and `scp policy evaluate` (BUILD_AND_TEST.md §8 M4).
+  for (const resource of GOVERNANCE_TYPED_REGISTRY_RESOURCES) {
+    registerTypedRegistryRoutes(app, deps, resource);
+  }
+  registerGovernanceRoutes(app, deps);
 
   app.get("/healthz", async () => ({ status: "ok" }));
 
