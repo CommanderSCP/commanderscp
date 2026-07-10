@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import fc from "fast-check";
 import {
   App,
+  Campaign,
   Component,
   Domain,
+  Initiative,
+  ReleaseTopology,
   ResourceConstruct,
   Service,
   Stack,
@@ -142,6 +145,108 @@ describe("@scp/iac: synth determinism (fast-check)", () => {
         }
       ),
       { numRuns: 30 }
+    );
+  });
+});
+
+/**
+ * Same determinism property as above (re-synthesizing the same tree twice is byte-identical;
+ * two independently-built-but-equivalent trees synthesize identically regardless of construction
+ * order), applied to the M5 constructs (`Campaign`/`Initiative`/`ReleaseTopology`). These can't
+ * join `RESOURCE_CTORS` above — each needs its own typed props (`waves`, `targets`, `topology`)
+ * rather than plain `ResourceProps` — so this is a small dedicated tree builder instead, varying
+ * both the random content (names, wave mode/fan-in, descriptions) and, within real dependency
+ * constraints (a Campaign's targets must exist before the Campaign does; an Initiative's
+ * `.coordinates()` calls need their Campaigns to exist first), the construction order.
+ */
+interface CampaignTreeSpec {
+  stackName: string;
+  serviceAName: string;
+  serviceBName: string;
+  waveMode: "parallel" | "sequential";
+  requiresFanIn: boolean;
+  campaignDescription: string;
+  initiativeDescription: string;
+}
+
+const campaignTreeSpecArb: fc.Arbitrary<CampaignTreeSpec> = fc.record({
+  stackName: fc.string({ minLength: 1, maxLength: 20 }).filter((s) => s.trim().length > 0),
+  serviceAName: fc.string({ minLength: 1, maxLength: 20 }),
+  serviceBName: fc.string({ minLength: 1, maxLength: 20 }),
+  waveMode: fc.constantFrom<"parallel" | "sequential">("parallel", "sequential"),
+  requiresFanIn: fc.boolean(),
+  campaignDescription: fc.string({ minLength: 0, maxLength: 20 }),
+  initiativeDescription: fc.string({ minLength: 0, maxLength: 20 })
+});
+
+/** Builds a stack with 2 services, a topology and campaign referencing them (built in either
+ *  `"topology-first"` or `"campaign-first"` order — both legal, since neither depends on the
+ *  other), and an initiative coordinating the campaign — every construction order a real IaC
+ *  author could legally choose, given `Campaign`/`ReleaseTopology` need the services to exist
+ *  first and `Initiative.coordinates()` needs the campaign to exist first. */
+function buildCampaignTree(spec: CampaignTreeSpec, serviceOrder: ["a", "b"] | ["b", "a"], topologyOrder: "topology-first" | "campaign-first"): Stack {
+  const app = new App();
+  const stack = new Stack(app, spec.stackName);
+
+  const services: { a?: ResourceConstruct; b?: ResourceConstruct } = {};
+  for (const which of serviceOrder) {
+    if (which === "a") services.a = new Service(stack, "svc-a", { name: spec.serviceAName });
+    else services.b = new Service(stack, "svc-b", { name: spec.serviceBName });
+  }
+  const svcA = services.a!;
+  const svcB = services.b!;
+
+  function buildTopology(): ReleaseTopology {
+    return new ReleaseTopology(stack, "topo", {
+      name: "Topology",
+      waves: [{ mode: spec.waveMode, targets: [svcA, svcB], requiresFanIn: spec.requiresFanIn }]
+    });
+  }
+  function buildCampaign(): Campaign {
+    return new Campaign(stack, "campaign", {
+      name: "Campaign",
+      targets: [svcA, svcB],
+      description: spec.campaignDescription
+    });
+  }
+
+  let campaign: Campaign;
+  if (topologyOrder === "topology-first") {
+    buildTopology();
+    campaign = buildCampaign();
+  } else {
+    campaign = buildCampaign();
+    buildTopology();
+  }
+
+  const initiative = new Initiative(stack, "initiative", {
+    name: "Initiative",
+    description: spec.initiativeDescription
+  });
+  initiative.coordinates(campaign);
+
+  return stack;
+}
+
+describe("@scp/iac: synth determinism (fast-check) — Campaign/Initiative/ReleaseTopology", () => {
+  it("re-synthesizing the same tree twice is byte-identical", () => {
+    fc.assert(
+      fc.property(campaignTreeSpecArb, (spec) => {
+        const stack = buildCampaignTree(spec, ["a", "b"], "topology-first");
+        expect(canonicalJson(stack.synth())).toBe(canonicalJson(stack.synth()));
+      }),
+      { numRuns: 50 }
+    );
+  });
+
+  it("two independently-built-but-equivalent trees synthesize identically regardless of construction order", () => {
+    fc.assert(
+      fc.property(campaignTreeSpecArb, (spec) => {
+        const stackA = buildCampaignTree(spec, ["a", "b"], "topology-first");
+        const stackB = buildCampaignTree(spec, ["b", "a"], "campaign-first");
+        expect(canonicalJson(stackA.synth())).toBe(canonicalJson(stackB.synth()));
+      }),
+      { numRuns: 50 }
     );
   });
 });

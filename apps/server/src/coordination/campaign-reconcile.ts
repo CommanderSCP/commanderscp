@@ -3,6 +3,8 @@ import { orgs } from "../db/schema.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import type { CelSandbox } from "../governance/cel-sandbox.js";
+import { badRequest } from "../errors.js";
+import { getObjectByIdOrUrnAnyType, updateObject } from "../graph/objects-repo.js";
 import type { GateDeps } from "./gates.js";
 import { evaluateWaveGate } from "./gates.js";
 import { insertDecision } from "./decisions-repo.js";
@@ -71,18 +73,71 @@ async function reconcileOneCampaign(
 
   if (!plan) {
     const properties = campaignObject.properties as Record<string, unknown>;
-    const targetObjectIds = campaignTargetObjectIdsOf(properties);
-    if (targetObjectIds.length === 0) return; // shouldn't happen — proposeCampaign rejects zero targets
+    const rawTargets = campaignTargetObjectIdsOf(properties);
+    if (rawTargets.length === 0) return; // shouldn't happen — proposeCampaign rejects zero targets
     try {
-      plan = await withTenantTx(db, orgId, (tx) =>
-        compileAndPersistCampaignPlan(tx, {
+      plan = await withTenantTx(db, orgId, async (tx) => {
+        // `properties.targets`/`properties.topologyObjectId` are ALREADY resolved real object ids
+        // for an API-created campaign (proposeCampaign resolves idOrUrn at creation time — same as
+        // changes-repo.ts's proposeChange), but NOT necessarily for an IaC-authored one: IaC apply
+        // (iac/plans-repo.ts) persists a manifest's declared `properties` verbatim, and a
+        // manifest can legitimately declare a URN there (@scp/iac's Campaign/ReleaseTopology
+        // constructs only ever have a deterministically-derived URN at pure/offline synth time,
+        // never a real database id). Re-resolving here — idempotently a no-op for an already-real
+        // id, via the same getObjectByIdOrUrnAnyType every other idOrUrn-accepting write path uses
+        // — makes campaign target/topology resolution creation-path-agnostic, so an IaC-authored
+        // campaign's implicit depends_on-based wave auto-sequencing (compileAndPersistCampaignPlan's
+        // loadDependsOnEdges, which queries relationships by real id) works exactly like an
+        // API-created campaign's does, instead of silently no-oping on URN-shaped target strings.
+        const targetObjectIds: string[] = [];
+        for (const idOrUrn of rawTargets) {
+          const target = await getObjectByIdOrUrnAnyType(tx, orgId, idOrUrn);
+          targetObjectIds.push(target.id);
+        }
+        const rawTopology = properties.topologyObjectId;
+        let topologyObjectId: string | null = null;
+        let topologyVersion: number | null = null;
+        if (typeof rawTopology === "string") {
+          const topology = await getObjectByIdOrUrnAnyType(tx, orgId, rawTopology);
+          if (topology.typeId !== "release-topology") {
+            throw badRequest(`'${rawTopology}' is not a release-topology object`);
+          }
+          topologyObjectId = topology.id;
+          topologyVersion = topology.version;
+        }
+
+        // Normalize the campaign's OWN stored properties to the resolved real ids — a no-op write
+        // for an API-created campaign (proposeCampaign already stored real ids), but load-bearing
+        // for an IaC-authored one: without this, `GET /campaigns/{id}` would keep echoing back
+        // whatever URNs the manifest declared forever (CampaignSchema.targets is `z.string().uuid()`
+        // — a URN would fail response validation), and every OTHER reconcile tick would silently
+        // repeat this same resolution work indefinitely instead of doing it once.
+        const targetsChanged =
+          targetObjectIds.length !== rawTargets.length || targetObjectIds.some((id, i) => id !== rawTargets[i]);
+        const topologyChanged = topologyObjectId !== null && topologyObjectId !== rawTopology;
+        if (targetsChanged || topologyChanged) {
+          await updateObject(tx, {
+            orgId,
+            typeId: "campaign",
+            actorObjectId: SYSTEM_ACTOR_ID,
+            requestId: "campaign-reconcile",
+            idOrUrn: campaignObjectId,
+            properties: {
+              ...properties,
+              targets: targetObjectIds,
+              ...(topologyObjectId !== null ? { topologyObjectId, topologyVersion } : {})
+            }
+          });
+        }
+
+        return compileAndPersistCampaignPlan(tx, {
           orgId,
           campaignObjectId,
           targetObjectIds,
-          topologyObjectId: (properties.topologyObjectId as string | undefined) ?? null,
-          topologyVersion: (properties.topologyVersion as number | undefined) ?? null
-        })
-      );
+          topologyObjectId,
+          topologyVersion
+        });
+      });
     } catch (err) {
       // A cycle, an unknown target, or a topology/dependency conflict. Unlike a Change (which
       // auto-cancels), a campaign has no 'cancelled' state to move to — record why and retry next

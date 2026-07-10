@@ -44,5 +44,25 @@ export function changeApprovalsKey(changeId: string): unknown[] {
   return ["change", "approvals", changeId];
 }
 
+/** Query key for the Campaigns list view (M5, BUILD_AND_TEST.md §8 M5 UI requirement). */
+export function campaignListKey(): unknown[] {
+  return ["campaign", "list"];
+}
+
+/** Query key for a single campaign's `:explain` detail view (campaign + plan/waves + decisions). */
+export function campaignDetailKey(id: string): unknown[] {
+  return ["campaign", "detail", id];
+}
+
+/** Query key for the Initiatives list view (M5, BUILD_AND_TEST.md §8 M5 UI requirement). */
+export function initiativeListKey(): unknown[] {
+  return ["initiative", "list"];
+}
+
+/** Query key for a single initiative's roll-up view (initiative + member campaigns + rollupStatus). */
+export function initiativeDetailKey(id: string): unknown[] {
+  return ["initiative", "detail", id];
+}
+
 export const authMeKey = ["auth", "me"];
 export const authConfigKey = ["auth", "config"];

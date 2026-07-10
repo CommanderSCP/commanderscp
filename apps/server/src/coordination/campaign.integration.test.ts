@@ -372,4 +372,52 @@ describe("campaigns & initiatives (M5)", () => {
     const created = await admin.object("campaign").get(campaignUrn);
     expect(created.properties).toMatchObject({ targets: [ownTarget.id] });
   });
+
+  it("an IaC-authored campaign whose manifest declares targets/topology by URN (not id) still resolves depends_on-based wave ordering correctly", async () => {
+    // @scp/iac's Campaign/ReleaseTopology constructs only ever have a deterministically-derived
+    // URN at pure/offline synth time (never a real database id) — this reproduces exactly that
+    // shape by hand (no @scp/iac dependency needed here — a DesiredStateManifest is plain JSON),
+    // proving campaign-reconcile.ts's idOrUrn resolution (added alongside the IaC construct work)
+    // makes target/topology resolution creation-path-agnostic: an IaC-authored campaign's implicit
+    // depends_on-based auto-sequencing now works exactly like an API-created campaign's does,
+    // instead of silently no-oping on URN-shaped target strings (loadDependsOnEdges queries
+    // `relationships` by real object id — URN strings would never match).
+    const infra = await admin.components.create({ name: "camp-iac-urn-infra" });
+    const app = await admin.components.create({ name: "camp-iac-urn-app" });
+    await admin.components.addDependsOn(app.id, infra.id); // app depends_on infra -> infra first
+
+    const stackName = `camp-iac-urn-${randomUUID().slice(0, 8)}`;
+    const campaignUrn = `urn:scp:${stackName}:campaign:patch`;
+    const manifest: DesiredStateManifest = {
+      stackName,
+      objects: [
+        {
+          urn: campaignUrn,
+          typeId: "campaign",
+          name: "campaign-via-iac-urn-targets",
+          // Declared by URN, exactly what @scp/iac's `Campaign` construct's `targets:
+          // (ResourceConstruct | string)[]` resolves to at synth time — NOT real object ids.
+          properties: { targets: [infra.urn, app.urn] }
+        }
+      ],
+      relationships: []
+    };
+    const plan = await admin.plans.create(manifest);
+    const { summary } = await admin.plans.apply(plan.id);
+    expect(summary).toMatchObject({ creates: 1 });
+
+    const created = await admin.object("campaign").get(campaignUrn);
+    const explained = await waitUntil(
+      async () => {
+        const e = await admin.campaigns.explain(created.id);
+        return e.plan && e.plan.waves.length === 2 ? e : undefined;
+      },
+      { describe: `IaC-authored campaign ${created.id} plan compiles to 2 waves`, timeoutMs: 20_000 }
+    );
+    const waves = explained.plan!.waves;
+    // If URN resolution were broken, both targets would land in ONE wave (no depends_on edge
+    // found between them) instead of two — this is the exact failure mode the fix closes.
+    expect(waves[0]!.targets.map((t) => t.targetObjectId)).toEqual([infra.id]);
+    expect(waves[1]!.targets.map((t) => t.targetObjectId)).toEqual([app.id]);
+  });
 });

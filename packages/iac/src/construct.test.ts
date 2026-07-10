@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { DesiredStateManifestSchema } from "@scp/schemas";
-import { App, Service, Stack, Team, synthToFile } from "./index.js";
+import { App, Campaign, Component, Initiative, ReleaseTopology, Service, Stack, Team, synthToFile } from "./index.js";
 import { canonicalJson } from "./canonical.js";
 
 /**
@@ -147,5 +147,115 @@ describe("@scp/iac: example stack synth", () => {
     const app = new App();
     expect(() => new Stack(app, "")).toThrow();
     expect(() => new Stack(app, "   ")).toThrow();
+  });
+});
+
+/**
+ * M5 constructs (Campaign, Initiative, ReleaseTopology) — same example-based style as above: the
+ * fast-check property test in `construct.determinism.test.ts` covers the general determinism
+ * guarantee, this file pins down the exact expected manifest shape.
+ */
+describe("@scp/iac: campaign/initiative/release-topology synth", () => {
+  it("a ReleaseTopology with a parallel wave and a sequential wave resolves construct-reference targets to URN strings", () => {
+    const app = new App();
+    const stack = new Stack(app, "release-platform");
+
+    const api = new Service(stack, "api", { name: "API" });
+    const worker = new Service(stack, "worker", { name: "Worker" });
+    const cache = new Component(stack, "cache", { name: "Cache" });
+
+    const topology = new ReleaseTopology(stack, "rollout-topology", {
+      name: "Rollout Topology",
+      waves: [
+        { mode: "parallel", targets: [api, worker], requiresFanIn: false },
+        { name: "cache-flush", mode: "sequential", targets: [cache] }
+      ]
+    });
+
+    const manifest = stack.synth();
+    const topologyObject = manifest.objects.find((o) => o.urn === topology.urn);
+
+    expect(topologyObject?.properties).toEqual({
+      waves: [
+        { mode: "parallel", targets: [api.urn, worker.urn], requiresFanIn: false },
+        { name: "cache-flush", mode: "sequential", targets: [cache.urn] }
+      ]
+    });
+  });
+
+  it("a Campaign resolves construct-reference targets to URNs and carries description/topology", () => {
+    const app = new App();
+    const stack = new Stack(app, "release-platform-2");
+
+    const api = new Service(stack, "api", { name: "API" });
+    const worker = new Service(stack, "worker", { name: "Worker" });
+
+    const campaign = new Campaign(stack, "q3-rollout", {
+      name: "Q3 Rollout",
+      targets: [api, worker],
+      description: "Roll out the Q3 release",
+      topology: "already-known-topology-object-id"
+    });
+
+    const manifest = stack.synth();
+    const campaignObject = manifest.objects.find((o) => o.urn === campaign.urn);
+
+    expect(campaignObject).toMatchObject({
+      typeId: "campaign",
+      name: "Q3 Rollout",
+      properties: {
+        targets: [api.urn, worker.urn],
+        description: "Roll out the Q3 release",
+        topologyObjectId: "already-known-topology-object-id"
+      }
+    });
+  });
+
+  it("a Campaign with no description/topology synthesizes only targets", () => {
+    const app = new App();
+    const stack = new Stack(app, "release-platform-3");
+    const api = new Service(stack, "api", { name: "API" });
+
+    const campaign = new Campaign(stack, "bare-campaign", { name: "Bare Campaign", targets: [api] });
+
+    const manifest = stack.synth();
+    expect(manifest.objects.find((o) => o.urn === campaign.urn)?.properties).toEqual({
+      targets: [api.urn]
+    });
+  });
+
+  it("Initiative.coordinates(campaign) chained twice produces two coordinates relationships", () => {
+    const app = new App();
+    const stack = new Stack(app, "modernization-platform");
+
+    const svcA = new Service(stack, "svc-a", { name: "Svc A" });
+    const svcB = new Service(stack, "svc-b", { name: "Svc B" });
+    const campaignA = new Campaign(stack, "campaign-a", { name: "Campaign A", targets: [svcA] });
+    const campaignB = new Campaign(stack, "campaign-b", { name: "Campaign B", targets: [svcB] });
+
+    const initiative = new Initiative(stack, "modernization", {
+      name: "Cloud Modernization",
+      description: "Multi-year modernization effort"
+    });
+    initiative.coordinates(campaignA).coordinates(campaignB);
+
+    const manifest = stack.synth();
+    const initiativeObject = manifest.objects.find((o) => o.urn === initiative.urn);
+    expect(initiativeObject?.properties).toEqual({ description: "Multi-year modernization effort" });
+
+    const coordinatesRels = manifest.relationships.filter((r) => r.typeId === "coordinates");
+    expect(coordinatesRels).toEqual([
+      { typeId: "coordinates", fromUrn: initiative.urn, toUrn: campaignA.urn },
+      { typeId: "coordinates", fromUrn: initiative.urn, toUrn: campaignB.urn }
+    ]);
+
+    expect(DesiredStateManifestSchema.safeParse(manifest).success).toBe(true);
+  });
+
+  it("an Initiative with no description synthesizes empty properties", () => {
+    const app = new App();
+    const stack = new Stack(app, "modernization-platform-2");
+    new Initiative(stack, "bare-initiative", { name: "Bare Initiative" });
+    expect(stack.synth().objects[0]?.properties).toEqual({});
   });
 });
