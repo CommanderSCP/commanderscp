@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@scp/plugin-api";
 import { createFakeExecutorPlugin, FakeExecutorPlugin } from "./index.js";
 
@@ -79,18 +79,26 @@ describe("FakeExecutorPlugin (unit, in-memory state)", () => {
   });
 
   it("status() reports running until autoSucceedAfterMs elapses, then succeeded", async () => {
-    const plugin = createFakeExecutorPlugin();
-    const ctx = testCtx({ autoSucceedAfterMs: 30 });
-    const ref = await plugin.trigger(ctx, { kind: "sync", targetRef: "svc-a" });
+    // Fake ONLY Date (not real timers) so the auto-succeed threshold is crossed deterministically
+    // by advancing the clock, never by racing wall-clock elapsed against I/O latency under CI load.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      const plugin = createFakeExecutorPlugin();
+      const ctx = testCtx({ autoSucceedAfterMs: 30 });
+      const ref = await plugin.trigger(ctx, { kind: "sync", targetRef: "svc-a" });
 
-    const immediate = await plugin.status(ctx, ref);
-    expect(immediate.phase).toBe("running");
-    expect(immediate.progress).toBeLessThan(1);
+      const immediate = await plugin.status(ctx, ref);
+      expect(immediate.phase).toBe("running");
+      expect(immediate.progress).toBeLessThan(1);
 
-    await sleep(60);
-    const later = await plugin.status(ctx, ref);
-    expect(later.phase).toBe("succeeded");
-    expect(later.progress).toBe(1);
+      vi.setSystemTime(Date.now() + 60);
+      const later = await plugin.status(ctx, ref);
+      expect(later.phase).toBe("succeeded");
+      expect(later.progress).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("abort() permanently sets aborted, overriding the auto-succeed timer", async () => {
@@ -193,19 +201,28 @@ describe("FakeExecutorPlugin (file-backed state — restart recovery)", () => {
     // for "two separate OS processes" here — the class holds no state itself once statePath is
     // set (see module doc), so this is a faithful proxy for the real subprocess-kill scenario,
     // which is additionally exercised end-to-end in apps/server/src/plugin-host/*.integration.test.ts.
-    const instanceA = new FakeExecutorPlugin();
-    const ctxA = testCtx({ statePath, autoSucceedAfterMs: 20 });
-    const ref = await instanceA.trigger(ctxA, { kind: "sync", targetRef: "svc-a" });
+    // Deterministic clock (fake Date only): the "running" read happens at elapsed 0 and the
+    // "succeeded" read after a controlled +40ms jump — no dependence on wall-clock timing, which
+    // previously flaked when I/O between trigger() and status() outran the 20ms auto-succeed window.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      const instanceA = new FakeExecutorPlugin();
+      const ctxA = testCtx({ statePath, autoSucceedAfterMs: 20 });
+      const ref = await instanceA.trigger(ctxA, { kind: "sync", targetRef: "svc-a" });
 
-    const instanceB = new FakeExecutorPlugin();
-    const ctxB = testCtx({ statePath, autoSucceedAfterMs: 20 });
-    const statusFromB = await instanceB.status(ctxB, ref);
-    expect(statusFromB.phase).toBe("running");
-    expect(statusFromB.stateRef).toBe("v0");
+      const instanceB = new FakeExecutorPlugin();
+      const ctxB = testCtx({ statePath, autoSucceedAfterMs: 20 });
+      const statusFromB = await instanceB.status(ctxB, ref);
+      expect(statusFromB.phase).toBe("running");
+      expect(statusFromB.stateRef).toBe("v0");
 
-    await sleep(40);
-    const laterFromB = await instanceB.status(ctxB, ref);
-    expect(laterFromB.phase).toBe("succeeded");
+      vi.setSystemTime(Date.now() + 40);
+      const laterFromB = await instanceB.status(ctxB, ref);
+      expect(laterFromB.phase).toBe("succeeded");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("state persists across trigger calls made by different instances against the same statePath", async () => {
