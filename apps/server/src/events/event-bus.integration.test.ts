@@ -82,6 +82,20 @@ describe("EventBus: real backend containers", () => {
         };
         sseHub.on(org.orgId, onEvent);
 
+        // Hermetic starting point (shared-Postgres singleFork suite): most integration test files
+        // create objects — hence outbox rows — but run no relay, so a large backlog of
+        // permanently-unprocessed rows accumulates ahead of what this test publishes. This relay
+        // drains OLDEST-first, 100 rows per ~1s poll, so a big enough backlog can push delivery of
+        // THESE three fresh (newest) rows past even a generous timeout (observed as a flake once
+        // the M3 coordination test suites, which land ahead of this file and generate many
+        // transition/outbox rows, inflated the backlog). Marking the pre-existing backlog processed
+        // makes the relay reach these three rows promptly and deterministically. Uses a throwaway
+        // admin/superuser connection — test-only diagnostics, never how the app itself queries.
+        const preClean = new pg.Client({ connectionString: testDatabaseUrl() });
+        await preClean.connect();
+        await preClean.query(`UPDATE outbox SET processed_at = now() WHERE processed_at IS NULL`);
+        await preClean.end();
+
         const expectedSubjects = [0, 1, 2].map((i) => `probe-${backend}-${i}`);
         try {
           await withTenantTx(server.deps.db, org.orgId, async (tx) => {

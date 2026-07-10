@@ -64,6 +64,18 @@ describe("outbox-relay: never marks a NATS-bound event processed unless the JetS
   });
 
   it("a JetStream publish failure leaves the row unprocessed on every retry; once the sink recovers, the SAME row is delivered and marked processed", async () => {
+    // Hermetic starting point (this is a SHARED-Postgres, singleFork suite): every test file that
+    // creates objects writes outbox rows, and most of them run NO relay, so a large backlog of
+    // permanently-unprocessed rows accumulates ahead of anything this test publishes. The relay
+    // drains that backlog OLDEST-first, 100 rows per ~1s poll — so without this pre-clean, once the
+    // NATS sink "recovers" below the relay would have to grind through hundreds of stale backlog
+    // rows before it ever reaches our probe, blowing the recovery timeout (the exact flake this
+    // fixes). Marking the pre-existing backlog processed makes our probe the ONLY pending row, so
+    // the relay's behaviour is deterministic and every `publishCalls` entry is genuinely about our
+    // probe. It does NOT weaken the assertions: the "stays unprocessed while failing" half still
+    // catches a mutation that marked rows processed on failure.
+    await adminClient.query(`UPDATE outbox SET processed_at = now() WHERE processed_at IS NULL`);
+
     let shouldFail = true;
     const publishCalls: string[] = [];
     const fakeFanout: NatsFanoutHandle = {
@@ -76,11 +88,8 @@ describe("outbox-relay: never marks a NATS-bound event processed unless the JetS
       }
     };
 
-    relay = startOutboxRelay(relayPool, server.deps.config.runtimeDatabaseUrl, boss, {
-      eventBusBackend: "nats",
-      natsFanout: fakeFanout
-    });
-
+    // Publish the probe BEFORE starting the relay so the relay's very first batch is exactly this
+    // one row (belt-and-braces on top of the pre-clean above).
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
       eventBus.publish(tx, {
         orgId: org.orgId,
@@ -97,31 +106,34 @@ describe("outbox-relay: never marks a NATS-bound event processed unless the JetS
     );
     const eventId = written.rows[0]!.id;
 
-    // Wait for the relay to have genuinely ATTEMPTED delivery (ruling out the false-negative of
-    // "it just never got picked up yet") — its immediate on-start trigger plus the 1s poll/NOTIFY
-    // wakeup make this fast. This server also has bootstrap-created outbox rows from
-    // `createTestOrg` ahead of our probe in `created_at` order — `relayOnce`'s per-batch loop
-    // aborts (and rolls the WHOLE batch back) on the FIRST row that fails, so an EARLIER row can
-    // "shield" our probe from ever individually reaching `natsFanout.publish` — that's fine and
-    // still proves the exact guarantee this test is about: as long as ANYTHING is failing,
-    // NOTHING in that batch — our probe very much included — ever gets marked processed.
-    await waitUntil(async () => (publishCalls.length > 0 ? true : undefined), {
-      describe: "the relay attempted the JetStream publish at least once",
+    relay = startOutboxRelay(relayPool, server.deps.config.runtimeDatabaseUrl, boss, {
+      eventBusBackend: "nats",
+      natsFanout: fakeFanout
+    });
+
+    // Wait for the relay to have genuinely ATTEMPTED delivery of OUR probe (ruling out the
+    // false-negative of "it just never got picked up yet") — the relay's immediate on-start
+    // trigger plus its 1s poll/NOTIFY wakeup make this fast, and with the backlog cleared the only
+    // row it can be attempting is the probe.
+    await waitUntil(async () => (publishCalls.includes(eventId) ? true : undefined), {
+      describe: "the relay attempted the JetStream publish of the probe row at least once",
       timeoutMs: 5_000
     });
 
     // Give the relay several more retry cycles — the row must stay unprocessed through every one
-    // of them, not just the first.
+    // of them, not just the first — and every publish attempt must be for our probe (the backlog
+    // is gone, so nothing else is in play).
     await new Promise((resolve) => setTimeout(resolve, 2_500));
     const stillUnprocessed = await adminClient.query<{ processed_at: Date | null }>(
       `SELECT processed_at FROM outbox WHERE id = $1`,
       [eventId]
     );
     expect(stillUnprocessed.rows[0]?.processed_at).toBeNull();
-    expect(publishCalls.length).toBeGreaterThan(1);
+    expect(publishCalls.filter((id) => id === eventId).length).toBeGreaterThan(1);
+    expect(publishCalls.every((id) => id === eventId)).toBe(true);
 
-    // The sink recovers — the relay's next retry of the SAME row should now succeed all the way
-    // through and commit `processed_at`.
+    // The sink recovers — the relay's next retry of the SAME row (driven by its 1s poll, no
+    // explicit wakeup needed) should now succeed all the way through and commit `processed_at`.
     shouldFail = false;
     await waitUntil(
       async () => {
