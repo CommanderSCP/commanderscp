@@ -268,7 +268,8 @@ async function reconcileExecutingChange(
             originalChangeObjectId: change.objectId,
             actorObjectId: SYSTEM_ACTOR_ID,
             requestId: "reconcile",
-            reason: `automatic: wave ${activeWave.waveIndex} failed and an autoRollbackOnFailure policy applies`
+            reason: `automatic: wave ${activeWave.waveIndex} failed and an autoRollbackOnFailure policy applies`,
+            trigger: "automatic"
           })
         );
       } catch (err) {

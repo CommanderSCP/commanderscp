@@ -338,7 +338,8 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
           originalChangeObjectId: request.params.id,
           actorObjectId: auth.subjectObjectId,
           requestId: request.id,
-          reason: request.body.reason
+          reason: request.body.reason,
+          trigger: "manual"
         });
       });
       reply.status(201).send(rollbackChange);
