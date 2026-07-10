@@ -25,6 +25,31 @@ export async function provisionRuntimeRole(
 }
 
 /**
+ * Boot-time pg-boss role provisioning (M3 tracked security follow-up: pg-boss no longer connects
+ * on the admin/superuser URL for its own `pgboss` schema). Same mechanism and same reasoning as
+ * `provisionRuntimeRole` above — drizzle/0008_pgboss_role.sql fixes `scp_pgboss`'s privilege
+ * shape (NOLOGIN, NOSUPERUSER, NOBYPASSRLS, owns only the `pgboss` schema, no grants on `public`
+ * at all); this only grants LOGIN and sets the password, which cannot live in committed SQL. A
+ * distinct function (rather than reusing `provisionRuntimeRole` under this name) keeps main.ts's
+ * boot sequence self-documenting: each role provisioned in Phase 1 gets its own named call.
+ * Idempotent: safe on every boot.
+ */
+export async function provisionPgBossRole(
+  adminPool: pg.Pool,
+  pgBossUser: string,
+  pgBossPassword: string
+): Promise<void> {
+  const client = await adminPool.connect();
+  try {
+    const role = client.escapeIdentifier(pgBossUser);
+    const password = client.escapeLiteral(pgBossPassword);
+    await client.query(`ALTER ROLE ${role} WITH LOGIN PASSWORD ${password}`);
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Derives the runtime (least-privileged) connection string from the admin one: same host, port,
  * database, and password — only the user is swapped to `scp_app`. Operators who manage the role
  * themselves override with an explicit SCP_RUNTIME_DATABASE_URL instead.

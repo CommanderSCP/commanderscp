@@ -13,6 +13,7 @@ import { createObject } from "../graph/objects-repo.js";
 import { ensureBootstrapAdmin } from "../auth/local-auth.js";
 import { startPgBoss } from "../events/pgboss.js";
 import { startOutboxRelay, type OutboxRelayHandle } from "../events/outbox-relay.js";
+import { connectNatsFanout, type NatsFanoutHandle } from "../events/nats-fanout.js";
 import type PgBoss from "pg-boss";
 import type { AppDeps } from "../types.js";
 
@@ -42,6 +43,21 @@ export function testRuntimeDatabaseUrl(): string {
   return url;
 }
 
+/**
+ * Schema-scoped `scp_pgboss` login-role URL — what pg-boss connects as under test (M3 tracked
+ * security follow-up), and what `pgboss-role.integration.test.ts` connects as directly to probe
+ * it.
+ */
+export function testPgBossDatabaseUrl(): string {
+  const url = process.env.TEST_PGBOSS_DATABASE_URL;
+  if (!url) {
+    throw new Error(
+      "TEST_PGBOSS_DATABASE_URL is unset — integration tests must run via `vitest.integration.config.ts` (globalSetup provisions the scp_pgboss login role)."
+    );
+  }
+  return url;
+}
+
 export interface TestServer {
   app: FastifyInstance;
   deps: AppDeps;
@@ -57,6 +73,7 @@ export async function buildTestServer(): Promise<TestServer> {
   const config = loadConfig({
     DATABASE_URL: testDatabaseUrl(),
     SCP_RUNTIME_DATABASE_URL: testRuntimeDatabaseUrl(),
+    SCP_PGBOSS_DATABASE_URL: testPgBossDatabaseUrl(),
     SCP_COOKIE_SECRET: "test-cookie-secret-value"
   });
   const pool = createPool(config.runtimeDatabaseUrl);
@@ -88,9 +105,15 @@ export interface ListeningTestServer extends TestServer {
  * actually reach `sseHub`/`GET /events/stream` — `buildApp` alone never starts either, so SSE
  * stays silent without this. Off by default: most callers of `listenTestServer` don't need a
  * live event pipeline, and pg-boss provisioning its own schema on every boot isn't free.
+ *
+ * `natsUrl` mirrors main.ts's `config.eventBus.backend === "nats"` branch: when set (only the
+ * NATS-backend half of events/event-bus.integration.test.ts's shared suite passes this), the
+ * relay ALSO fans relayed outbox rows out to a real JetStream stream, exactly as it would in
+ * production with `SCP_EVENT_BUS_BACKEND=nats`. `undefined` (every other caller) leaves the relay
+ * exactly as it's always behaved — no NATS connection is ever attempted.
  */
 export async function listenTestServer(
-  opts: { withEventRelay?: boolean } = {}
+  opts: { withEventRelay?: boolean; natsUrl?: string } = {}
 ): Promise<ListeningTestServer> {
   const server = await buildTestServer();
   const address = await server.app.listen({ port: 0, host: "127.0.0.1" });
@@ -98,12 +121,16 @@ export async function listenTestServer(
   let boss: PgBoss | undefined;
   let relay: OutboxRelayHandle | undefined;
   let relayPool: pg.Pool | undefined;
+  let natsFanout: NatsFanoutHandle | undefined;
   if (opts.withEventRelay) {
-    boss = await startPgBoss(server.deps.config.databaseUrl);
+    boss = await startPgBoss(server.deps.config.pgBossDatabaseUrl);
+    if (opts.natsUrl) {
+      natsFanout = await connectNatsFanout(opts.natsUrl);
+    }
     // A separate pool from the app's own `deps.db` connection — mirrors main.ts's `pool`, which
     // the relay also owns independently of the request-serving pool.
     relayPool = createPool(server.deps.config.runtimeDatabaseUrl);
-    relay = startOutboxRelay(relayPool, server.deps.config.runtimeDatabaseUrl, boss);
+    relay = startOutboxRelay(relayPool, server.deps.config.runtimeDatabaseUrl, boss, natsFanout);
   }
 
   return {
@@ -113,6 +140,7 @@ export async function listenTestServer(
       await relay?.stop();
       await boss?.stop({ graceful: false, timeout: 1000 }).catch(() => undefined);
       await relayPool?.end();
+      await natsFanout?.close().catch(() => undefined);
       await server.close();
     }
   };
@@ -270,6 +298,31 @@ export class RawScpAppClient {
 
   async clearOrgContext(): Promise<void> {
     await this.client.query("SELECT set_config('app.current_org_id', '', false)");
+  }
+
+  async query<T extends pg.QueryResultRow = pg.QueryResultRow>(text: string, params?: unknown[]) {
+    return this.client.query<T>(text, params);
+  }
+
+  async close(): Promise<void> {
+    await this.client.end();
+  }
+}
+
+/**
+ * A raw `pg.Client` that AUTHENTICATES as the schema-scoped `scp_pgboss` login role — the exact
+ * identity pg-boss itself connects as (M3 tracked security follow-up, drizzle/0008_pgboss_role
+ * .sql). Used by `pgboss-role.integration.test.ts` to probe the database directly: proving the
+ * role can operate inside the `pgboss` schema, and proving it has NO grant at all on `public`'s
+ * tenant tables (objects/relationships/role_bindings/changes).
+ */
+export class RawScpPgBossClient {
+  private constructor(private readonly client: pg.Client) {}
+
+  static async connect(): Promise<RawScpPgBossClient> {
+    const client = new pg.Client({ connectionString: testPgBossDatabaseUrl() });
+    await client.connect();
+    return new RawScpPgBossClient(client);
   }
 
   async query<T extends pg.QueryResultRow = pg.QueryResultRow>(text: string, params?: unknown[]) {

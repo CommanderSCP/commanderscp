@@ -1,5 +1,5 @@
 {
-  "name": "@scp/plugin-testkit",
+  "name": "@scp/plugin-fake-executor",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,10 +12,11 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@scp/plugin-api": "workspace:*",
-    "vitest": "^3.0.0"
+    "@scp/plugin-api": "workspace:*"
   },
   "devDependencies": {
-    "typescript": "~5.8.0"
+    "@scp/plugin-testkit": "workspace:*",
+    "typescript": "~5.8.0",
+    "vitest": "^3.0.0"
   }
 }

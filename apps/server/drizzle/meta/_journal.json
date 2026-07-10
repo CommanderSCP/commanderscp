@@ -50,6 +50,20 @@
       "when": 1783720000000,
       "tag": "0006_device_flow_defer_session",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1783730000000,
+      "tag": "0007_change_coordination",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1783740000000,
+      "tag": "0008_pgboss_role",
+      "breakpoints": true
     }
   ]
 }
