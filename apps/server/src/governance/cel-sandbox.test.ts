@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  CEL_MAX_CONTEXT_BYTES,
+  CEL_MAX_CONTEXT_DEPTH,
   CEL_MAX_EXPRESSION_LENGTH,
   CEL_MAX_NESTING_DEPTH,
   CelSandbox,
   CelSandboxError,
+  checkContextComplexity,
   checkStaticComplexity
 } from "./cel-sandbox.js";
 
@@ -140,31 +143,74 @@ describe("CelSandbox (layer 2: worker-thread isolation)", () => {
     return sandbox.evaluate(expression, { context: { nested: true } });
   }
 
-  it("a genuinely hung/slow evaluation is killed by the hard timeout, not left to hang the caller", async () => {
-    // cel-js has no native sleep/loop construct to actually hang itself with (by design — CEL is
-    // not Turing-complete), so this proves the OTHER failure mode the timeout defends against:
-    // an expression the static pre-check didn't catch but that is slow to evaluate. We simulate
-    // "slow" by pointing the sandbox at a worker entry that never responds (below), proving the
-    // timeout path itself — terminate() firing, the pending call resolving instead of hanging
-    // forever, and the pool recovering for the NEXT call.
-    const sandbox = makeSandbox({ timeoutMs: 50, workerEntryPath: HANGING_WORKER_ENTRY_PATH });
-    const start = Date.now();
-    const result = await sandbox.evaluate("true", {});
+  // MINOR (a): the escape-attempt loop above only ever exercises the `ok:false` branch (none of
+  // those strings is valid CEL). This makes the "inert value" branch real — a parseable
+  // expression that resolves to an OBJECT must come back as JSON-safe, structured-clone-stripped
+  // data, never a live/callable value.
+  it("a parseable expression that resolves to a context OBJECT returns inert, JSON-safe data (never a live/callable value)", async () => {
+    const sandbox = makeSandbox();
+    const result = await sandbox.evaluate("context", { context: { nested: { deep: true }, list: [1, 2, 3] } });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(typeof result.value).toBe("object");
+      expect(typeof result.value).not.toBe("function");
+      expect(() => JSON.stringify(result.value)).not.toThrow();
+      expect(result.value).toEqual({ nested: { deep: true }, list: [1, 2, 3] });
+    }
+  });
+
+  // MAJOR #4: a pathologically large or deep (partly attacker-controlled) context is rejected
+  // BEFORE it reaches a worker, so a short expression can't exhaust the timeout budget.
+  it("rejects an over-large evaluation context (fail-closed, not passed to a worker)", async () => {
+    const sandbox = makeSandbox();
+    const huge = "x".repeat(CEL_MAX_CONTEXT_BYTES + 1);
+    const result = await sandbox.evaluate("subject.labels == subject.labels", { subject: { labels: { blob: huge } } });
     expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/context exceeds max size/i);
+  });
+
+  it("rejects a pathologically deep evaluation context (fail-closed)", async () => {
+    const sandbox = makeSandbox();
+    // Build a context nested deeper than CEL_MAX_CONTEXT_DEPTH.
+    let deep: Record<string, unknown> = { leaf: true };
+    for (let i = 0; i < CEL_MAX_CONTEXT_DEPTH + 5; i++) deep = { child: deep };
+    const result = await sandbox.evaluate("has(subject)", { subject: deep });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/context exceeds max nesting depth/i);
+  });
+
+  it("checkContextComplexity accepts a normal policy-sized context", () => {
+    expect(
+      checkContextComplexity({
+        change: { id: "c1", emergency: false, targets: ["t1"] },
+        subject: { id: "t1", labels: { env: "prod", tier: "critical" } },
+        graph: { ownerIds: ["o1", "o2"], dependentIds: [], domainIds: [] }
+      })
+    ).toBeNull();
+  });
+
+  it("a genuinely hung/slow evaluation is killed by the hard timeout — and the SAME sandbox recovers for the next call", async () => {
+    // cel-js has no native sleep/loop construct to actually hang itself with (by design — CEL is
+    // not Turing-complete), so a conditional-hang worker entry forces the timeout path
+    // deterministically: it hangs ONLY on the sentinel "__HANG__" and evaluates everything else
+    // normally. That lets this prove what the old test couldn't (MINOR (b)) — after the timeout
+    // terminates+respawns the wedged worker, the SAME sandbox instance serves a subsequent call.
+    const sandbox = makeSandbox({ timeoutMs: 50, workerEntryPath: CONDITIONAL_HANG_WORKER_ENTRY_PATH });
+    const start = Date.now();
+    const hung = await sandbox.evaluate("__HANG__", {});
+    expect(hung.ok).toBe(false);
     expect(Date.now() - start).toBeLessThan(2000); // bounded, not hung forever
 
-    // The pool must have respawned a working worker for the NEXT call to succeed against a real
-    // (non-hanging) entry point — verified by constructing a fresh, normal sandbox here instead
-    // (respawn-after-timeout against the SAME hanging entry point would just hang again by
-    // construction; what matters is that `evaluate()` itself resolved rather than hung, proven
-    // above).
-    const normalSandbox = makeSandbox();
-    const normalResult = await normalSandbox.evaluate("true", {});
-    expect(normalResult).toEqual({ ok: true, value: true });
+    // SAME sandbox: the respawned worker (same conditional-hang entry) evaluates a normal
+    // expression successfully — proving the pool healed rather than staying wedged.
+    const recovered = await sandbox.evaluate("1 == 1", {});
+    expect(recovered).toEqual({ ok: true, value: true });
   }, 10_000);
 });
 
-// A worker entry that never posts a response — used only by the timeout test above to force the
-// hard-timeout path deterministically without depending on cel-js internals.
-const HANGING_WORKER_ENTRY_PATH = new URL("./test-support/hanging-cel-worker-entry.ts", import.meta.url)
-  .pathname;
+// A worker entry that hangs only on the "__HANG__" sentinel (evaluating everything else) — used by
+// the same-sandbox-recovery timeout test above.
+const CONDITIONAL_HANG_WORKER_ENTRY_PATH = new URL(
+  "./test-support/conditional-hang-cel-worker-entry.ts",
+  import.meta.url
+).pathname;

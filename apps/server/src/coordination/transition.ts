@@ -145,18 +145,20 @@ export async function transitionChange(
         : { summary: `transition '${fromState}' -> '${toState}' blocked by gate`, gate: gate.reasonTree }
   });
 
-  // DESIGN §10.3: freeze override is ALWAYS a high-severity, mandatory-reason audit event —
+  // DESIGN §10.3: a freeze override is ALWAYS a high-severity, mandatory-reason audit event —
   // written even though the transition itself allows, in the SAME transaction as everything else
   // this guarded function does, so an override can never happen without its own permanent record.
-  if (gate.freezeOverride) {
+  // CRITICAL #2: EVERY overridden freeze gets its own event (a change under several simultaneous
+  // freezes must override — and audit — each one individually).
+  for (const override of gate.freezeOverrides ?? []) {
     await appendAuditEvent(tx, {
       orgId: input.orgId,
       actorId: input.actorObjectId,
       action: "freeze.override",
-      subjectId: gate.freezeOverride.freezeId,
+      subjectId: override.freezeId,
       beforeHash: null,
       afterHash: null,
-      reason: gate.freezeOverride.reason,
+      reason: override.reason,
       decisionId: decision.id,
       requestId: input.requestId
     });

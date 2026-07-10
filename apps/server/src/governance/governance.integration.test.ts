@@ -306,6 +306,132 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
   });
 
   // -----------------------------------------------------------------------------------------
+  // CRITICAL #1a (adversarial review): a lower-scope same-named policy with a FALSE/broken
+  // condition must NOT neutralize a higher-scope required policy's effects. The pre-fix evaluator
+  // ANDed every contributor's condition, so one false condition zeroed the whole merged policy.
+  // -----------------------------------------------------------------------------------------
+
+  it("a second same-named policy with a FALSE condition does NOT weaken a higher-scope required policy — the required control still gates (block persists)", async () => {
+    const org = await createTestOrg(server, "condition-bypass");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+    const domain = await admin.domains.create({ name: "cb-domain" });
+    const component = await admin.components.create({ name: "cb-component", domainId: domain.id });
+    const realControl = await createWebhookControl(admin, org, {
+      urnSuffix: "cb-real-scan",
+      webhookUrl: webhook.url,
+      outcome: "pass"
+    });
+
+    // Org-level REQUIRED, unconditional, requiring a real (satisfiable) control.
+    await createPolicy(admin, org, {
+      name: "prod-security",
+      urnSuffix: "cb-org",
+      enforcement: "required",
+      scopeObjectId: org.orgId,
+      requireControlIds: [realControl.id]
+    });
+    // A second same-named policy scoped to the component with an always-false condition and no
+    // controls — the "neutralizer". Must NOT drop the org's required control.
+    await createPolicy(admin, org, {
+      name: "prod-security",
+      urnSuffix: "cb-neutralizer",
+      enforcement: "advisory",
+      scopeObjectId: component.id,
+      condition: "1 == 2"
+    });
+
+    const change = await admin.changes.propose({ name: "cb-change", targets: [component.id] });
+
+    // Before the control passes, the gate must BLOCK (the org required control is unsatisfied) —
+    // i.e. the false-condition contributor did NOT neutralize it. Assert via a dry-run evaluate
+    // that the required control effect is present and unsatisfied.
+    const evalResult = await admin.policyEvaluate(change.id);
+    const entry = (evalResult.reasonTree as { policies: Array<Record<string, unknown>> }).policies.find(
+      (p) => p.name === "prod-security"
+    );
+    expect(entry).toBeDefined();
+    expect(entry!.fired).toBe(true);
+    expect(entry!.enforcement).toBe("required");
+    const realControlEffect = (
+      entry!.effects as Array<{ kind: string; detail: Record<string, unknown> }>
+    ).find((e) => e.kind === "requireControls" && e.detail.controlObjectId === realControl.id);
+    expect(realControlEffect).toBeDefined();
+
+    // And end-to-end: the change only reaches 'validating' once the REAL required control passes
+    // (proving the required effect genuinely gated the wave, not silently dropped). The control
+    // returns pass, so it eventually clears.
+    await waitForControlRun(admin, change.id, realControl.id, "pass");
+    await waitForValidating(admin, change.id);
+    const promoted = await admin.changes.promote(change.id);
+    expect(promoted.state).toBe("promoted");
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // CRITICAL #1b (adversarial review): a policy's DECLARED scope is bound to the author's own
+  // `policy:write` authority — a component-scoped author cannot publish an org-wide (or
+  // higher-scope) policy, which was the planting vector that made #1a exploitable.
+  // -----------------------------------------------------------------------------------------
+
+  it("a component-scoped policy author cannot declare an org-wide (or org-root-scoped) policy — only one bounded to their own component", async () => {
+    const org = await createTestOrg(server, "scope-authority");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+    const domain = await admin.domains.create({ name: "sa-domain" });
+    const component = await admin.components.create({ name: "sa-component", domainId: domain.id });
+
+    // Administrator holds 'policy:write' (M4 migration) — bind it at the COMPONENT only, so this
+    // author's policy authority is exactly that component and below.
+    const author = await createTestUser(server, org, [{ role: "Administrator", scope: component.id }]);
+    const authorClient = new ScpClient({ baseUrl: server.baseUrl, token: author.token });
+
+    // (a) org-wide (UNSCOPED) policy, even placed at their own component → 403 (needs org-root authority).
+    const orgWide = await expectApiError(() =>
+      authorClient.policies.create({
+        name: "sneaky-org-wide",
+        domainId: component.id,
+        properties: { enforcement: "required", effects: [{ requireControls: ["x"] }] }
+      })
+    );
+    expect(orgWide.status).toBe(403);
+
+    // (b) a policy scoped to the ORG ROOT via objectRef → 403 (needs policy:write at org root).
+    const orgScoped = await expectApiError(() =>
+      authorClient.policies.create({
+        name: "sneaky-org-scoped",
+        domainId: component.id,
+        properties: { scope: { objectRef: org.orgId }, enforcement: "required" }
+      })
+    );
+    expect(orgScoped.status).toBe(403);
+
+    // (c) a label-selector policy (org-wide blast radius) → 403.
+    const selectorScoped = await expectApiError(() =>
+      authorClient.policies.create({
+        name: "sneaky-selector",
+        domainId: component.id,
+        properties: { scope: { selector: { labels: { env: "prod" } } }, enforcement: "required" }
+      })
+    );
+    expect(selectorScoped.status).toBe(403);
+
+    // (d) a policy scoped to their OWN component → allowed.
+    const componentScoped = await authorClient.policies.create({
+      name: "legit-component-policy",
+      domainId: component.id,
+      properties: { scope: { objectRef: component.id }, enforcement: "required" }
+    });
+    expect(componentScoped.id).toBeTruthy();
+
+    // Sanity: the admin (org-root Owner) CAN still create an org-wide policy.
+    const adminOrgWide = await admin.policies.create({
+      name: "legit-org-wide",
+      properties: { enforcement: "advisory" }
+    });
+    expect(adminOrgWide.id).toBeTruthy();
+  });
+
+  // -----------------------------------------------------------------------------------------
   // Required control blocks promote; hybrid gate (scan AND approval — either missing blocks);
   // control outcomes + evidence persisted and referenced by the Decision (joined by
   // controlObjectId — see routes/changes.ts's explain handler / control_runs.decision_id's own
@@ -507,11 +633,100 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
   });
 
   // -----------------------------------------------------------------------------------------
-  // Freezes: block, mandatory reason, unauthorized-override 403, authorized override succeeds +
+  // MAJOR #7 (adversarial review): `approves` edges are DESIGN §10.2 approval EVIDENCE and are
+  // system-managed — the generic /relationships endpoint must refuse to fabricate one (a
+  // graph-visible fake "X approved this"), so approval evidence only ever derives from the
+  // DB-vote-backed approval-vote path.
+  // -----------------------------------------------------------------------------------------
+
+  it("the generic /relationships endpoint refuses to create OR delete a system-managed 'approves' edge (403) — even for an org-root Owner", async () => {
+    const org = await createTestOrg(server, "approves-guard");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+    const a = await admin.components.create({ name: "ag-from" });
+    const b = await admin.components.create({ name: "ag-to" });
+
+    // Even the bootstrap admin (org-root Owner) cannot fabricate one — it's engine-owned, not a
+    // permission question.
+    const createErr = await expectApiError(() =>
+      admin.relationships.create({ typeId: "approves", fromId: a.id, toId: b.id })
+    );
+    expect(createErr.status).toBe(403);
+    expect(JSON.stringify(createErr.problem)).toMatch(/system-managed/i);
+
+    // A legitimate `approves` edge (from a real vote) also cannot be hand-deleted via the generic
+    // endpoint. Produce one via the real vote path, then attempt to delete it.
+    const target = await admin.components.create({ name: "ag-target" });
+    await createPolicy(admin, org, {
+      name: "approves-guard-policy",
+      urnSuffix: "approves-guard",
+      enforcement: "required",
+      scopeObjectId: target.id,
+      requireApprovals: { count: 1, fromRole: "Approver", scope: org.orgId }
+    });
+    const change = await admin.changes.propose({ name: "ag-change", targets: [target.id] });
+    const approvalRequest = await waitForApprovalRequest(admin, change.id);
+    const approver = await createTestUser(server, org, [{ role: "Approver", scope: org.orgId }]);
+    const approverClient = new ScpClient({ baseUrl: server.baseUrl, token: approver.token });
+    await approverClient.approvals.vote(approvalRequest.id);
+
+    const edges = await admin.relationships.list({ fromId: approver.objectId, toId: change.id, typeId: "approves" });
+    expect(edges.items.length).toBeGreaterThanOrEqual(1);
+    const deleteErr = await expectApiError(() => admin.relationships.delete(edges.items[0]!.id));
+    expect(deleteErr.status).toBe(403);
+    expect(JSON.stringify(deleteErr.problem)).toMatch(/system-managed/i);
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // MAJOR #5 (adversarial review): a requireApprovals.scope written as a scope-KIND keyword
+  // (DESIGN §10.1's own example `"scope":"service"`) must resolve to the change target's
+  // containing service — NOT crash the reconcile tick with a raw `::uuid` cast (22P02).
+  // -----------------------------------------------------------------------------------------
+
+  it("requireApprovals scope written as the DESIGN keyword 'service' resolves to the target's containing service (no 22P02 crash) and gates a service-level Approver's vote", async () => {
+    const org = await createTestOrg(server, "scope-keyword");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+    const service = await admin.services.create({ name: "sk-service" });
+    const component = await admin.components.create({ name: "sk-component", domainId: service.id });
+
+    await createPolicy(admin, org, {
+      name: "service-approval",
+      urnSuffix: "scope-keyword",
+      enforcement: "required",
+      scopeObjectId: component.id,
+      // The DESIGN §10.1 example scope KIND keyword — not a uuid.
+      requireApprovals: { count: 1, fromRole: "Approver", scope: "service" }
+    });
+
+    const change = await admin.changes.propose({ name: "sk-change", targets: [component.id] });
+
+    // The approval request materializes with scopeObjectId resolved to the SERVICE (not the raw
+    // string "service"), so an Approver bound at the service is eligible.
+    const approvalRequest = await waitForApprovalRequest(admin, change.id);
+    expect(approvalRequest.scopeObjectId).toBe(service.id);
+
+    const serviceApprover = await createTestUser(server, org, [{ role: "Approver", scope: service.id }]);
+    const serviceApproverClient = new ScpClient({ baseUrl: server.baseUrl, token: serviceApprover.token });
+    await serviceApproverClient.approvals.vote(approvalRequest.id);
+    const satisfied = await admin.approvals.get(approvalRequest.id);
+    expect(satisfied.status).toBe("satisfied");
+
+    // The change proceeds all the way to promoted — proving the whole path (materialize with
+    // resolved scope → eligible vote → quorum) worked, and never crashed a gate tick.
+    await waitForValidating(admin, change.id);
+    const promoted = await admin.changes.promote(change.id);
+    expect(promoted.state).toBe("promoted");
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // Freezes: block, mandatory reason, and — MAJOR #6 — a REJECTED override (unauthorized / no
+  // reason) is now routed through the Decision+audit path (409 carrying decision_id, an audited
+  // rejected-transition Decision), NOT a rolled-back raw 403. Authorized override succeeds and
   // audits with the reason. SECURITY-SENSITIVE surface.
   // -----------------------------------------------------------------------------------------
 
-  it("freeze blocks promote; override without permission is 403; override without a reason is 403; authorized override with a reason succeeds and writes an audited, Decision-linked freeze.override event", async () => {
+  it("freeze blocks promote; a rejected override (unauthorized / no-reason) carries decision_id + is audited (MAJOR #6); authorized override with a reason succeeds and writes an audited, Decision-linked freeze.override event", async () => {
     const org = await createTestOrg(server, "freeze");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
@@ -533,17 +748,25 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     expect(blocked.problem?.decision_id).toBeTruthy();
 
     // Administrator has 'freeze:write' (M4 migration) but deliberately NOT 'freeze:override' —
-    // the two highest-blast-radius bypass permissions are Owner-only.
+    // the two highest-blast-radius bypass permissions are Owner-only. MAJOR #6: an unauthorized
+    // override is now a 409 carrying decision_id (a real, audited rejected-transition Decision),
+    // not a bare 403 that leaves no trace.
     const administrator = await createTestUser(server, org, [{ role: "Administrator", scope: org.orgId }]);
     const administratorClient = new ScpClient({ baseUrl: server.baseUrl, token: administrator.token });
     const unauthorizedOverride = await expectApiError(() =>
       administratorClient.changes.promote(change.id, "let me through please", true)
     );
-    expect(unauthorizedOverride.status).toBe(403);
+    expect(unauthorizedOverride.status).toBe(409);
+    expect(unauthorizedOverride.problem?.decision_id).toBeTruthy();
+    // The rejected override left an audited Decision naming the rejection.
+    const rejectDecision = await admin.decisions.get(unauthorizedOverride.problem!.decision_id!);
+    expect(rejectDecision.verdict).toBe("block");
+    expect(JSON.stringify(rejectDecision.reasonTree)).toMatch(/override rejected/i);
 
-    // Owner HAS 'freeze:override' but omits the mandatory reason — still 403.
+    // Owner HAS 'freeze:override' but omits the mandatory reason — also a rejected-override 409.
     const missingReason = await expectApiError(() => admin.changes.promote(change.id, undefined, true));
-    expect(missingReason.status).toBe(403);
+    expect(missingReason.status).toBe(409);
+    expect(missingReason.problem?.decision_id).toBeTruthy();
 
     // Owner, with a reason, succeeds.
     const promoted = await admin.changes.promote(change.id, "hotfix approved by incident commander", true);
@@ -558,6 +781,61 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const decision = await admin.decisions.get(overrideEvent!.decisionId!);
     expect(decision.verdict).toBe("allow");
     expect(decision.kind).toBe("transition");
+    // The rejected attempts were also audited as blocked transitions (MAJOR #6 — nothing rolls
+    // back silently): at least one `change.transition.blocked` event exists for this change.
+    const blockedEvents = auditPage.items.filter((e) => e.action === "change.transition.blocked");
+    expect(blockedEvents.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // CRITICAL #2 (adversarial review): a narrow-scope override must NOT slip a change past a
+  // BROADER simultaneous freeze the actor has no authority over. `activeFreezesForScopes` can
+  // return several; only checking the first one was the bypass.
+  // -----------------------------------------------------------------------------------------
+
+  it("a narrow-scope freeze:override does NOT bypass a broader simultaneous freeze the actor lacks authority over — every active freeze must be individually overridden", async () => {
+    const org = await createTestOrg(server, "multi-freeze");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+    const service = await admin.services.create({ name: "mf-service" });
+    const component = await admin.components.create({ name: "mf-component", domainId: service.id });
+    const change = await admin.changes.propose({ name: "mf-change", targets: [component.id] });
+    await waitForValidating(admin, change.id);
+
+    const now = Date.now();
+    const startsAt = new Date(now - 60_000).toISOString();
+    const endsAt = new Date(now + 3_600_000).toISOString();
+    // TWO simultaneous freezes over the change's scope: a narrow one at the component, a broader
+    // one at the org root.
+    await admin.freezes.create({ scopeObjectId: component.id, name: "component-freeze", startsAt, endsAt, reason: "narrow" });
+    await admin.freezes.create({ scopeObjectId: org.orgId, name: "org-freeze", startsAt, endsAt, reason: "broad org-wide freeze" });
+
+    // An actor who can PROMOTE (Administrator at org root grants object:write, the route-level
+    // permission the promote endpoint checks — but NOT freeze:override, which is Owner-only) AND
+    // holds freeze:override ONLY at the component (Owner bound there). So they can override the
+    // component freeze but have no authority over the broader org-root freeze.
+    const narrowOverrider = await createTestUser(server, org, [
+      { role: "Administrator", scope: org.orgId },
+      { role: "Owner", scope: component.id }
+    ]);
+    const narrowClient = new ScpClient({ baseUrl: server.baseUrl, token: narrowOverrider.token });
+
+    // Their override covers the component freeze but NOT the org-root freeze → still blocked.
+    // (Also needs object:write to attempt the promote transition at all — Owner grants it.)
+    const stillBlocked = await expectApiError(() =>
+      narrowClient.changes.promote(change.id, "I can only override the component freeze", true)
+    );
+    expect(stillBlocked.status).toBe(409);
+    expect(stillBlocked.problem?.decision_id).toBeTruthy();
+
+    // The org-root Owner (admin) holds freeze:override at org root, which covers BOTH freezes via
+    // containment → the override succeeds and BOTH freezes are individually audited.
+    const promoted = await admin.changes.promote(change.id, "incident: overriding both freezes", true);
+    expect(promoted.state).toBe("promoted");
+
+    const auditPage = await admin.auditEvents.list({ limit: 200 });
+    const overrideEvents = auditPage.items.filter((e) => e.action === "freeze.override");
+    expect(overrideEvents.length).toBeGreaterThanOrEqual(2); // one per overridden freeze
   });
 
   // -----------------------------------------------------------------------------------------
