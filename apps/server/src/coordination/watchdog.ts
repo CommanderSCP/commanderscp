@@ -4,6 +4,7 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { changes } from "../db/schema.js";
 import { insertDecision } from "./decisions-repo.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
+import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 
 /**
  * Stuck-change watchdog (DESIGN.md §9.4): "a watchdog sweep flags any change showing no progress
@@ -35,8 +36,9 @@ export interface WatchdogFlag {
   decisionId: string;
 }
 
-/** System-actor id used to attribute watchdog-authored audit events/Decisions (no human actor). */
-export const WATCHDOG_SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-000000000000";
+/** System-actor id used to attribute watchdog-authored audit events/Decisions (no human actor) —
+ *  re-exported under this name for call-site clarity; same sentinel `reconcile.ts` uses. */
+export const WATCHDOG_SYSTEM_ACTOR_ID = SYSTEM_ACTOR_ID;
 
 /**
  * One sweep pass over one org: finds changes past their per-state SLA that haven't already been

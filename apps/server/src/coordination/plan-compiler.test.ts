@@ -202,21 +202,34 @@ describe("coordination/plan-compiler — explicit topology mode", () => {
 // Property-based tests (fast-check) — BUILD_AND_TEST.md §8 M3 DoD: "toposort property tests".
 // -------------------------------------------------------------------------------------------
 
-/** Generates a random DAG (never a cycle by construction: edges only point to LOWER indices) over `n` labeled nodes. */
+/**
+ * Generates a random DAG (never a cycle by construction: edges only point to LOWER indices) over
+ * `n` labeled nodes.
+ *
+ * `n === 1` is special-cased to a fixed empty-edges arbitrary: with only one node, `a !== b`
+ * (the "no self-loop" filter below) can NEVER hold, since both tuple halves are drawn from
+ * `fc.integer({min: 0, max: 0})` — every single candidate is `[0, 0]`. fast-check's `.filter()`
+ * retries a bounded number of times per draw before giving up, but with `numRuns: 200` across
+ * five property tests below, and `n === 1` coming up on roughly 1/8 of all draws, this was
+ * observed to make the WHOLE suite take minutes instead of milliseconds (thousands of guaranteed-
+ * to-fail filter retries, not an infinite loop, but pathologically slow) — worth special-casing
+ * outright rather than tuning retry limits.
+ */
 function dagArbitrary() {
-  return fc
-    .integer({ min: 1, max: 8 })
-    .chain((n) => {
-      const nodes = Array.from({ length: n }, (_, i) => `n${i}`);
-      const edgeArb = fc.array(
-        fc
-          .tuple(fc.integer({ min: 0, max: n - 1 }), fc.integer({ min: 0, max: n - 1 }))
-          .filter(([a, b]) => a !== b)
-          .map(([a, b]) => ({ from: nodes[Math.max(a, b)]!, to: nodes[Math.min(a, b)]! })),
-        { maxLength: n * 2 }
-      );
-      return edgeArb.map((edges) => ({ nodes, edges }));
-    });
+  return fc.integer({ min: 1, max: 8 }).chain((n) => {
+    const nodes = Array.from({ length: n }, (_, i) => `n${i}`);
+    if (n < 2) {
+      return fc.constant({ nodes, edges: [] as DependsOnEdge[] });
+    }
+    const edgeArb = fc.array(
+      fc
+        .tuple(fc.integer({ min: 0, max: n - 1 }), fc.integer({ min: 0, max: n - 1 }))
+        .filter(([a, b]) => a !== b)
+        .map(([a, b]) => ({ from: nodes[Math.max(a, b)]!, to: nodes[Math.min(a, b)]! })),
+      { maxLength: n * 2 }
+    );
+    return edgeArb.map((edges) => ({ nodes, edges }));
+  });
 }
 
 describe("coordination/plan-compiler — property tests", () => {

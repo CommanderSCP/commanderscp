@@ -68,9 +68,15 @@ export async function evaluateLifecycleGate(
 export async function evaluateWaveGate(
   tx: TenantTx,
   orgId: string,
-  topologyObjectId: string,
+  topologyObjectId: string | null,
   waveIndex: number
 ): Promise<GateVerdict> {
+  // A change compiled without a release topology (pure depends_on toposort) has nothing to bind
+  // a topology-scoped gate against — only "global" wave-boundary gates (topology_object_id IS
+  // NULL) can ever apply to it.
+  const scopeCondition = topologyObjectId
+    ? or(eq(gateBindings.topologyObjectId, topologyObjectId), isNull(gateBindings.topologyObjectId))
+    : isNull(gateBindings.topologyObjectId);
   const bound = await tx
     .select()
     .from(gateBindings)
@@ -78,7 +84,7 @@ export async function evaluateWaveGate(
       and(
         eq(gateBindings.orgId, orgId),
         eq(gateBindings.scopeKind, "wave_boundary"),
-        or(eq(gateBindings.topologyObjectId, topologyObjectId), isNull(gateBindings.topologyObjectId)),
+        scopeCondition,
         eq(gateBindings.waveIndex, waveIndex)
       )
     );

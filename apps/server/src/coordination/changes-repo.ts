@@ -1,4 +1,4 @@
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Change, ChangeState } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changes, objects } from "../db/schema.js";
@@ -7,7 +7,7 @@ import { decodeCursor, encodeCursor } from "../pagination.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { insertDecision } from "./decisions-repo.js";
 
-type ChangeRow = typeof changes.$inferSelect;
+export type ChangeRow = typeof changes.$inferSelect;
 type ObjectRow = typeof objects.$inferSelect;
 /** The minimal object shape `toChangeShape` actually reads — satisfied by both a raw `ObjectRow`
  *  (joined-query callers below) and a `GraphObject` (createObject's return shape in `proposeChange`,
@@ -173,6 +173,28 @@ export async function getChangeRow(tx: TenantTx, orgId: string, id: string): Pro
   const found = await fetchChangeWithObject(tx, orgId, id);
   if (!found) throw notFound(`change '${id}' not found`);
   return found.change;
+}
+
+/**
+ * Batch fetch for the reconciliation loop (coordination/reconcile.ts) and the watchdog: every
+ * change currently sitting in one of `states`, oldest-updated first (so a sweep drains the
+ * longest-waiting changes first rather than starving them behind a churny newer one), capped at
+ * `limit` per tick so one org with a huge backlog can't starve every other org's sweep turn.
+ */
+export async function listChangeRowsInStates(
+  tx: TenantTx,
+  orgId: string,
+  states: ChangeState[],
+  limit: number
+): Promise<{ change: ChangeRow; object: ObjectRow }[]> {
+  if (states.length === 0) return [];
+  return tx
+    .select({ change: changes, object: objects })
+    .from(changes)
+    .innerJoin(objects, eq(changes.objectId, objects.id))
+    .where(and(eq(changes.orgId, orgId), inArray(changes.state, states)))
+    .orderBy(asc(changes.updatedAt))
+    .limit(limit);
 }
 
 /** Reads the target object ids `proposeChange` stashed under `properties.targets` at creation time. */

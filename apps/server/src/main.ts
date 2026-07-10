@@ -1,3 +1,5 @@
+import path from "node:path";
+import os from "node:os";
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { createDb, createPool } from "./db/client.js";
@@ -8,6 +10,14 @@ import { startPgBoss } from "./events/pgboss.js";
 import { startOutboxRelay } from "./events/outbox-relay.js";
 import { connectNatsFanout, type NatsFanoutHandle } from "./events/nats-fanout.js";
 import { loginAndSeedDemoData } from "./seed.js";
+import { SubprocessPluginHost } from "./plugin-host/host.js";
+import { startReconcileLoop } from "./coordination/reconcile.js";
+import {
+  DEFAULT_EXECUTOR_INSTANCE_ID,
+  DEFAULT_EXECUTOR_MODULE,
+  SHARED_PLUGIN_INSTANCE_DOMAIN_ID,
+  SHARED_PLUGIN_INSTANCE_ORG_ID
+} from "./coordination/executor-config.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -58,7 +68,28 @@ async function main(): Promise<void> {
         ? await connectNatsFanout(config.eventBus.natsUrl!)
         : undefined;
     const relay = startOutboxRelay(pool, config.runtimeDatabaseUrl, boss, natsFanout);
+
+    // M3 coordination engine (BUILD_AND_TEST.md §8 M3, DESIGN.md §9.3/§9.4): the subprocess
+    // plugin host + the resumable reconciliation loop. One shared fake-executor plugin instance
+    // (coordination/executor-config.ts documents why: M3 has no plugin-instance configuration
+    // API yet) with its state file under the OS temp dir — durable across the plugin
+    // SUBPROCESS restarting (the plugin-host isolation DoD scenario), not across this whole
+    // `scpd` process restarting, which is fine: fake-executor is never a real system of record.
+    const pluginHost = new SubprocessPluginHost();
+    await pluginHost.start([
+      {
+        id: DEFAULT_EXECUTOR_INSTANCE_ID,
+        module: DEFAULT_EXECUTOR_MODULE,
+        orgId: SHARED_PLUGIN_INSTANCE_ORG_ID,
+        domainId: SHARED_PLUGIN_INSTANCE_DOMAIN_ID,
+        config: { statePath: path.join(os.tmpdir(), "scpd-fake-executor-state.json") }
+      }
+    ]);
+    const reconcileLoop = await startReconcileLoop(boss, db, pluginHost);
+
     app.addHook("onClose", async () => {
+      await reconcileLoop.stop();
+      await pluginHost.stop();
       await relay.stop();
       await boss.stop({ graceful: false, timeout: 1000 }).catch(() => undefined);
       await natsFanout?.close().catch(() => undefined);

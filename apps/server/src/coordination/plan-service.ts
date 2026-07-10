@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
-import type { ChangePlan, ChangeWave, ChangeWaveTarget } from "@scp/schemas";
+import type { ChangePlan, ChangeWaveTarget } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changePlans, changeWaveTargets, changeWaves, relationships } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";

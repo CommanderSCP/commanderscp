@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import pg from "pg";
 import * as argon2 from "argon2";
 import { v7 as uuidv7 } from "uuid";
@@ -16,6 +19,14 @@ import { startOutboxRelay, type OutboxRelayHandle } from "../events/outbox-relay
 import { connectNatsFanout, type NatsFanoutHandle } from "../events/nats-fanout.js";
 import type PgBoss from "pg-boss";
 import type { AppDeps } from "../types.js";
+import { SubprocessPluginHost, type PluginHostOptions } from "../plugin-host/host.js";
+import { startReconcileLoop, type ReconcileLoopHandle } from "../coordination/reconcile.js";
+import {
+  DEFAULT_EXECUTOR_INSTANCE_ID,
+  DEFAULT_EXECUTOR_MODULE,
+  SHARED_PLUGIN_INSTANCE_DOMAIN_ID,
+  SHARED_PLUGIN_INSTANCE_ORG_ID
+} from "../coordination/executor-config.js";
 
 /**
  * Admin/superuser URL — set by test-support/global-setup.ts (Vitest `globalSetup` — process.env
@@ -93,6 +104,11 @@ export async function buildTestServer(): Promise<TestServer> {
 
 export interface ListeningTestServer extends TestServer {
   baseUrl: string;
+  /** Only set when `opts.withReconcileLoop` — the plugin host driving whatever fake-executor
+   *  instance the reconciliation loop triggers wave targets against. Integration tests use this
+   *  directly (e.g. `pluginHost` internals via `killExecutorSubprocess` below) to exercise the
+   *  plugin-host isolation DoD scenario. */
+  pluginHost?: SubprocessPluginHost;
 }
 
 /**
@@ -111,9 +127,22 @@ export interface ListeningTestServer extends TestServer {
  * relay ALSO fans relayed outbox rows out to a real JetStream stream, exactly as it would in
  * production with `SCP_EVENT_BUS_BACKEND=nats`. `undefined` (every other caller) leaves the relay
  * exactly as it's always behaved — no NATS connection is ever attempted.
+ *
+ * `withReconcileLoop: true` (requires `withEventRelay: true` — the loop needs `boss`) starts the
+ * M3 coordination engine exactly as main.ts does: a `SubprocessPluginHost` with one fake-executor
+ * instance, plus the self-re-scheduling reconcile tick. `pluginHostOptions` lets a test tighten
+ * timeouts/backoff (the production defaults are tuned for real workloads, not fast test
+ * iteration) and `reconcileTickIntervalOverrideMs` isn't exposed — tests instead just poll
+ * (`waitUntil`, coordination.integration.test.ts) since `RECONCILE_TICK_INTERVAL_SECONDS` (1s) is
+ * already fast enough not to dominate test runtime.
  */
 export async function listenTestServer(
-  opts: { withEventRelay?: boolean; natsUrl?: string } = {}
+  opts: {
+    withEventRelay?: boolean;
+    natsUrl?: string;
+    withReconcileLoop?: boolean;
+    pluginHostOptions?: PluginHostOptions;
+  } = {}
 ): Promise<ListeningTestServer> {
   const server = await buildTestServer();
   const address = await server.app.listen({ port: 0, host: "127.0.0.1" });
@@ -122,6 +151,8 @@ export async function listenTestServer(
   let relay: OutboxRelayHandle | undefined;
   let relayPool: pg.Pool | undefined;
   let natsFanout: NatsFanoutHandle | undefined;
+  let pluginHost: SubprocessPluginHost | undefined;
+  let reconcileLoop: ReconcileLoopHandle | undefined;
   if (opts.withEventRelay) {
     boss = await startPgBoss(server.deps.config.pgBossDatabaseUrl);
     if (opts.natsUrl) {
@@ -131,12 +162,30 @@ export async function listenTestServer(
     // the relay also owns independently of the request-serving pool.
     relayPool = createPool(server.deps.config.runtimeDatabaseUrl);
     relay = startOutboxRelay(relayPool, server.deps.config.runtimeDatabaseUrl, boss, natsFanout);
+
+    if (opts.withReconcileLoop) {
+      const stateDir = await mkdtemp(join(tmpdir(), "scp-test-fake-executor-"));
+      pluginHost = new SubprocessPluginHost(opts.pluginHostOptions);
+      await pluginHost.start([
+        {
+          id: DEFAULT_EXECUTOR_INSTANCE_ID,
+          module: DEFAULT_EXECUTOR_MODULE,
+          orgId: SHARED_PLUGIN_INSTANCE_ORG_ID,
+          domainId: SHARED_PLUGIN_INSTANCE_DOMAIN_ID,
+          config: { statePath: join(stateDir, "fake-executor-state.json"), autoSucceedAfterMs: 50 }
+        }
+      ]);
+      reconcileLoop = await startReconcileLoop(boss, server.deps.db, pluginHost);
+    }
   }
 
   return {
     ...server,
     baseUrl: `${address}/api/v1`,
+    pluginHost,
     close: async () => {
+      await reconcileLoop?.stop();
+      await pluginHost?.stop();
       await relay?.stop();
       await boss?.stop({ graceful: false, timeout: 1000 }).catch(() => undefined);
       await relayPool?.end();

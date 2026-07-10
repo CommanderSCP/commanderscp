@@ -31,6 +31,8 @@ import { registerGraphRoutes } from "./routes/graph.js";
 import { registerAuditEventRoutes } from "./routes/audit-events.js";
 import { registerEventStreamRoute } from "./routes/events.js";
 import { registerPlanRoutes } from "./routes/plans.js";
+import { registerChangeRoutes } from "./routes/changes.js";
+import { registerChangeSourceRoutes } from "./routes/change-sources.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -115,6 +117,11 @@ export async function buildApp(
   registerEventStreamRoute(app, deps);
   // M2 stage 3: `@scp/iac` server-side plan/apply (BUILD_AND_TEST.md §8 M2 item 4).
   registerPlanRoutes(app, deps);
+  // M3: the Change lifecycle + Decision records (BUILD_AND_TEST.md §8 M3) — propose/list/get/
+  // cancel/promote/rollback/explain, plus the standalone `/decisions` sub-resource.
+  registerChangeRoutes(app, deps);
+  // M3: webhook ingress (persist-then-process) + source_mappings correlation config.
+  registerChangeSourceRoutes(app, deps);
 
   app.get("/healthz", async () => ({ status: "ok" }));
 
