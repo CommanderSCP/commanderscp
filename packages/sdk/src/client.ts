@@ -154,7 +154,17 @@ import {
   createFreeze as createFreezeRequest,
   listFreezes as listFreezesRequest,
   getFreeze as getFreezeRequest,
-  policyEvaluate as policyEvaluateRequest
+  policyEvaluate as policyEvaluateRequest,
+  // M5: Campaigns & Initiatives (BUILD_AND_TEST.md §8 M5, DESIGN §9.5).
+  proposeCampaign as proposeCampaignRequest,
+  listCampaigns as listCampaignsRequest,
+  getCampaign as getCampaignRequest,
+  explainCampaign as explainCampaignRequest,
+  rollbackCampaign as rollbackCampaignRequest,
+  proposeInitiative as proposeInitiativeRequest,
+  listInitiatives as listInitiativesRequest,
+  getInitiative as getInitiativeRequest,
+  addInitiativeCampaign as addInitiativeCampaignRequest
 } from "./generated/sdk.gen.js";
 import type {
   ApplyPlanResponse,
@@ -213,7 +223,20 @@ import type {
   Freeze,
   CreateFreezeRequest,
   FreezeListResponse,
-  PolicyEvaluateResponse
+  PolicyEvaluateResponse,
+  // M5: Campaigns & Initiatives (BUILD_AND_TEST.md §8 M5, DESIGN §9.5).
+  Campaign,
+  CampaignListQuery,
+  CampaignListResponse,
+  CampaignExplainResponse,
+  CreateCampaignRequest,
+  RollbackCampaignResponse,
+  Initiative,
+  InitiativeListQuery,
+  InitiativeListResponse,
+  InitiativeRollupResponse,
+  CreateInitiativeRequest,
+  AddInitiativeCampaignRequest
 } from "@scp/schemas";
 import { ScpApiError } from "./errors.js";
 
@@ -1146,4 +1169,64 @@ export class ScpClient {
     const result = await policyEvaluateRequest({ client: this.client, body: { changeId } });
     return unwrap(result);
   }
+
+  // -----------------------------------------------------------------------------------------
+  // M5 Campaigns & Initiatives (BUILD_AND_TEST.md §8 M5, DESIGN §9.5) — `scp campaign
+  // create/status` (packages/cli) are thin callers of these, same layering as `changes` above.
+  // No `promote`/`cancel` verbs: a campaign has no transition-guarded state machine of its own
+  // (coordination/campaign-status.ts's module doc) — `status` is always derived live by `get`.
+  // -----------------------------------------------------------------------------------------
+
+  readonly campaigns = {
+    propose: async (
+      req: CreateCampaignRequest,
+      opts: { idempotencyKey?: string } = {}
+    ): Promise<Campaign> => {
+      const result = await proposeCampaignRequest({
+        client: this.client,
+        body: req,
+        headers: idempotencyHeaders(opts.idempotencyKey)
+      });
+      return unwrap(result);
+    },
+    list: async (query: CampaignListQuery = { limit: 20 }): Promise<CampaignListResponse> => {
+      const result = await listCampaignsRequest({ client: this.client, query });
+      return unwrap(result);
+    },
+    get: async (id: string): Promise<Campaign> => {
+      const result = await getCampaignRequest({ client: this.client, path: { id } });
+      return unwrap(result);
+    },
+    explain: async (id: string): Promise<CampaignExplainResponse> => {
+      const result = await explainCampaignRequest({ client: this.client, path: { id } });
+      return unwrap(result);
+    },
+    /** Rolls back every currently-eligible member Change (DESIGN §9.4/§9.5) — each becomes its
+     *  own new rollback Change, exactly like `changes.rollback` does per-member. */
+    rollback: async (id: string, reason: string): Promise<RollbackCampaignResponse> => {
+      const result = await rollbackCampaignRequest({ client: this.client, path: { id }, body: { reason } });
+      return unwrap(result);
+    }
+  };
+
+  readonly initiatives = {
+    propose: async (req: CreateInitiativeRequest): Promise<Initiative> => {
+      const result = await proposeInitiativeRequest({ client: this.client, body: req });
+      return unwrap(result);
+    },
+    list: async (query: InitiativeListQuery = { limit: 20 }): Promise<InitiativeListResponse> => {
+      const result = await listInitiativesRequest({ client: this.client, query });
+      return unwrap(result);
+    },
+    /** The initiative plus its member campaigns and the traversal-derived `rollupStatus`
+     *  (DESIGN §9.5) — always computed live, never stored. */
+    get: async (id: string): Promise<InitiativeRollupResponse> => {
+      const result = await getInitiativeRequest({ client: this.client, path: { id } });
+      return unwrap(result);
+    },
+    addCampaign: async (id: string, req: AddInitiativeCampaignRequest): Promise<void> => {
+      const result = await addInitiativeCampaignRequest({ client: this.client, path: { id }, body: req });
+      unwrap(result);
+    }
+  };
 }
