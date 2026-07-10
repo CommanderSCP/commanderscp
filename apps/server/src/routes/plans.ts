@@ -49,6 +49,11 @@ import {
  *    write permission at both endpoints' scopes" (CRITICAL 1). Every check runs to completion
  *    BEFORE any mutation executes, in the same transaction, so a single denial rolls back the
  *    entire apply (fails fully closed — see `plans.integration.test.ts`'s partial-denial test).
+ *  - A `policy`/`control` object in the manifest is checked against `policy:write` instead of
+ *    `object:write`, and a `policy` create/update additionally runs
+ *    `assertPolicyScopeWithinAuthority` — the exact same governance gates the typed `/policies`/
+ *    `/controls` routes enforce (security fast-follow after PR #9: `iac/plans-repo.ts`'s
+ *    `prepareApplyChecks` doc comment has the full story).
  */
 export function registerPlanRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
@@ -155,7 +160,12 @@ export function registerPlanRoutes(app: FastifyInstance, deps: AppDeps): void {
         // duration so two concurrent applies of the same plan can't both succeed.
         const pending = await lockPendingPlan(tx, auth.orgId, request.params.id);
 
-        const { checks, objectResolutions } = await prepareApplyChecks(tx, auth.orgId, pending.diff);
+        const { checks, objectResolutions } = await prepareApplyChecks(
+          tx,
+          auth.orgId,
+          auth.subjectObjectId,
+          pending.diff
+        );
         // EVERY affected object/relationship's scope, checked to completion before any mutation
         // (module doc). A denial throws 403 here, which rolls back the whole transaction.
         for (const check of checks) {
