@@ -1,8 +1,14 @@
 import type { ControlOutcomeStatus } from "@scp/plugin-api";
 import type { TenantTx } from "../db/tenant-tx.js";
-import type { PluginHost } from "../plugin-host/contract.js";
+import type { PluginHost, PluginHostInstanceConfig } from "../plugin-host/contract.js";
 import { getControlBinding, insertControlRun, latestControlRun } from "./controls-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+
+const KNOWN_CONTROL_MODULES: PluginHostInstanceConfig["module"][] = ["webhook-control"];
+
+function isKnownPluginModule(value: string): value is PluginHostInstanceConfig["module"] {
+  return (KNOWN_CONTROL_MODULES as string[]).includes(value) || value === "fake-executor";
+}
 
 /**
  * Actually RUNS a control (DESIGN §10.2) via the subprocess plugin host — the one piece of
@@ -62,6 +68,22 @@ export async function ensureControlRun(
   let evidence: Record<string, unknown> = {};
   let detail: string | undefined;
   try {
+    if (!isKnownPluginModule(binding.pluginModule)) {
+      throw new Error(`unknown control plugin module '${binding.pluginModule}'`);
+    }
+    // Lazily provisions this binding's plugin instance on the host if it isn't already running
+    // (M4 has no plugin-instance-configuration API yet, same documented gap
+    // `coordination/executor-config.ts` has for executors) — idempotent per instance id
+    // (plugin-host/host.ts's `start()` doc comment), so calling this on every evaluation is safe.
+    await host.start([
+      {
+        id: binding.pluginInstanceId,
+        module: binding.pluginModule,
+        orgId: input.orgId,
+        domainId: "default",
+        config: binding.config
+      }
+    ]);
     const outcome = await host.control(binding.pluginInstanceId).evaluate({
       changeId: input.changeObjectId,
       controlId: input.controlObjectId,
