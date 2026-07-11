@@ -1,0 +1,30 @@
+CommanderSCP {{ .Chart.AppVersion }} deployed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+{{- if not .Values.postgres.existingSecret }}
+
+Postgres credentials were AUTO-GENERATED (postgres.existingSecret is unset) and stored in Secret
+"{{ include "commanderscp.postgresSecretName" . }}" — fine for evaluation, but production
+deployments should set postgres.existingSecret to a Secret your own secrets tooling manages.
+{{- end }}
+{{- if not .Values.appSecrets.existingSecret }}
+
+App secrets (cookie signing key, secrets-table master key) were AUTO-GENERATED and stored in
+Secret "{{ include "commanderscp.appSecretsName" . }}". IMPORTANT: back this up / pin
+appSecrets.existingSecret before your next `helm upgrade` if you rotate or move namespaces — the
+secrets-table master key must stay stable, or every plugin credential encrypted under it becomes
+permanently undecryptable.
+{{- end }}
+
+{{- if .Values.ingress.enabled }}
+
+Web UI / API: https://{{ .Values.ingress.host }}
+{{- else }}
+
+No Ingress configured (ingress.enabled=false). Reach the API from inside the cluster at:
+  http://{{ include "commanderscp.fullname" . }}-api.{{ .Release.Namespace }}.svc.cluster.local
+Or port-forward:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "commanderscp.fullname" . }}-api 8080:{{ .Values.api.service.port }}
+{{- end }}
+
+Check migration Job status:
+  kubectl -n {{ .Release.Namespace }} get jobs -l app.kubernetes.io/component=migrations

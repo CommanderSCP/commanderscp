@@ -1,0 +1,93 @@
+{{/*
+Managed-IaC (Mode 2, DESIGN §12/§16) on-ramp — RBAC granting the worker ServiceAccount permission
+to create/watch/delete Jobs (and read their Pods' logs) in this namespace, plus a ConfigMap
+documenting the exact per-run Job shape the `scp-managed-iac` orchestrator plugin would launch
+from the SEPARATE, signed `scp-runner-iac` image (apps/runner-iac — never bundled into the scpd
+image itself).
+
+HONEST SCOPE (flagged in the M8 PR body): `packages/plugins/managed-iac`'s CURRENT implementation
+launches the runner via `docker create`/`docker cp`/`docker start` — a host Docker socket, not a
+Kubernetes Job. That is fully functional under docker-compose/VM deployments (where `docker run`
+is the natural launch mechanism DESIGN §12 always described for that shape) but does NOT yet work
+unmodified inside a standard Kubernetes pod (no docker socket, and mounting one is a real
+container-escape risk this chart deliberately does NOT paper over). This RBAC + template is the
+on-ramp for a future Kubernetes-native launch mode in the plugin itself — not a claim that Mode 2
+already works end-to-end under `helm install` today. `managedIac.enabled` stays `false` by default
+so this is fully inert unless an operator opts in with eyes open.
+*/}}
+{{- if .Values.managedIac.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "commanderscp.fullname" . }}-runner-iac
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "commanderscp.fullname" . }}-runner-iac
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "commanderscp.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "commanderscp.fullname" . }}-runner-iac
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "commanderscp.fullname" . }}-runner-iac-job-template
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+data:
+  # Reference shape ONLY (not applied as a live resource by this chart — see module doc above for
+  # why a Job can't usefully be "installed once"). `__RUN_ID__`/`__ACTION__`/`__WORKSPACE_PVC__`
+  # are placeholders a Kubernetes-native launcher substitutes per run.
+  job-template.yaml: |
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: scp-runner-iac-__RUN_ID__
+      labels:
+        app.kubernetes.io/name: scp-runner-iac
+        app.kubernetes.io/managed-by: scp-managed-iac
+    spec:
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: runner
+              image: {{ .Values.managedIac.runnerImage | quote }}
+              args: ["__ACTION__"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: false # /workspace is written to (plan/apply/state files)
+                capabilities: { drop: ["ALL"] }
+              volumeMounts:
+                - name: workspace
+                  mountPath: /workspace
+              # Vaulted, scoped infra credentials are injected here as env, per run — never a
+              # tenant- or server-wide secret; resolved and set by the orchestrator at launch time
+              # (mirrors the existing docker-create path's credential confinement contract).
+          volumes:
+            - name: workspace
+              emptyDir: {}
+{{- end }}

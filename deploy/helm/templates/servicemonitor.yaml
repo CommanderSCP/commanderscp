@@ -1,0 +1,21 @@
+{{/* Requires the Prometheus Operator CRDs installed in-cluster — disabled by default so a plain
+     `helm install` never fails against a cluster without them. */}}
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "commanderscp.fullname" . }}
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "commanderscp.apiSelectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}

@@ -1,0 +1,117 @@
+{{/*
+worker — SCP_ROLE=worker: outbox relay, coordination reconcile loop, watchdog, subprocess plugin
+host. Multiple replicas (M8 hardening — BUILD_AND_TEST.md §8 M8 item 6): the coordination
+engine's wave-target trigger claim is a provable Postgres advisory-lock single-flight boundary
+(coordination/trigger-claim-lock.ts) specifically so this is safe to scale past 1 — see that
+module's doc comment and coordination.integration.test.ts's "multi-replica trigger claim is
+single-flight" suite.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "commanderscp.fullname" . }}-worker
+  labels:
+    {{- include "commanderscp.workerSelectorLabels" . | nindent 4 }}
+    {{- include "commanderscp.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.worker.hpa.enabled }}
+  replicas: {{ .Values.worker.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "commanderscp.workerSelectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        {{- include "commanderscp.workerSelectorLabels" . | nindent 8 }}
+      {{- with .Values.worker.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "commanderscp.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.managedIac.enabled }}
+      terminationGracePeriodSeconds: 30
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: worker
+          image: {{ include "commanderscp.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            - name: SCP_ROLE
+              value: "worker"
+            {{- include "commanderscp.commonEnv" . | nindent 12 }}
+            {{- include "commanderscp.runtimeDbEnv" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+          # worker's /healthz still answers (role=worker still boots the Fastify app — DESIGN
+          # §16's "role flag" split is per-process work scheduling, not a separate binary/API
+          # surface) — same liveness signal as api, cheap and accurate.
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: storage
+              mountPath: /var/lib/scp/storage
+            {{- if .Values.federation.mtls.enabled }}
+            - name: federation-mtls
+              mountPath: /etc/scp/federation-mtls
+              readOnly: true
+            {{- end }}
+            {{- if .Values.managedIac.enabled }}
+            - name: managed-iac-workspace
+              mountPath: {{ .Values.managedIac.workspaceRoot }}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: storage
+          {{- if eq .Values.objectStorage.provider "filesystem" }}
+          persistentVolumeClaim:
+            claimName: {{ include "commanderscp.fullname" . }}-storage
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- if .Values.federation.mtls.enabled }}
+        - name: federation-mtls
+          secret:
+            secretName: {{ .Values.federation.mtls.existingSecret }}
+        {{- end }}
+        {{- if .Values.managedIac.enabled }}
+        - name: managed-iac-workspace
+          emptyDir: {}
+        {{- end }}

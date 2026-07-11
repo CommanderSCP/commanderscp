@@ -1,0 +1,227 @@
+# CommanderSCP Helm chart — default values (DESIGN.md §16, BUILD_AND_TEST.md §8 M8).
+# One scpd image, two Deployments (api HPA-scalable, worker queue-depth-scalable), a pre-upgrade
+# migrations Job, hardened pod defaults, NetworkPolicies. PostgreSQL is external by default; a
+# plain in-cluster postgres:16 is available for evaluation only (NO Bitnami subchart).
+
+image:
+  repository: ghcr.io/commanderscp/scpd
+  # Defaults to .Chart.AppVersion — single image version for api+worker, no skew (DESIGN §16).
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# -------------------------------------------------------------------------------------------
+# api — SCP_ROLE=api, HPA-scalable, pure request server (never runs the reconcile/watchdog
+# loops or the plugin host).
+# -------------------------------------------------------------------------------------------
+api:
+  replicaCount: 2
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 8080
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits: { cpu: "1", memory: 512Mi }
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# -------------------------------------------------------------------------------------------
+# worker — SCP_ROLE=worker: outbox relay, coordination reconcile loop, watchdog, subprocess
+# plugin host. Scaled by queue depth, not CPU — pg-boss job backlog is the real signal. This
+# chart ships the HPA wired to a `pgboss_queue_depth` external metric BY NAME (documented,
+# values-driven) rather than bundling a metrics-adapter/exporter — operators wire their own
+# Prometheus Adapter/KEDA ScaledObject to publish that metric; ships DISABLED by default so
+# `helm install` never fails validation against a cluster with no such metric registered yet.
+# -------------------------------------------------------------------------------------------
+worker:
+  replicaCount: 2
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits: { cpu: "1", memory: 512Mi }
+  hpa:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 8
+    # Name of the external metric a Prometheus Adapter/KEDA install publishes (pg-boss queue
+    # depth for the coordination-reconcile-tick + watchdog queues). See README.md "Scaling".
+    metricName: pgboss_queue_depth
+    targetAverageValue: "10"
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# -------------------------------------------------------------------------------------------
+# Migrations Job — pre-install,pre-upgrade Helm hook (DESIGN §16: "forward-only, expand/contract
+# for zero-downtime, reversible upgrades"). Runs `node dist/migrate-bin.js` using the ADMIN
+# connection ONLY this Job ever holds — api/worker pods run with SCP_SKIP_MIGRATIONS=true and
+# only the least-privileged scp_app/scp_pgboss credentials (config.ts's doc comment).
+# -------------------------------------------------------------------------------------------
+migrations:
+  enabled: true
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+
+# -------------------------------------------------------------------------------------------
+# PostgreSQL — external by default (documented requirement; the org's own HA Postgres 16+).
+# `postgres.existingSecret` is the production path: a Secret (created outside this chart, e.g.
+# by an external-secrets operator) with three connection strings — admin (superuser-capable,
+# used ONLY by the migrations Job), app (scp_app), and pgboss (scp_pgboss). Leaving
+# `existingSecret` unset makes the chart GENERATE one at install time with random passwords for
+# the app/pgboss roles (persisted across upgrades via Helm's `lookup`) — the getting-started
+# path, still perfectly usable against a real external Postgres via `postgres.host`.
+# -------------------------------------------------------------------------------------------
+postgres:
+  host: ""
+  port: 5432
+  database: scp
+  # Admin/bootstrap username — its password is generated (or supplied) alongside app/pgboss.
+  adminUser: scp
+  existingSecret: ""
+  existingSecretKeys:
+    admin: DATABASE_URL
+    app: SCP_RUNTIME_DATABASE_URL
+    pgboss: SCP_PGBOSS_DATABASE_URL
+  # EVALUATION ONLY — a plain postgres:16 Deployment + PVC in this same namespace. NOT for
+  # production (no HA, no backups, no tuning). Never a Bitnami/third-party subchart.
+  evalInCluster:
+    enabled: false
+    storage: 8Gi
+    storageClassName: ""
+
+# -------------------------------------------------------------------------------------------
+# Object storage — filesystem/PVC provider default (DESIGN §16); S3-compatible configurable.
+# -------------------------------------------------------------------------------------------
+objectStorage:
+  provider: filesystem # filesystem | s3
+  filesystem:
+    size: 10Gi
+    storageClassName: ""
+    accessMode: ReadWriteOnce
+  s3:
+    bucket: ""
+    region: ""
+    endpoint: ""
+    existingSecret: "" # keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+
+# -------------------------------------------------------------------------------------------
+# Application secrets — cookie signing key + the secrets-table master key (secrets/crypto.ts).
+# Same existingSecret-or-generate pattern as postgres above.
+# -------------------------------------------------------------------------------------------
+appSecrets:
+  existingSecret: ""
+  existingSecretKeys:
+    cookieSecret: SCP_COOKIE_SECRET
+    secretsMasterKey: SCP_SECRETS_MASTER_KEY
+
+eventBus:
+  # postgres (default, zero extra dependency) | nats (DESIGN §8 — optional JetStream backend).
+  backend: postgres
+  natsUrl: ""
+
+oidc:
+  enabled: false
+  issuer: ""
+  clientId: ""
+  redirectUri: ""
+  scopes: "openid profile email"
+  existingSecretClientSecret: ""
+  existingSecretClientSecretKey: SCP_OIDC_CLIENT_SECRET
+
+bootstrap:
+  orgName: default
+  adminUsername: admin
+
+seedDemo: false
+
+# -------------------------------------------------------------------------------------------
+# Managed-IaC (Mode 2, DESIGN §12) — OFF by default. When enabled, the chart grants the worker
+# ServiceAccount RBAC to launch ephemeral scp-runner-iac Jobs and ships a reference Job manifest
+# (ConfigMap) documenting the exact shape those per-run Jobs take. The scpd image itself never
+# carries the IaC toolchain — `runnerImage` is the SEPARATE, signed `scp-runner-iac` image.
+# -------------------------------------------------------------------------------------------
+managedIac:
+  enabled: false
+  runnerImage: ""
+  networkMode: none
+  workspaceRoot: /var/lib/scp/managed-iac
+
+# -------------------------------------------------------------------------------------------
+# Federation mTLS transport identity (DESIGN §13, M8 hardening) — host-level, operator-owned
+# client certificate the federation-https subprocess presents to the parent. Air-gap file
+# transport is unaffected either way.
+# -------------------------------------------------------------------------------------------
+federation:
+  mtls:
+    enabled: false
+    # Secret must contain tls.crt / tls.key (and optionally ca.crt to trust a private/self-signed
+    # parent-side CA) — the standard `kubernetes.io/tls` secret shape.
+    existingSecret: ""
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""
+  tls:
+    enabled: false
+    secretName: ""
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}
+
+# -------------------------------------------------------------------------------------------
+# Hardened defaults (M8 — non-root, read-only rootfs, dropped caps, seccompProfile
+# RuntimeDefault) — applied to EVERY container this chart renders (api, worker, migrations Job).
+# Overridable, but the chart's own CI asserts these render on the DEFAULT values (deploy/helm's
+# template-verification gate) — loosening them is a deliberate, visible values.yaml change.
+# -------------------------------------------------------------------------------------------
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+  seccompProfile:
+    type: RuntimeDefault
+
+networkPolicy:
+  # Default-deny + explicit allows (M8 — see templates/networkpolicy.yaml): DNS egress, egress to
+  # Postgres (and NATS if eventBus.backend=nats), ingress from the ingress controller/other pods
+  # to `api`'s port only. Extra rules layer on top via these lists.
+  enabled: true
+  # Empty (default) = allow egress to ANY destination on the Postgres/NATS port — external
+  # Postgres is typically a DNS name NetworkPolicy can't match directly. Set to your Postgres/NATS
+  # host's CIDR (e.g. a /32 for a single managed-Postgres endpoint) to fully microsegment.
+  postgresCidr: ""
+  natsCidr: ""
+  extraIngressRules: []
+  extraEgressRules: []

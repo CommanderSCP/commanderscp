@@ -1,0 +1,128 @@
+{{/*
+Migrations Job — pre-install,pre-upgrade Helm hook (DESIGN §16, BUILD_AND_TEST.md §8 M8 item 1):
+runs `migrate-bin.ts`'s forward-only, expand/contract-safe Drizzle migrations using the ADMIN
+Postgres connection ONLY this Job ever holds — api/worker Deployments run with
+SCP_SKIP_MIGRATIONS=true and never see it (config.ts's doc comment, main.ts's Phase 1 gate).
+Runs to completion BEFORE the upgraded api/worker pods roll out (`pre-upgrade` hook ordering),
+which is what makes the zero-downtime expand/contract proof true: old-version pods keep serving
+against the already-migrated (expand/contract-compatible) schema for the whole rollout window.
+`helm.sh/hook-delete-policy: before-hook-creation` means a stuck/failed prior Job's leftovers
+never block the next attempt.
+*/}}
+{{- if .Values.migrations.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "commanderscp.fullname" . }}-migrate-{{ .Release.Revision }}
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrations
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "commanderscp.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrations
+    spec:
+      restartPolicy: Never
+      # Deliberately NOT the chart's own ServiceAccount: that resource is created during the
+      # MAIN install/upgrade phase, which runs AFTER pre-install/pre-upgrade hooks like this Job —
+      # referencing it here would make every install fail ("serviceaccount ... not found"). This
+      # Job never calls the Kubernetes API anyway (it only talks to Postgres), so the namespace's
+      # always-present "default" ServiceAccount is correct, not a workaround.
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        # Belt-and-braces for "the target Postgres exists but isn't accepting connections yet" —
+        # matters most for `postgres.evalInCluster.enabled: true` (its Deployment/Service are
+        # ALSO pre-install hooks, at a lower weight, so Helm creates them first, but nothing
+        # blocks THIS Job's pod from starting the instant that Deployment's pod is merely
+        # scheduled, well before postgres itself is ready for connections) — and is equally good
+        # practice against a real external Postgres that hiccups during a rolling upgrade. Same
+        # image, a plain TCP-connect retry loop (no extra tooling — `pg_isready` isn't in this
+        # image, DESIGN §16's "the scpd image carries no [extra toolchain]" principle extends
+        # here too); the outer Job's `activeDeadlineSeconds` is the overall backstop.
+        - name: wait-for-postgres
+          image: {{ include "commanderscp.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - node
+            - -e
+            - |
+              const net = require("node:net");
+              const url = new URL(process.env.DATABASE_URL);
+              const host = url.hostname;
+              const port = Number(url.port || 5432);
+              const deadline = Date.now() + 120_000;
+              function attempt() {
+                const sock = net.createConnection({ host, port }, () => {
+                  console.log(`wait-for-postgres: connected to ${host}:${port}`);
+                  sock.end();
+                  process.exit(0);
+                });
+                sock.on("error", (err) => {
+                  sock.destroy();
+                  if (Date.now() > deadline) {
+                    console.error(`wait-for-postgres: giving up after 120s: ${err.message}`);
+                    process.exit(1);
+                  }
+                  console.log(`wait-for-postgres: ${host}:${port} not ready yet (${err.message}), retrying...`);
+                  setTimeout(attempt, 2000);
+                });
+              }
+              attempt();
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            {{- include "commanderscp.adminDbEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+      containers:
+        - name: migrate
+          image: {{ include "commanderscp.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["node", "dist/migrate-bin.js"]
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            {{- include "commanderscp.commonEnv" . | nindent 12 }}
+            {{- include "commanderscp.adminDbEnv" . | nindent 12 }}
+            # CRITICAL: without these explicit refs, config.ts's loadConfig() falls back to
+            # DERIVING scp_app/scp_pgboss's connection strings from the ADMIN one (same password,
+            # username swapped) — migrate-bin.ts's provisionRuntimeRole/provisionPgBossRole would
+            # then set those roles' passwords to the ADMIN password, while api/worker (which DO
+            # get these two vars — commanderscp.runtimeDbEnv) connect using the INDEPENDENTLY
+            # generated password from this SAME secret. Real bug, caught against a live kind
+            # cluster while building this chart ("password authentication failed for user
+            # scp_app") — this Job MUST provision the EXACT credentials api/worker will actually
+            # use, not whatever the admin-password-derived default would be.
+            - name: SCP_RUNTIME_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "commanderscp.postgresSecretName" . }}
+                  key: {{ .Values.postgres.existingSecretKeys.app }}
+            - name: SCP_PGBOSS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "commanderscp.postgresSecretName" . }}
+                  key: {{ .Values.postgres.existingSecretKeys.pgboss }}
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}
