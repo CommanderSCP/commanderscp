@@ -72,12 +72,21 @@ CREATE UNIQUE INDEX IF NOT EXISTS "change_source_webhook_secrets_org_source_key"
 --> statement-breakpoint
 
 -- ===========================================================================================
--- 2. Grants — every new table is tenant data; `scp_app` never gets DELETE (append/update-only,
---    same convention as every other milestone's tenant tables).
+-- 2. Grants. `executor_bindings`/`change_source_webhook_secrets` follow the append/update-only
+--    convention every other milestone's tenant tables use (no DELETE route exists for either —
+--    both are upserted in place). `secrets` and `notification_bindings` are a deliberate
+--    EXCEPTION: routes/executors.ts exposes real DELETE endpoints for both (an operator rotating
+--    off a compromised credential, or removing a stale notification channel, needs an actual
+--    delete, not just "overwrite with something else") — caught by the M7 golden-path E2E
+--    (scripts/e2e-m7.sh) attempting `scp secret delete` against a real deployment and getting a
+--    live "permission denied for table secrets" from Postgres before this grant was added.
 -- ===========================================================================================
 
 GRANT SELECT, INSERT, UPDATE ON
-  secrets, executor_bindings, notification_bindings, change_source_webhook_secrets
+  executor_bindings, change_source_webhook_secrets
+TO scp_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON
+  secrets, notification_bindings
 TO scp_app;
 
 -- ===========================================================================================

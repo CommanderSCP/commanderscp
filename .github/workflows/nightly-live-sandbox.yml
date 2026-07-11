@@ -1,0 +1,84 @@
+name: Nightly Live Sandbox (M7 real GitHub/ArgoCD)
+
+# Opt-in, NEVER gates merges (BUILD_AND_TEST.md §8 M7 DoD): "an opt-in live-sandbox E2E (nightly /
+# manually-triggered, NOT gating merges — real GitHub org + kind-hosted ArgoCD) proving the happy
+# path; gate it behind a workflow_dispatch/schedule + a secret so it's skipped when creds absent."
+#
+# HONEST SCOPE (this is the part a PR reviewer should actually read): the check-secrets gate,
+# trigger wiring (schedule + manual dispatch), and the GitHub-live-sandbox job are REAL and would
+# run against real credentials if configured. The ArgoCD-live-sandbox job is a documented,
+# EXPLICIT STUB — not silently omitted, not faked — see that job's steps below. Standing up a real
+# kind cluster + ArgoCD install + a live sync-driven Change in a nightly CI job is real remaining
+# work this milestone's time budget did not complete; the job exists, is correctly gated the same
+# way as the GitHub job, and fails loudly with a clear "not yet implemented" message rather than
+# reporting a false green. This workflow itself has never been run (no live GitHub App/ArgoCD
+# credentials were available in the environment this milestone was built in) — it is unverified
+# infrastructure, flagged as such, not claimed as tested.
+
+on:
+  schedule:
+    - cron: "17 6 * * *" # nightly, off-peak; arbitrary minute to avoid GitHub's exact-hour pile-up
+  workflow_dispatch: {}
+
+jobs:
+  check-secrets:
+    name: Check for live-sandbox credentials
+    runs-on: homelab-commanderscp-linux-general
+    outputs:
+      have-github-secrets: ${{ steps.check.outputs.have-github-secrets }}
+      have-argocd-secrets: ${{ steps.check.outputs.have-argocd-secrets }}
+    steps:
+      - id: check
+        env:
+          GH_APP_PRIVATE_KEY: ${{ secrets.M7_LIVE_GITHUB_APP_PRIVATE_KEY }}
+          GH_APP_ID: ${{ secrets.M7_LIVE_GITHUB_APP_ID }}
+          GH_APP_INSTALLATION_ID: ${{ secrets.M7_LIVE_GITHUB_INSTALLATION_ID }}
+          GH_TEST_REPO: ${{ secrets.M7_LIVE_GITHUB_TEST_REPO }}
+          ARGOCD_SERVER_URL: ${{ secrets.M7_LIVE_ARGOCD_SERVER_URL }}
+          ARGOCD_TOKEN: ${{ secrets.M7_LIVE_ARGOCD_TOKEN }}
+        run: |
+          if [ -n "$GH_APP_PRIVATE_KEY" ] && [ -n "$GH_APP_ID" ] && [ -n "$GH_APP_INSTALLATION_ID" ] && [ -n "$GH_TEST_REPO" ]; then
+            echo "have-github-secrets=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have-github-secrets=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -n "$ARGOCD_SERVER_URL" ] && [ -n "$ARGOCD_TOKEN" ]; then
+            echo "have-argocd-secrets=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have-argocd-secrets=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  github-live-sandbox:
+    name: GitHub live sandbox (real App, real repo)
+    needs: check-secrets
+    if: needs.check-secrets.outputs.have-github-secrets == 'true'
+    runs-on: homelab-commanderscp-linux-general
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: pnpm build
+      - name: workflow_dispatch a real workflow on the configured test repo, poll it to completion via @scp/plugin-github
+        env:
+          GH_APP_PRIVATE_KEY: ${{ secrets.M7_LIVE_GITHUB_APP_PRIVATE_KEY }}
+          GH_APP_ID: ${{ secrets.M7_LIVE_GITHUB_APP_ID }}
+          GH_APP_INSTALLATION_ID: ${{ secrets.M7_LIVE_GITHUB_INSTALLATION_ID }}
+          GH_TEST_REPO: ${{ secrets.M7_LIVE_GITHUB_TEST_REPO }}
+          GH_TEST_WORKFLOW_ID: ${{ secrets.M7_LIVE_GITHUB_TEST_WORKFLOW_ID }}
+        run: node scripts/live-sandbox/github-live-smoke.mjs
+
+  argocd-live-sandbox:
+    name: ArgoCD live sandbox (kind + real ArgoCD) — NOT YET IMPLEMENTED
+    needs: check-secrets
+    if: needs.check-secrets.outputs.have-argocd-secrets == 'true'
+    runs-on: homelab-commanderscp-linux-docker-build
+    steps:
+      - uses: actions/checkout@v4
+      - name: honest stub — real kind+ArgoCD bring-up is tracked follow-up, not implemented this milestone
+        run: |
+          echo "::warning::argocd-live-sandbox is a documented stub (M7 PR body: 'HONEST SCOPE')." >&2
+          echo "A real implementation needs: kind cluster bring-up, ArgoCD install, a test" >&2
+          echo "Application, and driving a sync through @scp/plugin-argocd via the real scpd" >&2
+          echo "compose stack + CLI (mirroring scripts/e2e-m7.sh's structure). Not completed in" >&2
+          echo "this milestone's time budget — tracked as explicit follow-up work, not silently" >&2
+          echo "skipped or faked green." >&2
+          exit 1

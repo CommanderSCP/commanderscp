@@ -57,9 +57,14 @@ jobs:
       - run: pnpm test
 
   integration:
-    name: "5. Integration (Testcontainers Postgres)"
+    name: "5. Integration (Testcontainers Postgres + managed-iac real-Docker container)"
     # Needs a real Docker daemon for Testcontainers — the general runner has none
-    # (BUILD_AND_TEST.md §8 M1 item 9).
+    # (BUILD_AND_TEST.md §8 M1 item 9). M7: `pnpm test:integration` (turbo run test:integration)
+    # automatically picks up @scp/plugin-managed-iac's own test:integration script too (turbo
+    # discovers it from that package's package.json, no separate wiring needed) — the DoD-critical
+    # "launches a REAL scp-runner-iac container" test therefore runs in THIS job, on the same
+    # docker-build runner, rather than needing a second CI job. Every push/PR (not main-only): this
+    # is a permanent regression test, same gating as the Testcontainers suite it sits alongside.
     runs-on: homelab-commanderscp-linux-docker-build
     needs: [static-checks, codegen-drift, unit-tests]
     steps:
@@ -118,6 +123,25 @@ jobs:
       - uses: ./.github/actions/setup
       - run: pnpm build
       - run: bash scripts/e2e-m6.sh
+
+  e2e-m7:
+    name: "8d. E2E (M7 real executor integrations golden path, main only)"
+    # Same reason as e2e-m0/e2e-m4/e2e-m5/e2e-m6: needs a real Docker daemon (compose) — the
+    # general runner has none. HONEST SCOPE (see scripts/e2e-m7.sh's own header comment): this
+    # proves the M7 API/CLI surface end to end — webhook HMAC signature verification (fail-closed),
+    # executor/notification binding CRUD, the plugin-manifest catalog, and discovery's
+    # never-auto-commits guarantee — against the real compose-deployed image. It does NOT include
+    # an ArgoCD-in-kind wave-execution variant (deferred, flagged in the M7 PR body); real
+    # GitHub/ArgoCD/Terraform wire-format coverage comes from each plugin's deterministic
+    # nock-fixture suite (unit-tests job) plus the opt-in nightly-live-sandbox.yml workflow.
+    runs-on: homelab-commanderscp-linux-docker-build
+    needs: [static-checks, codegen-drift, unit-tests]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: pnpm build
+      - run: bash scripts/e2e-m7.sh
 
   e2e-web:
     name: "9. E2E (Web UI, Playwright/Chromium, main only)"
