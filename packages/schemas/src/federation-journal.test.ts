@@ -169,6 +169,84 @@ describe("sync journal hash chain (pure)", () => {
   });
 });
 
+describe("sync journal sparse verification (scope-filtered bundles — contiguous:false)", () => {
+  // A scope-filtered bundle deliberately omits out-of-scope entries: its sequence has gaps and each
+  // entry's prevHash points at an omitted predecessor. Sparse mode must ACCEPT the gaps while still
+  // verifying every rowHash + signature and rejecting non-increasing sequence.
+  it("ACCEPTS a gapped chain (sequences 1, 3, 7) whose prev_hashes don't link — each entry still signed", () => {
+    const { publicKey, privateKey } = keyPair();
+    const e1 = baseEntry(privateKey, { sequence: 1, prevHash: "unrelated-a" });
+    const e3 = baseEntry(privateKey, {
+      id: "0198f2a0-0000-7000-8000-000000000021",
+      sequence: 3,
+      prevHash: "unrelated-b"
+    });
+    const e7 = baseEntry(privateKey, {
+      id: "0198f2a0-0000-7000-8000-000000000027",
+      sequence: 7,
+      prevHash: "unrelated-c"
+    });
+    const result = verifyJournalChain([e1, e3, e7], {
+      contiguous: false,
+      resolvePublicKey: () => publicKey
+    });
+    expect(result.valid).toBe(true);
+    expect(result.entryCount).toBe(3);
+  });
+
+  it("STILL rejects a tampered row_hash in sparse mode (forgery is never allowed, only omission)", () => {
+    const { publicKey, privateKey } = keyPair();
+    const e1 = baseEntry(privateKey, { sequence: 1 });
+    const e3 = baseEntry(privateKey, { id: "0198f2a0-0000-7000-8000-000000000031", sequence: 3 });
+    const tampered = { ...e3, payload: { ...e3.payload, injected: true } };
+    const result = verifyJournalChain([e1, tampered], {
+      contiguous: false,
+      resolvePublicKey: () => publicKey
+    });
+    expect(result.valid).toBe(false);
+    expect(result.brokenAt?.reason).toMatch(/row_hash mismatch/);
+  });
+
+  it("STILL rejects a wrong-key signature in sparse mode", () => {
+    const attacker = keyPair();
+    const legit = keyPair();
+    const e1 = baseEntry(attacker.privateKey, { sequence: 1 });
+    const result = verifyJournalChain([e1], {
+      contiguous: false,
+      resolvePublicKey: () => legit.publicKey
+    });
+    expect(result.valid).toBe(false);
+    expect(result.brokenAt?.reason).toMatch(/signature verification failed/);
+  });
+
+  it("rejects a non-strictly-increasing sequence in sparse mode (dup/reorder still caught)", () => {
+    const { publicKey, privateKey } = keyPair();
+    const e3 = baseEntry(privateKey, { sequence: 3 });
+    const e3again = baseEntry(privateKey, {
+      id: "0198f2a0-0000-7000-8000-000000000033",
+      sequence: 3
+    });
+    const result = verifyJournalChain([e3, e3again], {
+      contiguous: false,
+      resolvePublicKey: () => publicKey
+    });
+    expect(result.valid).toBe(false);
+    expect(result.brokenAt?.reason).toMatch(/not strictly increasing/);
+  });
+
+  it("enforces expectedStartSequence as a LOWER BOUND in sparse mode (first entry can't precede the cursor)", () => {
+    const { publicKey, privateKey } = keyPair();
+    const e2 = baseEntry(privateKey, { sequence: 2 });
+    const result = verifyJournalChain([e2], {
+      contiguous: false,
+      expectedStartSequence: 5, // caller has already applied through 4 — a sequence-2 entry is stale
+      resolvePublicKey: () => publicKey
+    });
+    expect(result.valid).toBe(false);
+    expect(result.brokenAt?.reason).toMatch(/precedes expected start/);
+  });
+});
+
 describe("Ed25519 entry signature verification (isolated from chain walking)", () => {
   it("verifies a correctly signed entry", () => {
     const { publicKey, privateKey } = keyPair();

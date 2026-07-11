@@ -329,6 +329,13 @@ export async function importSyncBundle(
   //    origin, once a cursor is established, is held to the strict exact-continuity check —
   //    closing the gap an attacker could otherwise exploit by claiming "this is my first sync"
   //    indefinitely to splice in an arbitrary later segment.
+  // A scope-filtered bundle (any non-`full` peer — MAJOR review fix) is SPARSE: it deliberately
+  // omits out-of-scope entries, so its sequence has gaps and each entry's `prevHash` points at an
+  // omitted predecessor this side never sees. Such a bundle is verified with `contiguous: false`
+  // (still checking every rowHash + signature + strictly-increasing sequence — only omission of
+  // in-scope entries becomes undetectable, inherent to scoping). A `full` peer keeps the strict
+  // contiguous, cursor-continuous verification with trust-on-first-sync.
+  const isFullScope = peer.syncScope.mode === "full";
   const cursor = await getCursor(tx, orgId, peer.id, bundle.header.exporterDomainId);
   const toApply = bundle.entries.filter((entry) => entry.sequence > cursor.sequence);
 
@@ -343,10 +350,13 @@ export async function importSyncBundle(
   if (toApply.length > 0) {
     const isFirstSyncFromThisOrigin = cursor.sequence === 0 && cursor.rowHash === null;
     const verification = verifyJournalChain(toApply, {
-      expectedPrevHash: isFirstSyncFromThisOrigin
-        ? toApply[0]!.prevHash
-        : (cursor.rowHash ?? undefined),
-      expectedStartSequence: isFirstSyncFromThisOrigin ? toApply[0]!.sequence : cursor.sequence + 1,
+      contiguous: isFullScope,
+      expectedPrevHash:
+        isFullScope && !isFirstSyncFromThisOrigin ? (cursor.rowHash ?? undefined) : undefined,
+      // Full first-sync: anchor to the bundle's own first entry (trust-on-first-sync). Otherwise a
+      // lower bound of cursor+1 (exact for contiguous; minimum for sparse).
+      expectedStartSequence:
+        isFullScope && isFirstSyncFromThisOrigin ? toApply[0]!.sequence : cursor.sequence + 1,
       // Per-entry key resolved by AUTHENTICATED sequence (never timestamp) — an entry signed before
       // a rotation verifies against the old key only while its sequence is within that key's window.
       resolvePublicKey: (entry) => verificationKeyForSequence(keyWindows, entry.sequence)
@@ -361,19 +371,35 @@ export async function importSyncBundle(
   let applied = 0;
   let lastSequence = cursor.sequence;
   for (const entry of toApply) {
+    // Import-side scope filter kept as DEFENSE-IN-DEPTH (the bundle is already scope-filtered at
+    // export). All toApply entries in a scoped bundle are in-scope; this only ever skips if an
+    // exporter shipped something out-of-scope.
     if (entryMatchesScope(entry, peer.syncScope)) {
       await applyEntry(tx, orgId, entry, bundle.header.exporterDomainId);
+      applied += 1;
     }
-    applied += 1;
     lastSequence = entry.sequence;
-    await advanceCursor(
-      tx,
-      orgId,
-      peer.id,
-      bundle.header.exporterDomainId,
-      entry.sequence,
-      entry.rowHash
-    );
+    // Full scope: advance per applied entry, carrying the rowHash for next sync's continuity check.
+    if (isFullScope) {
+      await advanceCursor(
+        tx,
+        orgId,
+        peer.id,
+        bundle.header.exporterDomainId,
+        entry.sequence,
+        entry.rowHash
+      );
+    }
+  }
+
+  // Scoped: advance ONCE to the FULL range's tail (header.throughSequence), so out-of-scope entries
+  // are marked seen and never re-requested. rowHash continuity is not used for a sparse chain, so
+  // store null (we don't hold throughSequence's rowHash — it may be an out-of-scope entry).
+  if (!isFullScope) {
+    const advanceTo = Math.max(cursor.sequence, bundle.header.throughSequence, lastSequence);
+    if (advanceTo > cursor.sequence) {
+      await advanceCursor(tx, orgId, peer.id, bundle.header.exporterDomainId, advanceTo, null);
+    }
   }
 
   const skipped = bundle.entries.length - toApply.length;

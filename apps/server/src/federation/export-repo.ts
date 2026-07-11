@@ -6,13 +6,23 @@ import { ensureInstanceKey } from "../governance/attestation.js";
 import { getPeerByIdOrName } from "./peers-repo.js";
 import { listOwnJournalEntriesSince, ownJournalTail } from "./journal-repo.js";
 import { recordBundleTransfer } from "./bundle-transfers-repo.js";
+import { filterByScope } from "./scope-filter.js";
 
 /**
  * `scp federation export` (DESIGN.md §13 file transport). Builds a signed, checksummed
  * `.scpbundle` (a single bounded JSON document — see `packages/schemas/src/federation.ts`'s
  * module doc for why this is deliberately NOT a tar/zip archive) covering this domain's OWN
- * journal entries since a cursor. Ships the FULL unfiltered range — see `scope-filter.ts`'s doc
- * comment for why scope is enforced at import/apply time instead of by excluding entries here.
+ * journal entries since a cursor.
+ *
+ * SECURITY-SENSITIVE (M6 review fix — MAJOR: confidentiality). The exported bundle contains ONLY
+ * the entries in the peer's configured sync scope. Previously the FULL journal range was shipped
+ * to every peer and scope was applied only at IMPORT/apply time — so a `policies_only` /
+ * `status_only` / `custom` peer, scoped precisely FOR confidentiality, still received the complete
+ * plaintext graph on disk / in transit and could read everything. Scope is now enforced HERE, at
+ * export; import re-applies the same filter as defense-in-depth. `throughSequence` still reflects
+ * the FULL range's tail (not the last in-scope entry), so the importer's cursor advances past
+ * out-of-scope entries and never re-requests them; the scope-filtered chain is therefore SPARSE
+ * (deliberate sequence gaps), verified with `verifyJournalChain({ contiguous: false })` on import.
  */
 export async function exportSyncBundle(
   tx: TenantTx,
@@ -23,10 +33,13 @@ export async function exportSyncBundle(
   const self = await ensureFederationSelf(tx, orgId);
   const peer = await getPeerByIdOrName(tx, orgId, peerIdOrName);
   const since = sinceSequence ?? 0;
-  const entries = await listOwnJournalEntriesSince(tx, orgId, since);
+  const allEntries = await listOwnJournalEntriesSince(tx, orgId, since);
   const tail = await ownJournalTail(tx, orgId);
+  // throughSequence = the FULL range's tail (so the peer's cursor advances past out-of-scope
+  // entries too), even though only in-scope entries are actually shipped.
   const throughSequence =
-    entries.length > 0 ? (entries[entries.length - 1]?.sequence ?? since) : since;
+    allEntries.length > 0 ? (allEntries[allEntries.length - 1]?.sequence ?? since) : since;
+  const entries = filterByScope(allEntries, peer.syncScope);
 
   const header = {
     formatVersion: 1 as const,

@@ -741,7 +741,10 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
   it("sync scope filters honored: a peer scoped to policies_only never receives non-policy objects into its graph", async () => {
     const scopedDomain = await createIsolatedDomain("domainScoped");
     try {
-      await pair(domainA, scopedDomain, "child");
+      // The EXPORTER's peer record carries the scope (it decides what to share with this peer) —
+      // export-side filtering reads domainA's record of scopedDomain. The importer's record is
+      // scoped identically so its defense-in-depth re-filter agrees.
+      await pair(domainA, scopedDomain, "child", { mode: "policies_only" });
       await pair(scopedDomain, domainA, "parent", { mode: "policies_only" });
 
       const service = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
@@ -769,6 +772,17 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
       const bundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
         exportSyncBundle(tx, domainA.orgId, scopedDomain.orgName)
       );
+
+      // MAJOR review fix (confidentiality): the EXPORTED bundle itself must contain ONLY in-scope
+      // (policy) entries — the full-graph objects (the org root, the service) must never be present
+      // in the plaintext bundle a scoped peer receives on disk / in transit. Previously the full
+      // range was shipped and only filtered at import, leaking everything.
+      expect(bundle.entries.length).toBeGreaterThan(0);
+      expect(bundle.entries.every((e) => e.entryKind === "policy_upsert")).toBe(true);
+      const bundleJson = JSON.stringify(bundle);
+      expect(bundleJson).toContain("scope-test-policy");
+      expect(bundleJson).not.toContain("scope-test-svc"); // the service never appears, anywhere
+
       await withTenantTx(scopedDomain.db, scopedDomain.orgId, (tx) =>
         importSyncBundle(tx, scopedDomain.orgId, bundle)
       );

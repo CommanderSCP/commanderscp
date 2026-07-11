@@ -161,40 +161,81 @@ export interface JournalChainVerification {
 export function verifyJournalChain(
   entries: SyncJournalEntry[],
   opts: {
-    /** The last known-good `rowHash` this chain must continue from (omit/undefined = genesis). */
+    /** The last known-good `rowHash` this chain must continue from (omit/undefined = genesis).
+     *  Ignored when `contiguous === false`. */
     expectedPrevHash?: string;
     /** The sequence the first entry must equal (omit = accept whatever the first entry claims,
      *  provided everything after it is contiguous — callers resuming from a cursor should pass
-     *  `cursor + 1` here so a caller can't be fed a segment that silently skips entries). */
+     *  `cursor + 1` here so a caller can't be fed a segment that silently skips entries). When
+     *  `contiguous === false` this is a LOWER BOUND (first entry's sequence must be >= it) rather
+     *  than an exact match. */
     expectedStartSequence?: number;
+    /** Whether the run must be gap-free and prev_hash-linked (default true — a peer's contiguous own
+     *  journal). Pass `false` for a SCOPE-FILTERED bundle (MAJOR review fix — confidentiality:
+     *  scoped peers now receive ONLY their in-scope entries, so the sequence has deliberate gaps and
+     *  each entry's `prevHash` points at the omitted full-chain predecessor this side never sees).
+     *  In sparse mode every entry's `rowHash` and Ed25519 signature are STILL verified and `sequence`
+     *  must be strictly increasing — forgery/reorder are still caught; only OMISSION of in-scope
+     *  entries becomes undetectable, which is inherent to scoping (you cannot prove completeness of a
+     *  chain you are deliberately only shown part of) and is the documented scope tradeoff. */
+    contiguous?: boolean;
     resolvePublicKey: (entry: SyncJournalEntry) => string | null;
   }
 ): JournalChainVerification {
+  const contiguous = opts.contiguous ?? true;
   let expectedPrevHash = opts.expectedPrevHash ?? JOURNAL_GENESIS_HASH;
   let expectedSequence = opts.expectedStartSequence ?? null;
+  let lastSequence: number | null = null;
 
   for (const entry of entries) {
-    if (expectedSequence !== null && entry.sequence !== expectedSequence) {
-      return {
-        valid: false,
-        entryCount: entries.length,
-        brokenAt: {
-          id: entry.id,
-          sequence: entry.sequence,
-          reason: `sequence gap or reorder: expected ${expectedSequence}, got ${entry.sequence}`
-        }
-      };
-    }
-    if (entry.prevHash !== expectedPrevHash) {
-      return {
-        valid: false,
-        entryCount: entries.length,
-        brokenAt: {
-          id: entry.id,
-          sequence: entry.sequence,
-          reason: `prev_hash mismatch: expected ${expectedPrevHash}, got ${entry.prevHash}`
-        }
-      };
+    if (contiguous) {
+      if (expectedSequence !== null && entry.sequence !== expectedSequence) {
+        return {
+          valid: false,
+          entryCount: entries.length,
+          brokenAt: {
+            id: entry.id,
+            sequence: entry.sequence,
+            reason: `sequence gap or reorder: expected ${expectedSequence}, got ${entry.sequence}`
+          }
+        };
+      }
+      if (entry.prevHash !== expectedPrevHash) {
+        return {
+          valid: false,
+          entryCount: entries.length,
+          brokenAt: {
+            id: entry.id,
+            sequence: entry.sequence,
+            reason: `prev_hash mismatch: expected ${expectedPrevHash}, got ${entry.prevHash}`
+          }
+        };
+      }
+    } else {
+      // Sparse (scope-filtered): strictly increasing sequence, first >= the lower bound. No
+      // prev_hash linkage (deliberate gaps) — but each rowHash/signature is still checked below.
+      if (lastSequence !== null && entry.sequence <= lastSequence) {
+        return {
+          valid: false,
+          entryCount: entries.length,
+          brokenAt: {
+            id: entry.id,
+            sequence: entry.sequence,
+            reason: `sequence not strictly increasing: ${entry.sequence} after ${lastSequence}`
+          }
+        };
+      }
+      if (lastSequence === null && expectedSequence !== null && entry.sequence < expectedSequence) {
+        return {
+          valid: false,
+          entryCount: entries.length,
+          brokenAt: {
+            id: entry.id,
+            sequence: entry.sequence,
+            reason: `sequence ${entry.sequence} precedes expected start ${expectedSequence}`
+          }
+        };
+      }
     }
     const recomputed = computeJournalRowHash(entry);
     if (recomputed !== entry.rowHash) {
@@ -233,6 +274,7 @@ export function verifyJournalChain(
     }
     expectedPrevHash = entry.rowHash;
     expectedSequence = entry.sequence + 1;
+    lastSequence = entry.sequence;
   }
   return { valid: true, entryCount: entries.length };
 }
