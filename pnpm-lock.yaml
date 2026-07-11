@@ -62,12 +62,30 @@ importers:
       '@scp/plugin-api':
         specifier: workspace:*
         version: link:../../packages/plugin-api
+      '@scp/plugin-argocd':
+        specifier: workspace:*
+        version: link:../../packages/plugins/argocd
       '@scp/plugin-fake-executor':
         specifier: workspace:*
         version: link:../../packages/plugins/fake-executor
+      '@scp/plugin-github':
+        specifier: workspace:*
+        version: link:../../packages/plugins/github
+      '@scp/plugin-managed-iac':
+        specifier: workspace:*
+        version: link:../../packages/plugins/managed-iac
+      '@scp/plugin-smtp-notify':
+        specifier: workspace:*
+        version: link:../../packages/plugins/smtp-notify
+      '@scp/plugin-terraform':
+        specifier: workspace:*
+        version: link:../../packages/plugins/terraform
       '@scp/plugin-webhook-control':
         specifier: workspace:*
         version: link:../../packages/plugins/webhook-control
+      '@scp/plugin-webhook-notify':
+        specifier: workspace:*
+        version: link:../../packages/plugins/webhook-notify
       '@scp/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas
@@ -285,7 +303,17 @@ importers:
         version: 5.8.3
 
   packages/plugins/argocd:
+    dependencies:
+      '@scp/plugin-api':
+        specifier: workspace:*
+        version: link:../../plugin-api
     devDependencies:
+      '@scp/plugin-testkit':
+        specifier: workspace:*
+        version: link:../../plugin-testkit
+      nock:
+        specifier: ^13.5.0
+        version: 13.5.6
       typescript:
         specifier: ~5.8.0
         version: 5.8.3
@@ -323,7 +351,17 @@ importers:
         version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
 
   packages/plugins/github:
+    dependencies:
+      '@scp/plugin-api':
+        specifier: workspace:*
+        version: link:../../plugin-api
     devDependencies:
+      '@scp/plugin-testkit':
+        specifier: workspace:*
+        version: link:../../plugin-testkit
+      nock:
+        specifier: ^13.5.0
+        version: 13.5.6
       typescript:
         specifier: ~5.8.0
         version: 5.8.3
@@ -341,7 +379,17 @@ importers:
         version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
 
   packages/plugins/managed-iac:
+    dependencies:
+      '@scp/plugin-api':
+        specifier: workspace:*
+        version: link:../../plugin-api
     devDependencies:
+      '@scp/plugin-testkit':
+        specifier: workspace:*
+        version: link:../../plugin-testkit
+      nock:
+        specifier: ^13.5.0
+        version: 13.5.6
       typescript:
         specifier: ~5.8.0
         version: 5.8.3
@@ -359,7 +407,17 @@ importers:
         version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
 
   packages/plugins/smtp-notify:
+    dependencies:
+      '@scp/plugin-api':
+        specifier: workspace:*
+        version: link:../../plugin-api
     devDependencies:
+      '@scp/plugin-testkit':
+        specifier: workspace:*
+        version: link:../../plugin-testkit
+      nock:
+        specifier: ^13.5.0
+        version: 13.5.6
       typescript:
         specifier: ~5.8.0
         version: 5.8.3
@@ -368,7 +426,17 @@ importers:
         version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
 
   packages/plugins/terraform:
+    dependencies:
+      '@scp/plugin-api':
+        specifier: workspace:*
+        version: link:../../plugin-api
     devDependencies:
+      '@scp/plugin-testkit':
+        specifier: workspace:*
+        version: link:../../plugin-testkit
+      nock:
+        specifier: ^13.5.0
+        version: 13.5.6
       typescript:
         specifier: ~5.8.0
         version: 5.8.3
@@ -393,7 +461,17 @@ importers:
         version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
 
   packages/plugins/webhook-notify:
+    dependencies:
+      '@scp/plugin-api':
+        specifier: workspace:*
+        version: link:../../plugin-api
     devDependencies:
+      '@scp/plugin-testkit':
+        specifier: workspace:*
+        version: link:../../plugin-testkit
+      nock:
+        specifier: ^13.5.0
+        version: 13.5.6
       typescript:
         specifier: ~5.8.0
         version: 5.8.3

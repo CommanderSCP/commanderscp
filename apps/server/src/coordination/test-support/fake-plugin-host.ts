@@ -1,6 +1,12 @@
 import type { PluginContext } from "@scp/plugin-api";
 import { createFakeExecutorPlugin } from "@scp/plugin-fake-executor";
-import type { ControlPluginClient, ExecutorPluginClient, PluginHost } from "../../plugin-host/contract.js";
+import type {
+  ControlPluginClient,
+  DiscoveryPluginClient,
+  ExecutorPluginClient,
+  NotificationPluginClient,
+  PluginHost
+} from "../../plugin-host/contract.js";
 
 /**
  * An in-process `PluginHost` for coordination-engine tests that need a fast, deterministic
@@ -43,7 +49,19 @@ export function createInMemoryFakeHost(config?: unknown): PluginHost {
       return client;
     },
     control(_instanceId: string): ControlPluginClient {
-      throw new Error("createInMemoryFakeHost: no ControlPlugin fixture wired — this test only drives ExecutorPlugin");
+      throw new Error(
+        "createInMemoryFakeHost: no ControlPlugin fixture wired — this test only drives ExecutorPlugin"
+      );
+    },
+    discovery(_instanceId: string): DiscoveryPluginClient {
+      throw new Error(
+        "createInMemoryFakeHost: no DiscoveryPlugin fixture wired — this test only drives ExecutorPlugin"
+      );
+    },
+    notification(_instanceId: string): NotificationPluginClient {
+      throw new Error(
+        "createInMemoryFakeHost: no NotificationPlugin fixture wired — this test only drives ExecutorPlugin"
+      );
     }
   };
 }
@@ -91,6 +109,8 @@ export function withFailOnceAfterRealTrigger(
     start: (configs) => inner.start(configs),
     stop: () => inner.stop(),
     control: (instanceId) => inner.control(instanceId),
+    discovery: (instanceId) => inner.discovery(instanceId),
+    notification: (instanceId) => inner.notification(instanceId),
     executor(instanceId) {
       const real = inner.executor(instanceId);
       return {

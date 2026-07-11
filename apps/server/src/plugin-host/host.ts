@@ -43,14 +43,19 @@ import type {
   ControlOutcome,
   ControlRequest,
   Cursor,
+  DeliveryResult,
+  DiscoveryProposal,
   ExecutionStatus,
   ExecutorCapabilities,
   ExternalRunRef,
+  NotificationMessage,
   TriggerIntent
 } from "@scp/plugin-api";
 import type {
   ControlPluginClient,
+  DiscoveryPluginClient,
   ExecutorPluginClient,
+  NotificationPluginClient,
   PluginHost,
   PluginHostInstanceConfig
 } from "./contract.js";
@@ -318,6 +323,24 @@ export class SubprocessPluginHost implements PluginHost {
     };
   }
 
+  /** M7 counterpart to `executor()`/`control()` for a `DiscoveryPlugin` instance (github). */
+  discovery(instanceId: string): DiscoveryPluginClient {
+    const call = <T>(method: string, params?: unknown): Promise<T> =>
+      this.call(instanceId, method, params) as Promise<T>;
+    return {
+      discover: () => call<DiscoveryProposal>("discover")
+    };
+  }
+
+  /** M7 counterpart for a `NotificationPlugin` instance (smtp-notify/webhook-notify). */
+  notification(instanceId: string): NotificationPluginClient {
+    const call = <T>(method: string, params?: unknown): Promise<T> =>
+      this.call(instanceId, method, params) as Promise<T>;
+    return {
+      send: (msg: NotificationMessage) => call<DeliveryResult>("send", { msg })
+    };
+  }
+
   // -----------------------------------------------------------------------------------------
   // Process lifecycle
   // -----------------------------------------------------------------------------------------
@@ -330,7 +353,13 @@ export class SubprocessPluginHost implements PluginHost {
       SCP_PLUGIN_INSTANCE_ID: instance.config.id,
       SCP_PLUGIN_ORG_ID: instance.config.orgId,
       SCP_PLUGIN_DOMAIN_ID: instance.config.domainId,
-      SCP_PLUGIN_CONFIG_JSON: JSON.stringify(instance.config.config ?? {})
+      SCP_PLUGIN_CONFIG_JSON: JSON.stringify(instance.config.config ?? {}),
+      // M7: resolved (plaintext) secret values and the egress allowlist for this instance — see
+      // contract.ts's `PluginHostInstanceConfig.secrets`/`allowedHosts` doc comments. Never
+      // logged; `minimalChildEnv()` above already ensures the child inherits nothing else from
+      // this process's own environment.
+      SCP_PLUGIN_SECRETS_JSON: JSON.stringify(instance.config.secrets ?? {}),
+      SCP_PLUGIN_ALLOWED_HOSTS_JSON: JSON.stringify(instance.config.allowedHosts ?? [])
     };
     // A `.ts` entry path (dev/test — see the module-level comment on `RUNNING_FROM_SOURCE`, or an
     // explicit test override) needs the `tsx` loader registered; the compiled `.js` production

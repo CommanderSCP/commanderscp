@@ -99,6 +99,13 @@
       "when": 1783790000000,
       "tag": "0013_federation_key_sequence_anchor",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1783800000000,
+      "tag": "0014_m7_executor_integrations",
+      "breakpoints": true
     }
   ]
 }

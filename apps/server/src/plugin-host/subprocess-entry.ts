@@ -29,9 +29,12 @@ import type {
   ControlPlugin,
   ControlRequest,
   Cursor,
+  DiscoveryPlugin,
   ExecutorPlugin,
   ExternalRunRef,
   Logger,
+  NotificationMessage,
+  NotificationPlugin,
   PluginContext,
   ScopedHttpClient,
   ScopedHttpResponse,
@@ -40,12 +43,18 @@ import type {
 } from "@scp/plugin-api";
 import { encodeMessage, parseMessage, type RpcRequest } from "./rpc-protocol.js";
 
-type LoadedPlugin = { kind: "executor"; plugin: ExecutorPlugin } | { kind: "control"; plugin: ControlPlugin };
+type LoadedPlugin =
+  | { kind: "executor"; plugin: ExecutorPlugin }
+  | { kind: "control"; plugin: ControlPlugin }
+  | { kind: "discovery"; plugin: DiscoveryPlugin }
+  | { kind: "notification"; plugin: NotificationPlugin };
 
 /**
  * Static module map (DESIGN.md §11: "No runtime hot-loading, ever") — grows as M4/M7 ship more
  * in-repo plugins, never by loosening this to a dynamic/unchecked import. `kind` on the returned
- * union drives `dispatch()`'s method routing below (executor methods vs. `evaluate`).
+ * union drives `dispatch()`'s method routing below (executor methods vs. `evaluate` vs. `discover`
+ * vs. `send`). Every case here MUST also be a member of `PluginModule` (plugin-host/contract.ts) —
+ * that union is the compile-time half of this same contract.
  */
 async function loadPlugin(moduleName: string): Promise<LoadedPlugin> {
   switch (moduleName) {
@@ -57,10 +66,36 @@ async function loadPlugin(moduleName: string): Promise<LoadedPlugin> {
       const mod = await import("@scp/plugin-webhook-control");
       return { kind: "control", plugin: mod.createWebhookControlPlugin() };
     }
+    case "github": {
+      const mod = await import("@scp/plugin-github");
+      return { kind: "executor", plugin: mod.createGithubExecutorPlugin() };
+    }
+    case "github-discovery": {
+      const mod = await import("@scp/plugin-github");
+      return { kind: "discovery", plugin: mod.createGithubDiscoveryPlugin() };
+    }
+    case "argocd": {
+      const mod = await import("@scp/plugin-argocd");
+      return { kind: "executor", plugin: mod.createArgoCdExecutorPlugin() };
+    }
+    case "terraform": {
+      const mod = await import("@scp/plugin-terraform");
+      return { kind: "executor", plugin: mod.createTerraformExecutorPlugin() };
+    }
+    case "managed-iac": {
+      const mod = await import("@scp/plugin-managed-iac");
+      return { kind: "executor", plugin: mod.createManagedIacExecutorPlugin() };
+    }
+    case "webhook-notify": {
+      const mod = await import("@scp/plugin-webhook-notify");
+      return { kind: "notification", plugin: mod.createWebhookNotifyPlugin() };
+    }
+    case "smtp-notify": {
+      const mod = await import("@scp/plugin-smtp-notify");
+      return { kind: "notification", plugin: mod.createSmtpNotifyPlugin() };
+    }
     default:
-      throw new Error(
-        `subprocess-entry: unknown SCP_PLUGIN_MODULE "${moduleName}" — only "fake-executor"/"webhook-control" resolve`
-      );
+      throw new Error(`subprocess-entry: unknown SCP_PLUGIN_MODULE "${moduleName}"`);
   }
 }
 
@@ -68,7 +103,9 @@ async function loadPlugin(moduleName: string): Promise<LoadedPlugin> {
  *  protocol (see module doc: stdout is reserved exclusively for JSON-RPC). */
 function stderrLogger(instanceId: string): Logger {
   const write = (level: string, msg: string, meta?: Record<string, unknown>) => {
-    process.stderr.write(`${JSON.stringify({ level, instanceId, msg, ...(meta ? { meta } : {}) })}\n`);
+    process.stderr.write(
+      `${JSON.stringify({ level, instanceId, msg, ...(meta ? { meta } : {}) })}\n`
+    );
   };
   return {
     debug: (msg, meta) => write("debug", msg, meta),
@@ -124,11 +161,30 @@ function requireEnv(name: string): string {
   return value;
 }
 
-async function dispatch(loaded: LoadedPlugin, ctx: PluginContext, method: string, params: unknown): Promise<unknown> {
+async function dispatch(
+  loaded: LoadedPlugin,
+  ctx: PluginContext,
+  method: string,
+  params: unknown
+): Promise<unknown> {
   if (loaded.kind === "control") {
-    if (method !== "evaluate") throw new Error(`unknown method "${method}" for a ControlPlugin instance`);
+    if (method !== "evaluate")
+      throw new Error(`unknown method "${method}" for a ControlPlugin instance`);
     const p = params as { req: ControlRequest };
     return loaded.plugin.evaluate(ctx, p.req);
+  }
+
+  if (loaded.kind === "discovery") {
+    if (method !== "discover")
+      throw new Error(`unknown method "${method}" for a DiscoveryPlugin instance`);
+    return loaded.plugin.discover(ctx);
+  }
+
+  if (loaded.kind === "notification") {
+    if (method !== "send")
+      throw new Error(`unknown method "${method}" for a NotificationPlugin instance`);
+    const p = params as { msg: NotificationMessage };
+    return loaded.plugin.send(ctx, p.msg);
   }
 
   const plugin = loaded.plugin;
@@ -207,6 +263,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  process.stderr.write(`subprocess-entry: fatal: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`);
+  process.stderr.write(
+    `subprocess-entry: fatal: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`
+  );
   process.exitCode = 1;
 });
