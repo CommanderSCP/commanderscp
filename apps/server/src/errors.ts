@@ -51,6 +51,12 @@ export function unprocessable(detail?: string): ProblemError {
   return new ProblemError(422, "Unprocessable Entity", { detail });
 }
 
+/** A server-imposed execution bound was hit (e.g. graph/query-timeout.ts's statement_timeout
+ *  guardrail) — a clean, typed timeout response rather than a hung connection or a raw 500. */
+export function requestTimeout(detail?: string): ProblemError {
+  return new ProblemError(408, "Request Timeout", { detail });
+}
+
 export function toProblem(request: FastifyRequest, err: ProblemError): Problem {
   return {
     type: err.type,

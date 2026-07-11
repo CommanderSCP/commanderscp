@@ -96,6 +96,18 @@ export interface ServerConfig {
    * self-migrates+self-provisions on its own boot, exactly as it always has.
    */
   skipMigrations: boolean;
+  /**
+   * Defensive graph guardrail (adversarial review of PR #15 — graph/query-timeout.ts's module
+   * doc): bounds every `/graph/traverse` and `/graph/query/:name` call to this many milliseconds
+   * via Postgres `statement_timeout`, so a pathological shared-component topology (the
+   * `impact-of` recursive CTE's measured fan-in^depth blowup — 7+ minutes then disk exhaustion on
+   * one real topology) fails cleanly (a 408) instead of hanging a worker/connection or exhausting
+   * disk. Does not change query semantics — the CTE's own node-dedup fix remains a separate,
+   * pending owner decision. `SCP_GRAPH_QUERY_TIMEOUT_MS`, default 5000 (a few seconds — generous
+   * for any legitimate depth-≤10 query against a normal topology, per the load-test numbers in
+   * the M8 PR body, while still bounding the pathological case).
+   */
+  graphQueryStatementTimeoutMs: number;
 }
 
 function randomSecret(): string {
@@ -188,6 +200,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     eventBus: loadEventBusConfig(env),
     secretsMasterKey: secretsMasterKey.key,
     secretsMasterKeyWasGenerated: secretsMasterKey.wasGenerated,
-    skipMigrations: env.SCP_SKIP_MIGRATIONS === "true"
+    skipMigrations: env.SCP_SKIP_MIGRATIONS === "true",
+    graphQueryStatementTimeoutMs: Number(env.SCP_GRAPH_QUERY_TIMEOUT_MS ?? 5000)
   };
 }

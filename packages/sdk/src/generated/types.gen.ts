@@ -7886,6 +7886,17 @@ export type GraphQueryErrors = {
         instance?: string;
         decision_id?: string;
     };
+    /**
+     * Error
+     */
+    408: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
 };
 
 export type GraphQueryError = GraphQueryErrors[keyof GraphQueryErrors];
@@ -7954,6 +7965,17 @@ export type GraphTraverseErrors = {
      * Error
      */
     403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    408: {
         type: string;
         title: string;
         status: number;
