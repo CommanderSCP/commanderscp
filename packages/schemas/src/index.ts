@@ -13,3 +13,4 @@ export * from "./changes.js";
 export * from "./governance.js";
 export * from "./campaigns.js";
 export * from "./federation.js";
+export * from "./executors.js";

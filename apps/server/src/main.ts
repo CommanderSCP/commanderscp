@@ -20,6 +20,7 @@ import {
   SHARED_PLUGIN_INSTANCE_DOMAIN_ID,
   SHARED_PLUGIN_INSTANCE_ORG_ID
 } from "./coordination/executor-config.js";
+import type { AppDeps } from "./types.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -56,7 +57,12 @@ async function main(): Promise<void> {
   const pool = createPool(config.runtimeDatabaseUrl);
   const db = createDb(pool);
 
-  const app = await buildApp({ db, config });
+  // M7: `deps` is captured here (not just `{db, config}` inline) so `deps.pluginHost` can be set
+  // AFTER the plugin host is constructed below — route handlers registered against this same
+  // object (routes/executors.ts's `POST /discovery/run`) read `deps.pluginHost` at REQUEST time,
+  // long after boot, so the late assignment is visible to them (types.ts's doc comment).
+  const deps: AppDeps = { db, config };
+  const app = await buildApp(deps);
 
   const bootstrap = await ensureBootstrapAdmin(
     db,
@@ -92,6 +98,7 @@ async function main(): Promise<void> {
     // SUBPROCESS restarting (the plugin-host isolation DoD scenario), not across this whole
     // `scpd` process restarting, which is fine: fake-executor is never a real system of record.
     const pluginHost = new SubprocessPluginHost();
+    deps.pluginHost = pluginHost;
     await pluginHost.start([
       {
         id: DEFAULT_EXECUTOR_INSTANCE_ID,
