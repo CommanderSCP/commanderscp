@@ -95,20 +95,34 @@ describe("trigger()", () => {
     expect(ref.externalId.startsWith("rollback-app::")).toBe(true);
   });
 
-  it("kind 'rollback' with a non-string priorStateRef omits {revision} rather than sending a malformed value (priorStateRef is typed `unknown` on the wire)", async () => {
-    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
-    const scope = nock(SERVER_URL)
-      .post("/api/v1/applications/rollback-app-2/sync", {})
-      .reply(200, {});
+  // CRITICAL #2 (adversarial review): a rollback with no VALID prior revision must FAIL CLOSED,
+  // never send an empty-revision sync (which ArgoCD interprets as "re-sync the current revision" —
+  // silently re-applying the very deploy we're trying to roll back FROM, reported as success).
+  for (const priorStateRef of [{ not: "a string" }, undefined, ""] as const) {
+    it(`kind 'rollback' with priorStateRef=${JSON.stringify(priorStateRef)} FAILS CLOSED — no sync call, terminal 'failed' status`, async () => {
+      const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+      // A sync interceptor is registered but MUST NOT be hit — nock.disableNetConnect() (beforeAll)
+      // means a real (buggy) sync attempt would fail loudly, and we assert `scope.isDone()` is
+      // false to prove the endpoint was never called.
+      const scope = nock(SERVER_URL)
+        .post(/\/sync$/)
+        .reply(200, {});
 
-    await createArgoCdExecutorPlugin().trigger(ctx, {
-      kind: "rollback",
-      targetRef: "rollback-app-2",
-      priorStateRef: { not: "a string" }
+      const plugin = createArgoCdExecutorPlugin();
+      const ref = await plugin.trigger(ctx, {
+        kind: "rollback",
+        targetRef: "rollback-noprior",
+        priorStateRef
+      });
+      expect(scope.isDone()).toBe(false); // the sync endpoint was NEVER called
+      expect(ref.externalId.startsWith("argocd-rollback-unavailable::")).toBe(true);
+
+      const status = await plugin.status(ctx, ref);
+      expect(status.phase).toBe("failed");
+      expect(status.detail).toContain("rollback unavailable");
+      nock.cleanAll();
     });
-
-    expect(scope.isDone()).toBe(true);
-  });
+  }
 
   describe("idempotency dedup — in-memory mode (no statePath)", () => {
     it("two trigger() calls with the SAME idempotencyKey hit the sync endpoint only once and return the same ExternalRunRef", async () => {
@@ -292,6 +306,32 @@ describe("status()", () => {
     expect(result.phase).toBe("running");
   });
 
+  // MAJOR #3 (adversarial review): a sync that FINISHED (operationState 'Succeeded') but left the
+  // app Degraded/Missing must map to TERMINAL 'failed', not perpetual 'running' — ArgoCD never
+  // clears operationState, so the old code polled a dead deployment forever.
+  for (const health of ["Degraded", "Missing"] as const) {
+    it(`operationState.phase 'Succeeded' + health.status '${health}' maps to TERMINAL 'failed' (not perpetual 'running')`, async () => {
+      const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+      nock(SERVER_URL)
+        .get(`/api/v1/applications/status-succeeded-${health.toLowerCase()}`)
+        .reply(200, {
+          metadata: { name: `status-succeeded-${health.toLowerCase()}` },
+          status: {
+            operationState: { phase: "Succeeded" },
+            sync: { status: "Synced" },
+            health: { status: health }
+          }
+        });
+
+      const result = await createArgoCdExecutorPlugin().status(ctx, {
+        externalId: `status-succeeded-${health.toLowerCase()}::run-1`
+      });
+
+      expect(result.phase).toBe("failed");
+      expect(result.progress).toBe(1); // terminal, not 0.5 (still-in-flight)
+    });
+  }
+
   it("operationState.phase 'Failed' maps to phase 'failed'", async () => {
     const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
     nock(SERVER_URL)
@@ -383,9 +423,15 @@ describe("status()", () => {
 });
 
 describe("abort()", () => {
-  it("DELETE .../operation returning a 2xx maps to {aborted: true}", async () => {
+  it("terminates ONLY when there is an in-flight operation (GET check first — MINOR), then {aborted: true}", async () => {
     const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
-    const scope = nock(SERVER_URL)
+    const getScope = nock(SERVER_URL)
+      .get("/api/v1/applications/abort-app")
+      .reply(200, {
+        metadata: { name: "abort-app" },
+        status: { operationState: { phase: "Running" } }
+      });
+    const delScope = nock(SERVER_URL)
       .delete("/api/v1/applications/abort-app/operation")
       .reply(200, {});
 
@@ -393,21 +439,56 @@ describe("abort()", () => {
       externalId: "abort-app::run-1"
     });
 
-    expect(scope.isDone()).toBe(true);
+    expect(getScope.isDone()).toBe(true);
+    expect(delScope.isDone()).toBe(true);
     expect(result).toEqual({ aborted: true, detail: "argocd: operation terminated" });
   });
 
-  it("DELETE .../operation returning a non-2xx maps to {aborted: false}", async () => {
+  it("does NOT terminate when there is no in-flight operation — avoids killing a newer, unrelated sync (MINOR)", async () => {
     const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
-    const scope = nock(SERVER_URL)
+    const getScope = nock(SERVER_URL)
+      .get("/api/v1/applications/abort-idle")
+      .reply(200, {
+        metadata: { name: "abort-idle" },
+        status: { operationState: { phase: "Succeeded" } }
+      });
+    // NO delete interceptor — the plugin must not issue one (nock.disableNetConnect would fail a
+    // stray call loudly).
+
+    const result = await createArgoCdExecutorPlugin().abort(ctx, {
+      externalId: "abort-idle::run-1"
+    });
+
+    expect(getScope.isDone()).toBe(true);
+    expect(result.aborted).toBe(false);
+    expect(result.detail).toContain("no in-flight operation");
+  });
+
+  it("returns {aborted:false} for a fail-closed rollback ref (nothing to abort, no HTTP call)", async () => {
+    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+    const result = await createArgoCdExecutorPlugin().abort(ctx, {
+      externalId: "argocd-rollback-unavailable::some-app"
+    });
+    expect(result.aborted).toBe(false);
+  });
+
+  it("a DELETE that returns a non-2xx (after confirming an in-flight op) maps to {aborted: false}", async () => {
+    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+    nock(SERVER_URL)
+      .get("/api/v1/applications/abort-app-2")
+      .reply(200, {
+        metadata: { name: "abort-app-2" },
+        status: { operationState: { phase: "Running" } }
+      });
+    const delScope = nock(SERVER_URL)
       .delete("/api/v1/applications/abort-app-2/operation")
-      .reply(409, { error: "no active operation" });
+      .reply(409, { error: "conflict" });
 
     const result = await createArgoCdExecutorPlugin().abort(ctx, {
       externalId: "abort-app-2::run-1"
     });
 
-    expect(scope.isDone()).toBe(true);
+    expect(delScope.isDone()).toBe(true);
     expect(result.aborted).toBe(false);
     expect(result.detail).toContain("409");
   });

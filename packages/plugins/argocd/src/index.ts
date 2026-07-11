@@ -114,6 +114,13 @@ function parseAppName(externalId: string): string {
   return idx === -1 ? externalId : externalId.slice(0, idx);
 }
 
+/** CRITICAL #2: a rollback with no prior known-good revision must NEVER be turned into a sync (an
+ *  empty-revision sync re-applies the CURRENT — i.e. the bad — revision, then reports success). It
+ *  fails closed instead: `trigger()` mints a ref with this prefix and does NOT call ArgoCD;
+ *  `status()`/`abort()` recognize it and report a terminal `failed`, so the wave target fails
+ *  cleanly rather than silently re-deploying the broken revision as a "successful rollback". */
+const ROLLBACK_UNAVAILABLE_PREFIX = `argocd-rollback-unavailable${REF_DELIMITER}`;
+
 // -----------------------------------------------------------------------------------------
 // ArgoCD REST shapes (subset — only the fields this plugin reads/sends)
 // -----------------------------------------------------------------------------------------
@@ -153,6 +160,29 @@ async function apiRequest(
   return { status: response.status, body: response.body };
 }
 
+/**
+ * MAJOR #3 — health -> phase AFTER a sync operation has finished (`operationState.phase` is
+ * "Succeeded", or absent-but-"Synced"). The bug this fixes: ArgoCD does NOT clear
+ * `operationState` after a sync, so if the app degrades post-sync the old code returned "running"
+ * FOREVER and the reconciler waited on a dead deployment indefinitely. A finished sync that left
+ * the app Degraded/Missing is a TERMINAL failure. Progressing is still legitimately rolling out
+ * (keep polling); Unknown is genuinely ambiguous (keep polling — the stuck-change watchdog is the
+ * backstop, not perpetual silence here); Suspended is a valid stable state (succeeded).
+ */
+function phaseAfterFinishedSync(health: string | undefined): ExecutionPhase {
+  switch (health) {
+    case "Healthy":
+    case "Suspended":
+    case undefined:
+      return "succeeded";
+    case "Degraded":
+    case "Missing":
+      return "failed";
+    default:
+      return "running"; // "Progressing" (still rolling out) or "Unknown" (ambiguous)
+  }
+}
+
 function mapArgoPhase(app: ArgoApplication | undefined): ExecutionStatus {
   const opPhase = app?.status?.operationState?.phase;
   const healthStatus = app?.status?.health?.status;
@@ -164,17 +194,12 @@ function mapArgoPhase(app: ArgoApplication | undefined): ExecutionStatus {
   } else if (opPhase === "Failed" || opPhase === "Error") {
     phase = "failed";
   } else if (opPhase === "Succeeded") {
-    // ArgoCD's sync operation succeeded — treat degraded post-sync health as still "running" (the
-    // reconciliation loop keeps polling) rather than failed, since a sync can legitimately
-    // finish before workloads finish rolling out; only a terminal Degraded reading with no
-    // in-flight operation should read as failed, which the `else` branch below covers on a LATER
-    // poll once operationState itself clears.
-    phase = healthStatus === "Healthy" || healthStatus === undefined ? "succeeded" : "running";
+    phase = phaseAfterFinishedSync(healthStatus);
   } else if (!opPhase) {
     // No operation has ever run (or ArgoCD already forgot it) — fall back to sync/health status.
-    if (syncStatus === "Synced" && (healthStatus === "Healthy" || healthStatus === undefined)) {
-      phase = "succeeded";
-    } else if (healthStatus === "Degraded") {
+    if (syncStatus === "Synced") {
+      phase = phaseAfterFinishedSync(healthStatus);
+    } else if (healthStatus === "Degraded" || healthStatus === "Missing") {
       phase = "failed";
     } else {
       phase = "pending";
@@ -234,11 +259,29 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
     return { externalId: existing.externalId, url: `${config.serverUrl}/applications/${appName}` };
   }
 
+  // CRITICAL #2 — fail closed on a rollback with no valid prior revision. NEVER fall through to an
+  // empty-revision sync (which ArgoCD treats as "sync to the current target revision" — a no-op
+  // re-apply of the very revision we're rolling back FROM, reported as success).
+  if (intent.kind === "rollback") {
+    const priorRevision =
+      typeof intent.priorStateRef === "string" && intent.priorStateRef.length > 0
+        ? intent.priorStateRef
+        : undefined;
+    if (!priorRevision) {
+      const externalId = `${ROLLBACK_UNAVAILABLE_PREFIX}${appName}`;
+      state.targets[appName] = { idempotencyKey: intent.idempotencyKey, externalId };
+      await saveState(config.statePath, state);
+      ctx.logger.warn(
+        "argocd: rollback FAILED CLOSED — no prior known-good revision supplied; refusing to re-sync the current revision",
+        { appName }
+      );
+      return { externalId };
+    }
+  }
+
   const revision =
     intent.kind === "rollback"
-      ? typeof intent.priorStateRef === "string"
-        ? intent.priorStateRef
-        : undefined
+      ? (intent.priorStateRef as string) // guaranteed a non-empty string by the guard above
       : (intent.parameters?.targetRevision as string | undefined);
 
   const { status, body } = await apiRequest(
@@ -264,6 +307,15 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
 }
 
 async function status(ctx: PluginContext, ref: ExternalRunRef): Promise<ExecutionStatus> {
+  if (ref.externalId.startsWith(ROLLBACK_UNAVAILABLE_PREFIX)) {
+    // CRITICAL #2 — a fail-closed rollback is a terminal failure, not a pending/succeeded run.
+    return {
+      phase: "failed",
+      detail:
+        "argocd: rollback unavailable — no prior known-good revision was supplied; refused to re-sync the current revision",
+      progress: 1
+    };
+  }
   const config = asConfig(ctx.config);
   const appName = parseAppName(ref.externalId);
   const { status: httpStatus, body } = await apiRequest(
@@ -282,8 +334,39 @@ async function status(ctx: PluginContext, ref: ExternalRunRef): Promise<Executio
 }
 
 async function abort(ctx: PluginContext, ref: ExternalRunRef): Promise<AbortResult> {
+  if (ref.externalId.startsWith(ROLLBACK_UNAVAILABLE_PREFIX)) {
+    return {
+      aborted: false,
+      detail: "argocd: fail-closed rollback has no ArgoCD operation to abort"
+    };
+  }
   const config = asConfig(ctx.config);
   const appName = parseAppName(ref.externalId);
+  // MINOR — only terminate if there IS an in-flight operation, and don't blindly DELETE an
+  // operation that may be a NEWER one than the run this ref was minted for. ArgoCD's terminate
+  // endpoint targets "the current operation" (there is no per-operation id to scope to), so the
+  // best available guard is: GET the app first, and only issue the terminate when an operation is
+  // actually Running/Terminating. A settled/absent operation → nothing to abort (avoids
+  // terminating a subsequent, unrelated sync).
+  const { status: getStatus, body } = await apiRequest(
+    ctx,
+    config,
+    "GET",
+    `/api/v1/applications/${encodeURIComponent(appName)}`
+  );
+  if (getStatus < 200 || getStatus >= 300) {
+    return {
+      aborted: false,
+      detail: `argocd abort: could not read application (HTTP ${getStatus})`
+    };
+  }
+  const opPhase = (body as ArgoApplication)?.status?.operationState?.phase;
+  if (opPhase !== "Running" && opPhase !== "Terminating") {
+    return {
+      aborted: false,
+      detail: `argocd: no in-flight operation to abort (operationState=${opPhase ?? "none"})`
+    };
+  }
   const { status: httpStatus } = await apiRequest(
     ctx,
     config,
