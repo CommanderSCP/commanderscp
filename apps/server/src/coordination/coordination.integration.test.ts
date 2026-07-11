@@ -28,7 +28,10 @@ import { transitionChange } from "./transition.js";
 import { getSharedCelSandbox } from "../governance/cel-sandbox.js";
 import { compileAndPersistPlan } from "./plan-service.js";
 import { markWaveTerminal } from "./wave-targets-repo.js";
-import { createInMemoryFakeHost, withFailOnceAfterRealTrigger } from "./test-support/fake-plugin-host.js";
+import {
+  createInMemoryFakeHost,
+  withFailOnceAfterRealTrigger
+} from "./test-support/fake-plugin-host.js";
 
 /**
  * The M3 coordination-engine end-to-end suite (BUILD_AND_TEST.md §8 M3 DoD): full fake-executor
@@ -49,7 +52,11 @@ describe("coordination engine: full fake-executor loop", () => {
       // Fast enough that `autoSucceedAfterMs` (50ms, harness.ts default) resolves within a
       // couple of 1s reconcile ticks, but generous enough that a loaded CI box's occasional slow
       // tick doesn't spuriously time out a call.
-      pluginHostOptions: { callTimeoutMs: 8_000, restartBackoffBaseMs: 50, maxRestartBackoffMs: 300 }
+      pluginHostOptions: {
+        callTimeoutMs: 8_000,
+        restartBackoffBaseMs: 50,
+        maxRestartBackoffMs: 300
+      }
     });
     org = await createTestOrg(server, "coordination");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
@@ -103,9 +110,9 @@ describe("coordination engine: full fake-executor loop", () => {
     expect(promoted.state).toBe("promoted");
 
     const finalExplain = await admin.changes.explain(change.id);
-    expect(finalExplain.decisions.some((d) => d.kind === "transition" && d.verdict === "allow")).toBe(
-      true
-    );
+    expect(
+      finalExplain.decisions.some((d) => d.kind === "transition" && d.verdict === "allow")
+    ).toBe(true);
   });
 
   it("rollback is its own Change, executed through the same plan/wave machinery, and restores the prior known-good executor state", async () => {
@@ -113,17 +120,23 @@ describe("coordination engine: full fake-executor loop", () => {
 
     // Change #1: the target's first-ever change — brings the fake executor's internal version to v0.
     const change1 = await admin.changes.propose({ name: "change 1", targets: [target.id] });
-    await waitUntil(async () => (await admin.changes.get(change1.id)).state === "validating" || undefined, {
-      describe: `change1 ${change1.id} reaches 'validating'`
-    });
+    await waitUntil(
+      async () => (await admin.changes.get(change1.id)).state === "validating" || undefined,
+      {
+        describe: `change1 ${change1.id} reaches 'validating'`
+      }
+    );
     await admin.changes.promote(change1.id);
 
     // Change #2: a second change against the SAME target — bumps the fake executor to v1. Its
     // wave target captures `priorStateRef` = "v0" (what change1 left behind) BEFORE triggering.
     const change2 = await admin.changes.propose({ name: "change 2", targets: [target.id] });
-    await waitUntil(async () => (await admin.changes.get(change2.id)).state === "validating" || undefined, {
-      describe: `change2 ${change2.id} reaches 'validating'`
-    });
+    await waitUntil(
+      async () => (await admin.changes.get(change2.id)).state === "validating" || undefined,
+      {
+        describe: `change2 ${change2.id} reaches 'validating'`
+      }
+    );
     await admin.changes.promote(change2.id);
 
     const decision = await admin.changes.rollback(change2.id, "integration test: undo change 2");
@@ -155,7 +168,9 @@ describe("coordination engine: full fake-executor loop", () => {
     // The rollback trigger Decision names its trigger (DESIGN §9.4: "every rollback writes a
     // Decision record naming its trigger") — written against the ORIGINAL change's subject id.
     const originalExplain = await admin.changes.explain(change2.id);
-    const rollbackTriggerDecision = originalExplain.decisions.find((d) => d.kind === "rollback_trigger");
+    const rollbackTriggerDecision = originalExplain.decisions.find(
+      (d) => d.kind === "rollback_trigger"
+    );
     expect(rollbackTriggerDecision).toBeDefined();
     expect(rollbackTriggerDecision!.verdict).toBe("rollback");
     expect(rollbackTriggerDecision!.inputContext["trigger"]).toBe("manual");
@@ -166,9 +181,9 @@ describe("coordination engine: full fake-executor loop", () => {
     // superseded) or a fresh "v2" — proving the rollback genuinely restored the prior known-good
     // state rather than just re-running a forward trigger.
     const ref = rollbackTarget.executorRef as unknown as ExternalRunRef;
-    const liveStatus: ExecutionStatus = await server.pluginHost!.executor(DEFAULT_EXECUTOR_INSTANCE_ID).status(
-      ref
-    );
+    const liveStatus: ExecutionStatus = await server
+      .pluginHost!.executor(DEFAULT_EXECUTOR_INSTANCE_ID)
+      .status(ref);
     expect(liveStatus.stateRef).toBe("v0");
   });
 });
@@ -203,8 +218,12 @@ describe("coordination engine: watchdog", () => {
     // `runWatchdogSweep`'s `opts.now` lets the test simulate the passage of time without a real
     // sleep — `proposed`'s SLA is 5 minutes (coordination/watchdog.ts's `WATCHDOG_SLA_MS`).
     const farFuture = new Date(Date.now() + 10 * 60_000);
+    const watchdogHost = createInMemoryFakeHost();
     const flags = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      runWatchdogSweep(tx, org.orgId, { requestId: "watchdog-test-sweep", now: farFuture })
+      runWatchdogSweep(tx, org.orgId, watchdogHost, server.deps.config.secretsMasterKey, {
+        requestId: "watchdog-test-sweep",
+        now: farFuture
+      })
     );
 
     const flagged = flags.find((f) => f.changeObjectId === target.id);
@@ -221,7 +240,10 @@ describe("coordination engine: watchdog", () => {
     // Idempotent per state-entry: a second sweep at the same (or later) `now` does NOT re-flag —
     // `watchdog_flagged_at` guards it (coordination/watchdog.ts's module doc).
     const secondSweep = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      runWatchdogSweep(tx, org.orgId, { requestId: "watchdog-test-sweep-2", now: farFuture })
+      runWatchdogSweep(tx, org.orgId, watchdogHost, server.deps.config.secretsMasterKey, {
+        requestId: "watchdog-test-sweep-2",
+        now: farFuture
+      })
     );
     expect(secondSweep.some((f) => f.changeObjectId === target.id)).toBe(false);
   });
@@ -316,7 +338,13 @@ describe("coordination engine: crash resumption", () => {
         (targetRef) => targetRef === targetObjectId,
         () => resolveFaulted()
       );
-      const loop1 = await startReconcileLoop(boss1, server.deps.db, host1, getSharedCelSandbox());
+      const loop1 = await startReconcileLoop(
+        boss1,
+        server.deps.db,
+        host1,
+        getSharedCelSandbox(),
+        server.deps.config.secretsMasterKey
+      );
 
       // The target is left EXACTLY mid-flight: the real trigger() call already fired (a genuine
       // side effect against the real subprocess), but the injected fault meant reconcile.ts never
@@ -344,7 +372,10 @@ describe("coordination engine: crash resumption", () => {
       await boss1.stop({ graceful: false, timeout: 500 }).catch(() => undefined);
 
       const stillTriggering = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-        tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, targetObjectId))
+        tx
+          .select()
+          .from(changeWaveTargets)
+          .where(eq(changeWaveTargets.targetObjectId, targetObjectId))
       );
       expect(stillTriggering[0]!.status).toBe("triggering");
       expect(stillTriggering[0]!.executorRef).toBeNull(); // never recorded — that's the crash.
@@ -366,7 +397,13 @@ describe("coordination engine: crash resumption", () => {
           config: { statePath, autoSucceedAfterMs: 50 }
         }
       ]);
-      const loop2 = await startReconcileLoop(boss2, server.deps.db, host2, getSharedCelSandbox());
+      const loop2 = await startReconcileLoop(
+        boss2,
+        server.deps.db,
+        host2,
+        getSharedCelSandbox(),
+        server.deps.config.secretsMasterKey
+      );
 
       try {
         await waitUntil(
@@ -378,14 +415,20 @@ describe("coordination engine: crash resumption", () => {
             });
             return get.json().state === "validating" ? get.json() : undefined;
           },
-          { describe: `change ${changeId} reaches 'validating' after worker restart`, timeoutMs: 15_000 }
+          {
+            describe: `change ${changeId} reaches 'validating' after worker restart`,
+            timeoutMs: 15_000
+          }
         );
 
         // The resumed target was recorded with the SAME externalId worker #1's crashed-but-fired
         // real call produced — dedup, not a second real trigger. The fake-executor's own version
         // counter (asserted below) is the independent, harder-to-fake proof of that.
         const resumedTarget = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-          tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, targetObjectId))
+          tx
+            .select()
+            .from(changeWaveTargets)
+            .where(eq(changeWaveTargets.targetObjectId, targetObjectId))
         );
         expect(resumedTarget[0]!.status).not.toBe("triggering");
         const resumedRef = resumedTarget[0]!.executorRef as unknown as ExternalRunRef;
@@ -435,7 +478,13 @@ describe("coordination engine: crash resumption", () => {
         config: { statePath, autoSucceedAfterMs: 3_000 }
       }
     ]);
-    const loop = await startReconcileLoop(boss, server.deps.db, host, getSharedCelSandbox());
+    const loop = await startReconcileLoop(
+      boss,
+      server.deps.db,
+      host,
+      getSharedCelSandbox(),
+      server.deps.config.secretsMasterKey
+    );
 
     try {
       const createTarget = await server.app.inject({
@@ -459,13 +508,17 @@ describe("coordination engine: crash resumption", () => {
       await waitUntil(
         async () => {
           const targets = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-            tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, targetObjectId))
+            tx
+              .select()
+              .from(changeWaveTargets)
+              .where(eq(changeWaveTargets.targetObjectId, targetObjectId))
           );
           const t = targets[0];
           return t && (t.status === "triggered" || t.status === "observing") ? t : undefined;
         },
         {
-          describe: "wave target reaches triggered/observing (mid-wave) before the subprocess is killed",
+          describe:
+            "wave target reaches triggered/observing (mid-wave) before the subprocess is killed",
           timeoutMs: 10_000
         }
       );
@@ -589,7 +642,13 @@ describe("coordination engine: trigger idempotency across a same-tick crash (CRI
 
     // Tick 1: reconcileOrgTick walks BOTH freshly-proposed changes all the way to `executing` and
     // attempts to trigger their (only) wave target, all inside this one call.
-    await reconcileOrgTick(server.deps.db, org.orgId, host, getSharedCelSandbox());
+    await reconcileOrgTick(
+      server.deps.db,
+      org.orgId,
+      host,
+      getSharedCelSandbox(),
+      server.deps.config.secretsMasterKey
+    );
 
     const targetsAfterTick1 = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.select().from(changeWaveTargets)
@@ -614,7 +673,13 @@ describe("coordination engine: trigger idempotency across a same-tick crash (CRI
 
     // Tick 2: A's target (still `triggering`) is retried with the SAME idempotencyKey; nothing
     // faults it this time, so it commits.
-    await reconcileOrgTick(server.deps.db, org.orgId, host, getSharedCelSandbox());
+    await reconcileOrgTick(
+      server.deps.db,
+      org.orgId,
+      host,
+      getSharedCelSandbox(),
+      server.deps.config.secretsMasterKey
+    );
 
     const targetsAfterTick2 = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.select().from(changeWaveTargets)
@@ -635,7 +700,9 @@ describe("coordination engine: trigger idempotency across a same-tick crash (CRI
 
     const executorRef = targetARow2!.executorRef as unknown as ExternalRunRef;
     expect(executorRef.externalId).toBe(aCalls[0]!.externalId);
-    const liveStatus: ExecutionStatus = await host.executor(DEFAULT_EXECUTOR_INSTANCE_ID).status(executorRef);
+    const liveStatus: ExecutionStatus = await host
+      .executor(DEFAULT_EXECUTOR_INSTANCE_ID)
+      .status(executorRef);
     // v0, not v1 — a mutation that broke the dedup contract (e.g. re-minting a fresh run on every
     // retry) would bump this.
     expect(liveStatus.stateRef).toBe("v0");
@@ -758,7 +825,13 @@ describe("coordination engine: reconcile batch fairness (MAJOR #6)", () => {
     const host = createInMemoryFakeHost({ autoSucceedAfterMs: 60_000 });
     // One tick walks the fresh change proposed -> ... -> executing -> triggered, all inline —
     // exactly like the CRITICAL #2 test above relies on.
-    await reconcileOrgTick(server.deps.db, org.orgId, host, getSharedCelSandbox());
+    await reconcileOrgTick(
+      server.deps.db,
+      org.orgId,
+      host,
+      getSharedCelSandbox(),
+      server.deps.config.secretsMasterKey
+    );
 
     const targets = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, freshTargetId))

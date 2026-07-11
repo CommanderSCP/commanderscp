@@ -85,3 +85,29 @@ export type {
   PolicyEvaluateRequest,
   PolicyEvaluateResponse
 } from "@scp/schemas";
+
+// M7: Real Executor Integrations (BUILD_AND_TEST.md §8 M7, DESIGN.md §11/§12) — executor/
+// notification bindings, encrypted secrets (write-only), the plugin-manifest catalog a config
+// form is generated from, DiscoveryPlugin run/accept, and the webhook signing-secret + `scp
+// change report` wire shapes.
+export type {
+  CreateExecutorBindingRequest,
+  ExecutorBinding,
+  NotificationSeverity,
+  CreateNotificationBindingRequest,
+  NotificationBinding,
+  NotificationBindingListResponse,
+  PutSecretRequest,
+  SecretConfiguredResponse,
+  SecretKeyListResponse,
+  PluginKind,
+  PluginManifest,
+  PluginManifestListResponse,
+  DiscoveryProposal,
+  RunDiscoveryRequest,
+  AcceptDiscoveryRequest,
+  AcceptDiscoveryResponse,
+  ChangeReportRequest,
+  CreateWebhookSecretRequest,
+  WebhookSecretConfiguredResponse
+} from "@scp/schemas";

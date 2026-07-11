@@ -9337,6 +9337,56 @@ export type IngestChangeSourceWebhookResponses = {
 
 export type IngestChangeSourceWebhookResponse = IngestChangeSourceWebhookResponses[keyof IngestChangeSourceWebhookResponses];
 
+export type PutChangeSourceWebhookSecretData = {
+    body: {
+        secret: string;
+    };
+    path: {
+        sourceKind: string;
+    };
+    query?: never;
+    url: '/change-sources/{sourceKind}/webhook-secret';
+};
+
+export type PutChangeSourceWebhookSecretErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutChangeSourceWebhookSecretError = PutChangeSourceWebhookSecretErrors[keyof PutChangeSourceWebhookSecretErrors];
+
+export type PutChangeSourceWebhookSecretResponses = {
+    /**
+     * Success
+     */
+    200: {
+        configured: true;
+        sourceKind: string;
+    };
+};
+
+export type PutChangeSourceWebhookSecretResponse = PutChangeSourceWebhookSecretResponses[keyof PutChangeSourceWebhookSecretResponses];
+
 export type ListSourceMappingsData = {
     body?: never;
     path: {
@@ -12887,3 +12937,643 @@ export type HandFillObjectResponses = {
 };
 
 export type HandFillObjectResponse = HandFillObjectResponses[keyof HandFillObjectResponses];
+
+export type ListPluginManifestsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/plugins/manifests';
+};
+
+export type ListPluginManifestsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListPluginManifestsError = ListPluginManifestsErrors[keyof ListPluginManifestsErrors];
+
+export type ListPluginManifestsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            kind: 'executor' | 'control' | 'identity' | 'notification' | 'federation-transport' | 'discovery';
+            version: string;
+            configSchema: {
+                [key: string]: unknown;
+            };
+            requiredCapabilities?: Array<string>;
+        }>;
+    };
+};
+
+export type ListPluginManifestsResponse = ListPluginManifestsResponses[keyof ListPluginManifestsResponses];
+
+export type DeleteSecretData = {
+    body?: never;
+    path: {
+        key: string;
+    };
+    query?: never;
+    url: '/secrets/{key}';
+};
+
+export type DeleteSecretErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteSecretError = DeleteSecretErrors[keyof DeleteSecretErrors];
+
+export type DeleteSecretResponses = {
+    /**
+     * Success
+     */
+    204: void;
+};
+
+export type DeleteSecretResponse = DeleteSecretResponses[keyof DeleteSecretResponses];
+
+export type PutSecretData = {
+    body: {
+        value: string;
+    };
+    path: {
+        key: string;
+    };
+    query?: never;
+    url: '/secrets/{key}';
+};
+
+export type PutSecretErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutSecretError = PutSecretErrors[keyof PutSecretErrors];
+
+export type PutSecretResponses = {
+    /**
+     * Success
+     */
+    200: {
+        configured: true;
+        key: string;
+    };
+};
+
+export type PutSecretResponse = PutSecretResponses[keyof PutSecretResponses];
+
+export type ListSecretKeysData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/secrets';
+};
+
+export type ListSecretKeysErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListSecretKeysError = ListSecretKeysErrors[keyof ListSecretKeysErrors];
+
+export type ListSecretKeysResponses = {
+    /**
+     * Success
+     */
+    200: {
+        keys: Array<string>;
+    };
+};
+
+export type ListSecretKeysResponse = ListSecretKeysResponses[keyof ListSecretKeysResponses];
+
+export type GetExecutorBindingData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/executors/{idOrUrn}/binding';
+};
+
+export type GetExecutorBindingErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetExecutorBindingError = GetExecutorBindingErrors[keyof GetExecutorBindingErrors];
+
+export type GetExecutorBindingResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        targetObjectId: string;
+        pluginModule: string;
+        pluginInstanceId: string;
+        config: unknown;
+        secretRefs: {
+            [key: string]: string;
+        };
+        allowedHosts: Array<string>;
+    };
+};
+
+export type GetExecutorBindingResponse = GetExecutorBindingResponses[keyof GetExecutorBindingResponses];
+
+export type PutExecutorBindingData = {
+    body: {
+        pluginModule: string;
+        pluginInstanceId: string;
+        config?: {
+            [key: string]: unknown;
+        };
+        secretRefs?: {
+            [key: string]: string;
+        };
+        allowedHosts?: Array<string>;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/executors/{idOrUrn}/binding';
+};
+
+export type PutExecutorBindingErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutExecutorBindingError = PutExecutorBindingErrors[keyof PutExecutorBindingErrors];
+
+export type PutExecutorBindingResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        targetObjectId: string;
+        pluginModule: string;
+        pluginInstanceId: string;
+        config: unknown;
+        secretRefs: {
+            [key: string]: string;
+        };
+        allowedHosts: Array<string>;
+    };
+};
+
+export type PutExecutorBindingResponse = PutExecutorBindingResponses[keyof PutExecutorBindingResponses];
+
+export type DeleteNotificationBindingData = {
+    body?: never;
+    path: {
+        instanceId: string;
+    };
+    query?: never;
+    url: '/notifications/bindings/{instanceId}';
+};
+
+export type DeleteNotificationBindingErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteNotificationBindingError = DeleteNotificationBindingErrors[keyof DeleteNotificationBindingErrors];
+
+export type DeleteNotificationBindingResponses = {
+    /**
+     * Success
+     */
+    204: void;
+};
+
+export type DeleteNotificationBindingResponse = DeleteNotificationBindingResponses[keyof DeleteNotificationBindingResponses];
+
+export type PutNotificationBindingData = {
+    body: {
+        pluginModule: string;
+        config?: {
+            [key: string]: unknown;
+        };
+        secretRefs?: {
+            [key: string]: string;
+        };
+        allowedHosts?: Array<string>;
+        minSeverity?: 'info' | 'warning' | 'critical';
+    };
+    path: {
+        instanceId: string;
+    };
+    query?: never;
+    url: '/notifications/bindings/{instanceId}';
+};
+
+export type PutNotificationBindingErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutNotificationBindingError = PutNotificationBindingErrors[keyof PutNotificationBindingErrors];
+
+export type PutNotificationBindingResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        pluginModule: string;
+        pluginInstanceId: string;
+        config: unknown;
+        secretRefs: {
+            [key: string]: string;
+        };
+        allowedHosts: Array<string>;
+        minSeverity: 'info' | 'warning' | 'critical';
+    };
+};
+
+export type PutNotificationBindingResponse = PutNotificationBindingResponses[keyof PutNotificationBindingResponses];
+
+export type ListNotificationBindingsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/notifications/bindings';
+};
+
+export type ListNotificationBindingsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListNotificationBindingsError = ListNotificationBindingsErrors[keyof ListNotificationBindingsErrors];
+
+export type ListNotificationBindingsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            pluginModule: string;
+            pluginInstanceId: string;
+            config: unknown;
+            secretRefs: {
+                [key: string]: string;
+            };
+            allowedHosts: Array<string>;
+            minSeverity: 'info' | 'warning' | 'critical';
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListNotificationBindingsResponse = ListNotificationBindingsResponses[keyof ListNotificationBindingsResponses];
+
+export type RunDiscoveryData = {
+    body: {
+        pluginModule: string;
+        pluginInstanceId: string;
+        config?: {
+            [key: string]: unknown;
+        };
+        secretRefs?: {
+            [key: string]: string;
+        };
+        allowedHosts?: Array<string>;
+    };
+    path?: never;
+    query?: never;
+    url: '/discovery/run';
+};
+
+export type RunDiscoveryErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RunDiscoveryError = RunDiscoveryErrors[keyof RunDiscoveryErrors];
+
+export type RunDiscoveryResponses = {
+    /**
+     * Success
+     */
+    200: {
+        objects: Array<{
+            typeId: string;
+            name: string;
+            properties?: {
+                [key: string]: unknown;
+            };
+        }>;
+        relationships: Array<{
+            typeId: string;
+            fromUrn: string;
+            toUrn: string;
+        }>;
+    };
+};
+
+export type RunDiscoveryResponse = RunDiscoveryResponses[keyof RunDiscoveryResponses];
+
+export type AcceptDiscoveryProposalData = {
+    body: {
+        domainId?: string;
+        proposal: {
+            objects: Array<{
+                typeId: string;
+                name: string;
+                properties?: {
+                    [key: string]: unknown;
+                };
+            }>;
+            relationships: Array<{
+                typeId: string;
+                fromUrn: string;
+                toUrn: string;
+            }>;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/discovery/accept';
+};
+
+export type AcceptDiscoveryProposalErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type AcceptDiscoveryProposalError = AcceptDiscoveryProposalErrors[keyof AcceptDiscoveryProposalErrors];
+
+export type AcceptDiscoveryProposalResponses = {
+    /**
+     * Success
+     */
+    201: {
+        createdObjectIds: Array<string>;
+        createdRelationshipIds: Array<string>;
+    };
+};
+
+export type AcceptDiscoveryProposalResponse = AcceptDiscoveryProposalResponses[keyof AcceptDiscoveryProposalResponses];

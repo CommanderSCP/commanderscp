@@ -20,9 +20,21 @@ import {
   SHARED_PLUGIN_INSTANCE_DOMAIN_ID,
   SHARED_PLUGIN_INSTANCE_ORG_ID
 } from "./coordination/executor-config.js";
+import type { AppDeps } from "./types.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  if (config.secretsMasterKeyWasGenerated) {
+    // M7 (secrets/crypto.ts) — see config.ts's doc comment: an ephemeral key lets the compose
+    // eval stack and a first `pnpm dev` boot with zero required env vars, but any org secret
+    // (GitHub App key, ArgoCD token, managed-iac infra creds) encrypted under it becomes
+    // undecryptable the moment this process restarts. Loud, not fatal.
+    console.warn(
+      "[scpd] SCP_SECRETS_MASTER_KEY is unset — generated an EPHEMERAL secrets master key for this process only. " +
+        "Any plugin secret stored now will be unreadable after the next restart. Set SCP_SECRETS_MASTER_KEY " +
+        "(base64, 32 bytes) for any deployment that configures real executor/notification credentials."
+    );
+  }
 
   // Phase 1 — admin/bootstrap connection: migrations + login-role provisioning ONLY (PR #4
   // security review, CRITICAL 3; pg-boss role added for the M3 tracked security follow-up).
@@ -45,7 +57,12 @@ async function main(): Promise<void> {
   const pool = createPool(config.runtimeDatabaseUrl);
   const db = createDb(pool);
 
-  const app = await buildApp({ db, config });
+  // M7: `deps` is captured here (not just `{db, config}` inline) so `deps.pluginHost` can be set
+  // AFTER the plugin host is constructed below — route handlers registered against this same
+  // object (routes/executors.ts's `POST /discovery/run`) read `deps.pluginHost` at REQUEST time,
+  // long after boot, so the late assignment is visible to them (types.ts's doc comment).
+  const deps: AppDeps = { db, config };
+  const app = await buildApp(deps);
 
   const bootstrap = await ensureBootstrapAdmin(
     db,
@@ -81,6 +98,7 @@ async function main(): Promise<void> {
     // SUBPROCESS restarting (the plugin-host isolation DoD scenario), not across this whole
     // `scpd` process restarting, which is fine: fake-executor is never a real system of record.
     const pluginHost = new SubprocessPluginHost();
+    deps.pluginHost = pluginHost;
     await pluginHost.start([
       {
         id: DEFAULT_EXECUTOR_INSTANCE_ID,
@@ -90,11 +108,17 @@ async function main(): Promise<void> {
         config: { statePath: path.join(os.tmpdir(), "scpd-fake-executor-state.json") }
       }
     ]);
-    const reconcileLoop = await startReconcileLoop(boss, db, pluginHost, getSharedCelSandbox());
+    const reconcileLoop = await startReconcileLoop(
+      boss,
+      db,
+      pluginHost,
+      getSharedCelSandbox(),
+      config.secretsMasterKey
+    );
     // CRITICAL #1 fix (PR #7 review): the stuck-change watchdog sweep (DESIGN.md §9.4) had no
     // production caller at all before this — scheduled here the same way the reconcile loop is,
     // one queue per capability, both under the same `role === "all" || "worker"` guard.
-    const watchdogLoop = await startWatchdogLoop(boss, db);
+    const watchdogLoop = await startWatchdogLoop(boss, db, pluginHost, config.secretsMasterKey);
 
     app.addHook("onClose", async () => {
       await reconcileLoop.stop();

@@ -1,4 +1,5 @@
 import { deriveRuntimeDatabaseUrl } from "./db/provision.js";
+import { generateMasterKeyBase64, parseMasterKeyBase64 } from "./secrets/crypto.js";
 
 export interface ServerConfig {
   port: number;
@@ -70,6 +71,19 @@ export interface ServerConfig {
     /** Required when `backend === "nats"`; validated below. e.g. `nats://localhost:4222`. */
     natsUrl?: string;
   };
+  /**
+   * AES-256-GCM root key for the `secrets` table (M7, secrets/crypto.ts) — org-supplied plugin
+   * credentials (GitHub App private key, ArgoCD token, managed-IaC infra creds) are encrypted
+   * under this key, never stored in plaintext. `SCP_SECRETS_MASTER_KEY` (base64, 32 bytes) SHOULD
+   * be set explicitly and kept stable across restarts/deploys — every secret encrypted under one
+   * value becomes undecryptable if it changes. Mirrors `cookieSecret`'s "generate an ephemeral one
+   * with a loud warning if unset" fallback (five-minute-value / self-hosting-first: the compose
+   * eval stack and a first `pnpm dev` must still boot with zero required env vars) rather than
+   * failing boot — the operational consequence (secrets configured before a restart become
+   * unreadable after one) is a one-line warning away from being obvious, not a silent landmine.
+   */
+  secretsMasterKey: Buffer;
+  secretsMasterKeyWasGenerated: boolean;
 }
 
 function randomSecret(): string {
@@ -126,10 +140,25 @@ function loadEventBusConfig(env: NodeJS.ProcessEnv): ServerConfig["eventBus"] {
   return { backend, natsUrl };
 }
 
+function loadSecretsMasterKey(env: NodeJS.ProcessEnv): { key: Buffer; wasGenerated: boolean } {
+  const raw = env.SCP_SECRETS_MASTER_KEY;
+  if (raw) {
+    try {
+      return { key: parseMasterKeyBase64(raw), wasGenerated: false };
+    } catch (err) {
+      throw new Error(
+        `SCP_SECRETS_MASTER_KEY is set but invalid: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+  return { key: parseMasterKeyBase64(generateMasterKeyBase64()), wasGenerated: true };
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const port = Number(env.PORT ?? 8080);
   const host = env.HOST ?? "0.0.0.0";
   const databaseUrl = env.DATABASE_URL ?? "postgres://scp:scp@localhost:5432/scp";
+  const secretsMasterKey = loadSecretsMasterKey(env);
   return {
     port,
     host,
@@ -144,6 +173,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     internalBaseUrl: env.SCP_INTERNAL_BASE_URL ?? `http://127.0.0.1:${port}/api/v1`,
     seedDemo: env.SCP_SEED_DEMO === "true",
     oidc: loadOidcConfig(env),
-    eventBus: loadEventBusConfig(env)
+    eventBus: loadEventBusConfig(env),
+    secretsMasterKey: secretsMasterKey.key,
+    secretsMasterKeyWasGenerated: secretsMasterKey.wasGenerated
   };
 }

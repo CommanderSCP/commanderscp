@@ -220,3 +220,21 @@ export const WebhookIngressResponseSchema = z.object({
 export type WebhookIngressResponse = z.infer<typeof WebhookIngressResponseSchema>;
 
 export const ChangeSourceEventParamSchema = z.object({ sourceKind: z.string().min(1) });
+
+/**
+ * `PUT /change-sources/{sourceKind}/webhook-secret` (M7, DESIGN §12/BUILD_AND_TEST.md §8 M7) —
+ * configures the HMAC signing secret `routes/change-sources.ts`'s webhook route requires and
+ * verifies against once set (coordination/webhook-signature.ts). The plaintext secret is
+ * write-only from the API's perspective: it is encrypted at rest immediately (secrets/crypto.ts)
+ * and never echoed back by any endpoint.
+ */
+export const CreateWebhookSecretRequestSchema = z.object({
+  secret: z.string().min(1)
+});
+export type CreateWebhookSecretRequest = z.infer<typeof CreateWebhookSecretRequestSchema>;
+
+export const WebhookSecretConfiguredResponseSchema = z.object({
+  configured: z.literal(true),
+  sourceKind: z.string()
+});
+export type WebhookSecretConfiguredResponse = z.infer<typeof WebhookSecretConfiguredResponseSchema>;

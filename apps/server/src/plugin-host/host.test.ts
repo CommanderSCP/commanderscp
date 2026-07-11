@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import http from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SubprocessPluginHost } from "./host.js";
 
@@ -87,6 +88,116 @@ describe("SubprocessPluginHost: child environment (CRITICAL #3)", () => {
     // stripped env and then the child died") — proves stripping env didn't break the child.
     const caps = await host.executor("env-probe").describeCapabilities();
     expect(caps.supportsTrigger).toBe(true);
+  });
+
+  it("threads PluginHostInstanceConfig.secrets/allowedHosts through as SCP_PLUGIN_SECRETS_JSON/SCP_PLUGIN_ALLOWED_HOSTS_JSON (M7)", async () => {
+    const childProcess = await import("node:child_process");
+    const spawnSpy = vi.mocked(childProcess.spawn);
+    spawnSpy.mockClear();
+
+    host = new SubprocessPluginHost({ callTimeoutMs: 10_000 });
+    await host.start([
+      {
+        id: "secrets-probe",
+        module: "fake-executor",
+        orgId: "org-1",
+        domainId: "domain-1",
+        secrets: { "github-app-private-key": "-----BEGIN PRIVATE KEY-----fake-for-test-----" },
+        allowedHosts: ["api.github.com"]
+      }
+    ]);
+
+    const spawnCall = spawnSpy.mock.calls[0]!;
+    const childEnv = (spawnCall[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
+    expect(JSON.parse(childEnv?.SCP_PLUGIN_SECRETS_JSON ?? "{}")).toEqual({
+      "github-app-private-key": "-----BEGIN PRIVATE KEY-----fake-for-test-----"
+    });
+    expect(JSON.parse(childEnv?.SCP_PLUGIN_ALLOWED_HOSTS_JSON ?? "[]")).toEqual(["api.github.com"]);
+  });
+});
+
+/**
+ * M7 SSRF mitigation (subprocess-entry.ts's `scopedFetchHttpClient` + egress-guard.ts) — enforced
+ * over the REAL subprocess boundary. The loopback/private allowance is gated on MODULE IDENTITY,
+ * NOT `allowedHosts` (MAJOR #6 follow-up: tenant bindings default to empty `allowedHosts`, so an
+ * emptiness heuristic reopened the hole). This drives BOTH plugin kinds at the SAME loopback server:
+ * a TENANT plugin (`webhook-notify`) is refused (server never hit), while the OPERATOR-PLANE escape
+ * hatch (`webhook-control`) reaches it. If the module gate were removed, webhook-notify would reach
+ * the server and this test would fail — the regression guard. (The full allow/block IP matrix is
+ * exhaustively unit-tested in egress-guard.test.ts with IP literals.)
+ */
+describe("SubprocessPluginHost: egress guard enforcement (M7 SSRF mitigation)", () => {
+  it("blocks a TENANT plugin from a loopback target (even allowlisted) but PERMITS the operator-plane escape hatch — same server, module-identity gated", async () => {
+    let notifyHits = 0;
+    let controlHits = 0;
+    const server = http.createServer((req, res) => {
+      if (req.url === "/control") controlHits += 1;
+      else notifyHits += 1;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ status: "pass", evidence: { ok: true } }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("could not determine bound port");
+    const base = `http://127.0.0.1:${address.port}`;
+
+    try {
+      host = new SubprocessPluginHost({ callTimeoutMs: 10_000 });
+      await host.start([
+        {
+          id: "tenant-notify-allowlisted",
+          module: "webhook-notify", // TENANT plugin — loopback blocked regardless of allowlist
+          orgId: "org-1",
+          domainId: "domain-1",
+          config: { url: `${base}/hook` },
+          allowedHosts: ["127.0.0.1"]
+        },
+        {
+          id: "tenant-notify-empty-allowlist",
+          module: "webhook-notify", // the exact regression: empty allowedHosts (tenant default)
+          orgId: "org-1",
+          domainId: "domain-1",
+          config: { url: `${base}/hook` },
+          allowedHosts: []
+        },
+        {
+          id: "operator-control",
+          module: "webhook-control", // OPERATOR-PLANE escape hatch — MAY reach its loopback control server
+          orgId: "org-1",
+          domainId: "domain-1",
+          config: { url: `${base}/control` }
+        }
+      ]);
+
+      // TENANT webhook-notify → loopback blocked, whether allowlisted or empty-allowlist (the
+      // reopened-SSRF regression guard). The notify endpoint is never hit.
+      expect(
+        (
+          await host
+            .notification("tenant-notify-allowlisted")
+            .send({ subject: "s", body: "b", severity: "info" })
+        ).delivered
+      ).toBe(false);
+      expect(
+        (
+          await host
+            .notification("tenant-notify-empty-allowlist")
+            .send({ subject: "s", body: "b", severity: "info" })
+        ).delivered
+      ).toBe(false);
+      expect(notifyHits).toBe(0);
+
+      // OPERATOR-PLANE webhook-control → reaches its loopback control server and returns an outcome.
+      const outcome = await host.control("operator-control").evaluate({
+        changeId: "c1",
+        controlId: "ctrl-1",
+        context: {}
+      });
+      expect(outcome.status).toBe("pass");
+      expect(controlHits).toBe(1);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
 

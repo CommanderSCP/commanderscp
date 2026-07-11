@@ -25,7 +25,11 @@ export type RpcMethod =
   // M4: ControlPlugin's sole method (DESIGN.md §11's ControlPlugin interface) — same host, same
   // wire framing, dispatched by subprocess-entry.ts based on which kind of plugin this instance
   // loaded.
-  | "evaluate";
+  | "evaluate"
+  // M7: DiscoveryPlugin's sole method (github repo/topology scan) and NotificationPlugin's sole
+  // method (smtp-notify/webhook-notify) — same host, same wire framing, same dispatch-by-kind.
+  | "discover"
+  | "send";
 
 export interface RpcRequest {
   jsonrpc: "2.0";

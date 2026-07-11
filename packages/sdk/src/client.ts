@@ -176,7 +176,20 @@ import {
   importBundle as importBundleRequest,
   createOverlay as createOverlayRequest,
   getMergedOverlayView as getMergedOverlayViewRequest,
-  handFillObject as handFillObjectRequest
+  handFillObject as handFillObjectRequest,
+  // M7: Real Executor Integrations (BUILD_AND_TEST.md §8 M7, DESIGN §11/§12).
+  putChangeSourceWebhookSecret as putChangeSourceWebhookSecretRequest,
+  putExecutorBinding as putExecutorBindingRequest,
+  getExecutorBinding as getExecutorBindingRequest,
+  putNotificationBinding as putNotificationBindingRequest,
+  listNotificationBindings as listNotificationBindingsRequest,
+  deleteNotificationBinding as deleteNotificationBindingRequest,
+  putSecret as putSecretRequest,
+  listSecretKeys as listSecretKeysRequest,
+  deleteSecret as deleteSecretRequest,
+  listPluginManifests as listPluginManifestsRequest,
+  runDiscovery as runDiscoveryRequest,
+  acceptDiscoveryProposal as acceptDiscoveryProposalRequest
 } from "./generated/sdk.gen.js";
 import type {
   ApplyPlanResponse,
@@ -261,7 +274,23 @@ import type {
   PromotionBundle,
   ImportBundleRequest,
   ImportResult,
-  HandFillRequest
+  HandFillRequest,
+  // M7: Real Executor Integrations (BUILD_AND_TEST.md §8 M7, DESIGN §11/§12).
+  CreateWebhookSecretRequest,
+  WebhookSecretConfiguredResponse,
+  CreateExecutorBindingRequest,
+  ExecutorBinding,
+  CreateNotificationBindingRequest,
+  NotificationBinding,
+  NotificationBindingListResponse,
+  PutSecretRequest,
+  SecretConfiguredResponse,
+  SecretKeyListResponse,
+  PluginManifestListResponse,
+  RunDiscoveryRequest,
+  DiscoveryProposal,
+  AcceptDiscoveryRequest,
+  AcceptDiscoveryResponse
 } from "@scp/schemas";
 import { ScpApiError } from "./errors.js";
 
@@ -1118,6 +1147,41 @@ export class ScpClient {
     listMappings: async (sourceKind: string): Promise<SourceMappingListResponse> => {
       const result = await listSourceMappingsRequest({ client: this.client, path: { sourceKind } });
       return unwrap(result);
+    },
+    /** M7: configures (or rotates) this org+sourceKind's webhook HMAC signing secret — once set,
+     *  `webhook()` deliveries for this sourceKind MUST carry a valid signature or are rejected
+     *  (coordination/webhook-signature.ts). */
+    putWebhookSecret: async (
+      sourceKind: string,
+      req: CreateWebhookSecretRequest
+    ): Promise<WebhookSecretConfiguredResponse> => {
+      const result = await putChangeSourceWebhookSecretRequest({
+        client: this.client,
+        path: { sourceKind },
+        body: req
+      });
+      return unwrap(result);
+    },
+    /** `scp change report --plan-json` (DESIGN §12 Mode 1) — a thin, typed wrapper around the SAME
+     *  webhook ingress `webhook()` above uses; not a new engine path. */
+    report: async (
+      sourceKind: string,
+      req: {
+        repo?: string;
+        path?: string;
+        correlationKey?: string;
+        workspace?: string;
+        artifactDigest?: string;
+        status: string;
+        planJson?: unknown;
+      }
+    ): Promise<WebhookIngressResponse> => {
+      const result = await ingestChangeSourceWebhookRequest({
+        client: this.client,
+        path: { sourceKind },
+        body: req as Record<string, unknown>
+      });
+      return unwrap(result);
     }
   };
 
@@ -1344,6 +1408,94 @@ export class ScpClient {
     },
     handFill: async (req: HandFillRequest) => {
       const result = await handFillObjectRequest({ client: this.client, body: req });
+      return unwrap(result);
+    }
+  };
+
+  // -----------------------------------------------------------------------------------------
+  // M7: Real Executor Integrations (BUILD_AND_TEST.md §8 M7, DESIGN §11/§12) — webhook signing
+  // secrets, executor/notification bindings, encrypted secrets (write-only), the plugin-manifest
+  // catalog, and DiscoveryPlugin run/accept.
+  // -----------------------------------------------------------------------------------------
+
+  readonly executors = {
+    putBinding: async (
+      idOrUrn: string,
+      req: CreateExecutorBindingRequest
+    ): Promise<ExecutorBinding> => {
+      const result = await putExecutorBindingRequest({
+        client: this.client,
+        path: { idOrUrn },
+        body: req
+      });
+      return unwrap(result);
+    },
+    getBinding: async (idOrUrn: string): Promise<ExecutorBinding> => {
+      const result = await getExecutorBindingRequest({ client: this.client, path: { idOrUrn } });
+      return unwrap(result);
+    }
+  };
+
+  readonly notifications = {
+    putBinding: async (
+      instanceId: string,
+      req: CreateNotificationBindingRequest
+    ): Promise<NotificationBinding> => {
+      const result = await putNotificationBindingRequest({
+        client: this.client,
+        path: { instanceId },
+        body: req
+      });
+      return unwrap(result);
+    },
+    listBindings: async (): Promise<NotificationBindingListResponse> => {
+      const result = await listNotificationBindingsRequest({ client: this.client });
+      return unwrap(result);
+    },
+    deleteBinding: async (instanceId: string): Promise<void> => {
+      const result = await deleteNotificationBindingRequest({
+        client: this.client,
+        path: { instanceId }
+      });
+      unwrapVoid(result);
+    }
+  };
+
+  readonly secrets = {
+    /** Write-only — a stored value is never readable back through the API. */
+    put: async (key: string, req: PutSecretRequest): Promise<SecretConfiguredResponse> => {
+      const result = await putSecretRequest({ client: this.client, path: { key }, body: req });
+      return unwrap(result);
+    },
+    listKeys: async (): Promise<SecretKeyListResponse> => {
+      const result = await listSecretKeysRequest({ client: this.client });
+      return unwrap(result);
+    },
+    delete: async (key: string): Promise<void> => {
+      const result = await deleteSecretRequest({ client: this.client, path: { key } });
+      unwrapVoid(result);
+    }
+  };
+
+  readonly plugins = {
+    /** Every bundled plugin's `{id, kind, version, configSchema}` — the source a config form is
+     *  generated from (DESIGN §11). */
+    listManifests: async (): Promise<PluginManifestListResponse> => {
+      const result = await listPluginManifestsRequest({ client: this.client });
+      return unwrap(result);
+    }
+  };
+
+  readonly discovery = {
+    /** Runs a `DiscoveryPlugin` scan — returns a PROPOSAL only, nothing is written to the graph
+     *  (DESIGN §11: "reviewed/accepted into the graph, never auto-committed"). */
+    run: async (req: RunDiscoveryRequest): Promise<DiscoveryProposal> => {
+      const result = await runDiscoveryRequest({ client: this.client, body: req });
+      return unwrap(result);
+    },
+    /** The ONLY call that commits a discovery proposal's objects/relationships into the graph. */
+    accept: async (req: AcceptDiscoveryRequest): Promise<AcceptDiscoveryResponse> => {
+      const result = await acceptDiscoveryProposalRequest({ client: this.client, body: req });
       return unwrap(result);
     }
   };

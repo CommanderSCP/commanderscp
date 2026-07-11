@@ -1,4 +1,5 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
+import { mapGithubWebhookEventToHint } from "@scp/plugin-github";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changeSourceEvents } from "../db/schema.js";
 import { linkToCoordinatedChange, matchComponentForSource } from "./correlation.js";
@@ -17,19 +18,52 @@ const BATCH_LIMIT = 20;
  * is what makes ingress "replayable": a row that fails processing simply stays unprocessed and is
  * retried on the next tick, exactly like every other engine action in this milestone.
  *
- * Provider-agnostic on purpose: M3 ships no GitHub/ArgoCD/Terraform-specific payload parsing (that
- * lands with the real executor plugins in M7) — the correlation hint this reads is the same small,
- * documented common shape `coordination/correlation.ts`'s `CorrelationHint` already models
- * (`repo`, `path`, `correlationKey`), which a source-specific adapter (or, today, a direct test/
- * curl caller) is expected to send.
+ * Correlation hint extraction (M3 -> M7): the common shape `coordination/correlation.ts`'s
+ * `CorrelationHint` models (`repo`, `path`, `correlationKey`) is still the baseline — a generic
+ * source (a source-specific adapter, `scp change report`, or a direct test/curl caller) that sends
+ * this flat shape directly keeps working unchanged. M7 ADDS real provider-specific parsing for
+ * `sourceKind === "github"`: `@scp/plugin-github`'s `mapGithubWebhookEventToHint` (the SAME
+ * function used by that plugin's own polling-fallback `observe()` — DESIGN §12's "poll-vs-push
+ * equivalence") reads the real nested GitHub webhook JSON (`repository.full_name`, `head_commit.id`,
+ * etc.) using the `X-GitHub-Event` header persisted alongside the payload
+ * (`change_source_events.headers`). A github-specific hint field, when present, wins; any field it
+ * doesn't set (or an unrecognized/missing event name) falls back to the flat generic shape, so a
+ * hand-crafted test payload with a bare `{repo, correlationKey}` still correlates exactly as
+ * before. ArgoCD/Terraform provider-specific parsing is not yet added (both source kinds' M7
+ * plugins don't define an inbound webhook payload shape of their own — ArgoCD is poll-only,
+ * Terraform Mode 1's inbound path is `scp change report`'s own flat shape already) — tracked as
+ * natural follow-up if/when TFC/Atlantis-native webhook payloads need first-class parsing too.
  */
-function extractHint(payload: unknown): { repo?: string; path?: string; correlationKey?: string } {
+interface ExtractedHint {
+  repo?: string;
+  path?: string;
+  correlationKey?: string;
+}
+
+function genericHint(payload: unknown): ExtractedHint {
   if (!payload || typeof payload !== "object") return {};
   const p = payload as Record<string, unknown>;
   return {
     repo: typeof p.repo === "string" ? p.repo : undefined,
     path: typeof p.path === "string" ? p.path : undefined,
     correlationKey: typeof p.correlationKey === "string" ? p.correlationKey : undefined
+  };
+}
+
+function extractHint(sourceKind: string, headers: unknown, payload: unknown): ExtractedHint {
+  const generic = genericHint(payload);
+  if (sourceKind !== "github") return generic;
+
+  const headerMap = (headers ?? {}) as Record<string, unknown>;
+  const eventName = headerMap["x-github-event"];
+  if (typeof eventName !== "string") return generic;
+
+  const githubHint = mapGithubWebhookEventToHint(eventName, payload);
+  if (!githubHint) return generic;
+  return {
+    repo: githubHint.repo ?? generic.repo,
+    path: githubHint.path ?? generic.path,
+    correlationKey: githubHint.correlationKey ?? generic.correlationKey
   };
 }
 
@@ -42,7 +76,7 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
     .limit(BATCH_LIMIT);
 
   for (const row of rows) {
-    const hint = extractHint(row.payload);
+    const hint = extractHint(row.sourceKind, row.headers, row.payload);
     const componentObjectId = await matchComponentForSource(tx, orgId, {
       sourceKind: row.sourceKind,
       repo: hint.repo,

@@ -22,9 +22,12 @@ import type {
   ControlOutcomeStatus,
   ControlPlugin,
   ControlRequest,
+  DiscoveryPlugin,
   ExecutorCapabilities,
   ExecutorEvent,
   ExecutorPlugin,
+  NotificationMessage,
+  NotificationPlugin,
   PluginContext,
   TriggerIntent
 } from "@scp/plugin-api";
@@ -32,9 +35,26 @@ import type {
 export interface ExecutorConformanceFixture {
   plugin: ExecutorPlugin;
   ctx: PluginContext;
+  /**
+   * MAJOR #4 (adversarial review): optionally simulate a SUBPROCESS RESTART — return a FRESH
+   * plugin instance + ctx that share the FIRST fixture's DURABLE dedup state (i.e. the same
+   * on-disk `statePath`), NOT the first instance's in-process memory. If provided, the idempotency
+   * conformance test fires the two `trigger()` calls across this restart, proving the dedup
+   * guarantee survives the exact crash/resume scenario `coordination/reconcile.ts`'s three-step
+   * design targets (a retry after the subprocess died must NOT re-fire the real side effect). A
+   * fixture that only supports in-memory dedup omits this, and the test falls back to same-instance
+   * dedup (still correct, just a weaker guarantee — which is why the server ALWAYS injects a
+   * durable statePath for real executor instances, `executor-bindings-repo.ts`).
+   */
+  restart?: () => Promise<{ plugin: ExecutorPlugin; ctx: PluginContext }>;
 }
 
-const KNOWN_TRIGGER_KINDS: TriggerIntent["kind"][] = ["sync", "workflow_dispatch", "rollback", "custom"];
+const KNOWN_TRIGGER_KINDS: TriggerIntent["kind"][] = [
+  "sync",
+  "workflow_dispatch",
+  "rollback",
+  "custom"
+];
 const KNOWN_EVENT_KINDS: ExecutorEvent["kind"][] = [
   "push",
   "pull_request",
@@ -123,6 +143,57 @@ export function runExecutorConformanceSuite(
         expect(typeof event.correlation).toBe("object");
       }
     });
+
+    /**
+     * M7 (BUILD_AND_TEST.md §8 M7 item 6 — a tracked M3 item, now due): "extend the Executor
+     * conformance suite to assert an executor honors `idempotencyKey` (same key ⇒ same external
+     * run, no duplicate side effect)". `coordination/reconcile.ts`'s crash-safe `triggerWaveTarget`
+     * (DESIGN §9.3) depends on EVERY real executor plugin honoring this — a retry after a
+     * crash/resume re-derives the SAME `idempotencyKey` and must get back the SAME
+     * `ExternalRunRef` rather than firing a second real run. Two DIFFERENT keys, by contrast, must
+     * be free to mint different runs (this suite doesn't assert they're forced to differ — a
+     * plugin's own state might legitimately coincide — only that a REPEATED key never diverges,
+     * which is the actual safety property the engine relies on).
+     */
+    it("trigger() honors idempotencyKey — the SAME key returns the SAME ExternalRunRef on retry (no duplicate side effect)", async () => {
+      const { plugin, ctx } = await factory();
+      const caps = plugin.describeCapabilities();
+      if (!caps.supportsTrigger) return;
+
+      const kind = caps.triggerKinds[0] ?? "custom";
+      const intent: TriggerIntent = {
+        kind,
+        targetRef: "conformance-idempotency-target",
+        idempotencyKey: "conformance-idempotency-key"
+      };
+      const first = await plugin.trigger(ctx, intent);
+      const second = await plugin.trigger(ctx, intent);
+      expect(second.externalId).toBe(first.externalId);
+    });
+
+    it("trigger() dedup SURVIVES a subprocess restart — same key across a fresh instance sharing durable state returns the SAME ExternalRunRef (MAJOR #4)", async () => {
+      const first = await factory();
+      const caps = first.plugin.describeCapabilities();
+      if (!caps.supportsTrigger) return;
+
+      const kind = caps.triggerKinds[0] ?? "custom";
+      const intent: TriggerIntent = {
+        kind,
+        targetRef: "conformance-restart-target",
+        idempotencyKey: "conformance-restart-key"
+      };
+      const firstRef = await first.plugin.trigger(first.ctx, intent);
+
+      // Simulate a subprocess restart: a FRESH plugin instance + ctx that share only the durable
+      // (on-disk) dedup state, never the first instance's in-process memory. A plugin whose dedup
+      // is in-memory-only would re-fire here and mint a DIFFERENT ref; a durable one returns the
+      // same. A fixture without `restart` reuses the same instance (same-process fallback).
+      const restarted = first.restart
+        ? await first.restart()
+        : { plugin: first.plugin, ctx: first.ctx };
+      const secondRef = await restarted.plugin.trigger(restarted.ctx, intent);
+      expect(secondRef.externalId).toBe(firstRef.externalId);
+    });
   });
 }
 
@@ -177,6 +248,78 @@ export function runControlConformanceSuite(
       const { plugin, ctx, request } = await factory();
       const outcome = await plugin.evaluate(ctx, request);
       expect(outcome.evidence).toBeDefined();
+    });
+  });
+}
+
+// -------------------------------------------------------------------------------------------
+// DiscoveryPlugin conformance (DESIGN.md §11, BUILD_AND_TEST.md §8 M7) — `@scp/plugin-github`'s
+// discovery half is the first real implementation. Shape-only, same discipline as every other
+// suite here: asserts `discover()` returns a well-formed `DiscoveryProposal`, never that it found
+// any particular thing. The "never auto-commits" guarantee DESIGN §11 requires is NOT (and cannot
+// be) asserted here — `discover()` has no graph access at all, structurally, so there is nothing
+// for this plugin-level suite to observe about commit behavior; that guarantee is proven at the
+// server layer instead (routes/executors.integration.test.ts: `/discovery/run` never writes to the
+// graph, only `/discovery/accept` does).
+// -------------------------------------------------------------------------------------------
+
+export interface DiscoveryConformanceFixture {
+  plugin: DiscoveryPlugin;
+  ctx: PluginContext;
+}
+
+export function runDiscoveryConformanceSuite(
+  name: string,
+  factory: () => Promise<DiscoveryConformanceFixture>
+): void {
+  describe(`DiscoveryPlugin conformance: ${name}`, () => {
+    it("discover() returns a well-formed DiscoveryProposal", async () => {
+      const { plugin, ctx } = await factory();
+      const proposal = await plugin.discover(ctx);
+      expect(Array.isArray(proposal.objects)).toBe(true);
+      expect(Array.isArray(proposal.relationships)).toBe(true);
+      for (const object of proposal.objects) {
+        expect(typeof object.typeId).toBe("string");
+        expect(object.typeId.length).toBeGreaterThan(0);
+        expect(typeof object.name).toBe("string");
+        expect(object.name.length).toBeGreaterThan(0);
+      }
+      for (const relationship of proposal.relationships) {
+        expect(typeof relationship.typeId).toBe("string");
+        expect(typeof relationship.fromUrn).toBe("string");
+        expect(typeof relationship.toUrn).toBe("string");
+      }
+    });
+  });
+}
+
+// -------------------------------------------------------------------------------------------
+// NotificationPlugin conformance (DESIGN.md §11, BUILD_AND_TEST.md §8 M7) — `@scp/plugin-
+// webhook-notify`/`@scp/plugin-smtp-notify`'s first real implementations. Same shape-only
+// discipline: asserts `send()` returns a well-formed `DeliveryResult` and never throws even when
+// delivery itself fails (a notification's own failure must never propagate as an exception to
+// whatever engine seam called it — coordination/watchdog.ts, notify/dispatch.ts).
+// -------------------------------------------------------------------------------------------
+
+export interface NotificationConformanceFixture {
+  plugin: NotificationPlugin;
+  ctx: PluginContext;
+  /** A representative message `send()` should handle without throwing. */
+  message: NotificationMessage;
+}
+
+export function runNotificationConformanceSuite(
+  name: string,
+  factory: () => Promise<NotificationConformanceFixture>
+): void {
+  describe(`NotificationPlugin conformance: ${name}`, () => {
+    it("send() returns a well-formed DeliveryResult — never throws", async () => {
+      const { plugin, ctx, message } = await factory();
+      const result = await plugin.send(ctx, message);
+      expect(typeof result.delivered).toBe("boolean");
+      if (result.detail !== undefined) {
+        expect(typeof result.detail).toBe("string");
+      }
     });
   });
 }

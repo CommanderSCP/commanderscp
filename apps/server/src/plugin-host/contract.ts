@@ -3,10 +3,13 @@ import type {
   ControlOutcome,
   ControlRequest,
   Cursor,
+  DeliveryResult,
+  DiscoveryProposal,
   ExecutionStatus,
   ExecutorCapabilities,
   ExecutorEvent,
   ExternalRunRef,
+  NotificationMessage,
   TriggerIntent
 } from "@scp/plugin-api";
 
@@ -39,16 +42,58 @@ export interface ControlPluginClient {
   evaluate(req: ControlRequest): Promise<ControlOutcome>;
 }
 
+/** M7 counterpart to `ExecutorPluginClient`/`ControlPluginClient` for `DiscoveryPlugin` (github
+ *  repo/topology scan — DESIGN §11/§12). */
+export interface DiscoveryPluginClient {
+  discover(): Promise<DiscoveryProposal>;
+}
+
+/** M7 counterpart for `NotificationPlugin` (smtp-notify/webhook-notify — DESIGN §11). */
+export interface NotificationPluginClient {
+  send(msg: NotificationMessage): Promise<DeliveryResult>;
+}
+
+/**
+ * Every in-repo plugin module a subprocess can load (subprocess-entry.ts's `loadPlugin` switch is
+ * the single source of truth this union must stay in sync with). M7 widens this from M3/M4's
+ * closed `"fake-executor" | "webhook-control"` pair: `github`/`argocd`/`terraform`/`managed-iac`
+ * are `ExecutorPlugin`s, `github-discovery` is github's separate `DiscoveryPlugin` export (a
+ * distinct module name because ONE subprocess-hosted instance loads exactly one plugin `kind` —
+ * an org that wants both github's executor AND its discovery scan configures two instances, same
+ * package, two module names), `webhook-notify`/`smtp-notify` are `NotificationPlugin`s.
+ */
+export type PluginModule =
+  | "fake-executor"
+  | "webhook-control"
+  | "github"
+  | "github-discovery"
+  | "argocd"
+  | "terraform"
+  | "managed-iac"
+  | "webhook-notify"
+  | "smtp-notify";
+
 export interface PluginHostInstanceConfig {
-  /** Stable id referenced by `change_wave_targets.executor_plugin_id` (executor instances) or
-   *  `control_bindings.plugin_instance_id` (control instances, M4). */
+  /** Stable id referenced by `change_wave_targets.executor_plugin_id` / `executor_bindings.plugin_instance_id`
+   *  (executor instances), `control_bindings.plugin_instance_id` (control instances, M4), or
+   *  `notification_bindings.plugin_instance_id` (M7). */
   id: string;
-  /** Which in-repo plugin module the spawned subprocess loads. `webhook-control` is M4's
-   *  escape-hatch ControlPlugin (DESIGN §10.2); every other value is an ExecutorPlugin module. */
-  module: "fake-executor" | "webhook-control";
+  module: PluginModule;
   orgId: string;
   domainId: string;
   config?: unknown;
+  /** Resolved (plaintext, already-decrypted) secret values for this instance — M7's
+   *  `executor_bindings`/`notification_bindings` `secretRefs` resolved via
+   *  `secrets/secrets-repo.ts`'s `resolveSecretRefs` BEFORE this config ever reaches `host.start()`.
+   *  Never logged; injected into the subprocess only via env (subprocess-entry.ts's
+   *  `SCP_PLUGIN_SECRETS_JSON`), read into an in-memory `SecretsAccessor`, never written to disk. */
+  secrets?: Record<string, string>;
+  /** Egress allowlist (SSRF mitigation) for this instance's `PluginContext.http` — hostnames (not
+   *  URLs) a `ScopedHttpClient.request()` call may target. Empty/omitted preserves M3/M4's
+   *  unscoped behavior (needed by `webhook-control`, whose entire point is POSTing to an
+   *  operator-configured arbitrary URL) — every M7 network-calling plugin (github/argocd/
+   *  webhook-notify) sets this explicitly from its own binding config instead. */
+  allowedHosts?: string[];
 }
 
 export interface PluginHost {
@@ -56,4 +101,6 @@ export interface PluginHost {
   stop(): Promise<void>;
   executor(instanceId: string): ExecutorPluginClient;
   control(instanceId: string): ControlPluginClient;
+  discovery(instanceId: string): DiscoveryPluginClient;
+  notification(instanceId: string): NotificationPluginClient;
 }

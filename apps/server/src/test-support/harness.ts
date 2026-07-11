@@ -184,6 +184,7 @@ export async function listenTestServer(
     if (opts.withReconcileLoop) {
       const stateDir = await mkdtemp(join(tmpdir(), "scp-test-fake-executor-"));
       pluginHost = new SubprocessPluginHost(opts.pluginHostOptions);
+      server.deps.pluginHost = pluginHost; // M7: routes/executors.ts's POST /discovery/run needs this
       await pluginHost.start([
         {
           id: DEFAULT_EXECUTOR_INSTANCE_ID,
@@ -197,10 +198,22 @@ export async function listenTestServer(
           }
         }
       ]);
-      reconcileLoop = await startReconcileLoop(boss, server.deps.db, pluginHost, server.deps.celSandbox!);
-      watchdogLoop = await startWatchdogLoop(boss, server.deps.db, {
-        intervalSeconds: opts.watchdogIntervalSeconds
-      });
+      reconcileLoop = await startReconcileLoop(
+        boss,
+        server.deps.db,
+        pluginHost,
+        server.deps.celSandbox!,
+        server.deps.config.secretsMasterKey
+      );
+      watchdogLoop = await startWatchdogLoop(
+        boss,
+        server.deps.db,
+        pluginHost,
+        server.deps.config.secretsMasterKey,
+        {
+          intervalSeconds: opts.watchdogIntervalSeconds
+        }
+      );
     }
   }
 
@@ -435,7 +448,9 @@ export async function waitUntil<T>(
     if (Date.now() >= deadline) {
       throw new Error(
         `waitUntil timed out after ${timeoutMs}ms waiting for: ${opts.describe}` +
-          (lastError ? ` — last error: ${lastError instanceof Error ? lastError.message : String(lastError)}` : "")
+          (lastError
+            ? ` — last error: ${lastError instanceof Error ? lastError.message : String(lastError)}`
+            : "")
       );
     }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));

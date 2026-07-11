@@ -15,6 +15,7 @@ import { CampaignDetailPage } from "./routes/campaign-detail";
 import { InitiativeListPage } from "./routes/initiative-list";
 import { InitiativeDetailPage } from "./routes/initiative-detail";
 import { FederationStatusPage } from "./routes/federation-status";
+import { PluginsPage } from "./routes/plugins";
 
 /**
  * Code-based TanStack Router route tree (BUILD_AND_TEST.md §8 M2 item 2 — "TanStack Router...
@@ -110,6 +111,12 @@ const federationStatusRoute = createRoute({
   component: FederationStatusPage
 });
 
+const pluginsRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/plugins",
+  component: PluginsPage
+});
+
 // Static segments (`/login`, `/device`, `/pats`, `/graph/...`, `/changes`, `/changes/...`,
 // `/campaigns`, `/campaigns/...`, `/initiatives`, `/initiatives/...`, `/federation`) always
 // out-rank the single dynamic `$basePath` segment below at the same depth — standard router
@@ -140,6 +147,7 @@ const routeTree = rootRoute.addChildren([
     initiativeListRoute,
     initiativeDetailRoute,
     federationStatusRoute,
+    pluginsRoute,
     registryListRoute,
     registryDetailRoute
   ])

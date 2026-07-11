@@ -2,6 +2,7 @@ import {
   bigint,
   boolean,
   index,
+  integer,
   jsonb,
   pgTable,
   text,
@@ -504,17 +505,29 @@ export const sourceMappings = pgTable(
 export const changeSourceEvents = pgTable(
   "change_source_events",
   {
-    id: uuid("id").primaryKey(), // UUIDv7 — doubles as an idempotency key for re-delivery
+    id: uuid("id").primaryKey(), // UUIDv7 — the LOCAL event id (not a replay dedupe key — see below)
     orgId: uuid("org_id").notNull(),
     sourceKind: text("source_kind").notNull(),
     signatureVerified: boolean("signature_verified").notNull().default(false),
+    /**
+     * M7 (MAJOR #5, adversarial review): the PROVIDER's own delivery identity — GitHub's
+     * `X-GitHub-Delivery` (unique per delivery, stable across a redelivery of the same event), or
+     * a `payload-sha256:<hex>` of the raw body when no delivery header exists. A unique index on
+     * `(org_id, source_kind, dedupe_key)` makes a redelivered/replayed (even validly-signed)
+     * webhook a no-op instead of a second Change → second real workflow_dispatch/sync/apply. The
+     * PK `id` is freshly minted per HTTP request and is NOT this key (that was the bug).
+     */
+    dedupeKey: text("dedupe_key"),
     headers: jsonb("headers").notNull(),
     payload: jsonb("payload").notNull(),
     processedAt: timestamp("processed_at", { withTimezone: true }),
     resultingChangeObjectId: uuid("resulting_change_object_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
-  (table) => [index("change_source_events_unprocessed").on(table.processedAt, table.createdAt)]
+  (table) => [
+    index("change_source_events_unprocessed").on(table.processedAt, table.createdAt),
+    unique("change_source_events_dedupe").on(table.orgId, table.sourceKind, table.dedupeKey)
+  ]
 );
 
 /**
@@ -1047,4 +1060,121 @@ export const idempotencyKeys = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [uniqueIndex("idempotency_keys_pk").on(table.orgId, table.idempotencyKey)]
+);
+
+// -------------------------------------------------------------------------------------------
+// M7 Real Executor Integrations (DESIGN.md §11, §12, BUILD_AND_TEST.md §8 M7). Hand-authored
+// grants/RLS in drizzle/0014_m7_executor_integrations.sql (same pattern as 0002/0005/0007/0010).
+//
+// `executor_bindings` is the exact gap `coordination/executor-config.ts`'s module doc predicted
+// ("that lands once ExecutorPlugin config becomes a registry object, alongside GitHub/ArgoCD/
+// Terraform in M7") — the M4 `control_bindings` precedent for a graph object bound to a concrete
+// plugin instance, applied to Component/DeploymentTarget objects instead of Control objects.
+//
+// `secrets` is the org-scoped, ENCRYPTED-AT-REST credential store the GitHub App private key /
+// ArgoCD token / managed-IaC vaulted infra credentials need (`secrets/crypto.ts` — AES-256-GCM,
+// keyed by an operator-supplied `SCP_SECRETS_MASTER_KEY`, never the app database itself). This is
+// deliberately NOT modeled on `instance_keys` (M4/M6): that table is explicitly plaintext-in-
+// Postgres with no RLS, an acceptable narrow exception for one federation-domain-wide signing key;
+// a general-purpose secrets store handling many tenants' arbitrary plugin credentials gets both
+// real encryption and RLS.
+//
+// `notification_bindings` gives the M3 watchdog escalation seam (coordination/watchdog.ts) and
+// governance gate blocks somewhere real to send to — an org may configure more than one channel
+// (hence no per-org uniqueness), each bound to a `NotificationPlugin` instance exactly like an
+// executor/control binding.
+// -------------------------------------------------------------------------------------------
+
+/** Org-scoped, encrypted-at-rest secret material referenced BY KEY from `executor_bindings.config`
+ *  / `notification_bindings.config` (e.g. `{ "privateKeySecretRef": "github-app-1-private-key" }`)
+ *  — plugin instances never see a secret unless their own binding's config explicitly names it,
+ *  and the plaintext is decrypted only in-memory, injected into the plugin's subprocess env at
+ *  spawn time (`plugin-host/host.ts`), never logged, never persisted anywhere but this ciphertext
+ *  column. */
+export const secrets = pgTable(
+  "secrets",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    key: text("key").notNull(), // caller-chosen reference name, unique per org
+    ciphertext: text("ciphertext").notNull(), // base64(AES-256-GCM(plaintext) || authTag)
+    nonce: text("nonce").notNull(), // base64, 12-byte GCM IV, fresh per encryption
+    keyVersion: integer("key_version").notNull().default(1), // which master key encrypted this row
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    unique("secrets_org_key").on(table.orgId, table.key),
+    index("secrets_org").on(table.orgId)
+  ]
+);
+
+/** Binds a Component/DeploymentTarget graph object to a concrete `ExecutorPlugin` instance —
+ *  `pluginModule`/`pluginInstanceId`/`config` feed the exact same `PluginHostInstanceConfig` shape
+ *  `control_bindings` already does (plugin-host/contract.ts); `secretRefs` names which `secrets`
+ *  rows (by key) get resolved and injected as this instance's `PluginContext.secrets` at
+ *  provisioning time (coordination/executor-bindings-repo.ts's `resolveExecutorPluginInstance`).
+ *  `allowedHosts` is this instance's egress allowlist (SSRF mitigation, plugin-host/host.ts) —
+ *  empty/omitted means the plugin's own manifest-declared defaults apply. */
+export const executorBindings = pgTable(
+  "executor_bindings",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    targetObjectId: uuid("target_object_id").notNull(),
+    pluginModule: text("plugin_module").notNull(), // 'github'|'argocd'|'terraform'|'managed-iac'|...
+    pluginInstanceId: text("plugin_instance_id").notNull(),
+    config: jsonb("config").notNull().default({}),
+    secretRefs: jsonb("secret_refs").notNull().default({}), // { configFieldName: secretKey }
+    allowedHosts: jsonb("allowed_hosts").notNull().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    unique("executor_bindings_org_target_key").on(table.orgId, table.targetObjectId),
+    index("executor_bindings_org").on(table.orgId)
+  ]
+);
+
+/** An org's notification channels (DESIGN §11 `NotificationPlugin`) — the watchdog escalation
+ *  seam and governance gate-block notices fan out to every row here, best-effort (one channel's
+ *  delivery failure never blocks another's, nor the engine action that triggered it). */
+export const notificationBindings = pgTable(
+  "notification_bindings",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    pluginModule: text("plugin_module").notNull(), // 'smtp-notify'|'webhook-notify'
+    pluginInstanceId: text("plugin_instance_id").notNull(),
+    config: jsonb("config").notNull().default({}),
+    secretRefs: jsonb("secret_refs").notNull().default({}),
+    allowedHosts: jsonb("allowed_hosts").notNull().default([]),
+    minSeverity: text("min_severity").notNull().default("info"), // info|warning|critical
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    unique("notification_bindings_org_instance_key").on(table.orgId, table.pluginInstanceId),
+    index("notification_bindings_org").on(table.orgId)
+  ]
+);
+
+/** Per-org, per-source-kind webhook signing secret KEY REFERENCE (into `secrets`) — resolved by
+ *  `routes/change-sources.ts` before it will accept a delivery as signature-verified. Kept as its
+ *  own tiny table (not folded into `source_mappings`, which is 1:N per source kind and has no
+ *  natural place for a singleton secret) so rotating a webhook secret never touches correlation
+ *  config. */
+export const changeSourceWebhookSecrets = pgTable(
+  "change_source_webhook_secrets",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    sourceKind: text("source_kind").notNull(),
+    secretKey: text("secret_key").notNull(), // references secrets.key for this org
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    unique("change_source_webhook_secrets_org_source_key").on(table.orgId, table.sourceKind)
+  ]
 );

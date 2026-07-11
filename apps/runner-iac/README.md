@@ -1,9 +1,17 @@
 # scp-runner-iac
 
-Stub for M0. This is the source for the separate `scp-runner-iac` image: pinned
-OpenTofu/Terraform plus a minimal run shim, used only by the isolated `scp-managed-iac`
-executor (charter's Managed Execution Exception; DESIGN.md §12 Mode 2).
+The SEPARATE image the `scp-managed-iac` executor (`packages/plugins/managed-iac`) launches, one
+ephemeral container per run (DESIGN.md §12 Mode 2, charter's Managed Execution Exception,
+BUILD_AND_TEST.md §8 M7 item 3): pinned OpenTofu + a minimal shell run shim (`run.sh`), nothing
+else. No Node app code lives here (docs/DESIGN.md §3) — the `scpd` image carries no IaC toolchain
+at all; this is the only place `tofu` exists in the whole system.
 
-Not an npm workspace package — it is a plain Docker build context with no Node app code
-(DESIGN.md §3). The Dockerfile, pinned tofu/terraform toolchain, and run shim land in **M7**
-(BUILD_AND_TEST.md §8). Until then this directory exists only to hold the layout in place.
+Not an npm workspace package — a plain Docker build context.
+
+```
+docker build -t scp-runner-iac:dev apps/runner-iac
+```
+
+Interface: `docker run --rm -v <workspace-dir>:/workspace -e <vaulted infra creds> scp-runner-iac
+<plan|apply|rollback>` — see `run.sh`'s own doc comment for the full per-action contract (evidence
+files written back into `/workspace`, state-history snapshots, `PRIOR_STATE_FILE` for rollback).

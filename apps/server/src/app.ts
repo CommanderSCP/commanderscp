@@ -39,8 +39,21 @@ import { registerChangeSourceRoutes } from "./routes/change-sources.js";
 import { registerCampaignRoutes } from "./routes/campaigns.js";
 import { registerInitiativeRoutes } from "./routes/initiatives.js";
 import { registerFederationRoutes } from "./routes/federation.js";
+import { registerExecutorRoutes } from "./routes/executors.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * M7 (routes/change-sources.ts, coordination/webhook-signature.ts): every inbound webhook source
+ * (GitHub, TFC/Atlantis, ...) signs over the RAW request bytes, not a re-serialized
+ * JSON.parse/stringify round trip — whitespace/key-order differences would break the HMAC. Fastify
+ * augmented here with the one extra field the signature-verification path needs.
+ */
+declare module "fastify" {
+  interface FastifyRequest {
+    rawBody?: Buffer;
+  }
+}
 
 export interface BuildAppOptions {
   /** Suppresses request logging noise for openapi:emit / tests. */
@@ -74,6 +87,33 @@ export async function buildApp(
 
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
+
+  // M7 (coordination/webhook-signature.ts): captures the RAW request bytes onto `request.rawBody`
+  // BEFORE JSON-parsing them — every webhook signature scheme (GitHub's `X-Hub-Signature-256`, the
+  // generic `sha256=` fallback) is computed over those exact bytes, and a JSON.parse -> JSON.
+  // stringify round trip is not guaranteed byte-identical (whitespace, key order). Behaves
+  // identically to Fastify's own default JSON parser for every OTHER route — this replaces it
+  // wholesale rather than adding a second, route-scoped parser, since Fastify content-type parsers
+  // are registered per content-type globally, not per-route. An empty body parses to `undefined`
+  // (matches Fastify's default), and a JSON syntax error surfaces as the same `FST_ERR_CTP_INVALID_
+  // JSON_BODY`-shaped error the default parser produces (rethrown as-is so the existing error
+  // handling table is unaffected).
+  app.addContentTypeParser<Buffer>(
+    "application/json",
+    { parseAs: "buffer" },
+    (request, body, done) => {
+      request.rawBody = body;
+      if (body.length === 0) {
+        done(null, undefined);
+        return;
+      }
+      try {
+        done(null, JSON.parse(body.toString("utf8")));
+      } catch (err) {
+        done(err as Error, undefined);
+      }
+    }
+  );
 
   const routeRegistry: CollectedRoute[] = [];
   app.decorate("routeRegistry", routeRegistry);
@@ -153,6 +193,9 @@ export async function buildApp(
   // M6: Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN.md §13) — sync journal export/import,
   // peer pairing, Promotion Bundles, overlays, hand-fill. See routes/federation.ts's module doc.
   registerFederationRoutes(app, deps);
+  // M7: Real Executor Integrations (BUILD_AND_TEST.md §8 M7, DESIGN.md §11/§12) — executor/
+  // notification bindings, encrypted secrets, plugin manifests, DiscoveryPlugin run/accept.
+  registerExecutorRoutes(app, deps);
 
   app.get("/healthz", async () => ({ status: "ok" }));
 
