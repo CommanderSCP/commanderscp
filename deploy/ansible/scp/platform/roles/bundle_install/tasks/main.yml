@@ -17,9 +17,13 @@
     that:
       - scp_bundle_tarball | length > 0
       - scp_registry | length > 0
+      - scp_cosign_pubkey | length > 0
     fail_msg: >-
-      scp_bundle_tarball (path to scp-bundle-<version>.tar.gz on the control node) and
-      scp_registry (target registry, e.g. registry.internal:5000/scp) are both required.
+      scp_bundle_tarball (path to scp-bundle-<version>.tar.gz on the control node), scp_registry
+      (target registry, e.g. registry.internal:5000/scp), and scp_cosign_pubkey (path, on the
+      control node, to an EXTERNAL cosign public key obtained out-of-band from the bundle itself
+      — adversarial review CRITICAL #1: install.sh refuses to verify a bundle against a key
+      shipped inside that same bundle) are all required.
 
 - name: Ensure the extraction directory exists
   ansible.builtin.file:
@@ -33,6 +37,15 @@
     dest: "{{ scp_bundle_extract_dir }}/{{ scp_bundle_tarball | basename }}"
     mode: "0644"
   register: scp_bundle_copy
+
+- name: >-
+    Copy the EXTERNAL cosign public key to the target host (adversarial review CRITICAL #1 —
+    install.sh's own trust root must never be a key shipped inside the bundle it verifies)
+  ansible.builtin.copy:
+    src: "{{ scp_cosign_pubkey }}"
+    dest: "{{ scp_bundle_extract_dir }}/cosign-external.pub"
+    mode: "0644"
+  register: scp_cosign_pubkey_copy
 
 - name: Extract the bundle
   # Plain `tar -xzf` rather than ansible.builtin.unarchive: unarchive's auto-detection needs GNU
@@ -69,11 +82,14 @@
 - name: Run the bundle install/upgrade script (cosign-verify -> retarget -> apply)
   # install.sh's own `set -euo pipefail` + fail-closed cosign verification is the real gate — a
   # non-zero exit here (a tampered bundle, a failed retarget, a digest mismatch) fails the play
-  # for this host, which is exactly what a fleet rollout wants.
+  # for this host, which is exactly what a fleet rollout wants. `--pubkey` points at the EXTERNAL
+  # key copied to this host above — never the cosign.pub shipped inside the bundle itself
+  # (adversarial review CRITICAL #1).
   ansible.builtin.command:
     cmd: >-
       ./install.sh
       --registry {{ scp_registry }}
+      --pubkey {{ scp_bundle_extract_dir }}/cosign-external.pub
       --mode {{ scp_install_mode }}
       {{ '--namespace ' + scp_helm_namespace if (scp_install_mode == 'helm' and scp_helm_namespace | length > 0) else '' }}
       {{ '--release-name ' + scp_helm_release_name if scp_install_mode == 'helm' else '' }}

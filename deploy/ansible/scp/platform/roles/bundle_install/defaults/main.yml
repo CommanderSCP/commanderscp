@@ -14,6 +14,13 @@ scp_install_mode: compose
 # Required — install.sh will not run without it.
 scp_registry: ""
 
+# EXTERNAL cosign public key (install.sh --pubkey), obtained OUT-OF-BAND from the bundle itself
+# (the project's release page, a prior trusted install, etc.) — path on the CONTROL NODE, copied
+# to the target host alongside the bundle. Required — install.sh (adversarial review CRITICAL #1)
+# refuses to verify a bundle against the cosign.pub shipped INSIDE that same bundle, since an
+# attacker who substitutes the whole bundle can just ship their own matching key with it.
+scp_cosign_pubkey: ""
+
 # Pass-throughs to install.sh (all optional).
 scp_helm_namespace: ""       # --namespace (helm mode only)
 scp_helm_release_name: scp   # --release-name (helm mode only)

@@ -135,9 +135,13 @@ log "install.sh: cosign-verify -> retarget-push into the local registry -> helm 
   # this drill is fully self-contained with no external DB and no internet image pulls. scpd +
   # runner-iac are retargeted+pushed to the local registry by install.sh; the eval postgres image
   # is the documented known-gap (chart pins the literal tag) that `kind load` covers here.
+  # --pubkey: the EXTERNAL copy build-bundle.js wrote ALONGSIDE the tarball (BUNDLE_OUT/cosign.pub,
+  # NOT the cosign.pub shipped INSIDE the bundle dir being verified) — install.sh (adversarial
+  # review CRITICAL #1) refuses to run without an external key; using the same one build-bundle
+  # wrote is this drill's stand-in for "the operator obtained it out-of-band".
   SCP_EXTRA_HELM_SET="postgres.evalInCluster.enabled=true" \
-    ./install.sh --registry "${REG_IN_CLUSTER}/scp" --mode helm --insecure-registry \
-      --release-name "$RELEASE_NAME"
+    ./install.sh --registry "${REG_IN_CLUSTER}/scp" --pubkey "${BUNDLE_OUT}/cosign.pub" \
+      --mode helm --insecure-registry --release-name "$RELEASE_NAME"
 )
 
 log "waiting for all pods Ready under the enforced default-deny egress policy"

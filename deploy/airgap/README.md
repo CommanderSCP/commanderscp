@@ -83,17 +83,24 @@ tampered bundle. See "Trust model" below for what each layer actually proves.
 ```bash
 tar xzf scp-bundle-1.0.0-rc.tar.gz
 cd scp-bundle-1.0.0-rc
-./install.sh --registry myregistry.example.com/scp --mode helm
+./install.sh --registry myregistry.example.com/scp --pubkey /path/to/independently-obtained/cosign.pub --mode helm
 ```
 
+`--pubkey` (or `SCP_COSIGN_PUBKEY`) is REQUIRED and must point at a cosign public key you obtained
+OUT-OF-BAND from this bundle — e.g. the copy `pnpm --filter @scp/airgap bundle` wrote ALONGSIDE
+the tarball (not the `cosign.pub` shipped INSIDE it) if you built it yourself, or the project's
+published key for an official release. `install.sh` refuses to run (fails closed with a clear
+message) if no external key is supplied — see "Trust model" below for why the in-bundle
+`cosign.pub` can never be used as this script's own verification key.
+
 `install.sh` is a standalone bash script (no Node/pnpm dependency) that: (1) cosign-verifies
-everything, fail-closed, before touching anything; (2) pushes each image into your registry; (3)
-re-resolves each pushed image's digest from your registry and confirms it matches what was just
-verified; (4) runs `helm upgrade --install` (or rewrites+runs the compose file in `--mode
-compose`), pinned by digest, never by a mutable tag alone. Add `--dry-run` to exercise (1)–(3)
-without the final deploy step; add `--insecure-registry` for a registry with a self-signed
-cert/plain HTTP (internal air-gapped registries commonly aren't behind a public CA — never use
-this for anything reachable over an untrusted network).
+everything against that external key, fail-closed, before touching anything; (2) pushes each
+image into your registry; (3) re-resolves each pushed image's digest from your registry and
+confirms it matches what was just verified; (4) runs `helm upgrade --install` (or rewrites+runs
+the compose file in `--mode compose`), pinned by digest, never by a mutable tag alone. Add
+`--dry-run` to exercise (1)–(3) without the final deploy step; add `--insecure-registry` for a
+registry with a self-signed cert/plain HTTP (internal air-gapped registries commonly aren't behind
+a public CA — never use this for anything reachable over an untrusted network).
 
 ## Trust model
 
@@ -111,9 +118,14 @@ Three signature layers, each proving something different:
 
 **Obtain `cosign.pub` from a channel independent of the tarball's own download** before trusting
 the tarball's signature — a copy of the public key bundled next to (or inside) a tampered tarball
-proves nothing about that tarball, only about itself. This package bundles a copy for convenience
-(and so the inner per-file checks work once you've already trusted the outer layer once), not as
-a substitute for out-of-band key distribution.
+proves nothing about that tarball, only about itself. This is not merely advice: `verify-bundle`'s
+`--pubkey` is a required flag with no in-bundle fallback, and `install.sh` (adversarial review
+CRITICAL #1 — a previous version of this script fell back to the IN-BUNDLE `cosign.pub` as its own
+trust root, which an attacker who substitutes the whole bundle can defeat trivially by re-signing
+everything with their own key and shipping their own matching `cosign.pub`) now REQUIRES
+`--pubkey`/`SCP_COSIGN_PUBKEY` and refuses to run without it — the in-bundle copy is convenience
+only (e.g. eyeballing it against a known-good value), never a substitute for out-of-band key
+distribution, and neither tool ever reads it as a verification key.
 
 ## The empirically-discovered air-gap footgun (read this if you touch `cosign.ts`)
 
@@ -137,7 +149,15 @@ exact test — a silent regression here would mean bundle builds start phoning h
 manifest render/parse, and the compose-file retarget transform — all pure logic, no
 skopeo/cosign/Docker required (`pnpm --filter @scp/airgap test`).
 
-The skopeo/cosign/install.sh mechanics themselves were exercised manually end-to-end against real
+`src/install-sh-tamper.test.ts` is the one exception: it spawns the REAL `install.sh` (the actual
+bash script, copied into a fixture bundle dir — not a reimplementation of its logic) to prove the
+CRITICAL #1 fix (adversarial review of PR #15) holds — a bundle whose `CHECKSUMS.txt` is re-signed
+with a DIFFERENT (attacker) keypair is REJECTED when verified against the real, external
+`--pubkey`, and `install.sh` refuses to run at all without one. Requires `cosign`/`skopeo`/`helm`
+on PATH (`describe.skipIf`s cleanly, never a false failure, where they aren't — same posture as
+`scripts/airgap-drill.sh`).
+
+The skopeo/cosign/install.sh mechanics themselves were ALSO exercised manually end-to-end against real
 images already built on this dev machine (the real `scpd`/`scp-runner-iac` images from prior M7/M8
 work, tagged to match this package's default refs, plus the real `postgres:16`) — build a real
 ~370MB bundle, verify it clean, verify tamper-rejection (content tamper, signature tamper, OCI-blob

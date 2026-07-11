@@ -114,11 +114,15 @@ EOF
 run_playbook_inv() {
   local phase="$1"
   log "ansible-playbook (${phase}): rollout compose install/upgrade via scp.platform"
+  # scp_cosign_pubkey: the EXTERNAL copy build-bundle.js wrote ALONGSIDE the tarball
+  # (BUNDLE_OUT/cosign.pub, NOT the one shipped inside the bundle) — install.sh (adversarial
+  # review CRITICAL #1) refuses to run without an external key; this drill's stand-in for "the
+  # operator obtained it out-of-band" is using that same alongside-the-tarball copy.
   ANSIBLE_ROLES_PATH="${ROOT_DIR}/deploy/ansible/scp/platform/roles" \
   ansible-playbook \
     -i "$INVENTORY" \
     "${ROOT_DIR}/deploy/ansible/scp/platform/playbooks/rollout.yml" \
-    --extra-vars "{\"scp_bundle_tarball\":\"${TARBALL}\",\"scp_bundle_extract_dir\":\"${EXTRACT_DIR}\",\"scp_registry\":\"${REGISTRY_HOST}/scp\",\"scp_install_mode\":\"compose\",\"scp_insecure_registry\":true,\"scp_health_url\":\"http://127.0.0.1:8080/healthz\",\"scp_health_retries\":40,\"scp_health_delay_seconds\":2}"
+    --extra-vars "{\"scp_bundle_tarball\":\"${TARBALL}\",\"scp_bundle_extract_dir\":\"${EXTRACT_DIR}\",\"scp_registry\":\"${REGISTRY_HOST}/scp\",\"scp_cosign_pubkey\":\"${BUNDLE_OUT}/cosign.pub\",\"scp_install_mode\":\"compose\",\"scp_insecure_registry\":true,\"scp_health_url\":\"http://127.0.0.1:8080/healthz\",\"scp_health_retries\":40,\"scp_health_delay_seconds\":2}"
 }
 
 # INSTALL (first apply)

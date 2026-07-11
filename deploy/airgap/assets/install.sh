@@ -7,13 +7,23 @@
 #
 # SECURITY MODEL — read this before running it against anything you care about:
 #
-#   1. EVERY bundled image and the bundle's CHECKSUMS.txt are cosign-verified against the
-#      bundled `cosign.pub`, and the OCI-layout images are independently re-hashed (content-
-#      addressed blob filenames must match their own content — see step 1 below), BEFORE this
-#      script does anything else. Any failure here aborts immediately (`set -euo pipefail` plus
-#      explicit checks) — a tampered bundle is REJECTED, not silently installed. This is the
-#      single most adversarially-reviewed property of this whole package; if you are auditing
-#      this script, start here.
+#   0. Trust root: an EXTERNAL public key YOU supply (`--pubkey <path>` or `SCP_COSIGN_PUBKEY`),
+#      obtained out-of-band from this bundle (the project's release page, a prior trusted install,
+#      etc.) — NEVER the `cosign.pub` shipped INSIDE the bundle (adversarial review CRITICAL #1:
+#      an attacker who substitutes the whole bundle can just re-sign everything with their own key
+#      and ship their own `cosign.pub` alongside it — a bundle verifying itself against a key it
+#      also ships proves nothing about authenticity, only that the bundle is internally
+#      self-consistent). This script REFUSES to run any signature verification without an
+#      external key — see the check right after argument parsing below. The bundled `cosign.pub`
+#      is shipped for operator convenience only (e.g. comparing it by hand against a known-good
+#      value) and is never read by this script as a trust root.
+#   1. EVERY bundled image and the bundle's CHECKSUMS.txt are cosign-verified against that
+#      EXTERNAL key, and the OCI-layout images are independently re-hashed (content-addressed
+#      blob filenames must match their own content — see step 1 below), BEFORE this script does
+#      anything else. Any failure here aborts immediately (`set -euo pipefail` plus explicit
+#      checks) — a tampered bundle (including a wholesale-resigned one) is REJECTED, not silently
+#      installed. This is the single most adversarially-reviewed property of this whole package;
+#      if you are auditing this script, start here.
 #   2. Only after (1) passes does this script push images into YOUR registry
 #      (`skopeo copy oci:... docker://<registry>/...`) — the one deliberate, documented,
 #      operator-controlled network action this bundle ever performs. This script does not manage
@@ -50,14 +60,21 @@ RELEASE_NAME=scp
 DRY_RUN=0
 REGISTRY=""
 INSECURE_REGISTRY=0
+PUBKEY="${SCP_COSIGN_PUBKEY:-}"
 
 usage() {
   cat <<'EOF'
-Usage: install.sh --registry <host>/<path> [options]
+Usage: install.sh --registry <host>/<path> --pubkey <path> [options]
 
 Required:
   --registry <ref>       Target registry + path prefix, e.g. myregistry.example.com/scp
                           Images are pushed to <registry>/<image-name>:<version>@<digest>.
+  --pubkey <path>         EXTERNAL cosign public key to verify this bundle against — obtained
+                          out-of-band from the bundle itself (project release page, a prior
+                          trusted install, etc.), NEVER the `cosign.pub` shipped inside the
+                          bundle (that proves nothing: an attacker who substitutes the whole
+                          bundle can resign it and ship their own key alongside it). May also be
+                          set via the SCP_COSIGN_PUBKEY environment variable.
 
 Options:
   --mode helm|compose     Install mode (default: helm)
@@ -79,6 +96,7 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --registry) REGISTRY="${2:?--registry requires a value}"; shift 2 ;;
+    --pubkey) PUBKEY="${2:?--pubkey requires a value}"; shift 2 ;;
     --namespace) NAMESPACE="${2:?--namespace requires a value}"; shift 2 ;;
     --release-name) RELEASE_NAME="${2:?--release-name requires a value}"; shift 2 ;;
     --mode) MODE="${2:?--mode requires a value}"; shift 2 ;;
@@ -96,6 +114,22 @@ if [[ -z "$REGISTRY" ]]; then
 fi
 if [[ "$MODE" != "helm" && "$MODE" != "compose" ]]; then
   echo "install.sh: --mode must be 'helm' or 'compose' (got '$MODE')" >&2
+  exit 2
+fi
+# CRITICAL #1 fix (adversarial review of PR #15): fail closed rather than fall back to the
+# in-bundle `cosign.pub` — see the SECURITY MODEL header comment (step 0) for why that fallback
+# would defeat code-signing entirely (a substituted bundle can ship its own matching key).
+if [[ -z "$PUBKEY" ]]; then
+  echo "install.sh: FAIL — no external public key supplied." >&2
+  echo "  Pass --pubkey <path> (or set SCP_COSIGN_PUBKEY) pointing at a cosign public key you" >&2
+  echo "  obtained OUT-OF-BAND from this bundle (the project's release page, a prior trusted" >&2
+  echo "  install, etc.) — never the cosign.pub shipped inside this bundle. This script refuses" >&2
+  echo "  to verify a bundle's signature against a key that same bundle also ships; that key" >&2
+  echo "  proves nothing about authenticity." >&2
+  exit 2
+fi
+if [[ ! -f "$PUBKEY" ]]; then
+  echo "install.sh: FAIL — --pubkey/SCP_COSIGN_PUBKEY points at a file that does not exist: $PUBKEY" >&2
   exit 2
 fi
 
@@ -143,7 +177,9 @@ verify_blob() {
   # why those specific flags are required for air-gap correctness), so success is silenced by
   # default, but a FAILURE's actual reason is shown to stderr — "signature invalid" alone isn't
   # enough for an operator to tell a corrupted bundle apart from e.g. a cosign version mismatch.
-  if out="$(cosign verify-blob --key cosign.pub --signature "$sig" --insecure-ignore-tlog=true "$file" 2>&1)"; then
+  # `--key "$PUBKEY"` — the EXTERNAL, operator-supplied key validated above, NEVER the in-bundle
+  # `cosign.pub` (CRITICAL #1 fix — see the SECURITY MODEL header comment).
+  if out="$(cosign verify-blob --key "$PUBKEY" --signature "$sig" --insecure-ignore-tlog=true "$file" 2>&1)"; then
     return 0
   else
     echo "$out" >&2
@@ -156,11 +192,15 @@ fail() {
   exit 1
 }
 
-echo "== step 1/4: verifying bundle signatures (fail-closed — any problem aborts) =="
+echo "== step 1/4: verifying bundle signatures against the EXTERNAL --pubkey (fail-closed — any problem aborts) =="
+echo "   trust root: $PUBKEY"
 
-[[ -f cosign.pub ]] || fail "cosign.pub missing from bundle"
+# The in-bundle cosign.pub is NOT checked/used here at all — see the SECURITY MODEL header
+# comment (step 0). It is shipped purely for operator convenience (e.g. eyeballing it against a
+# known-good value); trusting it as this script's own verification key is exactly the
+# self-referential hole CRITICAL #1 closed.
 [[ -f CHECKSUMS.txt && -f CHECKSUMS.txt.sig ]] || fail "CHECKSUMS.txt or its signature missing"
-verify_blob CHECKSUMS.txt CHECKSUMS.txt.sig || fail "CHECKSUMS.txt signature does not verify against cosign.pub — bundle is not authentic or has been tampered with"
+verify_blob CHECKSUMS.txt CHECKSUMS.txt.sig || fail "CHECKSUMS.txt signature does not verify against --pubkey ($PUBKEY) — bundle is not authentic or has been tampered with"
 
 # Recompute every checksum CHECKSUMS.txt lists and compare — this is what actually detects a
 # modified/added/removed file; the signature above only proves CHECKSUMS.txt ITSELF is authentic.

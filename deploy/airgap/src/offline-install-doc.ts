@@ -46,9 +46,15 @@ Alongside the tarball itself (not inside it): \`scp-bundle-${bundleVersion}.tar.
 of \`cosign.pub\`. **Obtain the public key from a channel independent of the tarball's own
 download** (the project's release page, a prior trusted install, etc.) before trusting the
 signature on the tarball itself — a bundled \`cosign.pub\` alongside a tampered tarball proves
-nothing about that tarball, only about itself. Once you've verified the tarball with an
-independently-obtained key, the copy of \`cosign.pub\` inside it is fine to use for the
-per-image/per-file checks below (they're all covered by that same outer verification already).
+nothing about that tarball, only about itself.
+
+**Use that independently-obtained key for EVERY verification below, including \`install.sh\` —
+never the \`cosign.pub\` shipped INSIDE the bundle.** \`install.sh\` REQUIRES an external key
+(\`--pubkey <path>\` or \`SCP_COSIGN_PUBKEY\`) and refuses to run without one: an attacker who
+substitutes the whole bundle can simply re-sign everything with their own key and ship a matching
+\`cosign.pub\` alongside it, so a bundle verifying itself against a key it also ships proves
+nothing about authenticity. The in-bundle \`cosign.pub\` is shipped for convenience only (e.g.
+eyeballing it against a known-good value) — no tool in this project ever reads it as a trust root.
 
 ## Verify before you extract anything
 
@@ -65,13 +71,19 @@ extract it, and get a fresh copy through a trusted channel.
 \`\`\`bash
 tar xzf scp-bundle-${bundleVersion}.tar.gz
 cd scp-bundle-${bundleVersion}
-./install.sh --registry <your-registry-host>/<path> --mode helm [--namespace scp] [--release-name scp]
+./install.sh --registry <your-registry-host>/<path> \\
+  --pubkey /path/to/independently-obtained/cosign.pub \\
+  --mode helm [--namespace scp] [--release-name scp]
 \`\`\`
 
+\`--pubkey\` (or the \`SCP_COSIGN_PUBKEY\` environment variable) is REQUIRED — \`install.sh\` fails
+closed with a clear message if it's omitted, rather than falling back to the bundle's own
+\`cosign.pub\`.
+
 \`install.sh\` is the same script for a first install and for an upgrade — it always: (1)
-cosign-verifies every bundled image and the checksums file against \`cosign.pub\` FIRST, refusing
-to continue on any failure; (2) pushes each image, by digest, into your registry under
-\`<registry>/<image-name>\`; (3) re-resolves each pushed image's digest from your registry and
+cosign-verifies every bundled image and the checksums file against that EXTERNAL \`--pubkey\`
+FIRST, refusing to continue on any failure; (2) pushes each image, by digest, into your registry
+under \`<registry>/<image-name>\`; (3) re-resolves each pushed image's digest from your registry and
 confirms it is byte-for-byte the digest that was just verified (a registry push cannot silently
 substitute a different image without this check catching it); (4) runs \`helm upgrade --install\`
 (or, in \`--mode compose\`, rewrites and runs the compose file) pinned to those exact digests —
