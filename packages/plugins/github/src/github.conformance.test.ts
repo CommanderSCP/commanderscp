@@ -15,6 +15,9 @@
  * see fake-executor's/webhook-control's own conformance files, neither of which makes assertions
  * beyond wiring the factory).
  */
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll } from "vitest";
 import type { PluginContext } from "@scp/plugin-api";
 import { runDiscoveryConformanceSuite, runExecutorConformanceSuite } from "@scp/plugin-testkit";
@@ -26,8 +29,6 @@ import {
   installationTokenFor,
   nockInstallationToken
 } from "./github-test-support.js";
-
-const RUN_ID = 424_242;
 
 const executorConfig = buildGithubConfig({ owner: "conformance-org", repo: "conformance-repo" });
 const discoveryConfig = buildGithubConfig({
@@ -44,8 +45,10 @@ beforeAll(() => {
   const executorToken = installationTokenFor(executorConfig);
   const executorAuthHeader = `Bearer ${executorToken}`;
 
-  // trigger(): workflow_dispatch POST, then the runs-list correlation poll — matches immediately
-  // so the suite never waits on correlateDispatchedRun's 500ms inter-attempt backoff.
+  // trigger(): workflow_dispatch POST, then the runs-list correlation poll. The correlated run
+  // gets a UNIQUE id per poll (Date.now()) — so the cross-restart dedup conformance test (MAJOR
+  // #4) is non-vacuous: a broken (non-durable) dedup would re-dispatch and correlate a DIFFERENT
+  // run id, while a durable one returns the cached `workflow_run::<id>` without any HTTP at all.
   nock(executorConfig.apiBaseUrl ?? "https://api.github.com")
     .matchHeader("authorization", executorAuthHeader)
     .post(
@@ -57,37 +60,45 @@ beforeAll(() => {
     .matchHeader("authorization", executorAuthHeader)
     .get(`/repos/${executorConfig.owner}/${executorConfig.repo}/actions/workflows/ci.yml/runs`)
     .query({ event: "workflow_dispatch", per_page: "5" })
-    .reply(200, {
-      workflow_runs: [
-        {
-          id: RUN_ID,
-          status: "completed",
-          conclusion: "success",
-          html_url: `https://github.com/${executorConfig.owner}/${executorConfig.repo}/actions/runs/${RUN_ID}`,
-          head_sha: "a".repeat(40),
-          created_at: new Date().toISOString()
-        }
-      ]
+    .reply(200, () => {
+      const id = Date.now();
+      return {
+        workflow_runs: [
+          {
+            id,
+            status: "completed",
+            conclusion: "success",
+            html_url: `https://github.com/${executorConfig.owner}/${executorConfig.repo}/actions/runs/${id}`,
+            head_sha: "a".repeat(40),
+            created_at: new Date().toISOString()
+          }
+        ]
+      };
     })
     .persist();
 
-  // status(): the correlated run always reads back as completed/success.
+  // status(): ANY correlated run id (path regex) reads back completed/success.
   nock(executorConfig.apiBaseUrl ?? "https://api.github.com")
     .matchHeader("authorization", executorAuthHeader)
-    .get(`/repos/${executorConfig.owner}/${executorConfig.repo}/actions/runs/${RUN_ID}`)
-    .reply(200, {
-      id: RUN_ID,
-      status: "completed",
-      conclusion: "success",
-      html_url: `https://github.com/${executorConfig.owner}/${executorConfig.repo}/actions/runs/${RUN_ID}`,
-      head_sha: "a".repeat(40)
+    .get(new RegExp(`/repos/${executorConfig.owner}/${executorConfig.repo}/actions/runs/\\d+$`))
+    .reply(200, (uri: string) => {
+      const id = Number(uri.split("/").pop());
+      return {
+        id,
+        status: "completed",
+        conclusion: "success",
+        html_url: `https://github.com/${executorConfig.owner}/${executorConfig.repo}/actions/runs/${id}`,
+        head_sha: "a".repeat(40)
+      };
     })
     .persist();
 
-  // abort(): cancel the correlated run.
+  // abort(): cancel ANY correlated run id (path regex).
   nock(executorConfig.apiBaseUrl ?? "https://api.github.com")
     .matchHeader("authorization", executorAuthHeader)
-    .post(`/repos/${executorConfig.owner}/${executorConfig.repo}/actions/runs/${RUN_ID}/cancel`)
+    .post(
+      new RegExp(`/repos/${executorConfig.owner}/${executorConfig.repo}/actions/runs/\\d+/cancel$`)
+    )
     .reply(202)
     .persist();
 
@@ -124,9 +135,18 @@ afterAll(() => {
 });
 
 runExecutorConformanceSuite("github", async () => {
-  const plugin = createGithubExecutorPlugin();
-  const ctx: PluginContext = buildTestCtx(executorConfig);
-  return { plugin, ctx };
+  // A durable statePath (fresh per factory() call) so the cross-restart dedup test reads on-disk
+  // state, not the first instance's memory (MAJOR #4). `executorConfig` is shared across the file
+  // so the installation-token/dispatch fixtures keep matching; only statePath varies per call.
+  const statePath = join(await mkdtemp(join(tmpdir(), "github-conformance-")), "state.json");
+  const build = (): {
+    plugin: ReturnType<typeof createGithubExecutorPlugin>;
+    ctx: PluginContext;
+  } => ({
+    plugin: createGithubExecutorPlugin(),
+    ctx: buildTestCtx({ ...executorConfig, statePath })
+  });
+  return { ...build(), restart: async () => build() };
 });
 
 runDiscoveryConformanceSuite("github-discovery", async () => {

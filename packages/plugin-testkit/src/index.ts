@@ -35,6 +35,18 @@ import type {
 export interface ExecutorConformanceFixture {
   plugin: ExecutorPlugin;
   ctx: PluginContext;
+  /**
+   * MAJOR #4 (adversarial review): optionally simulate a SUBPROCESS RESTART — return a FRESH
+   * plugin instance + ctx that share the FIRST fixture's DURABLE dedup state (i.e. the same
+   * on-disk `statePath`), NOT the first instance's in-process memory. If provided, the idempotency
+   * conformance test fires the two `trigger()` calls across this restart, proving the dedup
+   * guarantee survives the exact crash/resume scenario `coordination/reconcile.ts`'s three-step
+   * design targets (a retry after the subprocess died must NOT re-fire the real side effect). A
+   * fixture that only supports in-memory dedup omits this, and the test falls back to same-instance
+   * dedup (still correct, just a weaker guarantee — which is why the server ALWAYS injects a
+   * durable statePath for real executor instances, `executor-bindings-repo.ts`).
+   */
+  restart?: () => Promise<{ plugin: ExecutorPlugin; ctx: PluginContext }>;
 }
 
 const KNOWN_TRIGGER_KINDS: TriggerIntent["kind"][] = [
@@ -157,6 +169,30 @@ export function runExecutorConformanceSuite(
       const first = await plugin.trigger(ctx, intent);
       const second = await plugin.trigger(ctx, intent);
       expect(second.externalId).toBe(first.externalId);
+    });
+
+    it("trigger() dedup SURVIVES a subprocess restart — same key across a fresh instance sharing durable state returns the SAME ExternalRunRef (MAJOR #4)", async () => {
+      const first = await factory();
+      const caps = first.plugin.describeCapabilities();
+      if (!caps.supportsTrigger) return;
+
+      const kind = caps.triggerKinds[0] ?? "custom";
+      const intent: TriggerIntent = {
+        kind,
+        targetRef: "conformance-restart-target",
+        idempotencyKey: "conformance-restart-key"
+      };
+      const firstRef = await first.plugin.trigger(first.ctx, intent);
+
+      // Simulate a subprocess restart: a FRESH plugin instance + ctx that share only the durable
+      // (on-disk) dedup state, never the first instance's in-process memory. A plugin whose dedup
+      // is in-memory-only would re-fire here and mint a DIFFERENT ref; a durable one returns the
+      // same. A fixture without `restart` reuses the same instance (same-process fallback).
+      const restarted = first.restart
+        ? await first.restart()
+        : { plugin: first.plugin, ctx: first.ctx };
+      const secondRef = await restarted.plugin.trigger(restarted.ctx, intent);
+      expect(secondRef.externalId).toBe(firstRef.externalId);
     });
   });
 }

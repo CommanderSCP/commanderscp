@@ -19,6 +19,9 @@
  * or a fixed call count — the equivalent of webhook-control's conformance fixture always
  * returning the same well-formed response regardless of how many times `evaluate()` is called.
  */
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll } from "vitest";
 import nock from "nock";
 import type { PluginContext } from "@scp/plugin-api";
@@ -67,16 +70,23 @@ nock(SERVER_URL)
 nock(SERVER_URL).persist().get("/api/v1/applications").reply(200, { items: [] });
 
 runExecutorConformanceSuite("argocd", async () => {
-  const plugin = createArgoCdExecutorPlugin();
-  const ctx: PluginContext = {
-    orgId: "conformance-org",
-    domainId: "conformance-domain",
-    logger: { debug() {}, info() {}, warn() {}, error() {} },
-    secrets: { get: async () => undefined },
-    http: createNodeHttpTestClient(),
-    config: { serverUrl: SERVER_URL, token: "conformance-token" }
-  };
-  return { plugin, ctx };
+  const statePath = join(await mkdtemp(join(tmpdir(), "argocd-conformance-")), "state.json");
+  const build = (): {
+    plugin: ReturnType<typeof createArgoCdExecutorPlugin>;
+    ctx: PluginContext;
+  } => ({
+    plugin: createArgoCdExecutorPlugin(),
+    ctx: {
+      orgId: "conformance-org",
+      domainId: "conformance-domain",
+      logger: { debug() {}, info() {}, warn() {}, error() {} },
+      secrets: { get: async () => undefined },
+      http: createNodeHttpTestClient(),
+      // statePath makes dedup durable across the simulated restart (MAJOR #4).
+      config: { serverUrl: SERVER_URL, token: "conformance-token", statePath }
+    }
+  });
+  return { ...build(), restart: async () => build() };
 });
 
 afterAll(() => {

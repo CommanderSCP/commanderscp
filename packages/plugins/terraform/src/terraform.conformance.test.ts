@@ -20,6 +20,10 @@
  * plugin-testkit's own idempotencyKey conformance assertion, which this fixture also satisfies:
  * the SAME idempotencyKey reuses the module-level dedup cache and never re-POSTs).
  */
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll } from "vitest";
 import nock from "nock";
 import { runExecutorConformanceSuite } from "@scp/plugin-testkit";
@@ -30,7 +34,14 @@ const BASE_URL = "http://pipeline.test";
 
 beforeAll(() => {
   nock.disableNetConnect();
-  nock(BASE_URL).persist().post("/trigger").reply(200, { id: "run-conformance-1" });
+  // A UNIQUE run id per POST — so the cross-restart dedup conformance test (MAJOR #4) is
+  // non-vacuous: a broken (non-durable) dedup would POST again and get a DIFFERENT id, while a
+  // durable one returns the cached id without POSTing. A constant id would let a broken dedup
+  // pass by coincidence.
+  nock(BASE_URL)
+    .persist()
+    .post("/trigger")
+    .reply(200, () => ({ id: `run-${randomUUID()}` }));
   nock(BASE_URL)
     .persist()
     .get(/^\/status\//)
@@ -47,11 +58,19 @@ afterAll(() => {
 });
 
 runExecutorConformanceSuite("terraform", async () => {
-  const plugin = createTerraformExecutorPlugin();
-  const ctx = realHttpPluginContext({
-    triggerUrl: `${BASE_URL}/trigger`,
-    statusUrl: `${BASE_URL}/status/{externalId}`,
-    abortUrl: `${BASE_URL}/abort/{externalId}`
+  const statePath = join(await mkdtemp(join(tmpdir(), "terraform-conformance-")), "state.json");
+  const build = (): {
+    plugin: ReturnType<typeof createTerraformExecutorPlugin>;
+    ctx: ReturnType<typeof realHttpPluginContext>;
+  } => ({
+    plugin: createTerraformExecutorPlugin(),
+    ctx: realHttpPluginContext({
+      triggerUrl: `${BASE_URL}/trigger`,
+      statusUrl: `${BASE_URL}/status/{externalId}`,
+      abortUrl: `${BASE_URL}/abort/{externalId}`,
+      // statePath makes dedup durable across the simulated restart (MAJOR #4).
+      statePath
+    })
   });
-  return { plugin, ctx };
+  return { ...build(), restart: async () => build() };
 });
