@@ -136,8 +136,17 @@ jobs:
         uses: azure/setup-helm@v4
         with:
           version: latest
-      - name: Install cosign (BUILD_AND_TEST.md §1)
+      - name: Install cosign (BUILD_AND_TEST.md §1) — pinned for deterministic sign-blob flag behavior
+        # PINNED (not floating): cosign's sign-blob flag surface shifts across versions — an
+        # unpinned install previously resolved a build WITHOUT `--use-signing-config`, which the
+        # air-gap signing code (deploy/airgap/src/cosign.ts) then failed on with "unknown flag".
+        # The code now detects that flag at runtime and adapts, but pinning keeps CI deterministic
+        # and documents the exact tested cosign version an air-gap operator should match (the
+        # signing code's own module comment references this version). v3.1.1 advertises
+        # `--use-signing-config`, so CI exercises the newer-cosign flag path.
         uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: "v3.1.1"
       - name: Install skopeo (BUILD_AND_TEST.md §1) — no-op if the runner already has it
         run: |
           command -v skopeo >/dev/null 2>&1 && exit 0

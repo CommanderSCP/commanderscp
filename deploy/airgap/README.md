@@ -129,19 +129,35 @@ distribution, and neither tool ever reads it as a verification key.
 
 ## The empirically-discovered air-gap footgun (read this if you touch `cosign.ts`)
 
-`cosign sign-blob` on the cosign build this was developed against (`cosign version` reports a
-v2-line build, `GitVersion: v3.1.1`) defaults to uploading every signature to the **public**
-`rekor.sigstore.dev` transparency log — even for pure local-keypair signing, even with
-`--use-signing-config=false`. Confirmed by pointing `HTTPS_PROXY`/`HTTP_PROXY` at a closed local
-port and watching `sign-blob` fail with `Post "https://rekor.sigstore.dev/...": connection
-refused`. That's a hard violation of CLAUDE.md principle #5 (no runtime network calls) and this
-milestone's own "NO runtime network calls" requirement.
+`cosign sign-blob` defaults to uploading every signature to the **public** `rekor.sigstore.dev`
+transparency log — even for pure local-keypair signing. Confirmed by pointing
+`HTTPS_PROXY`/`HTTP_PROXY` at a closed local port and watching `sign-blob` fail with `Post
+"https://rekor.sigstore.dev/...": connection refused`. That's a hard violation of CLAUDE.md
+principle #5 (no runtime network calls) and this milestone's own "NO runtime network calls"
+requirement.
 
-The fix, applied throughout `cosign.ts`: `--tlog-upload=false --new-bundle-format=false
---use-signing-config=false` (the first is deprecated-but-still-honored; cosign prints a notice and
-does the right thing anyway). Re-verified with the same closed-port-proxy test that this
-combination makes zero outbound connection attempts. If cosign's flags change again, re-run that
-exact test — a silent regression here would mean bundle builds start phoning home.
+The essential fix is **`--tlog-upload=false`** — the one flag that disables the Rekor upload,
+present (deprecated-but-honored) across cosign 2.x and 3.x. Alongside it `cosign.ts` passes
+`--new-bundle-format=false --output-signature <file> --yes` for the legacy detached-signature
+file the verifier and `install.sh` consume.
+
+**`--use-signing-config=false` is version-conditional** — this is an air-gap product where
+operators may bring their own cosign, and the flag's handling differs sharply by version:
+- **Newer cosign** (advertises `--use-signing-config`; the pinned CI/dev build is **v3.1.1**)
+  defaults it to `true`, and then *rejects* `--tlog-upload=false` with "not supported with
+  --signing-config or --use-signing-config" — so the flag MUST be passed as `false`.
+- **Older cosign** lacks the flag entirely; passing it fails with "unknown flag:
+  --use-signing-config" (this was a real CI red), and it isn't needed — `--tlog-upload=false`
+  alone prevents the upload.
+
+`cosign.ts` detects the flag from `cosign sign-blob --help` and adds `--use-signing-config=false`
+only when present, so signing works on the pinned CI cosign AND a reasonable range of operator
+versions while still uploading nothing. Egress re-verified against a closed-port proxy on
+**v3.1.1** with the full flag set (sign succeeds, sig verifies, zero outbound connection
+attempts). CI pins `sigstore/cosign-installer` to `cosign-release: v3.1.1` for determinism — that
+is the tested version an air-gap operator should match. If cosign's flags change again, re-run
+that exact closed-port-proxy test — a silent regression here would mean bundle builds start
+phoning home.
 
 ## Testing
 

@@ -13,31 +13,49 @@
  * documented optional extra (see install.sh's own comments) — it's not this package's job to do
  * that on the operator's behalf, since it doesn't control the customer registry's credentials.
  *
- * ## The air-gap-critical flag combination (found empirically on this exact cosign build)
+ * ## The air-gap-critical flag combination (portable across a range of cosign versions)
  *
- * `cosign sign-blob` in this environment's cosign (`cosign version` reports a v2-line build)
- * defaults to uploading every signature to the **public** Rekor transparency log
- * (`https://rekor.sigstore.dev`) even for pure local-keypair signing with `--use-signing-config
- * false` — confirmed by pointing HTTP(S)_PROXY at a closed port and watching `sign-blob` fail
- * with `Post "https://rekor.sigstore.dev/api/v1/log/entries": ... connection refused`. That is a
- * hard violation of CLAUDE.md principle #5 ("no runtime network calls to the outside world") and
- * of this milestone's own "NO runtime network calls" requirement — bundle building must never
- * depend on reaching the public internet, let alone leak a customer's private image digests to a
- * public transparency log.
+ * `cosign sign-blob` defaults to uploading every signature to the **public** Rekor transparency
+ * log (`https://rekor.sigstore.dev`) even for pure local-keypair signing — confirmed by pointing
+ * HTTP(S)_PROXY at a closed port and watching `sign-blob` fail with `Post
+ * "https://rekor.sigstore.dev/api/v1/log/entries": ... connection refused`. That is a hard
+ * violation of CLAUDE.md principle #5 ("no runtime network calls to the outside world") and of
+ * this milestone's own "NO runtime network calls" requirement — bundle building must never depend
+ * on reaching the public internet, let alone leak a customer's private image digests to a public
+ * transparency log.
  *
- * The fix is `--tlog-upload=false` — a flag `cosign sign-blob --help` doesn't even list any more
- * (cosign prints "Flag --tlog-upload has been deprecated, prefer using a --signing-config file
- * with no transparency log services" and then honors it exactly as before) — combined with
- * `--new-bundle-format=false --use-signing-config=false --output-signature <file> --yes` to get
- * the legacy detached-signature file this package stores in the bundle, with no bundle-format
- * digest-file requirement and no signing-config lookup. Verified against a broken proxy that this
- * combination makes zero outbound connection attempts. `verifyBlobDetached` mirrors it with
- * `--insecure-ignore-tlog=true` on the verify side (we deliberately never wrote a tlog entry, so
- * asking cosign to check for one would always — correctly, but uselessly — fail).
+ * The essential, long-stable fix is **`--tlog-upload=false`** — the flag that disables the Rekor
+ * upload. It is present (deprecated but honored) across cosign 2.x and 3.x and is the ONE flag
+ * that actually prevents the egress. Alongside it we pass `--new-bundle-format=false
+ * --output-signature <file> --yes` to get the legacy detached-signature file this package stores
+ * in the bundle (the format `verifyBlobDetached` and install.sh's `cosign verify-blob --signature`
+ * both consume).
  *
- * If cosign's flags change again, the empirical test to re-run is: set `HTTPS_PROXY=http://127.0.0.1:1`
- * (a closed local port) and confirm sign/verify still succeed — if either call ever tries the
- * network, it will fail fast with a `connection refused` instead of silently working.
+ * `--use-signing-config=false` is **version-conditional** (see signBlobFlags() below), because
+ * its handling differs sharply across cosign versions and this is an air-gap product where
+ * operators may bring their OWN cosign:
+ *   - NEWER cosign (advertises `--use-signing-config`, ~2.5+/3.x — the pinned CI build is v3.1.1):
+ *     `--use-signing-config` DEFAULTS to `true`, and cosign then REJECTS `--tlog-upload=false`
+ *     with "`--tlog-upload=false is not supported with --signing-config or --use-signing-config`".
+ *     So on these builds we MUST also pass `--use-signing-config=false`.
+ *   - OLDER cosign (does NOT have the flag): passing `--use-signing-config=false` fails with
+ *     "`unknown flag: --use-signing-config`" (exactly the CI red this replaced), and it isn't
+ *     needed anyway — `--tlog-upload=false` alone prevents the upload. So we OMIT it there.
+ * We detect the flag from `cosign sign-blob --help` (it's listed on versions that have it) and add
+ * `--use-signing-config=false` only when present. This keeps signing working on the pinned CI
+ * cosign AND on a reasonable range of operator cosign versions, while STILL uploading nothing.
+ *
+ * `verifyBlobDetached` mirrors the sign side with `--insecure-ignore-tlog=true` (a stable flag
+ * present across versions) — we deliberately never wrote a tlog entry, so asking cosign to check
+ * for one would always — correctly, but uselessly — fail.
+ *
+ * Egress verified against a closed proxy on cosign v3.1.1 (the pinned CI version): with the full
+ * flag set, `sign-blob` succeeds behind `HTTPS_PROXY=http://127.0.0.1:1` and the sig verifies —
+ * zero outbound connection attempts. If cosign's flags change again, re-run exactly that: set
+ * `HTTPS_PROXY=http://127.0.0.1:1` (a closed local port) and confirm sign/verify still succeed;
+ * if either ever tries the network it fails fast with `connection refused` instead of silently
+ * working. CI pins `sigstore/cosign-installer` to `cosign-release: v3.1.1` so this stays
+ * deterministic; that is the tested version an air-gap operator should match.
  */
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -106,24 +124,49 @@ export function makeScratchDir(): Promise<string> {
 }
 
 /**
+ * Whether the installed cosign advertises `--use-signing-config` (a newer flag, ~cosign 2.5+/3.x).
+ * Probed once from `cosign sign-blob --help` (the flag is listed there on versions that have it)
+ * and cached for the rest of the process. See the module doc comment for why this matters and
+ * signBlobFlags() for how it's used.
+ */
+let cachedUseSigningConfigSupported: boolean | undefined;
+
+function cosignSupportsUseSigningConfig(): boolean {
+  if (cachedUseSigningConfigSupported === undefined) {
+    try {
+      const { stdout, stderr } = run("cosign", ["sign-blob", "--help"], { log: false });
+      cachedUseSigningConfigSupported = (stdout + stderr).includes("use-signing-config");
+    } catch {
+      // If cosign can't even print help (e.g. not installed), treat the flag as unsupported —
+      // the actual sign call below will surface the real error to the caller regardless.
+      cachedUseSigningConfigSupported = false;
+    }
+  }
+  return cachedUseSigningConfigSupported;
+}
+
+/**
+ * The portable `cosign sign-blob` flag set that produces a legacy detached signature and uploads
+ * NOTHING to the Rekor transparency log — see the module doc comment for the full rationale and
+ * the per-version behavior. `--tlog-upload=false` is the essential, long-stable egress-prevention
+ * flag; `--use-signing-config=false` is added ONLY when the installed cosign has it (newer builds
+ * make `--tlog-upload=false` conflict with its default `true`; older builds reject the flag as
+ * unknown and don't need it).
+ */
+function signBlobFlags(): string[] {
+  const flags = ["--tlog-upload=false", "--new-bundle-format=false"];
+  if (cosignSupportsUseSigningConfig()) flags.push("--use-signing-config=false");
+  return flags;
+}
+
+/**
  * `cosign sign-blob` producing a detached, legacy-format signature file — see the module doc
  * comment above for why these exact flags and why they're required for air-gap correctness.
  */
 export function signBlobDetached(filePath: string, sigOutPath: string, key: SigningKey): void {
   run(
     "cosign",
-    [
-      "sign-blob",
-      "--key",
-      key.keyPath,
-      "--tlog-upload=false",
-      "--new-bundle-format=false",
-      "--use-signing-config=false",
-      "--output-signature",
-      sigOutPath,
-      "--yes",
-      filePath
-    ],
+    ["sign-blob", "--key", key.keyPath, ...signBlobFlags(), "--output-signature", sigOutPath, "--yes", filePath],
     { env: { COSIGN_PASSWORD: key.password } }
   );
 }
