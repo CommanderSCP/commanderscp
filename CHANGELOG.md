@@ -24,10 +24,15 @@ load/perf numbers, security-sensitive surfaces).
   for VM/on-prem fleet updates wrapping the signed-bundle installer.
 - `tools/ci-image`: a versioned CI runner image baking in Node/pnpm/Playwright Chromium so the
   Web E2E job makes no CDN/network fetch.
-- `tools/helm-verify`: structural hardened-defaults assertions over `helm template` output (CI
-  gate) — non-root/read-only-rootfs/dropped-caps/seccompProfile, least-privilege DB credential
+- `tools/helm-verify`: structural hardened-defaults assertions over `helm template` output —
+  non-root/read-only-rootfs/dropped-caps/seccompProfile, least-privilege DB credential
   separation, single image version (no api/worker skew), default-deny + explicit-allow
-  NetworkPolicies.
+  NetworkPolicies with no any-destination DB-port egress, ingress mTLS annotations when enabled.
+  **Genuinely CI-gated** as of the adversarial-review fix pass (MAJOR #4 — a prior version of this
+  entry claimed "CI gate" while the tool was invoked nowhere in CI): a dedicated job
+  (`.github/workflows/ci.yml`'s `helm-verify`) runs it on every push/PR, and it's additionally
+  picked up automatically by `pnpm test` (`tools/helm-verify` now has a `test` script, so Turborepo
+  includes it in the standard test task graph).
 - Federation mTLS transport identity (DESIGN §13): `federation-https` now presents a real client
   certificate (host-level, operator-configured — `SCP_FEDERATION_MTLS_*`), proven against a real
   mTLS-enforcing test server (`plugin-host/federation-mtls.test.ts`) including peer-without-a-

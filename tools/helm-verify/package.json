@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "verify": "tsx src/verify.ts"
+    "verify": "tsx src/verify.ts",
+    "test": "tsx src/verify.ts"
   },
   "dependencies": {
     "yaml": "^2.9.0"

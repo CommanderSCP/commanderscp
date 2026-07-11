@@ -59,16 +59,26 @@ role credentials — verified structurally by `tools/helm-verify` (below).
 ```bash
 helm lint deploy/helm
 helm template test deploy/helm            # renders cleanly, no live cluster needed
-pnpm --filter @scp/helm-verify verify     # structural hardened-defaults assertions (CI gate)
+pnpm --filter @scp/helm-verify test       # structural hardened-defaults assertions
 ```
 
 `tools/helm-verify` renders the chart with default values AND with every optional feature toggled
-on (managed-iac, federation mTLS, ingress, serviceMonitor, NATS, OIDC, worker HPA), then parses the
-YAML and asserts — per container — non-root/read-only-rootfs/dropped-caps/seccompProfile, that the
-migrations Job is a `pre-install,pre-upgrade` hook holding the ONLY admin DB credential, that
-api/worker never see it, that api and worker use the identical image (no version skew), and that a
-default-deny NetworkPolicy plus explicit allows are present. It's a real gate, not a vacuous one —
-deliberately loosening any of these in `values.yaml` fails it (verified while building this chart).
+on (managed-iac, federation mTLS, ingress + ingress mTLS, serviceMonitor, NATS, OIDC, worker HPA),
+then parses the YAML and asserts — per container — non-root/read-only-rootfs/dropped-caps/
+seccompProfile, that the migrations Job is a `pre-install,pre-upgrade` hook holding the ONLY admin
+DB credential, that api/worker never see it, that api and worker use the identical image (no
+version skew), that a default-deny NetworkPolicy plus explicit allows are present with no
+any-destination DB-port egress, and that ingress mTLS annotations render when enabled. It's a real
+gate, not a vacuous one — deliberately loosening any of these in `values.yaml` fails it (verified
+while building this chart, and re-verified while wiring adversarial-review fixes: reverting each
+template to its pre-fix shape and confirming this tool actually catches it before restoring the
+fix).
+
+**Genuinely CI-gated** (adversarial review MAJOR #4 — a prior version of this doc, and the
+`CHANGELOG.md` "Added" entry, called this "(CI gate)" while the tool was invoked nowhere in CI):
+`.github/workflows/ci.yml`'s `helm-verify` job runs `pnpm --filter @scp/helm-verify test` on every
+push/PR; it's also picked up automatically by the top-level `pnpm test` (Turborepo discovers any
+workspace package's `test` script).
 
 **Verified end to end against a real `kind` cluster** while building this chart (`helm install` →
 golden path via the real API → `helm upgrade` → `helm rollback`):

@@ -66,6 +66,27 @@ jobs:
       - run: pnpm build
       - run: pnpm test
 
+  helm-verify:
+    name: "4b. Helm hardened-defaults gate (tools/helm-verify)"
+    # Adversarial review MAJOR #4 on PR #15: the hardening tools/helm-verify asserts (non-root,
+    # read-only-rootfs, dropped caps, seccomp, default-deny NetworkPolicy with no any-destination
+    # DB-port egress, migrations-hook, least-priv DB creds, ingress mTLS annotations) genuinely
+    # apply today, but the tool was never invoked anywhere in CI — "CI gate" was aspirational, not
+    # real; a values.yaml regression would have shipped silently. This job is the actual gate: it
+    # fails the build on any of those assertions regressing. Pure `helm template` (offline
+    # rendering, no live cluster) — the general runner is sufficient, no Docker needed. Helm is a
+    # documented toolchain prerequisite (BUILD_AND_TEST.md §1); the explicit check below turns a
+    # missing binary into a clear, actionable failure instead of a cryptic ENOENT.
+    runs-on: homelab-commanderscp-linux-general
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - name: Verify helm is on PATH (BUILD_AND_TEST.md §1 documented prerequisite)
+        run: command -v helm || { echo "helm not found on PATH — see BUILD_AND_TEST.md §1" >&2; exit 1; }
+      - run: pnpm build
+      - run: pnpm --filter @scp/helm-verify test
+
   integration:
     name: "5. Integration (Testcontainers Postgres + managed-iac real-Docker container)"
     # Needs a real Docker daemon for Testcontainers — the general runner has none
