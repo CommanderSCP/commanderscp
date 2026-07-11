@@ -70,17 +70,27 @@ export interface WaveTargetTriggerUpdate {
  *     Matches `pending` OR `triggering` in its WHERE guard so a target already `triggering` from
  *     a PRIOR attempt that crashed before reaching step 3 can be re-claimed by the same or a
  *     different tick and retried with the identical idempotencyKey, rather than getting stuck
- *     forever because it's no longer literally `pending`. Two concurrent claims (two workers, or
- *     an overlapping self-scheduled tick) still can't both "win" a `pending` target — the WHERE
- *     narrows to exactly one row and a `pending`-only claim only ever succeeds once — but this
- *     intentionally does NOT protect against calling `trigger()` twice concurrently for a target
- *     already `triggering` (there's nothing more locking to do there: that's exactly the
- *     resume-after-crash case, and it's ONLY safe because the external call this enables carries a
- *     stable idempotencyKey the executor is contractually required to dedup on).
+ *     forever because it's no longer literally `pending`.
  *  2. The caller calls `plugin.trigger(intent)` OUTSIDE any transaction.
  *  3. `markWaveTargetTriggered` (tx B, its own commit) — flips `triggering` -> `triggered` and
  *     records the executor's returned ref. Guarded on `triggering` (not `pending`) since step 1
  *     already consumed the `pending` state.
+ *
+ * MULTI-REPLICA SINGLE-FLIGHT (M8 hardening — BUILD_AND_TEST.md §8 M8 item 6): this function's
+ * WHERE guard, on its own, does NOT distinguish "a `triggering` row abandoned by a crashed prior
+ * attempt" from "a `triggering` row another worker REPLICA's overlapping tick is, right now,
+ * genuinely still in the middle of processing" — under Postgres READ COMMITTED semantics, a
+ * second concurrent caller whose `UPDATE` blocked on this row's lock re-evaluates the SAME `WHERE`
+ * against the just-committed `triggering` row once unblocked, and that broad `IN (...)` still
+ * matches. Fixing that HERE (e.g. with a time-based staleness window) was tried and reverted: it
+ * directly conflicts with this function's own crash-recovery contract, which several M3 tests
+ * exercise by retrying an abandoned `triggering` row on the VERY NEXT tick (no time budget to
+ * spare). The actual fix lives one layer up: `coordination/trigger-claim-lock.ts`'s Postgres
+ * advisory lock, held by `reconcile.ts`'s `triggerWaveTarget` for the full claim -> `trigger()` ->
+ * record sequence. That lock is the true mutual-exclusion boundary — only its holder ever calls
+ * this function for a given `targetId` — so by the time this UPDATE runs, "another attempt is
+ * genuinely, concurrently here too" is already structurally impossible, and this WHERE guard is
+ * free to stay exactly as simple (and exactly as fast to retry) as it always was.
  */
 export async function claimWaveTargetForTriggering(
   tx: TenantTx,

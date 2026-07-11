@@ -24,6 +24,7 @@ import {
   markWaveTerminal,
   updateWaveTargetObserved
 } from "./wave-targets-repo.js";
+import { tryAcquireTriggerClaimLock } from "./trigger-claim-lock.js";
 import { evaluateWaveGate } from "./gates.js";
 import { insertDecision } from "./decisions-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
@@ -490,6 +491,16 @@ async function reconcileExecutingChange(
  * did fire before the crash. `@scp/plugin-fake-executor` implements this dedup contract; M3's
  * `@scp/plugin-testkit` conformance suite is the natural home for asserting every future real
  * executor plugin honors it too (tracked as M7 scope, when the first real executor plugin ships).
+ *
+ * MULTI-REPLICA SINGLE-FLIGHT (M8 hardening — BUILD_AND_TEST.md §8 M8 item 6): the three steps
+ * above are wrapped, start to finish, in `trigger-claim-lock.ts`'s Postgres advisory lock — see
+ * that module's doc comment for the full "why" (short version: a Helm-scaled `worker` replica has
+ * no shared view of another replica's in-flight work, so the claim/status column alone cannot
+ * distinguish "abandoned by a crash" from "another replica is genuinely working on this right
+ * now"; the advisory lock is a real, non-blocking, provably-exclusive mutex for exactly that
+ * question). If the lock can't be acquired, another attempt (this process's own overlapping tick,
+ * or a different replica's) already owns this target — back off exactly like the pre-existing "no
+ * longer pending/triggering" case below, and let a later tick try again.
  */
 async function triggerWaveTarget(
   db: Db,
@@ -501,73 +512,80 @@ async function triggerWaveTarget(
   host: PluginHost,
   masterKey: Buffer
 ): Promise<void> {
-  // M7: resolve targetObjectId's configured executor binding (executor-bindings-repo.ts) — a
-  // Component/DeploymentTarget with no binding configured falls back to the shared default
-  // fake-executor instance, exactly as every M0-M6 test/demo relies on (executor-config.ts).
-  const instanceId = await ensureExecutorInstanceStarted(
-    db,
-    orgId,
-    host,
-    targetObjectId,
-    null,
-    masterKey
-  );
-  const client = host.executor(instanceId);
-  // Deterministic across every retry of this exact wave target — no separate storage needed, the
-  // row's own id already satisfies "IDENTICAL across retries of the same target."
-  const idempotencyKey = waveTargetId;
+  const lock = await tryAcquireTriggerClaimLock(db, waveTargetId);
+  if (!lock) return; // another attempt (this or another worker replica) is genuinely in flight.
 
-  const claim = await withTenantTx(db, orgId, async (tx) => {
-    let kind: TriggerIntent["kind"];
-    let priorStateRef: unknown = null;
+  try {
+    // M7: resolve targetObjectId's configured executor binding (executor-bindings-repo.ts) — a
+    // Component/DeploymentTarget with no binding configured falls back to the shared default
+    // fake-executor instance, exactly as every M0-M6 test/demo relies on (executor-config.ts).
+    const instanceId = await ensureExecutorInstanceStarted(
+      db,
+      orgId,
+      host,
+      targetObjectId,
+      null,
+      masterKey
+    );
+    const client = host.executor(instanceId);
+    // Deterministic across every retry of this exact wave target — no separate storage needed, the
+    // row's own id already satisfies "IDENTICAL across retries of the same target."
+    const idempotencyKey = waveTargetId;
 
-    if (isRollback && change.rollbackOfObjectId) {
-      // Restore exactly what the ORIGINAL change's trigger of this same target would have
-      // reverted (DESIGN §9.4: "referencing the prior known-good executor state").
-      kind = "rollback";
-      const originalTarget = await findOriginalWaveTarget(
-        tx,
-        orgId,
-        change.rollbackOfObjectId,
-        targetObjectId
-      );
-      priorStateRef = originalTarget?.priorStateRef ?? null;
-    } else {
-      kind = "sync";
-      // Snapshot the target's CURRENT executor-side state (via a fresh status() call against its
-      // last successful run, not just whatever a previous poll happened to observe) before this
-      // trigger supersedes it — this is the "prior known-good state" a later rollback restores.
-      // Recomputed fresh on every retry (including a post-crash resume) rather than persisted:
-      // since this target is still `triggering`/`pending` (not `succeeded`), it can never be its
-      // OWN "latest succeeded execution", so recomputation is stable/idempotent across retries.
-      const latestSucceeded = await findLatestSucceededExecution(tx, orgId, targetObjectId);
-      if (latestSucceeded?.executorRef) {
-        const priorStatus = await client.status(latestSucceeded.executorRef as ExecutorRef);
-        priorStateRef = priorStatus.stateRef ?? null;
+    const claim = await withTenantTx(db, orgId, async (tx) => {
+      let kind: TriggerIntent["kind"];
+      let priorStateRef: unknown = null;
+
+      if (isRollback && change.rollbackOfObjectId) {
+        // Restore exactly what the ORIGINAL change's trigger of this same target would have
+        // reverted (DESIGN §9.4: "referencing the prior known-good executor state").
+        kind = "rollback";
+        const originalTarget = await findOriginalWaveTarget(
+          tx,
+          orgId,
+          change.rollbackOfObjectId,
+          targetObjectId
+        );
+        priorStateRef = originalTarget?.priorStateRef ?? null;
+      } else {
+        kind = "sync";
+        // Snapshot the target's CURRENT executor-side state (via a fresh status() call against its
+        // last successful run, not just whatever a previous poll happened to observe) before this
+        // trigger supersedes it — this is the "prior known-good state" a later rollback restores.
+        // Recomputed fresh on every retry (including a post-crash resume) rather than persisted:
+        // since this target is still `triggering`/`pending` (not `succeeded`), it can never be its
+        // OWN "latest succeeded execution", so recomputation is stable/idempotent across retries.
+        const latestSucceeded = await findLatestSucceededExecution(tx, orgId, targetObjectId);
+        if (latestSucceeded?.executorRef) {
+          const priorStatus = await client.status(latestSucceeded.executorRef as ExecutorRef);
+          priorStateRef = priorStatus.stateRef ?? null;
+        }
       }
-    }
 
-    const claimed = await claimWaveTargetForTriggering(tx, orgId, waveTargetId);
-    return claimed ? { kind, priorStateRef } : null;
-  });
+      const claimed = await claimWaveTargetForTriggering(tx, orgId, waveTargetId);
+      return claimed ? { kind, priorStateRef } : null;
+    });
 
-  if (!claim) return; // no longer pending/triggering — another tick/worker already handled it.
+    if (!claim) return; // no longer pending/triggering — another tick already handled it.
 
-  // Step 2 — OUTSIDE any open transaction, on purpose (see doc comment above).
-  const ref = await client.trigger({
-    kind: claim.kind,
-    targetRef: targetObjectId,
-    priorStateRef: claim.priorStateRef,
-    idempotencyKey
-  });
+    // Step 2 — OUTSIDE any open transaction, on purpose (see doc comment above).
+    const ref = await client.trigger({
+      kind: claim.kind,
+      targetRef: targetObjectId,
+      priorStateRef: claim.priorStateRef,
+      idempotencyKey
+    });
 
-  await withTenantTx(db, orgId, (tx) =>
-    markWaveTargetTriggered(tx, orgId, waveTargetId, {
-      executorPluginId: instanceId,
-      executorRef: ref,
-      priorStateRef: claim.priorStateRef
-    })
-  );
+    await withTenantTx(db, orgId, (tx) =>
+      markWaveTargetTriggered(tx, orgId, waveTargetId, {
+        executorPluginId: instanceId,
+        executorRef: ref,
+        priorStateRef: claim.priorStateRef
+      })
+    );
+  } finally {
+    await lock.release();
+  }
 }
 
 /**
