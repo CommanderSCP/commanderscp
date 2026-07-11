@@ -145,15 +145,44 @@ risk). Mode 2 is fully functional under docker-compose/VM deployments today. Wir
 launch Kubernetes Jobs via the API (using the RBAC + template this chart already ships) is tracked
 follow-up work. `managedIac.enabled` defaults to `false`.
 
-## Federation mTLS — known gap
+## Federation mTLS — what's enforced vs. deferred (corrected, adversarial review MAJOR #3)
 
-`federation.mtls.enabled: true` mounts a `kubernetes.io/tls`-shaped Secret and wires real client-
-certificate presentation into the `federation-https` subprocess (M8 —
-`apps/server/src/plugin-host/subprocess-entry.ts`'s `loadFederationMtlsMaterial`, proven by
-`plugin-host/federation-mtls.test.ts` against a real mTLS-enforcing test server). What does **not**
-exist yet: the scheduled sync loop that actually calls `pull()`/`push()` on an interval for
-connected children — only the air-gapped **file** transport (`scp federation export/import`) has a
-caller today. The transport is real and independently testable; nothing schedules it yet.
+**`federation.mtls.enabled: true` is CLIENT-side presentation only.** It mounts a
+`kubernetes.io/tls`-shaped Secret and wires real client-certificate presentation into the
+`federation-https` subprocess (M8 — `apps/server/src/plugin-host/subprocess-entry.ts`'s
+`loadFederationMtlsMaterial`, proven by `plugin-host/federation-mtls.test.ts` against a real
+mTLS-enforcing test server): when THIS domain acts as a CHILD dialing a parent, it presents a real
+client cert. That is genuinely implemented and tested — an earlier version of this doc, and the
+PR body, described this as "mTLS enforced" without qualification, which overstated it.
+
+**What that does NOT do: make THIS domain's own API, acting as a PARENT, verify an incoming
+child's client certificate.** `apps/server/src/main.ts` starts the API with a plain `app.listen`
+(no `requestCert`/`rejectUnauthorized`) — a parent receiving a child's pull today accepts any (or
+no) client certificate; the request is authenticated by bearer token + RBAC only, exactly as
+pre-M8. `federation.mtls` alone does not close that gap.
+
+**The deployment-level fix, shipped in this chart: `ingress.mtls`** (`templates/ingress.yaml`,
+`values.yaml`). When enabled, it adds nginx ingress-controller annotations
+(`auth-tls-verify-client: "on"`, `auth-tls-secret: <ns>/<ingress.mtls.caSecretName>`) that make the
+ingress controller itself require and verify a client certificate, against a CA you provide,
+before any request — including a federation pull — reaches the `api` Service. This is a REAL
+server-side enforcement point, gated behind a values flag, verified structurally by
+`tools/helm-verify`. Caveats: (a) it's nginx-specific — a different ingress controller needs its
+own equivalent annotations; (b) it enforces on the WHOLE Ingress (this chart serves the entire API
+on one host/path today), not scoped to `/v1/federation/*` alone; (c) an in-app enforcement path
+(the API server itself calling `requestCert`/verifying peer certs, independent of whatever sits in
+front of it) remains a follow-up, not yet implemented.
+
+**The primary integrity control for federation sync remains the Ed25519 journal signatures**
+(DESIGN §13) — every synced journal entry is signed and independently re-verified on import
+regardless of transport-level identity, mTLS or not. mTLS (client presentation + `ingress.mtls`
+enforcement) is a defense-in-depth transport-identity layer on top of that, not a replacement for
+it.
+
+Separately: the scheduled sync loop that actually calls `pull()`/`push()` on an interval for
+connected children does not exist yet — only the air-gapped **file** transport (`scp federation
+export/import`) has a caller today. The transport is real and independently testable; nothing
+schedules it yet.
 
 ## Other known gaps (honestly flagged, not silently worked around)
 

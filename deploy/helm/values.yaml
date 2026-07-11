@@ -185,6 +185,19 @@ ingress:
   tls:
     enabled: false
     secretName: ""
+  # SERVER-SIDE mTLS enforcement (adversarial review MAJOR #3) — federation.mtls above is
+  # CLIENT-side presentation only (federation-https presenting a cert TO a parent); it does NOT
+  # make this domain's own API verify an incoming child's cert (apps/server's API server itself
+  # has no requestCert/rejectUnauthorized). When enabled, this renders nginx ingress-controller
+  # annotations that require and verify a client cert (against caSecretName, a Secret containing
+  # ca.crt) before any request reaches the api Service — the deployment-level mechanism for
+  # enforcing what federation.mtls only presents. See deploy/helm/README.md's "Federation mTLS"
+  # section for what's enforced vs. deferred, and for non-nginx-controller equivalents.
+  mtls:
+    enabled: false
+    # Secret (same namespace as this release) containing ca.crt — the CA that signed the client
+    # certs peers present. Required when mtls.enabled.
+    caSecretName: ""
 
 serviceMonitor:
   enabled: false

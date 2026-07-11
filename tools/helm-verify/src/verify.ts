@@ -171,6 +171,26 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
     assert(apiImage && apiImage === workerImage, `[${label}] api and worker must use the SAME image (got api=${apiImage}, worker=${workerImage})`);
   }
 
+  // Ingress mTLS (adversarial review MAJOR #3) — the kitchen-sink render opts into
+  // ingress.mtls.enabled; the rendered Ingress must actually carry the nginx client-cert-
+  // verification annotations (not just accept the value silently).
+  if (label === "kitchen-sink") {
+    const ingressDoc = docs.find((d) => d.kind === "Ingress");
+    assert(ingressDoc, `[${label}] expected an Ingress in the render`);
+    if (ingressDoc) {
+      const annotations = (ingressDoc.metadata?.annotations ?? {}) as Record<string, string>;
+      assert(
+        annotations["nginx.ingress.kubernetes.io/auth-tls-verify-client"] === "on",
+        `[${label}] Ingress with mtls enabled must set nginx.ingress.kubernetes.io/auth-tls-verify-client: "on" (got ${JSON.stringify(annotations["nginx.ingress.kubernetes.io/auth-tls-verify-client"])})`
+      );
+      assert(
+        typeof annotations["nginx.ingress.kubernetes.io/auth-tls-secret"] === "string" &&
+          annotations["nginx.ingress.kubernetes.io/auth-tls-secret"].length > 0,
+        `[${label}] Ingress with mtls enabled must set a non-empty nginx.ingress.kubernetes.io/auth-tls-secret`
+      );
+    }
+  }
+
   // NetworkPolicy — default-deny AND at least one explicit allow, both present.
   const networkPolicies = docs.filter((d) => d.kind === "NetworkPolicy");
   assert(networkPolicies.length >= 2, `[${label}] expected multiple NetworkPolicies (default-deny + explicit allows), got ${networkPolicies.length}`);
@@ -232,6 +252,8 @@ function main(): void {
       "--set", "federation.mtls.existingSecret=my-fed-cert",
       "--set", "ingress.enabled=true",
       "--set", "ingress.host=scp.example.com",
+      "--set", "ingress.mtls.enabled=true",
+      "--set", "ingress.mtls.caSecretName=fed-ca",
       "--set", "serviceMonitor.enabled=true",
       "--set", "objectStorage.provider=s3",
       "--set", "eventBus.backend=nats",

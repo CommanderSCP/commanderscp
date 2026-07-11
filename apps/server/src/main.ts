@@ -139,6 +139,15 @@ async function main(): Promise<void> {
     });
   }
 
+  // Plain HTTP(S) listen — no `requestCert`/`rejectUnauthorized`. This process never verifies an
+  // incoming client TLS certificate itself (adversarial review MAJOR #3 on PR #15):
+  // `federation-https` (plugin-host/subprocess-entry.ts) presents a client cert when THIS domain
+  // dials OUT to a parent, but a PARENT receiving a child's pull here authenticates it by bearer
+  // token + RBAC only, same as pre-M8. Server-side mTLS enforcement today lives at the deployment
+  // edge (`deploy/helm/templates/ingress.yaml`'s `ingress.mtls` — nginx client-cert-verification
+  // annotations, see deploy/helm/README.md's "Federation mTLS" section). An in-app enforcement
+  // path (this server itself verifying peer certs, independent of whatever proxy sits in front of
+  // it) is tracked follow-up, not implemented here.
   await app.listen({ port: config.port, host: config.host });
   app.log.info(`scp (${config.role}) listening on http://${config.host}:${config.port}`);
 
