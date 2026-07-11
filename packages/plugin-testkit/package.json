@@ -12,10 +12,13 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@scp/plugin-api": "workspace:*",
+    "@scp/plugin-api": "workspace:*"
+  },
+  "peerDependencies": {
     "vitest": "^3.0.0"
   },
   "devDependencies": {
-    "typescript": "~5.8.0"
+    "typescript": "~5.8.0",
+    "vitest": "^3.0.0"
   }
 }

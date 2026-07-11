@@ -1,0 +1,54 @@
+{{- if .Values.ingress.enabled }}
+{{/*
+Adversarial review MAJOR #3: federation.mtls (above) is CLIENT-side presentation only — the
+federation-https subprocess presenting a cert TO a parent. It does NOT make THIS domain's own API
+verify an incoming child's client certificate; apps/server/src/main.ts starts the API with a plain
+`app.listen` (no requestCert/rejectUnauthorized), so absent this, a parent receiving a child's pull
+accepts any/no client cert (bearer+RBAC only). This is the deployment-level mechanism for
+SERVER-side enforcement: when ingress.mtls.enabled, nginx ingress-controller annotations require
+and verify a client certificate against ingress.mtls.caSecretName before any request reaches the
+api Service. See deploy/helm/README.md's "Federation mTLS" section for exactly what this does and
+does not cover (non-nginx controllers need their own equivalent annotations; this enforces on ALL
+traffic through this Ingress, not just /v1/federation/*, since the chart serves the whole API on
+one host/path today) and for the in-app enforcement path tracked as follow-up.
+*/}}
+{{- $mtlsAnnotations := dict }}
+{{- if .Values.ingress.mtls.enabled }}
+{{- $mtlsAnnotations = dict
+      "nginx.ingress.kubernetes.io/auth-tls-secret" (printf "%s/%s" .Release.Namespace .Values.ingress.mtls.caSecretName)
+      "nginx.ingress.kubernetes.io/auth-tls-verify-client" "on"
+      "nginx.ingress.kubernetes.io/auth-tls-verify-depth" "1"
+}}
+{{- end }}
+{{- $annotations := merge $mtlsAnnotations (.Values.ingress.annotations | default dict) }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "commanderscp.fullname" . }}
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+  {{- if $annotations }}
+  annotations:
+    {{- toYaml $annotations | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts: [{{ .Values.ingress.host | quote }}]
+      secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "commanderscp.fullname" . }}-api
+                port:
+                  number: {{ .Values.api.service.port }}
+{{- end }}

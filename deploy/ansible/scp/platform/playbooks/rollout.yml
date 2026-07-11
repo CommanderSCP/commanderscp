@@ -1,0 +1,26 @@
+---
+# scp.platform fleet rollout / upgrade playbook (DESIGN.md §16). Runs the signed-bundle
+# install/upgrade on every host in the `scp_instances` inventory group. Because install.sh is
+# idempotent (helm upgrade --install / docker compose up -d) and the SAME bundle is install AND
+# upgrade, this ONE playbook is both a first install and every subsequent fleet-wide upgrade.
+#
+# Example:
+#   ansible-playbook -i inventory.ini scp/platform/playbooks/rollout.yml \
+#     -e scp_bundle_tarball=/path/to/scp-bundle-1.0.0-rc.0.tar.gz \
+#     -e scp_registry=registry.internal:5000/scp \
+#     -e scp_cosign_pubkey=/path/to/independently-obtained/cosign.pub \
+#     -e scp_install_mode=compose
+#
+# scp_cosign_pubkey (control-node path) MUST be an EXTERNAL key obtained out-of-band from the
+# bundle itself (the project's release page, a prior trusted install, etc.) — never a copy of the
+# cosign.pub shipped inside scp_bundle_tarball. install.sh refuses to run without it (adversarial
+# review CRITICAL #1 — a bundle verifying itself against a key it also ships proves nothing).
+#
+# `serial: 1` rolls the fleet one host at a time — a failed cosign verify / health check on one
+# instance stops the rollout before touching the rest, the standard safe-fleet-update posture.
+- name: CommanderSCP fleet rollout / upgrade from the signed air-gap bundle
+  hosts: scp_instances
+  serial: 1
+  gather_facts: true
+  roles:
+    - role: bundle_install

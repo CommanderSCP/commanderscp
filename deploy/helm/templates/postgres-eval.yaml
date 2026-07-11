@@ -1,0 +1,145 @@
+{{/*
+EVALUATION-ONLY in-cluster PostgreSQL — a plain `postgres:16` Deployment + PVC + Service. NO
+Bitnami/third-party subchart (DESIGN §16: licensing/registry churn; no bundled operator). Not for
+production: no HA, no backups, no tuning. `postgres.evalInCluster.enabled: true` is the on-ramp
+for `kind`/local evaluation clusters that don't already have an external Postgres.
+
+HOOK ORDERING AND DELETE POLICY (see secrets-generated.yaml's doc comment for the full story —
+both were real bugs caught against a live kind cluster while building this chart): the migrations
+Job is a pre-install hook, which runs strictly BEFORE any of this chart's normal (non-hook) release
+resources exist — including this eval Postgres. For `postgres.evalInCluster.enabled: true` to
+work in a single `helm install`, THIS must also be a pre-install,pre-upgrade hook, at a LOWER
+weight ("-20") than the generated secrets ("-10") and the migrations Job ("0") — Postgres starts
+first, then its credentials Secret, then migrations run against it. The migrations Job's own
+`wait-for-postgres` init container is the belt-and-braces backstop for "created" vs. "actually
+accepting connections yet". `"helm.sh/hook-delete-policy": hook-failed` (explicit, overriding
+Helm's own default of `before-hook-creation`) is what stops `helm upgrade` from deleting and
+recreating this PVC — and therefore the whole eval database — on every single upgrade.
+*/}}
+{{- if .Values.postgres.evalInCluster.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "commanderscp.fullname" . }}-postgres-eval
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres-eval
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": hook-failed
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if .Values.postgres.evalInCluster.storageClassName }}
+  storageClassName: {{ .Values.postgres.evalInCluster.storageClassName }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.postgres.evalInCluster.storage }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "commanderscp.fullname" . }}-postgres-eval
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres-eval
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": hook-failed
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "commanderscp.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres-eval
+  template:
+    metadata:
+      labels:
+        {{- include "commanderscp.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: postgres-eval
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: "postgres:16"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            # postgres itself needs to write its data dir — read-only rootfs stays on for every
+            # OTHER path via an explicit writable emptyDir for /tmp and PGDATA lives on the PVC.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.adminUser | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.database | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "commanderscp.postgresSecretName" . }}
+                  key: adminPassword
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+              name: postgres
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: tmp
+              mountPath: /tmp
+            - name: run
+              mountPath: /var/run/postgresql
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.postgres.adminUser | quote }}]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.postgres.adminUser | quote }}]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "commanderscp.fullname" . }}-postgres-eval
+        - name: tmp
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "commanderscp.fullname" . }}-postgres-eval
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres-eval
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": hook-failed
+spec:
+  selector:
+    {{- include "commanderscp.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres-eval
+  ports:
+    - port: 5432
+      targetPort: 5432
+      name: postgres
+{{- end }}

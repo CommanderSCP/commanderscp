@@ -84,6 +84,30 @@ export interface ServerConfig {
    */
   secretsMasterKey: Buffer;
   secretsMasterKeyWasGenerated: boolean;
+  /**
+   * M8 hardening (BUILD_AND_TEST.md §8 M8 item 1, "hardened defaults" — least privilege): when
+   * `true`, `main.ts` skips Phase 1 entirely (no admin-connection migrations/role-provisioning on
+   * boot) and connects straight in as `runtimeDatabaseUrl`/`pgBossDatabaseUrl`. Set by the Helm
+   * chart's `api`/`worker` Deployments — ONLY the migrations Job (`migrate-bin.ts`, run as a
+   * pre-upgrade hook with the admin `DATABASE_URL`) ever holds admin/superuser-capable database
+   * credentials in that deployment shape; `api`/`worker` pods hold only the already-least-
+   * privileged `scp_app`/`scp_pgboss` role credentials. Default `false` preserves EVERY existing
+   * deployment shape unchanged (compose, `pnpm dev`, every E2E script): every pod still
+   * self-migrates+self-provisions on its own boot, exactly as it always has.
+   */
+  skipMigrations: boolean;
+  /**
+   * Defensive graph guardrail (adversarial review of PR #15 — graph/query-timeout.ts's module
+   * doc): bounds every `/graph/traverse` and `/graph/query/:name` call to this many milliseconds
+   * via Postgres `statement_timeout`, so a pathological shared-component topology (the
+   * `impact-of` recursive CTE's measured fan-in^depth blowup — 7+ minutes then disk exhaustion on
+   * one real topology) fails cleanly (a 408) instead of hanging a worker/connection or exhausting
+   * disk. Does not change query semantics — the CTE's own node-dedup fix remains a separate,
+   * pending owner decision. `SCP_GRAPH_QUERY_TIMEOUT_MS`, default 5000 (a few seconds — generous
+   * for any legitimate depth-≤10 query against a normal topology, per the load-test numbers in
+   * the M8 PR body, while still bounding the pathological case).
+   */
+  graphQueryStatementTimeoutMs: number;
 }
 
 function randomSecret(): string {
@@ -175,6 +199,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     oidc: loadOidcConfig(env),
     eventBus: loadEventBusConfig(env),
     secretsMasterKey: secretsMasterKey.key,
-    secretsMasterKeyWasGenerated: secretsMasterKey.wasGenerated
+    secretsMasterKeyWasGenerated: secretsMasterKey.wasGenerated,
+    skipMigrations: env.SCP_SKIP_MIGRATIONS === "true",
+    graphQueryStatementTimeoutMs: Number(env.SCP_GRAPH_QUERY_TIMEOUT_MS ?? 5000)
   };
 }

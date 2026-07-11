@@ -4,6 +4,7 @@ import type {
   ControlPluginClient,
   DiscoveryPluginClient,
   ExecutorPluginClient,
+  FederationTransportPluginClient,
   NotificationPluginClient,
   PluginHost
 } from "../../plugin-host/contract.js";
@@ -62,6 +63,11 @@ export function createInMemoryFakeHost(config?: unknown): PluginHost {
       throw new Error(
         "createInMemoryFakeHost: no NotificationPlugin fixture wired — this test only drives ExecutorPlugin"
       );
+    },
+    federationTransport(_instanceId: string): FederationTransportPluginClient {
+      throw new Error(
+        "createInMemoryFakeHost: no FederationTransportPlugin fixture wired — this test only drives ExecutorPlugin"
+      );
     }
   };
 }
@@ -111,6 +117,7 @@ export function withFailOnceAfterRealTrigger(
     control: (instanceId) => inner.control(instanceId),
     discovery: (instanceId) => inner.discovery(instanceId),
     notification: (instanceId) => inner.notification(instanceId),
+    federationTransport: (instanceId) => inner.federationTransport(instanceId),
     executor(instanceId) {
       const real = inner.executor(instanceId);
       return {

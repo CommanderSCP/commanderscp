@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-bundle/
 .turbo/
 *.log
 .env
@@ -12,3 +13,4 @@ test-results/
 playwright-report/
 blob-report/
 playwright/.cache/
+.claude/

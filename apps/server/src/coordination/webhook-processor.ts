@@ -67,13 +67,29 @@ function extractHint(sourceKind: string, headers: unknown, payload: unknown): Ex
   };
 }
 
+/**
+ * MULTI-REPLICA SINGLE-FLIGHT (M8 hardening — BUILD_AND_TEST.md §8 M8 item 6, found during the
+ * same concurrency audit as the trigger-claim and evaluated->coordinated fixes): without `FOR
+ * UPDATE SKIP LOCKED` here, two concurrent ticks (two worker replicas' overlapping reconcile
+ * loops) each run this ENTIRE function in their own transaction, and BOTH could `SELECT` the SAME
+ * unprocessed `change_source_events` row before either commits (plain READ COMMITTED — nothing
+ * about a bare `SELECT ... WHERE processed_at IS NULL` prevents a second transaction from reading
+ * the identical "still unprocessed" snapshot). Each would then call `proposeChange` for that SAME
+ * webhook delivery — creating TWO SEPARATE Change objects for one real-world event, which could
+ * go on to independently gate/approve/promote/execute as if they were unrelated changes. `FOR
+ * UPDATE SKIP LOCKED` is the standard job-queue claim pattern: a row already locked by another
+ * in-flight transaction is silently EXCLUDED from this transaction's result set (not waited on),
+ * so two concurrent ticks always get disjoint row sets — provably no double-processing, and no
+ * added latency (never blocks).
+ */
 export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Promise<void> {
   const rows = await tx
     .select()
     .from(changeSourceEvents)
     .where(and(eq(changeSourceEvents.orgId, orgId), isNull(changeSourceEvents.processedAt)))
     .orderBy(asc(changeSourceEvents.createdAt))
-    .limit(BATCH_LIMIT);
+    .limit(BATCH_LIMIT)
+    .for("update", { skipLocked: true });
 
   for (const row of rows) {
     const hint = extractHint(row.sourceKind, row.headers, row.payload);

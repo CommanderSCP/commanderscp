@@ -7,6 +7,7 @@ import type { PluginHost } from "../plugin-host/contract.js";
 import type { CelSandbox } from "../governance/cel-sandbox.js";
 import type { GateDeps } from "./gates.js";
 import {
+  getChangeRow,
   listChangeRowsInStates,
   markChangeReconcileBlocked,
   targetObjectIdsOf,
@@ -19,11 +20,14 @@ import {
   claimWaveTargetForTriggering,
   findLatestSucceededExecution,
   findOriginalWaveTarget,
+  getWaveStatus,
   markWaveRunning,
   markWaveTargetTriggered,
   markWaveTerminal,
   updateWaveTargetObserved
 } from "./wave-targets-repo.js";
+import { tryAcquireTriggerClaimLock } from "./trigger-claim-lock.js";
+import { tryAcquireChangeCoordinationLock } from "./change-coordination-lock.js";
 import { evaluateWaveGate } from "./gates.js";
 import { insertDecision } from "./decisions-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
@@ -84,11 +88,23 @@ function logChangeError(orgId: string, change: ChangeRow, step: string, err: unk
 // state machinery is entirely inside `advanceExecutingChanges` below.
 // -------------------------------------------------------------------------------------------
 
+/**
+ * MULTI-REPLICA consistency (M8 hardening audit): `transitionChange`'s own row-level `FOR UPDATE`
+ * already makes a concurrent race here SAFE (the loser's transition throws a plain fromState-
+ * mismatch error, caught below and just logged — no compile-then-cancel-style harmful fallback
+ * exists on this edge). The lock is added anyway for the same reason `advanceEvaluatedChanges`
+ * needs one and `advanceCoordinatedChanges` gets one too: without it, two racing replicas both do
+ * the full transition attempt and one throws every time two ticks overlap on the same change —
+ * wasted work and confusing "failed" log lines for something that isn't actually a failure. One
+ * coherent multi-replica story: every change is single-flight per tick, everywhere in this file.
+ */
 async function advanceProposedChanges(db: Db, orgId: string, gateDeps: GateDeps): Promise<void> {
   const rows = await withTenantTx(db, orgId, (tx) =>
     listChangeRowsInStates(tx, orgId, ["proposed"], BATCH_LIMIT)
   );
   for (const { change } of rows) {
+    const lock = await tryAcquireChangeCoordinationLock(db, change.objectId);
+    if (!lock) continue;
     try {
       await withTenantTx(db, orgId, (tx) =>
         transitionChange(
@@ -107,17 +123,51 @@ async function advanceProposedChanges(db: Db, orgId: string, gateDeps: GateDeps)
       );
     } catch (err) {
       logChangeError(orgId, change, "proposed->evaluated", err);
+    } finally {
+      await lock.release();
     }
   }
 }
 
+/**
+ * MULTI-REPLICA SINGLE-FLIGHT (M8 hardening — BUILD_AND_TEST.md §8 M8 item 6): every unit of
+ * work below is wrapped in `change-coordination-lock.ts`'s advisory lock, keyed by
+ * `changeObjectId`, acquired BEFORE compiling a plan or transitioning anything. This closes a
+ * genuine race found while proving the (separately fixed) wave-target trigger claim's
+ * single-flight guarantee under real multi-replica concurrency: two worker replicas' overlapping
+ * ticks could both observe the SAME change as `evaluated` (via the batch read above, taken
+ * outside any lock) and both call `compileAndPersistPlan` before either committed its
+ * `evaluated -> coordinated` transition. The loser's transition used to throw (fromState
+ * mismatch), get caught, and fall back to `transitionChange(..., "cancelled")` IN THE SAME
+ * transaction as its own already-inserted plan rows — since `coordinated -> cancelled` is a
+ * legal edge, that fallback SUCCEEDED, committing a fully-persisted DUPLICATE
+ * `change_waves`/`change_wave_targets` plan set and wrongfully cancelling a change the winner had
+ * already legitimately coordinated (confirmed against a real Postgres via a deliberate
+ * 2-concurrent-tick race while investigating this).
+ *
+ * The lock makes this structurally impossible rather than detecting it after the fact: only ONE
+ * process anywhere can be inside the locked section for a given change at any instant, so by the
+ * time ANY holder re-reads the change's state fresh (immediately below, still under the lock),
+ * "another attempt is genuinely racing me right now" is already ruled out. If that fresh read
+ * shows the change is no longer `evaluated` (a DIFFERENT tick got there first, in the window
+ * between the batch read and this lock's acquisition, and has SINCE finished — released the lock
+ * — successfully or not), that is a clean "lost the race, someone else already handled it" no-op
+ * — never treated as a compilation failure, so never wrongfully cancelled.
+ */
 async function advanceEvaluatedChanges(db: Db, orgId: string, gateDeps: GateDeps): Promise<void> {
   const rows = await withTenantTx(db, orgId, (tx) =>
     listChangeRowsInStates(tx, orgId, ["evaluated"], BATCH_LIMIT)
   );
   for (const { change, object } of rows) {
+    const lock = await tryAcquireChangeCoordinationLock(db, change.objectId);
+    if (!lock) continue; // another tick/replica is genuinely working on this change right now.
     try {
       await withTenantTx(db, orgId, async (tx) => {
+        // Fresh re-check, still under the lock — see the doc comment above for why this is the
+        // "lost the race" no-op path, not a failure.
+        const current = await getChangeRow(tx, orgId, change.objectId);
+        if (current.state !== "evaluated") return;
+
         const targetObjectIds = targetObjectIdsOf(object.properties as Record<string, unknown>);
         try {
           await compileAndPersistPlan(tx, {
@@ -143,7 +193,9 @@ async function advanceEvaluatedChanges(db: Db, orgId: string, gateDeps: GateDeps
           // A cycle, an unknown target, or a topology/dependency conflict (plan-compiler.ts)
           // auto-cancels the change with the compiler's own reason attached, rather than leaving
           // it stuck in `evaluated` forever with no path forward. Same transaction as the failed
-          // compile attempt, so either both roll back together or the cancel commits clean.
+          // compile attempt, so either both roll back together or the cancel commits clean. Safe
+          // to treat any error here as a genuine compilation failure — the lock above already
+          // ruled out "lost a concurrent race" as the cause.
           const message = err instanceof Error ? err.message : String(err);
           await transitionChange(
             tx,
@@ -161,15 +213,20 @@ async function advanceEvaluatedChanges(db: Db, orgId: string, gateDeps: GateDeps
       });
     } catch (err) {
       logChangeError(orgId, change, "evaluated->coordinated", err);
+    } finally {
+      await lock.release();
     }
   }
 }
 
+/** Same consistency lock as `advanceProposedChanges` — see its doc comment. */
 async function advanceCoordinatedChanges(db: Db, orgId: string, gateDeps: GateDeps): Promise<void> {
   const rows = await withTenantTx(db, orgId, (tx) =>
     listChangeRowsInStates(tx, orgId, ["coordinated"], BATCH_LIMIT)
   );
   for (const { change } of rows) {
+    const lock = await tryAcquireChangeCoordinationLock(db, change.objectId);
+    if (!lock) continue;
     try {
       await withTenantTx(db, orgId, (tx) =>
         transitionChange(
@@ -187,6 +244,8 @@ async function advanceCoordinatedChanges(db: Db, orgId: string, gateDeps: GateDe
       );
     } catch (err) {
       logChangeError(orgId, change, "coordinated->executing", err);
+    } finally {
+      await lock.release();
     }
   }
 }
@@ -327,37 +386,65 @@ async function reconcileExecutingChange(
   }
 
   if (activeWave.status === "pending") {
-    const gateOutcome = await withTenantTx(db, orgId, async (tx) => {
-      const gate = await evaluateWaveGate(
-        tx,
-        {
+    // MULTI-REPLICA SINGLE-FLIGHT (M8 hardening follow-up, adversarial review MINOR #5): the SAME
+    // per-change advisory lock advanceProposedChanges/advanceEvaluatedChanges/
+    // advanceCoordinatedChanges/triggerWaveTarget already use — see change-coordination-lock.ts's
+    // doc comment for the underlying mechanism. Without it, two concurrent replica ticks that both
+    // read this wave as "pending" (the batch read in advanceExecutingChanges, taken outside any
+    // lock, one call up the stack) both call evaluateWaveGate + insertDecision here, producing a
+    // duplicate audit Decision row for the same gate evaluation — the 4th multi-replica race found
+    // during this coordination-races audit (bounded: markWaveRunning's own `WHERE status =
+    // 'pending'` guard means no double-execution results, and triggering itself is already
+    // single-flight via the trigger-claim lock — this closes the remaining "duplicate Decision"
+    // race for one coherent single-flight story across all four).
+    const gateLock = await tryAcquireChangeCoordinationLock(db, change.objectId);
+    if (!gateLock) return; // another tick/replica is genuinely evaluating this wave's gate right now — retry next tick.
+    let gateOutcome: "blocked" | "running" | "already-progressed";
+    try {
+      gateOutcome = await withTenantTx(db, orgId, async (tx) => {
+        // Fresh re-check, still under the lock — a racing tick may have already evaluated this
+        // wave's gate and advanced it (running, or further) in the window between the batch read
+        // in advanceExecutingChanges and this lock's acquisition. Re-running the gate here would
+        // insert a SECOND Decision for the same wave — this is the "lost the race" no-op, not a
+        // re-evaluation, exactly like advanceEvaluatedChanges's fresh re-check above.
+        const freshStatus = await getWaveStatus(tx, orgId, activeWave.id);
+        if (freshStatus !== "pending") return "already-progressed" as const;
+
+        const gate = await evaluateWaveGate(
+          tx,
+          {
+            orgId,
+            changeObjectId: change.objectId,
+            actorObjectId: SYSTEM_ACTOR_ID,
+            emergency: change.emergency,
+            topologyObjectId: plan.topologyObjectId,
+            waveIndex: activeWave.waveIndex,
+            targetObjectIds: activeWave.targets.map((t) => t.targetObjectId)
+          },
+          gateDeps
+        );
+        await insertDecision(tx, {
           orgId,
-          changeObjectId: change.objectId,
-          actorObjectId: SYSTEM_ACTOR_ID,
-          emergency: change.emergency,
-          topologyObjectId: plan.topologyObjectId,
-          waveIndex: activeWave.waveIndex,
-          targetObjectIds: activeWave.targets.map((t) => t.targetObjectId)
-        },
-        gateDeps
-      );
-      await insertDecision(tx, {
-        orgId,
-        kind: "gate",
-        subjectId: change.objectId,
-        verdict: gate.verdict,
-        inputContext: {
-          ...gate.inputContext,
-          waveId: activeWave.id,
-          waveIndex: activeWave.waveIndex
-        },
-        reasonTree: gate.reasonTree
+          kind: "gate",
+          subjectId: change.objectId,
+          verdict: gate.verdict,
+          inputContext: {
+            ...gate.inputContext,
+            waveId: activeWave.id,
+            waveIndex: activeWave.waveIndex
+          },
+          reasonTree: gate.reasonTree
+        });
+        if (gate.verdict === "block") return "blocked" as const;
+        await markWaveRunning(tx, orgId, activeWave.id);
+        return "running" as const;
       });
-      if (gate.verdict === "block") return "blocked" as const;
-      await markWaveRunning(tx, orgId, activeWave.id);
-      return "running" as const;
-    });
-    if (gateOutcome === "blocked") return; // M3's seam always allows — kept honest for M4.
+    } finally {
+      await gateLock.release();
+    }
+    // "blocked": M3's seam always allows — kept honest for M4. "already-progressed": a racing
+    // tick already handled this wave's gate; next tick sees its result and proceeds normally.
+    if (gateOutcome !== "running") return;
   }
 
   // Unified target reconciliation: every non-terminal target gets either a trigger attempt
@@ -490,6 +577,16 @@ async function reconcileExecutingChange(
  * did fire before the crash. `@scp/plugin-fake-executor` implements this dedup contract; M3's
  * `@scp/plugin-testkit` conformance suite is the natural home for asserting every future real
  * executor plugin honors it too (tracked as M7 scope, when the first real executor plugin ships).
+ *
+ * MULTI-REPLICA SINGLE-FLIGHT (M8 hardening — BUILD_AND_TEST.md §8 M8 item 6): the three steps
+ * above are wrapped, start to finish, in `trigger-claim-lock.ts`'s Postgres advisory lock — see
+ * that module's doc comment for the full "why" (short version: a Helm-scaled `worker` replica has
+ * no shared view of another replica's in-flight work, so the claim/status column alone cannot
+ * distinguish "abandoned by a crash" from "another replica is genuinely working on this right
+ * now"; the advisory lock is a real, non-blocking, provably-exclusive mutex for exactly that
+ * question). If the lock can't be acquired, another attempt (this process's own overlapping tick,
+ * or a different replica's) already owns this target — back off exactly like the pre-existing "no
+ * longer pending/triggering" case below, and let a later tick try again.
  */
 async function triggerWaveTarget(
   db: Db,
@@ -501,73 +598,80 @@ async function triggerWaveTarget(
   host: PluginHost,
   masterKey: Buffer
 ): Promise<void> {
-  // M7: resolve targetObjectId's configured executor binding (executor-bindings-repo.ts) — a
-  // Component/DeploymentTarget with no binding configured falls back to the shared default
-  // fake-executor instance, exactly as every M0-M6 test/demo relies on (executor-config.ts).
-  const instanceId = await ensureExecutorInstanceStarted(
-    db,
-    orgId,
-    host,
-    targetObjectId,
-    null,
-    masterKey
-  );
-  const client = host.executor(instanceId);
-  // Deterministic across every retry of this exact wave target — no separate storage needed, the
-  // row's own id already satisfies "IDENTICAL across retries of the same target."
-  const idempotencyKey = waveTargetId;
+  const lock = await tryAcquireTriggerClaimLock(db, waveTargetId);
+  if (!lock) return; // another attempt (this or another worker replica) is genuinely in flight.
 
-  const claim = await withTenantTx(db, orgId, async (tx) => {
-    let kind: TriggerIntent["kind"];
-    let priorStateRef: unknown = null;
+  try {
+    // M7: resolve targetObjectId's configured executor binding (executor-bindings-repo.ts) — a
+    // Component/DeploymentTarget with no binding configured falls back to the shared default
+    // fake-executor instance, exactly as every M0-M6 test/demo relies on (executor-config.ts).
+    const instanceId = await ensureExecutorInstanceStarted(
+      db,
+      orgId,
+      host,
+      targetObjectId,
+      null,
+      masterKey
+    );
+    const client = host.executor(instanceId);
+    // Deterministic across every retry of this exact wave target — no separate storage needed, the
+    // row's own id already satisfies "IDENTICAL across retries of the same target."
+    const idempotencyKey = waveTargetId;
 
-    if (isRollback && change.rollbackOfObjectId) {
-      // Restore exactly what the ORIGINAL change's trigger of this same target would have
-      // reverted (DESIGN §9.4: "referencing the prior known-good executor state").
-      kind = "rollback";
-      const originalTarget = await findOriginalWaveTarget(
-        tx,
-        orgId,
-        change.rollbackOfObjectId,
-        targetObjectId
-      );
-      priorStateRef = originalTarget?.priorStateRef ?? null;
-    } else {
-      kind = "sync";
-      // Snapshot the target's CURRENT executor-side state (via a fresh status() call against its
-      // last successful run, not just whatever a previous poll happened to observe) before this
-      // trigger supersedes it — this is the "prior known-good state" a later rollback restores.
-      // Recomputed fresh on every retry (including a post-crash resume) rather than persisted:
-      // since this target is still `triggering`/`pending` (not `succeeded`), it can never be its
-      // OWN "latest succeeded execution", so recomputation is stable/idempotent across retries.
-      const latestSucceeded = await findLatestSucceededExecution(tx, orgId, targetObjectId);
-      if (latestSucceeded?.executorRef) {
-        const priorStatus = await client.status(latestSucceeded.executorRef as ExecutorRef);
-        priorStateRef = priorStatus.stateRef ?? null;
+    const claim = await withTenantTx(db, orgId, async (tx) => {
+      let kind: TriggerIntent["kind"];
+      let priorStateRef: unknown = null;
+
+      if (isRollback && change.rollbackOfObjectId) {
+        // Restore exactly what the ORIGINAL change's trigger of this same target would have
+        // reverted (DESIGN §9.4: "referencing the prior known-good executor state").
+        kind = "rollback";
+        const originalTarget = await findOriginalWaveTarget(
+          tx,
+          orgId,
+          change.rollbackOfObjectId,
+          targetObjectId
+        );
+        priorStateRef = originalTarget?.priorStateRef ?? null;
+      } else {
+        kind = "sync";
+        // Snapshot the target's CURRENT executor-side state (via a fresh status() call against its
+        // last successful run, not just whatever a previous poll happened to observe) before this
+        // trigger supersedes it — this is the "prior known-good state" a later rollback restores.
+        // Recomputed fresh on every retry (including a post-crash resume) rather than persisted:
+        // since this target is still `triggering`/`pending` (not `succeeded`), it can never be its
+        // OWN "latest succeeded execution", so recomputation is stable/idempotent across retries.
+        const latestSucceeded = await findLatestSucceededExecution(tx, orgId, targetObjectId);
+        if (latestSucceeded?.executorRef) {
+          const priorStatus = await client.status(latestSucceeded.executorRef as ExecutorRef);
+          priorStateRef = priorStatus.stateRef ?? null;
+        }
       }
-    }
 
-    const claimed = await claimWaveTargetForTriggering(tx, orgId, waveTargetId);
-    return claimed ? { kind, priorStateRef } : null;
-  });
+      const claimed = await claimWaveTargetForTriggering(tx, orgId, waveTargetId);
+      return claimed ? { kind, priorStateRef } : null;
+    });
 
-  if (!claim) return; // no longer pending/triggering — another tick/worker already handled it.
+    if (!claim) return; // no longer pending/triggering — another tick already handled it.
 
-  // Step 2 — OUTSIDE any open transaction, on purpose (see doc comment above).
-  const ref = await client.trigger({
-    kind: claim.kind,
-    targetRef: targetObjectId,
-    priorStateRef: claim.priorStateRef,
-    idempotencyKey
-  });
+    // Step 2 — OUTSIDE any open transaction, on purpose (see doc comment above).
+    const ref = await client.trigger({
+      kind: claim.kind,
+      targetRef: targetObjectId,
+      priorStateRef: claim.priorStateRef,
+      idempotencyKey
+    });
 
-  await withTenantTx(db, orgId, (tx) =>
-    markWaveTargetTriggered(tx, orgId, waveTargetId, {
-      executorPluginId: instanceId,
-      executorRef: ref,
-      priorStateRef: claim.priorStateRef
-    })
-  );
+    await withTenantTx(db, orgId, (tx) =>
+      markWaveTargetTriggered(tx, orgId, waveTargetId, {
+        executorPluginId: instanceId,
+        executorRef: ref,
+        priorStateRef: claim.priorStateRef
+      })
+    );
+  } finally {
+    await lock.release();
+  }
 }
 
 /**

@@ -1,0 +1,33 @@
+---
+# Path to the CommanderSCP air-gap bundle tarball (scp-bundle-<version>.tar.gz), ON THE CONTROL
+# NODE — it is copied to each target host and extracted there. Required.
+scp_bundle_tarball: ""
+
+# Where to extract the bundle on each target host.
+scp_bundle_extract_dir: /opt/scp/bundle
+
+# Install mode passed straight through to install.sh: "helm" or "compose". The M8 DoD's
+# "Ansible-driven upgrade of a compose-based instance" exercises "compose".
+scp_install_mode: compose
+
+# Target registry + path prefix install.sh retargets images into (install.sh --registry).
+# Required — install.sh will not run without it.
+scp_registry: ""
+
+# EXTERNAL cosign public key (install.sh --pubkey), obtained OUT-OF-BAND from the bundle itself
+# (the project's release page, a prior trusted install, etc.) — path on the CONTROL NODE, copied
+# to the target host alongside the bundle. Required — install.sh (adversarial review CRITICAL #1)
+# refuses to verify a bundle against the cosign.pub shipped INSIDE that same bundle, since an
+# attacker who substitutes the whole bundle can just ship their own matching key with it.
+scp_cosign_pubkey: ""
+
+# Pass-throughs to install.sh (all optional).
+scp_helm_namespace: ""       # --namespace (helm mode only)
+scp_helm_release_name: scp   # --release-name (helm mode only)
+scp_insecure_registry: false # --insecure-registry (self-signed/HTTP registry you control)
+scp_dry_run: false           # --dry-run (verify + retarget-push, skip the final helm/compose apply)
+
+# Health check after install/upgrade. The compose eval stack publishes the api on host port 8080.
+scp_health_url: "http://127.0.0.1:8080/healthz"
+scp_health_retries: 30
+scp_health_delay_seconds: 2

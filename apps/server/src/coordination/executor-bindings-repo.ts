@@ -116,7 +116,7 @@ export async function upsertExecutorBinding(
  * `webhook-notify`/`smtp-notify`, which are `DiscoveryPlugin`/`NotificationPlugin` and would only
  * ever produce a confusing "unknown method" RPC failure if a wave target were bound to one).
  */
-const KNOWN_EXECUTOR_MODULES: PluginModule[] = [
+export const KNOWN_EXECUTOR_MODULES: PluginModule[] = [
   "fake-executor",
   "github",
   "argocd",
@@ -124,7 +124,17 @@ const KNOWN_EXECUTOR_MODULES: PluginModule[] = [
   "managed-iac"
 ];
 
-function isKnownExecutorModule(value: string): value is PluginModule {
+/**
+ * Exported (M8 hardening — BUILD_AND_TEST.md §8 M8 item 6, "create-time module allowlist"): until
+ * now this check ran ONLY here, at dispatch time (`resolveExecutorPluginInstance`, below) — a
+ * binding with an unknown/wrong-kind `pluginModule` (e.g. `webhook-control`, a `ControlPlugin`, or
+ * a typo) was accepted uncomplainingly by `PUT /executors/:idOrUrn/binding` and only ever surfaced
+ * as a confusing failure the next time the coordination engine tried to trigger that target.
+ * `routes/executors.ts`'s binding-create handler now calls this SAME function at WRITE time —
+ * defense in depth, mirroring the discovery-create route's `KNOWN_DISCOVERY_MODULES` check it was
+ * always inconsistent with.
+ */
+export function isKnownExecutorModule(value: string): value is PluginModule {
   return (KNOWN_EXECUTOR_MODULES as string[]).includes(value);
 }
 

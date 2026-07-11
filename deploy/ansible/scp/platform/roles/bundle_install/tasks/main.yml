@@ -1,0 +1,114 @@
+---
+# scp.platform.bundle_install — install or UPGRADE a CommanderSCP instance from the signed
+# air-gap bundle (DESIGN.md §16: "the signed bundle's idempotent install/upgrade script is the
+# unit of update, and we ship an Ansible collection (scp.platform) wrapping it for fleet
+# rollout"). The SAME bundle+script is install AND upgrade — there is no separate upgrade path
+# (install.sh does `helm upgrade --install` / `docker compose up -d`, both idempotent), so this
+# role is equally a first-install and a fleet-wide upgrade role.
+#
+# This role deliberately does NOTHING install.sh doesn't already do — it copies the bundle to the
+# host, extracts it, and runs install.sh. All the security-critical work (cosign-verify every
+# image + CHECKSUMS.txt against the bundled key, reject a tampered bundle, retarget-push pinned by
+# digest, re-verify the pushed digest) lives IN install.sh and happens identically whether an
+# operator runs it by hand or Ansible runs it here — Ansible is a convenience, never a dependency.
+
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - scp_bundle_tarball | length > 0
+      - scp_registry | length > 0
+      - scp_cosign_pubkey | length > 0
+    fail_msg: >-
+      scp_bundle_tarball (path to scp-bundle-<version>.tar.gz on the control node), scp_registry
+      (target registry, e.g. registry.internal:5000/scp), and scp_cosign_pubkey (path, on the
+      control node, to an EXTERNAL cosign public key obtained out-of-band from the bundle itself
+      — adversarial review CRITICAL #1: install.sh refuses to verify a bundle against a key
+      shipped inside that same bundle) are all required.
+
+- name: Ensure the extraction directory exists
+  ansible.builtin.file:
+    path: "{{ scp_bundle_extract_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Copy the signed bundle to the target host
+  ansible.builtin.copy:
+    src: "{{ scp_bundle_tarball }}"
+    dest: "{{ scp_bundle_extract_dir }}/{{ scp_bundle_tarball | basename }}"
+    mode: "0644"
+  register: scp_bundle_copy
+
+- name: >-
+    Copy the EXTERNAL cosign public key to the target host (adversarial review CRITICAL #1 —
+    install.sh's own trust root must never be a key shipped inside the bundle it verifies)
+  ansible.builtin.copy:
+    src: "{{ scp_cosign_pubkey }}"
+    dest: "{{ scp_bundle_extract_dir }}/cosign-external.pub"
+    mode: "0644"
+  register: scp_cosign_pubkey_copy
+
+- name: Extract the bundle
+  # Plain `tar -xzf` rather than ansible.builtin.unarchive: unarchive's auto-detection needs GNU
+  # tar (gtar) for .tar.gz and otherwise mis-falls-back to unzip (fails on macOS control nodes);
+  # `tar -xzf` works with both BSD and GNU tar. Re-extract only when the copied tarball actually
+  # changed (idempotent re-runs) — the bundle's top-level dir embeds the version
+  # (scp-bundle-<version>/), unknown ahead of time, so idempotency keys on the copy step's change
+  # status rather than a `creates:` path.
+  ansible.builtin.command:
+    cmd: "tar -xzf {{ (scp_bundle_extract_dir + '/' + (scp_bundle_tarball | basename)) | quote }}"
+    chdir: "{{ scp_bundle_extract_dir }}"
+  register: scp_bundle_extract
+  changed_when: scp_bundle_extract.rc == 0
+  when: scp_bundle_copy is changed
+
+- name: Locate the extracted bundle root (contains install.sh)
+  ansible.builtin.find:
+    paths: "{{ scp_bundle_extract_dir }}"
+    patterns: "install.sh"
+    recurse: true
+    file_type: file
+  register: scp_installsh_find
+
+- name: Fail if install.sh was not found in the extracted bundle
+  ansible.builtin.assert:
+    that:
+      - scp_installsh_find.files | length > 0
+    fail_msg: "No install.sh found under {{ scp_bundle_extract_dir }} after extraction — is the bundle intact?"
+
+- name: Resolve the bundle root directory
+  ansible.builtin.set_fact:
+    scp_bundle_dir: "{{ scp_installsh_find.files[0].path | dirname }}"
+
+- name: Run the bundle install/upgrade script (cosign-verify -> retarget -> apply)
+  # install.sh's own `set -euo pipefail` + fail-closed cosign verification is the real gate — a
+  # non-zero exit here (a tampered bundle, a failed retarget, a digest mismatch) fails the play
+  # for this host, which is exactly what a fleet rollout wants. `--pubkey` points at the EXTERNAL
+  # key copied to this host above — never the cosign.pub shipped inside the bundle itself
+  # (adversarial review CRITICAL #1).
+  ansible.builtin.command:
+    cmd: >-
+      ./install.sh
+      --registry {{ scp_registry }}
+      --pubkey {{ scp_bundle_extract_dir }}/cosign-external.pub
+      --mode {{ scp_install_mode }}
+      {{ '--namespace ' + scp_helm_namespace if (scp_install_mode == 'helm' and scp_helm_namespace | length > 0) else '' }}
+      {{ '--release-name ' + scp_helm_release_name if scp_install_mode == 'helm' else '' }}
+      {{ '--insecure-registry' if scp_insecure_registry | bool else '' }}
+      {{ '--dry-run' if scp_dry_run | bool else '' }}
+    chdir: "{{ scp_bundle_dir }}"
+  register: scp_install_result
+  changed_when: scp_install_result.rc == 0
+
+- name: Show install.sh output
+  ansible.builtin.debug:
+    var: scp_install_result.stdout_lines
+
+- name: Health check the running instance
+  ansible.builtin.uri:
+    url: "{{ scp_health_url }}"
+    status_code: 200
+  register: scp_health
+  retries: "{{ scp_health_retries }}"
+  delay: "{{ scp_health_delay_seconds }}"
+  until: scp_health.status == 200
+  when: not (scp_dry_run | bool)

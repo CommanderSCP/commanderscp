@@ -23,7 +23,8 @@ export default tseslint.config(
       "**/coverage/**",
       "**/drizzle/**",
       "packages/sdk/src/generated/**",
-      "apps/web/dist/**"
+      "apps/web/dist/**",
+      ".claude/**"
     ]
   },
   js.configs.recommended,

@@ -1,0 +1,56 @@
+{{- if .Values.api.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "commanderscp.fullname" . }}-api
+  labels:
+    {{- include "commanderscp.apiSelectorLabels" . | nindent 4 }}
+    {{- include "commanderscp.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "commanderscp.fullname" . }}-api
+  minReplicas: {{ .Values.api.hpa.minReplicas }}
+  maxReplicas: {{ .Values.api.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.api.hpa.targetCPUUtilizationPercentage }}
+{{- end }}
+---
+{{/*
+worker — scaled by queue depth, not CPU (DESIGN §16: "worker (SCP_ROLE=worker, scaled by queue
+depth)"). Requires an External metric named `worker.hpa.metricName` to already be registered in
+the cluster (a Prometheus Adapter rule or a KEDA ScaledObject publishing pg-boss's queue-depth
+gauge) — disabled by default (`worker.hpa.enabled: false`) so a plain `helm install` never fails
+HPA validation against a cluster with no such metric source configured yet. See README.md
+"Scaling" for the two supported wiring options.
+*/}}
+{{- if .Values.worker.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "commanderscp.fullname" . }}-worker
+  labels:
+    {{- include "commanderscp.workerSelectorLabels" . | nindent 4 }}
+    {{- include "commanderscp.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "commanderscp.fullname" . }}-worker
+  minReplicas: {{ .Values.worker.hpa.minReplicas }}
+  maxReplicas: {{ .Values.worker.hpa.maxReplicas }}
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: {{ .Values.worker.hpa.metricName }}
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.worker.hpa.targetAverageValue | quote }}
+{{- end }}

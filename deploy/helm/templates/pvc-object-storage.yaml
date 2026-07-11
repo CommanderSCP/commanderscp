@@ -1,0 +1,20 @@
+{{/* Object storage — filesystem/PVC provider default (DESIGN §16). Mounted into api AND worker
+     at /var/lib/scp/storage (ReadWriteOnce is fine for a single-writer-at-a-time access pattern;
+     operators needing multi-writer set accessMode: ReadWriteMany with a storage class that
+     supports it, or switch to the S3 provider). */}}
+{{- if eq .Values.objectStorage.provider "filesystem" }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "commanderscp.fullname" . }}-storage
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+spec:
+  accessModes: [{{ .Values.objectStorage.filesystem.accessMode | quote }}]
+  {{- if .Values.objectStorage.filesystem.storageClassName }}
+  storageClassName: {{ .Values.objectStorage.filesystem.storageClassName }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.objectStorage.filesystem.size }}
+{{- end }}

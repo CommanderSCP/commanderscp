@@ -42,14 +42,23 @@ async function main(): Promise<void> {
   // (schema-scoped to `pgboss` only, no grants on `public`) and apply RLS; provisioning grants
   // each LOGIN with its runtime password. The admin pool is closed before the server serves
   // anything.
-  const adminPool = createPool(config.databaseUrl);
-  const adminDb = createDb(adminPool);
-  await runMigrations(adminDb);
-  const creds = runtimeCredentials(config.runtimeDatabaseUrl);
-  await provisionRuntimeRole(adminPool, creds.user, creds.password);
-  const pgBossCreds = runtimeCredentials(config.pgBossDatabaseUrl);
-  await provisionPgBossRole(adminPool, pgBossCreds.user, pgBossCreds.password);
-  await adminPool.end();
+  //
+  // M8 hardening: `SCP_SKIP_MIGRATIONS=true` (the Helm chart's `api`/`worker` Deployments) skips
+  // ALL of this — `config.databaseUrl` (admin-capable) is never even connected to from these
+  // pods. The chart's migrations Job (`migrate-bin.ts`) runs this exact same work, once, as a
+  // pre-upgrade hook, using the admin connection ONLY that Job holds. Every other deployment
+  // shape (compose, `pnpm dev`, every E2E script) leaves `SCP_SKIP_MIGRATIONS` unset and keeps
+  // this unchanged.
+  if (!config.skipMigrations) {
+    const adminPool = createPool(config.databaseUrl);
+    const adminDb = createDb(adminPool);
+    await runMigrations(adminDb);
+    const creds = runtimeCredentials(config.runtimeDatabaseUrl);
+    await provisionRuntimeRole(adminPool, creds.user, creds.password);
+    const pgBossCreds = runtimeCredentials(config.pgBossDatabaseUrl);
+    await provisionPgBossRole(adminPool, pgBossCreds.user, pgBossCreds.password);
+    await adminPool.end();
+  }
 
   // Phase 2 — runtime pool: authenticates as the least-privileged `scp_app` login role. Every
   // request-serving query runs on this pool; RLS is enforced by the role itself, so a forgotten
@@ -130,6 +139,15 @@ async function main(): Promise<void> {
     });
   }
 
+  // Plain HTTP(S) listen — no `requestCert`/`rejectUnauthorized`. This process never verifies an
+  // incoming client TLS certificate itself (adversarial review MAJOR #3 on PR #15):
+  // `federation-https` (plugin-host/subprocess-entry.ts) presents a client cert when THIS domain
+  // dials OUT to a parent, but a PARENT receiving a child's pull here authenticates it by bearer
+  // token + RBAC only, same as pre-M8. Server-side mTLS enforcement today lives at the deployment
+  // edge (`deploy/helm/templates/ingress.yaml`'s `ingress.mtls` — nginx client-cert-verification
+  // annotations, see deploy/helm/README.md's "Federation mTLS" section). An in-app enforcement
+  // path (this server itself verifying peer certs, independent of whatever proxy sits in front of
+  // it) is tracked follow-up, not implemented here.
   await app.listen({ port: config.port, host: config.host });
   app.log.info(`scp (${config.role}) listening on http://${config.host}:${config.port}`);
 

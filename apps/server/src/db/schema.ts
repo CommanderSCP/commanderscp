@@ -767,9 +767,18 @@ export const freezes = pgTable(
  * reasons: (1) it lets federation's Testcontainers-level integration tests model two distinct
  * "domains" as two orgs sharing one test Postgres instance with genuinely DIFFERENT signing keys,
  * which the M6 DoD's tamper/signature tests require; (2) it keeps every federation identity
- * concept (self, peers, journal, signing key) consistently scoped the same way. Still no RLS
- * (private key material — `scp_app` reads/writes it directly, same trust tier treatment as before,
- * just partitioned by org now instead of a single global row).
+ * concept (self, peers, journal, signing key) consistently scoped the same way.
+ *
+ * M8 SECURITY-PASS FIX (drizzle/0016_instance_keys_rls.sql): the M6 org-scoping change above left
+ * this table WITHOUT an `org_isolation` RLS policy — its "no RLS" reasoning predates M6 and was
+ * written for a single GLOBAL row ("same treatment as state_transitions"), a premise the M6 change
+ * made false but the policy was never revisited to match. Once this table held one PRIVATE SIGNING
+ * KEY PER ORG in a table shared across every tenant, that gap meant a single forgotten `org_id`
+ * filter (an app bug) — with no independent DB-level backstop — could leak one org's federation/
+ * attestation signing key to another org's request context, violating DESIGN.md §4.2's
+ * non-negotiable "two independent failures" invariant. Now has full RLS, matching every other
+ * tenant-scoped table; `ensureInstanceKey`'s only call sites already run inside `withTenantTx`
+ * (it takes a `TenantTx`), so this closes the gap with no impact on the legitimate access path.
  */
 export const instanceKeys = pgTable(
   "instance_keys",

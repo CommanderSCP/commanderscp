@@ -1,0 +1,20 @@
+apiVersion: v2
+name: commanderscp
+description: >-
+  CommanderSCP — one chart, one scpd image, two Deployments (api + worker), a pre-upgrade
+  migrations Job (expand/contract, zero-downtime), hardened defaults, NetworkPolicies. See
+  deploy/helm/README.md for the full deployment model (DESIGN.md §16).
+type: application
+# Chart version and appVersion both track the release version this chart is built FOR — bumped by
+# the M8 Changesets release flow (BUILD_AND_TEST.md §8 M8 item 7), never hand-edited otherwise.
+version: 1.0.0-rc.0
+appVersion: "1.0.0-rc.0"
+kubeVersion: ">=1.28.0-0"
+home: https://github.com/CommanderSCP/commanderscp
+sources:
+  - https://github.com/CommanderSCP/commanderscp
+keywords:
+  - commanderscp
+  - federated-systems-coordination
+maintainers:
+  - name: CommanderSCP

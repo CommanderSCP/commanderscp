@@ -40,12 +40,14 @@ import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.j
 import { createRelationship } from "../graph/relationships-repo.js";
 import {
   upsertExecutorBinding,
-  getExecutorBinding
+  getExecutorBinding,
+  isKnownExecutorModule
 } from "../coordination/executor-bindings-repo.js";
 import {
   upsertNotificationBinding,
   listNotificationBindings,
-  deleteNotificationBinding
+  deleteNotificationBinding,
+  isKnownNotificationModule
 } from "../notify/notification-bindings-repo.js";
 import {
   putSecret,
@@ -242,6 +244,15 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
+      // M8 hardening (BUILD_AND_TEST.md §8 M8 item 6, "create-time module allowlist"): reject an
+      // unknown/wrong-kind/operator-plane `pluginModule` HERE, at WRITE time — mirroring the
+      // discovery-create route's `KNOWN_DISCOVERY_MODULES` check below — rather than only ever
+      // discovering it later, confusingly, the first time the coordination engine tries to
+      // dispatch to this binding (`executor-bindings-repo.ts`'s `resolveExecutorPluginInstance`
+      // already refused it there; this closes the same gap earlier, defense in depth).
+      if (!isKnownExecutorModule(request.body.pluginModule)) {
+        throw badRequest(`unknown or non-executor plugin module '${request.body.pluginModule}'`);
+      }
       // Validate the tenant config against the plugin's declared schema BEFORE storing it —
       // rejects e.g. a managed-iac binding that tries to set the server-governed runnerImage/
       // networkMode/workspace fields (CRITICAL #1 item 5). Outside the tx: pure input validation.
@@ -328,6 +339,10 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
+      // M8 hardening — same write-time allowlist as the executor-binding route above.
+      if (!isKnownNotificationModule(request.body.pluginModule)) {
+        throw badRequest(`unknown or non-notification plugin module '${request.body.pluginModule}'`);
+      }
       validatePluginConfig(request.body.pluginModule, request.body.config);
       const binding = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         await authorize(tx, {

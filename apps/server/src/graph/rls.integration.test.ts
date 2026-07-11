@@ -407,4 +407,57 @@ describe("RLS: adversarial cross-org probes", () => {
     ).rejects.toThrow(/row-level security/i);
     await raw.close();
   });
+
+  // -------------------------------------------------------------------------------------------
+  // M8 security pass (drizzle/0016_instance_keys_rls.sql): `instance_keys` became org-scoped in
+  // M6 (one Ed25519 PRIVATE SIGNING KEY per org) but was never given an `org_isolation` policy —
+  // its "no RLS" reasoning predated M6 and was written for a single global row. Regression
+  // coverage for that fix, same adversarial-probe shape as every other tenant table above:
+  // wrong/unset org context must fail closed, and a cross-org INSERT must be rejected.
+  // -------------------------------------------------------------------------------------------
+
+  it("instance_keys: cross-org SELECT sees zero rows — one org's private signing key is invisible under another org's context", async () => {
+    const raw = await RawScpAppClient.connect();
+    await raw.setOrgContext(orgAId);
+    // `scp_app` only ever has SELECT+INSERT on this table (drizzle/0010_governance.sql —
+    // never UPDATE/DELETE), so `ON CONFLICT ... DO NOTHING` (not DO UPDATE) is required — and a
+    // row for `orgAId` may already exist (e.g. `governance/attestation.ts`'s `ensureInstanceKey`
+    // lazily provisioning one via some earlier test/setup path in this suite; unique index on
+    // org_id means at most one row per org either way). This test only cares that SOME row is
+    // visible from orgA's own context and that exact row is invisible from orgB's — not which
+    // attempt actually won the insert.
+    await raw.query(
+      `INSERT INTO instance_keys (id, org_id, public_key, private_key) VALUES ($1, $2, 'pub-a', 'PRIVATE-KEY-SECRET-A')
+       ON CONFLICT (org_id) DO NOTHING`,
+      [randomUUID(), orgAId]
+    );
+    const visibleFromOwnOrg = await raw.query("SELECT id FROM instance_keys WHERE org_id = $1", [orgAId]);
+    expect(visibleFromOwnOrg.rows).toHaveLength(1);
+    await raw.close();
+
+    const rawB = await RawScpAppClient.connect();
+    await rawB.setOrgContext(orgBId);
+    const result = await rawB.query("SELECT * FROM instance_keys WHERE org_id = $1", [orgAId]);
+    await rawB.close();
+    expect(result.rows).toHaveLength(0);
+  });
+
+  it("instance_keys: fails closed when app.current_org_id is never set (SELECT sees zero rows across every org)", async () => {
+    const raw = await RawScpAppClient.connect();
+    const result = await raw.query("SELECT * FROM instance_keys");
+    await raw.close();
+    expect(result.rows).toHaveLength(0);
+  });
+
+  it("instance_keys: cannot INSERT a row under org B's context claiming org A's org_id (WITH CHECK)", async () => {
+    const raw = await RawScpAppClient.connect();
+    await raw.setOrgContext(orgBId);
+    await expect(
+      raw.query(
+        `INSERT INTO instance_keys (id, org_id, public_key, private_key) VALUES ($1, $2, 'pub-forged', 'forged-key')`,
+        [randomUUID(), orgAId]
+      )
+    ).rejects.toThrow(/row-level security/i);
+    await raw.close();
+  });
 });

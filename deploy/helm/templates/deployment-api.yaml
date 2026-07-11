@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "commanderscp.fullname" . }}-api
+  labels:
+    {{- include "commanderscp.apiSelectorLabels" . | nindent 4 }}
+    {{- include "commanderscp.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.api.hpa.enabled }}
+  replicas: {{ .Values.api.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "commanderscp.apiSelectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        {{- include "commanderscp.apiSelectorLabels" . | nindent 8 }}
+      {{- with .Values.api.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "commanderscp.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.api.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        {{- include "commanderscp.waitForPostgresInitContainer" (dict "root" . "dbEnvVar" "SCP_RUNTIME_DATABASE_URL") | nindent 8 }}
+      containers:
+        - name: api
+          image: {{ include "commanderscp.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            - name: SCP_ROLE
+              value: "api"
+            {{- include "commanderscp.commonEnv" . | nindent 12 }}
+            {{- include "commanderscp.runtimeDbEnv" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: storage
+              mountPath: /var/lib/scp/storage
+            {{- if .Values.federation.mtls.enabled }}
+            - name: federation-mtls
+              mountPath: /etc/scp/federation-mtls
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: storage
+          {{- if eq .Values.objectStorage.provider "filesystem" }}
+          persistentVolumeClaim:
+            claimName: {{ include "commanderscp.fullname" . }}-storage
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- if .Values.federation.mtls.enabled }}
+        - name: federation-mtls
+          secret:
+            secretName: {{ .Values.federation.mtls.existingSecret }}
+        {{- end }}

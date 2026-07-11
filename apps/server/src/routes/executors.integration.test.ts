@@ -229,6 +229,57 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     await expect(anon.notifications.listBindings()).rejects.toBeInstanceOf(ScpApiError);
   });
 
+  // M8 hardening (BUILD_AND_TEST.md §8 M8 item 6, "create-time module allowlist"): an unknown or
+  // wrong-KIND `pluginModule` (a real module, but not an ExecutorPlugin/NotificationPlugin) must be
+  // rejected at WRITE time — previously this was only ever caught later, confusingly, the first
+  // time the coordination engine/notification dispatcher tried to actually USE the binding.
+  it("REJECTS an executor binding whose pluginModule is unknown or the WRONG KIND (e.g. a ControlPlugin/DiscoveryPlugin/NotificationPlugin module) — at WRITE time, not just dispatch", async () => {
+    const org = await createTestOrg(server, "m8-executor-module-allowlist");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const component = await admin.components.create({ name: `comp-${randomUUID().slice(0, 8)}` });
+
+    for (const wrongModule of [
+      "bogus-module-that-does-not-exist",
+      "webhook-control", // a real module, but a ControlPlugin, not an ExecutorPlugin
+      "github-discovery", // a real module, but a DiscoveryPlugin
+      "webhook-notify", // a real module, but a NotificationPlugin
+      "smtp-notify"
+    ]) {
+      await expect(
+        admin.executors.putBinding(component.id, {
+          pluginModule: wrongModule,
+          pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`,
+          config: {}
+        }),
+        `expected pluginModule '${wrongModule}' to be rejected at write time`
+      ).rejects.toBeInstanceOf(ScpApiError);
+    }
+
+    // Nothing was ever persisted for any of the rejected attempts.
+    await expect(admin.executors.getBinding(component.id)).rejects.toBeInstanceOf(ScpApiError);
+  });
+
+  it("REJECTS a notification binding whose pluginModule is unknown or the WRONG KIND — at WRITE time", async () => {
+    const org = await createTestOrg(server, "m8-notification-module-allowlist");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+    for (const wrongModule of [
+      "bogus-module-that-does-not-exist",
+      "fake-executor", // a real module, but an ExecutorPlugin, not a NotificationPlugin
+      "webhook-control",
+      "github-discovery"
+    ]) {
+      const instanceId = `notify-${randomUUID().slice(0, 8)}`;
+      await expect(
+        admin.notifications.putBinding(instanceId, {
+          pluginModule: wrongModule,
+          config: {}
+        }),
+        `expected pluginModule '${wrongModule}' to be rejected at write time`
+      ).rejects.toBeInstanceOf(ScpApiError);
+    }
+  });
+
   // CRITICAL #1 (adversarial review): a tenant must never be able to set managed-iac's
   // server-governed runnerImage/networkMode/workspace fields — the manifest configSchema is
   // additionalProperties:false, so the config-validation added to the binding route rejects them.

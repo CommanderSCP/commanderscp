@@ -1,7 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
 import type { ExecutionStatus, ExternalRunRef } from "@scp/plugin-api";
@@ -16,9 +16,13 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { changes, changeWaveTargets } from "../db/schema.js";
+import { v7 as uuidv7 } from "uuid";
+import { changes, changeSourceEvents, changeWaveTargets, decisions } from "../db/schema.js";
+import { processChangeSourceEvents } from "./webhook-processor.js";
+import { createSourceMapping } from "./source-mappings-repo.js";
 import { createObject } from "../graph/objects-repo.js";
 import { SubprocessPluginHost } from "../plugin-host/host.js";
+import type { PluginHost } from "../plugin-host/contract.js";
 import { RECONCILE_QUEUE, reconcileOrgTick, startReconcileLoop } from "./reconcile.js";
 import { startPgBoss } from "../events/pgboss.js";
 import { DEFAULT_EXECUTOR_INSTANCE_ID, DEFAULT_EXECUTOR_MODULE } from "./executor-config.js";
@@ -28,6 +32,7 @@ import { transitionChange } from "./transition.js";
 import { getSharedCelSandbox } from "../governance/cel-sandbox.js";
 import { compileAndPersistPlan } from "./plan-service.js";
 import { markWaveTerminal } from "./wave-targets-repo.js";
+import { tryAcquireTriggerClaimLock } from "./trigger-claim-lock.js";
 import {
   createInMemoryFakeHost,
   withFailOnceAfterRealTrigger
@@ -928,3 +933,554 @@ describe("coordination engine: watchdog scheduled on the running worker (CRITICA
     }
   }, 40_000);
 });
+
+/**
+ * M8 hardening (BUILD_AND_TEST.md §8 M8 item 6, "Multi-replica coordination trigger concurrency"):
+ * the Helm chart shipped this milestone scales `worker` to N replicas, each running its own
+ * `startReconcileLoop` against the SAME Postgres database with NO shared, synchronously-consistent
+ * view of any other replica's in-flight work (a real `ExecutorPlugin` subprocess's own dedup state
+ * is per-pod, not cluster-shared). Two replicas' overlapping ticks reaching the SAME wave target at
+ * (genuinely, not just apparently) the same moment must not both fire the executor's `trigger()` —
+ * the DB claim in `claimWaveTargetForTriggering` must be the actual single-flight boundary, not a
+ * courtesy that downstream idempotency happens to paper over.
+ */
+describe("coordination engine: multi-replica trigger claim is single-flight (M8 hardening)", () => {
+  let server: TestServer;
+  let org: TestOrg;
+
+  beforeAll(async () => {
+    server = await buildTestServer();
+    org = await createTestOrg(server, "multi-replica-claim");
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  /** Manually walks a change to `executing` with a compiled plan — same manual walk as the
+   *  "reconcile batch fairness" fixture above — WITHOUT ever calling `reconcileOrgTick`/
+   *  `advanceExecutingChanges`, so the resulting wave target sits at `pending`, genuinely
+   *  un-claimed by anything, under this test's full control. */
+  async function createExecutingChangeWithPendingTarget(name: string): Promise<string> {
+    return withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const targetObject = await createObject(tx, {
+        orgId: org.orgId,
+        typeId: "component",
+        actorObjectId: org.orgId,
+        requestId: "multi-replica-claim-test",
+        name
+      });
+      const { change, targetObjectIds } = await proposeChange(tx, {
+        orgId: org.orgId,
+        actorObjectId: org.orgId,
+        requestId: "multi-replica-claim-test",
+        name: `${name}-change`,
+        targets: [targetObject.id]
+      });
+      const gateDeps = { sandbox: getSharedCelSandbox(), host: null };
+      await transitionChange(
+        tx,
+        {
+          orgId: org.orgId,
+          changeObjectId: change.id,
+          toState: "evaluated",
+          actorObjectId: org.orgId,
+          requestId: "multi-replica-claim-test"
+        },
+        gateDeps
+      );
+      await compileAndPersistPlan(tx, {
+        orgId: org.orgId,
+        changeObjectId: change.id,
+        targetObjectIds,
+        topologyObjectId: null,
+        topologyVersion: null
+      });
+      await transitionChange(
+        tx,
+        {
+          orgId: org.orgId,
+          changeObjectId: change.id,
+          toState: "coordinated",
+          actorObjectId: org.orgId,
+          requestId: "multi-replica-claim-test"
+        },
+        gateDeps
+      );
+      await transitionChange(
+        tx,
+        {
+          orgId: org.orgId,
+          changeObjectId: change.id,
+          toState: "executing",
+          actorObjectId: org.orgId,
+          requestId: "multi-replica-claim-test"
+        },
+        gateDeps
+      );
+      return targetObject.id;
+    });
+  }
+
+  async function waveTargetIdFor(targetObjectId: string): Promise<string> {
+    const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, targetObjectId))
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe("pending");
+    return rows[0]!.id;
+  }
+
+  it("N genuinely concurrent lock-acquire attempts for the SAME wave target: exactly one succeeds", async () => {
+    const targetObjectId = await createExecutingChangeWithPendingTarget("race-target");
+    const waveTargetId = await waveTargetIdFor(targetObjectId);
+
+    // Real, independent connections + `pg_try_advisory_lock` calls fired concurrently via
+    // Promise.all — genuine Postgres-level mutual exclusion, not just JS-level interleaving,
+    // exactly the shape of two (or more) worker replicas' overlapping ticks reaching the same
+    // target at once. None of these ever block: a non-winner's `pg_try_advisory_lock` call
+    // returns `false` immediately.
+    const CONCURRENT_CLAIMANTS = 8;
+    const locks = await Promise.all(
+      Array.from({ length: CONCURRENT_CLAIMANTS }, () =>
+        tryAcquireTriggerClaimLock(server.deps.db, waveTargetId)
+      )
+    );
+
+    const winners = locks.filter((lock) => lock !== undefined);
+    expect(winners).toHaveLength(1);
+
+    // Release the sole winner's lock — every loser already released nothing (they acquired
+    // nothing), so this is the only cleanup needed.
+    await winners[0]!.release();
+  });
+
+  it("releasing the lock makes it IMMEDIATELY reclaimable — no time budget spent, unlike a lease would need", async () => {
+    const targetObjectId = await createExecutingChangeWithPendingTarget("release-target");
+    const waveTargetId = await waveTargetIdFor(targetObjectId);
+
+    const first = await tryAcquireTriggerClaimLock(server.deps.db, waveTargetId);
+    expect(first).toBeDefined();
+
+    // While held, a second attempt must NOT acquire it — this is the property that makes a
+    // concurrent replica back off instead of double-firing.
+    const whileHeld = await tryAcquireTriggerClaimLock(server.deps.db, waveTargetId);
+    expect(whileHeld).toBeUndefined();
+
+    await first!.release();
+
+    // The instant it's released (simulating the original claimant's `triggerWaveTarget` `finally`
+    // running — success OR a caught error, exactly what the M3 crash-resumption tests rely on for
+    // "retry on the very next tick") a fresh attempt succeeds immediately. No staleness window,
+    // no wait.
+    const afterRelease = await tryAcquireTriggerClaimLock(server.deps.db, waveTargetId);
+    expect(afterRelease).toBeDefined();
+    await afterRelease!.release();
+  });
+
+  it("end-to-end: two independent PluginHosts (simulating two worker replicas with NO shared executor state) run reconcileOrgTick concurrently against the SAME already-executing change — the executor's trigger() fires exactly once", async () => {
+    // Deterministic setup via the SAME manual walk as the tests above — proposed -> evaluated ->
+    // coordinated -> executing, entirely OUTSIDE reconcileOrgTick, so the change sits `executing`
+    // with a compiled plan and one `pending` wave target BEFORE either "replica" ever ticks. This
+    // scopes the race to exactly the property this test exists to prove — single-flight around
+    // the wave-target TRIGGER CLAIM under genuine multi-replica concurrency — without also
+    // exercising the earlier proposed/evaluated/coordinated pipeline stages concurrently (a
+    // change's very first `evaluated -> coordinated` plan-compilation racing across two ticks is
+    // a real, but SEPARATE, pre-existing concern this test deliberately does not conflate with the
+    // trigger-claim guarantee it's here to verify).
+    const targetObjectId = await createExecutingChangeWithPendingTarget("e2e-race-target");
+    await waveTargetIdFor(targetObjectId);
+
+    // Two SEPARATE `createInMemoryFakeHost()` instances = two SEPARATE `FakeExecutorPlugin`
+    // instances with their own independent in-memory state — deliberately NOT sharing a
+    // `statePath`, modeling the realistic default (no shared PV across Helm `worker` replicas).
+    // If the DB-level claim were the only thing standing between "pending" and a real trigger()
+    // call, and it were racy, BOTH hosts would independently observe zero prior state for this
+    // target and BOTH would mint a fresh run — a genuine double-fire neither host's own dedup
+    // could ever catch, because neither can see the other's state.
+    const { host: hostA, calls: callsA } = withFailOnceAfterRealTrigger(
+      createInMemoryFakeHost({ autoSucceedAfterMs: 60_000 }),
+      () => false // never inject a fault — this wrapper is used purely as a call-count logger here.
+    );
+    const { host: hostB, calls: callsB } = withFailOnceAfterRealTrigger(
+      createInMemoryFakeHost({ autoSucceedAfterMs: 60_000 }),
+      () => false
+    );
+
+    // Two concurrent, continuously self-re-ticking loops — the same shape as `startReconcileLoop`
+    // wires onto pg-boss in production, minus pg-boss itself — both independently polling the SAME
+    // already-`executing` change and racing to claim/trigger its one `pending` wave target. What
+    // must NEVER be true, at any point across BOTH loops running the whole time, is the executor's
+    // `trigger()` firing more than once for this target.
+    let settled = false;
+    async function tickLoop(host: PluginHost): Promise<void> {
+      while (!settled) {
+        await reconcileOrgTick(
+          server.deps.db,
+          org.orgId,
+          host,
+          getSharedCelSandbox(),
+          server.deps.config.secretsMasterKey
+        );
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    const loopA = tickLoop(hostA);
+    const loopB = tickLoop(hostB);
+
+    try {
+      await waitUntil(
+        async () => {
+          const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+            tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, targetObjectId))
+          );
+          const row = rows[0];
+          return row && row.status !== "pending" && row.status !== "triggering" ? row : undefined;
+        },
+        { describe: "e2e-race wave target settles past triggering", timeoutMs: 15_000 }
+      );
+    } finally {
+      settled = true; // stop both loops — awaited below so the test doesn't outlive them.
+      await Promise.all([loopA, loopB]);
+    }
+
+    const totalRealTriggerCalls =
+      callsA.filter((c) => c.targetRef === targetObjectId).length +
+      callsB.filter((c) => c.targetRef === targetObjectId).length;
+    expect(totalRealTriggerCalls).toBe(1);
+  }, 30_000);
+});
+
+/**
+ * M8 hardening — one pipeline stage EARLIER than the trigger-claim race above, found while
+ * proving that fix under genuine multi-replica concurrency (coordinator follow-up on top of
+ * BUILD_AND_TEST.md §8 M8 item 6): `reconcile.ts`'s `advanceEvaluatedChanges` compiles a change's
+ * plan and transitions `evaluated -> coordinated`. Confirmed via direct DB inspection (before the
+ * `change-coordination-lock.ts` fix landed): two concurrent `reconcileOrgTick` calls racing the
+ * SAME freshly-proposed change could both call `compileAndPersistPlan`, and the loser's
+ * catch-and-cancel fallback would COMMIT its own already-inserted duplicate plan rows AND
+ * wrongfully flip the change to `cancelled` even though the winner had already legitimately
+ * coordinated (or, by the time the race resolves, already be executing) it.
+ */
+describe("coordination engine: evaluated->coordinated plan compilation is single-flight (M8 hardening)", () => {
+  let server: TestServer;
+  let org: TestOrg;
+
+  beforeAll(async () => {
+    server = await buildTestServer();
+    org = await createTestOrg(server, "eval-coordinate-race");
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  it("N concurrent reconcileOrgTick calls racing the SAME freshly-proposed change: exactly ONE plan is ever persisted, and the change is never wrongfully cancelled", async () => {
+    const createTarget = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/components",
+      headers: { authorization: `Bearer ${org.adminToken}` },
+      payload: { name: "eval-race-target" }
+    });
+    expect(createTarget.statusCode).toBe(201);
+    const targetObjectId = createTarget.json().id as string;
+
+    const propose = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/changes",
+      headers: { authorization: `Bearer ${org.adminToken}` },
+      payload: { name: "eval-race change", targets: [targetObjectId] }
+    });
+    expect(propose.statusCode).toBe(201);
+    const changeObjectId = propose.json().id as string;
+
+    // Independent in-memory fake hosts (no shared executor state, same reasoning as the
+    // trigger-claim e2e test above) driving several genuinely concurrent, continuously
+    // self-re-ticking reconcile loops — all racing to be the one that compiles this change's
+    // plan and coordinates it.
+    const CONCURRENT_REPLICAS = 4;
+    let settled = false;
+    async function tickLoop(): Promise<void> {
+      const host = createInMemoryFakeHost({ autoSucceedAfterMs: 60_000 });
+      while (!settled) {
+        await reconcileOrgTick(
+          server.deps.db,
+          org.orgId,
+          host,
+          getSharedCelSandbox(),
+          server.deps.config.secretsMasterKey
+        );
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    const loops = Array.from({ length: CONCURRENT_REPLICAS }, () => tickLoop());
+
+    try {
+      await waitUntil(
+        async () => {
+          const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+            tx.select().from(changes).where(eq(changes.objectId, changeObjectId))
+          );
+          const state = rows[0]?.state;
+          // "coordinated" or further (executing/validating/...) — anything past the race this
+          // test is about. Never expect "cancelled" here (asserted explicitly below too).
+          return state && state !== "proposed" && state !== "evaluated" ? state : undefined;
+        },
+        { describe: "eval-race change reaches coordinated (or further)", timeoutMs: 15_000 }
+      );
+    } finally {
+      settled = true;
+      await Promise.all(loops);
+    }
+
+    const finalChange = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(changes).where(eq(changes.objectId, changeObjectId))
+    );
+    expect(finalChange[0]!.state).not.toBe("cancelled");
+
+    // The definitive proof: exactly ONE plan was EVER persisted for this change — not "the
+    // latest one looks fine" (which duplicate-plan-row bugs can still pass), but a hard count.
+    const plans = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.query.changePlans.findMany({
+        where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.orgId, org.orgId), eqOp(t.changeObjectId, changeObjectId))
+      })
+    );
+    expect(plans).toHaveLength(1);
+
+    // And exactly one wave_target row for this target — the same observable symptom the
+    // pre-fix bug produced (two distinct waveIds for the same targetObjectId).
+    const waveTargetRows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, targetObjectId))
+    );
+    expect(waveTargetRows).toHaveLength(1);
+  }, 30_000);
+});
+
+/**
+ * M8 hardening — same concurrency audit, one layer further upstream: `webhook-processor.ts`'s
+ * `processChangeSourceEvents` turns unprocessed `change_source_events` rows into Changes. Without
+ * `FOR UPDATE SKIP LOCKED` on its batch read, two concurrent ticks (two worker replicas) could
+ * both `SELECT` the SAME unprocessed row before either committed, and both call `proposeChange`
+ * for it — two separate Change objects for one real-world webhook delivery, each independently
+ * eligible to gate/approve/promote/execute as if they were unrelated.
+ */
+describe("coordination engine: webhook-event processing is single-flight across concurrent ticks (M8 hardening)", () => {
+  let server: TestServer;
+  let org: TestOrg;
+
+  beforeAll(async () => {
+    server = await buildTestServer();
+    org = await createTestOrg(server, "webhook-race");
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  it("N concurrent processChangeSourceEvents calls racing the SAME unprocessed event row: exactly ONE Change is ever proposed", async () => {
+    const createComponent = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/components",
+      headers: { authorization: `Bearer ${org.adminToken}` },
+      payload: { name: `webhook-race-comp-${randomSuffix()}` }
+    });
+    expect(createComponent.statusCode).toBe(201);
+    const componentObjectId = createComponent.json().id as string;
+    const repo = `webhook-race-org/${randomSuffix()}`;
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      createSourceMapping(tx, {
+        orgId: org.orgId,
+        sourceKind: "generic",
+        repoPattern: repo,
+        componentIdOrUrn: componentObjectId
+      })
+    );
+
+    // Insert ONE unprocessed change_source_events row directly (bypassing the HTTP/HMAC layer,
+    // already covered by executors.integration.test.ts's signature/redelivery-dedupe suite) — this
+    // test is specifically about PROCESSING-time concurrency, not ingestion.
+    const eventId = uuidv7();
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.insert(changeSourceEvents).values({
+        id: eventId,
+        orgId: org.orgId,
+        sourceKind: "generic",
+        signatureVerified: true,
+        dedupeKey: `test:${eventId}`,
+        headers: {},
+        payload: { repo, correlationKey: "refs/heads/main" }
+      })
+    );
+
+    const CONCURRENT_REPLICAS = 6;
+    await Promise.all(
+      Array.from({ length: CONCURRENT_REPLICAS }, () =>
+        withTenantTx(server.deps.db, org.orgId, (tx) => processChangeSourceEvents(tx, org.orgId))
+      )
+    );
+
+    const eventRow = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(changeSourceEvents).where(eq(changeSourceEvents.id, eventId))
+    );
+    expect(eventRow[0]!.processedAt).not.toBeNull();
+    expect(eventRow[0]!.resultingChangeObjectId).not.toBeNull();
+
+    // The definitive proof: exactly one Change exists in this (fresh, dedicated) org — a
+    // duplicate-processing bug would show two.
+    const allChanges = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select({ objectId: changes.objectId }).from(changes).where(eq(changes.orgId, org.orgId))
+    );
+    expect(allChanges).toHaveLength(1);
+    expect(allChanges[0]!.objectId).toBe(eventRow[0]!.resultingChangeObjectId);
+  });
+});
+
+/**
+ * M8 hardening follow-up (adversarial review MINOR #5, disclosed as "undisclosed" in the M8 PR's
+ * own "all three coordination races" claim — this is the 4th): one pipeline stage further than
+ * the plan-compilation race above — `reconcile.ts`'s `reconcileExecutingChange` PENDING-wave
+ * branch (`evaluateWaveGate` + `insertDecision` + `markWaveRunning`) had no per-change advisory
+ * lock, so two concurrent replica ticks that both read the SAME wave as "pending" (the batch read
+ * in `advanceExecutingChanges`, taken outside any lock) could both evaluate the gate and insert a
+ * SECOND `kind: "gate"` Decision row for the same wave boundary — a duplicate AUDIT record, not a
+ * double-execution (`markWaveRunning`'s own `WHERE status = 'pending'` guard already made that
+ * safe, and triggering itself is already single-flight via the trigger-claim lock). The fix adds
+ * the SAME per-change advisory lock (`change-coordination-lock.ts`) around this branch, with a
+ * fresh re-check of the wave's status still under the lock — the same "lost the race, someone else
+ * already handled it" no-op shape `advanceEvaluatedChanges` already uses.
+ */
+describe("coordination engine: wave-gate evaluation is single-flight (M8 hardening MINOR #5)", () => {
+  let server: TestServer;
+  let org: TestOrg;
+
+  beforeAll(async () => {
+    server = await buildTestServer();
+    org = await createTestOrg(server, "wave-gate-race");
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  /** Manually walks a change to `executing` with a compiled plan, entirely OUTSIDE
+   *  `reconcileOrgTick` — same technique as the trigger-claim describe block's own
+   *  `createExecutingChangeWithPendingTarget` above, scoped here to the WAVE-GATE race (one stage
+   *  earlier: the gate has never been evaluated for this wave at all) rather than the
+   *  trigger-claim race (a different, already-proven-single-flight lock one stage later). */
+  async function createExecutingChangeWithPendingWave(
+    name: string
+  ): Promise<{ changeObjectId: string; targetObjectId: string }> {
+    return withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const targetObject = await createObject(tx, {
+        orgId: org.orgId,
+        typeId: "component",
+        actorObjectId: org.orgId,
+        requestId: "wave-gate-race-test",
+        name
+      });
+      const { change, targetObjectIds } = await proposeChange(tx, {
+        orgId: org.orgId,
+        actorObjectId: org.orgId,
+        requestId: "wave-gate-race-test",
+        name: `${name}-change`,
+        targets: [targetObject.id]
+      });
+      const gateDeps = { sandbox: getSharedCelSandbox(), host: null };
+      await transitionChange(
+        tx,
+        {
+          orgId: org.orgId,
+          changeObjectId: change.id,
+          toState: "evaluated",
+          actorObjectId: org.orgId,
+          requestId: "wave-gate-race-test"
+        },
+        gateDeps
+      );
+      await compileAndPersistPlan(tx, {
+        orgId: org.orgId,
+        changeObjectId: change.id,
+        targetObjectIds,
+        topologyObjectId: null,
+        topologyVersion: null
+      });
+      await transitionChange(
+        tx,
+        {
+          orgId: org.orgId,
+          changeObjectId: change.id,
+          toState: "coordinated",
+          actorObjectId: org.orgId,
+          requestId: "wave-gate-race-test"
+        },
+        gateDeps
+      );
+      await transitionChange(
+        tx,
+        {
+          orgId: org.orgId,
+          changeObjectId: change.id,
+          toState: "executing",
+          actorObjectId: org.orgId,
+          requestId: "wave-gate-race-test"
+        },
+        gateDeps
+      );
+      return { changeObjectId: change.id, targetObjectId: targetObject.id };
+    });
+  }
+
+  it("N genuinely concurrent reconcileOrgTick calls racing the SAME pending wave's gate: exactly ONE gate Decision is ever recorded", async () => {
+    const { changeObjectId, targetObjectId } = await createExecutingChangeWithPendingWave("wave-gate-race-target");
+
+    // Sanity: the wave genuinely has never been GATED yet — the manual walk above writes
+    // `kind: "transition"` Decisions for each transitionChange call, but zero `kind: "gate"`
+    // Decisions exist before the race starts (this manual walk never called reconcileOrgTick, the
+    // only thing that ever evaluates a wave gate).
+    const beforeGateDecisions = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(decisions)
+        .where(and(eq(decisions.subjectId, changeObjectId), eq(decisions.kind, "gate")))
+    );
+    expect(beforeGateDecisions).toHaveLength(0);
+
+    // A real, independent in-memory fake host per the same reasoning the other races' e2e tests
+    // use — not shared executor state, and a long autoSucceedAfterMs so the target sits durably
+    // `triggered`/`observing` after the race resolves rather than racing to completion too.
+    const host = createInMemoryFakeHost({ autoSucceedAfterMs: 60_000 });
+
+    // Genuinely concurrent (Promise.all, not a loop) — the same shape as the trigger-claim lock's
+    // own direct N-concurrent-attempts test above. All N ticks race the SAME org, so all N read
+    // this change as `executing` with its one wave `pending` before any of them can possibly have
+    // committed a gate Decision yet.
+    const CONCURRENT_REPLICAS = 8;
+    await Promise.all(
+      Array.from({ length: CONCURRENT_REPLICAS }, () =>
+        reconcileOrgTick(server.deps.db, org.orgId, host, getSharedCelSandbox(), server.deps.config.secretsMasterKey)
+      )
+    );
+
+    // The wave genuinely progressed past `pending` (proves SOME tick won the race and did the
+    // real work, not that every tick just silently no-op'd).
+    const waveTargetRows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, targetObjectId))
+    );
+    expect(waveTargetRows).toHaveLength(1);
+    expect(waveTargetRows[0]!.status).not.toBe("pending");
+
+    // The definitive proof: exactly ONE gate Decision was EVER persisted for this change's wave
+    // boundary — not "the latest one looks fine", a hard count.
+    const gateDecisions = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(decisions)
+        .where(and(eq(decisions.subjectId, changeObjectId), eq(decisions.kind, "gate")))
+    );
+    expect(gateDecisions).toHaveLength(1);
+  }, 30_000);
+});
+
+function randomSuffix(): string {
+  return Math.random().toString(36).slice(2, 10);
+}

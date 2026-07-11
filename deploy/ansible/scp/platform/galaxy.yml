@@ -1,0 +1,21 @@
+namespace: scp
+name: platform
+version: 1.0.0-rc.0
+readme: README.md
+authors:
+  - CommanderSCP
+description: >-
+  Fleet rollout of CommanderSCP via the signed air-gap bundle's own install/upgrade script
+  (deploy/airgap/assets/install.sh). Ansible is a packaging CONVENIENCE, never a platform
+  dependency (DESIGN.md §16): this collection only shells out to the same install.sh an operator
+  could run by hand — inventory-driven cosign-verify -> image load + registry retarget ->
+  migration run -> service (re)start -> health check, per instance.
+license:
+  - Apache-2.0
+tags:
+  - commanderscp
+  - deployment
+  - airgap
+repository: https://github.com/CommanderSCP/commanderscp
+build_ignore:
+  - "*.tar.gz"
