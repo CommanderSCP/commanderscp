@@ -45,6 +45,7 @@ import type {
   TriggerIntent
 } from "@scp/plugin-api";
 import { encodeMessage, parseMessage, type RpcRequest } from "./rpc-protocol.js";
+import { assertEgressAllowed } from "./egress-guard.js";
 
 type LoadedPlugin =
   | { kind: "executor"; plugin: ExecutorPlugin }
@@ -135,22 +136,26 @@ function stderrLogger(instanceId: string): Logger {
  * `federation-https` (peer URLs come from `federation_peers`, not a plugin-instance-level
  * allowlist). Every M7 network-calling plugin (github/argocd/webhook-notify) is expected to set
  * `allowedHosts` explicitly at binding-creation time for real SSRF protection.
+ *
+ * MAJOR #6 — the allowlist alone doesn't stop the cloud metadata endpoint / loopback / internal
+ * services, nor an allowlisted hostname that DNS-resolves (or a 3xx redirects) to an internal IP.
+ * `egress-guard.ts`'s `assertEgressAllowed` adds an internal-range deny-list enforced AFTER DNS
+ * resolution (loopback/link-local/metadata ALWAYS blocked; private ranges blocked for a scoped
+ * plugin), and this client disables redirect-following entirely.
  */
 function scopedFetchHttpClient(allowedHosts: string[]): ScopedHttpClient {
   return {
     async request(req): Promise<ScopedHttpResponse> {
-      if (allowedHosts.length > 0) {
-        const targetHost = new URL(req.url).hostname;
-        if (!allowedHosts.includes(targetHost)) {
-          throw new Error(
-            `scoped http client: host '${targetHost}' is not in the configured allowedHosts allowlist`
-          );
-        }
-      }
+      // MAJOR #6 — allowlist AND internal-IP deny-list (post-DNS-resolution). See egress-guard.ts.
+      await assertEgressAllowed(req.url, allowedHosts);
       const res = await fetch(req.url, {
         method: req.method,
         headers: req.headers,
-        body: req.body === undefined ? undefined : JSON.stringify(req.body)
+        body: req.body === undefined ? undefined : JSON.stringify(req.body),
+        // MAJOR #6 — never follow redirects: a 3xx could re-point the request at an internal host
+        // AFTER the pre-flight egress check. A redirect surfaces as an error the plugin handles;
+        // plugins must target final URLs. (No M7 plugin's fixtures rely on redirects.)
+        redirect: "error"
       });
       const text = await res.text();
       let body: unknown = text;

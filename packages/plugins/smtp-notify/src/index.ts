@@ -78,6 +78,15 @@ function asConfig(config: unknown): SmtpNotifyConfig {
   };
 }
 
+/**
+ * `allowedHosts` allowlist enforcement (SSRF mitigation) — this plugin's own copy, since it dials
+ * a raw SMTP socket and can't go through `apps/server`'s `ctx.http` egress guard. SCOPED to the
+ * ALLOWLIST only (not the internal-IP deny-list the HTTP plugins get via egress-guard.ts): an SMTP
+ * channel's credential is the ORG's OWN smtp username/password to the ORG's OWN configured relay
+ * (not an SCP-held token an attacker could redirect), so the risk profile is lower and the fake-
+ * SMTP-server test fixtures bind to loopback. Extending the full internal-range deny-list here
+ * (blocking the metadata endpoint / loopback for smtp too) is documented M8-hardening follow-up.
+ */
 function checkAllowlist(host: string, allowedHosts: string[] | undefined): void {
   if (!allowedHosts || allowedHosts.length === 0) return; // unscoped — see module/config doc.
   if (!allowedHosts.includes(host)) {

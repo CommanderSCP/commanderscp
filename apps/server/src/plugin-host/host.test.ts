@@ -117,15 +117,18 @@ describe("SubprocessPluginHost: child environment (CRITICAL #3)", () => {
 });
 
 /**
- * M7 SSRF mitigation (subprocess-entry.ts's `scopedFetchHttpClient`) — an out-of-allowlist target
- * host must be rejected BEFORE any network call is attempted, over the REAL subprocess boundary
- * (not just the pure function in isolation): a real local HTTP server proves both "allowed reaches
- * the server" and "disallowed never does", using `@scp/plugin-webhook-notify` (already
- * independently tested against nock in its own package) as the real network-calling plugin under
- * the subprocess host.
+ * M7 SSRF mitigation (subprocess-entry.ts's `scopedFetchHttpClient` + egress-guard.ts) — enforced
+ * over the REAL subprocess boundary (not just the pure function in isolation), using
+ * `@scp/plugin-webhook-notify` as the real network-calling plugin under the subprocess host. A
+ * local HTTP server binds to loopback (127.0.0.1); MAJOR #6 makes loopback an ALWAYS-blocked
+ * egress target, so this proves the guard fires end-to-end: even an ALLOWLISTED loopback target is
+ * refused and the server is never hit. (The allow-a-public-host / block-a-non-allowlisted-host /
+ * block-private-when-scoped matrix is exhaustively unit-tested in egress-guard.test.ts with IP
+ * literals — no network — since a unit-test HTTP server can only bind loopback, which the guard
+ * always blocks.)
  */
-describe("SubprocessPluginHost: egress allowlist enforcement (M7 SSRF mitigation)", () => {
-  it("an allowed host is reached; a disallowed host is rejected before any connection is attempted", async () => {
+describe("SubprocessPluginHost: egress guard enforcement (M7 SSRF mitigation)", () => {
+  it("blocks a loopback target over the real subprocess boundary EVEN when allowlisted — the server is never hit", async () => {
     let requestCount = 0;
     const server = http.createServer((_req, res) => {
       requestCount += 1;
@@ -141,15 +144,15 @@ describe("SubprocessPluginHost: egress allowlist enforcement (M7 SSRF mitigation
       host = new SubprocessPluginHost({ callTimeoutMs: 10_000 });
       await host.start([
         {
-          id: "allowed-notify",
+          id: "loopback-allowlisted",
           module: "webhook-notify",
           orgId: "org-1",
           domainId: "domain-1",
           config: { url },
-          allowedHosts: ["127.0.0.1"]
+          allowedHosts: ["127.0.0.1"] // explicitly allowlisted — MAJOR #6 blocks loopback anyway
         },
         {
-          id: "disallowed-notify",
+          id: "not-allowlisted",
           module: "webhook-notify",
           orgId: "org-1",
           domainId: "domain-1",
@@ -158,23 +161,23 @@ describe("SubprocessPluginHost: egress allowlist enforcement (M7 SSRF mitigation
         }
       ]);
 
-      const allowedResult = await host.notification("allowed-notify").send({
+      // Allowlisted loopback: refused by the internal-IP deny-list, never reaches the server.
+      const loopbackResult = await host.notification("loopback-allowlisted").send({
         subject: "s",
         body: "b",
         severity: "info"
       });
-      expect(allowedResult.delivered).toBe(true);
-      expect(requestCount).toBe(1);
+      expect(loopbackResult.delivered).toBe(false);
+      expect(requestCount).toBe(0);
 
-      const disallowedResult = await host.notification("disallowed-notify").send({
+      // Not-allowlisted: refused by the allowlist gate.
+      const disallowedResult = await host.notification("not-allowlisted").send({
         subject: "s",
         body: "b",
         severity: "info"
       });
       expect(disallowedResult.delivered).toBe(false);
-      expect(disallowedResult.detail).toContain("allowedHosts");
-      // The disallowed call never reached the server at all — still exactly 1 from the allowed call.
-      expect(requestCount).toBe(1);
+      expect(requestCount).toBe(0);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
