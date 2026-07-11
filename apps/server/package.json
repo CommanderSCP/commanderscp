@@ -8,6 +8,7 @@
     "build": "tsc -b",
     "dev": "tsx watch src/main.ts",
     "start": "node dist/main.js",
+    "migrate": "node dist/migrate-bin.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run --passWithNoTests",
     "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests",
