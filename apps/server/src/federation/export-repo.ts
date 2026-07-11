@@ -38,7 +38,10 @@ export async function exportSyncBundle(
     exportedAt: new Date().toISOString()
   };
 
-  const checksum = computeBundleChecksum(entries);
+  // SECURITY-SENSITIVE (M6 review fix — CRITICAL: the header was unsigned). The signed checksum
+  // now covers the HEADER (exporterDomainId, peerDomainId, since/throughSequence, exportedAt) as
+  // well as the entries, so a header rewritten in transit fails signature verification on import.
+  const checksum = computeBundleChecksum({ header, entries });
   const key = await ensureInstanceKey(tx, orgId);
   const bundleSignature = signBundleChecksum(key.privateKey, checksum);
 

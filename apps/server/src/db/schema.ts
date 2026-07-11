@@ -901,7 +901,18 @@ export const federationPeers = pgTable(
 /** Peer public-key history (rotation via signed journal events, DESIGN §13). Exactly one row per
  *  peer has `supersededAt IS NULL` (the current key) at any time — `federation-repo.ts` enforces
  *  this invariant on rotation rather than a DB constraint (a partial unique index would need a
- *  fixed sentinel for "current", which `NULL` already conveys unambiguously per peer). */
+ *  fixed sentinel for "current", which `NULL` already conveys unambiguously per peer).
+ *
+ *  SECURITY-SENSITIVE (M6 review fix — CRITICAL: rotation gave no compromise recovery). Key
+ *  validity is anchored to the AUTHENTICATED, monotonic journal SEQUENCE, never to a self-declared
+ *  timestamp an attacker can choose. On rotation, the OLD key records `supersededAtSequence` = the
+ *  highest origin sequence this domain had verifiably applied from that peer (from `sync_cursors`);
+ *  the NEW key records `effectiveFromSequence` at the same anchor. A key verifies entry with
+ *  sequence S iff `effectiveFromSequence < S AND (supersededAtSequence IS NULL OR S <=
+ *  supersededAtSequence)`. Because every future import applies only entries with sequence > the
+ *  cursor (>= the anchor), a rotated-away (compromised) key can never verify any content that will
+ *  ever be applied — rotation HARD-revokes it. The `effectiveFrom`/`supersededAt` TIMESTAMP columns
+ *  are retained for display/audit only and are NEVER consulted for verification. */
 export const federationPeerKeys = pgTable(
   "federation_peer_keys",
   {
@@ -910,7 +921,12 @@ export const federationPeerKeys = pgTable(
     peerDomainId: uuid("peer_domain_id").notNull(),
     publicKey: text("public_key").notNull(), // base64 SPKI DER
     effectiveFrom: timestamp("effective_from", { withTimezone: true }).notNull().defaultNow(),
-    supersededAt: timestamp("superseded_at", { withTimezone: true })
+    supersededAt: timestamp("superseded_at", { withTimezone: true }),
+    // Sequence-anchored validity window (the actual verification anchor — see doc above).
+    effectiveFromSequence: bigint("effective_from_sequence", { mode: "number" })
+      .notNull()
+      .default(0),
+    supersededAtSequence: bigint("superseded_at_sequence", { mode: "number" })
   },
   (table) => [
     index("federation_peer_keys_org_peer").on(table.orgId, table.peerDomainId, table.supersededAt)

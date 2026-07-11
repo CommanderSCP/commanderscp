@@ -92,6 +92,13 @@
       "when": 1783780000000,
       "tag": "0012_federation",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1783790000000,
+      "tag": "0013_federation_key_sequence_anchor",
+      "breakpoints": true
     }
   ]
 }

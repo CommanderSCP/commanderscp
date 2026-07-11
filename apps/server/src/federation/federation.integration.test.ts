@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, generateKeyPairSync } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, isNull } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
@@ -56,6 +56,7 @@ function resignPromotionBundle(
   exporterPrivateKeyB64: string
 ): PromotionBundle {
   const checksumPayload = {
+    header: bundle.header,
     change: bundle.change,
     controlOutcomes: bundle.controlOutcomes,
     approvals: bundle.approvals,
@@ -64,6 +65,16 @@ function resignPromotionBundle(
   const checksum = computeBundleChecksum(checksumPayload);
   const bundleSignature = signBundleChecksum(exporterPrivateKeyB64, checksum);
   return { ...bundle, checksum, bundleSignature };
+}
+
+/** A fresh Ed25519 keypair in the same base64-DER encoding federation stores keys in — used to
+ *  model a NEW key a peer rotates TO (the attacker never holds its private half). */
+function generateEd25519KeypairB64(): { publicKey: string; privateKey: string } {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  return {
+    publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64"),
+    privateKey: privateKey.export({ format: "der", type: "pkcs8" }).toString("base64")
+  };
 }
 
 async function pair(
@@ -419,7 +430,7 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
       const rowHash = computeJournalRowHash(tampered);
       return { ...tampered, rowHash, signature: signJournalRowHash(aKey.privateKey, rowHash) };
     });
-    const checksum = computeBundleChecksum(forgedEntries);
+    const checksum = computeBundleChecksum({ header: bundle.header, entries: forgedEntries });
     const forged: SyncBundle = {
       ...bundle,
       entries: forgedEntries,
@@ -437,6 +448,158 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
         getObjectByIdOrUrnAnyType(tx, domainB.orgId, forgedUrn)
       )
     ).rejects.toThrow();
+  });
+
+  it("SECURITY: a bundle whose HEADER was rewritten in transit is rejected (signed checksum now covers the header)", async () => {
+    await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      createObject(tx, {
+        orgId: domainA.orgId,
+        domainId: null,
+        typeId: "service",
+        actorObjectId: domainA.orgId,
+        requestId: "t-hdr",
+        name: "header-tamper-svc"
+      })
+    );
+    const cursor = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      getCursor(tx, domainB.orgId, selfA.domainId, selfA.domainId)
+    );
+    const bundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      exportSyncBundle(tx, domainA.orgId, domainB.orgName, cursor.sequence)
+    );
+
+    // Rewrite header fields (inflate throughSequence, backdate exportedAt) but leave the entries,
+    // checksum, and signature untouched — exactly what an in-transit attacker can do to a plaintext
+    // bundle. Before the fix the header was unsigned, so this sailed through; now the checksum is
+    // recomputed over {header, entries} and no longer matches.
+    const rewritten: SyncBundle = {
+      ...bundle,
+      header: {
+        ...bundle.header,
+        throughSequence: bundle.header.throughSequence + 1000,
+        exportedAt: new Date(0).toISOString()
+      }
+    };
+
+    await expect(
+      withTenantTx(domainB.db, domainB.orgId, (tx) =>
+        importSyncBundle(tx, domainB.orgId, rewritten)
+      )
+    ).rejects.toMatchObject({ status: 409, detail: expect.stringMatching(/checksum mismatch/) });
+
+    const cursorAfter = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      getCursor(tx, domainB.orgId, selfA.domainId, selfA.domainId)
+    );
+    expect(cursorAfter.sequence).toBe(cursor.sequence); // nothing applied
+  });
+
+  it("SECURITY: a rotated-away (compromised) key cannot get NEW forged entries accepted by backdating exportedAt", async () => {
+    const origin = await createIsolatedDomain("rotOrigin");
+    const victim = await createIsolatedDomain("rotVictim");
+    try {
+      const originSelf = await withTenantTx(origin.db, origin.orgId, (tx) =>
+        ensureFederationSelf(tx, origin.orgId)
+      );
+      // origin needs victim registered as a peer so it can export toward it (the ordinary
+      // out-of-band exchange); the reverse direction (victim's record of origin) is set up manually
+      // below because this test drives origin's KEY ROTATION on victim's side explicitly.
+      await pair(origin, victim, "child");
+      // origin's REAL signing key K1 (its instance key) — the key that later "leaks" to the attacker.
+      const k1 = await withTenantTx(origin.db, origin.orgId, (tx) =>
+        ensureInstanceKey(tx, origin.orgId)
+      );
+      await withTenantTx(victim.db, victim.orgId, (tx) =>
+        pairPeer(tx, {
+          orgId: victim.orgId,
+          domainId: originSelf.domainId,
+          name: origin.orgName,
+          role: "parent",
+          publicKey: k1.publicKey
+        })
+      );
+
+      // origin authors + exports normally under K1; victim imports it (cursor advances to C0).
+      await withTenantTx(origin.db, origin.orgId, (tx) =>
+        createObject(tx, {
+          orgId: origin.orgId,
+          domainId: null,
+          typeId: "service",
+          actorObjectId: origin.orgId,
+          requestId: "rot-1",
+          name: "pre-rotation-svc"
+        })
+      );
+      const bundle0 = await withTenantTx(origin.db, origin.orgId, (tx) =>
+        exportSyncBundle(tx, origin.orgId, victim.orgName)
+      );
+      await withTenantTx(victim.db, victim.orgId, (tx) =>
+        importSyncBundle(tx, victim.orgId, bundle0)
+      );
+
+      // origin rotates its key -> K2. victim re-pairs origin with K2's public half (the out-of-band
+      // exchange). This anchors K1.supersededAtSequence = victim's cursor and K2.effectiveFrom there.
+      const k2 = generateEd25519KeypairB64();
+      await withTenantTx(victim.db, victim.orgId, (tx) =>
+        pairPeer(tx, {
+          orgId: victim.orgId,
+          domainId: originSelf.domainId,
+          name: origin.orgName,
+          role: "parent",
+          publicKey: k2.publicKey
+        })
+      );
+
+      // The attacker, holding the COMPROMISED old private key K1, authors a NEW object (sequence
+      // beyond the rotation anchor) and forges a bundle for it — re-signed with K1 and BACKDATING
+      // exportedAt to when K1 was still current, the exact timestamp trick the old code fell for.
+      const forgedObj = await withTenantTx(origin.db, origin.orgId, (tx) =>
+        createObject(tx, {
+          orgId: origin.orgId,
+          domainId: null,
+          typeId: "service",
+          actorObjectId: origin.orgId,
+          requestId: "rot-2",
+          name: "post-rotation-forged-svc"
+        })
+      );
+      const cursorAtRotation = await withTenantTx(victim.db, victim.orgId, (tx) =>
+        getCursor(tx, victim.orgId, originSelf.domainId, originSelf.domainId)
+      );
+      const rawBundle = await withTenantTx(origin.db, origin.orgId, (tx) =>
+        exportSyncBundle(tx, origin.orgId, victim.orgName, cursorAtRotation.sequence)
+      );
+      const backdatedHeader = { ...rawBundle.header, exportedAt: new Date(0).toISOString() };
+      const forgedChecksum = computeBundleChecksum({
+        header: backdatedHeader,
+        entries: rawBundle.entries
+      });
+      const forged: SyncBundle = {
+        ...rawBundle,
+        header: backdatedHeader,
+        checksum: forgedChecksum,
+        bundleSignature: signBundleChecksum(k1.privateKey, forgedChecksum) // compromised K1
+      };
+
+      // Rejected: key selection is anchored to the AUTHENTICATED sequence (beyond the rotation
+      // anchor => must be K2), so the K1 signature no longer verifies — backdating exportedAt into
+      // K1's old window changes nothing.
+      await expect(
+        withTenantTx(victim.db, victim.orgId, (tx) => importSyncBundle(tx, victim.orgId, forged))
+      ).rejects.toMatchObject({
+        status: 409,
+        detail: expect.stringMatching(/signature verification failed/)
+      });
+
+      // The forged object never landed.
+      await expect(
+        withTenantTx(victim.db, victim.orgId, (tx) =>
+          getObjectByIdOrUrnAnyType(tx, victim.orgId, forgedObj.id)
+        )
+      ).rejects.toThrow();
+    } finally {
+      await origin.close();
+      await victim.close();
+    }
   });
 
   it("hand-filled parent config reconciles correctly when a signed bundle later arrives", async () => {

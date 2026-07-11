@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { syncCursors } from "../db/schema.js";
 
@@ -40,6 +40,23 @@ export async function getCursor(
   return { sequence: rows[0]?.lastAppliedSeq ?? 0, rowHash: rows[0]?.lastAppliedRowHash ?? null };
 }
 
+/** The highest origin sequence THIS domain has verifiably applied from `peerDomainId`, across all
+ *  origin domains that peer has relayed (in practice one — a direct peer's own domain). Used as the
+ *  key-rotation ANCHOR (peers-repo.ts): when a peer's key rotates, the old key is declared valid
+ *  only through this sequence, and the new key from here on — the authenticated compromise-recovery
+ *  boundary. `0` when nothing has ever been applied from the peer. */
+export async function maxAppliedSequenceForPeer(
+  tx: TenantTx,
+  orgId: string,
+  peerDomainId: string
+): Promise<number> {
+  const rows = await tx
+    .select({ maxSeq: sql<number>`coalesce(max(${syncCursors.lastAppliedSeq}), 0)` })
+    .from(syncCursors)
+    .where(and(eq(syncCursors.orgId, orgId), eq(syncCursors.peerDomainId, peerDomainId)));
+  return Number(rows[0]?.maxSeq ?? 0);
+}
+
 /** Advances the cursor to `sequence`/`rowHash`, but ONLY forward — never regresses it, so an
  *  out-of-order or duplicate apply can never rewind progress already recorded (belt-and-braces on
  *  top of the entry-level idempotent-replay check the import path itself performs). */
@@ -49,7 +66,7 @@ export async function advanceCursor(
   peerDomainId: string,
   originDomainId: string,
   sequence: number,
-  rowHash: string
+  rowHash: string | null
 ): Promise<void> {
   const current = await getCursor(tx, orgId, peerDomainId, originDomainId);
   if (sequence <= current.sequence) return;

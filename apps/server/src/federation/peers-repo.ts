@@ -1,10 +1,11 @@
-import { and, desc, eq, isNull, or } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, or } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { SyncScope } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { federationPeers, federationPeerKeys } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
 import { isUuid } from "../graph/objects-repo.js";
+import { maxAppliedSequenceForPeer } from "./cursors-repo.js";
 
 /**
  * Peer pairing + the peer public-key registry (DESIGN.md §13). Pairing itself is always initiated
@@ -61,29 +62,56 @@ export async function currentPeerPublicKey(
   return rows[0]?.publicKey ?? null;
 }
 
-/** Resolves the public key that was in force for a peer AT a given point in time — needed to
- *  verify a segment signed before a later key rotation (DESIGN §13: keys "rotated via signed
- *  journal events", old segments must remain verifiable against the key that was current when
- *  they were signed). Falls back to the current key if no historical row predates `at`. */
-export async function peerPublicKeyAt(
+export interface PeerKeyWindow {
+  publicKey: string;
+  effectiveFromSequence: number;
+  supersededAtSequence: number | null;
+}
+
+/** Every registered public key for a peer with its SEQUENCE-anchored validity window, oldest
+ *  first. The verification anchor (DESIGN §13; M6 review fix) — timestamps are never consulted. */
+export async function listPeerKeyWindows(
   tx: TenantTx,
   orgId: string,
-  peerDomainId: string,
-  at: Date
-): Promise<string | null> {
+  peerDomainId: string
+): Promise<PeerKeyWindow[]> {
   const rows = await tx
     .select()
     .from(federationPeerKeys)
     .where(
       and(eq(federationPeerKeys.orgId, orgId), eq(federationPeerKeys.peerDomainId, peerDomainId))
     )
-    .orderBy(desc(federationPeerKeys.effectiveFrom));
-  for (const row of rows) {
-    if (row.effectiveFrom <= at && (row.supersededAt === null || row.supersededAt > at)) {
-      return row.publicKey;
+    .orderBy(asc(federationPeerKeys.effectiveFromSequence));
+  return rows.map((row) => ({
+    publicKey: row.publicKey,
+    effectiveFromSequence: Number(row.effectiveFromSequence),
+    supersededAtSequence:
+      row.supersededAtSequence === null ? null : Number(row.supersededAtSequence)
+  }));
+}
+
+/**
+ * Resolves the public key that must verify an entry signed at origin `sequence` — the ONLY key
+ * selection permitted (SECURITY-SENSITIVE, M6 review fix — CRITICAL). A key is valid for sequence
+ * `S` iff `effectiveFromSequence < S AND (supersededAtSequence IS NULL OR S <= supersededAtSequence)`.
+ * Returns `null` (fail-closed) if no window covers `S`. Because rotation anchors the old key's
+ * `supersededAtSequence` to the highest sequence this domain had already applied, and every future
+ * import applies only entries with sequence beyond that, a rotated-away/compromised key can never
+ * verify content that will ever be applied — never by a self-declared timestamp.
+ */
+export function verificationKeyForSequence(
+  keys: PeerKeyWindow[],
+  sequence: number
+): string | null {
+  for (const key of keys) {
+    if (
+      key.effectiveFromSequence < sequence &&
+      (key.supersededAtSequence === null || sequence <= key.supersededAtSequence)
+    ) {
+      return key.publicKey;
     }
   }
-  return rows[0]?.publicKey ?? null;
+  return null;
 }
 
 export interface PairPeerInput {
@@ -145,9 +173,15 @@ export async function pairPeer(tx: TenantTx, input: PairPeerInput): Promise<Fede
   const current = await currentPeerPublicKey(tx, input.orgId, input.domainId);
   if (current !== input.publicKey) {
     const now = new Date();
+    // SECURITY-SENSITIVE (M6 review fix — CRITICAL): anchor the rotation to the AUTHENTICATED
+    // journal sequence, not a timestamp. The old key legitimately signed everything this domain has
+    // already applied from the peer (its cursor high-water mark); the new key takes over from there.
+    // Every future import applies only entries beyond the cursor, so the old key is hard-revoked for
+    // all content that will ever be applied — no timestamp fallback an attacker could backdate.
+    const anchor = await maxAppliedSequenceForPeer(tx, input.orgId, input.domainId);
     await tx
       .update(federationPeerKeys)
-      .set({ supersededAt: now })
+      .set({ supersededAt: now, supersededAtSequence: anchor })
       .where(
         and(
           eq(federationPeerKeys.orgId, input.orgId),
@@ -160,7 +194,8 @@ export async function pairPeer(tx: TenantTx, input: PairPeerInput): Promise<Fede
       orgId: input.orgId,
       peerDomainId: input.domainId,
       publicKey: input.publicKey,
-      effectiveFrom: now
+      effectiveFrom: now,
+      effectiveFromSequence: anchor
     });
   }
   return toPeerRow(row, input.publicKey);

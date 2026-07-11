@@ -11,7 +11,7 @@ import {
 import type { TenantTx } from "../db/tenant-tx.js";
 import { badRequest, conflict } from "../errors.js";
 import { ensureFederationSelf } from "./self-repo.js";
-import { getPeerByIdOrName, peerPublicKeyAt } from "./peers-repo.js";
+import { getPeerByIdOrName, currentPeerPublicKey } from "./peers-repo.js";
 import { recordBundleTransfer } from "./bundle-transfers-repo.js";
 import { ensureInstanceKey, verifyAttestation } from "../governance/attestation.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
@@ -105,7 +105,9 @@ export async function exportPromotionBundle(
     sourceKind: change.sourceKind,
     sourceRef: change.sourceRef
   };
-  const checksumPayload = { change: changePayload, controlOutcomes, approvals, artifactDigests };
+  // Checksum covers the HEADER too (M6 review fix — CRITICAL: an unsigned header let its
+  // exporterDomainId / peerDomainId / sourceChangeObjectId / exportedAt be rewritten in transit).
+  const checksumPayload = { header, change: changePayload, controlOutcomes, approvals, artifactDigests };
   const checksum = computeBundleChecksum(checksumPayload);
   const key = await ensureInstanceKey(tx, input.orgId);
   const bundleSignature = signBundleChecksum(key.privateKey, checksum);
@@ -143,8 +145,14 @@ export async function importPromotionBundle(
   }
   const peer = await getPeerByIdOrName(tx, orgId, bundle.header.exporterDomainId);
 
-  // 1. Bundle-level checksum + signature — fail closed, exactly like a sync bundle.
+  // 1. Bundle-level checksum + signature — fail closed, exactly like a sync bundle. Checksum covers
+  //    the header (M6 review fix — CRITICAL). A promotion bundle carries no journal sequence to
+  //    anchor key selection to, so it is verified against the peer's CURRENT (non-superseded) key —
+  //    NEVER a timestamp-selected key (that was the `bundle.header.exportedAt` /
+  //    `evidence.record.timestamp` backdating vector). A rotated-away key is hard-revoked for
+  //    promotion: a bundle it signed no longer verifies once the peer has rotated.
   const checksumPayload = {
+    header: bundle.header,
     change: bundle.change,
     controlOutcomes: bundle.controlOutcomes,
     approvals: bundle.approvals,
@@ -153,16 +161,8 @@ export async function importPromotionBundle(
   if (computeBundleChecksum(checksumPayload) !== bundle.checksum) {
     throw conflict("promotion bundle checksum mismatch (rejected, fail-closed)");
   }
-  const exportTimeKey = await peerPublicKeyAt(
-    tx,
-    orgId,
-    peer.id,
-    new Date(bundle.header.exportedAt)
-  );
-  if (
-    !exportTimeKey ||
-    !verifyBundleSignature(bundle.checksum, bundle.bundleSignature, exportTimeKey)
-  ) {
+  const currentKey = await currentPeerPublicKey(tx, orgId, peer.id);
+  if (!currentKey || !verifyBundleSignature(bundle.checksum, bundle.bundleSignature, currentKey)) {
     throw conflict("promotion bundle signature verification failed (rejected, fail-closed)");
   }
 
@@ -203,12 +203,13 @@ export async function importPromotionBundle(
   let accepted = 0;
   let rejected = 0;
   for (const evidence of bundle.approvals) {
-    const registeredKey = await peerPublicKeyAt(
-      tx,
-      orgId,
-      peer.id,
-      new Date(evidence.record.timestamp)
-    );
+    // Validate against the peer's CURRENT registered key — never the attestation's own embedded
+    // `publicKey` (self-consistent by construction, so trusting it would let an attacker sign an
+    // "approval" with a throwaway key and mislabel its origin) and never a key selected by the
+    // signer-chosen `evidence.record.timestamp` (the backdating vector — M6 review fix, CRITICAL).
+    // An approval signed by a since-rotated key is marked verified:false (non-fatal — the local
+    // change must earn its OWN approvals regardless), preserving compromise recovery.
+    const registeredKey = await currentPeerPublicKey(tx, orgId, peer.id);
     const selfConsistent = verifyAttestation(evidence);
     const signedByRegisteredKey = registeredKey !== null && registeredKey === evidence.publicKey;
     const bindsThisChange = evidence.record.approvedObjectUrn === bundle.change.urn;

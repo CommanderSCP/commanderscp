@@ -7,7 +7,11 @@ import {
 import type { TenantTx } from "../db/tenant-tx.js";
 import { conflict, ProblemError } from "../errors.js";
 import { ensureFederationSelf } from "./self-repo.js";
-import { getPeerByIdOrName, peerPublicKeyAt } from "./peers-repo.js";
+import {
+  getPeerByIdOrName,
+  listPeerKeyWindows,
+  verificationKeyForSequence
+} from "./peers-repo.js";
 import { getCursor, advanceCursor } from "./cursors-repo.js";
 import { recordBundleTransfer } from "./bundle-transfers-repo.js";
 import { entryMatchesScope } from "./scope-filter.js";
@@ -287,24 +291,28 @@ export async function importSyncBundle(
     );
   }
   const peer = await getPeerByIdOrName(tx, orgId, bundle.header.exporterDomainId);
+  const keyWindows = await listPeerKeyWindows(tx, orgId, peer.id);
+  const currentPeerKey = keyWindows.find((k) => k.supersededAtSequence === null)?.publicKey ?? null;
 
-  // 1. Bundle-level checksum + signature — fail closed.
-  const recomputedChecksum = computeBundleChecksum(bundle.entries);
+  // 1. Bundle-level checksum + signature — fail closed. The checksum covers the HEADER as well as
+  //    the entries (M6 review fix — CRITICAL: an unsigned header let anyone rewrite exporterDomainId
+  //    / sinceSequence / throughSequence / exportedAt in transit), so a rewritten header fails here.
+  const recomputedChecksum = computeBundleChecksum({
+    header: bundle.header,
+    entries: bundle.entries
+  });
   if (recomputedChecksum !== bundle.checksum) {
     throw conflict(
       "bundle checksum mismatch — payload does not match the signed checksum (rejected, fail-closed)"
     );
   }
-  const exportTimeKey = await peerPublicKeyAt(
-    tx,
-    orgId,
-    peer.id,
-    new Date(bundle.header.exportedAt)
-  );
-  if (
-    !exportTimeKey ||
-    !verifyBundleSignature(bundle.checksum, bundle.bundleSignature, exportTimeKey)
-  ) {
+  // The exporter signs with the key current when it exported, i.e. the key valid at the highest
+  // sequence the bundle covers (`throughSequence`); empty bundles fall back to the current key.
+  // Key selection is anchored to the AUTHENTICATED sequence — NEVER a self-declared timestamp
+  // (M6 review fix — CRITICAL: rotation now hard-revokes a compromised key for all new content).
+  const bundleKey =
+    verificationKeyForSequence(keyWindows, bundle.header.throughSequence) ?? currentPeerKey;
+  if (!bundleKey || !verifyBundleSignature(bundle.checksum, bundle.bundleSignature, bundleKey)) {
     throw conflict("bundle signature verification failed (rejected, fail-closed)");
   }
 
@@ -339,7 +347,9 @@ export async function importSyncBundle(
         ? toApply[0]!.prevHash
         : (cursor.rowHash ?? undefined),
       expectedStartSequence: isFirstSyncFromThisOrigin ? toApply[0]!.sequence : cursor.sequence + 1,
-      resolvePublicKey: () => exportTimeKey // same peer, same bundle-level export instant for every entry
+      // Per-entry key resolved by AUTHENTICATED sequence (never timestamp) — an entry signed before
+      // a rotation verifies against the old key only while its sequence is within that key's window.
+      resolvePublicKey: (entry) => verificationKeyForSequence(keyWindows, entry.sequence)
     });
     if (!verification.valid) {
       throw conflict(
