@@ -12,6 +12,20 @@
 ALTER TABLE objects ADD COLUMN IF NOT EXISTS "provenance" text;
 
 -- ===========================================================================================
+-- 1b. `instance_keys` becomes org-scoped (db/schema.ts's updated doc comment on this table
+--    explains why — M4's own doc comment anticipated exactly this evolution: "multi-org
+--    attestation verification is out of M4 scope (no federation yet — M6)"). Pre-1.0/unreleased
+--    system, no production deployments to migrate: any existing singleton row predates every org
+--    association and is simply regenerated per-org, lazily, on next use
+--    (governance/attestation.ts `ensureInstanceKey`) — safe to drop outright rather than backfill.
+-- ===========================================================================================
+
+ALTER TABLE instance_keys ADD COLUMN IF NOT EXISTS "org_id" uuid;
+DELETE FROM instance_keys;
+ALTER TABLE instance_keys ALTER COLUMN "org_id" SET NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS "instance_keys_org_id_key" ON instance_keys USING btree ("org_id");
+
+-- ===========================================================================================
 -- 2. New tables — see db/schema.ts's doc comments for the design rationale on each.
 -- ===========================================================================================
 

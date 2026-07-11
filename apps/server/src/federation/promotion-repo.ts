@@ -107,7 +107,7 @@ export async function exportPromotionBundle(
   };
   const checksumPayload = { change: changePayload, controlOutcomes, approvals, artifactDigests };
   const checksum = computeBundleChecksum(checksumPayload);
-  const key = await ensureInstanceKey(tx);
+  const key = await ensureInstanceKey(tx, input.orgId);
   const bundleSignature = signBundleChecksum(key.privateKey, checksum);
 
   await recordBundleTransfer(tx, {

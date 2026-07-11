@@ -18,7 +18,7 @@ export async function getFederationStatus(
   orgId: string
 ): Promise<FederationStatusResponse> {
   const selfRow = await ensureFederationSelf(tx, orgId);
-  const key = await ensureInstanceKey(tx);
+  const key = await ensureInstanceKey(tx, orgId);
   const peers = await listPeers(tx, orgId);
 
   const peerStatuses = await Promise.all(

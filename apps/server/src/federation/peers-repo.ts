@@ -4,6 +4,7 @@ import type { SyncScope } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { federationPeers, federationPeerKeys } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
+import { isUuid } from "../graph/objects-repo.js";
 
 /**
  * Peer pairing + the peer public-key registry (DESIGN.md §13). Pairing itself is always initiated
@@ -183,15 +184,17 @@ export async function getPeerByIdOrName(
   idOrName: string
 ): Promise<FederationPeerRow> {
   if (!idOrName) throw badRequest("peer identifier is required");
+  // `federationPeers.id` is a `uuid` column — comparing it against a non-UUID string (a plain
+  // peer NAME) is a Postgres type error, not merely a non-match, so the id branch of the OR is
+  // only included when `idOrName` actually parses as a UUID (mirrors `graph/objects-repo.ts`'s
+  // `idOrUrnCondition` convention for the identical id-or-friendly-name ergonomic).
+  const condition = isUuid(idOrName)
+    ? or(eq(federationPeers.id, idOrName), eq(federationPeers.name, idOrName))
+    : eq(federationPeers.name, idOrName);
   const rows = await tx
     .select()
     .from(federationPeers)
-    .where(
-      and(
-        eq(federationPeers.orgId, orgId),
-        or(eq(federationPeers.id, idOrName), eq(federationPeers.name, idOrName))
-      )
-    )
+    .where(and(eq(federationPeers.orgId, orgId), condition))
     .limit(1);
   if (!rows[0])
     throw notFound(

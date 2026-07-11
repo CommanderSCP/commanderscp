@@ -1,4 +1,5 @@
 import { generateKeyPairSync, sign as cryptoSign, verify as cryptoVerify } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { instanceKeys } from "../db/schema.js";
@@ -28,13 +29,20 @@ export interface InstanceKeyPair {
   privateKey: string; // base64 (PKCS8 DER) — server-side only, never sent to a client
 }
 
-/** Reads the singleton instance key, generating and persisting one on first use (no migration
- *  seed — key material must never live in committed SQL). Race-safe: a duplicate-insert on
- *  concurrent first-boot callers is resolved by re-reading rather than erroring, since
- *  `instance_keys` carries no unique constraint to conflict on other than its own random id (by
- *  design — see the loop below, which always converges on whichever row was inserted first). */
-export async function ensureInstanceKey(tx: TenantTx): Promise<InstanceKeyPair> {
-  const existing = await tx.select().from(instanceKeys).limit(1);
+/** Reads this org's signing key, generating and persisting one on first use (no migration seed —
+ *  key material must never live in committed SQL). M6: org-scoped (schema.ts's updated doc
+ *  comment on `instanceKeys` explains why) — every caller now supplies `orgId`, which in a real
+ *  deployment is this instance's one org, but lets federation's tests model two distinct domains
+ *  as two orgs with genuinely different keys. Race-safe: a duplicate-insert on concurrent
+ *  first-use callers for the SAME org is resolved by re-reading rather than erroring, relying on
+ *  `instance_keys_org_id_key`'s unique constraint (schema.ts) to make the loop below always
+ *  converge on whichever row was inserted first. */
+export async function ensureInstanceKey(tx: TenantTx, orgId: string): Promise<InstanceKeyPair> {
+  const existing = await tx
+    .select()
+    .from(instanceKeys)
+    .where(eq(instanceKeys.orgId, orgId))
+    .limit(1);
   if (existing[0]) {
     return {
       id: existing[0].id,
@@ -47,18 +55,26 @@ export async function ensureInstanceKey(tx: TenantTx): Promise<InstanceKeyPair> 
   const publicKeyB64 = publicKey.export({ type: "spki", format: "der" }).toString("base64");
   const privateKeyB64 = privateKey.export({ type: "pkcs8", format: "der" }).toString("base64");
 
-  const [row] = await tx
-    .insert(instanceKeys)
-    .values({ id: uuidv7(), publicKey: publicKeyB64, privateKey: privateKeyB64 })
-    .returning();
+  let row: typeof instanceKeys.$inferSelect | undefined;
+  try {
+    [row] = await tx
+      .insert(instanceKeys)
+      .values({ id: uuidv7(), orgId, publicKey: publicKeyB64, privateKey: privateKeyB64 })
+      .returning();
+  } catch {
+    // Lost a race with a concurrent first-use caller for the SAME org — fall through to re-read.
+  }
   if (row) return { id: row.id, publicKey: row.publicKey, privateKey: row.privateKey };
 
-  // Lost a race with a concurrent first-boot caller (extremely unlikely under a single-row
-  // singleton with no unique constraint to fail on, but handled rather than assumed away) —
-  // re-read whatever is there now.
-  const afterRace = await tx.select().from(instanceKeys).limit(1);
+  const afterRace = await tx
+    .select()
+    .from(instanceKeys)
+    .where(eq(instanceKeys.orgId, orgId))
+    .limit(1);
   if (!afterRace[0])
-    throw new Error("ensureInstanceKey: failed to create or read the instance signing key");
+    throw new Error(
+      `ensureInstanceKey: failed to create or read the signing key for org '${orgId}'`
+    );
   return {
     id: afterRace[0].id,
     publicKey: afterRace[0].publicKey,

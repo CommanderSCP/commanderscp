@@ -225,7 +225,7 @@ export async function castApprovalVote(
   }
 
   const changeObject = await getObjectByIdOrUrnAnyType(tx, input.orgId, request.changeObjectId);
-  const key = await ensureInstanceKey(tx);
+  const key = await ensureInstanceKey(tx, input.orgId);
   const attestation = signAttestation(key, {
     approverSubjectId: input.voterObjectId,
     approverIdpSubject: input.voterIdpSubject ?? null,

@@ -39,7 +39,7 @@ export async function exportSyncBundle(
   };
 
   const checksum = computeBundleChecksum(entries);
-  const key = await ensureInstanceKey(tx);
+  const key = await ensureInstanceKey(tx, orgId);
   const bundleSignature = signBundleChecksum(key.privateKey, checksum);
 
   await recordBundleTransfer(tx, {

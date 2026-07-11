@@ -44,7 +44,7 @@ export async function appendJournalEntry(
   }
 ): Promise<SyncJournalEntry> {
   const self = await ensureFederationSelf(tx, input.orgId);
-  const key = await ensureInstanceKey(tx);
+  const key = await ensureInstanceKey(tx, input.orgId);
 
   // Serializes journal appends per (org, origin domain) — held until COMMIT/ROLLBACK, same
   // discipline as audit-repo.ts's `pg_advisory_xact_lock`, so concurrent writers can never observe

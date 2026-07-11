@@ -115,7 +115,7 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
           scopeObjectId: auth.orgId
         });
         const self = await ensureFederationSelf(tx, auth.orgId);
-        const key = await ensureInstanceKey(tx);
+        const key = await ensureInstanceKey(tx, auth.orgId);
         return {
           domainId: self.domainId,
           name: self.name,

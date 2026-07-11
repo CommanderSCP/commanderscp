@@ -740,19 +740,35 @@ export const freezes = pgTable(
 );
 
 /**
- * Singleton Ed25519 keypair this instance signs approval attestations with (DESIGN §10.2: "the
- * domain instance signs (Ed25519 domain key)"). Generated once on first boot
- * (governance/attestation.ts `ensureInstanceKey`), same trust tier as `SCP_COOKIE_SECRET` — a
- * server-side secret, never sent to clients. A single fixed-id row (no org scoping, no RLS):
- * DESIGN's "domain key" is one key per SCP INSTANCE (= federation domain), not per tenant org;
- * multi-org attestation verification is out of M4 scope (no federation yet — M6).
+ * Ed25519 keypair this domain signs approval attestations AND (as of M6) sync-journal
+ * entries/bundles with (DESIGN §10.2/§13: "the domain instance signs (Ed25519 domain key)").
+ * Generated once per org on first use (governance/attestation.ts `ensureInstanceKey`), same trust
+ * tier as `SCP_COOKIE_SECRET` — a server-side secret, never sent to clients.
+ *
+ * M6 CHANGE (org-scoped — M4's own doc comment anticipated exactly this: "multi-org attestation
+ * verification is out of M4 scope (no federation yet — M6)"): originally a single fixed-id row
+ * with "no org scoping, no RLS" under the reasoning that DESIGN's "domain key" is one key per SCP
+ * INSTANCE (= federation domain), and a real deployment has exactly one org per instance anyway
+ * (charter: "MSPs needing hard isolation run one instance per customer"). Scoped by `org_id` here
+ * — matching `federation_self`'s own scoping decision (schema.ts's M6 section doc) — for two
+ * reasons: (1) it lets federation's Testcontainers-level integration tests model two distinct
+ * "domains" as two orgs sharing one test Postgres instance with genuinely DIFFERENT signing keys,
+ * which the M6 DoD's tamper/signature tests require; (2) it keeps every federation identity
+ * concept (self, peers, journal, signing key) consistently scoped the same way. Still no RLS
+ * (private key material — `scp_app` reads/writes it directly, same trust tier treatment as before,
+ * just partitioned by org now instead of a single global row).
  */
-export const instanceKeys = pgTable("instance_keys", {
-  id: uuid("id").primaryKey(),
-  publicKey: text("public_key").notNull(),
-  privateKey: text("private_key").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
-});
+export const instanceKeys = pgTable(
+  "instance_keys",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    publicKey: text("public_key").notNull(),
+    privateKey: text("private_key").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [uniqueIndex("instance_keys_org_id_key").on(table.orgId)]
+);
 
 // -------------------------------------------------------------------------------------------
 // M5 Campaigns & Initiatives (DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5). Hand-authored
@@ -835,16 +851,17 @@ export const campaignWaveTargets = pgTable(
 // Domain Control Plane) — a different concept from the pre-existing `domain` OBJECT TYPE (an
 // org-internal containment node under which services/components live). This schema keeps
 // federation identity/peers/journal ORG-SCOPED (one federation self-identity + peer set per org,
-// same `org_isolation` RLS every other tenant table gets) rather than instance-wide the way
-// `instance_keys` is, because the sync journal is derived from the per-org outbox/audit stream
-// and every row it carries (`objects`/`relationships`/`changes`/policy/approval rows) is already
-// org_id-scoped end to end. Per the charter ("MSPs needing hard isolation run one instance per
-// customer"), one org per instance is the expected shape, so this collapses to one federation
-// domain per instance in practice — nothing in the M6 DoD depends on the distinction. The Ed25519
-// key that SIGNS journal segments/bundles is nonetheless the SAME instance-wide `instance_keys`
-// singleton `governance/attestation.ts` already manages (one Ed25519 identity per SCP instance
-// signs both approval attestations and, as of M6, federation material — DESIGN §13: "SCP performs
-// all signing and validation itself").
+// same `org_isolation` RLS every other tenant table gets), because the sync journal is derived
+// from the per-org outbox/audit stream and every row it carries (`objects`/`relationships`/
+// `changes`/policy/approval rows) is already org_id-scoped end to end. Per the charter ("MSPs
+// needing hard isolation run one instance per customer"), one org per instance is the expected
+// shape, so this collapses to one federation domain per instance in practice — nothing in the M6
+// DoD depends on the distinction. The Ed25519 key that SIGNS journal segments/bundles is the SAME
+// key `governance/attestation.ts`'s `ensureInstanceKey` already manages for approval attestations
+// — as of M6 that table (`instanceKeys`, above) is ALSO org-scoped, for exactly this reason, so
+// "one Ed25519 identity signs both approval attestations and
+// federation material" (DESIGN §13: "SCP performs all signing and validation itself") holds at
+// the org-as-domain granularity this schema uses throughout.
 // -------------------------------------------------------------------------------------------
 
 /** This org's own federation identity within this instance — a singleton row per org, created

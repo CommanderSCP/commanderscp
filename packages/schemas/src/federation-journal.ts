@@ -26,8 +26,39 @@ import type { SyncJournalEntry } from "./federation.js";
  *  `audit-chain.ts`'s `AUDIT_GENESIS_HASH` exactly (32 zero bytes, hex-encoded). */
 export const JOURNAL_GENESIS_HASH = "0".repeat(64);
 
+/** Deterministic JSON serialization (recursively sorted object keys). Defined here, ahead of
+ *  `canonicalizeJournalEntry`, because that function NEEDS it — SECURITY-SENSITIVE bug this
+ *  fixes (caught by M6's own integration tests): `payload` is a free-form nested object that
+ *  round-trips through a Postgres `jsonb` column, which does NOT guarantee preserving the
+ *  original key insertion order. A row_hash computed with plain `JSON.stringify` at WRITE time
+ *  (using the in-memory object's original key order) would then MISMATCH the same computation
+ *  recomputed at VERIFY time against the entry as read back from the database — a false-positive
+ *  "tampered" rejection on every single legitimately unmodified row, the moment it round-trips
+ *  through storage. Recursively sorting keys makes the canonical form independent of any
+ *  particular JSON serializer's or database driver's key ordering. Duplicated (rather than
+ *  imported) from `apps/server/src/graph/objects-repo.ts`'s identical helper because this package
+ *  must stay server-independent (BUILD_AND_TEST.md §3 module boundaries — `@scp/schemas` has no
+ *  dependency on `apps/server`). */
+export function canonicalStringify(value: unknown): string {
+  return JSON.stringify(sortKeysDeep(value));
+}
+
+function sortKeysDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeysDeep);
+  if (value !== null && typeof value === "object") {
+    return Object.keys(value as Record<string, unknown>)
+      .sort()
+      .reduce<Record<string, unknown>>((acc, key) => {
+        acc[key] = sortKeysDeep((value as Record<string, unknown>)[key]);
+        return acc;
+      }, {});
+  }
+  return value;
+}
+
 /** Deterministic canonical string for the *content* of a journal entry (everything except
- *  `rowHash`/`signature`, which are derived from / computed over this). Field order fixed. */
+ *  `rowHash`/`signature`, which are derived from / computed over this). Field order fixed at the
+ *  top level, AND `payload`'s own keys are recursively sorted (see `canonicalStringify`'s doc). */
 export function canonicalizeJournalEntry(
   entry: Omit<SyncJournalEntry, "rowHash" | "signature" | "createdAt">
 ): string {
@@ -37,7 +68,7 @@ export function canonicalizeJournalEntry(
     originDomainId: entry.originDomainId,
     sequence: entry.sequence,
     entryKind: entry.entryKind,
-    payload: entry.payload,
+    payload: sortKeysDeep(entry.payload),
     contentHash: entry.contentHash,
     baseRevision: entry.baseRevision,
     conflict: entry.conflict,
@@ -204,28 +235,6 @@ export function verifyJournalChain(
     expectedSequence = entry.sequence + 1;
   }
   return { valid: true, entryCount: entries.length };
-}
-
-/** Deterministic JSON serialization (recursively sorted object keys) — the `.scpbundle` envelope's
- *  checksum/signature cover this, not `JSON.stringify`'s insertion-order-dependent output.
- *  Duplicated (rather than imported) from `apps/server/src/graph/objects-repo.ts`'s identical
- *  helper because this package must stay server-independent (BUILD_AND_TEST.md §3 module
- *  boundaries — `@scp/schemas` has no dependency on `apps/server`). */
-export function canonicalStringify(value: unknown): string {
-  return JSON.stringify(sortKeysDeep(value));
-}
-
-function sortKeysDeep(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortKeysDeep);
-  if (value !== null && typeof value === "object") {
-    return Object.keys(value as Record<string, unknown>)
-      .sort()
-      .reduce<Record<string, unknown>>((acc, key) => {
-        acc[key] = sortKeysDeep((value as Record<string, unknown>)[key]);
-        return acc;
-      }, {});
-  }
-  return value;
 }
 
 /** `.scpbundle` checksum = `sha256(canonicalStringify(payload))`, hex-encoded — covers whatever

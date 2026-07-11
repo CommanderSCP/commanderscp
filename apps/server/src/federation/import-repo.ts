@@ -77,7 +77,18 @@ async function applyEntry(
         urn,
         id: typeof payload.id === "string" ? payload.id : undefined,
         name: String(payload.name ?? urn),
-        domainId: (payload.domainId as string | null | undefined) ?? undefined,
+        // `?? undefined` would wrongly collapse an explicit `null` (the origin domain's own
+        // resolved "no parent" — graph/objects-repo.ts's `resolveDomainId`) into `undefined`
+        // (which instead means "default to MY OWN org root" — an entirely different object).
+        // Preserve `null` exactly; only a genuinely missing/non-string key falls back to
+        // `undefined`, matching what a payload from a pre-this-fix producer would have looked
+        // like (defensive backward compatibility, not the common case).
+        domainId:
+          payload.domainId === null
+            ? null
+            : typeof payload.domainId === "string"
+              ? payload.domainId
+              : undefined,
         properties: (payload.properties as Record<string, unknown>) ?? {},
         labels: (payload.labels as Record<string, unknown>) ?? {},
         federationImport: { originDomainId, revision, provenance: null }
@@ -228,14 +239,28 @@ export async function importSyncBundle(
   }
 
   // 2. Resume-from-cursor + hash-chain verification, continuous with what was actually applied
-  //    last time (not just internally contiguous within this one bundle).
+  //    last time (not just internally contiguous within this one bundle) — EXCEPT on the very
+  //    first sync ever received from this origin (cursor.sequence === 0), where there is by
+  //    definition no prior state to demand exact continuity from. DESIGN.md §13 explicitly
+  //    anticipates starting mid-chain here ("`scp federation export`... + optional snapshot for
+  //    bootstrap"): a child may bootstrap from a snapshot/later cursor rather than absolute
+  //    sequence 1. In that one case, trust-on-first-sync applies: verification anchors to the
+  //    bundle's OWN first entry (still checking every entry's signature and the chain's INTERNAL
+  //    contiguity from there) rather than demanding the impossible ("prove this is really
+  //    sequence 1 forward" when it may legitimately not be). Every SUBSEQUENT sync from the same
+  //    origin, once a cursor is established, is held to the strict exact-continuity check —
+  //    closing the gap an attacker could otherwise exploit by claiming "this is my first sync"
+  //    indefinitely to splice in an arbitrary later segment.
   const cursor = await getCursor(tx, orgId, peer.id, bundle.header.exporterDomainId);
   const toApply = bundle.entries.filter((entry) => entry.sequence > cursor.sequence);
 
   if (toApply.length > 0) {
+    const isFirstSyncFromThisOrigin = cursor.sequence === 0 && cursor.rowHash === null;
     const verification = verifyJournalChain(toApply, {
-      expectedPrevHash: cursor.rowHash ?? undefined,
-      expectedStartSequence: cursor.sequence + 1,
+      expectedPrevHash: isFirstSyncFromThisOrigin
+        ? toApply[0]!.prevHash
+        : (cursor.rowHash ?? undefined),
+      expectedStartSequence: isFirstSyncFromThisOrigin ? toApply[0]!.sequence : cursor.sequence + 1,
       resolvePublicKey: () => exportTimeKey // same peer, same bundle-level export instant for every entry
     });
     if (!verification.valid) {

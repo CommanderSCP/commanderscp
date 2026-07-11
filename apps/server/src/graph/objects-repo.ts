@@ -575,6 +575,75 @@ export async function upsertObjectByUrn(
     }
   }
 
+  // M6 hand-fill reconciliation (DESIGN §13: "reconciled — CONFIRMED OR REPLACED — when a signed
+  // bundle later arrives"): a hand-filled row (`provenance: 'manual'`) was created by an operator
+  // who could not have known the real object's id (a human can't hand-type a UUID they've never
+  // seen) — `handfill-repo.ts` generates a local placeholder id for it. When the REAL, signature-
+  // verified import for the SAME urn later arrives carrying the object's true id, an ordinary
+  // UPDATE would silently keep the WRONG (locally-generated) id forever — every future entry that
+  // references the object by its real id (a relationship endpoint, a `domainId` parent, ...) would
+  // then fail to resolve locally, since this org's row would still be filed under the placeholder
+  // id. So this case REPLACES the id in place via `UPDATE ... SET id = ...` — never a hard DELETE
+  // (`scp_app` is deliberately never granted DELETE on `objects`, DESIGN.md §4.1's append/soft-
+  // delete-only discipline). If some OTHER row already references the placeholder id via a foreign
+  // key (a relationship endpoint created against the unverified hand-filled row), this UPDATE
+  // fails closed with a foreign-key violation rather than silently orphaning it — an acceptable
+  // v1 scope boundary (hand-filled rows are expected to accumulate local references rarely, if
+  // ever, before reconciliation). Never fires for an ordinary (non-hand-filled) reconciliation,
+  // where the id is already correct and stable.
+  if (
+    input.federationImport &&
+    existing.provenance === "manual" &&
+    input.id &&
+    input.id !== existing.id
+  ) {
+    const nextDomainId = input.domainId === undefined ? existing.domainId : input.domainId;
+    const nextProperties = input.properties ?? {};
+    const nextLabels = input.labels ?? {};
+    const nextVersion = existing.version + 1;
+    const afterHash = computeObjectContentHash({
+      id: input.id,
+      orgId: input.orgId,
+      domainId: nextDomainId,
+      typeId: input.typeId,
+      name: input.name,
+      urn: input.urn,
+      properties: nextProperties,
+      labels: nextLabels,
+      version: nextVersion
+    });
+    const [row] = await tx
+      .update(objects)
+      .set({
+        id: input.id,
+        name: input.name,
+        domainId: nextDomainId,
+        properties: nextProperties,
+        labels: nextLabels,
+        version: nextVersion,
+        revision: input.federationImport.revision,
+        originDomainId: input.federationImport.originDomainId,
+        provenance: input.federationImport.provenance ?? null,
+        contentHash: afterHash,
+        updatedAt: new Date()
+      })
+      .where(eq(objects.id, existing.id))
+      .returning();
+    if (!row) throw new Error("failed to reconcile hand-filled object onto its authoritative id");
+
+    await appendAuditEvent(tx, {
+      orgId: input.orgId,
+      domainId: nextDomainId,
+      actorId: input.actorObjectId,
+      action: `${input.typeId}.update`,
+      subjectId: row.id,
+      beforeHash: existing.contentHash,
+      afterHash,
+      requestId: input.requestId
+    });
+    return { object: toGraphObject(row), created: false };
+  }
+
   // True idempotency: replaying the exact same PUT body against an unchanged row is a no-op —
   // no version/revision bump, no audit event, no outbox event. Without this, a byte-identical
   // replay would still increment `version` forever, which is "safe" for federation convergence
