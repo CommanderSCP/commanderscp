@@ -45,7 +45,6 @@ export type NotificationSeverity = z.infer<typeof NotificationSeveritySchema>;
 
 export const CreateNotificationBindingRequestSchema = z.object({
   pluginModule: z.string().min(1),
-  pluginInstanceId: z.string().min(1),
   config: z.record(z.string(), z.unknown()).optional(),
   secretRefs: z.record(z.string(), z.string()).optional(),
   allowedHosts: z.array(z.string()).optional(),

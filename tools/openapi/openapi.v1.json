@@ -50820,10 +50820,6 @@
                     "type": "string",
                     "minLength": 1
                   },
-                  "pluginInstanceId": {
-                    "type": "string",
-                    "minLength": 1
-                  },
                   "config": {
                     "type": "object",
                     "propertyNames": {
@@ -50856,8 +50852,7 @@
                   }
                 },
                 "required": [
-                  "pluginModule",
-                  "pluginInstanceId"
+                  "pluginModule"
                 ],
                 "additionalProperties": false
               }

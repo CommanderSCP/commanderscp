@@ -13310,7 +13310,6 @@ export type DeleteNotificationBindingResponse = DeleteNotificationBindingRespons
 export type PutNotificationBindingData = {
     body: {
         pluginModule: string;
-        pluginInstanceId: string;
         config?: {
             [key: string]: unknown;
         };

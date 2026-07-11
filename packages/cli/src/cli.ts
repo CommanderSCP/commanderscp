@@ -2171,6 +2171,317 @@ export function buildProgram(): Command {
       console.log(JSON.stringify(view.merged, null, 2));
     });
 
+  // -----------------------------------------------------------------------------------------
+  // M7: Real Executor Integrations (BUILD_AND_TEST.md §8 M7, DESIGN §11/§12) — secrets, executor/
+  // notification bindings, plugin manifests, discovery run/accept, webhook signing secrets, and
+  // `scp change report` (Terraform Mode 1's `--plan-json` CLI step).
+  // -----------------------------------------------------------------------------------------
+
+  const secretCmd = program
+    .command("secret")
+    .description("Manage encrypted org secrets (write-only — never readable back)");
+
+  secretCmd
+    .command("put <key>")
+    .description("Store (or rotate) an encrypted secret value by key")
+    .requiredOption("--value <value>", "the plaintext secret value (encrypted at rest immediately)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (key: string, opts: BaseCliOpts & { value: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.secrets.put(key, { value: opts.value });
+      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+    });
+
+  secretCmd
+    .command("list")
+    .description("List configured secret KEYS for this org (never values)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.secrets.listKeys();
+      if (opts.output === "json") {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      for (const key of result.keys) console.log(key);
+    });
+
+  secretCmd
+    .command("delete <key>")
+    .description("Delete a secret by key")
+    .option("--base-url <url>", "API base URL override")
+    .action(async (key: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      await client.secrets.delete(key);
+      console.log(`Deleted secret '${key}'`);
+    });
+
+  const executorCmd = program
+    .command("executor")
+    .description("Configure ExecutorPlugin instances (DESIGN §12)");
+
+  executorCmd
+    .command("bind <idOrUrn>")
+    .description("Bind a Component/DeploymentTarget to a configured ExecutorPlugin instance")
+    .requiredOption("--module <module>", "plugin module: github|argocd|terraform|managed-iac")
+    .requiredOption("--instance-id <id>", "stable id for this plugin instance")
+    .option(
+      "--config <json>",
+      "JSON object — the plugin's own config shape (see `scp plugin manifests`)"
+    )
+    .option(
+      "--secret-refs <json>",
+      "JSON object mapping configFieldName -> secret key (`scp secret put`)"
+    )
+    .option("--allowed-hosts <list>", "comma-separated egress allowlist (hostnames)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        idOrUrn: string,
+        opts: BaseCliOpts & {
+          module: string;
+          instanceId: string;
+          config?: string;
+          secretRefs?: string;
+          allowedHosts?: string;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const result = await client.executors.putBinding(idOrUrn, {
+          pluginModule: opts.module,
+          pluginInstanceId: opts.instanceId,
+          config: parseJsonOption(opts.config, "--config") as Record<string, unknown> | undefined,
+          secretRefs: parseJsonOption(opts.secretRefs, "--secret-refs") as
+            Record<string, string> | undefined,
+          allowedHosts: parseList(opts.allowedHosts)
+        });
+        printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+      }
+    );
+
+  executorCmd
+    .command("get <idOrUrn>")
+    .description("Get a target's configured executor binding")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrUrn: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.executors.getBinding(idOrUrn);
+      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+    });
+
+  const notifyCmd = program
+    .command("notify")
+    .description("Configure NotificationPlugin channels (DESIGN §11)");
+
+  notifyCmd
+    .command("bind <instanceId>")
+    .description(
+      "Configure (or update) a notification channel — an org may configure more than one"
+    )
+    .requiredOption("--module <module>", "plugin module: webhook-notify|smtp-notify")
+    .option(
+      "--config <json>",
+      "JSON object — the plugin's own config shape (see `scp plugin manifests`)"
+    )
+    .option("--secret-refs <json>", "JSON object mapping configFieldName -> secret key")
+    .option("--allowed-hosts <list>", "comma-separated egress allowlist (hostnames)")
+    .option(
+      "--min-severity <severity>",
+      "info|warning|critical — minimum severity this channel receives",
+      "info"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        instanceId: string,
+        opts: BaseCliOpts & {
+          module: string;
+          config?: string;
+          secretRefs?: string;
+          allowedHosts?: string;
+          minSeverity: "info" | "warning" | "critical";
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const result = await client.notifications.putBinding(instanceId, {
+          pluginModule: opts.module,
+          config: parseJsonOption(opts.config, "--config") as Record<string, unknown> | undefined,
+          secretRefs: parseJsonOption(opts.secretRefs, "--secret-refs") as
+            Record<string, string> | undefined,
+          allowedHosts: parseList(opts.allowedHosts),
+          minSeverity: opts.minSeverity
+        });
+        printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+      }
+    );
+
+  notifyCmd
+    .command("list")
+    .description("List this org's configured notification channels")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const page = await client.notifications.listBindings();
+      printResult(page.items, opts.output, (item) => item as unknown as Record<string, string>);
+    });
+
+  notifyCmd
+    .command("delete <instanceId>")
+    .description("Remove a notification channel")
+    .option("--base-url <url>", "API base URL override")
+    .action(async (instanceId: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      await client.notifications.deleteBinding(instanceId);
+      console.log(`Deleted notification binding '${instanceId}'`);
+    });
+
+  const pluginCmd = program.command("plugin").description("Inspect bundled plugins (DESIGN §11)");
+
+  pluginCmd
+    .command("manifests")
+    .description(
+      "Every bundled plugin's {id, kind, version, configSchema} — the source a config form is generated from"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.plugins.listManifests();
+      console.log(JSON.stringify(result.items, null, 2));
+    });
+
+  const discoveryCmd = program
+    .command("discovery")
+    .description("DiscoveryPlugin run/accept — NEVER auto-commits (DESIGN §11)");
+
+  discoveryCmd
+    .command("run")
+    .description(
+      "Run a DiscoveryPlugin scan — prints a PROPOSAL only, nothing is written to the graph"
+    )
+    .requiredOption("--module <module>", "plugin module: github-discovery")
+    .requiredOption("--instance-id <id>", "stable id for this plugin instance")
+    .option("--config <json>", "JSON object — the plugin's own config shape")
+    .option("--secret-refs <json>", "JSON object mapping configFieldName -> secret key")
+    .option("--allowed-hosts <list>", "comma-separated egress allowlist (hostnames)")
+    .option("--base-url <url>", "API base URL override")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          module: string;
+          instanceId: string;
+          config?: string;
+          secretRefs?: string;
+          allowedHosts?: string;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const proposal = await client.discovery.run({
+          pluginModule: opts.module,
+          pluginInstanceId: opts.instanceId,
+          config: parseJsonOption(opts.config, "--config") as Record<string, unknown> | undefined,
+          secretRefs: parseJsonOption(opts.secretRefs, "--secret-refs") as
+            Record<string, string> | undefined,
+          allowedHosts: parseList(opts.allowedHosts)
+        });
+        // Always JSON — a proposal is meant to be reviewed, edited, and re-submitted to
+        // `discovery accept --proposal`, not rendered as a table.
+        console.log(JSON.stringify(proposal, null, 2));
+      }
+    );
+
+  discoveryCmd
+    .command("accept")
+    .description(
+      "EXPLICITLY accept a discovery proposal — the only command that commits discovered objects/relationships"
+    )
+    .requiredOption(
+      "--proposal <path-or-json>",
+      "a file path to (or literal JSON of) a proposal from `discovery run`"
+    )
+    .option("--domain <idOrUrn>", "domain to create discovered objects under (default: org root)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { proposal: string; domain?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const raw = opts.proposal.trim().startsWith("{")
+        ? opts.proposal
+        : await readFile(opts.proposal, "utf8");
+      const proposal = JSON.parse(raw) as { objects: unknown[]; relationships: unknown[] };
+      const result = await client.discovery.accept({
+        domainId: opts.domain,
+        proposal: proposal as never
+      });
+      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+    });
+
+  const changeSourceCmd = program
+    .command("change-source")
+    .description("Change-source webhook config (DESIGN §8/§9.2/§12)");
+
+  changeSourceCmd
+    .command("webhook-secret <sourceKind>")
+    .description("Configure (or rotate) this org+sourceKind's webhook HMAC signing secret")
+    .requiredOption("--secret <value>", "the plaintext HMAC secret (encrypted at rest immediately)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (sourceKind: string, opts: BaseCliOpts & { secret: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.changeSources.putWebhookSecret(sourceKind, {
+        secret: opts.secret
+      });
+      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+    });
+
+  changeSourceCmd
+    .command("report <sourceKind>")
+    .description(
+      "Report a plan/apply result (DESIGN §12 Mode 1: `scp change report --plan-json`) — thin wrapper over the same webhook ingress every source kind uses"
+    )
+    .requiredOption("--status <status>", "planned|applied|errored|discarded")
+    .option("--repo <repo>", "correlation hint: repo (source_mappings matching)")
+    .option("--path <path>", "correlation hint: path")
+    .option("--correlation-key <key>", "correlation key for grouping related changes")
+    .option("--workspace <workspace>", "Terraform/OpenTofu workspace name")
+    .option("--artifact-digest <digest>", "artifact digest linking this to an app-side change")
+    .option("--plan-json <path>", "path to a `tofu show -json`-shaped plan file, attached verbatim")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        sourceKind: string,
+        opts: BaseCliOpts & {
+          status: string;
+          repo?: string;
+          path?: string;
+          correlationKey?: string;
+          workspace?: string;
+          artifactDigest?: string;
+          planJson?: string;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const planJson = opts.planJson
+          ? JSON.parse(await readFile(opts.planJson, "utf8"))
+          : undefined;
+        const result = await client.changeSources.report(sourceKind, {
+          status: opts.status,
+          repo: opts.repo,
+          path: opts.path,
+          correlationKey: opts.correlationKey,
+          workspace: opts.workspace,
+          artifactDigest: opts.artifactDigest,
+          planJson
+        });
+        printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+      }
+    );
+
   return program;
 }
 
