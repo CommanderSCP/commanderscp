@@ -1,8 +1,15 @@
 /**
- * @scp/airgap — stub scaffold (M0 walking skeleton).
+ * @scp/airgap — air-gap bundle builder/verifier (DESIGN.md §16, BUILD_AND_TEST.md §8 M8).
  *
- * Empty-but-compiling per BUILD_AND_TEST.md §2 / §8 M0. Real implementation lands in M8 (air-gap bundle builder scripts)
- * (see docs/BUILD_AND_TEST.md §8 for the milestone plan, docs/DESIGN.md §3 for this package's
- * role in the repo layout).
+ * This module re-exports the package's pure-logic/wrapper surface for programmatic use; the
+ * actual CLI entrypoints are `build-bundle.ts`/`verify-bundle.ts` (run via the `bundle`/`verify`
+ * pnpm scripts — see README.md), not this file.
  */
-export const STUB = true as const;
+export * from "./types.js";
+export * as checksums from "./checksums.js";
+export * as ociLayout from "./oci-layout.js";
+export * as skopeo from "./skopeo.js";
+export * as cosign from "./cosign.js";
+export * as manifest from "./manifest.js";
+export * as composeRetarget from "./compose-retarget.js";
+export * as repoPaths from "./repo-paths.js";

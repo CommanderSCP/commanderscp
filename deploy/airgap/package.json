@@ -5,13 +5,25 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "scp-airgap-build": "dist/build-bundle.js",
+    "scp-airgap-verify": "dist/verify-bundle.js"
+  },
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && chmod +x dist/build-bundle.js dist/verify-bundle.js",
     "dev": "tsc -b -w",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "bundle": "tsx src/build-bundle.ts",
+    "verify": "tsx src/verify-bundle.ts"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
     "typescript": "~5.8.0",
     "vitest": "^3.0.0"
   }
