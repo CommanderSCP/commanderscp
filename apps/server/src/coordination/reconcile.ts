@@ -7,6 +7,7 @@ import type { PluginHost } from "../plugin-host/contract.js";
 import type { CelSandbox } from "../governance/cel-sandbox.js";
 import type { GateDeps } from "./gates.js";
 import {
+  getChangeRow,
   listChangeRowsInStates,
   markChangeReconcileBlocked,
   targetObjectIdsOf,
@@ -25,6 +26,7 @@ import {
   updateWaveTargetObserved
 } from "./wave-targets-repo.js";
 import { tryAcquireTriggerClaimLock } from "./trigger-claim-lock.js";
+import { tryAcquireChangeCoordinationLock } from "./change-coordination-lock.js";
 import { evaluateWaveGate } from "./gates.js";
 import { insertDecision } from "./decisions-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
@@ -85,11 +87,23 @@ function logChangeError(orgId: string, change: ChangeRow, step: string, err: unk
 // state machinery is entirely inside `advanceExecutingChanges` below.
 // -------------------------------------------------------------------------------------------
 
+/**
+ * MULTI-REPLICA consistency (M8 hardening audit): `transitionChange`'s own row-level `FOR UPDATE`
+ * already makes a concurrent race here SAFE (the loser's transition throws a plain fromState-
+ * mismatch error, caught below and just logged — no compile-then-cancel-style harmful fallback
+ * exists on this edge). The lock is added anyway for the same reason `advanceEvaluatedChanges`
+ * needs one and `advanceCoordinatedChanges` gets one too: without it, two racing replicas both do
+ * the full transition attempt and one throws every time two ticks overlap on the same change —
+ * wasted work and confusing "failed" log lines for something that isn't actually a failure. One
+ * coherent multi-replica story: every change is single-flight per tick, everywhere in this file.
+ */
 async function advanceProposedChanges(db: Db, orgId: string, gateDeps: GateDeps): Promise<void> {
   const rows = await withTenantTx(db, orgId, (tx) =>
     listChangeRowsInStates(tx, orgId, ["proposed"], BATCH_LIMIT)
   );
   for (const { change } of rows) {
+    const lock = await tryAcquireChangeCoordinationLock(db, change.objectId);
+    if (!lock) continue;
     try {
       await withTenantTx(db, orgId, (tx) =>
         transitionChange(
@@ -108,17 +122,51 @@ async function advanceProposedChanges(db: Db, orgId: string, gateDeps: GateDeps)
       );
     } catch (err) {
       logChangeError(orgId, change, "proposed->evaluated", err);
+    } finally {
+      await lock.release();
     }
   }
 }
 
+/**
+ * MULTI-REPLICA SINGLE-FLIGHT (M8 hardening — BUILD_AND_TEST.md §8 M8 item 6): every unit of
+ * work below is wrapped in `change-coordination-lock.ts`'s advisory lock, keyed by
+ * `changeObjectId`, acquired BEFORE compiling a plan or transitioning anything. This closes a
+ * genuine race found while proving the (separately fixed) wave-target trigger claim's
+ * single-flight guarantee under real multi-replica concurrency: two worker replicas' overlapping
+ * ticks could both observe the SAME change as `evaluated` (via the batch read above, taken
+ * outside any lock) and both call `compileAndPersistPlan` before either committed its
+ * `evaluated -> coordinated` transition. The loser's transition used to throw (fromState
+ * mismatch), get caught, and fall back to `transitionChange(..., "cancelled")` IN THE SAME
+ * transaction as its own already-inserted plan rows — since `coordinated -> cancelled` is a
+ * legal edge, that fallback SUCCEEDED, committing a fully-persisted DUPLICATE
+ * `change_waves`/`change_wave_targets` plan set and wrongfully cancelling a change the winner had
+ * already legitimately coordinated (confirmed against a real Postgres via a deliberate
+ * 2-concurrent-tick race while investigating this).
+ *
+ * The lock makes this structurally impossible rather than detecting it after the fact: only ONE
+ * process anywhere can be inside the locked section for a given change at any instant, so by the
+ * time ANY holder re-reads the change's state fresh (immediately below, still under the lock),
+ * "another attempt is genuinely racing me right now" is already ruled out. If that fresh read
+ * shows the change is no longer `evaluated` (a DIFFERENT tick got there first, in the window
+ * between the batch read and this lock's acquisition, and has SINCE finished — released the lock
+ * — successfully or not), that is a clean "lost the race, someone else already handled it" no-op
+ * — never treated as a compilation failure, so never wrongfully cancelled.
+ */
 async function advanceEvaluatedChanges(db: Db, orgId: string, gateDeps: GateDeps): Promise<void> {
   const rows = await withTenantTx(db, orgId, (tx) =>
     listChangeRowsInStates(tx, orgId, ["evaluated"], BATCH_LIMIT)
   );
   for (const { change, object } of rows) {
+    const lock = await tryAcquireChangeCoordinationLock(db, change.objectId);
+    if (!lock) continue; // another tick/replica is genuinely working on this change right now.
     try {
       await withTenantTx(db, orgId, async (tx) => {
+        // Fresh re-check, still under the lock — see the doc comment above for why this is the
+        // "lost the race" no-op path, not a failure.
+        const current = await getChangeRow(tx, orgId, change.objectId);
+        if (current.state !== "evaluated") return;
+
         const targetObjectIds = targetObjectIdsOf(object.properties as Record<string, unknown>);
         try {
           await compileAndPersistPlan(tx, {
@@ -144,7 +192,9 @@ async function advanceEvaluatedChanges(db: Db, orgId: string, gateDeps: GateDeps
           // A cycle, an unknown target, or a topology/dependency conflict (plan-compiler.ts)
           // auto-cancels the change with the compiler's own reason attached, rather than leaving
           // it stuck in `evaluated` forever with no path forward. Same transaction as the failed
-          // compile attempt, so either both roll back together or the cancel commits clean.
+          // compile attempt, so either both roll back together or the cancel commits clean. Safe
+          // to treat any error here as a genuine compilation failure — the lock above already
+          // ruled out "lost a concurrent race" as the cause.
           const message = err instanceof Error ? err.message : String(err);
           await transitionChange(
             tx,
@@ -162,15 +212,20 @@ async function advanceEvaluatedChanges(db: Db, orgId: string, gateDeps: GateDeps
       });
     } catch (err) {
       logChangeError(orgId, change, "evaluated->coordinated", err);
+    } finally {
+      await lock.release();
     }
   }
 }
 
+/** Same consistency lock as `advanceProposedChanges` — see its doc comment. */
 async function advanceCoordinatedChanges(db: Db, orgId: string, gateDeps: GateDeps): Promise<void> {
   const rows = await withTenantTx(db, orgId, (tx) =>
     listChangeRowsInStates(tx, orgId, ["coordinated"], BATCH_LIMIT)
   );
   for (const { change } of rows) {
+    const lock = await tryAcquireChangeCoordinationLock(db, change.objectId);
+    if (!lock) continue;
     try {
       await withTenantTx(db, orgId, (tx) =>
         transitionChange(
@@ -188,6 +243,8 @@ async function advanceCoordinatedChanges(db: Db, orgId: string, gateDeps: GateDe
       );
     } catch (err) {
       logChangeError(orgId, change, "coordinated->executing", err);
+    } finally {
+      await lock.release();
     }
   }
 }

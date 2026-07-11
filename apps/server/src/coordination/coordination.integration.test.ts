@@ -16,7 +16,10 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { changes, changeWaveTargets } from "../db/schema.js";
+import { v7 as uuidv7 } from "uuid";
+import { changes, changeSourceEvents, changeWaveTargets } from "../db/schema.js";
+import { processChangeSourceEvents } from "./webhook-processor.js";
+import { createSourceMapping } from "./source-mappings-repo.js";
 import { createObject } from "../graph/objects-repo.js";
 import { SubprocessPluginHost } from "../plugin-host/host.js";
 import type { PluginHost } from "../plugin-host/contract.js";
@@ -1147,3 +1150,191 @@ describe("coordination engine: multi-replica trigger claim is single-flight (M8 
     expect(totalRealTriggerCalls).toBe(1);
   }, 30_000);
 });
+
+/**
+ * M8 hardening — one pipeline stage EARLIER than the trigger-claim race above, found while
+ * proving that fix under genuine multi-replica concurrency (coordinator follow-up on top of
+ * BUILD_AND_TEST.md §8 M8 item 6): `reconcile.ts`'s `advanceEvaluatedChanges` compiles a change's
+ * plan and transitions `evaluated -> coordinated`. Confirmed via direct DB inspection (before the
+ * `change-coordination-lock.ts` fix landed): two concurrent `reconcileOrgTick` calls racing the
+ * SAME freshly-proposed change could both call `compileAndPersistPlan`, and the loser's
+ * catch-and-cancel fallback would COMMIT its own already-inserted duplicate plan rows AND
+ * wrongfully flip the change to `cancelled` even though the winner had already legitimately
+ * coordinated (or, by the time the race resolves, already be executing) it.
+ */
+describe("coordination engine: evaluated->coordinated plan compilation is single-flight (M8 hardening)", () => {
+  let server: TestServer;
+  let org: TestOrg;
+
+  beforeAll(async () => {
+    server = await buildTestServer();
+    org = await createTestOrg(server, "eval-coordinate-race");
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  it("N concurrent reconcileOrgTick calls racing the SAME freshly-proposed change: exactly ONE plan is ever persisted, and the change is never wrongfully cancelled", async () => {
+    const createTarget = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/components",
+      headers: { authorization: `Bearer ${org.adminToken}` },
+      payload: { name: "eval-race-target" }
+    });
+    expect(createTarget.statusCode).toBe(201);
+    const targetObjectId = createTarget.json().id as string;
+
+    const propose = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/changes",
+      headers: { authorization: `Bearer ${org.adminToken}` },
+      payload: { name: "eval-race change", targets: [targetObjectId] }
+    });
+    expect(propose.statusCode).toBe(201);
+    const changeObjectId = propose.json().id as string;
+
+    // Independent in-memory fake hosts (no shared executor state, same reasoning as the
+    // trigger-claim e2e test above) driving several genuinely concurrent, continuously
+    // self-re-ticking reconcile loops — all racing to be the one that compiles this change's
+    // plan and coordinates it.
+    const CONCURRENT_REPLICAS = 4;
+    let settled = false;
+    async function tickLoop(): Promise<void> {
+      const host = createInMemoryFakeHost({ autoSucceedAfterMs: 60_000 });
+      while (!settled) {
+        await reconcileOrgTick(
+          server.deps.db,
+          org.orgId,
+          host,
+          getSharedCelSandbox(),
+          server.deps.config.secretsMasterKey
+        );
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    const loops = Array.from({ length: CONCURRENT_REPLICAS }, () => tickLoop());
+
+    try {
+      await waitUntil(
+        async () => {
+          const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+            tx.select().from(changes).where(eq(changes.objectId, changeObjectId))
+          );
+          const state = rows[0]?.state;
+          // "coordinated" or further (executing/validating/...) — anything past the race this
+          // test is about. Never expect "cancelled" here (asserted explicitly below too).
+          return state && state !== "proposed" && state !== "evaluated" ? state : undefined;
+        },
+        { describe: "eval-race change reaches coordinated (or further)", timeoutMs: 15_000 }
+      );
+    } finally {
+      settled = true;
+      await Promise.all(loops);
+    }
+
+    const finalChange = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(changes).where(eq(changes.objectId, changeObjectId))
+    );
+    expect(finalChange[0]!.state).not.toBe("cancelled");
+
+    // The definitive proof: exactly ONE plan was EVER persisted for this change — not "the
+    // latest one looks fine" (which duplicate-plan-row bugs can still pass), but a hard count.
+    const plans = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.query.changePlans.findMany({
+        where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.orgId, org.orgId), eqOp(t.changeObjectId, changeObjectId))
+      })
+    );
+    expect(plans).toHaveLength(1);
+
+    // And exactly one wave_target row for this target — the same observable symptom the
+    // pre-fix bug produced (two distinct waveIds for the same targetObjectId).
+    const waveTargetRows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, targetObjectId))
+    );
+    expect(waveTargetRows).toHaveLength(1);
+  }, 30_000);
+});
+
+/**
+ * M8 hardening — same concurrency audit, one layer further upstream: `webhook-processor.ts`'s
+ * `processChangeSourceEvents` turns unprocessed `change_source_events` rows into Changes. Without
+ * `FOR UPDATE SKIP LOCKED` on its batch read, two concurrent ticks (two worker replicas) could
+ * both `SELECT` the SAME unprocessed row before either committed, and both call `proposeChange`
+ * for it — two separate Change objects for one real-world webhook delivery, each independently
+ * eligible to gate/approve/promote/execute as if they were unrelated.
+ */
+describe("coordination engine: webhook-event processing is single-flight across concurrent ticks (M8 hardening)", () => {
+  let server: TestServer;
+  let org: TestOrg;
+
+  beforeAll(async () => {
+    server = await buildTestServer();
+    org = await createTestOrg(server, "webhook-race");
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  it("N concurrent processChangeSourceEvents calls racing the SAME unprocessed event row: exactly ONE Change is ever proposed", async () => {
+    const createComponent = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/components",
+      headers: { authorization: `Bearer ${org.adminToken}` },
+      payload: { name: `webhook-race-comp-${randomSuffix()}` }
+    });
+    expect(createComponent.statusCode).toBe(201);
+    const componentObjectId = createComponent.json().id as string;
+    const repo = `webhook-race-org/${randomSuffix()}`;
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      createSourceMapping(tx, {
+        orgId: org.orgId,
+        sourceKind: "generic",
+        repoPattern: repo,
+        componentIdOrUrn: componentObjectId
+      })
+    );
+
+    // Insert ONE unprocessed change_source_events row directly (bypassing the HTTP/HMAC layer,
+    // already covered by executors.integration.test.ts's signature/redelivery-dedupe suite) — this
+    // test is specifically about PROCESSING-time concurrency, not ingestion.
+    const eventId = uuidv7();
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.insert(changeSourceEvents).values({
+        id: eventId,
+        orgId: org.orgId,
+        sourceKind: "generic",
+        signatureVerified: true,
+        dedupeKey: `test:${eventId}`,
+        headers: {},
+        payload: { repo, correlationKey: "refs/heads/main" }
+      })
+    );
+
+    const CONCURRENT_REPLICAS = 6;
+    await Promise.all(
+      Array.from({ length: CONCURRENT_REPLICAS }, () =>
+        withTenantTx(server.deps.db, org.orgId, (tx) => processChangeSourceEvents(tx, org.orgId))
+      )
+    );
+
+    const eventRow = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(changeSourceEvents).where(eq(changeSourceEvents.id, eventId))
+    );
+    expect(eventRow[0]!.processedAt).not.toBeNull();
+    expect(eventRow[0]!.resultingChangeObjectId).not.toBeNull();
+
+    // The definitive proof: exactly one Change exists in this (fresh, dedicated) org — a
+    // duplicate-processing bug would show two.
+    const allChanges = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select({ objectId: changes.objectId }).from(changes).where(eq(changes.orgId, org.orgId))
+    );
+    expect(allChanges).toHaveLength(1);
+    expect(allChanges[0]!.objectId).toBe(eventRow[0]!.resultingChangeObjectId);
+  });
+});
+
+function randomSuffix(): string {
+  return Math.random().toString(36).slice(2, 10);
+}
