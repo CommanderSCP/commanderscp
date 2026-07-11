@@ -64,6 +64,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - run: pnpm build
+      # `homelab-commanderscp-linux-general` ships Node only — no Helm, cosign, skopeo, or Docker
+      # (BUILD_AND_TEST.md §8 M1 item 9). `pnpm test` (turbo run test) must stay tool-free here so
+      # this stage genuinely reflects "unit tests," not "unit tests plus whatever binaries happen
+      # to be on this runner." Every tool-dependent check reachable from the default `test` task
+      # (tools/helm-verify's `test` script; deploy/airgap's install.sh-tamper suite) probes for its
+      # own binary and SKIPS (not fails) when absent — see tools/helm-verify/src/verify.ts's and
+      # deploy/airgap/src/install-sh-tamper.test.ts's own comments. Those same assertions are
+      # genuinely CI-gated elsewhere, with the tool actually installed first: helm-verify below
+      # (job 4b) and the install.sh tamper suite in job 5 (Integration).
       - run: pnpm test
 
   helm-verify:
@@ -74,16 +83,25 @@ jobs:
     # apply today, but the tool was never invoked anywhere in CI — "CI gate" was aspirational, not
     # real; a values.yaml regression would have shipped silently. This job is the actual gate: it
     # fails the build on any of those assertions regressing. Pure `helm template` (offline
-    # rendering, no live cluster) — the general runner is sufficient, no Docker needed. Helm is a
-    # documented toolchain prerequisite (BUILD_AND_TEST.md §1); the explicit check below turns a
-    # missing binary into a clear, actionable failure instead of a cryptic ENOENT.
+    # rendering, no live cluster) — the general runner is sufficient, no Docker needed.
+    #
+    # Helm is a documented toolchain prerequisite (BUILD_AND_TEST.md §1) but is NOT pre-provisioned
+    # on `homelab-commanderscp-linux-general` (confirmed by this job going red on PR #15 with
+    # `spawnSync helm ENOENT` before this fix) — so this job installs a real Helm binary itself
+    # (`azure/setup-helm@v4`, a static-binary download, no sudo/apt needed) rather than assuming
+    # it's already on PATH. That makes this job an unconditional real gate on every PR regardless
+    # of runner provisioning: `tools/helm-verify/src/verify.ts` SKIPS cleanly when helm is absent
+    # (see its own comment) precisely so the general unit-test stage stays green, but THIS job
+    # always has helm, so the same script here always genuinely renders the chart and asserts.
     runs-on: homelab-commanderscp-linux-general
     needs: build
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - name: Verify helm is on PATH (BUILD_AND_TEST.md §1 documented prerequisite)
-        run: command -v helm || { echo "helm not found on PATH — see BUILD_AND_TEST.md §1" >&2; exit 1; }
+      - name: "Install Helm (BUILD_AND_TEST.md §1: 3.16+) — general runner ships Node only"
+        uses: azure/setup-helm@v4
+        with:
+          version: latest
       - run: pnpm build
       - run: pnpm --filter @scp/helm-verify test
 
@@ -96,13 +114,41 @@ jobs:
     # "launches a REAL scp-runner-iac container" test therefore runs in THIS job, on the same
     # docker-build runner, rather than needing a second CI job. Every push/PR (not main-only): this
     # is a permanent regression test, same gating as the Testcontainers suite it sits alongside.
+    #
+    # This job also makes the CRITICAL #1 air-gap guard (adversarial review of PR #15:
+    # `deploy/airgap/src/install-sh-tamper.test.ts` — a bundle re-signed with an attacker's
+    # keypair must be REJECTED against the real external `--pubkey`, exercised against the actual
+    # `install.sh` subprocess, not a reimplementation) a REAL gate on every PR. That suite's
+    # tool-dependent `describe` block probes `cosign`/`skopeo`/`helm` on PATH and SKIPS when any
+    # are absent (see the test file's own comment) — which is what keeps `pnpm test` green on the
+    # tool-free general runner (job 4). None of those three are pre-provisioned on THIS runner
+    # either by default, so the steps below install them for real before re-running
+    # `@scp/airgap`'s suite explicitly (it's not part of the `test:integration` task graph — its
+    # script is named `test`, and Turborepo only wires the `test:integration` task to packages
+    # that declare that exact script name) — with all three tools genuinely on PATH, the tamper
+    # scenario actually executes here instead of skipping.
     runs-on: homelab-commanderscp-linux-docker-build
     needs: [static-checks, codegen-drift, unit-tests]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
+      - name: "Install Helm (BUILD_AND_TEST.md §1: 3.16+)"
+        uses: azure/setup-helm@v4
+        with:
+          version: latest
+      - name: Install cosign (BUILD_AND_TEST.md §1)
+        uses: sigstore/cosign-installer@v3
+      - name: Install skopeo (BUILD_AND_TEST.md §1) — no-op if the runner already has it
+        run: |
+          command -v skopeo >/dev/null 2>&1 && exit 0
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq skopeo
       - run: pnpm build
       - run: pnpm test:integration
+      # Explicit, not part of test:integration's task graph (see comment above) — this is the
+      # ONLY place in CI these tool-dependent assertions run for real rather than skip.
+      - name: Air-gap install.sh tamper-rejection suite (CRITICAL #1 real gate — cosign/skopeo/helm now on PATH)
+        run: pnpm --filter @scp/airgap test
 
   e2e-m0:
     name: "7. E2E (M0 golden path, main only)"

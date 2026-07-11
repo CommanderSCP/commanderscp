@@ -76,9 +76,13 @@ fix).
 
 **Genuinely CI-gated** (adversarial review MAJOR #4 — a prior version of this doc, and the
 `CHANGELOG.md` "Added" entry, called this "(CI gate)" while the tool was invoked nowhere in CI):
-`.github/workflows/ci.yml`'s `helm-verify` job runs `pnpm --filter @scp/helm-verify test` on every
-push/PR; it's also picked up automatically by the top-level `pnpm test` (Turborepo discovers any
-workspace package's `test` script).
+`.github/workflows/ci.yml`'s `helm-verify` job installs Helm (`azure/setup-helm@v4`) and then runs
+`pnpm --filter @scp/helm-verify test` on every push/PR — an unconditional real gate regardless of
+what's pre-provisioned on the runner. It's also picked up automatically by the top-level `pnpm
+test` (Turborepo discovers any workspace package's `test` script); there, `tools/helm-verify/src/verify.ts`
+probes for `helm` on PATH first and SKIPS cleanly (not a failure) when it's absent, which is what
+keeps the tool-free general CI runner's unit-test stage green. Locally, any dev with Helm on PATH
+gets the real check for free via `pnpm test`.
 
 **Verified end to end against a real `kind` cluster** while building this chart (`helm install` →
 golden path via the real API → `helm upgrade` → `helm rollback`):

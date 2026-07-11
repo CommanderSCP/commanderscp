@@ -14,6 +14,15 @@
  * Run: `pnpm --filter @scp/helm-verify verify` (from repo root) or `tsx src/verify.ts` from this
  * directory. Requires `helm` on PATH (BUILD_AND_TEST.md §1: Helm 3.16+) — no live cluster needed,
  * this is pure `helm template` (offline rendering).
+ *
+ * SKIPS (does not fail) when `helm` isn't on PATH at all — this script is wired into the
+ * top-level `pnpm test` (Turborepo picks up this package's `test` script), which also runs on
+ * CI's general Node-only runner (`homelab-commanderscp-linux-general` — no Helm pre-provisioned).
+ * A hard ENOENT there would fail every PR's unit-test stage for a tool-availability gap, not a
+ * real regression. The assertions below are still a REAL gate: `.github/workflows/ci.yml`'s
+ * dedicated `helm-verify` job installs Helm first (`azure/setup-helm@v4`) before running this
+ * exact script, so a loosened `values.yaml` genuinely fails CI there — see that job's own
+ * comment. Locally, any dev with Helm on PATH gets the real check for free via `pnpm test`.
  */
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -22,6 +31,15 @@ import { parseAllDocuments } from "yaml";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CHART_DIR = path.resolve(__dirname, "../../../deploy/helm");
+
+function helmAvailable(): boolean {
+  try {
+    execFileSync(process.platform === "win32" ? "where" : "which", ["helm"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 interface K8sDoc {
   apiVersion?: string;
@@ -238,6 +256,16 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
 }
 
 function main(): void {
+  if (!helmAvailable()) {
+    console.log(
+      "helm-verify: SKIP — 'helm' not found on PATH (BUILD_AND_TEST.md §1 requires Helm 3.16+ to " +
+        "run this check). This is expected on CI's general Node-only unit-test runner; the " +
+        "dedicated 'helm-verify' CI job installs Helm and runs this exact script for real. To run " +
+        "it yourself, install Helm and re-run `pnpm --filter @scp/helm-verify test`."
+    );
+    return;
+  }
+
   console.log(`helm-verify: rendering ${CHART_DIR} with default values...`);
   verifyRender("defaults", renderChart("verify-defaults", []));
 
