@@ -40,14 +40,22 @@ load/perf numbers, security-sensitive surfaces).
   first time (`FederationTransportPluginClient`, a `PluginHost.federationTransport()` accessor).
 - Create-time module allowlist: executor/notification binding creation now rejects an unknown or
   wrong-kind `pluginModule` at write time, mirroring the existing discovery-create check.
-- Multi-replica coordination single-flight (`apps/server/src/coordination/advisory-lock.ts` and
-  its two call sites, `trigger-claim-lock.ts` and `change-coordination-lock.ts`): a Postgres
-  session-scoped advisory lock closes two genuine multi-replica races found and reproduced against
-  a real Postgres while hardening for `worker` replica scaling — the wave-target trigger claim
-  (could double-fire a real executor call) and the `evaluated -> coordinated` plan compilation
-  (could persist a duplicate plan and wrongfully cancel a change another replica had already
-  coordinated). A third related race (webhook-event processing creating duplicate Changes under
-  concurrent ticks) is closed with `FOR UPDATE SKIP LOCKED` on the claim query.
+- Multi-replica coordination single-flight — **all FOUR** genuine races found and reproduced
+  against a real Postgres while hardening for `worker` replica scaling, one coherent story:
+  1. the wave-target trigger claim (could double-fire a real executor call) —
+     `trigger-claim-lock.ts`, a Postgres session-scoped advisory lock
+     (`apps/server/src/coordination/advisory-lock.ts`).
+  2. the `evaluated -> coordinated` plan compilation (could persist a duplicate plan and
+     wrongfully cancel a change another replica had already coordinated) —
+     `change-coordination-lock.ts`, the same advisory-lock mechanism.
+  3. webhook-event processing (could create duplicate Changes for one real webhook delivery under
+     concurrent ticks) — closed with `FOR UPDATE SKIP LOCKED` on the claim query.
+  4. the executing-wave gate evaluation (`reconcile.ts`'s pending-wave branch — could insert a
+     duplicate `kind: "gate"` audit Decision under concurrent ticks; bounded — no double-execution,
+     since `markWaveRunning` is itself idempotent and triggering was already covered by #1) —
+     found in the adversarial review of this same PR (MINOR #5) and closed with the same
+     `change-coordination-lock.ts` lock, completing the single-flight story across every
+     `reconcile.ts` state-advancing branch.
 - `SCP_SKIP_MIGRATIONS`: `api`/`worker` pods can now run with only the least-privileged
   `scp_app`/`scp_pgboss` database credentials — only the migrations Job ever holds the admin
   connection.

@@ -1,7 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
 import type { ExecutionStatus, ExternalRunRef } from "@scp/plugin-api";
@@ -17,7 +17,7 @@ import {
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { v7 as uuidv7 } from "uuid";
-import { changes, changeSourceEvents, changeWaveTargets } from "../db/schema.js";
+import { changes, changeSourceEvents, changeWaveTargets, decisions } from "../db/schema.js";
 import { processChangeSourceEvents } from "./webhook-processor.js";
 import { createSourceMapping } from "./source-mappings-repo.js";
 import { createObject } from "../graph/objects-repo.js";
@@ -1333,6 +1333,152 @@ describe("coordination engine: webhook-event processing is single-flight across 
     expect(allChanges).toHaveLength(1);
     expect(allChanges[0]!.objectId).toBe(eventRow[0]!.resultingChangeObjectId);
   });
+});
+
+/**
+ * M8 hardening follow-up (adversarial review MINOR #5, disclosed as "undisclosed" in the M8 PR's
+ * own "all three coordination races" claim — this is the 4th): one pipeline stage further than
+ * the plan-compilation race above — `reconcile.ts`'s `reconcileExecutingChange` PENDING-wave
+ * branch (`evaluateWaveGate` + `insertDecision` + `markWaveRunning`) had no per-change advisory
+ * lock, so two concurrent replica ticks that both read the SAME wave as "pending" (the batch read
+ * in `advanceExecutingChanges`, taken outside any lock) could both evaluate the gate and insert a
+ * SECOND `kind: "gate"` Decision row for the same wave boundary — a duplicate AUDIT record, not a
+ * double-execution (`markWaveRunning`'s own `WHERE status = 'pending'` guard already made that
+ * safe, and triggering itself is already single-flight via the trigger-claim lock). The fix adds
+ * the SAME per-change advisory lock (`change-coordination-lock.ts`) around this branch, with a
+ * fresh re-check of the wave's status still under the lock — the same "lost the race, someone else
+ * already handled it" no-op shape `advanceEvaluatedChanges` already uses.
+ */
+describe("coordination engine: wave-gate evaluation is single-flight (M8 hardening MINOR #5)", () => {
+  let server: TestServer;
+  let org: TestOrg;
+
+  beforeAll(async () => {
+    server = await buildTestServer();
+    org = await createTestOrg(server, "wave-gate-race");
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  /** Manually walks a change to `executing` with a compiled plan, entirely OUTSIDE
+   *  `reconcileOrgTick` — same technique as the trigger-claim describe block's own
+   *  `createExecutingChangeWithPendingTarget` above, scoped here to the WAVE-GATE race (one stage
+   *  earlier: the gate has never been evaluated for this wave at all) rather than the
+   *  trigger-claim race (a different, already-proven-single-flight lock one stage later). */
+  async function createExecutingChangeWithPendingWave(
+    name: string
+  ): Promise<{ changeObjectId: string; targetObjectId: string }> {
+    return withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const targetObject = await createObject(tx, {
+        orgId: org.orgId,
+        typeId: "component",
+        actorObjectId: org.orgId,
+        requestId: "wave-gate-race-test",
+        name
+      });
+      const { change, targetObjectIds } = await proposeChange(tx, {
+        orgId: org.orgId,
+        actorObjectId: org.orgId,
+        requestId: "wave-gate-race-test",
+        name: `${name}-change`,
+        targets: [targetObject.id]
+      });
+      const gateDeps = { sandbox: getSharedCelSandbox(), host: null };
+      await transitionChange(
+        tx,
+        {
+          orgId: org.orgId,
+          changeObjectId: change.id,
+          toState: "evaluated",
+          actorObjectId: org.orgId,
+          requestId: "wave-gate-race-test"
+        },
+        gateDeps
+      );
+      await compileAndPersistPlan(tx, {
+        orgId: org.orgId,
+        changeObjectId: change.id,
+        targetObjectIds,
+        topologyObjectId: null,
+        topologyVersion: null
+      });
+      await transitionChange(
+        tx,
+        {
+          orgId: org.orgId,
+          changeObjectId: change.id,
+          toState: "coordinated",
+          actorObjectId: org.orgId,
+          requestId: "wave-gate-race-test"
+        },
+        gateDeps
+      );
+      await transitionChange(
+        tx,
+        {
+          orgId: org.orgId,
+          changeObjectId: change.id,
+          toState: "executing",
+          actorObjectId: org.orgId,
+          requestId: "wave-gate-race-test"
+        },
+        gateDeps
+      );
+      return { changeObjectId: change.id, targetObjectId: targetObject.id };
+    });
+  }
+
+  it("N genuinely concurrent reconcileOrgTick calls racing the SAME pending wave's gate: exactly ONE gate Decision is ever recorded", async () => {
+    const { changeObjectId, targetObjectId } = await createExecutingChangeWithPendingWave("wave-gate-race-target");
+
+    // Sanity: the wave genuinely has never been GATED yet — the manual walk above writes
+    // `kind: "transition"` Decisions for each transitionChange call, but zero `kind: "gate"`
+    // Decisions exist before the race starts (this manual walk never called reconcileOrgTick, the
+    // only thing that ever evaluates a wave gate).
+    const beforeGateDecisions = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(decisions)
+        .where(and(eq(decisions.subjectId, changeObjectId), eq(decisions.kind, "gate")))
+    );
+    expect(beforeGateDecisions).toHaveLength(0);
+
+    // A real, independent in-memory fake host per the same reasoning the other races' e2e tests
+    // use — not shared executor state, and a long autoSucceedAfterMs so the target sits durably
+    // `triggered`/`observing` after the race resolves rather than racing to completion too.
+    const host = createInMemoryFakeHost({ autoSucceedAfterMs: 60_000 });
+
+    // Genuinely concurrent (Promise.all, not a loop) — the same shape as the trigger-claim lock's
+    // own direct N-concurrent-attempts test above. All N ticks race the SAME org, so all N read
+    // this change as `executing` with its one wave `pending` before any of them can possibly have
+    // committed a gate Decision yet.
+    const CONCURRENT_REPLICAS = 8;
+    await Promise.all(
+      Array.from({ length: CONCURRENT_REPLICAS }, () =>
+        reconcileOrgTick(server.deps.db, org.orgId, host, getSharedCelSandbox(), server.deps.config.secretsMasterKey)
+      )
+    );
+
+    // The wave genuinely progressed past `pending` (proves SOME tick won the race and did the
+    // real work, not that every tick just silently no-op'd).
+    const waveTargetRows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, targetObjectId))
+    );
+    expect(waveTargetRows).toHaveLength(1);
+    expect(waveTargetRows[0]!.status).not.toBe("pending");
+
+    // The definitive proof: exactly ONE gate Decision was EVER persisted for this change's wave
+    // boundary — not "the latest one looks fine", a hard count.
+    const gateDecisions = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(decisions)
+        .where(and(eq(decisions.subjectId, changeObjectId), eq(decisions.kind, "gate")))
+    );
+    expect(gateDecisions).toHaveLength(1);
+  }, 30_000);
 });
 
 function randomSuffix(): string {

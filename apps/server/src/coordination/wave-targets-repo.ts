@@ -37,6 +37,17 @@ export async function loadWavesWithTargets(
   return out;
 }
 
+/** The current `status` column of one wave, fresh — used by `reconcile.ts`'s pending-wave-gate
+ *  branch (M8 hardening MINOR #5) to re-check, INSIDE the per-change advisory lock, whether a
+ *  racing tick already evaluated this wave's gate before this one acquired the lock. */
+export async function getWaveStatus(tx: TenantTx, orgId: string, waveId: string): Promise<WaveRow["status"] | undefined> {
+  const [row] = await tx
+    .select({ status: changeWaves.status })
+    .from(changeWaves)
+    .where(and(eq(changeWaves.orgId, orgId), eq(changeWaves.id, waveId)));
+  return row?.status;
+}
+
 export async function markWaveRunning(tx: TenantTx, orgId: string, waveId: string): Promise<void> {
   await tx
     .update(changeWaves)

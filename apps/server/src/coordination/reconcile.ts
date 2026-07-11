@@ -20,6 +20,7 @@ import {
   claimWaveTargetForTriggering,
   findLatestSucceededExecution,
   findOriginalWaveTarget,
+  getWaveStatus,
   markWaveRunning,
   markWaveTargetTriggered,
   markWaveTerminal,
@@ -385,37 +386,65 @@ async function reconcileExecutingChange(
   }
 
   if (activeWave.status === "pending") {
-    const gateOutcome = await withTenantTx(db, orgId, async (tx) => {
-      const gate = await evaluateWaveGate(
-        tx,
-        {
+    // MULTI-REPLICA SINGLE-FLIGHT (M8 hardening follow-up, adversarial review MINOR #5): the SAME
+    // per-change advisory lock advanceProposedChanges/advanceEvaluatedChanges/
+    // advanceCoordinatedChanges/triggerWaveTarget already use — see change-coordination-lock.ts's
+    // doc comment for the underlying mechanism. Without it, two concurrent replica ticks that both
+    // read this wave as "pending" (the batch read in advanceExecutingChanges, taken outside any
+    // lock, one call up the stack) both call evaluateWaveGate + insertDecision here, producing a
+    // duplicate audit Decision row for the same gate evaluation — the 4th multi-replica race found
+    // during this coordination-races audit (bounded: markWaveRunning's own `WHERE status =
+    // 'pending'` guard means no double-execution results, and triggering itself is already
+    // single-flight via the trigger-claim lock — this closes the remaining "duplicate Decision"
+    // race for one coherent single-flight story across all four).
+    const gateLock = await tryAcquireChangeCoordinationLock(db, change.objectId);
+    if (!gateLock) return; // another tick/replica is genuinely evaluating this wave's gate right now — retry next tick.
+    let gateOutcome: "blocked" | "running" | "already-progressed";
+    try {
+      gateOutcome = await withTenantTx(db, orgId, async (tx) => {
+        // Fresh re-check, still under the lock — a racing tick may have already evaluated this
+        // wave's gate and advanced it (running, or further) in the window between the batch read
+        // in advanceExecutingChanges and this lock's acquisition. Re-running the gate here would
+        // insert a SECOND Decision for the same wave — this is the "lost the race" no-op, not a
+        // re-evaluation, exactly like advanceEvaluatedChanges's fresh re-check above.
+        const freshStatus = await getWaveStatus(tx, orgId, activeWave.id);
+        if (freshStatus !== "pending") return "already-progressed" as const;
+
+        const gate = await evaluateWaveGate(
+          tx,
+          {
+            orgId,
+            changeObjectId: change.objectId,
+            actorObjectId: SYSTEM_ACTOR_ID,
+            emergency: change.emergency,
+            topologyObjectId: plan.topologyObjectId,
+            waveIndex: activeWave.waveIndex,
+            targetObjectIds: activeWave.targets.map((t) => t.targetObjectId)
+          },
+          gateDeps
+        );
+        await insertDecision(tx, {
           orgId,
-          changeObjectId: change.objectId,
-          actorObjectId: SYSTEM_ACTOR_ID,
-          emergency: change.emergency,
-          topologyObjectId: plan.topologyObjectId,
-          waveIndex: activeWave.waveIndex,
-          targetObjectIds: activeWave.targets.map((t) => t.targetObjectId)
-        },
-        gateDeps
-      );
-      await insertDecision(tx, {
-        orgId,
-        kind: "gate",
-        subjectId: change.objectId,
-        verdict: gate.verdict,
-        inputContext: {
-          ...gate.inputContext,
-          waveId: activeWave.id,
-          waveIndex: activeWave.waveIndex
-        },
-        reasonTree: gate.reasonTree
+          kind: "gate",
+          subjectId: change.objectId,
+          verdict: gate.verdict,
+          inputContext: {
+            ...gate.inputContext,
+            waveId: activeWave.id,
+            waveIndex: activeWave.waveIndex
+          },
+          reasonTree: gate.reasonTree
+        });
+        if (gate.verdict === "block") return "blocked" as const;
+        await markWaveRunning(tx, orgId, activeWave.id);
+        return "running" as const;
       });
-      if (gate.verdict === "block") return "blocked" as const;
-      await markWaveRunning(tx, orgId, activeWave.id);
-      return "running" as const;
-    });
-    if (gateOutcome === "blocked") return; // M3's seam always allows — kept honest for M4.
+    } finally {
+      await gateLock.release();
+    }
+    // "blocked": M3's seam always allows — kept honest for M4. "already-progressed": a racing
+    // tick already handled this wave's gate; next tick sees its result and proceeds normally.
+    if (gateOutcome !== "running") return;
   }
 
   // Unified target reconciliation: every non-terminal target gets either a trigger attempt
