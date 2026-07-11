@@ -143,39 +143,92 @@ jobs:
       - run: pnpm build
       - run: bash scripts/e2e-m7.sh
 
+  ci-image:
+    name: "9a. Build CI runner image (tools/ci-image, main only)"
+    # Builds the versioned CI runner image BUILD_AND_TEST.md §6 calls for ("Required tooling
+    # (Node, pnpm store, Playwright browsers, oasdiff) is baked into a versioned CI runner image
+    # built from tools/ci-image/Dockerfile") and hands it to the e2e-web job below via a workflow
+    # artifact (docker save/load) — this repo has no container registry yet, so this is the
+    # simplest thing that actually works on self-hosted runners with no registry to push to: build
+    # once per workflow run, pass the image tar between jobs. See tools/ci-image/Dockerfile's own
+    # header comment for exactly what gets baked in (Node 22, corepack-pinned pnpm, a warmed pnpm
+    # store, Playwright's Chromium + OS deps version-matched to pnpm-lock.yaml, the Docker CLI +
+    # compose plugin, the vendored oasdiff binary) and why each is safe/expected to touch the
+    # network at IMAGE BUILD time without violating CLAUDE.md principle 5's "no runtime network
+    # calls" (build-time vendoring vs. run-time fetching are different things).
+    #
+    # HONEST SCOPE: a real production setup would build this on a schedule or only when
+    # tools/ci-image/Dockerfile (or pnpm-lock.yaml) actually changes, and push it to a registry
+    # that e2e-web then pulls a pinned tag from — much cheaper than rebuilding a multi-GB image on
+    # every main-branch push, and shareable across workflow runs without a same-run artifact
+    # hand-off. That registry+publish pipeline does not exist in this repo and standing one up is
+    # out of scope for "close the e2e-web Chromium network-fetch gap" — tracked as follow-up in
+    # tools/ci-image/README.md.
+    runs-on: homelab-commanderscp-linux-docker-build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build tools/ci-image (build context is the repo root — see Dockerfile header comment)
+        run: docker build -f tools/ci-image/Dockerfile -t scp-ci-image:${{ github.sha }} .
+      - name: Save image for hand-off to the e2e-web job
+        run: docker save scp-ci-image:${{ github.sha }} | gzip > /tmp/scp-ci-image.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scp-ci-image
+          path: /tmp/scp-ci-image.tar.gz
+          retention-days: 1
+
   e2e-web:
     name: "9. E2E (Web UI, Playwright/Chromium, main only)"
     # Same reason as e2e-m0: needs a real Docker daemon (compose) — the general runner has none.
     runs-on: homelab-commanderscp-linux-docker-build
-    needs: [static-checks, codegen-drift, unit-tests]
+    needs: [static-checks, codegen-drift, unit-tests, ci-image]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
-      - run: pnpm build
-      - run: pnpm --filter @scp/web build
 
-      # Playwright's Chromium is NOT baked into a versioned CI runner image yet — there is no
-      # `tools/ci-image` in this repo (checked). Standing up a full CI-image-build pipeline is out
-      # of scope for this stage and is tracked as follow-up work. This is the next-best, honestly
-      # documented approach instead: cache the downloaded browser (+ its OS-level deps) keyed on
-      # the resolved `@playwright/test` version, so it downloads once and is reused across runs.
-      # On a cache MISS (first run, cache eviction, or a Playwright version bump) `playwright
-      # install --with-deps` fetches Chromium and its OS packages from the network — a known,
-      # documented, TEMPORARY air-gap exception scoped to this one CI job only. Every other CI
-      # stage, and the product itself, makes zero runtime network calls (CLAUDE.md principle 5).
-      - name: Resolve @playwright/test version (cache key)
-        id: playwright-version
-        run: |
-          echo "version=$(node -p "require('./apps/web/node_modules/@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
-
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
+      - name: Load the baked CI runner image (tools/ci-image)
+        uses: actions/download-artifact@v4
         with:
-          path: ~/.cache/ms-playwright
-          key: playwright-chromium-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+          name: scp-ci-image
+          path: /tmp
+      - run: gunzip -c /tmp/scp-ci-image.tar.gz | docker load
 
-      - name: Install Playwright's Chromium (network fetch on cache miss only)
-        run: npx --prefix apps/web playwright install --with-deps chromium
-
-      - run: bash scripts/e2e-web.sh
+      # Everything scripts/e2e-web.sh needs — Node 22, pnpm + its pre-warmed store, Playwright's
+      # Chromium + its OS-level deps, the Docker CLI + compose plugin — is baked into
+      # tools/ci-image (see that Dockerfile's header comment). This replaces the old
+      # actions/cache-plus-network-fetch-on-cache-miss Playwright install entirely: zero network
+      # calls for tooling in this job, cache hit or miss, full stop. `pnpm install --offline
+      # --frozen-lockfile` resolves entirely from the store baked into the image — see the
+      # Dockerfile's `npm_config_store_dir` comment for why that explicit env var, not just a
+      # warm store, is what makes this actually work offline against a bind-mounted checkout
+      # (pnpm otherwise silently relocates the store when the checkout and the image's own
+      # filesystem are on different devices, which they always are here).
+      #
+      # `-v /var/run/docker.sock:/var/run/docker.sock`: Docker-outside-of-Docker — this
+      # container's own `docker compose build/up` calls (inside scripts/e2e-web.sh) drive the
+      # RUNNER's Docker daemon as sibling containers, not a nested daemon; the build context those
+      # compose commands send is streamed from THIS container's view of /workspace (the checked-out
+      # commit), which is the normal Docker client/server contract, not a shared-path assumption.
+      # `--network host`: lets Playwright, running inside this container, reach the compose
+      # stack's host-published port (http://localhost:8080, per scripts/e2e-web.sh) the same way
+      # it would running directly on the runner. Linux-only, which is fine — every runner in this
+      # workflow is homelab-commanderscp-linux-*.
+      #
+      # HONEST SCOPE / ASSUMPTION flagged for whoever lands this on the real homelab runners: the
+      # Docker-outside-of-Docker + `--network host` pattern above was verified locally (Docker
+      # CLI + `docker compose` from inside a tools/ci-image container reaching a real host
+      # daemon; a fully offline `pnpm install --offline --frozen-lockfile` against the baked
+      # store; a Chromium launch inside a `--network none` container) but NOT against an actual
+      # run of this exact job on the homelab self-hosted runners — if those runners are
+      # container-per-job (e.g. Actions Runner Controller pods) rather than plain VMs/hosts, the
+      # docker.sock bind-mount and `--network host` may need runner-specific adjustment. See the
+      # m8-hardening-packaging-rc PR description for the full list of what was and wasn't tested.
+      - name: Run compose-stack Playwright E2E inside the baked CI runner image (zero network)
+        run: |
+          docker run --rm \
+            --network host \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$(pwd):/workspace" -w /workspace \
+            scp-ci-image:${{ github.sha }} \
+            bash -c "pnpm install --offline --frozen-lockfile && bash scripts/e2e-web.sh"
