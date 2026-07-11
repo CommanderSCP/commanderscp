@@ -29,7 +29,8 @@ function assertPolicyOverlayOnlyAddsStrictness(
   overlay: Record<string, unknown>
 ): void {
   const baseEnforcement = typeof base.enforcement === "string" ? base.enforcement : "advisory";
-  const overlayEnforcement = typeof overlay.enforcement === "string" ? overlay.enforcement : undefined;
+  const overlayEnforcement =
+    typeof overlay.enforcement === "string" ? overlay.enforcement : undefined;
   if (overlayEnforcement !== undefined) {
     const baseRank = ENFORCEMENT_RANK[baseEnforcement] ?? 0;
     const overlayRank = ENFORCEMENT_RANK[overlayEnforcement] ?? 0;
@@ -64,7 +65,10 @@ export interface OverlayResult {
  *  writer authority and convergent replication are preserved by construction, not by a runtime
  *  check (there is no code path here that could mutate `base` even by accident: only
  *  `createObject`, never `updateObject`, is called on it). */
-export async function createOverlay(tx: TenantTx, input: CreateOverlayInput): Promise<OverlayResult> {
+export async function createOverlay(
+  tx: TenantTx,
+  input: CreateOverlayInput
+): Promise<OverlayResult> {
   const base = await getObjectByIdOrUrnAnyType(tx, input.orgId, input.baseIdOrUrn);
 
   if (base.typeId === "policy" && input.overlayTypeId === "policy") {
@@ -114,7 +118,11 @@ export async function getMergedOverlayView(
   baseIdOrUrn: string
 ): Promise<MergedOverlayView> {
   const base = await getObjectByIdOrUrnAnyType(tx, orgId, baseIdOrUrn);
-  const edges = await listRelationships(tx, orgId, { toId: base.id, typeId: "annotates", limit: 100 });
+  const edges = await listRelationships(tx, orgId, {
+    toId: base.id,
+    typeId: "annotates",
+    limit: 100
+  });
   const overlays: GraphObject[] = [];
   for (const edge of edges.items) {
     try {
@@ -126,10 +134,14 @@ export async function getMergedOverlayView(
   }
 
   let merged: Record<string, unknown> = { ...base.properties };
-  let strictestEnforcement = typeof base.properties.enforcement === "string" ? base.properties.enforcement : undefined;
+  let strictestEnforcement =
+    typeof base.properties.enforcement === "string" ? base.properties.enforcement : undefined;
   for (const overlay of overlays) {
     merged = { ...merged, ...overlay.properties };
-    const overlayEnforcement = typeof overlay.properties.enforcement === "string" ? overlay.properties.enforcement : undefined;
+    const overlayEnforcement =
+      typeof overlay.properties.enforcement === "string"
+        ? overlay.properties.enforcement
+        : undefined;
     if (overlayEnforcement !== undefined) {
       const currentRank = ENFORCEMENT_RANK[strictestEnforcement ?? "advisory"] ?? 0;
       const overlayRank = ENFORCEMENT_RANK[overlayEnforcement] ?? 0;

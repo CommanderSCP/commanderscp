@@ -35,7 +35,11 @@ function toFederationSelf(row: typeof federationSelf.$inferSelect): FederationSe
 /** Race-safe like `governance/attestation.ts`'s `ensureInstanceKey`: a duplicate-insert on
  *  concurrent first-use callers is resolved by re-reading rather than erroring. */
 export async function ensureFederationSelf(tx: TenantTx, orgId: string): Promise<FederationSelf> {
-  const existing = await tx.select().from(federationSelf).where(eq(federationSelf.orgId, orgId)).limit(1);
+  const existing = await tx
+    .select()
+    .from(federationSelf)
+    .where(eq(federationSelf.orgId, orgId))
+    .limit(1);
   if (existing[0]) return toFederationSelf(existing[0]);
 
   const domainId = uuidv7();
@@ -48,8 +52,13 @@ export async function ensureFederationSelf(tx: TenantTx, orgId: string): Promise
   } catch {
     // Lost a race with a concurrent first-use caller — fall through to re-read.
   }
-  const afterRace = await tx.select().from(federationSelf).where(eq(federationSelf.orgId, orgId)).limit(1);
-  if (!afterRace[0]) throw new Error(`ensureFederationSelf: failed to create or read identity for org '${orgId}'`);
+  const afterRace = await tx
+    .select()
+    .from(federationSelf)
+    .where(eq(federationSelf.orgId, orgId))
+    .limit(1);
+  if (!afterRace[0])
+    throw new Error(`ensureFederationSelf: failed to create or read identity for org '${orgId}'`);
   return toFederationSelf(afterRace[0]);
 }
 
@@ -64,13 +73,17 @@ export interface InitFederationInput {
  *  is allowed (the operator's responsibility) since role is advisory metadata for the CLI/UI, not
  *  itself an authority check — single-writer authority is enforced by `originDomainId` alone,
  *  independent of `role`. */
-export async function initFederationSelf(tx: TenantTx, input: InitFederationInput): Promise<FederationSelf> {
+export async function initFederationSelf(
+  tx: TenantTx,
+  input: InitFederationInput
+): Promise<FederationSelf> {
   await ensureFederationSelf(tx, input.orgId);
   const [row] = await tx
     .update(federationSelf)
     .set({ name: input.name, role: input.role })
     .where(eq(federationSelf.orgId, input.orgId))
     .returning();
-  if (!row) throw new Error(`initFederationSelf: failed to update identity for org '${input.orgId}'`);
+  if (!row)
+    throw new Error(`initFederationSelf: failed to update identity for org '${input.orgId}'`);
   return toFederationSelf(row);
 }

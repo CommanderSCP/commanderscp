@@ -36,7 +36,11 @@ export interface InstanceKeyPair {
 export async function ensureInstanceKey(tx: TenantTx): Promise<InstanceKeyPair> {
   const existing = await tx.select().from(instanceKeys).limit(1);
   if (existing[0]) {
-    return { id: existing[0].id, publicKey: existing[0].publicKey, privateKey: existing[0].privateKey };
+    return {
+      id: existing[0].id,
+      publicKey: existing[0].publicKey,
+      privateKey: existing[0].privateKey
+    };
   }
 
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -53,8 +57,13 @@ export async function ensureInstanceKey(tx: TenantTx): Promise<InstanceKeyPair> 
   // singleton with no unique constraint to fail on, but handled rather than assumed away) —
   // re-read whatever is there now.
   const afterRace = await tx.select().from(instanceKeys).limit(1);
-  if (!afterRace[0]) throw new Error("ensureInstanceKey: failed to create or read the instance signing key");
-  return { id: afterRace[0].id, publicKey: afterRace[0].publicKey, privateKey: afterRace[0].privateKey };
+  if (!afterRace[0])
+    throw new Error("ensureInstanceKey: failed to create or read the instance signing key");
+  return {
+    id: afterRace[0].id,
+    publicKey: afterRace[0].publicKey,
+    privateKey: afterRace[0].privateKey
+  };
 }
 
 /** The canonical record an attestation signs over — DESIGN §10.2's exact field list. */
@@ -74,13 +83,24 @@ export interface SignedAttestation {
 }
 
 function derPublicKeyToKeyObject(publicKeyB64: string) {
-  return { key: Buffer.from(publicKeyB64, "base64"), format: "der" as const, type: "spki" as const };
+  return {
+    key: Buffer.from(publicKeyB64, "base64"),
+    format: "der" as const,
+    type: "spki" as const
+  };
 }
 function derPrivateKeyToKeyObject(privateKeyB64: string) {
-  return { key: Buffer.from(privateKeyB64, "base64"), format: "der" as const, type: "pkcs8" as const };
+  return {
+    key: Buffer.from(privateKeyB64, "base64"),
+    format: "der" as const,
+    type: "pkcs8" as const
+  };
 }
 
-export function signAttestation(key: InstanceKeyPair, record: AttestationRecord): SignedAttestation {
+export function signAttestation(
+  key: InstanceKeyPair,
+  record: AttestationRecord
+): SignedAttestation {
   const message = Buffer.from(canonicalJson(record), "utf8");
   const signature = cryptoSign(null, message, derPrivateKeyToKeyObject(key.privateKey));
   return { record, signature: signature.toString("base64"), publicKey: key.publicKey };

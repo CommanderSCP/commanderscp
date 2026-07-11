@@ -73,7 +73,9 @@ export async function peerPublicKeyAt(
   const rows = await tx
     .select()
     .from(federationPeerKeys)
-    .where(and(eq(federationPeerKeys.orgId, orgId), eq(federationPeerKeys.peerDomainId, peerDomainId)))
+    .where(
+      and(eq(federationPeerKeys.orgId, orgId), eq(federationPeerKeys.peerDomainId, peerDomainId))
+    )
     .orderBy(desc(federationPeerKeys.effectiveFrom));
   for (const row of rows) {
     if (row.effectiveFrom <= at && (row.supersededAt === null || row.supersededAt > at)) {
@@ -175,16 +177,26 @@ export async function listPeers(tx: TenantTx, orgId: string): Promise<Federation
 
 /** Resolves a peer by its domain id OR its human name (CLI/route ergonomics — mirrors
  *  `graph/objects-repo.ts`'s idOrUrn convention). */
-export async function getPeerByIdOrName(tx: TenantTx, orgId: string, idOrName: string): Promise<FederationPeerRow> {
+export async function getPeerByIdOrName(
+  tx: TenantTx,
+  orgId: string,
+  idOrName: string
+): Promise<FederationPeerRow> {
   if (!idOrName) throw badRequest("peer identifier is required");
   const rows = await tx
     .select()
     .from(federationPeers)
     .where(
-      and(eq(federationPeers.orgId, orgId), or(eq(federationPeers.id, idOrName), eq(federationPeers.name, idOrName)))
+      and(
+        eq(federationPeers.orgId, orgId),
+        or(eq(federationPeers.id, idOrName), eq(federationPeers.name, idOrName))
+      )
     )
     .limit(1);
-  if (!rows[0]) throw notFound(`federation peer '${idOrName}' not found — pair it first with 'scp federation pair'`);
+  if (!rows[0])
+    throw notFound(
+      `federation peer '${idOrName}' not found — pair it first with 'scp federation pair'`
+    );
   const key = await currentPeerPublicKey(tx, orgId, rows[0].id);
   return toPeerRow(rows[0], key ?? "");
 }

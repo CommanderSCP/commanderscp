@@ -144,7 +144,10 @@ export async function transitionChange(
     reasonTree:
       gate.verdict === "allow"
         ? { summary: `transition '${fromState}' -> '${toState}' allowed`, gate: gate.reasonTree }
-        : { summary: `transition '${fromState}' -> '${toState}' blocked by gate`, gate: gate.reasonTree }
+        : {
+            summary: `transition '${fromState}' -> '${toState}' blocked by gate`,
+            gate: gate.reasonTree
+          }
   });
 
   // DESIGN §10.3: a freeze override is ALWAYS a high-severity, mandatory-reason audit event —
@@ -190,9 +193,7 @@ export async function transitionChange(
       lastHeartbeatAt: now,
       watchdogFlaggedAt: null,
       updatedAt: now,
-      ...(toState === "rolled_back" && input.reason
-        ? { rollbackTriggerReason: input.reason }
-        : {})
+      ...(toState === "rolled_back" && input.reason ? { rollbackTriggerReason: input.reason } : {})
     })
     .where(eq(changes.objectId, existing.objectId))
     .returning();

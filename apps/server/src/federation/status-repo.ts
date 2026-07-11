@@ -13,7 +13,10 @@ import { listRecentTransfers } from "./bundle-transfers-repo.js";
  * as live — the CLI/UI layer is responsible for rendering `lastSyncedAt` with that framing rather
  * than this endpoint claiming a false real-time guarantee.
  */
-export async function getFederationStatus(tx: TenantTx, orgId: string): Promise<FederationStatusResponse> {
+export async function getFederationStatus(
+  tx: TenantTx,
+  orgId: string
+): Promise<FederationStatusResponse> {
   const selfRow = await ensureFederationSelf(tx, orgId);
   const key = await ensureInstanceKey(tx);
   const peers = await listPeers(tx, orgId);
@@ -35,7 +38,12 @@ export async function getFederationStatus(tx: TenantTx, orgId: string): Promise<
   );
 
   return {
-    self: { domainId: selfRow.domainId, name: selfRow.name, role: selfRow.role, publicKey: key.publicKey },
+    self: {
+      domainId: selfRow.domainId,
+      name: selfRow.name,
+      role: selfRow.role,
+      publicKey: key.publicKey
+    },
     peers: peerStatuses
   };
 }

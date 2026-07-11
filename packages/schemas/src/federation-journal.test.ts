@@ -179,7 +179,9 @@ describe("Ed25519 entry signature verification (isolated from chain walking)", (
   it("rejects a tampered signature", () => {
     const { publicKey, privateKey } = keyPair();
     const e1 = baseEntry(privateKey);
-    expect(verifyJournalEntrySignature({ ...e1, signature: "not-base64-!!" }, publicKey)).toBe(false);
+    expect(verifyJournalEntrySignature({ ...e1, signature: "not-base64-!!" }, publicKey)).toBe(
+      false
+    );
   });
 
   it("rejects a malformed public key rather than throwing", () => {

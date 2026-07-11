@@ -56,14 +56,37 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     url: "/api/v1/federation/init",
     schema: {
       body: InitFederationRequestSchema,
-      response: { 200: z.object({ domainId: z.string().uuid(), name: z.string(), role: FederationRoleSchema }), 401: ProblemSchema, 403: ProblemSchema }
+      response: {
+        200: z.object({
+          domainId: z.string().uuid(),
+          name: z.string(),
+          role: FederationRoleSchema
+        }),
+        401: ProblemSchema,
+        403: ProblemSchema
+      }
     },
-    config: { openapi: { operationId: "initFederation", summary: "Designate this domain's federation role (parent|child)", tags: ["federation"] } },
+    config: {
+      openapi: {
+        operationId: "initFederation",
+        summary: "Designate this domain's federation role (parent|child)",
+        tags: ["federation"]
+      }
+    },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const self = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "federation:write", scopeObjectId: auth.orgId });
-        return initFederationSelf(tx, { orgId: auth.orgId, name: request.body.name, role: request.body.role });
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:write",
+          scopeObjectId: auth.orgId
+        });
+        return initFederationSelf(tx, {
+          orgId: auth.orgId,
+          name: request.body.name,
+          role: request.body.role
+        });
       });
       reply.status(200).send(self);
     }
@@ -75,14 +98,30 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     schema: {
       response: { 200: FederationSelfSchema, 401: ProblemSchema, 403: ProblemSchema }
     },
-    config: { openapi: { operationId: "getFederationSelf", summary: "This domain's own federation identity + public key (for out-of-band pairing)", tags: ["federation"] } },
+    config: {
+      openapi: {
+        operationId: "getFederationSelf",
+        summary: "This domain's own federation identity + public key (for out-of-band pairing)",
+        tags: ["federation"]
+      }
+    },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "federation:read", scopeObjectId: auth.orgId });
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:read",
+          scopeObjectId: auth.orgId
+        });
         const self = await ensureFederationSelf(tx, auth.orgId);
         const key = await ensureInstanceKey(tx);
-        return { domainId: self.domainId, name: self.name, role: self.role, publicKey: key.publicKey };
+        return {
+          domainId: self.domainId,
+          name: self.name,
+          role: self.role,
+          publicKey: key.publicKey
+        };
       });
       reply.status(200).send(result);
     }
@@ -93,13 +132,29 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     url: "/api/v1/federation/peers",
     schema: {
       body: PairPeerRequestSchema,
-      response: { 201: FederationPeerSchema, 400: ProblemSchema, 401: ProblemSchema, 403: ProblemSchema }
+      response: {
+        201: FederationPeerSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema
+      }
     },
-    config: { openapi: { operationId: "pairPeer", summary: "Pair (or update) a federation peer domain — always initiated from this side", tags: ["federation"] } },
+    config: {
+      openapi: {
+        operationId: "pairPeer",
+        summary: "Pair (or update) a federation peer domain — always initiated from this side",
+        tags: ["federation"]
+      }
+    },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const peer = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "federation:write", scopeObjectId: auth.orgId });
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:write",
+          scopeObjectId: auth.orgId
+        });
         const self = await ensureFederationSelf(tx, auth.orgId);
         if (request.body.domainId === self.domainId) {
           throw badRequest("cannot pair this domain with itself");
@@ -113,12 +168,25 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
   typed.route({
     method: "GET",
     url: "/api/v1/federation/peers",
-    schema: { response: { 200: z.array(FederationPeerSchema), 401: ProblemSchema, 403: ProblemSchema } },
-    config: { openapi: { operationId: "listFederationPeers", summary: "List paired federation peers", tags: ["federation"] } },
+    schema: {
+      response: { 200: z.array(FederationPeerSchema), 401: ProblemSchema, 403: ProblemSchema }
+    },
+    config: {
+      openapi: {
+        operationId: "listFederationPeers",
+        summary: "List paired federation peers",
+        tags: ["federation"]
+      }
+    },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const peers = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "federation:read", scopeObjectId: auth.orgId });
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:read",
+          scopeObjectId: auth.orgId
+        });
         return listPeers(tx, auth.orgId);
       });
       reply.status(200).send(peers);
@@ -128,18 +196,26 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
   typed.route({
     method: "GET",
     url: "/api/v1/federation/status",
-    schema: { response: { 200: FederationStatusResponseSchema, 401: ProblemSchema, 403: ProblemSchema } },
+    schema: {
+      response: { 200: FederationStatusResponseSchema, 401: ProblemSchema, 403: ProblemSchema }
+    },
     config: {
       openapi: {
         operationId: "getFederationStatus",
-        summary: "Cross-domain status: every peer, this side's sync freshness, bundle-transfer history",
+        summary:
+          "Cross-domain status: every peer, this side's sync freshness, bundle-transfer history",
         tags: ["federation"]
       }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const status = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "federation:read", scopeObjectId: auth.orgId });
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:read",
+          scopeObjectId: auth.orgId
+        });
         return getFederationStatus(tx, auth.orgId);
       });
       reply.status(200).send(status);
@@ -151,13 +227,31 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     url: "/api/v1/federation/exports",
     schema: {
       body: ExportJournalRequestSchema,
-      response: { 200: SyncBundleSchema, 400: ProblemSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
+      response: {
+        200: SyncBundleSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
     },
-    config: { openapi: { operationId: "exportSyncBundle", summary: "Export a signed .scpbundle of journal entries since a cursor (scp federation export)", tags: ["federation"] } },
+    config: {
+      openapi: {
+        operationId: "exportSyncBundle",
+        summary:
+          "Export a signed .scpbundle of journal entries since a cursor (scp federation export)",
+        tags: ["federation"]
+      }
+    },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const bundle = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "federation:write", scopeObjectId: auth.orgId });
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:write",
+          scopeObjectId: auth.orgId
+        });
         return exportSyncBundle(tx, auth.orgId, request.body.peer, request.body.sinceSequence);
       });
       reply.status(200).send(bundle);
@@ -169,14 +263,35 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     url: "/api/v1/federation/exports/promotion",
     schema: {
       body: ExportPromotionRequestSchema,
-      response: { 200: PromotionBundleSchema, 400: ProblemSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
+      response: {
+        200: PromotionBundleSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
     },
-    config: { openapi: { operationId: "exportPromotionBundle", summary: "Export a Promotion Bundle for a Change (change + evidence + attestations)", tags: ["federation"] } },
+    config: {
+      openapi: {
+        operationId: "exportPromotionBundle",
+        summary: "Export a Promotion Bundle for a Change (change + evidence + attestations)",
+        tags: ["federation"]
+      }
+    },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const bundle = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "federation:write", scopeObjectId: auth.orgId });
-        return exportPromotionBundle(tx, { orgId: auth.orgId, peerIdOrName: request.body.peer, changeIdOrUrn: request.body.change });
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:write",
+          scopeObjectId: auth.orgId
+        });
+        return exportPromotionBundle(tx, {
+          orgId: auth.orgId,
+          peerIdOrName: request.body.peer,
+          changeIdOrUrn: request.body.change
+        });
       });
       reply.status(200).send(bundle);
     }
@@ -187,19 +302,32 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     url: "/api/v1/federation/imports",
     schema: {
       body: ImportBundleRequestSchema,
-      response: { 200: ImportResultSchema, 400: ProblemSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema, 409: ProblemSchema }
+      response: {
+        200: ImportResultSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema,
+        409: ProblemSchema
+      }
     },
     config: {
       openapi: {
         operationId: "importBundle",
-        summary: "Verify + apply a .scpbundle (sync or promotion) — fail-closed on any signature/chain check",
+        summary:
+          "Verify + apply a .scpbundle (sync or promotion) — fail-closed on any signature/chain check",
         tags: ["federation"]
       }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "federation:write", scopeObjectId: auth.orgId });
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:write",
+          scopeObjectId: auth.orgId
+        });
         if (isPromotionBundle(request.body)) {
           const imported = await importPromotionBundle(tx, auth.orgId, request.body);
           return { kind: "promotion" as const, ...imported };
@@ -223,13 +351,30 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         properties: z.record(z.string(), z.unknown()).optional(),
         labels: z.record(z.string(), z.unknown()).optional()
       }),
-      response: { 201: GraphObjectSchema, 400: ProblemSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
+      response: {
+        201: GraphObjectSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
     },
-    config: { openapi: { operationId: "createOverlay", summary: "Create a local overlay annotating a (possibly foreign-origin) base object", tags: ["federation"] } },
+    config: {
+      openapi: {
+        operationId: "createOverlay",
+        summary: "Create a local overlay annotating a (possibly foreign-origin) base object",
+        tags: ["federation"]
+      }
+    },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "object:write", scopeObjectId: auth.orgId });
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:write",
+          scopeObjectId: auth.orgId
+        });
         return createOverlay(tx, {
           orgId: auth.orgId,
           actorObjectId: auth.subjectObjectId,
@@ -252,17 +397,32 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     schema: {
       params: z.object({ idOrUrn: z.string().min(1) }),
       response: {
-        200: z.object({ base: GraphObjectSchema, overlays: z.array(GraphObjectSchema), merged: z.record(z.string(), z.unknown()) }),
+        200: z.object({
+          base: GraphObjectSchema,
+          overlays: z.array(GraphObjectSchema),
+          merged: z.record(z.string(), z.unknown())
+        }),
         401: ProblemSchema,
         403: ProblemSchema,
         404: ProblemSchema
       }
     },
-    config: { openapi: { operationId: "getMergedOverlayView", summary: "Read-time merge of a base object with its local overlays", tags: ["federation"] } },
+    config: {
+      openapi: {
+        operationId: "getMergedOverlayView",
+        summary: "Read-time merge of a base object with its local overlays",
+        tags: ["federation"]
+      }
+    },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "object:read", scopeObjectId: auth.orgId });
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:read",
+          scopeObjectId: auth.orgId
+        });
         return getMergedOverlayView(tx, auth.orgId, request.params.idOrUrn);
       });
       reply.status(200).send(result);
@@ -274,19 +434,31 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     url: "/api/v1/federation/hand-fill",
     schema: {
       body: HandFillRequestSchema,
-      response: { 201: GraphObjectSchema, 400: ProblemSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
+      response: {
+        201: GraphObjectSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
     },
     config: {
       openapi: {
         operationId: "handFillObject",
-        summary: "Manually enter a parent-origin object as an unverified shadow copy (air-gapped, no bundle transport)",
+        summary:
+          "Manually enter a parent-origin object as an unverified shadow copy (air-gapped, no bundle transport)",
         tags: ["federation"]
       }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const object = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "federation:write", scopeObjectId: auth.orgId });
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:write",
+          scopeObjectId: auth.orgId
+        });
         return handFillObject(tx, {
           orgId: auth.orgId,
           peerIdOrName: request.body.peer,

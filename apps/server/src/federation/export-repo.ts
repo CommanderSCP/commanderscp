@@ -25,7 +25,8 @@ export async function exportSyncBundle(
   const since = sinceSequence ?? 0;
   const entries = await listOwnJournalEntriesSince(tx, orgId, since);
   const tail = await ownJournalTail(tx, orgId);
-  const throughSequence = entries.length > 0 ? (entries[entries.length - 1]?.sequence ?? since) : since;
+  const throughSequence =
+    entries.length > 0 ? (entries[entries.length - 1]?.sequence ?? since) : since;
 
   const header = {
     formatVersion: 1 as const,

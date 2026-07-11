@@ -705,7 +705,11 @@ export const approvalVotes = pgTable(
     votedAt: timestamp("voted_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [
-    unique("approval_votes_no_double_vote").on(table.orgId, table.approvalRequestId, table.voterObjectId),
+    unique("approval_votes_no_double_vote").on(
+      table.orgId,
+      table.approvalRequestId,
+      table.voterObjectId
+    ),
     index("approval_votes_org_request").on(table.orgId, table.approvalRequestId)
   ]
 );
@@ -923,7 +927,11 @@ export const syncJournal = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [
-    unique("sync_journal_origin_sequence_key").on(table.orgId, table.originDomainId, table.sequence),
+    unique("sync_journal_origin_sequence_key").on(
+      table.orgId,
+      table.originDomainId,
+      table.sequence
+    ),
     index("sync_journal_org_origin_seq").on(table.orgId, table.originDomainId, table.sequence)
   ]
 );
@@ -948,7 +956,9 @@ export const syncCursors = pgTable(
     lastAppliedRowHash: text("last_applied_row_hash"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
-  (table) => [uniqueIndex("sync_cursors_pk").on(table.orgId, table.peerDomainId, table.originDomainId)]
+  (table) => [
+    uniqueIndex("sync_cursors_pk").on(table.orgId, table.peerDomainId, table.originDomainId)
+  ]
 );
 
 /** Bundle-transfer tracking (DESIGN §13: "export created -> transfer submitted -> confirmed when
@@ -969,7 +979,9 @@ export const bundleTransfers = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     confirmedAt: timestamp("confirmed_at", { withTimezone: true })
   },
-  (table) => [index("bundle_transfers_org_peer").on(table.orgId, table.peerDomainId, table.createdAt)]
+  (table) => [
+    index("bundle_transfers_org_peer").on(table.orgId, table.peerDomainId, table.createdAt)
+  ]
 );
 
 /** Imported-approval EVIDENCE (DESIGN §13: "approvals transfer as evidence, never as authority").

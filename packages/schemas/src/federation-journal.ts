@@ -47,7 +47,9 @@ export function canonicalizeJournalEntry(
 
 /** `row_hash = sha256(prev_hash || canonical(entry))`, hex-encoded — identical shape to
  *  `audit-chain.ts`'s `computeRowHash`. */
-export function computeJournalRowHash(entry: Omit<SyncJournalEntry, "rowHash" | "signature" | "createdAt">): string {
+export function computeJournalRowHash(
+  entry: Omit<SyncJournalEntry, "rowHash" | "signature" | "createdAt">
+): string {
   const hash = createHash("sha256");
   hash.update(entry.prevHash);
   hash.update(canonicalizeJournalEntry(entry));
@@ -55,10 +57,18 @@ export function computeJournalRowHash(entry: Omit<SyncJournalEntry, "rowHash" | 
 }
 
 function derPublicKeyToKeyObject(publicKeyB64: string) {
-  return { key: Buffer.from(publicKeyB64, "base64"), format: "der" as const, type: "spki" as const };
+  return {
+    key: Buffer.from(publicKeyB64, "base64"),
+    format: "der" as const,
+    type: "spki" as const
+  };
 }
 function derPrivateKeyToKeyObject(privateKeyB64: string) {
-  return { key: Buffer.from(privateKeyB64, "base64"), format: "der" as const, type: "pkcs8" as const };
+  return {
+    key: Buffer.from(privateKeyB64, "base64"),
+    format: "der" as const,
+    type: "pkcs8" as const
+  };
 }
 
 /** Signs a journal row's `rowHash` with the origin domain's Ed25519 private key (PKCS8 DER,
@@ -67,13 +77,20 @@ function derPrivateKeyToKeyObject(privateKeyB64: string) {
  *  content field, so a signature over it transitively authenticates the whole chain up to and
  *  including this entry. */
 export function signJournalRowHash(privateKeyB64: string, rowHash: string): string {
-  const signature = cryptoSign(null, Buffer.from(rowHash, "utf8"), derPrivateKeyToKeyObject(privateKeyB64));
+  const signature = cryptoSign(
+    null,
+    Buffer.from(rowHash, "utf8"),
+    derPrivateKeyToKeyObject(privateKeyB64)
+  );
   return signature.toString("base64");
 }
 
 /** Verifies one entry's signature against a given public key (SPKI DER, base64). Never throws —
  *  any malformed key/signature input is treated as a verification failure. */
-export function verifyJournalEntrySignature(entry: SyncJournalEntry, publicKeyB64: string): boolean {
+export function verifyJournalEntrySignature(
+  entry: SyncJournalEntry,
+  publicKeyB64: string
+): boolean {
   try {
     return cryptoVerify(
       null,
@@ -165,14 +182,22 @@ export function verifyJournalChain(
       return {
         valid: false,
         entryCount: entries.length,
-        brokenAt: { id: entry.id, sequence: entry.sequence, reason: "no public key available to verify signature" }
+        brokenAt: {
+          id: entry.id,
+          sequence: entry.sequence,
+          reason: "no public key available to verify signature"
+        }
       };
     }
     if (!verifyJournalEntrySignature(entry, publicKey)) {
       return {
         valid: false,
         entryCount: entries.length,
-        brokenAt: { id: entry.id, sequence: entry.sequence, reason: "signature verification failed" }
+        brokenAt: {
+          id: entry.id,
+          sequence: entry.sequence,
+          reason: "signature verification failed"
+        }
       };
     }
     expectedPrevHash = entry.rowHash;
@@ -211,13 +236,19 @@ export function computeBundleChecksum(payload: unknown): string {
 }
 
 export function signBundleChecksum(privateKeyB64: string, checksum: string): string {
-  return cryptoSign(null, Buffer.from(checksum, "utf8"), derPrivateKeyToKeyObject(privateKeyB64)).toString(
-    "base64"
-  );
+  return cryptoSign(
+    null,
+    Buffer.from(checksum, "utf8"),
+    derPrivateKeyToKeyObject(privateKeyB64)
+  ).toString("base64");
 }
 
 /** Fail-closed: any malformed key/signature input verifies as `false`, never throws. */
-export function verifyBundleSignature(checksum: string, signatureB64: string, publicKeyB64: string): boolean {
+export function verifyBundleSignature(
+  checksum: string,
+  signatureB64: string,
+  publicKeyB64: string
+): boolean {
   try {
     return cryptoVerify(
       null,

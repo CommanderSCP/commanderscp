@@ -215,7 +215,19 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
       orgId: input.orgId,
       entryKind: journalEntryKindFor(input.typeId, false),
       contentHash,
-      payload: { id, orgId: input.orgId, domainId, typeId: input.typeId, name: input.name, urn, properties, labels, originDomainId, revision, version }
+      payload: {
+        id,
+        orgId: input.orgId,
+        domainId,
+        typeId: input.typeId,
+        name: input.name,
+        urn,
+        properties,
+        labels,
+        originDomainId,
+        revision,
+        version
+      }
     });
   }
   await eventBus.publish(tx, {
@@ -414,7 +426,9 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
   const nextDomainId = input.domainId === undefined ? existing.domainId : input.domainId;
   const nextVersion = existing.version + 1;
   const nextRevision = input.federationImport?.revision ?? existing.revision + 1;
-  const nextProvenance = input.federationImport ? (input.federationImport.provenance ?? null) : existing.provenance;
+  const nextProvenance = input.federationImport
+    ? (input.federationImport.provenance ?? null)
+    : existing.provenance;
   const beforeHash = existing.contentHash;
   const afterHash = computeObjectContentHash({
     id: existing.id,
@@ -575,7 +589,8 @@ export async function upsertObjectByUrn(
   // byte-identical signed bundle would leave the object permanently stuck flagged "unverified"
   // even though it was JUST verified (DESIGN §13 hand-fill reconciliation).
   const provenanceWouldChange =
-    input.federationImport !== undefined && (input.federationImport.provenance ?? null) !== existing.provenance;
+    input.federationImport !== undefined &&
+    (input.federationImport.provenance ?? null) !== existing.provenance;
   if (
     !provenanceWouldChange &&
     existing.name === input.name &&
@@ -634,7 +649,12 @@ export async function deleteObject(
   const nextRevision = input.federationImport?.revision ?? existing.revision + 1;
   await tx
     .update(objects)
-    .set({ deletedAt: new Date(), version: existing.version + 1, revision: nextRevision, updatedAt: new Date() })
+    .set({
+      deletedAt: new Date(),
+      version: existing.version + 1,
+      revision: nextRevision,
+      updatedAt: new Date()
+    })
     .where(eq(objects.id, existing.id));
 
   await appendAuditEvent(tx, {

@@ -1,7 +1,11 @@
 import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { JournalEntryKind, SyncJournalEntry } from "@scp/schemas";
-import { JOURNAL_GENESIS_HASH, computeJournalRowHash, signJournalRowHash } from "@scp/schemas/federation-journal";
+import {
+  JOURNAL_GENESIS_HASH,
+  computeJournalRowHash,
+  signJournalRowHash
+} from "@scp/schemas/federation-journal";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { syncJournal } from "../db/schema.js";
 import { ensureFederationSelf } from "./self-repo.js";
@@ -32,7 +36,12 @@ import { ensureInstanceKey } from "../governance/attestation.js";
 
 export async function appendJournalEntry(
   tx: TenantTx,
-  input: { orgId: string; entryKind: JournalEntryKind; payload: Record<string, unknown>; contentHash: string }
+  input: {
+    orgId: string;
+    entryKind: JournalEntryKind;
+    payload: Record<string, unknown>;
+    contentHash: string;
+  }
 ): Promise<SyncJournalEntry> {
   const self = await ensureFederationSelf(tx, input.orgId);
   const key = await ensureInstanceKey(tx);
@@ -40,7 +49,9 @@ export async function appendJournalEntry(
   // Serializes journal appends per (org, origin domain) — held until COMMIT/ROLLBACK, same
   // discipline as audit-repo.ts's `pg_advisory_xact_lock`, so concurrent writers can never observe
   // a stale tail and fork the chain.
-  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${input.orgId + ":" + self.domainId}))`);
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${input.orgId + ":" + self.domainId}))`
+  );
 
   const tail = await tx
     .select({ rowHash: syncJournal.rowHash, sequence: syncJournal.sequence })

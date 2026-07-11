@@ -1,5 +1,13 @@
-import type { ImportPromotionResponse, PromotionBundle, PromotionApprovalEvidence } from "@scp/schemas";
-import { computeBundleChecksum, signBundleChecksum, verifyBundleSignature } from "@scp/schemas/federation-journal";
+import type {
+  ImportPromotionResponse,
+  PromotionBundle,
+  PromotionApprovalEvidence
+} from "@scp/schemas";
+import {
+  computeBundleChecksum,
+  signBundleChecksum,
+  verifyBundleSignature
+} from "@scp/schemas/federation-journal";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { badRequest, conflict } from "../errors.js";
 import { ensureFederationSelf } from "./self-repo.js";
@@ -9,7 +17,10 @@ import { ensureInstanceKey, verifyAttestation } from "../governance/attestation.
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { getChange, proposeChange } from "../coordination/changes-repo.js";
 import { listControlRunsForChange } from "../governance/controls-repo.js";
-import { listApprovalRequestsForChange, listVotesForRequest } from "../governance/approvals-repo.js";
+import {
+  listApprovalRequestsForChange,
+  listVotesForRequest
+} from "../governance/approvals-repo.js";
 import { importedApprovalEvidence } from "../db/schema.js";
 import { v7 as uuidv7 } from "uuid";
 import { FEDERATION_IMPORT_ACTOR_ID } from "./import-repo.js";
@@ -39,7 +50,10 @@ export interface ExportPromotionInput {
   changeIdOrUrn: string;
 }
 
-export async function exportPromotionBundle(tx: TenantTx, input: ExportPromotionInput): Promise<PromotionBundle> {
+export async function exportPromotionBundle(
+  tx: TenantTx,
+  input: ExportPromotionInput
+): Promise<PromotionBundle> {
   const self = await ensureFederationSelf(tx, input.orgId);
   const peer = await getPeerByIdOrName(tx, input.orgId, input.peerIdOrName);
   const change = await getChange(tx, input.orgId, input.changeIdOrUrn);
@@ -66,8 +80,15 @@ export async function exportPromotionBundle(tx: TenantTx, input: ExportPromotion
   }
 
   const sourceRef = change.sourceRef ?? {};
-  const artifactDigest = (sourceRef as Record<string, unknown>).artifact_digest ?? (sourceRef as Record<string, unknown>).artifactDigest;
-  const artifactDigests = typeof artifactDigest === "string" ? [artifactDigest] : Array.isArray(artifactDigest) ? artifactDigest.filter((d): d is string => typeof d === "string") : [];
+  const artifactDigest =
+    (sourceRef as Record<string, unknown>).artifact_digest ??
+    (sourceRef as Record<string, unknown>).artifactDigest;
+  const artifactDigests =
+    typeof artifactDigest === "string"
+      ? [artifactDigest]
+      : Array.isArray(artifactDigest)
+        ? artifactDigest.filter((d): d is string => typeof d === "string")
+        : [];
 
   const header = {
     formatVersion: 1 as const,
@@ -98,7 +119,15 @@ export async function exportPromotionBundle(tx: TenantTx, input: ExportPromotion
     checksum
   });
 
-  return { header, change: changePayload, controlOutcomes, approvals, artifactDigests, checksum, bundleSignature };
+  return {
+    header,
+    change: changePayload,
+    controlOutcomes,
+    approvals,
+    artifactDigests,
+    checksum,
+    bundleSignature
+  };
 }
 
 export async function importPromotionBundle(
@@ -124,8 +153,16 @@ export async function importPromotionBundle(
   if (computeBundleChecksum(checksumPayload) !== bundle.checksum) {
     throw conflict("promotion bundle checksum mismatch (rejected, fail-closed)");
   }
-  const exportTimeKey = await peerPublicKeyAt(tx, orgId, peer.id, new Date(bundle.header.exportedAt));
-  if (!exportTimeKey || !verifyBundleSignature(bundle.checksum, bundle.bundleSignature, exportTimeKey)) {
+  const exportTimeKey = await peerPublicKeyAt(
+    tx,
+    orgId,
+    peer.id,
+    new Date(bundle.header.exportedAt)
+  );
+  if (
+    !exportTimeKey ||
+    !verifyBundleSignature(bundle.checksum, bundle.bundleSignature, exportTimeKey)
+  ) {
     throw conflict("promotion bundle signature verification failed (rejected, fail-closed)");
   }
 
@@ -134,7 +171,9 @@ export async function importPromotionBundle(
   //    sync bundle preserves ids verbatim across domains — graph/objects-repo.ts's
   //    FederationImportContext never regenerates an incoming id).
   const rawTargets = (bundle.change.properties as Record<string, unknown>).targets;
-  const targets = Array.isArray(rawTargets) ? rawTargets.filter((t): t is string => typeof t === "string") : [];
+  const targets = Array.isArray(rawTargets)
+    ? rawTargets.filter((t): t is string => typeof t === "string")
+    : [];
   if (targets.length === 0) {
     throw badRequest(
       "promotion bundle's change has no resolvable local targets — sync the graph from this peer first"
@@ -164,7 +203,12 @@ export async function importPromotionBundle(
   let accepted = 0;
   let rejected = 0;
   for (const evidence of bundle.approvals) {
-    const registeredKey = await peerPublicKeyAt(tx, orgId, peer.id, new Date(evidence.record.timestamp));
+    const registeredKey = await peerPublicKeyAt(
+      tx,
+      orgId,
+      peer.id,
+      new Date(evidence.record.timestamp)
+    );
     const selfConsistent = verifyAttestation(evidence);
     const signedByRegisteredKey = registeredKey !== null && registeredKey === evidence.publicKey;
     const bindsThisChange = evidence.record.approvedObjectUrn === bundle.change.urn;

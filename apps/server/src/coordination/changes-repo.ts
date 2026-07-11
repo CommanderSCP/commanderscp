@@ -243,7 +243,11 @@ export async function listChangeRowsInStates(
     .from(changes)
     .innerJoin(objects, eq(changes.objectId, objects.id))
     .where(
-      and(eq(changes.orgId, orgId), inArray(changes.state, states), isNull(changes.reconcileBlockedAt))
+      and(
+        eq(changes.orgId, orgId),
+        inArray(changes.state, states),
+        isNull(changes.reconcileBlockedAt)
+      )
     )
     .orderBy(asc(changes.updatedAt))
     .limit(limit);
@@ -270,7 +274,9 @@ export async function markChangeReconcileBlocked(
 }
 
 /** Reads the target object ids `proposeChange` stashed under `properties.targets` at creation time. */
-export function targetObjectIdsOf(properties: Record<string, unknown> | null | undefined): string[] {
+export function targetObjectIdsOf(
+  properties: Record<string, unknown> | null | undefined
+): string[] {
   const targets = properties?.targets;
   return Array.isArray(targets) ? targets.filter((t): t is string => typeof t === "string") : [];
 }
@@ -309,6 +315,8 @@ export async function listChanges(
   return {
     items: page.map((r) => toChangeShape(r.change, r.object)),
     nextCursor:
-      hasMore && last ? encodeCursor({ createdAt: last.change.createdAt, id: last.change.objectId }) : null
+      hasMore && last
+        ? encodeCursor({ createdAt: last.change.createdAt, id: last.change.objectId })
+        : null
   };
 }

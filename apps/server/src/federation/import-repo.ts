@@ -210,10 +210,20 @@ export async function importSyncBundle(
   // 1. Bundle-level checksum + signature — fail closed.
   const recomputedChecksum = computeBundleChecksum(bundle.entries);
   if (recomputedChecksum !== bundle.checksum) {
-    throw conflict("bundle checksum mismatch — payload does not match the signed checksum (rejected, fail-closed)");
+    throw conflict(
+      "bundle checksum mismatch — payload does not match the signed checksum (rejected, fail-closed)"
+    );
   }
-  const exportTimeKey = await peerPublicKeyAt(tx, orgId, peer.id, new Date(bundle.header.exportedAt));
-  if (!exportTimeKey || !verifyBundleSignature(bundle.checksum, bundle.bundleSignature, exportTimeKey)) {
+  const exportTimeKey = await peerPublicKeyAt(
+    tx,
+    orgId,
+    peer.id,
+    new Date(bundle.header.exportedAt)
+  );
+  if (
+    !exportTimeKey ||
+    !verifyBundleSignature(bundle.checksum, bundle.bundleSignature, exportTimeKey)
+  ) {
     throw conflict("bundle signature verification failed (rejected, fail-closed)");
   }
 
@@ -243,7 +253,14 @@ export async function importSyncBundle(
     }
     applied += 1;
     lastSequence = entry.sequence;
-    await advanceCursor(tx, orgId, peer.id, bundle.header.exporterDomainId, entry.sequence, entry.rowHash);
+    await advanceCursor(
+      tx,
+      orgId,
+      peer.id,
+      bundle.header.exporterDomainId,
+      entry.sequence,
+      entry.rowHash
+    );
   }
 
   const skipped = bundle.entries.length - toApply.length;
@@ -259,5 +276,10 @@ export async function importSyncBundle(
     checksum: bundle.checksum
   });
 
-  return { peerDomainId: peer.id, appliedEntries: applied, skippedEntries: skipped, lastAppliedSequence: lastSequence };
+  return {
+    peerDomainId: peer.id,
+    appliedEntries: applied,
+    skippedEntries: skipped,
+    lastAppliedSequence: lastSequence
+  };
 }

@@ -117,7 +117,11 @@ export async function materializeApprovalRequest(
   }
 }
 
-export async function getApprovalRequest(tx: TenantTx, orgId: string, id: string): Promise<ApprovalRequestRow> {
+export async function getApprovalRequest(
+  tx: TenantTx,
+  orgId: string,
+  id: string
+): Promise<ApprovalRequestRow> {
   const rows = await tx
     .select()
     .from(approvalRequests)
@@ -135,7 +139,9 @@ export async function listApprovalRequestsForChange(
   const rows = await tx
     .select()
     .from(approvalRequests)
-    .where(and(eq(approvalRequests.orgId, orgId), eq(approvalRequests.changeObjectId, changeObjectId)));
+    .where(
+      and(eq(approvalRequests.orgId, orgId), eq(approvalRequests.changeObjectId, changeObjectId))
+    );
   return rows as ApprovalRequestRow[];
 }
 
@@ -148,11 +154,17 @@ export interface ApprovalVoteRow {
   votedAt: Date;
 }
 
-export async function listVotesForRequest(tx: TenantTx, orgId: string, approvalRequestId: string): Promise<ApprovalVoteRow[]> {
+export async function listVotesForRequest(
+  tx: TenantTx,
+  orgId: string,
+  approvalRequestId: string
+): Promise<ApprovalVoteRow[]> {
   const rows = await tx
     .select()
     .from(approvalVotes)
-    .where(and(eq(approvalVotes.orgId, orgId), eq(approvalVotes.approvalRequestId, approvalRequestId)));
+    .where(
+      and(eq(approvalVotes.orgId, orgId), eq(approvalVotes.approvalRequestId, approvalRequestId))
+    );
   return rows as unknown as ApprovalVoteRow[];
 }
 
@@ -162,9 +174,17 @@ export interface QuorumStatus {
   required: number;
 }
 
-export async function quorumStatus(tx: TenantTx, orgId: string, request: ApprovalRequestRow): Promise<QuorumStatus> {
+export async function quorumStatus(
+  tx: TenantTx,
+  orgId: string,
+  request: ApprovalRequestRow
+): Promise<QuorumStatus> {
   const votes = await listVotesForRequest(tx, orgId, request.id);
-  return { satisfied: votes.length >= request.requiredCount, count: votes.length, required: request.requiredCount };
+  return {
+    satisfied: votes.length >= request.requiredCount,
+    count: votes.length,
+    required: request.requiredCount
+  };
 }
 
 export interface CastApprovalVoteInput {
@@ -186,7 +206,10 @@ export interface CastApprovalVoteInput {
  * several approval requests on the SAME change — `approves` is a coarser, per-change signal; the
  * `approval_votes` row is the fine-grained source of truth quorum counting actually uses).
  */
-export async function castApprovalVote(tx: TenantTx, input: CastApprovalVoteInput): Promise<ApprovalVoteRow> {
+export async function castApprovalVote(
+  tx: TenantTx,
+  input: CastApprovalVoteInput
+): Promise<ApprovalVoteRow> {
   const request = await getApprovalRequest(tx, input.orgId, input.approvalRequestId);
 
   const eligible = await hasRoleAtScope(tx, {
@@ -238,7 +261,9 @@ export async function castApprovalVote(tx: TenantTx, input: CastApprovalVoteInpu
     row = inserted as unknown as ApprovalVoteRow;
   } catch (err) {
     if (isUniqueViolation(err, "approval_votes_no_double_vote")) {
-      throw conflict(`subject '${input.voterObjectId}' has already voted on approval request '${request.id}'`);
+      throw conflict(
+        `subject '${input.voterObjectId}' has already voted on approval request '${request.id}'`
+      );
     }
     throw err;
   }
@@ -311,7 +336,11 @@ export async function castApprovalVote(tx: TenantTx, input: CastApprovalVoteInpu
   if (status.satisfied && request.status !== "satisfied") {
     await tx
       .update(approvalRequests)
-      .set({ status: "satisfied", satisfiedAt: new Date(), satisfiedDecisionId: input.decisionId ?? null })
+      .set({
+        status: "satisfied",
+        satisfiedAt: new Date(),
+        satisfiedDecisionId: input.decisionId ?? null
+      })
       .where(eq(approvalRequests.id, request.id));
   }
 

@@ -24,7 +24,10 @@ export async function getCursor(
   originDomainId: string
 ): Promise<SyncCursor> {
   const rows = await tx
-    .select({ lastAppliedSeq: syncCursors.lastAppliedSeq, lastAppliedRowHash: syncCursors.lastAppliedRowHash })
+    .select({
+      lastAppliedSeq: syncCursors.lastAppliedSeq,
+      lastAppliedRowHash: syncCursors.lastAppliedRowHash
+    })
     .from(syncCursors)
     .where(
       and(
@@ -77,6 +80,12 @@ export async function advanceCursor(
   } else {
     await tx
       .insert(syncCursors)
-      .values({ orgId, peerDomainId, originDomainId, lastAppliedSeq: sequence, lastAppliedRowHash: rowHash });
+      .values({
+        orgId,
+        peerDomainId,
+        originDomainId,
+        lastAppliedSeq: sequence,
+        lastAppliedRowHash: rowHash
+      });
   }
 }

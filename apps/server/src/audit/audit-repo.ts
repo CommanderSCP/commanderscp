@@ -91,7 +91,15 @@ export async function appendAuditEvent(tx: TenantTx, input: AppendAuditEventInpu
     orgId: input.orgId,
     entryKind: "audit_segment",
     contentHash: rowHash,
-    payload: { auditEventId: id, action: input.action, subjectId, actorId: input.actorId, occurredAt: occurredAt.toISOString(), reason, decisionId }
+    payload: {
+      auditEventId: id,
+      action: input.action,
+      subjectId,
+      actorId: input.actorId,
+      occurredAt: occurredAt.toISOString(),
+      reason,
+      decisionId
+    }
   });
 }
 

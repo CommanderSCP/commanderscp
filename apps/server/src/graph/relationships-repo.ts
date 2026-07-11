@@ -138,7 +138,8 @@ export async function createRelationship(
   });
 
   const originDomainId =
-    input.federationImport?.originDomainId ?? (await ensureFederationSelf(tx, input.orgId)).domainId;
+    input.federationImport?.originDomainId ??
+    (await ensureFederationSelf(tx, input.orgId)).domainId;
   const revision = input.federationImport?.revision ?? 1;
 
   let row: typeof relationships.$inferSelect | undefined;
@@ -166,7 +167,12 @@ export async function createRelationship(
       if (input.federationImport) {
         const existing = await tx.query.relationships.findFirst({
           where: (t, { eq: eqOp, and: andOp }) =>
-            andOp(eqOp(t.orgId, input.orgId), eqOp(t.typeId, input.typeId), eqOp(t.fromId, input.fromId), eqOp(t.toId, input.toId))
+            andOp(
+              eqOp(t.orgId, input.orgId),
+              eqOp(t.typeId, input.typeId),
+              eqOp(t.fromId, input.fromId),
+              eqOp(t.toId, input.toId)
+            )
         });
         if (existing && existing.originDomainId === input.federationImport.originDomainId) {
           return toRelationship(existing);
@@ -200,7 +206,17 @@ export async function createRelationship(
       orgId: input.orgId,
       entryKind: "relationship_upsert",
       contentHash,
-      payload: { id, orgId: input.orgId, typeId: input.typeId, fromId: input.fromId, toId: input.toId, properties, labels, originDomainId, revision }
+      payload: {
+        id,
+        orgId: input.orgId,
+        typeId: input.typeId,
+        fromId: input.fromId,
+        toId: input.toId,
+        properties,
+        labels,
+        originDomainId,
+        revision
+      }
     });
   }
   await eventBus.publish(tx, {
@@ -322,7 +338,12 @@ export async function deleteRelationship(
       orgId: input.orgId,
       entryKind: "relationship_tombstone",
       contentHash: existing.contentHash,
-      payload: { id: existing.id, typeId: existing.typeId, fromId: existing.fromId, toId: existing.toId }
+      payload: {
+        id: existing.id,
+        typeId: existing.typeId,
+        fromId: existing.fromId,
+        toId: existing.toId
+      }
     });
   }
   await eventBus.publish(tx, {
