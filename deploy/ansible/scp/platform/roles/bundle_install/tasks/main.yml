@@ -35,14 +35,17 @@
   register: scp_bundle_copy
 
 - name: Extract the bundle
-  # Re-extract only when the copied tarball actually changed (idempotent re-runs). The bundle's
-  # top-level directory name embeds the version (scp-bundle-<version>/), which this role doesn't
-  # know ahead of time, so idempotency is keyed on the copy step's change status rather than a
-  # `creates:` path.
-  ansible.builtin.unarchive:
-    src: "{{ scp_bundle_extract_dir }}/{{ scp_bundle_tarball | basename }}"
-    dest: "{{ scp_bundle_extract_dir }}"
-    remote_src: true
+  # Plain `tar -xzf` rather than ansible.builtin.unarchive: unarchive's auto-detection needs GNU
+  # tar (gtar) for .tar.gz and otherwise mis-falls-back to unzip (fails on macOS control nodes);
+  # `tar -xzf` works with both BSD and GNU tar. Re-extract only when the copied tarball actually
+  # changed (idempotent re-runs) — the bundle's top-level dir embeds the version
+  # (scp-bundle-<version>/), unknown ahead of time, so idempotency keys on the copy step's change
+  # status rather than a `creates:` path.
+  ansible.builtin.command:
+    cmd: "tar -xzf {{ (scp_bundle_extract_dir + '/' + (scp_bundle_tarball | basename)) | quote }}"
+    chdir: "{{ scp_bundle_extract_dir }}"
+  register: scp_bundle_extract
+  changed_when: scp_bundle_extract.rc == 0
   when: scp_bundle_copy is changed
 
 - name: Locate the extracted bundle root (contains install.sh)
