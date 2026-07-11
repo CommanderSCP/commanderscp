@@ -81,12 +81,17 @@ describe("graph query statement_timeout guardrail", () => {
 });
 
 /**
- * The end-to-end route-level proof: the REAL `/api/v1/graph/query/impact-of` endpoint, hit
- * against a small-but-combinatorially-explosive fan-in DAG, is cut off at the configured bound
- * and returns 408 — not a hang, not a 500, and not the eventual 200 an unbounded run would
- * produce.
+ * End-to-end, route-level confirmation that the M9.1 CTE fix (graph/named-queries.ts's
+ * `transitiveReverseClosure` — see its doc comment for the approach) actually resolved the
+ * pathological case this guardrail was originally built to merely survive: the exact
+ * fan-in^depth topology that used to run unbounded (this test used to assert a 408 here) now
+ * returns a normal 200, with the correct closure, comfortably inside a tight timeout — not just
+ * "doesn't hang", but "computes the right answer fast". The generic guardrail mechanism itself
+ * (statement_timeout translating to a clean 408 on a genuinely slow statement) is still covered
+ * above by the pg_sleep-based tests, and remains in place as belt-and-braces — see
+ * `query-timeout.ts`'s module doc.
  */
-describe("GET /api/v1/graph/query/impact-of — genuinely explosive fan-in is bounded (defensive graph guardrail)", () => {
+describe("GET /api/v1/graph/query/impact-of — high fan-in no longer blows up (M9.1 CTE fix)", () => {
   let server: TestServer;
   let pool: ReturnType<typeof createPool>;
 
@@ -94,14 +99,15 @@ describe("GET /api/v1/graph/query/impact-of — genuinely explosive fan-in is bo
     await server?.close();
   });
 
-  it("a fan-in^depth traversal that would otherwise run far longer than the bound returns 408", async () => {
+  it("a fan-in^depth topology that used to run unbounded now completes fast with the correct closure", async () => {
     const config = loadConfig({
       DATABASE_URL: testDatabaseUrl(),
       SCP_RUNTIME_DATABASE_URL: testRuntimeDatabaseUrl(),
       SCP_PGBOSS_DATABASE_URL: testPgBossDatabaseUrl(),
       SCP_COOKIE_SECRET: "test-cookie-secret-value",
-      // Deliberately tiny for this test — production default is 5000ms (config.ts).
-      SCP_GRAPH_QUERY_TIMEOUT_MS: "300"
+      // Still tight (production default is 5000ms, config.ts) — proves the fix rather than just
+      // widening the window enough to hide a regression.
+      SCP_GRAPH_QUERY_TIMEOUT_MS: "3000"
     });
     pool = createPool(config.runtimeDatabaseUrl);
     const db = createDb(pool);
@@ -118,15 +124,16 @@ describe("GET /api/v1/graph/query/impact-of — genuinely explosive fan-in is bo
 
     const org = await createTestOrg(server, "graph-timeout-guardrail");
 
-    // A small, cheap-to-insert, but COMBINATORIALLY EXPLOSIVE fan-in DAG (bulk INSERT, bypassing
-    // the API — same technique load-test/graph-scale.ts uses for scale, at a tiny fraction of its
-    // size): LAYERS layers of WIDTH nodes each, EVERY node in layer i depends_on EVERY node in
-    // layer i+1 (a complete bipartite join per layer). Walking `impact-of` BACKWARD from a single
-    // last-layer node explores WIDTH^(LAYERS-1) distinct PATHS (traverse.ts/named-queries.ts's
-    // shared "no intermediate node-dedup" root cause — see this suite's module doc) — with
-    // WIDTH=12, LAYERS=9 that's 12^8 ≈ 4.3*10^8 paths: genuinely unbounded on this machine's
-    // Postgres (far longer than the 300ms configured above), while costing only ~1,260 rows to
-    // set up.
+    // A small, cheap-to-insert, but (pre-M9.1) COMBINATORIALLY EXPLOSIVE fan-in DAG (bulk INSERT,
+    // bypassing the API — same technique load-test/graph-scale.ts uses for scale, at a tiny
+    // fraction of its size): LAYERS layers of WIDTH nodes each, EVERY node in layer i depends_on
+    // EVERY node in layer i+1 (a complete bipartite join per layer). Walking `impact-of` BACKWARD
+    // from a single last-layer node used to explore WIDTH^(LAYERS-1) distinct PATHS
+    // (named-queries.ts's old "no intermediate node-dedup" root cause — see this suite's module
+    // doc) — with WIDTH=12, LAYERS=9 that's 12^8 ≈ 4.3*10^8 paths, genuinely unbounded pre-fix,
+    // while costing only ~1,260 rows to set up. Post-M9.1, node-level dedup means this same
+    // topology costs only ~WIDTH*(LAYERS-1) closure rows (every node sits at exactly one distance
+    // from the target in this uniform layered DAG), hence the assertions below.
     const WIDTH = 12;
     const LAYERS = 9;
     const raw = await RawScpAppClient.connect();
@@ -191,19 +198,18 @@ describe("GET /api/v1/graph/query/impact-of — genuinely explosive fan-in is bo
     });
     const elapsedMs = performance.now() - start;
 
-    expect(res.statusCode).toBe(408);
-    expect(res.headers["content-type"]).toContain("application/problem+json");
-    const body = res.json() as { status: number; detail?: string };
-    expect(body.status).toBe(408);
-    expect(body.detail).toMatch(/statement_timeout/i);
-    // Cut off close to the configured 300ms bound — nowhere near the minutes an unbounded run of
-    // this topology would take (the M8 PR body's own measured pathological case: 7+ minutes on a
-    // less extreme fan-in). Generous upper bound to tolerate a loaded CI box without being
-    // vacuous (a bug that let the query run to completion would take vastly longer than this).
-    expect(elapsedMs).toBeLessThan(10_000);
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { objects: { id: string }[] };
+    // Every node in every earlier layer (0..LAYERS-2) is a genuine transitive dependent — complete
+    // bipartite between consecutive layers, and maxDepth=LAYERS-1 covers exactly that many hops.
+    expect(body.objects).toHaveLength(WIDTH * (LAYERS - 1));
+    expect(new Set(body.objects.map((o) => o.id)).size).toBe(WIDTH * (LAYERS - 1)); // no duplicates
+    // Comfortably fast — nowhere near the old 7+ minute pathological runtime, and well inside the
+    // tight 3s bound configured above (generous only for a loaded CI box, not to hide a
+    // regression: a reopened blowup would take vastly longer than this).
+    expect(elapsedMs).toBeLessThan(3_000);
 
-    // The connection pool survives a cancelled statement cleanly — a follow-up request on the
-    // SAME server succeeds normally (proves this guardrail fails the ONE query, not the process).
+    // A follow-up request on the SAME server still succeeds normally.
     const health = await server.app.inject({ method: "GET", url: "/healthz" });
     expect(health.statusCode).toBe(200);
   }, 30_000);

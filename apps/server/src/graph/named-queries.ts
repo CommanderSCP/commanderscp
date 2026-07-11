@@ -20,10 +20,21 @@ import { campaignsCoordinatedByInitiative } from "../coordination/initiative-rep
 import { getCampaignStatus } from "../coordination/campaign-repo.js";
 
 /**
- * Named graph queries (DESIGN.md §5): depth-limited recursive CTEs over indexed adjacency,
- * cycle-detected via a path array, depth ≤ 10. Every query here is org-scoped (the `relationships`/
- * `objects` RLS policies apply — these run inside the caller's `withTenantTx`, same as any other
- * read) and soft-delete-aware.
+ * Named graph queries (DESIGN.md §5): depth-limited recursive CTEs over indexed adjacency, depth
+ * ≤ 10. Every query here is org-scoped (the `relationships`/`objects` RLS policies apply — these
+ * run inside the caller's `withTenantTx`, same as any other read) and soft-delete-aware.
+ *
+ * Two cycle-detection/dedup strategies coexist here, deliberately:
+ *
+ *  - The five REACHABILITY queries (`impact-of`/`dependents-of`/`consumers-of`/`blast-radius`/
+ *    `domains-impacted` — all backed by {@link transitiveReverseClosure} below) only ever need
+ *    the SET of reachable nodes, never the route taken to reach them. These dedupe at the NODE
+ *    level between recursion steps (plain `UNION`, no `path` array — M9.1 fix, see that
+ *    function's doc for the full "why" and the correctness argument for why this is safe).
+ *  - `paths-between` (and `graph/traverse.ts`'s own generic walk, a separate capability) genuinely
+ *    need the actual sequence of hops, so they keep full path-array tracking and simple-path
+ *    (`NOT x = ANY(path)`) cycle detection — untouched by M9.1, and not safe to change the same
+ *    way (collapsing to node-level dedup there would silently drop legitimate alternate routes).
  */
 
 const DEFAULT_IMPACT_TYPES = ["depends_on", "consumes", "hosted_on"];
@@ -32,7 +43,55 @@ const DEFAULT_IMPACT_TYPES = ["depends_on", "consumes", "hosted_on"];
  * Transitive reverse closure: "what points at `startId` (directly or transitively) via any of
  * `relTypes`" — i.e. walk edges backward from `startId`. This is DESIGN.md §5's `impact-of`
  * example, generalized over the relationship-type set so `dependents-of`/`consumers-of`/
- * `impact-of` share one implementation.
+ * `impact-of`/`blast-radius`/`domains-impacted` all share this one implementation.
+ *
+ * M9.1 fix (previously: PR #15's `query-timeout.ts` guardrail, adversarial review of that PR): the
+ * old version tracked a full `path` array per row and only deduped with a final `SELECT DISTINCT`
+ * — on a high-fan-in ("shared component") topology the same node gets re-expanded once per
+ * DISTINCT PATH that reaches it, so intermediate row count grows roughly as
+ * (effective fan-in)^depth before that final DISTINCT ever collapses it (measured: 7+ minutes /
+ * disk exhaustion on an ~11-way fan-out — see `query-timeout.ts`'s module doc and
+ * `named-queries.integration.test.ts`'s perf-regression test for the concrete repro).
+ *
+ * Fix: dedupe at the NODE level between recursion steps instead — drop `path` entirely and use
+ * `UNION` (not `UNION ALL`), so Postgres's own recursive-CTE duplicate elimination does the work.
+ * This query never needs `depth`/distance in its OUTPUT (the final `SELECT DISTINCT o.*` never
+ * selects it — `depth` exists only to enforce the `maxDepth` hop-limit, i.e. it's a *control*
+ * column, not a *result* column), so a bare `(id)` row would be ideal; the one thing standing in
+ * the way is that `c.depth < maxDepth` still needs `depth` to enforce the hop limit, which makes
+ * the recursive term's dedup key technically `(id, depth)`, not `id` alone. That's fine here,
+ * deliberately, for two reasons:
+ *
+ *   1. It doesn't reopen the blowup: fan-in causes many DISTINCT PATHS to reconverge on the same
+ *      node AT THE SAME DEPTH (that's the actual shape of the pathological topology — a uniform
+ *      layered DAG puts every node at one deterministic distance from the start) — `(id, depth)`
+ *      collapses all of those immediately, every iteration. The only residual duplication is a
+ *      node genuinely reachable at several DIFFERENT depths, which — because `maxDepth` is
+ *      schema-capped at 10 (`packages/schemas/src/graph.ts`) — bounds any one node to at most 10
+ *      redundant occurrences: a constant, linear factor, nothing like the old exponential blowup.
+ *   2. It's necessary for correctness, not just incidental: `maxDepth` is a real, user-facing
+ *      truncation ("nodes within N hops"), not merely a runaway-query guard, so the recursion
+ *      genuinely cannot drop the depth cutoff without changing which nodes come back for a given
+ *      `maxDepth` input.
+ *
+ * `AND r.from_id != startId` in the recursive term replaces the path array's other job: the old
+ * `path` was always seeded with `startId` as its first element (`ARRAY[startId, r.from_id]`), so
+ * `NOT r.from_id = ANY(c.path)` implicitly ALSO forbade ever re-adding `startId` itself at any
+ * depth ≥ 2, unconditionally (a node can't be its own dependent via a cycle back through itself).
+ * That invariant is semantically load-bearing — dropping it would let `startId` reappear in its
+ * own closure whenever it sits on a cycle within `maxDepth` — so it's kept explicitly rather than
+ * as a side effect of path-tracking. (The *base* case — direct predecessors of `startId` — is
+ * intentionally left unfiltered, exactly matching the old base case: a literal self-loop edge on
+ * `startId` was, and still is, included at depth 1 either way.)
+ *
+ * For every node other than `startId`, dropping the "simple path" restriction (any node can now
+ * be revisited mid-walk, not just avoided-in-this-specific-path) does not change which nodes come
+ * back for a given `maxDepth`: if some walk of length ≤ maxDepth reaches node Y (Y ≠ startId) and
+ * that walk revisits an earlier node, splicing out the revisited segment yields a strictly
+ * SHORTER (still ≤ maxDepth) SIMPLE path to Y — so "reachable via a walk" and "reachable via a
+ * simple path" agree for every Y ≠ startId, at every depth bound. Combined with the previous
+ * paragraph's explicit `startId` exclusion, the returned node SET is identical to the prior
+ * (path-array) implementation for every input — only the internal dedup mechanism changed.
  */
 async function transitiveReverseClosure(
   tx: TenantTx,
@@ -44,17 +103,17 @@ async function transitiveReverseClosure(
   const typeFilter = sqlIn("r.type_id", relTypes);
   const result = await tx.execute<RawObjectRow>(sql`
     WITH RECURSIVE closure AS (
-      SELECT r.from_id AS id, 1 AS depth, ARRAY[${startId}::uuid, r.from_id] AS path
+      SELECT r.from_id AS id, 1 AS depth
       FROM relationships r
       WHERE r.to_id = ${startId}::uuid AND r.org_id = ${orgId}::uuid AND r.deleted_at IS NULL
         AND ${typeFilter}
-      UNION ALL
-      SELECT r.from_id, c.depth + 1, c.path || r.from_id
+      UNION
+      SELECT r.from_id, c.depth + 1
       FROM relationships r
       JOIN closure c ON r.to_id = c.id
       WHERE r.org_id = ${orgId}::uuid AND r.deleted_at IS NULL
         AND ${typeFilter}
-        AND NOT r.from_id = ANY(c.path)
+        AND r.from_id != ${startId}::uuid
         AND c.depth < ${maxDepth}
     )
     SELECT DISTINCT o.* FROM closure c
