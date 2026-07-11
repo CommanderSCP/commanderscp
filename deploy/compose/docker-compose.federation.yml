@@ -1,0 +1,96 @@
+# Two-domain federation E2E stack (BUILD_AND_TEST.md §4.4/§8 M6 — "the headline" test, DESIGN.md
+# §13): TWO fully isolated scpd+postgres pairs ("domain A" and "domain B"), each on its OWN
+# Docker network with no shared network at all — a container in domain A cannot reach ANY
+# container in domain B by address, and vice versa. This is the "no network path exists between
+# the stacks" requirement, enforced structurally (not by a firewall rule that could be
+# misconfigured): Docker only routes between containers that share a network, and these two
+# stacks share none.
+#
+# The host machine (where `scripts/e2e-m6.sh` runs) publishes each domain's API on a DIFFERENT
+# host port and can reach both — simulating the operator/CLI's own access, which is exactly how a
+# real `.scpbundle` file transfer across an air gap works: a human (or a script standing in for
+# one) carries the file between two networks neither side can dial into. `scripts/e2e-m6.sh`
+# never lets the two scpd containers talk to each other directly; every hand-off is a real file on
+# the host filesystem, `docker cp`'d in target-side and CLI-imported.
+#
+# `SCP_SEED_DEMO: "false"` on both — the federation E2E's own fixtures would otherwise collide
+# with (or be obscured by) the seed script's demo graph.
+#
+# Both `scp` services share the identical `image:` tag so Compose builds the "scp" image exactly
+# ONCE (not once per service — the default when two `build:` blocks share a context but no
+# `image:` name) and reuses it for both containers. Real deployments do the same: "one binary,
+# roles not products" (CLAUDE.md) — a parent and a child domain run the SAME published image.
+
+services:
+  domain-a-postgres:
+    image: postgres:16
+    networks: [domain-a]
+    environment:
+      POSTGRES_USER: scp
+      POSTGRES_PASSWORD: scp
+      POSTGRES_DB: scp
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scp -d scp"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - scp-domain-a-data:/var/lib/postgresql/data
+
+  domain-a-scp:
+    image: scp-federation-e2e:latest
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    networks: [domain-a]
+    environment:
+      SCP_ROLE: all
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      DATABASE_URL: postgres://scp:scp@domain-a-postgres:5432/scp
+      SCP_SEED_DEMO: "false"
+    ports:
+      - "8081:8080"
+    depends_on:
+      domain-a-postgres:
+        condition: service_healthy
+
+  domain-b-postgres:
+    image: postgres:16
+    networks: [domain-b]
+    environment:
+      POSTGRES_USER: scp
+      POSTGRES_PASSWORD: scp
+      POSTGRES_DB: scp
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scp -d scp"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - scp-domain-b-data:/var/lib/postgresql/data
+
+  domain-b-scp:
+    image: scp-federation-e2e:latest
+    networks: [domain-b]
+    environment:
+      SCP_ROLE: all
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      DATABASE_URL: postgres://scp:scp@domain-b-postgres:5432/scp
+      SCP_SEED_DEMO: "false"
+    ports:
+      - "8082:8080"
+    depends_on:
+      domain-b-postgres:
+        condition: service_healthy
+
+networks:
+  domain-a:
+    driver: bridge
+  domain-b:
+    driver: bridge
+
+volumes:
+  scp-domain-a-data:
+  scp-domain-b-data:

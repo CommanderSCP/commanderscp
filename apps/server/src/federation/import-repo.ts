@@ -47,10 +47,51 @@ import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 // backs it (audit_events.actor_id carries no FK constraint, by design — schema.ts). Distinct from
 // any real user/service-account id so `scp audit verify`/UI can recognize "this action came from
 // a federation import," not a masquerading human actor.
-export const FEDERATION_IMPORT_ACTOR_ID = "00000000-0000-0000-0000-00000000fed0";
+//
+// Must be a value `z.string().uuid()` actually accepts: Zod's UUID regex only special-cases the
+// literal nil UUID (all zeros — already claimed by coordination/system-actor.ts's SYSTEM_ACTOR_ID)
+// and the literal max UUID (all f's), rejecting any other non-RFC-4122 string including
+// "…-00000000fed0" (found live: it 500'd GET /api/v1/audit-events' response schema the moment a
+// federation-import-authored audit event existed). Use the max UUID as federation's sentinel.
+export const FEDERATION_IMPORT_ACTOR_ID = "ffffffff-ffff-ffff-ffff-ffffffffffff";
 
 function isNotFound(err: unknown): boolean {
   return err instanceof ProblemError && err.status === 404;
+}
+
+/**
+ * Resolves an imported object's LOCAL containment placement (`objects.domain_id`) — a genuinely
+ * separate concern from single-writer CONTENT authority (`originDomainId`), and one this
+ * milestone's own two-domain E2E surfaced the hard way: `authz/resolve.ts`'s RBAC containment
+ * walk assumes "every object's chain terminates at ITS OWN org's root" (that module's own doc
+ * comment). Preserving a foreign domain's `domainId` verbatim breaks that assumption the moment
+ * the referenced parent wasn't ALSO replicated (the common case — DESIGN §13 never requires
+ * syncing an origin domain's own root/containment objects) — the replica becomes a syntactically
+ * valid but UNREACHABLE-BY-RBAC row: no local role binding's containment walk can ever reach it,
+ * so every authorized read/write against it fails closed with 403, forever.
+ *
+ * The fix: `domainId` is LOCAL PLACEMENT, not authority — DESIGN §13's single-writer authority
+ * governs WHO may write a row, never WHERE it displays in a domain's own containment tree. So:
+ * if the payload's claimed parent id already exists in THIS org (e.g. a nested hierarchy that WAS
+ * fully replicated, parent-first, in this same import), preserve it — the nesting is genuinely
+ * meaningful locally too. Otherwise (the common case), the replica is placed under THIS domain's
+ * OWN org root instead (`undefined` — `graph/objects-repo.ts`'s existing default), which is
+ * reachable by every role binding an operator normally holds. An explicit `null` (the origin's
+ * own object WAS its org root) is preserved as `null` only when nothing else already exists at
+ * that exact id locally, avoiding a collision with this domain's OWN, unrelated root object.
+ */
+async function resolveImportDomainId(
+  tx: TenantTx,
+  orgId: string,
+  rawDomainId: unknown
+): Promise<string | null | undefined> {
+  if (rawDomainId === null) return undefined; // never re-parent a replica onto THIS domain's own root
+  if (typeof rawDomainId !== "string") return undefined;
+  const parent = await tx.query.objects.findFirst({
+    where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
+      andOp(eqOp(t.id, rawDomainId), eqOp(t.orgId, orgId), isNullOp(t.deletedAt))
+  });
+  return parent ? rawDomainId : undefined;
 }
 
 async function applyEntry(
@@ -77,18 +118,7 @@ async function applyEntry(
         urn,
         id: typeof payload.id === "string" ? payload.id : undefined,
         name: String(payload.name ?? urn),
-        // `?? undefined` would wrongly collapse an explicit `null` (the origin domain's own
-        // resolved "no parent" — graph/objects-repo.ts's `resolveDomainId`) into `undefined`
-        // (which instead means "default to MY OWN org root" — an entirely different object).
-        // Preserve `null` exactly; only a genuinely missing/non-string key falls back to
-        // `undefined`, matching what a payload from a pre-this-fix producer would have looked
-        // like (defensive backward compatibility, not the common case).
-        domainId:
-          payload.domainId === null
-            ? null
-            : typeof payload.domainId === "string"
-              ? payload.domainId
-              : undefined,
+        domainId: await resolveImportDomainId(tx, orgId, payload.domainId),
         properties: (payload.properties as Record<string, unknown>) ?? {},
         labels: (payload.labels as Record<string, unknown>) ?? {},
         federationImport: { originDomainId, revision, provenance: null }
