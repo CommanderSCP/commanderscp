@@ -569,7 +569,15 @@ export async function upsertObjectByUrn(
   const nextDomainId = input.domainId === undefined ? existing.domainId : input.domainId;
   const nextProperties = input.properties ?? {};
   const nextLabels = input.labels ?? {};
+  // M6: a hand-filled row (`provenance: 'manual'`) whose content happens to already match an
+  // arriving REAL import must still fall through to `updateObject` — never take the no-op fast
+  // path — so `provenance` actually clears and `revision` actually advances. Otherwise a
+  // byte-identical signed bundle would leave the object permanently stuck flagged "unverified"
+  // even though it was JUST verified (DESIGN §13 hand-fill reconciliation).
+  const provenanceWouldChange =
+    input.federationImport !== undefined && (input.federationImport.provenance ?? null) !== existing.provenance;
   if (
+    !provenanceWouldChange &&
     existing.name === input.name &&
     existing.domainId === nextDomainId &&
     canonicalJson(existing.properties) === canonicalJson(nextProperties) &&
