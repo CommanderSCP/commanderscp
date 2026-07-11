@@ -14,7 +14,9 @@
     "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests",
     "openapi:emit": "tsx src/openapi-emit.ts",
     "db:generate": "drizzle-kit generate",
-    "seed": "tsx src/seed.ts"
+    "seed": "tsx src/seed.ts",
+    "load-test:graph": "tsx src/load-test/graph-scale.ts",
+    "load-test:events": "tsx src/load-test/event-path.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.0",
