@@ -69,6 +69,20 @@ case "$ACTION" in
       echo "scp-runner-iac: rollback requires PRIOR_STATE_FILE (a state-history/*.tfstate path)" >&2
       exit 1
     fi
+    # Jail PRIOR_STATE_FILE to the workspace's own state-history/ dir (defence in depth — the
+    # managed-iac orchestrator plugin already validates this, this is the container-side backstop):
+    # must be a relative path under state-history/, no absolute paths, no `..` traversal.
+    case "$PRIOR_STATE_FILE" in
+      /*|*..*)
+        echo "scp-runner-iac: PRIOR_STATE_FILE '$PRIOR_STATE_FILE' must be a relative state-history/ path (no absolute paths, no '..')" >&2
+        exit 1
+        ;;
+      state-history/*) : ;;
+      *)
+        echo "scp-runner-iac: PRIOR_STATE_FILE '$PRIOR_STATE_FILE' must be under state-history/" >&2
+        exit 1
+        ;;
+    esac
     if [ ! -f "$PRIOR_STATE_FILE" ]; then
       echo "scp-runner-iac: PRIOR_STATE_FILE '$PRIOR_STATE_FILE' not found under /workspace" >&2
       exit 1

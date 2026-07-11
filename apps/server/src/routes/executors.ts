@@ -35,6 +35,7 @@ import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { badRequest, notFound } from "../errors.js";
+import { validateProperties } from "../graph/property-validation.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { createRelationship } from "../graph/relationships-repo.js";
 import {
@@ -57,6 +58,30 @@ import {
  *  as `executor-bindings-repo.ts`'s `KNOWN_EXECUTOR_MODULES` (a free-form request field must never
  *  reach `host.start()` unchecked). */
 const KNOWN_DISCOVERY_MODULES: PluginModule[] = ["github-discovery"];
+
+/** Every bundled plugin's manifest, keyed by the module name a binding references. Used to
+ *  validate a binding's tenant-supplied `config` against the plugin's declared `configSchema`
+ *  BEFORE it's ever stored/provisioned (adversarial-review CRITICAL #1 item 5) — in particular,
+ *  managed-iac's schema is `additionalProperties: false` with no runnerImage/networkMode/workspace,
+ *  so a tenant attempt to set those server-governed fields is rejected here with a 400. */
+const MANIFEST_BY_MODULE: Record<string, { configSchema: unknown }> = {
+  github: githubExecutorManifest,
+  "github-discovery": githubDiscoveryManifest,
+  argocd: argocdManifest,
+  terraform: terraformManifest,
+  "managed-iac": managedIacManifest,
+  "webhook-notify": webhookNotifyManifest,
+  "smtp-notify": smtpNotifyManifest
+};
+
+/** Throws `badRequest` if `config` doesn't satisfy `module`'s declared `configSchema`. An unknown
+ *  module has no schema to validate against — that's caught separately (the module allowlist in
+ *  `executor-bindings-repo.ts`/`notification-bindings-repo.ts`), so here we simply skip. */
+function validatePluginConfig(module: string, config: unknown): void {
+  const manifest = MANIFEST_BY_MODULE[module];
+  if (!manifest) return;
+  validateProperties(manifest.configSchema, config ?? {}, `plugin-config:${module}`);
+}
 
 /**
  * M7 plugin-configuration surface (BUILD_AND_TEST.md §8 M7 item 5: "plugin config schemas
@@ -217,6 +242,10 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
+      // Validate the tenant config against the plugin's declared schema BEFORE storing it —
+      // rejects e.g. a managed-iac binding that tries to set the server-governed runnerImage/
+      // networkMode/workspace fields (CRITICAL #1 item 5). Outside the tx: pure input validation.
+      validatePluginConfig(request.body.pluginModule, request.body.config);
       const binding = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const target = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.idOrUrn);
         await authorize(tx, {
@@ -299,6 +328,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
+      validatePluginConfig(request.body.pluginModule, request.body.config);
       const binding = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         await authorize(tx, {
           orgId: auth.orgId,
@@ -419,6 +449,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
       if (!(KNOWN_DISCOVERY_MODULES as string[]).includes(request.body.pluginModule)) {
         throw badRequest(`unknown discovery plugin module '${request.body.pluginModule}'`);
       }
+      validatePluginConfig(request.body.pluginModule, request.body.config);
       const proposal = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         await authorize(tx, {
           orgId: auth.orgId,

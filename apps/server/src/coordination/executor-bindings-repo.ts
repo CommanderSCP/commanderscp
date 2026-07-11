@@ -1,3 +1,5 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -131,14 +133,58 @@ export interface ResolvedExecutorInstance {
 }
 
 /**
+ * OPERATOR/SERVER-GOVERNED settings read straight from the scpd process env — NEVER from a tenant
+ * binding (adversarial-review CRITICAL #1: image/network/workspace for managed-iac must not be
+ * tenant-suppliable). Read here (server-side code, full process.env) rather than threaded through
+ * `config.ts` + the whole reconcile call chain, because these are pure deployment/operator knobs
+ * and the plugin subprocess never sees `process.env` (host.ts's `minimalChildEnv` strips it) — the
+ * ONLY channel to the plugin is the config this function injects them into.
+ *
+ *  - SCP_MANAGED_IAC_RUNNER_IMAGE  — the vetted, pinned `scp-runner-iac` image (unset ⇒ Mode 2 is
+ *    not enabled; a managed-iac binding then fails closed with a clear error rather than defaulting
+ *    to some tenant-influenceable value).
+ *  - SCP_MANAGED_IAC_NETWORK_MODE  — `docker --network` (default "none").
+ *  - SCP_MANAGED_IAC_WORKSPACE_ROOT — operator root the plugin derives per-(org,target) workspaces
+ *    under.
+ *  - SCP_PLUGIN_STATE_DIR — durable per-instance dedup-cache root (MAJOR #4): a stable on-disk
+ *    path (default under the OS temp dir; operators mount a persistent volume for cross-restart
+ *    durability) so an executor's idempotency cache survives a subprocess restart rather than
+ *    silently degrading to in-memory-only.
+ */
+function managedIacServerSettings(): {
+  runnerImage: string | undefined;
+  networkMode: string;
+  workspaceRoot: string;
+} {
+  return {
+    runnerImage: process.env.SCP_MANAGED_IAC_RUNNER_IMAGE,
+    networkMode: process.env.SCP_MANAGED_IAC_NETWORK_MODE ?? "none",
+    workspaceRoot: process.env.SCP_MANAGED_IAC_WORKSPACE_ROOT ?? join(tmpdir(), "scp-managed-iac")
+  };
+}
+
+function pluginStateDir(): string {
+  return process.env.SCP_PLUGIN_STATE_DIR ?? join(tmpdir(), "scp-plugin-state");
+}
+
+function sanitizeInstanceId(instanceId: string): string {
+  return instanceId.replace(/[^A-Za-z0-9._-]/g, "_");
+}
+
+/**
  * Resolves `targetObjectId`'s configured executor binding into a ready-to-provision
  * `PluginHostInstanceConfig` — secret refs decrypted via `secrets/secrets-repo.ts`'s
- * `resolveSecretRefs` (never left as opaque key names once they cross into what `host.start()`
- * injects into a subprocess env). Returns `undefined` when no binding is configured (the caller
- * falls back to the shared default fake-executor instance — `coordination/executor-config.ts`'s
- * M3 behavior, preserved unchanged for any org/target that hasn't configured a real executor yet)
- * OR when the binding's `pluginModule` isn't a known `ExecutorPlugin` module (fails closed, same
- * posture as `control-runner.ts`'s `ensureControlRun` for an unknown control module).
+ * `resolveSecretRefs`, plus two server-governed injections that MUST NOT come from the tenant:
+ *
+ *   1. A durable per-instance dedup `statePath` (MAJOR #4) — always set, so no executor's
+ *      idempotency cache ever silently degrades to in-memory-only across a subprocess restart.
+ *   2. For managed-iac, the vetted runnerImage/networkMode/workspaceRoot (CRITICAL #1) — spread
+ *      LAST so they win over anything in `binding.config` (the tenant config schema already
+ *      rejects those fields at create/update, but overriding here is defence in depth).
+ *
+ * Returns `undefined` when no binding is configured (caller falls back to the shared default
+ * fake-executor instance) OR the module isn't a known `ExecutorPlugin`. Throws (fails closed) if a
+ * managed-iac binding is used while Mode 2 isn't enabled (no runner image configured).
  */
 export async function resolveExecutorPluginInstance(
   tx: TenantTx,
@@ -159,13 +205,31 @@ export async function resolveExecutorPluginInstance(
     input.masterKey
   );
 
+  const tenantConfig = (binding.config ?? {}) as Record<string, unknown>;
+  const serverInjected: Record<string, unknown> = {
+    statePath: join(pluginStateDir(), `${sanitizeInstanceId(binding.pluginInstanceId)}.json`)
+  };
+
+  if (binding.pluginModule === "managed-iac") {
+    const settings = managedIacServerSettings();
+    if (!settings.runnerImage) {
+      throw new Error(
+        "managed-iac binding used but Mode 2 is not enabled (SCP_MANAGED_IAC_RUNNER_IMAGE is unset)"
+      );
+    }
+    serverInjected.runnerImage = settings.runnerImage;
+    serverInjected.networkMode = settings.networkMode;
+    serverInjected.workspaceRoot = settings.workspaceRoot;
+  }
+
   return {
     instanceConfig: {
       id: binding.pluginInstanceId,
       module: binding.pluginModule,
       orgId: input.orgId,
       domainId: input.domainId ?? "default",
-      config: binding.config,
+      // Tenant config first, server-governed fields LAST (they win — CRITICAL #1 / MAJOR #4).
+      config: { ...tenantConfig, ...serverInjected },
       secrets: resolvedSecrets,
       allowedHosts: binding.allowedHosts
     }

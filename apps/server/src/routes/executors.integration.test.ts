@@ -178,4 +178,87 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     await expect(anon.plugins.listManifests()).rejects.toBeInstanceOf(ScpApiError);
     await expect(anon.notifications.listBindings()).rejects.toBeInstanceOf(ScpApiError);
   });
+
+  // CRITICAL #1 (adversarial review): a tenant must never be able to set managed-iac's
+  // server-governed runnerImage/networkMode/workspace fields — the manifest configSchema is
+  // additionalProperties:false, so the config-validation added to the binding route rejects them.
+  it("REJECTS a managed-iac binding whose config tries to set server-governed fields (runnerImage/networkMode)", async () => {
+    const org = await createTestOrg(server, "m7-managed-iac-reject");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const component = await admin.components.create({ name: `comp-${randomUUID().slice(0, 8)}` });
+
+    for (const evilConfig of [
+      { runnerImage: "attacker/evil:latest" },
+      { networkMode: "host" },
+      { workspaceDir: "/" },
+      { workspaceRoot: "/" }
+    ]) {
+      await expect(
+        admin.executors.putBinding(component.id, {
+          pluginModule: "managed-iac",
+          pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`,
+          config: evilConfig
+        }),
+        `expected config ${JSON.stringify(evilConfig)} to be rejected`
+      ).rejects.toBeInstanceOf(ScpApiError);
+    }
+
+    // A managed-iac binding with ONLY the tenant-allowed fields is accepted.
+    const ok = await admin.executors.putBinding(component.id, {
+      pluginModule: "managed-iac",
+      pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`,
+      config: { infraCredsSecretKeys: { AWS_ACCESS_KEY_ID: "aws-key-secret" }, timeoutMs: 60000 }
+    });
+    expect(ok.pluginModule).toBe("managed-iac");
+  });
+
+  // CRITICAL #1 defence in depth: even a binding whose stored config was somehow populated with a
+  // malicious networkMode (bypassing the route validation) has it OVERRIDDEN by the server's own
+  // settings when the instance is provisioned — proven by calling resolveExecutorPluginInstance
+  // directly against a repo-inserted (validation-bypassing) binding.
+  it("server-injects runnerImage/networkMode/workspaceRoot/statePath, overriding any stored tenant value", async () => {
+    const { withTenantTx } = await import("../db/tenant-tx.js");
+    const { upsertExecutorBinding, resolveExecutorPluginInstance } =
+      await import("../coordination/executor-bindings-repo.js");
+    const org = await createTestOrg(server, "m7-managed-iac-inject");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const component = await admin.components.create({ name: `comp-${randomUUID().slice(0, 8)}` });
+
+    const savedEnv = {
+      image: process.env.SCP_MANAGED_IAC_RUNNER_IMAGE,
+      net: process.env.SCP_MANAGED_IAC_NETWORK_MODE,
+      root: process.env.SCP_MANAGED_IAC_WORKSPACE_ROOT
+    };
+    process.env.SCP_MANAGED_IAC_RUNNER_IMAGE = "scp-runner-iac:vetted-server-pinned";
+    process.env.SCP_MANAGED_IAC_NETWORK_MODE = "none";
+    process.env.SCP_MANAGED_IAC_WORKSPACE_ROOT = "/srv/scp/managed-iac";
+    try {
+      const resolved = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+        // Insert a binding whose config carries MALICIOUS server-field values (the repo layer
+        // doesn't validate — that's the route's job — so this simulates a validation bypass).
+        await upsertExecutorBinding(tx, {
+          orgId: org.orgId,
+          targetObjectId: component.id,
+          pluginModule: "managed-iac",
+          pluginInstanceId: "inst-inject",
+          config: { runnerImage: "attacker/evil", networkMode: "host", workspaceRoot: "/" }
+        });
+        return resolveExecutorPluginInstance(tx, {
+          orgId: org.orgId,
+          targetObjectId: component.id,
+          masterKey: server.deps.config.secretsMasterKey
+        });
+      });
+
+      const cfg = resolved!.instanceConfig.config as Record<string, unknown>;
+      expect(cfg.runnerImage).toBe("scp-runner-iac:vetted-server-pinned"); // NOT attacker/evil
+      expect(cfg.networkMode).toBe("none"); // NOT host
+      expect(cfg.workspaceRoot).toBe("/srv/scp/managed-iac"); // NOT /
+      expect(typeof cfg.statePath).toBe("string"); // durable dedup path always injected (MAJOR #4)
+    } finally {
+      process.env.SCP_MANAGED_IAC_RUNNER_IMAGE = savedEnv.image;
+      process.env.SCP_MANAGED_IAC_NETWORK_MODE = savedEnv.net;
+      process.env.SCP_MANAGED_IAC_WORKSPACE_ROOT = savedEnv.root;
+    }
+  });
 });
