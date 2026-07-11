@@ -38,39 +38,36 @@ describe("classifyIp", () => {
   }
 });
 
+const url = (ip: string): string => `http://${ip.includes(":") ? `[${ip}]` : ip}/x`;
+
 describe("assertEgressAllowed", () => {
-  it("ALWAYS blocks loopback, link-local (metadata), and unspecified — even with the IP allowlisted", async () => {
-    for (const ip of ["127.0.0.1", "169.254.169.254", "0.0.0.0", "::1", "fe80::1"]) {
-      await expect(
-        assertEgressAllowed(`http://${ip.includes(":") ? `[${ip}]` : ip}/x`, [ip]),
-        `expected ${ip} blocked even when allowlisted`
-      ).rejects.toThrow(/never a permitted plugin egress target|SSRF/);
+  it("ALWAYS blocks link-local (cloud metadata) + unspecified — for EVERY plugin, scoped or not", async () => {
+    for (const ip of ["169.254.169.254", "169.254.0.1", "0.0.0.0", "::", "fe80::1"]) {
+      // Blocked whether allowlisted (scoped) or unscoped (escape hatch).
+      await expect(assertEgressAllowed(url(ip), [ip]), `scoped ${ip}`).rejects.toThrow(
+        /never a permitted plugin egress target/
+      );
+      await expect(assertEgressAllowed(url(ip), []), `unscoped ${ip}`).rejects.toThrow(
+        /never a permitted plugin egress target/
+      );
     }
   });
 
-  it("blocks private ranges for a SCOPED plugin (non-empty allowlist) — 'the DB host is blocked even when allowlisted'", async () => {
-    for (const ip of ["10.0.0.5", "172.16.9.9", "192.168.1.50"]) {
-      await expect(assertEgressAllowed(`http://${ip}/x`, [ip])).rejects.toThrow(/private/);
+  it("blocks loopback + private for a SCOPED plugin — '127.0.0.1 / the DB host is blocked even when allowlisted'", async () => {
+    for (const ip of ["127.0.0.1", "::1", "10.0.0.5", "172.16.9.9", "192.168.1.50", "fc00::1"]) {
+      await expect(assertEgressAllowed(url(ip), [ip]), `scoped ${ip}`).rejects.toThrow(
+        /rebinding|redirect defense/
+      );
     }
   });
 
-  it("PERMITS private ranges for an UNSCOPED escape hatch (empty allowlist) — federation-https/webhook-control internal targets", async () => {
-    for (const ip of ["10.0.0.5", "192.168.1.50", "fc00::1"]) {
-      await expect(
-        assertEgressAllowed(`http://${ip.includes(":") ? `[${ip}]` : ip}/x`, [])
-      ).resolves.toBeUndefined();
+  it("PERMITS loopback + private for an UNSCOPED escape hatch (empty allowlist) — webhook-control's local control server, federation-https's on-prem peers", async () => {
+    for (const ip of ["127.0.0.1", "::1", "10.0.0.5", "192.168.1.50", "fc00::1"]) {
+      await expect(assertEgressAllowed(url(ip), []), `unscoped ${ip}`).resolves.toBeUndefined();
     }
   });
 
-  it("still blocks loopback/link-local even for an UNSCOPED escape hatch (empty allowlist)", async () => {
-    for (const ip of ["127.0.0.1", "169.254.169.254", "::1"]) {
-      await expect(
-        assertEgressAllowed(`http://${ip.includes(":") ? `[${ip}]` : ip}/x`, [])
-      ).rejects.toThrow(/never a permitted plugin egress target|SSRF/);
-    }
-  });
-
-  it("permits a public IP", async () => {
+  it("permits a public IP (scoped and unscoped)", async () => {
     await expect(assertEgressAllowed("http://8.8.8.8/x", ["8.8.8.8"])).resolves.toBeUndefined();
     await expect(assertEgressAllowed("http://8.8.8.8/x", [])).resolves.toBeUndefined();
   });

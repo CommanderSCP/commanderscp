@@ -140,8 +140,9 @@ function stderrLogger(instanceId: string): Logger {
  * MAJOR #6 — the allowlist alone doesn't stop the cloud metadata endpoint / loopback / internal
  * services, nor an allowlisted hostname that DNS-resolves (or a 3xx redirects) to an internal IP.
  * `egress-guard.ts`'s `assertEgressAllowed` adds an internal-range deny-list enforced AFTER DNS
- * resolution (loopback/link-local/metadata ALWAYS blocked; private ranges blocked for a scoped
- * plugin), and this client disables redirect-following entirely.
+ * resolution (link-local/metadata ALWAYS blocked; loopback + private blocked for a SCOPED plugin,
+ * permitted for an unscoped escape hatch like webhook-control/federation-https), and this client
+ * disables redirect-following entirely.
  */
 function scopedFetchHttpClient(allowedHosts: string[]): ScopedHttpClient {
   return {

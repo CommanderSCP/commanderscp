@@ -9,16 +9,18 @@ import { lookup } from "node:dns/promises";
  * caller disables HTTP redirect-following (a redirect can't be re-pointed at an internal host).
  *
  * The rule (see `assertEgressAllowed`):
- *  - loopback (127/8, ::1), link-local incl. cloud metadata 169.254.169.254 (169.254/16, fe80::/10),
- *    and the unspecified address (0.0.0.0, ::) are ALWAYS blocked — for EVERY plugin, allowlisted
- *    or not: there is no legitimate reason a plugin should ever reach those.
- *  - private ranges (10/8, 172.16/12, 192.168/16, fc00::/7) are blocked for a SCOPED plugin (one
- *    with a non-empty `allowedHosts`) — an allowlisted plugin targets a specific (public) API, so a
- *    resolution to a private IP is a rebinding/redirect attack ("the DB host is blocked even when
- *    allowlisted"). An UNSCOPED escape hatch (empty `allowedHosts` — webhook-control's
- *    arbitrary-URL POST, federation-https's on-prem peers) is deliberately permitted to reach
- *    private ranges (but never loopback/link-local). An M7 integration that genuinely must reach a
- *    private-IP on-prem API runs unscoped, a documented tradeoff.
+ *  - link-local incl. cloud metadata 169.254.169.254 (169.254/16, fe80::/10) and the unspecified
+ *    address (0.0.0.0, ::) are ALWAYS blocked — for EVERY plugin, scoped or not: no plugin ever
+ *    legitimately reaches the metadata endpoint.
+ *  - loopback (127/8, ::1) and private ranges (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7)
+ *    are blocked for a SCOPED plugin (non-empty `allowedHosts`) — an allowlisted plugin targets a
+ *    specific (public) API, so a resolution to loopback/private is a rebinding/redirect attack
+ *    ("the DB host / 127.0.0.1 is blocked even when allowlisted"). An UNSCOPED escape hatch (empty
+ *    `allowedHosts` — webhook-control's arbitrary operator-configured control-server URL,
+ *    federation-https's on-prem/single-host peers) IS permitted to reach loopback/private, because
+ *    that is its deliberate purpose; the operator (policy:write, not an ordinary tenant) chose it.
+ *    An M7 integration that genuinely must reach a private-IP on-prem API runs unscoped — a
+ *    documented tradeoff (it loses the allowlist gate, but the metadata endpoint stays blocked).
  */
 
 export type IpClass = "loopback" | "linkLocal" | "unspecified" | "private" | "public";
@@ -104,14 +106,17 @@ export async function assertEgressAllowed(url: string, allowedHosts: string[]): 
 
   for (const ip of ips) {
     const cls = classifyIp(ip);
-    if (cls === "loopback" || cls === "linkLocal" || cls === "unspecified") {
+    // link-local (cloud metadata) + unspecified: blocked for EVERY plugin, always.
+    if (cls === "linkLocal" || cls === "unspecified") {
       throw blocked(
         `egress guard: '${hostname}' resolves to ${ip} (${cls}) — never a permitted plugin egress target (SSRF)`
       );
     }
-    if (cls === "private" && scoped) {
+    // loopback + private: blocked only for a SCOPED plugin (an allowlisted public API resolving
+    // there is a rebinding/redirect attack). An unscoped escape hatch may reach them by design.
+    if ((cls === "loopback" || cls === "private") && scoped) {
       throw blocked(
-        `egress guard: allowlisted host '${hostname}' resolves to private ${ip} — blocked (DNS-rebinding/redirect defense)`
+        `egress guard: allowlisted host '${hostname}' resolves to ${cls} ${ip} — blocked (DNS-rebinding/redirect defense)`
       );
     }
   }
