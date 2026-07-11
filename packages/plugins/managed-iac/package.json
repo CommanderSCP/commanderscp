@@ -9,7 +9,8 @@
     "build": "tsc -b",
     "dev": "tsc -b -w",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests"
   },
   "devDependencies": {
     "@scp/plugin-testkit": "workspace:*",
