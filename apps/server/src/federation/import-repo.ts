@@ -60,6 +60,41 @@ function isNotFound(err: unknown): boolean {
 }
 
 /**
+ * SECURITY-SENSITIVE (M6 review fix — CRITICAL: single-writer authority was forgeable on CREATE).
+ * The ONLY domain a signed bundle may vouch authorship for is the domain that cryptographically
+ * SIGNED it (the verified `exporterDomainId`). M6 federation is direct-peer: there is no multi-hop
+ * relay of a third party's origin (that is the deferred reserved-fields path, DESIGN §13). So:
+ *
+ *  - The signed, hash-chained top-level `entry.originDomainId` MUST equal the exporter. A malicious
+ *    but legitimately-paired peer X could otherwise sign an entry for a NEW urn claiming
+ *    `originDomainId = <parent P>`; on the create path `createObject` would write that verbatim
+ *    (the update-path 409 authority check only guards EXISTING rows), making the victim believe P
+ *    authoritatively owns an object X forged — and an inflated `revision` would then permanently
+ *    409-block P's real future updates (a durable DoS on P's authority).
+ *  - Any free-form `payload.originDomainId` (attacker-controlled) MUST be absent or equal the
+ *    exporter — never trusted as the authority, never written.
+ *
+ * Called on every entry BEFORE apply (including scope-skipped ones), so a bundle containing ANY
+ * forged-authorship entry is rejected wholesale, fail-closed.
+ */
+function assertEntryAuthoredBySigner(entry: SyncJournalEntry, exporterDomainId: string): void {
+  if (entry.originDomainId !== exporterDomainId) {
+    throw conflict(
+      `forged authorship (rejected, fail-closed): entry ${entry.id} (sequence ${entry.sequence}) ` +
+        `claims origin domain '${entry.originDomainId}', but the bundle was signed by '${exporterDomainId}' ` +
+        `— a peer can only vouch for its OWN authorship`
+    );
+  }
+  const claimed = entry.payload.originDomainId;
+  if (claimed !== undefined && claimed !== null && String(claimed) !== exporterDomainId) {
+    throw conflict(
+      `forged authorship (rejected, fail-closed): entry ${entry.id} (sequence ${entry.sequence}) ` +
+        `payload claims origin domain '${String(claimed)}', but the bundle was signed by '${exporterDomainId}'`
+    );
+  }
+}
+
+/**
  * Resolves an imported object's LOCAL containment placement (`objects.domain_id`) — a genuinely
  * separate concern from single-writer CONTENT authority (`originDomainId`), and one this
  * milestone's own two-domain E2E surfaced the hard way: `authz/resolve.ts`'s RBAC containment
@@ -109,7 +144,10 @@ async function applyEntry(
       const typeId = String(payload.typeId);
       const urn = String(payload.urn);
       const revision = Number(payload.revision ?? entry.sequence);
-      const originDomainId = String(payload.originDomainId ?? exporterDomainId);
+      // Authority is the cryptographically-verified signer — NEVER the attacker-controlled
+      // `payload.originDomainId` (validated identical to `exporterDomainId` by
+      // `assertEntryAuthoredBySigner` before we get here). CRITICAL review fix.
+      const originDomainId = exporterDomainId;
       await upsertObjectByUrn(tx, {
         orgId,
         typeId,
@@ -144,7 +182,9 @@ async function applyEntry(
       return;
     }
     case "relationship_upsert": {
-      const originDomainId = String(payload.originDomainId ?? exporterDomainId);
+      // Authority is the verified signer, never `payload.originDomainId`. CRITICAL review fix
+      // (same forgeable-authority-on-create hole as object_upsert above).
+      const originDomainId = exporterDomainId;
       const revision = Number(payload.revision ?? entry.sequence);
       try {
         await createRelationship(tx, {
@@ -283,6 +323,14 @@ export async function importSyncBundle(
   //    indefinitely to splice in an arbitrary later segment.
   const cursor = await getCursor(tx, orgId, peer.id, bundle.header.exporterDomainId);
   const toApply = bundle.entries.filter((entry) => entry.sequence > cursor.sequence);
+
+  // Single-writer authority: every entry about to be applied must be authored by the verified
+  // signer — reject the WHOLE bundle if any claims a foreign origin (CRITICAL review fix; see
+  // assertEntryAuthoredBySigner). Runs before verification/apply so forged-authorship is caught
+  // fail-closed regardless of scope.
+  for (const entry of toApply) {
+    assertEntryAuthoredBySigner(entry, bundle.header.exporterDomainId);
+  }
 
   if (toApply.length > 0) {
     const isFirstSyncFromThisOrigin = cursor.sequence === 0 && cursor.rowHash === null;

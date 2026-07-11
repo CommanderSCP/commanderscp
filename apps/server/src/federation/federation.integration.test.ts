@@ -18,7 +18,12 @@ import { handFillObject } from "./handfill-repo.js";
 import { proposeChange } from "../coordination/changes-repo.js";
 import { materializeApprovalRequest, castApprovalVote } from "../governance/approvals-repo.js";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
-import { computeBundleChecksum, signBundleChecksum } from "@scp/schemas/federation-journal";
+import {
+  computeBundleChecksum,
+  signBundleChecksum,
+  computeJournalRowHash,
+  signJournalRowHash
+} from "@scp/schemas/federation-journal";
 import type { PromotionBundle } from "@scp/schemas";
 
 /**
@@ -367,15 +372,25 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
     expect(stillA.name).toBe("authority-svc");
   });
 
-  it("SECURITY: single-writer authority — a bundle cannot forge authorship of another domain's object", async () => {
-    const created = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+  it("SECURITY: single-writer authority — a signed bundle cannot forge authorship of a THIRD domain's object on the CREATE path", async () => {
+    // The exploit this guards (CRITICAL review finding): a legitimately-paired peer X (domainA)
+    // signs a bundle entry for a BRAND-NEW urn whose `originDomainId` claims some OTHER domain P.
+    // On the create path `createObject` writes `originDomainId` verbatim (the update-path 409 check
+    // only protects EXISTING rows), so without the fix the victim (domainB) would believe P
+    // authoritatively owns an object X actually forged — and an inflated revision would then
+    // permanently 409-block P's real future updates. A signer may only vouch for its OWN authorship.
+    const fabricatedParentDomainId = uuidv7(); // 'P' — a domain X does not own and never signed as
+    const forgedUrn = `urn:scp:${domainA.orgName}:service:forged-authorship-${randomUUID()}`;
+
+    await withTenantTx(domainA.db, domainA.orgId, (tx) =>
       createObject(tx, {
         orgId: domainA.orgId,
         domainId: null,
         typeId: "service",
         actorObjectId: domainA.orgId,
-        requestId: "t-forge1",
-        name: "forge-svc"
+        requestId: "t-forge-create",
+        urn: forgedUrn,
+        name: "forge-create-svc"
       })
     );
     const cursor = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
@@ -384,27 +399,44 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
     const bundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
       exportSyncBundle(tx, domainA.orgId, domainB.orgName, cursor.sequence)
     );
-    await withTenantTx(domainB.db, domainB.orgId, (tx) =>
-      importSyncBundle(tx, domainB.orgId, bundle)
-    );
+    const targetIdx = bundle.entries.findIndex((e) => e.payload.urn === forgedUrn);
+    expect(targetIdx).toBeGreaterThanOrEqual(0);
 
-    // Craft a write claiming domain B itself is the origin of A's object (self-forged
-    // authorship) — simulating "what if signature verification were somehow bypassed and only
-    // the row-level check ran": call the underlying repo function directly with a forged
-    // FederationImportContext claiming domainB as the origin of an object domainA actually owns.
+    // X rewrites the entry to claim P owns the object (BOTH the signed top-level field AND the
+    // free-form payload field), then re-signs the entry AND the whole bundle with X's (domainA's)
+    // OWN real key — i.e. a perfectly valid signature from a legitimately-paired peer. The chain
+    // and signatures all verify; only the authorship binding is forged.
+    const aKey = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      ensureInstanceKey(tx, domainA.orgId)
+    );
+    const forgedEntries = bundle.entries.map((e, i) => {
+      if (i !== targetIdx) return e;
+      const tampered = {
+        ...e,
+        originDomainId: fabricatedParentDomainId,
+        payload: { ...e.payload, originDomainId: fabricatedParentDomainId }
+      };
+      const rowHash = computeJournalRowHash(tampered);
+      return { ...tampered, rowHash, signature: signJournalRowHash(aKey.privateKey, rowHash) };
+    });
+    const checksum = computeBundleChecksum(forgedEntries);
+    const forged: SyncBundle = {
+      ...bundle,
+      entries: forgedEntries,
+      checksum,
+      bundleSignature: signBundleChecksum(aKey.privateKey, checksum)
+    };
+
+    await expect(
+      withTenantTx(domainB.db, domainB.orgId, (tx) => importSyncBundle(tx, domainB.orgId, forged))
+    ).rejects.toMatchObject({ status: 409, detail: expect.stringMatching(/forged authorship/) });
+
+    // Nothing was written — no object under the forged urn, so certainly none owned by P.
     await expect(
       withTenantTx(domainB.db, domainB.orgId, (tx) =>
-        updateObject(tx, {
-          orgId: domainB.orgId,
-          typeId: "service",
-          actorObjectId: domainB.orgId,
-          requestId: "t-forge2",
-          idOrUrn: created.id,
-          name: "forged",
-          federationImport: { originDomainId: selfB.domainId, revision: 999 }
-        })
+        getObjectByIdOrUrnAnyType(tx, domainB.orgId, forgedUrn)
       )
-    ).rejects.toMatchObject({ status: 409 });
+    ).rejects.toThrow();
   });
 
   it("hand-filled parent config reconciles correctly when a signed bundle later arrives", async () => {
