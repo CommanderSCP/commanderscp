@@ -1,14 +1,19 @@
 import type {
   AbortResult,
+  BundleRef,
   ControlOutcome,
   ControlRequest,
   Cursor,
   DeliveryResult,
   DiscoveryProposal,
+  DomainCursor,
   ExecutionStatus,
   ExecutorCapabilities,
   ExecutorEvent,
+  ExportOptions,
   ExternalRunRef,
+  ImportReport,
+  JournalSegment,
   NotificationMessage,
   TriggerIntent
 } from "@scp/plugin-api";
@@ -53,6 +58,18 @@ export interface NotificationPluginClient {
   send(msg: NotificationMessage): Promise<DeliveryResult>;
 }
 
+/** M8 counterpart for `FederationTransportPlugin` (`federation-https` — DESIGN §13). Subprocess
+ *  hosting so this transport runs under the same host-enforced timeout/restart-with-backoff/
+ *  egress-guard machinery as every other network-calling plugin, and so its mTLS client
+ *  certificate (subprocess-entry.ts's `loadFederationMtlsMaterial`) is presented on a connection
+ *  this process's own `ScopedHttpClient` controls, never a raw fetch bypassing the plugin host. */
+export interface FederationTransportPluginClient {
+  push(segment: JournalSegment): Promise<void>;
+  pull(cursor: DomainCursor): Promise<JournalSegment[]>;
+  exportBundle(opts: ExportOptions): Promise<BundleRef>;
+  importBundle(bundle: BundleRef): Promise<ImportReport>;
+}
+
 /**
  * Every in-repo plugin module a subprocess can load (subprocess-entry.ts's `loadPlugin` switch is
  * the single source of truth this union must stay in sync with). M7 widens this from M3/M4's
@@ -60,7 +77,8 @@ export interface NotificationPluginClient {
  * are `ExecutorPlugin`s, `github-discovery` is github's separate `DiscoveryPlugin` export (a
  * distinct module name because ONE subprocess-hosted instance loads exactly one plugin `kind` —
  * an org that wants both github's executor AND its discovery scan configures two instances, same
- * package, two module names), `webhook-notify`/`smtp-notify` are `NotificationPlugin`s.
+ * package, two module names), `webhook-notify`/`smtp-notify` are `NotificationPlugin`s. M8 adds
+ * `federation-https`, a `FederationTransportPlugin`.
  */
 export type PluginModule =
   | "fake-executor"
@@ -71,7 +89,8 @@ export type PluginModule =
   | "terraform"
   | "managed-iac"
   | "webhook-notify"
-  | "smtp-notify";
+  | "smtp-notify"
+  | "federation-https";
 
 export interface PluginHostInstanceConfig {
   /** Stable id referenced by `change_wave_targets.executor_plugin_id` / `executor_bindings.plugin_instance_id`
@@ -103,4 +122,5 @@ export interface PluginHost {
   control(instanceId: string): ControlPluginClient;
   discovery(instanceId: string): DiscoveryPluginClient;
   notification(instanceId: string): NotificationPluginClient;
+  federationTransport(instanceId: string): FederationTransportPluginClient;
 }

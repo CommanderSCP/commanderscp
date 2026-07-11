@@ -28,13 +28,20 @@
  * goes to stderr.
  */
 import { createInterface } from "node:readline";
+import { readFileSync } from "node:fs";
+import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
 import type {
+  BundleRef,
   ControlPlugin,
   ControlRequest,
   Cursor,
   DiscoveryPlugin,
+  DomainCursor,
   ExecutorPlugin,
+  ExportOptions,
   ExternalRunRef,
+  FederationTransportPlugin,
+  JournalSegment,
   Logger,
   NotificationMessage,
   NotificationPlugin,
@@ -51,7 +58,8 @@ type LoadedPlugin =
   | { kind: "executor"; plugin: ExecutorPlugin }
   | { kind: "control"; plugin: ControlPlugin }
   | { kind: "discovery"; plugin: DiscoveryPlugin }
-  | { kind: "notification"; plugin: NotificationPlugin };
+  | { kind: "notification"; plugin: NotificationPlugin }
+  | { kind: "federation-transport"; plugin: FederationTransportPlugin };
 
 /**
  * Static module map (DESIGN.md §11: "No runtime hot-loading, ever") — grows as M4/M7 ship more
@@ -97,6 +105,10 @@ async function loadPlugin(moduleName: string): Promise<LoadedPlugin> {
     case "smtp-notify": {
       const mod = await import("@scp/plugin-smtp-notify");
       return { kind: "notification", plugin: mod.createSmtpNotifyPlugin() };
+    }
+    case "federation-https": {
+      const mod = await import("@scp/plugin-federation-https");
+      return { kind: "federation-transport", plugin: mod.default };
     }
     default:
       throw new Error(`subprocess-entry: unknown SCP_PLUGIN_MODULE "${moduleName}"`);
@@ -156,24 +168,88 @@ function stderrLogger(instanceId: string): Logger {
  */
 const OPERATOR_PLANE_MODULES = new Set(["webhook-control", "federation-https"]);
 
+/**
+ * M8 hardening (DESIGN.md §13, BUILD_AND_TEST.md §8 M8 item 6, "Federation mTLS transport
+ * identity"): reads the HOST-level (operator-configured, never tenant-suppliable —
+ * `host.ts`'s `spawnInstance` forwards these into ONLY the `federation-https` subprocess's env,
+ * gated on module identity) client-certificate material `federation-https` presents to the
+ * parent. All three are OPTIONAL — unset (the pre-M8 default) means no client certificate, and
+ * federation-https keeps working exactly as it did in M6 (bearer+RBAC+Ed25519 journal signing,
+ * no transport-level peer identity). Reads synchronously, once, at subprocess boot — this is
+ * static per-deployment config, not something that changes per call or per instance.
+ *
+ * A configured-but-unreadable path fails LOUD (throws, taking the subprocess boot down with a
+ * clear error the plugin-host surfaces to its own stderr) rather than silently degrading to "no
+ * client cert" — a misconfigured mTLS setup that quietly falls back to unauthenticated transport
+ * is a false sense of security worse than an obvious boot failure.
+ */
+function loadFederationMtlsMaterial():
+  | { cert: string; key: string; ca?: string }
+  | undefined {
+  const certFile = process.env.SCP_FEDERATION_MTLS_CERT_FILE;
+  const keyFile = process.env.SCP_FEDERATION_MTLS_KEY_FILE;
+  const caFile = process.env.SCP_FEDERATION_MTLS_CA_FILE;
+  if (!certFile && !keyFile) return undefined; // mTLS not configured for this deployment.
+  if (!certFile || !keyFile) {
+    throw new Error(
+      "federation-https mTLS: both SCP_FEDERATION_MTLS_CERT_FILE and SCP_FEDERATION_MTLS_KEY_FILE " +
+        "must be set together (only one was provided) — refusing to boot with a half-configured client certificate"
+    );
+  }
+  return {
+    cert: readFileSync(certFile, "utf8"),
+    key: readFileSync(keyFile, "utf8"),
+    ca: caFile ? readFileSync(caFile, "utf8") : undefined
+  };
+}
+
 function scopedFetchHttpClient(
   allowedHosts: string[],
-  allowInternalPrivate: boolean
+  allowInternalPrivate: boolean,
+  mtls?: { cert: string; key: string; ca?: string }
 ): ScopedHttpClient {
+  // A dedicated undici Agent presenting the client certificate on every TLS handshake this
+  // dispatcher makes — constructed once and reused (undici pools connections per-origin
+  // internally), not per-request. `undefined` when `mtls` is unset: every request falls back to
+  // Node's global `fetch()`, preserving the exact pre-M8 (no client cert) behavior byte-for-byte.
+  //
+  // MUST use the explicitly-imported `undici` package's OWN `fetch` (`undiciFetch`) with this
+  // Agent, never Node's global `fetch` — Node's global `fetch` is powered by its OWN internal,
+  // separately-bundled copy of undici, and passing a `dispatcher` constructed from a DIFFERENT
+  // undici install across that boundary throws (`UND_ERR_INVALID_ARG: invalid onError method`) at
+  // request time, not at construction time. Confirmed empirically while building this fix — global
+  // `fetch` + an externally-constructed `undici.Agent` are simply not interoperable.
+  const dispatcher = mtls
+    ? new UndiciAgent({ connect: { cert: mtls.cert, key: mtls.key, ca: mtls.ca } })
+    : undefined;
   return {
     async request(req): Promise<ScopedHttpResponse> {
       // MAJOR #6 — allowlist AND internal-IP deny-list (post-DNS-resolution). See egress-guard.ts.
       // `allowInternalPrivate` comes from module identity (OPERATOR_PLANE_MODULES), never config.
       await assertEgressAllowed(req.url, allowedHosts, allowInternalPrivate);
-      const res = await fetch(req.url, {
-        method: req.method,
-        headers: req.headers,
-        body: req.body === undefined ? undefined : JSON.stringify(req.body),
-        // MAJOR #6 — never follow redirects: a 3xx could re-point the request at an internal host
-        // AFTER the pre-flight egress check. A redirect surfaces as an error the plugin handles;
-        // plugins must target final URLs. (No M7 plugin's fixtures rely on redirects.)
-        redirect: "error"
-      });
+      const requestBody = req.body === undefined ? undefined : JSON.stringify(req.body);
+      // Two near-identical branches rather than one call through a unified variable: undici's own
+      // `fetch` and Node's global `fetch` declare incompatible `RequestInit`/`Headers` TypeScript
+      // types (two separately-vendored copies of the same underlying shape) even though both
+      // accept the exact same plain object at runtime — this keeps each call fully type-checked
+      // against its OWN fetch's real signature instead of casting the options object away.
+      const res = dispatcher
+        ? await undiciFetch(req.url, {
+            method: req.method,
+            headers: req.headers,
+            body: requestBody,
+            redirect: "error",
+            dispatcher
+          })
+        : await fetch(req.url, {
+            method: req.method,
+            headers: req.headers,
+            body: requestBody,
+            // MAJOR #6 — never follow redirects: a 3xx could re-point the request at an internal
+            // host AFTER the pre-flight egress check. A redirect surfaces as an error the plugin
+            // handles; plugins must target final URLs. (No M7 plugin's fixtures rely on redirects.)
+            redirect: "error"
+          });
       const text = await res.text();
       let body: unknown = text;
       try {
@@ -248,6 +324,29 @@ async function dispatch(
     return loaded.plugin.send(ctx, p.msg);
   }
 
+  if (loaded.kind === "federation-transport") {
+    switch (method) {
+      case "push": {
+        const p = params as { segment: JournalSegment };
+        return loaded.plugin.push(ctx, p.segment);
+      }
+      case "pull": {
+        const p = params as { cursor: DomainCursor };
+        return loaded.plugin.pull(ctx, p.cursor);
+      }
+      case "exportBundle": {
+        const p = params as { opts: ExportOptions };
+        return loaded.plugin.exportBundle(ctx, p.opts);
+      }
+      case "importBundle": {
+        const p = params as { bundle: BundleRef };
+        return loaded.plugin.importBundle(ctx, p.bundle);
+      }
+      default:
+        throw new Error(`unknown method "${method}" for a FederationTransportPlugin instance`);
+    }
+  }
+
   const plugin = loaded.plugin;
   switch (method) {
     case "observe": {
@@ -283,6 +382,10 @@ async function main(): Promise<void> {
   // Loopback/private egress permitted ONLY for operator-plane escape hatches — by MODULE identity,
   // never tenant config (MAJOR #6 follow-up).
   const allowInternalPrivate = OPERATOR_PLANE_MODULES.has(moduleName);
+  // M8: client-certificate material, gated on module identity (only federation-https ever sees
+  // the SCP_FEDERATION_MTLS_* env vars in the first place — host.ts's `spawnInstance` — but this
+  // module-identity check is defence in depth against the vars ever leaking to another module).
+  const mtls = moduleName === "federation-https" ? loadFederationMtlsMaterial() : undefined;
 
   const plugin = await loadPlugin(moduleName);
   const ctx: PluginContext = {
@@ -290,7 +393,7 @@ async function main(): Promise<void> {
     domainId,
     logger: stderrLogger(instanceId),
     secrets: envSecretsAccessor(),
-    http: scopedFetchHttpClient(allowedHosts, allowInternalPrivate),
+    http: scopedFetchHttpClient(allowedHosts, allowInternalPrivate, mtls),
     config
   };
 

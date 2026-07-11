@@ -40,14 +40,19 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   AbortResult,
+  BundleRef,
   ControlOutcome,
   ControlRequest,
   Cursor,
   DeliveryResult,
   DiscoveryProposal,
+  DomainCursor,
   ExecutionStatus,
   ExecutorCapabilities,
+  ExportOptions,
   ExternalRunRef,
+  ImportReport,
+  JournalSegment,
   NotificationMessage,
   TriggerIntent
 } from "@scp/plugin-api";
@@ -55,6 +60,7 @@ import type {
   ControlPluginClient,
   DiscoveryPluginClient,
   ExecutorPluginClient,
+  FederationTransportPluginClient,
   NotificationPluginClient,
   PluginHost,
   PluginHostInstanceConfig
@@ -341,6 +347,20 @@ export class SubprocessPluginHost implements PluginHost {
     };
   }
 
+  /** M8 counterpart for a `FederationTransportPlugin` instance (federation-https) — same host,
+   *  same timeout/restart-with-backoff guarantees, same egress-guarded (and, for this module,
+   *  mTLS-capable — subprocess-entry.ts) `ScopedHttpClient`. */
+  federationTransport(instanceId: string): FederationTransportPluginClient {
+    const call = <T>(method: string, params?: unknown): Promise<T> =>
+      this.call(instanceId, method, params) as Promise<T>;
+    return {
+      push: (segment: JournalSegment) => call<void>("push", { segment }),
+      pull: (cursor: DomainCursor) => call<JournalSegment[]>("pull", { cursor }),
+      exportBundle: (opts: ExportOptions) => call<BundleRef>("exportBundle", { opts }),
+      importBundle: (bundle: BundleRef) => call<ImportReport>("importBundle", { bundle })
+    };
+  }
+
   // -----------------------------------------------------------------------------------------
   // Process lifecycle
   // -----------------------------------------------------------------------------------------
@@ -361,6 +381,29 @@ export class SubprocessPluginHost implements PluginHost {
       SCP_PLUGIN_SECRETS_JSON: JSON.stringify(instance.config.secrets ?? {}),
       SCP_PLUGIN_ALLOWED_HOSTS_JSON: JSON.stringify(instance.config.allowedHosts ?? [])
     };
+    // M8 hardening (DESIGN.md §13, BUILD_AND_TEST.md §8 M8 item 6 "Federation mTLS transport
+    // identity"): forward the HOST-level (operator-configured, NEVER tenant-suppliable — same
+    // trust tier as `SCP_MANAGED_IAC_RUNNER_IMAGE` in executor-bindings-repo.ts) client-certificate
+    // file paths into ONLY the `federation-https` subprocess's env, gated on MODULE IDENTITY (the
+    // exact same discipline `subprocess-entry.ts`'s `OPERATOR_PLANE_MODULES` already uses for the
+    // internal-IP egress allowance) — no other plugin module ever sees these vars, and a tenant's
+    // `PluginHostInstanceConfig.config`/`secrets` can never reach or override them, since they are
+    // read straight from THIS (the scpd parent) process's own environment, not from any binding
+    // row. `subprocess-entry.ts` reads the actual PEM files (if the paths are set) and presents the
+    // client certificate for every request `federation-https` makes to the parent — real
+    // transport-level peer identity on top of the existing bearer+RBAC+Ed25519 journal signing, not
+    // a replacement for it. Unset (the pre-M8 default): federation-https keeps working exactly as
+    // before, with no client certificate.
+    if (instance.config.module === "federation-https") {
+      for (const key of [
+        "SCP_FEDERATION_MTLS_CERT_FILE",
+        "SCP_FEDERATION_MTLS_KEY_FILE",
+        "SCP_FEDERATION_MTLS_CA_FILE"
+      ]) {
+        const value = process.env[key];
+        if (value) env[key] = value;
+      }
+    }
     // A `.ts` entry path (dev/test — see the module-level comment on `RUNNING_FROM_SOURCE`, or an
     // explicit test override) needs the `tsx` loader registered; the compiled `.js` production
     // path needs nothing extra. `tsx` resolves from node_modules exactly like any other import, so
