@@ -172,6 +172,56 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     // against the full running compose stack.
   });
 
+  // MAJOR #5 (adversarial review): a REDELIVERY/replay of the same signed payload (same
+  // X-GitHub-Delivery, or same body hash) must NOT create a second event/Change/trigger.
+  it("webhook redelivery is deduped — the same delivery id returns the SAME event id and inserts exactly one row", async () => {
+    const org = await createTestOrg(server, "m7-webhook-dedupe");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const secret = "integration-test-webhook-dedupe-secret";
+    await admin.changeSources.putWebhookSecret("github", { secret });
+
+    const payload = { repository: { full_name: "m7-org/dedupe-repo" }, head_commit: { id: "abc" } };
+    const rawBody = JSON.stringify(payload);
+    const sig = `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`;
+    const deliveryId = `delivery-${randomUUID()}`;
+
+    const post = () =>
+      fetch(`${server.baseUrl}/change-sources/github/webhook`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${org.adminToken}`,
+          "content-type": "application/json",
+          "x-hub-signature-256": sig,
+          "x-github-event": "push",
+          "x-github-delivery": deliveryId
+        },
+        body: rawBody
+      });
+
+    const first = (await (await post()).json()) as { accepted: boolean; eventId: string };
+    const second = (await (await post()).json()) as { accepted: boolean; eventId: string };
+    // Both return 202 (idempotent), and the SECOND returns the FIRST delivery's event id.
+    expect(first.accepted).toBe(true);
+    expect(second.eventId).toBe(first.eventId);
+
+    // Exactly one row exists for this org+sourceKind+deliveryId.
+    const { withTenantTx } = await import("../db/tenant-tx.js");
+    const { changeSourceEvents } = await import("../db/schema.js");
+    const { and, eq } = await import("drizzle-orm");
+    const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select({ id: changeSourceEvents.id })
+        .from(changeSourceEvents)
+        .where(
+          and(
+            eq(changeSourceEvents.orgId, org.orgId),
+            eq(changeSourceEvents.dedupeKey, `delivery:${deliveryId}`)
+          )
+        )
+    );
+    expect(rows).toHaveLength(1);
+  });
+
   it("unauthenticated calls to every new M7 route are rejected", async () => {
     const anon = new ScpClient({ baseUrl: server.baseUrl });
     await expect(anon.secrets.listKeys()).rejects.toBeInstanceOf(ScpApiError);

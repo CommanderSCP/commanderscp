@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { v7 as uuidv7 } from "uuid";
@@ -42,6 +43,27 @@ import { and, eq } from "drizzle-orm";
  * with NO secret configured keeps M3's original behavior (`signature_verified: false`, honestly
  * reflecting that no verification happened, never silently defaulted to `true`).
  */
+/**
+ * MAJOR #5 — the replay/redelivery dedupe key for one webhook delivery. Provider delivery
+ * identifiers (stable across a redelivery of the SAME event, distinct for genuinely different
+ * events) are strongly preferred; the raw-body hash is the fallback for sources that send no such
+ * header (it dedupes byte-identical payloads, which is the best available signal absent a delivery
+ * id). Hashing the RAW bytes (`request.rawBody`, captured pre-JSON-parse by app.ts) — not a
+ * re-serialized `JSON.stringify(body)` — keeps the fallback stable against key-order/whitespace.
+ */
+function computeDedupeKey(
+  headers: Record<string, unknown>,
+  rawBody: Buffer | undefined,
+  body: unknown
+): string {
+  const deliveryHeader = headers["x-github-delivery"] ?? headers["x-scp-delivery"];
+  if (typeof deliveryHeader === "string" && deliveryHeader.length > 0) {
+    return `delivery:${deliveryHeader}`;
+  }
+  const bytes = rawBody ?? Buffer.from(JSON.stringify(body ?? null), "utf8");
+  return `payload-sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
 export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 
@@ -99,16 +121,47 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
           signatureVerified = true;
         }
 
+        // MAJOR #5 — dedupe redeliveries/replays. Prefer the provider's own delivery identifier
+        // (GitHub `X-GitHub-Delivery`, or a generic `X-SCP-Delivery` an adapter can set), which is
+        // stable across a redelivery of the SAME event; fall back to a hash of the raw body when no
+        // delivery header exists. The unique index on (org_id, source_kind, dedupe_key) makes a
+        // second delivery of the same key a no-op (returns the FIRST event's id), so a replayed —
+        // even validly-signed — webhook never creates a second Change / fires a second real trigger.
+        const dedupeKey = computeDedupeKey(request.headers, request.rawBody, request.body);
         const id = uuidv7();
-        await tx.insert(changeSourceEvents).values({
-          id,
-          orgId: auth.orgId,
-          sourceKind: request.params.sourceKind,
-          signatureVerified,
-          headers: request.headers as Record<string, unknown>,
-          payload: request.body
-        });
-        return id;
+        const inserted = await tx
+          .insert(changeSourceEvents)
+          .values({
+            id,
+            orgId: auth.orgId,
+            sourceKind: request.params.sourceKind,
+            signatureVerified,
+            dedupeKey,
+            headers: request.headers as Record<string, unknown>,
+            payload: request.body
+          })
+          .onConflictDoNothing({
+            target: [
+              changeSourceEvents.orgId,
+              changeSourceEvents.sourceKind,
+              changeSourceEvents.dedupeKey
+            ]
+          })
+          .returning({ id: changeSourceEvents.id });
+        if (inserted[0]) return inserted[0].id;
+        // Conflict: this exact delivery was already ingested — return the original event's id.
+        const existing = await tx
+          .select({ id: changeSourceEvents.id })
+          .from(changeSourceEvents)
+          .where(
+            and(
+              eq(changeSourceEvents.orgId, auth.orgId),
+              eq(changeSourceEvents.sourceKind, request.params.sourceKind),
+              eq(changeSourceEvents.dedupeKey, dedupeKey)
+            )
+          )
+          .limit(1);
+        return existing[0]?.id ?? id;
       });
       reply.status(202).send({ accepted: true, eventId });
     }

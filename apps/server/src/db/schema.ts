@@ -505,17 +505,29 @@ export const sourceMappings = pgTable(
 export const changeSourceEvents = pgTable(
   "change_source_events",
   {
-    id: uuid("id").primaryKey(), // UUIDv7 — doubles as an idempotency key for re-delivery
+    id: uuid("id").primaryKey(), // UUIDv7 — the LOCAL event id (not a replay dedupe key — see below)
     orgId: uuid("org_id").notNull(),
     sourceKind: text("source_kind").notNull(),
     signatureVerified: boolean("signature_verified").notNull().default(false),
+    /**
+     * M7 (MAJOR #5, adversarial review): the PROVIDER's own delivery identity — GitHub's
+     * `X-GitHub-Delivery` (unique per delivery, stable across a redelivery of the same event), or
+     * a `payload-sha256:<hex>` of the raw body when no delivery header exists. A unique index on
+     * `(org_id, source_kind, dedupe_key)` makes a redelivered/replayed (even validly-signed)
+     * webhook a no-op instead of a second Change → second real workflow_dispatch/sync/apply. The
+     * PK `id` is freshly minted per HTTP request and is NOT this key (that was the bug).
+     */
+    dedupeKey: text("dedupe_key"),
     headers: jsonb("headers").notNull(),
     payload: jsonb("payload").notNull(),
     processedAt: timestamp("processed_at", { withTimezone: true }),
     resultingChangeObjectId: uuid("resulting_change_object_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
-  (table) => [index("change_source_events_unprocessed").on(table.processedAt, table.createdAt)]
+  (table) => [
+    index("change_source_events_unprocessed").on(table.processedAt, table.createdAt),
+    unique("change_source_events_dedupe").on(table.orgId, table.sourceKind, table.dedupeKey)
+  ]
 );
 
 /**
