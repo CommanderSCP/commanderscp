@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
+import { unwrapDriverError } from "../db/pg-errors.js";
 
 /**
  * Defensive graph guardrail (adversarial review of PR #15): the `impact-of` recursive CTE
@@ -32,11 +33,14 @@ export class GraphQueryTimeoutError extends Error {}
 const PG_QUERY_CANCELED = "57014";
 
 function isStatementTimeoutError(err: unknown): boolean {
+  // drizzle-orm >=0.44 wraps every driver error in `DrizzleQueryError` — unwrap to the original
+  // `pg` error first (db/pg-errors.ts's `unwrapDriverError` doc comment) or this never matches.
+  const unwrapped = unwrapDriverError(err);
   return (
-    typeof err === "object" &&
-    err !== null &&
-    "code" in err &&
-    (err as { code?: unknown }).code === PG_QUERY_CANCELED
+    typeof unwrapped === "object" &&
+    unwrapped !== null &&
+    "code" in unwrapped &&
+    (unwrapped as { code?: unknown }).code === PG_QUERY_CANCELED
   );
 }
 
