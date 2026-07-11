@@ -7,6 +7,8 @@ import { changes, orgs } from "../db/schema.js";
 import { insertDecision } from "./decisions-repo.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
+import type { PluginHost } from "../plugin-host/contract.js";
+import { dispatchNotification } from "../notify/dispatch.js";
 
 /**
  * Stuck-change watchdog (DESIGN.md §9.4): "a watchdog sweep flags any change showing no progress
@@ -45,9 +47,10 @@ export const WATCHDOG_SYSTEM_ACTOR_ID = SYSTEM_ACTOR_ID;
 /**
  * One sweep pass over one org: finds changes past their per-state SLA that haven't already been
  * flagged since entering this state, writes a Decision + escalation audit event for each, and
- * returns what it flagged. The notification seam (DESIGN §9.4 "escalates via notifications") is
- * a structured console log for now — a real `NotificationPlugin` dispatch is M7; the Decision
- * record is the durable, queryable artifact regardless.
+ * returns what it flagged. The notification seam (DESIGN §9.4 "escalates via notifications") now
+ * dispatches for real (`notify/dispatch.ts`, M7) to every configured `notification_bindings`
+ * channel meeting its own severity threshold — best-effort, never able to fail this sweep; the
+ * Decision record remains the durable, queryable artifact regardless of delivery outcome.
  *
  * Idempotent per state-entry: `watchdog_flagged_at IS NULL` (cleared by `transitionChange` on
  * every legal transition, since a transition IS progress) is the guard against re-flagging the
@@ -57,6 +60,8 @@ export const WATCHDOG_SYSTEM_ACTOR_ID = SYSTEM_ACTOR_ID;
 export async function runWatchdogSweep(
   tx: TenantTx,
   orgId: string,
+  host: PluginHost,
+  masterKey: Buffer,
   opts: { requestId: string; now?: Date } = { requestId: "watchdog-sweep" }
 ): Promise<WatchdogFlag[]> {
   const now = opts.now ?? new Date();
@@ -132,11 +137,21 @@ export async function runWatchdogSweep(
         requestId: opts.requestId
       });
 
-      // Escalation seam (DESIGN §9.4) — a real NotificationPlugin dispatch lands in M7; this is
-      // the durable signal an operator/dashboard/alerting integration can act on today.
+      // Escalation seam (DESIGN §9.4) — real NotificationPlugin dispatch (M7). console.warn stays
+      // as the durable, always-present signal (an operator/log-aggregator sees it even with zero
+      // channels configured); dispatchNotification is the best-effort, never-throwing fan-out on
+      // top of it.
       console.warn(
         `[watchdog] change ${change.objectId} stalled in '${state}' for ${Math.round(stalledForMs / 1000)}s — decision ${decision.id}`
       );
+      await dispatchNotification(tx, host, orgId, masterKey, {
+        subject: `Change stalled in '${state}'`,
+        body: `Change ${change.objectId} has shown no progress in state '${state}' for ${Math.round(
+          stalledForMs / 1000
+        )}s (SLA ${Math.round(WATCHDOG_SLA_MS[state] / 1000)}s). Decision ${decision.id}.`,
+        severity: "warning",
+        context: { changeObjectId: change.objectId, state, decisionId: decision.id }
+      });
 
       flags.push({
         changeObjectId: change.objectId,
@@ -168,11 +183,13 @@ export const WATCHDOG_SWEEP_INTERVAL_SECONDS = 60;
 /** One full sweep: every org, one `runWatchdogSweep` each, same tenant scoping as the reconcile
  *  loop's `runReconcileSweep`. Errors in one org's sweep are caught and logged so they never take
  *  down the sweep (or the pg-boss job) for every other org. */
-export async function runWatchdogSweepForAllOrgs(db: Db): Promise<void> {
+export async function runWatchdogSweepForAllOrgs(db: Db, host: PluginHost, masterKey: Buffer): Promise<void> {
   const orgRows = await db.select({ id: orgs.id }).from(orgs);
   for (const org of orgRows) {
     try {
-      await withTenantTx(db, org.id, (tx) => runWatchdogSweep(tx, org.id, { requestId: "watchdog-sweep" }));
+      await withTenantTx(db, org.id, (tx) =>
+        runWatchdogSweep(tx, org.id, host, masterKey, { requestId: "watchdog-sweep" })
+      );
     } catch (err) {
       console.error(`[watchdog] org ${org.id} sweep failed:`, err);
     }
@@ -186,6 +203,8 @@ export interface WatchdogLoopHandle {
 export async function startWatchdogLoop(
   boss: PgBoss,
   db: Db,
+  host: PluginHost,
+  masterKey: Buffer,
   opts: { intervalSeconds?: number } = {}
 ): Promise<WatchdogLoopHandle> {
   const intervalSeconds = opts.intervalSeconds ?? WATCHDOG_SWEEP_INTERVAL_SECONDS;
@@ -199,7 +218,7 @@ export async function startWatchdogLoop(
   await boss.createQueue(WATCHDOG_QUEUE);
   await boss.work(WATCHDOG_QUEUE, async () => {
     if (stopped) return;
-    const sweep = runWatchdogSweepForAllOrgs(db);
+    const sweep = runWatchdogSweepForAllOrgs(db, host, masterKey);
     inFlightSweep = sweep;
     try {
       await sweep;

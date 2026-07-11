@@ -6,7 +6,12 @@ import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import type { CelSandbox } from "../governance/cel-sandbox.js";
 import type { GateDeps } from "./gates.js";
-import { listChangeRowsInStates, markChangeReconcileBlocked, targetObjectIdsOf, type ChangeRow } from "./changes-repo.js";
+import {
+  listChangeRowsInStates,
+  markChangeReconcileBlocked,
+  targetObjectIdsOf,
+  type ChangeRow
+} from "./changes-repo.js";
 import { transitionChange } from "./transition.js";
 import { triggerRollback } from "./rollback.js";
 import { compileAndPersistPlan, getLatestPlanForChange } from "./plan-service.js";
@@ -22,7 +27,8 @@ import {
 import { evaluateWaveGate } from "./gates.js";
 import { insertDecision } from "./decisions-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
-import { DEFAULT_EXECUTOR_INSTANCE_ID } from "./executor-config.js";
+import { DEFAULT_EXECUTOR_INSTANCE_ID, DEFAULT_EXECUTOR_MODULE } from "./executor-config.js";
+import { resolveExecutorPluginInstance } from "./executor-bindings-repo.js";
 import { processChangeSourceEvents } from "./webhook-processor.js";
 import { matchPoliciesForTargets } from "../governance/policy-resolve.js";
 import { resolvePolicies } from "../governance/policy-model.js";
@@ -63,7 +69,10 @@ const BATCH_LIMIT = 25;
 type ExecutorRef = { externalId: string; url?: string };
 
 function logChangeError(orgId: string, change: ChangeRow, step: string, err: unknown): void {
-  console.error(`[reconcile] org ${orgId} change ${change.objectId} ${step} failed (will retry next tick):`, err);
+  console.error(
+    `[reconcile] org ${orgId} change ${change.objectId} ${step} failed (will retry next tick):`,
+    err
+  );
 }
 
 // -------------------------------------------------------------------------------------------
@@ -76,7 +85,9 @@ function logChangeError(orgId: string, change: ChangeRow, step: string, err: unk
 // -------------------------------------------------------------------------------------------
 
 async function advanceProposedChanges(db: Db, orgId: string, gateDeps: GateDeps): Promise<void> {
-  const rows = await withTenantTx(db, orgId, (tx) => listChangeRowsInStates(tx, orgId, ["proposed"], BATCH_LIMIT));
+  const rows = await withTenantTx(db, orgId, (tx) =>
+    listChangeRowsInStates(tx, orgId, ["proposed"], BATCH_LIMIT)
+  );
   for (const { change } of rows) {
     try {
       await withTenantTx(db, orgId, (tx) =>
@@ -88,7 +99,8 @@ async function advanceProposedChanges(db: Db, orgId: string, gateDeps: GateDeps)
             toState: "evaluated",
             actorObjectId: SYSTEM_ACTOR_ID,
             requestId: "reconcile",
-            reason: "auto: proposed->evaluated is not governance-gated (M4 — coordination/gates.ts's module doc)"
+            reason:
+              "auto: proposed->evaluated is not governance-gated (M4 — coordination/gates.ts's module doc)"
           },
           gateDeps
         )
@@ -100,7 +112,9 @@ async function advanceProposedChanges(db: Db, orgId: string, gateDeps: GateDeps)
 }
 
 async function advanceEvaluatedChanges(db: Db, orgId: string, gateDeps: GateDeps): Promise<void> {
-  const rows = await withTenantTx(db, orgId, (tx) => listChangeRowsInStates(tx, orgId, ["evaluated"], BATCH_LIMIT));
+  const rows = await withTenantTx(db, orgId, (tx) =>
+    listChangeRowsInStates(tx, orgId, ["evaluated"], BATCH_LIMIT)
+  );
   for (const { change, object } of rows) {
     try {
       await withTenantTx(db, orgId, async (tx) => {
@@ -152,7 +166,9 @@ async function advanceEvaluatedChanges(db: Db, orgId: string, gateDeps: GateDeps
 }
 
 async function advanceCoordinatedChanges(db: Db, orgId: string, gateDeps: GateDeps): Promise<void> {
-  const rows = await withTenantTx(db, orgId, (tx) => listChangeRowsInStates(tx, orgId, ["coordinated"], BATCH_LIMIT));
+  const rows = await withTenantTx(db, orgId, (tx) =>
+    listChangeRowsInStates(tx, orgId, ["coordinated"], BATCH_LIMIT)
+  );
   for (const { change } of rows) {
     try {
       await withTenantTx(db, orgId, (tx) =>
@@ -185,8 +201,15 @@ async function advanceCoordinatedChanges(db: Db, orgId: string, gateDeps: GateDe
 // /approvals` — see up-to-date state without ever needing this process to hold a live PluginHost.
 // -------------------------------------------------------------------------------------------
 
-async function advanceValidatingChanges(db: Db, orgId: string, host: PluginHost, sandbox: CelSandbox): Promise<void> {
-  const rows = await withTenantTx(db, orgId, (tx) => listChangeRowsInStates(tx, orgId, ["validating"], BATCH_LIMIT));
+async function advanceValidatingChanges(
+  db: Db,
+  orgId: string,
+  host: PluginHost,
+  sandbox: CelSandbox
+): Promise<void> {
+  const rows = await withTenantTx(db, orgId, (tx) =>
+    listChangeRowsInStates(tx, orgId, ["validating"], BATCH_LIMIT)
+  );
   for (const { change, object } of rows) {
     try {
       const targetObjectIds = targetObjectIdsOf(object.properties as Record<string, unknown>);
@@ -210,11 +233,19 @@ async function advanceValidatingChanges(db: Db, orgId: string, host: PluginHost,
 // first (lowest waveIndex) wave not yet `succeeded`/`skipped`.
 // -------------------------------------------------------------------------------------------
 
-async function advanceExecutingChanges(db: Db, orgId: string, host: PluginHost, sandbox: CelSandbox): Promise<void> {
-  const rows = await withTenantTx(db, orgId, (tx) => listChangeRowsInStates(tx, orgId, ["executing"], BATCH_LIMIT));
+async function advanceExecutingChanges(
+  db: Db,
+  orgId: string,
+  host: PluginHost,
+  sandbox: CelSandbox,
+  masterKey: Buffer
+): Promise<void> {
+  const rows = await withTenantTx(db, orgId, (tx) =>
+    listChangeRowsInStates(tx, orgId, ["executing"], BATCH_LIMIT)
+  );
   for (const { change } of rows) {
     try {
-      await reconcileExecutingChange(db, orgId, change, host, sandbox);
+      await reconcileExecutingChange(db, orgId, change, host, sandbox, masterKey);
     } catch (err) {
       logChangeError(orgId, change, "executing-advance", err);
     }
@@ -226,10 +257,13 @@ async function reconcileExecutingChange(
   orgId: string,
   change: ChangeRow,
   host: PluginHost,
-  sandbox: CelSandbox
+  sandbox: CelSandbox,
+  masterKey: Buffer
 ): Promise<void> {
   const gateDeps: GateDeps = { sandbox, host };
-  const plan = await withTenantTx(db, orgId, (tx) => getLatestPlanForChange(tx, orgId, change.objectId));
+  const plan = await withTenantTx(db, orgId, (tx) =>
+    getLatestPlanForChange(tx, orgId, change.objectId)
+  );
   if (!plan || plan.waves.length === 0) {
     // Shouldn't happen — `coordinated` never advances to `executing` without a compiled plan of
     // at least one wave (proposeChange rejects zero targets). Defensive no-op rather than a
@@ -269,7 +303,9 @@ async function reconcileExecutingChange(
     const failedWaveTargetIds = activeWave.targets.map((t) => t.targetObjectId);
     const autoRollback =
       change.rollbackOfObjectId === null &&
-      (await withTenantTx(db, orgId, (tx) => shouldAutoRollback(tx, orgId, failedWaveTargetIds, change.objectId)));
+      (await withTenantTx(db, orgId, (tx) =>
+        shouldAutoRollback(tx, orgId, failedWaveTargetIds, change.objectId)
+      ));
     if (autoRollback) {
       try {
         await withTenantTx(db, orgId, (tx) =>
@@ -310,7 +346,11 @@ async function reconcileExecutingChange(
         kind: "gate",
         subjectId: change.objectId,
         verdict: gate.verdict,
-        inputContext: { ...gate.inputContext, waveId: activeWave.id, waveIndex: activeWave.waveIndex },
+        inputContext: {
+          ...gate.inputContext,
+          waveId: activeWave.id,
+          waveIndex: activeWave.waveIndex
+        },
         reasonTree: gate.reasonTree
       });
       if (gate.verdict === "block") return "blocked" as const;
@@ -342,7 +382,16 @@ async function reconcileExecutingChange(
     if (target.status === "pending" || target.status === "triggering") {
       allTerminal = false;
       try {
-        await triggerWaveTarget(db, orgId, change, target.id, target.targetObjectId, isRollback, host);
+        await triggerWaveTarget(
+          db,
+          orgId,
+          change,
+          target.id,
+          target.targetObjectId,
+          isRollback,
+          host,
+          masterKey
+        );
       } catch (err) {
         console.error(
           `[reconcile] org ${orgId} change ${change.objectId} target ${target.targetObjectId} trigger failed (will retry next tick):`,
@@ -360,10 +409,20 @@ async function reconcileExecutingChange(
       continue;
     }
     try {
-      const client = host.executor(target.executorPluginId ?? DEFAULT_EXECUTOR_INSTANCE_ID);
+      const instanceId = await ensureExecutorInstanceStarted(
+        db,
+        orgId,
+        host,
+        target.targetObjectId,
+        target.executorPluginId ?? null,
+        masterKey
+      );
+      const client = host.executor(instanceId);
       const status = await client.status(target.executorRef as ExecutorRef);
       if (status.phase === "succeeded") {
-        await withTenantTx(db, orgId, (tx) => updateWaveTargetObserved(tx, orgId, target.id, "succeeded"));
+        await withTenantTx(db, orgId, (tx) =>
+          updateWaveTargetObserved(tx, orgId, target.id, "succeeded")
+        );
       } else if (status.phase === "failed" || status.phase === "aborted") {
         anyFailed = true;
         const phase = status.phase;
@@ -385,7 +444,9 @@ async function reconcileExecutingChange(
         });
       } else {
         allTerminal = false;
-        await withTenantTx(db, orgId, (tx) => updateWaveTargetObserved(tx, orgId, target.id, "observing"));
+        await withTenantTx(db, orgId, (tx) =>
+          updateWaveTargetObserved(tx, orgId, target.id, "observing")
+        );
       }
     } catch (err) {
       allTerminal = false; // still in flight as far as we know — polled again next tick
@@ -397,7 +458,9 @@ async function reconcileExecutingChange(
   }
 
   if (!allTerminal) return; // still in flight — next tick polls/resumes again
-  await withTenantTx(db, orgId, (tx) => markWaveTerminal(tx, orgId, activeWave.id, anyFailed ? "failed" : "succeeded"));
+  await withTenantTx(db, orgId, (tx) =>
+    markWaveTerminal(tx, orgId, activeWave.id, anyFailed ? "failed" : "succeeded")
+  );
 }
 
 /**
@@ -435,9 +498,21 @@ async function triggerWaveTarget(
   waveTargetId: string,
   targetObjectId: string,
   isRollback: boolean,
-  host: PluginHost
+  host: PluginHost,
+  masterKey: Buffer
 ): Promise<void> {
-  const client = host.executor(DEFAULT_EXECUTOR_INSTANCE_ID);
+  // M7: resolve targetObjectId's configured executor binding (executor-bindings-repo.ts) — a
+  // Component/DeploymentTarget with no binding configured falls back to the shared default
+  // fake-executor instance, exactly as every M0-M6 test/demo relies on (executor-config.ts).
+  const instanceId = await ensureExecutorInstanceStarted(
+    db,
+    orgId,
+    host,
+    targetObjectId,
+    null,
+    masterKey
+  );
+  const client = host.executor(instanceId);
   // Deterministic across every retry of this exact wave target — no separate storage needed, the
   // row's own id already satisfies "IDENTICAL across retries of the same target."
   const idempotencyKey = waveTargetId;
@@ -450,7 +525,12 @@ async function triggerWaveTarget(
       // Restore exactly what the ORIGINAL change's trigger of this same target would have
       // reverted (DESIGN §9.4: "referencing the prior known-good executor state").
       kind = "rollback";
-      const originalTarget = await findOriginalWaveTarget(tx, orgId, change.rollbackOfObjectId, targetObjectId);
+      const originalTarget = await findOriginalWaveTarget(
+        tx,
+        orgId,
+        change.rollbackOfObjectId,
+        targetObjectId
+      );
       priorStateRef = originalTarget?.priorStateRef ?? null;
     } else {
       kind = "sync";
@@ -483,11 +563,65 @@ async function triggerWaveTarget(
 
   await withTenantTx(db, orgId, (tx) =>
     markWaveTargetTriggered(tx, orgId, waveTargetId, {
-      executorPluginId: DEFAULT_EXECUTOR_INSTANCE_ID,
+      executorPluginId: instanceId,
       executorRef: ref,
       priorStateRef: claim.priorStateRef
     })
   );
+}
+
+/**
+ * Ensures the executor plugin instance a wave target should use is provisioned on `host`
+ * (`PluginHost.start()` is idempotent per instance id — plugin-host/host.ts — so calling this on
+ * every trigger/poll is cheap once the instance is already running in THIS process) and returns
+ * the instance id to call. Resolution order:
+ *
+ *   1. If `persistedExecutorPluginId` is set (a poll on an already-`triggered` target) and a
+ *      CURRENT binding for `targetObjectId` still resolves to that exact instance id, provision
+ *      it from the current binding config and return it — the common case, and what keeps a
+ *      freshly-started worker process (which has never called `host.start()` for this instance
+ *      before — DESIGN §9.3's "any worker resumes from Postgres alone") able to poll a target
+ *      another worker triggered before it, or before this process itself restarted.
+ *   2. Otherwise (no persisted id yet — a fresh trigger — or the binding no longer matches),
+ *      resolve `targetObjectId`'s CURRENT binding fresh and provision/return ITS instance id.
+ *   3. No binding configured at all — fall back to the shared default fake-executor instance
+ *      (`executor-config.ts`), preserving M0-M6 behavior unchanged for orgs/targets that haven't
+ *      configured a real executor.
+ */
+async function ensureExecutorInstanceStarted(
+  db: Db,
+  orgId: string,
+  host: PluginHost,
+  targetObjectId: string,
+  persistedExecutorPluginId: string | null,
+  masterKey: Buffer
+): Promise<string> {
+  const resolved = await withTenantTx(db, orgId, (tx) =>
+    resolveExecutorPluginInstance(tx, { orgId, targetObjectId, masterKey })
+  );
+
+  if (
+    resolved &&
+    (!persistedExecutorPluginId || persistedExecutorPluginId === resolved.instanceConfig.id)
+  ) {
+    await host.start([resolved.instanceConfig]);
+    return resolved.instanceConfig.id;
+  }
+
+  // Either no binding is configured, or a persisted id from an earlier trigger no longer matches
+  // the (possibly since-changed) current binding — fall back to whichever id was already
+  // persisted so polling keeps addressing the SAME instance the original trigger used, ensuring
+  // at least the shared default is alive so the call doesn't fail outright on a fresh process.
+  await host.start([
+    {
+      id: DEFAULT_EXECUTOR_INSTANCE_ID,
+      module: DEFAULT_EXECUTOR_MODULE,
+      orgId,
+      domainId: "default",
+      config: {}
+    }
+  ]);
+  return persistedExecutorPluginId ?? DEFAULT_EXECUTOR_INSTANCE_ID;
 }
 
 /** All waves of `change`'s plan have succeeded — advance past `executing`. Forward changes stop
@@ -497,7 +631,12 @@ async function triggerWaveTarget(
  *  rolling new state out does — so it auto-promotes itself and then, per DESIGN §9.4 / this
  *  module's rollback.ts sibling, transitions the ORIGINAL change to `rolled_back` in the same
  *  transaction. */
-async function completeExecution(tx: TenantTx, orgId: string, change: ChangeRow, gateDeps: GateDeps): Promise<void> {
+async function completeExecution(
+  tx: TenantTx,
+  orgId: string,
+  change: ChangeRow,
+  gateDeps: GateDeps
+): Promise<void> {
   const validated = await transitionChange(
     tx,
     {
@@ -582,11 +721,16 @@ async function shouldAutoRollback(
 
 /** One full sweep: every org, one `reconcileOrgTick` each. Errors in one org's tick are caught
  *  and logged so they never take down the sweep (or the pg-boss job) for every other org. */
-export async function runReconcileSweep(db: Db, host: PluginHost, sandbox: CelSandbox): Promise<void> {
+export async function runReconcileSweep(
+  db: Db,
+  host: PluginHost,
+  sandbox: CelSandbox,
+  masterKey: Buffer
+): Promise<void> {
   const orgRows = await db.select({ id: orgs.id }).from(orgs);
   for (const org of orgRows) {
     try {
-      await reconcileOrgTick(db, org.id, host, sandbox);
+      await reconcileOrgTick(db, org.id, host, sandbox, masterKey);
     } catch (err) {
       console.error(`[reconcile] org ${org.id} tick failed:`, err);
     }
@@ -600,7 +744,13 @@ export async function runReconcileSweep(db: Db, host: PluginHost, sandbox: CelSa
  * Changes — no external plugin calls), so it keeps its single-transaction-per-tick shape; it's
  * still wrapped in try/catch here so one bad webhook row can never take down the rest of the tick.
  */
-export async function reconcileOrgTick(db: Db, orgId: string, host: PluginHost, sandbox: CelSandbox): Promise<void> {
+export async function reconcileOrgTick(
+  db: Db,
+  orgId: string,
+  host: PluginHost,
+  sandbox: CelSandbox,
+  masterKey: Buffer
+): Promise<void> {
   const gateDeps: GateDeps = { sandbox, host };
   try {
     await withTenantTx(db, orgId, (tx) => processChangeSourceEvents(tx, orgId));
@@ -610,7 +760,7 @@ export async function reconcileOrgTick(db: Db, orgId: string, host: PluginHost, 
   await advanceProposedChanges(db, orgId, gateDeps);
   await advanceEvaluatedChanges(db, orgId, gateDeps);
   await advanceCoordinatedChanges(db, orgId, gateDeps);
-  await advanceExecutingChanges(db, orgId, host, sandbox);
+  await advanceExecutingChanges(db, orgId, host, sandbox, masterKey);
   await advanceValidatingChanges(db, orgId, host, sandbox);
   // M5 (DESIGN §9.5): campaigns fan out into real M3 Changes above already progress through the
   // exact same steps this tick just ran — this only sequences WHICH wave's member changes get
@@ -646,14 +796,15 @@ export async function startReconcileLoop(
   boss: PgBoss,
   db: Db,
   host: PluginHost,
-  sandbox: CelSandbox
+  sandbox: CelSandbox,
+  masterKey: Buffer
 ): Promise<ReconcileLoopHandle> {
   let stopped = false;
   let inFlightTick: Promise<void> | undefined;
   await boss.createQueue(RECONCILE_QUEUE);
   await boss.work(RECONCILE_QUEUE, async () => {
     if (stopped) return;
-    const tick = runReconcileSweep(db, host, sandbox);
+    const tick = runReconcileSweep(db, host, sandbox, masterKey);
     inFlightTick = tick;
     try {
       await tick;

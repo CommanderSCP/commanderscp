@@ -42,6 +42,18 @@ import { registerFederationRoutes } from "./routes/federation.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * M7 (routes/change-sources.ts, coordination/webhook-signature.ts): every inbound webhook source
+ * (GitHub, TFC/Atlantis, ...) signs over the RAW request bytes, not a re-serialized
+ * JSON.parse/stringify round trip — whitespace/key-order differences would break the HMAC. Fastify
+ * augmented here with the one extra field the signature-verification path needs.
+ */
+declare module "fastify" {
+  interface FastifyRequest {
+    rawBody?: Buffer;
+  }
+}
+
 export interface BuildAppOptions {
   /** Suppresses request logging noise for openapi:emit / tests. */
   logger?: boolean;

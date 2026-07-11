@@ -197,8 +197,14 @@ export async function listenTestServer(
           }
         }
       ]);
-      reconcileLoop = await startReconcileLoop(boss, server.deps.db, pluginHost, server.deps.celSandbox!);
-      watchdogLoop = await startWatchdogLoop(boss, server.deps.db, {
+      reconcileLoop = await startReconcileLoop(
+        boss,
+        server.deps.db,
+        pluginHost,
+        server.deps.celSandbox!,
+        server.deps.config.secretsMasterKey
+      );
+      watchdogLoop = await startWatchdogLoop(boss, server.deps.db, pluginHost, server.deps.config.secretsMasterKey, {
         intervalSeconds: opts.watchdogIntervalSeconds
       });
     }
@@ -435,7 +441,9 @@ export async function waitUntil<T>(
     if (Date.now() >= deadline) {
       throw new Error(
         `waitUntil timed out after ${timeoutMs}ms waiting for: ${opts.describe}` +
-          (lastError ? ` — last error: ${lastError instanceof Error ? lastError.message : String(lastError)}` : "")
+          (lastError
+            ? ` — last error: ${lastError instanceof Error ? lastError.message : String(lastError)}`
+            : "")
       );
     }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
