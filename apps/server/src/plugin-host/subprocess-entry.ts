@@ -140,15 +140,31 @@ function stderrLogger(instanceId: string): Logger {
  * MAJOR #6 — the allowlist alone doesn't stop the cloud metadata endpoint / loopback / internal
  * services, nor an allowlisted hostname that DNS-resolves (or a 3xx redirects) to an internal IP.
  * `egress-guard.ts`'s `assertEgressAllowed` adds an internal-range deny-list enforced AFTER DNS
- * resolution (link-local/metadata ALWAYS blocked; loopback + private blocked for a SCOPED plugin,
- * permitted for an unscoped escape hatch like webhook-control/federation-https), and this client
- * disables redirect-following entirely.
+ * resolution (link-local/metadata ALWAYS blocked; loopback + private blocked for every plugin
+ * EXCEPT the operator-plane escape hatches in `OPERATOR_PLANE_MODULES` — gated on MODULE identity,
+ * never tenant config), and this client disables redirect-following entirely.
  */
-function scopedFetchHttpClient(allowedHosts: string[]): ScopedHttpClient {
+/**
+ * The ONLY plugin modules permitted to reach loopback/private internal hosts (MAJOR #6 follow-up):
+ * the genuine operator-plane escape hatches. `webhook-control`'s control-server URL is
+ * operator-configured behind `policy:write` (never an ordinary tenant), and `federation-https`
+ * dials on-prem/single-host peers. EVERY tenant-configurable plugin (webhook-notify, github,
+ * argocd, terraform, managed-iac) is absent here, so its `ctx.http` cannot be pointed at
+ * `127.0.0.1`/`10.x`/... — this gate is on MODULE IDENTITY, not on `allowedHosts` emptiness (which
+ * tenant bindings default to, and which a tenant controls). Metadata/link-local stay blocked for
+ * these modules too.
+ */
+const OPERATOR_PLANE_MODULES = new Set(["webhook-control", "federation-https"]);
+
+function scopedFetchHttpClient(
+  allowedHosts: string[],
+  allowInternalPrivate: boolean
+): ScopedHttpClient {
   return {
     async request(req): Promise<ScopedHttpResponse> {
       // MAJOR #6 — allowlist AND internal-IP deny-list (post-DNS-resolution). See egress-guard.ts.
-      await assertEgressAllowed(req.url, allowedHosts);
+      // `allowInternalPrivate` comes from module identity (OPERATOR_PLANE_MODULES), never config.
+      await assertEgressAllowed(req.url, allowedHosts, allowInternalPrivate);
       const res = await fetch(req.url, {
         method: req.method,
         headers: req.headers,
@@ -264,6 +280,9 @@ async function main(): Promise<void> {
   const domainId = requireEnv("SCP_PLUGIN_DOMAIN_ID");
   const config: unknown = JSON.parse(process.env.SCP_PLUGIN_CONFIG_JSON ?? "{}");
   const allowedHosts = JSON.parse(process.env.SCP_PLUGIN_ALLOWED_HOSTS_JSON ?? "[]") as string[];
+  // Loopback/private egress permitted ONLY for operator-plane escape hatches — by MODULE identity,
+  // never tenant config (MAJOR #6 follow-up).
+  const allowInternalPrivate = OPERATOR_PLANE_MODULES.has(moduleName);
 
   const plugin = await loadPlugin(moduleName);
   const ctx: PluginContext = {
@@ -271,7 +290,7 @@ async function main(): Promise<void> {
     domainId,
     logger: stderrLogger(instanceId),
     secrets: envSecretsAccessor(),
-    http: scopedFetchHttpClient(allowedHosts),
+    http: scopedFetchHttpClient(allowedHosts, allowInternalPrivate),
     config
   };
 

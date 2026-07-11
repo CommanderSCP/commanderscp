@@ -10,17 +10,20 @@ import { lookup } from "node:dns/promises";
  *
  * The rule (see `assertEgressAllowed`):
  *  - link-local incl. cloud metadata 169.254.169.254 (169.254/16, fe80::/10) and the unspecified
- *    address (0.0.0.0, ::) are ALWAYS blocked — for EVERY plugin, scoped or not: no plugin ever
+ *    address (0.0.0.0, ::) are ALWAYS blocked — for EVERY plugin, no exceptions: no plugin ever
  *    legitimately reaches the metadata endpoint.
  *  - loopback (127/8, ::1) and private ranges (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7)
- *    are blocked for a SCOPED plugin (non-empty `allowedHosts`) — an allowlisted plugin targets a
- *    specific (public) API, so a resolution to loopback/private is a rebinding/redirect attack
- *    ("the DB host / 127.0.0.1 is blocked even when allowlisted"). An UNSCOPED escape hatch (empty
- *    `allowedHosts` — webhook-control's arbitrary operator-configured control-server URL,
- *    federation-https's on-prem/single-host peers) IS permitted to reach loopback/private, because
- *    that is its deliberate purpose; the operator (policy:write, not an ordinary tenant) chose it.
- *    An M7 integration that genuinely must reach a private-IP on-prem API runs unscoped — a
- *    documented tradeoff (it loses the allowlist gate, but the metadata endpoint stays blocked).
+ *    are blocked UNLESS `allowInternalPrivate` is true. That flag is derived by the CALLER from the
+ *    plugin's MODULE IDENTITY (subprocess-entry.ts's `OPERATOR_PLANE_MODULES`), NEVER from tenant
+ *    config: only the genuine operator-plane escape hatches — `webhook-control` (its control-server
+ *    URL is operator-configured behind `policy:write`) and `federation-https` (on-prem/single-host
+ *    peers) — may reach internal hosts. EVERY tenant-configurable plugin (webhook-notify, github,
+ *    argocd, terraform, managed-iac) has `allowInternalPrivate === false`, so a tenant that creates
+ *    a binding with `config.url = http://127.0.0.1/...` or `http://10.x/internal` is BLOCKED —
+ *    closing the SSRF hole an earlier "unscoped ⇒ allowed" heuristic (based on `allowedHosts`
+ *    emptiness, which tenant bindings default to) had reopened. The `allowedHosts` allowlist is a
+ *    SEPARATE, additional gate (a scoped plugin's hostname must be on it); it does NOT decide the
+ *    internal-range allowance.
  */
 
 export type IpClass = "loopback" | "linkLocal" | "unspecified" | "private" | "public";
@@ -81,15 +84,20 @@ function blocked(message: string): EgressGuardError {
 }
 
 /**
- * Throws (an `EgressGuardError`) if `url` is not a permitted egress target for a plugin instance
- * whose allowlist is `allowedHosts`. Enforced AFTER DNS resolution — see module doc for the rule.
+ * Throws (an `EgressGuardError`) if `url` is not a permitted egress target. Enforced AFTER DNS
+ * resolution — see module doc. `allowInternalPrivate` MUST be derived from the plugin's module
+ * identity by the caller (never from tenant config), and is true ONLY for the operator-plane
+ * escape hatches.
  */
-export async function assertEgressAllowed(url: string, allowedHosts: string[]): Promise<void> {
+export async function assertEgressAllowed(
+  url: string,
+  allowedHosts: string[],
+  allowInternalPrivate: boolean
+): Promise<void> {
   // `URL.hostname` wraps an IPv6 literal in brackets (`[::1]`) — strip them so `isIP`/`classifyIp`
   // and the allowlist comparison see the bare address.
   const hostname = new URL(url).hostname.replace(/^\[|\]$/g, "");
-  const scoped = allowedHosts.length > 0;
-  if (scoped && !allowedHosts.includes(hostname)) {
+  if (allowedHosts.length > 0 && !allowedHosts.includes(hostname)) {
     throw blocked(
       `scoped http client: host '${hostname}' is not in the configured allowedHosts allowlist`
     );
@@ -112,11 +120,11 @@ export async function assertEgressAllowed(url: string, allowedHosts: string[]): 
         `egress guard: '${hostname}' resolves to ${ip} (${cls}) — never a permitted plugin egress target (SSRF)`
       );
     }
-    // loopback + private: blocked only for a SCOPED plugin (an allowlisted public API resolving
-    // there is a rebinding/redirect attack). An unscoped escape hatch may reach them by design.
-    if ((cls === "loopback" || cls === "private") && scoped) {
+    // loopback + private: blocked for every TENANT-configurable plugin; permitted only for an
+    // operator-plane escape hatch (allowInternalPrivate — module identity, not tenant config).
+    if ((cls === "loopback" || cls === "private") && !allowInternalPrivate) {
       throw blocked(
-        `egress guard: allowlisted host '${hostname}' resolves to ${cls} ${ip} — blocked (DNS-rebinding/redirect defense)`
+        `egress guard: host '${hostname}' resolves to ${cls} ${ip} — internal egress blocked for this plugin (SSRF)`
       );
     }
   }

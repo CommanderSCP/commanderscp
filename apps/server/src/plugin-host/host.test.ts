@@ -118,66 +118,83 @@ describe("SubprocessPluginHost: child environment (CRITICAL #3)", () => {
 
 /**
  * M7 SSRF mitigation (subprocess-entry.ts's `scopedFetchHttpClient` + egress-guard.ts) — enforced
- * over the REAL subprocess boundary (not just the pure function in isolation), using
- * `@scp/plugin-webhook-notify` as the real network-calling plugin under the subprocess host. A
- * local HTTP server binds to loopback (127.0.0.1); MAJOR #6 makes loopback an ALWAYS-blocked
- * egress target, so this proves the guard fires end-to-end: even an ALLOWLISTED loopback target is
- * refused and the server is never hit. (The allow-a-public-host / block-a-non-allowlisted-host /
- * block-private-when-scoped matrix is exhaustively unit-tested in egress-guard.test.ts with IP
- * literals — no network — since a unit-test HTTP server can only bind loopback, which the guard
- * always blocks.)
+ * over the REAL subprocess boundary. The loopback/private allowance is gated on MODULE IDENTITY,
+ * NOT `allowedHosts` (MAJOR #6 follow-up: tenant bindings default to empty `allowedHosts`, so an
+ * emptiness heuristic reopened the hole). This drives BOTH plugin kinds at the SAME loopback server:
+ * a TENANT plugin (`webhook-notify`) is refused (server never hit), while the OPERATOR-PLANE escape
+ * hatch (`webhook-control`) reaches it. If the module gate were removed, webhook-notify would reach
+ * the server and this test would fail — the regression guard. (The full allow/block IP matrix is
+ * exhaustively unit-tested in egress-guard.test.ts with IP literals.)
  */
 describe("SubprocessPluginHost: egress guard enforcement (M7 SSRF mitigation)", () => {
-  it("blocks a loopback target over the real subprocess boundary EVEN when allowlisted — the server is never hit", async () => {
-    let requestCount = 0;
-    const server = http.createServer((_req, res) => {
-      requestCount += 1;
+  it("blocks a TENANT plugin from a loopback target (even allowlisted) but PERMITS the operator-plane escape hatch — same server, module-identity gated", async () => {
+    let notifyHits = 0;
+    let controlHits = 0;
+    const server = http.createServer((req, res) => {
+      if (req.url === "/control") controlHits += 1;
+      else notifyHits += 1;
       res.writeHead(200, { "content-type": "application/json" });
-      res.end("{}");
+      res.end(JSON.stringify({ status: "pass", evidence: { ok: true } }));
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("could not determine bound port");
-    const url = `http://127.0.0.1:${address.port}/hook`;
+    const base = `http://127.0.0.1:${address.port}`;
 
     try {
       host = new SubprocessPluginHost({ callTimeoutMs: 10_000 });
       await host.start([
         {
-          id: "loopback-allowlisted",
-          module: "webhook-notify",
+          id: "tenant-notify-allowlisted",
+          module: "webhook-notify", // TENANT plugin — loopback blocked regardless of allowlist
           orgId: "org-1",
           domainId: "domain-1",
-          config: { url },
-          allowedHosts: ["127.0.0.1"] // explicitly allowlisted — MAJOR #6 blocks loopback anyway
+          config: { url: `${base}/hook` },
+          allowedHosts: ["127.0.0.1"]
         },
         {
-          id: "not-allowlisted",
-          module: "webhook-notify",
+          id: "tenant-notify-empty-allowlist",
+          module: "webhook-notify", // the exact regression: empty allowedHosts (tenant default)
           orgId: "org-1",
           domainId: "domain-1",
-          config: { url },
-          allowedHosts: ["some-other-host.invalid"]
+          config: { url: `${base}/hook` },
+          allowedHosts: []
+        },
+        {
+          id: "operator-control",
+          module: "webhook-control", // OPERATOR-PLANE escape hatch — MAY reach its loopback control server
+          orgId: "org-1",
+          domainId: "domain-1",
+          config: { url: `${base}/control` }
         }
       ]);
 
-      // Allowlisted loopback: refused by the internal-IP deny-list, never reaches the server.
-      const loopbackResult = await host.notification("loopback-allowlisted").send({
-        subject: "s",
-        body: "b",
-        severity: "info"
-      });
-      expect(loopbackResult.delivered).toBe(false);
-      expect(requestCount).toBe(0);
+      // TENANT webhook-notify → loopback blocked, whether allowlisted or empty-allowlist (the
+      // reopened-SSRF regression guard). The notify endpoint is never hit.
+      expect(
+        (
+          await host
+            .notification("tenant-notify-allowlisted")
+            .send({ subject: "s", body: "b", severity: "info" })
+        ).delivered
+      ).toBe(false);
+      expect(
+        (
+          await host
+            .notification("tenant-notify-empty-allowlist")
+            .send({ subject: "s", body: "b", severity: "info" })
+        ).delivered
+      ).toBe(false);
+      expect(notifyHits).toBe(0);
 
-      // Not-allowlisted: refused by the allowlist gate.
-      const disallowedResult = await host.notification("not-allowlisted").send({
-        subject: "s",
-        body: "b",
-        severity: "info"
+      // OPERATOR-PLANE webhook-control → reaches its loopback control server and returns an outcome.
+      const outcome = await host.control("operator-control").evaluate({
+        changeId: "c1",
+        controlId: "ctrl-1",
+        context: {}
       });
-      expect(disallowedResult.delivered).toBe(false);
-      expect(requestCount).toBe(0);
+      expect(outcome.status).toBe("pass");
+      expect(controlHits).toBe(1);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

@@ -39,40 +39,65 @@ describe("classifyIp", () => {
 });
 
 const url = (ip: string): string => `http://${ip.includes(":") ? `[${ip}]` : ip}/x`;
+// Third arg = allowInternalPrivate, derived from MODULE identity by the caller (not shown here).
+const TENANT = false; // webhook-notify/github/argocd/terraform/managed-iac
+const OPERATOR_PLANE = true; // webhook-control/federation-https
 
 describe("assertEgressAllowed", () => {
-  it("ALWAYS blocks link-local (cloud metadata) + unspecified — for EVERY plugin, scoped or not", async () => {
+  it("ALWAYS blocks link-local (cloud metadata) + unspecified — for EVERY plugin incl. operator-plane escape hatches", async () => {
     for (const ip of ["169.254.169.254", "169.254.0.1", "0.0.0.0", "::", "fe80::1"]) {
-      // Blocked whether allowlisted (scoped) or unscoped (escape hatch).
-      await expect(assertEgressAllowed(url(ip), [ip]), `scoped ${ip}`).rejects.toThrow(
+      await expect(assertEgressAllowed(url(ip), [ip], TENANT), `tenant ${ip}`).rejects.toThrow(
         /never a permitted plugin egress target/
       );
-      await expect(assertEgressAllowed(url(ip), []), `unscoped ${ip}`).rejects.toThrow(
-        /never a permitted plugin egress target/
-      );
+      await expect(
+        assertEgressAllowed(url(ip), [], OPERATOR_PLANE),
+        `op-plane ${ip}`
+      ).rejects.toThrow(/never a permitted plugin egress target/);
     }
   });
 
-  it("blocks loopback + private for a SCOPED plugin — '127.0.0.1 / the DB host is blocked even when allowlisted'", async () => {
-    for (const ip of ["127.0.0.1", "::1", "10.0.0.5", "172.16.9.9", "192.168.1.50", "fc00::1"]) {
-      await expect(assertEgressAllowed(url(ip), [ip]), `scoped ${ip}`).rejects.toThrow(
-        /rebinding|redirect defense/
-      );
+  it("BLOCKS loopback + private for a TENANT plugin — even with EMPTY allowedHosts (the reopened-SSRF regression guard)", async () => {
+    // Empty allowedHosts is exactly what a tenant-created binding defaults to — must NOT permit internal.
+    for (const ip of [
+      "127.0.0.1",
+      "::1",
+      "10.0.0.5",
+      "172.16.9.9",
+      "192.168.1.50",
+      "100.64.0.1",
+      "fc00::1"
+    ]) {
+      await expect(
+        assertEgressAllowed(url(ip), [], TENANT),
+        `tenant empty-allowlist ${ip}`
+      ).rejects.toThrow(/internal egress blocked/);
+      // And with the IP allowlisted, still blocked (the allowlist doesn't grant internal access).
+      await expect(
+        assertEgressAllowed(url(ip), [ip], TENANT),
+        `tenant allowlisted ${ip}`
+      ).rejects.toThrow(/internal egress blocked/);
     }
   });
 
-  it("PERMITS loopback + private for an UNSCOPED escape hatch (empty allowlist) — webhook-control's local control server, federation-https's on-prem peers", async () => {
+  it("PERMITS loopback + private ONLY for an OPERATOR-PLANE escape hatch (webhook-control's control server, federation-https's on-prem peers)", async () => {
     for (const ip of ["127.0.0.1", "::1", "10.0.0.5", "192.168.1.50", "fc00::1"]) {
-      await expect(assertEgressAllowed(url(ip), []), `unscoped ${ip}`).resolves.toBeUndefined();
+      await expect(
+        assertEgressAllowed(url(ip), [], OPERATOR_PLANE),
+        `op-plane ${ip}`
+      ).resolves.toBeUndefined();
     }
   });
 
-  it("permits a public IP (scoped and unscoped)", async () => {
-    await expect(assertEgressAllowed("http://8.8.8.8/x", ["8.8.8.8"])).resolves.toBeUndefined();
-    await expect(assertEgressAllowed("http://8.8.8.8/x", [])).resolves.toBeUndefined();
+  it("permits a public IP (tenant and operator-plane)", async () => {
+    await expect(
+      assertEgressAllowed("http://8.8.8.8/x", ["8.8.8.8"], TENANT)
+    ).resolves.toBeUndefined();
+    await expect(assertEgressAllowed("http://8.8.8.8/x", [], TENANT)).resolves.toBeUndefined();
   });
 
   it("blocks a host NOT on a non-empty allowlist (the allowlist gate itself)", async () => {
-    await expect(assertEgressAllowed("http://8.8.8.8/x", ["1.1.1.1"])).rejects.toThrow(/allowlist/);
+    await expect(assertEgressAllowed("http://8.8.8.8/x", ["1.1.1.1"], TENANT)).rejects.toThrow(
+      /allowlist/
+    );
   });
 });

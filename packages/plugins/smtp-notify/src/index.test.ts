@@ -1,5 +1,11 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@scp/plugin-api";
+
+// These SMTP-PROTOCOL tests reach a loopback fake server (127.0.0.1), which the real internal-IP
+// egress guard (egress.ts, MAJOR #6) would block — so bypass the guard HERE. The guard itself is
+// tested directly in egress.test.ts, and its wiring into send() in index.egress.test.ts (no mock).
+vi.mock("./egress.js", () => ({ assertHostNotInternal: async (): Promise<void> => undefined }));
+
 import { smtpNotifyPlugin } from "./index.js";
 import { startFakeSmtpServer, type FakeSmtpServerHandle } from "./test-support/fake-smtp-server.js";
 

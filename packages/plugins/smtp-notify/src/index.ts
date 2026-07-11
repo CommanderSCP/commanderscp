@@ -7,6 +7,7 @@ import type {
   PluginContext,
   PluginManifest
 } from "@scp/plugin-api";
+import { assertHostNotInternal } from "./egress.js";
 
 /**
  * `@scp/plugin-smtp-notify` — the SMTP `NotificationPlugin` (M7, BUILD_AND_TEST.md §8 M7 item 4).
@@ -79,13 +80,11 @@ function asConfig(config: unknown): SmtpNotifyConfig {
 }
 
 /**
- * `allowedHosts` allowlist enforcement (SSRF mitigation) — this plugin's own copy, since it dials
- * a raw SMTP socket and can't go through `apps/server`'s `ctx.http` egress guard. SCOPED to the
- * ALLOWLIST only (not the internal-IP deny-list the HTTP plugins get via egress-guard.ts): an SMTP
- * channel's credential is the ORG's OWN smtp username/password to the ORG's OWN configured relay
- * (not an SCP-held token an attacker could redirect), so the risk profile is lower and the fake-
- * SMTP-server test fixtures bind to loopback. Extending the full internal-range deny-list here
- * (blocking the metadata endpoint / loopback for smtp too) is documented M8-hardening follow-up.
+ * `allowedHosts` allowlist enforcement — this plugin dials a raw SMTP socket and can't go through
+ * `apps/server`'s `ctx.http` egress guard, so it enforces its own allowlist AND (see `egress.ts`,
+ * MAJOR #6) its own internal-range deny-list. smtp-notify is a tenant-configurable plugin, never an
+ * operator-plane escape hatch, so `assertHostNotInternal` blocks EVERY non-public target
+ * (metadata/link-local/loopback/private) — same class of hole as the webhook-notify one.
  */
 function checkAllowlist(host: string, allowedHosts: string[] | undefined): void {
   if (!allowedHosts || allowedHosts.length === 0) return; // unscoped — see module/config doc.
@@ -207,6 +206,7 @@ async function send(ctx: PluginContext, msg: NotificationMessage): Promise<Deliv
   let socket: Socket | TLSSocket | undefined;
   try {
     checkAllowlist(config.host, config.allowedHosts);
+    await assertHostNotInternal(config.host); // MAJOR #6 — SSRF internal-range deny-list (egress.ts)
     socket = await connectSocket(config);
     await readReply(socket); // server greeting (220)
     let ehlo = await expect(socket, `EHLO scp-notify`, [250]);
