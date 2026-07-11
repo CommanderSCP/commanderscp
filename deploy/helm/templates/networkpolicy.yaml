@@ -45,9 +45,10 @@ spec:
 # Egress: PostgreSQL (external by default — a DNS-named host outside the cluster's pod/namespace
 # selector reach, so this is a port-scoped allow rather than a podSelector one; narrow it to a
 # specific CIDR via `networkPolicy.postgresCidr` for full microsegmentation in production). Also
-# covers `postgres.evalInCluster` via the same port — if that pod's own labels are within this
-# selector-less `to: []` allow, which an empty `to` (any destination) on a specific port
-# satisfies.
+# covers `postgres.evalInCluster` via the same port (its pod IP falls within the default private
+# ranges below on essentially every real cluster). Adversarial review MAJOR #2: the UNCONFIGURED
+# default is NOT "any destination" — see `commanderscp.egressToBlock` in _helpers.tpl for exactly
+# what it defaults to and why (RFC1918 private ranges, not the public internet).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -60,16 +61,14 @@ spec:
       {{- include "commanderscp.selectorLabels" . | nindent 6 }}
   policyTypes: ["Egress"]
   egress:
-    - {{- if .Values.networkPolicy.postgresCidr }}
-      to:
-        - ipBlock:
-            cidr: {{ .Values.networkPolicy.postgresCidr }}
-      {{- end }}
+    - {{- include "commanderscp.egressToBlock" .Values.networkPolicy.postgresCidr | nindent 6 }}
       ports:
         - { protocol: TCP, port: {{ .Values.postgres.port }} }
 ---
 {{- if eq .Values.eventBus.backend "nats" }}
 # Egress: NATS JetStream (optional event-bus backend, DESIGN §8) — only rendered when enabled.
+# Same MAJOR #2 fix as allow-postgres above: the unconfigured default is RFC1918 private ranges,
+# never "any destination".
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -82,11 +81,7 @@ spec:
       {{- include "commanderscp.selectorLabels" . | nindent 6 }}
   policyTypes: ["Egress"]
   egress:
-    - {{- if .Values.networkPolicy.natsCidr }}
-      to:
-        - ipBlock:
-            cidr: {{ .Values.networkPolicy.natsCidr }}
-      {{- end }}
+    - {{- include "commanderscp.egressToBlock" .Values.networkPolicy.natsCidr | nindent 6 }}
       ports:
         - { protocol: TCP, port: 4222 }
 ---

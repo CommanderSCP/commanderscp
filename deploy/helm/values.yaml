@@ -218,9 +218,14 @@ networkPolicy:
   # Postgres (and NATS if eventBus.backend=nats), ingress from the ingress controller/other pods
   # to `api`'s port only. Extra rules layer on top via these lists.
   enabled: true
-  # Empty (default) = allow egress to ANY destination on the Postgres/NATS port — external
-  # Postgres is typically a DNS name NetworkPolicy can't match directly. Set to your Postgres/NATS
-  # host's CIDR (e.g. a /32 for a single managed-Postgres endpoint) to fully microsegment.
+  # Empty (default, adversarial review MAJOR #2) = egress to the Postgres/NATS port is allowed
+  # only within RFC1918 private ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) — NOT any
+  # destination. This covers the common case (an in-VPC/on-prem Postgres reachable by private IP,
+  # or `postgres.evalInCluster`, whose pod IP falls in the cluster's pod CIDR) without ever
+  # defaulting to "reachable from the public internet" on the DB port. External Postgres is
+  # typically a DNS name NetworkPolicy can't match directly — set this to your Postgres/NATS
+  # host's own CIDR (e.g. a /32 for a single managed-Postgres endpoint reachable by public IP) to
+  # scope precisely instead of relying on the private-range default.
   postgresCidr: ""
   natsCidr: ""
   extraIngressRules: []

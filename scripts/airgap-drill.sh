@@ -10,8 +10,12 @@
 # "golden path that happens not to call out" would prove nothing. This drill installs Calico as the
 # CNI specifically so the chart's default-deny egress NetworkPolicy is ACTUALLY enforced, then:
 #   (a) proves the enforcement is real -- a deliberately-launched pod carrying the chart's own pod
-#       labels (so it's covered by the default-deny egress policy) tries to reach the public
-#       internet and MUST fail; the drill FAILS if that egress attempt SUCCEEDS;
+#       labels (so it's covered by the default-deny egress policy) tries to reach a PUBLIC IP on
+#       ports 443, 5432 (Postgres), AND 4222 (NATS) -- the latter two specifically because
+#       adversarial review MAJOR #2 found the chart's allow-postgres/allow-nats rules, on
+#       UNCONFIGURED defaults, used to render no `to:` at all (= "any destination", including the
+#       public internet, on those ports); testing only 443 would never have caught that hole. ALL
+#       THREE MUST fail; the drill FAILS if any of them SUCCEEDS;
 #   (b) proves the app still works under that same policy -- the golden path (register a service)
 #       succeeds, because the chart's explicit DNS + in-cluster-Postgres allows are the only egress
 #       the app needs.
@@ -152,9 +156,17 @@ kubectl wait --for=condition=Ready pods -l app.kubernetes.io/name=commanderscp -
 # ---- THE GENUINE ZERO-EGRESS ASSERTION -------------------------------------------------------
 log "SECURITY: launching a deliberate-egress-attempt pod covered by the chart's default-deny egress policy"
 # Same pod labels the chart's default-deny NetworkPolicy selects (commanderscp name+instance), so
-# Calico applies the default-deny egress rule to it. It tries to open a TCP connection to a public
-# IP; under a genuinely-enforced default-deny egress this MUST fail (timeout). If it SUCCEEDS, the
-# egress block is not real and the drill FAILS.
+# Calico applies the default-deny egress rule to it. It tries to open a TCP connection to a PUBLIC
+# IP on THREE ports: 443 (nothing allows this -- the general "no arbitrary internet egress" case),
+# and 5432 / 4222 (the exact Postgres/NATS ports MAJOR #2's adversarial-review finding named: the
+# chart's allow-postgres/allow-nats rules, when networkPolicy.postgresCidr/natsCidr are left
+# UNSET, used to render NO `to:` at all -- Kubernetes NetworkPolicy semantics for an egress rule
+# with a port but no `to:` is "any destination", so a pod could reach the public internet on the
+# DB port even under an otherwise-enforced default-deny policy). Testing only port 443 would NOT
+# have caught that hole -- it was never allow-listed at all, so it was already blocked before the
+# fix. Under a genuinely-enforced default-deny + the MAJOR #2 fix, ALL THREE must fail (timeout/
+# refused). If ANY of them SUCCEEDS, the egress block is not real (or the private-range default
+# regressed) and the drill FAILS.
 cat > "${SCRATCH}/egress-probe.yaml" <<EOF
 apiVersion: v1
 kind: Pod
@@ -168,7 +180,7 @@ spec:
   containers:
     - name: probe
       image: ${REG_IN_CLUSTER}/scp/scpd:${BUNDLE_VERSION}
-      command: ["node", "-e", "const net=require('node:net');const s=net.createConnection({host:'1.1.1.1',port:443,timeout:8000},()=>{console.log('EGRESS_REACHED');process.exit(0)});s.on('timeout',()=>{console.log('EGRESS_BLOCKED_TIMEOUT');process.exit(3)});s.on('error',e=>{console.log('EGRESS_BLOCKED_'+e.code);process.exit(3)})"]
+      command: ["node", "-e", "const net=require('node:net');const ports=[443,5432,4222];let remaining=ports.length;for(const port of ports){const s=net.createConnection({host:'1.1.1.1',port,timeout:8000},()=>{console.log('EGRESS_REACHED:'+port);s.destroy();if(--remaining===0)process.exit(0)});s.on('timeout',()=>{console.log('EGRESS_BLOCKED_TIMEOUT:'+port);s.destroy();if(--remaining===0)process.exit(0)});s.on('error',e=>{console.log('EGRESS_BLOCKED_'+e.code+':'+port);if(--remaining===0)process.exit(0)})}"]
 EOF
 kubectl apply -f "${SCRATCH}/egress-probe.yaml"
 kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/egress-probe --timeout=30s 2>/dev/null \
@@ -176,13 +188,17 @@ kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/egress-probe --timeo
 PROBE_OUT="$(kubectl logs egress-probe 2>/dev/null || true)"
 log "egress-probe result: ${PROBE_OUT:-<no output>}"
 if printf '%s' "$PROBE_OUT" | grep -q "EGRESS_REACHED"; then
-  echo "FAIL: a pod under the default-deny egress policy REACHED the public internet -- egress is NOT genuinely blocked" >&2
+  echo "FAIL: a pod under the default-deny egress policy REACHED the public internet (1.1.1.1) on at least one probed port -- egress is NOT genuinely blocked:" >&2
+  printf '%s\n' "$PROBE_OUT" | grep "EGRESS_REACHED" >&2
   exit 1
 fi
-printf '%s' "$PROBE_OUT" | grep -q "EGRESS_BLOCKED" || {
-  echo "FAIL: egress-probe produced no conclusive result (expected EGRESS_BLOCKED_*): ${PROBE_OUT}" >&2; exit 1;
-}
-log "PASS: deliberate egress attempt was BLOCKED by the enforced default-deny NetworkPolicy"
+for port in 443 5432 4222; do
+  printf '%s' "$PROBE_OUT" | grep -q "EGRESS_BLOCKED.*:${port}$" || {
+    echo "FAIL: egress-probe produced no conclusive BLOCKED result for port ${port} (expected EGRESS_BLOCKED_*:${port}): ${PROBE_OUT}" >&2
+    exit 1
+  }
+done
+log "PASS: deliberate egress attempts on ports 443, 5432 (Postgres), and 4222 (NATS) were ALL BLOCKED by the enforced default-deny NetworkPolicy"
 
 # ---- GOLDEN PATH under the same enforced policy ----------------------------------------------
 log "golden path (register a service) -- must still work with only the chart's explicit in-cluster allows"

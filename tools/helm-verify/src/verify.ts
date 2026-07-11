@@ -189,6 +189,32 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
     return Array.isArray(spec?.egress) && spec!.egress!.length > 0;
   });
   assert(explicitAllowEgress, `[${label}] expected at least one NetworkPolicy with an explicit egress allow (e.g. DNS)`);
+
+  // Adversarial review MAJOR #2: on the DEFAULT (unconfigured networkPolicy.postgresCidr/natsCidr)
+  // values, the Postgres/NATS egress rules must NEVER allow "any destination" — a NetworkPolicy
+  // egress rule entry with `ports` but no `to` at all means every destination on that port,
+  // including the public internet. Every egress rule entry on every port-scoped
+  // allow-postgres/allow-nats NetworkPolicy must carry a `to` with at least one selector/ipBlock.
+  // This is a structural check (parsed YAML, not a string grep) so a future regression back to an
+  // absent `to:` fails THIS assertion, not just a human reviewer's eyeball pass.
+  interface EgressRule {
+    to?: unknown[];
+    ports?: { port?: number }[];
+  }
+  const dbPorts = new Set([5432, 4222]);
+  for (const np of networkPolicies) {
+    const name = String(np.metadata?.name ?? "");
+    if (!/allow-(postgres|nats)/.test(name)) continue;
+    const spec = np.spec as { egress?: EgressRule[] } | undefined;
+    for (const rule of spec?.egress ?? []) {
+      const touchesDbPort = (rule.ports ?? []).some((p) => typeof p.port === "number" && dbPorts.has(p.port));
+      if (!touchesDbPort) continue;
+      assert(
+        Array.isArray(rule.to) && rule.to.length > 0,
+        `[${label}] NetworkPolicy/${name}: a DB-port egress rule has no 'to' at all — this allows egress to ANY destination (including the public internet), not just the intended private-range/CIDR default`
+      );
+    }
+  }
 }
 
 function main(): void {

@@ -57,6 +57,37 @@ app.kubernetes.io/component: worker
 {{- end -}}
 
 {{/*
+NetworkPolicy egress `to:` block for a Postgres/NATS-shaped allow rule, given an OPTIONAL explicit
+CIDR value (`networkPolicy.postgresCidr`/`natsCidr`). Adversarial review MAJOR #2: the UNCONFIGURED
+default must NOT be "any destination" (an omitted `to:` on a NetworkPolicy egress rule means
+"every destination", including the public internet, on that port) — so when no explicit CIDR is
+set, this renders the RFC1918 private-range ipBlocks instead (10.0.0.0/8, 172.16.0.0/12,
+192.168.0.0/16 — same set apps/server's own SSRF egress-guard, plugin-host/egress-guard.ts, treats
+as "private"), which still covers the common cases (an in-VPC/on-prem external Postgres reachable
+by private IP, and the eval in-cluster Postgres pod, whose IP falls in the cluster's pod CIDR —
+itself almost always one of these three ranges, e.g. kind's default/this chart's own drill's
+192.168.0.0/16) without ever defaulting to "reachable from anywhere on the internet" on the DB
+port. An operator with a genuinely public-IP-reachable Postgres/NATS host still sets the CIDR
+value explicitly to scope this precisely (or wider, if truly required — an explicit, visible
+choice, not a silent default).
+*/}}
+{{- define "commanderscp.egressToBlock" -}}
+{{- if . -}}
+to:
+  - ipBlock:
+      cidr: {{ . }}
+{{- else -}}
+to:
+  - ipBlock:
+      cidr: 10.0.0.0/8
+  - ipBlock:
+      cidr: 172.16.0.0/12
+  - ipBlock:
+      cidr: 192.168.0.0/16
+{{- end -}}
+{{- end -}}
+
+{{/*
 Secret name + key helpers — postgres/appSecrets/oidc all follow the same "existingSecret OR the
 chart-generated one" pattern (secrets.yaml renders the generated Secret only when existingSecret
 is empty, under the fixed name "<fullname>-generated").
