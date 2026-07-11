@@ -143,21 +143,23 @@ file the verifier and `install.sh` consume.
 
 **`--use-signing-config=false` is version-conditional** — this is an air-gap product where
 operators may bring their own cosign, and the flag's handling differs sharply by version:
-- **Newer cosign** (advertises `--use-signing-config`; the pinned CI/dev build is **v3.1.1**)
-  defaults it to `true`, and then *rejects* `--tlog-upload=false` with "not supported with
-  --signing-config or --use-signing-config" — so the flag MUST be passed as `false`.
+- **Newer cosign** (advertises `--use-signing-config`; e.g. the **v3.1.1** dev build this was
+  authored against) defaults it to `true`, and then *rejects* `--tlog-upload=false` with "not
+  supported with --signing-config or --use-signing-config" — so the flag MUST be passed as `false`.
 - **Older cosign** lacks the flag entirely; passing it fails with "unknown flag:
   --use-signing-config" (this was a real CI red), and it isn't needed — `--tlog-upload=false`
-  alone prevents the upload.
+  alone prevents the upload. This is the case for the **v2.x** that `sigstore/cosign-installer@v3`
+  installs by default in CI.
 
 `cosign.ts` detects the flag from `cosign sign-blob --help` and adds `--use-signing-config=false`
-only when present, so signing works on the pinned CI cosign AND a reasonable range of operator
-versions while still uploading nothing. Egress re-verified against a closed-port proxy on
-**v3.1.1** with the full flag set (sign succeeds, sig verifies, zero outbound connection
-attempts). CI pins `sigstore/cosign-installer` to `cosign-release: v3.1.1` for determinism — that
-is the tested version an air-gap operator should match. If cosign's flags change again, re-run
-that exact closed-port-proxy test — a silent regression here would mean bundle builds start
-phoning home.
+only when present, so signing works across a range of cosign versions — no fixed release pin — while
+still uploading nothing. Egress re-verified against a closed-port proxy on **v3.1.1** with the full
+flag set (sign succeeds, sig verifies, zero outbound connection attempts). **CI does NOT pin a
+cosign release**: `sigstore/cosign-installer@v3` is built around cosign's v2.x asset layout, so
+asking it for a v3.x tag makes the *download* itself fail (curl exit 22) before any test runs —
+the adaptive flag logic, not a version pin, carries the portability, so we let the installer use
+its default. If cosign's flags change again, re-run that exact closed-port-proxy test — a silent
+regression here would mean bundle builds start phoning home.
 
 ## Testing
 

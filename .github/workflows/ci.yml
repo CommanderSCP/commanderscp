@@ -136,17 +136,19 @@ jobs:
         uses: azure/setup-helm@v4
         with:
           version: latest
-      - name: Install cosign (BUILD_AND_TEST.md §1) — pinned for deterministic sign-blob flag behavior
-        # PINNED (not floating): cosign's sign-blob flag surface shifts across versions — an
-        # unpinned install previously resolved a build WITHOUT `--use-signing-config`, which the
-        # air-gap signing code (deploy/airgap/src/cosign.ts) then failed on with "unknown flag".
-        # The code now detects that flag at runtime and adapts, but pinning keeps CI deterministic
-        # and documents the exact tested cosign version an air-gap operator should match (the
-        # signing code's own module comment references this version). v3.1.1 advertises
-        # `--use-signing-config`, so CI exercises the newer-cosign flag path.
+      - name: Install cosign (BUILD_AND_TEST.md §1)
+        # UNPINNED (no cosign-release): let sigstore/cosign-installer@v3 install its own default
+        # cosign build — which is exactly what installs SUCCESSFULLY on this runner. We do NOT pin
+        # a cosign-release: this action's @v3 line is built around cosign's v2.x asset layout, so
+        # asking it for a v3.x tag (e.g. v3.1.1) makes the download step itself fail with a curl
+        # error (exit 22) before any test runs. The air-gap signing code
+        # (deploy/airgap/src/cosign.ts) is version-ADAPTIVE — it probes `cosign sign-blob --help`
+        # and only passes `--use-signing-config=false` when the installed cosign actually has that
+        # flag — so whatever version the installer's default resolves to, signing works AND uploads
+        # nothing to Rekor (the egress-critical `--tlog-upload=false` is long-stable across cosign
+        # 2.x/3.x). Unpinned + adaptive is the robust combination here; the code carries the
+        # version-portability, not a brittle release-tag pin. See cosign.ts's module comment.
         uses: sigstore/cosign-installer@v3
-        with:
-          cosign-release: "v3.1.1"
       - name: Install skopeo (BUILD_AND_TEST.md §1) — no-op if the runner already has it
         run: |
           command -v skopeo >/dev/null 2>&1 && exit 0

@@ -34,28 +34,30 @@
  * `--use-signing-config=false` is **version-conditional** (see signBlobFlags() below), because
  * its handling differs sharply across cosign versions and this is an air-gap product where
  * operators may bring their OWN cosign:
- *   - NEWER cosign (advertises `--use-signing-config`, ~2.5+/3.x — the pinned CI build is v3.1.1):
- *     `--use-signing-config` DEFAULTS to `true`, and cosign then REJECTS `--tlog-upload=false`
- *     with "`--tlog-upload=false is not supported with --signing-config or --use-signing-config`".
- *     So on these builds we MUST also pass `--use-signing-config=false`.
- *   - OLDER cosign (does NOT have the flag): passing `--use-signing-config=false` fails with
- *     "`unknown flag: --use-signing-config`" (exactly the CI red this replaced), and it isn't
- *     needed anyway — `--tlog-upload=false` alone prevents the upload. So we OMIT it there.
+ *   - NEWER cosign (advertises `--use-signing-config`, ~2.5+/3.x — e.g. the v3.1.1 dev build this
+ *     was authored against): `--use-signing-config` DEFAULTS to `true`, and cosign then REJECTS
+ *     `--tlog-upload=false` with "`--tlog-upload=false is not supported with --signing-config or
+ *     --use-signing-config`". So on these builds we MUST also pass `--use-signing-config=false`.
+ *   - OLDER cosign (does NOT have the flag — e.g. the v2.x that `sigstore/cosign-installer@v3`
+ *     installs by default in CI): passing `--use-signing-config=false` fails with "`unknown flag:
+ *     --use-signing-config`" (exactly the CI red this replaced), and it isn't needed anyway —
+ *     `--tlog-upload=false` alone prevents the upload. So we OMIT it there.
  * We detect the flag from `cosign sign-blob --help` (it's listed on versions that have it) and add
- * `--use-signing-config=false` only when present. This keeps signing working on the pinned CI
- * cosign AND on a reasonable range of operator cosign versions, while STILL uploading nothing.
+ * `--use-signing-config=false` only when present. This keeps signing working across a range of
+ * cosign versions — no fixed version pin required — while STILL uploading nothing.
  *
  * `verifyBlobDetached` mirrors the sign side with `--insecure-ignore-tlog=true` (a stable flag
  * present across versions) — we deliberately never wrote a tlog entry, so asking cosign to check
  * for one would always — correctly, but uselessly — fail.
  *
- * Egress verified against a closed proxy on cosign v3.1.1 (the pinned CI version): with the full
- * flag set, `sign-blob` succeeds behind `HTTPS_PROXY=http://127.0.0.1:1` and the sig verifies —
- * zero outbound connection attempts. If cosign's flags change again, re-run exactly that: set
- * `HTTPS_PROXY=http://127.0.0.1:1` (a closed local port) and confirm sign/verify still succeed;
- * if either ever tries the network it fails fast with `connection refused` instead of silently
- * working. CI pins `sigstore/cosign-installer` to `cosign-release: v3.1.1` so this stays
- * deterministic; that is the tested version an air-gap operator should match.
+ * Egress verified against a closed proxy on cosign v3.1.1: with the full flag set, `sign-blob`
+ * succeeds behind `HTTPS_PROXY=http://127.0.0.1:1` and the sig verifies — zero outbound connection
+ * attempts. If cosign's flags change again, re-run exactly that: set `HTTPS_PROXY=http://127.0.0.1:1`
+ * (a closed local port) and confirm sign/verify still succeed; if either ever tries the network it
+ * fails fast with `connection refused` instead of silently working. CI deliberately does NOT pin a
+ * cosign release (see .github/workflows/ci.yml) — `sigstore/cosign-installer@v3`'s default install
+ * is what reliably downloads, and this adaptive flag logic (not a brittle version pin) carries the
+ * portability. Air-gap operators can bring any cosign in the supported range.
  */
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
