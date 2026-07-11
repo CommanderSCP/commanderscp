@@ -73,8 +73,8 @@ export function FederationStatusPage(): React.JSX.Element {
       <div>
         <h1 className="text-2xl font-semibold text-slate-900">Federation</h1>
         <p className="text-sm text-slate-500">
-          This domain&apos;s identity and its sync status with every paired peer. All figures are
-          as of this domain&apos;s own last-applied journal cursor, never a live probe of a peer
+          This domain&apos;s identity and its sync status with every paired peer. All figures are as
+          of this domain&apos;s own last-applied journal cursor, never a live probe of a peer
           (DESIGN §13) — federated peers, especially air-gapped ones, may not be reachable at all.
         </p>
       </div>
@@ -98,15 +98,11 @@ export function FederationStatusPage(): React.JSX.Element {
           {selfQuery.data && (
             <dl className="grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
               <div>
-                <dt className="text-xs font-medium uppercase tracking-wide text-slate-400">
-                  Name
-                </dt>
+                <dt className="text-xs font-medium uppercase tracking-wide text-slate-400">Name</dt>
                 <dd className="text-sm text-slate-900">{selfQuery.data.name}</dd>
               </div>
               <div>
-                <dt className="text-xs font-medium uppercase tracking-wide text-slate-400">
-                  Role
-                </dt>
+                <dt className="text-xs font-medium uppercase tracking-wide text-slate-400">Role</dt>
                 <dd className="text-sm">{roleBadge(selfQuery.data.role)}</dd>
               </div>
               <div>
@@ -119,7 +115,10 @@ export function FederationStatusPage(): React.JSX.Element {
                 <dt className="text-xs font-medium uppercase tracking-wide text-slate-400">
                   Public key
                 </dt>
-                <dd className="truncate font-mono text-xs text-slate-700" title={selfQuery.data.publicKey}>
+                <dd
+                  className="truncate font-mono text-xs text-slate-700"
+                  title={selfQuery.data.publicKey}
+                >
                   {selfQuery.data.publicKey}
                 </dd>
               </div>
@@ -139,8 +138,8 @@ export function FederationStatusPage(): React.JSX.Element {
           {statusQuery.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
           {statusQuery.data && statusQuery.data.peers.length === 0 && (
             <p className="text-sm text-slate-500">
-              No peers paired yet. Run <code className="rounded bg-slate-100 px-1 py-0.5">scp
-              federation pair</code>.
+              No peers paired yet. Run{" "}
+              <code className="rounded bg-slate-100 px-1 py-0.5">scp federation pair</code>.
             </p>
           )}
           {statusQuery.data && statusQuery.data.peers.length > 0 && (
@@ -155,38 +154,40 @@ export function FederationStatusPage(): React.JSX.Element {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {statusQuery.data.peers.map(({ peer, lastAppliedSequence, lastSyncedAt, recentTransfers }) => (
-                  <TableRow key={peer.id} data-testid={`federation-peer-${peer.id}`}>
-                    <TableCell>
-                      <div className="font-medium text-slate-900">{peer.name}</div>
-                      <div className="font-mono text-xs text-slate-500">{peer.id}</div>
-                    </TableCell>
-                    <TableCell>{roleBadge(peer.role)}</TableCell>
-                    <TableCell>{lastAppliedSequence ?? "—"}</TableCell>
-                    <TableCell>{formatDateTime(lastSyncedAt)}</TableCell>
-                    <TableCell>
-                      {recentTransfers.length === 0 && (
-                        <span className="text-sm text-slate-400">none</span>
-                      )}
-                      {recentTransfers.length > 0 && (
-                        <div className="flex flex-col gap-1">
-                          {recentTransfers.slice(0, 5).map((transfer) => (
-                            <div key={transfer.id} className="flex items-center gap-1.5 text-xs">
-                              <Badge variant="outline" className="capitalize">
-                                {transfer.direction}
-                              </Badge>
-                              <span className="text-slate-500">{transfer.kind}</span>
-                              {transferStatusBadge(transfer.status)}
-                              <span className="text-slate-400">
-                                {formatDateTime(transfer.createdAt)}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {statusQuery.data.peers.map(
+                  ({ peer, lastAppliedSequence, lastSyncedAt, recentTransfers }) => (
+                    <TableRow key={peer.id} data-testid={`federation-peer-${peer.id}`}>
+                      <TableCell>
+                        <div className="font-medium text-slate-900">{peer.name}</div>
+                        <div className="font-mono text-xs text-slate-500">{peer.id}</div>
+                      </TableCell>
+                      <TableCell>{roleBadge(peer.role)}</TableCell>
+                      <TableCell>{lastAppliedSequence ?? "—"}</TableCell>
+                      <TableCell>{formatDateTime(lastSyncedAt)}</TableCell>
+                      <TableCell>
+                        {recentTransfers.length === 0 && (
+                          <span className="text-sm text-slate-400">none</span>
+                        )}
+                        {recentTransfers.length > 0 && (
+                          <div className="flex flex-col gap-1">
+                            {recentTransfers.slice(0, 5).map((transfer) => (
+                              <div key={transfer.id} className="flex items-center gap-1.5 text-xs">
+                                <Badge variant="outline" className="capitalize">
+                                  {transfer.direction}
+                                </Badge>
+                                <span className="text-slate-500">{transfer.kind}</span>
+                                {transferStatusBadge(transfer.status)}
+                                <span className="text-slate-400">
+                                  {formatDateTime(transfer.createdAt)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  )
+                )}
               </TableBody>
             </Table>
           )}
