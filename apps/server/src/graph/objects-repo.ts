@@ -12,6 +12,40 @@ import { requireObjectType } from "./type-registry-repo.js";
 import { validateProperties } from "./property-validation.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { eventBus } from "../events/event-bus.js";
+import { ensureFederationSelf } from "../federation/self-repo.js";
+import { appendJournalEntry } from "../federation/journal-repo.js";
+import type { JournalEntryKind } from "@scp/schemas";
+import { canonicalJson } from "../util/canonical-json.js";
+
+/**
+ * M6 single-writer authority (DESIGN.md §13 — SECURITY-SENSITIVE, M6 PR body flag): "every object
+ * has exactly one authoritative origin domain; non-authoritative copies are read-only replicas...
+ * conflict resolution is 'authority wins' — no merge." `FederationImportContext` is the ONLY way
+ * `createObject`/`updateObject`/`deleteObject` will accept/preserve a foreign `originDomainId` —
+ * every ordinary route handler omits it, so every ordinary write stamps THIS domain's own
+ * identity and can only ever touch rows this domain already owns (checked below). Only
+ * `federation/import-repo.ts`'s bundle-apply path constructs one of these, and only after
+ * `verifyJournalChain`/`verifyBundleSignature` have already passed — so a row's `originDomainId`
+ * can never be forged into pointing at a domain that didn't cryptographically sign for it.
+ */
+export interface FederationImportContext {
+  originDomainId: string;
+  revision: number;
+  provenance?: "manual" | null;
+}
+
+// NOTE: `change` objects deliberately stay `object_upsert`/`object_tombstone` here, even though
+// `entryKind: "change_status"` also exists as a journal entry kind — that one is produced
+// EXCLUSIVELY by `coordination/changes-repo.ts`/`coordination/transition.ts` with a distinct,
+// richer state-machine-shaped payload (objectId/fromState/toState/...). Having two producers emit
+// the SAME entryKind with two different payload shapes would make the importer's dispatch
+// ambiguous — so the graph-object snapshot for a `change` and its lifecycle-state snapshot are
+// kept as clearly separate entry kinds/payload shapes instead.
+function journalEntryKindFor(typeId: string, tombstone: boolean): JournalEntryKind {
+  if (tombstone) return "object_tombstone";
+  if (typeId === "policy") return "policy_upsert";
+  return "object_upsert";
+}
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -19,23 +53,12 @@ export function isUuid(value: string): boolean {
   return UUID_RE.test(value);
 }
 
-/** Deterministic JSON serialization (recursively sorted object keys) for content-equality checks. */
-export function canonicalJson(value: unknown): string {
-  return JSON.stringify(sortKeysDeep(value));
-}
-
-function sortKeysDeep(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortKeysDeep);
-  if (value !== null && typeof value === "object") {
-    return Object.keys(value as Record<string, unknown>)
-      .sort()
-      .reduce<Record<string, unknown>>((acc, key) => {
-        acc[key] = sortKeysDeep((value as Record<string, unknown>)[key]);
-        return acc;
-      }, {});
-  }
-  return value;
-}
+// `canonicalJson` moved to `util/canonical-json.ts` (M6 — see that module's doc comment for why:
+// breaking an objects-repo -> journal-repo -> attestation -> objects-repo import cycle), imported
+// above and re-exported here so every EXISTING import of `canonicalJson` FROM THIS module (several
+// other files still do `import { canonicalJson } from "../graph/objects-repo.js"`) keeps compiling
+// unchanged.
+export { canonicalJson };
 
 export function toGraphObject(row: typeof objects.$inferSelect): GraphObject {
   return {
@@ -49,6 +72,7 @@ export function toGraphObject(row: typeof objects.$inferSelect): GraphObject {
     labels: row.labels as Record<string, unknown>,
     originDomainId: row.originDomainId,
     revision: row.revision,
+    provenance: row.provenance as GraphObject["provenance"],
     version: row.version,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -84,6 +108,10 @@ export interface CreateObjectInput {
   domainId?: string | null;
   properties?: Record<string, unknown>;
   labels?: Record<string, unknown>;
+  /** M6: set ONLY by `federation/import-repo.ts` after signature/chain verification — see
+   *  `FederationImportContext`'s doc comment. Preserves the imported row's true authoritative
+   *  origin instead of stamping this domain as the author. */
+  federationImport?: FederationImportContext;
 }
 
 /**
@@ -130,6 +158,15 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
     version
   });
 
+  // M6 single-writer authority: an ordinary (non-import) create always stamps THIS domain's own
+  // identity as the author. Only `federation/import-repo.ts` supplies `federationImport`, and only
+  // after the incoming entry's signature/chain has already verified — a normal route handler has
+  // no way to make an object claim a foreign `originDomainId`.
+  const self = input.federationImport ? null : await ensureFederationSelf(tx, input.orgId);
+  const originDomainId = input.federationImport?.originDomainId ?? self!.domainId;
+  const revision = input.federationImport?.revision ?? 1;
+  const provenance = input.federationImport?.provenance ?? null;
+
   let row: typeof objects.$inferSelect | undefined;
   try {
     [row] = await tx
@@ -143,9 +180,10 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
         urn,
         properties,
         labels,
-        originDomainId: input.orgId, // placeholder local-domain identity pending M6 federation
-        revision: 1,
+        originDomainId,
+        revision,
         contentHash,
+        provenance,
         version
       })
       .returning();
@@ -168,6 +206,30 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
     afterHash: contentHash,
     requestId: input.requestId
   });
+  // Only journal writes THIS domain actually authored — an imported row was already journaled (and
+  // signed) by ITS origin domain; re-journaling it here would falsely claim co-authorship and
+  // corrupt this domain's own hash chain with content it didn't originate (DESIGN §13 single-writer
+  // authority: "no merge algorithm exists because none is needed").
+  if (!input.federationImport) {
+    await appendJournalEntry(tx, {
+      orgId: input.orgId,
+      entryKind: journalEntryKindFor(input.typeId, false),
+      contentHash,
+      payload: {
+        id,
+        orgId: input.orgId,
+        domainId,
+        typeId: input.typeId,
+        name: input.name,
+        urn,
+        properties,
+        labels,
+        originDomainId,
+        revision,
+        version
+      }
+    });
+  }
   await eventBus.publish(tx, {
     orgId: input.orgId,
     type: `scp.object.created`,
@@ -284,6 +346,8 @@ export interface UpdateObjectInput {
   labels?: Record<string, unknown>;
   /** Optimistic concurrency (DESIGN.md §4.1) — required when set, mismatch is a 412. */
   expectedVersion?: number;
+  /** M6: see `FederationImportContext`'s doc comment above `createObject`. */
+  federationImport?: FederationImportContext;
 }
 
 // Uses the drizzle query builder (not raw `tx.execute(sql...)`) specifically so the result is
@@ -324,6 +388,35 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
     );
   }
 
+  // M6 single-writer authority (DESIGN §13 — SECURITY-SENSITIVE): the two cases below are the
+  // enforcement point "a domain cannot mutate a replica it doesn't own" / "a child cannot claim
+  // authorship of a parent-origin object" — every ordinary write funnels through here.
+  if (input.federationImport) {
+    // Importing a peer's update: the incoming entry's claimed authority MUST match who already
+    // owns this row. If a bundle claims domain C authored an update to an object domain A
+    // actually originated, that is a forged-authorship attempt — reject outright rather than
+    // silently overwriting A's row with C's content.
+    if (existing.originDomainId !== input.federationImport.originDomainId) {
+      throw conflict(
+        `single-writer authority violation: object '${existing.id}' is authoritatively owned by domain '${existing.originDomainId}', not '${input.federationImport.originDomainId}'`
+      );
+    }
+    // Idempotent replay / interrupted-transfer resume (DESIGN §13, DoD "double-import is a
+    // no-op"): a revision at-or-behind what's already stored is stale — return the row unchanged,
+    // no audit event, no journal entry, no version bump.
+    if (input.federationImport.revision <= existing.revision) {
+      return toGraphObject(existing);
+    }
+  } else {
+    // Ordinary local write attempting to touch a row this domain did not author.
+    const self = await ensureFederationSelf(tx, input.orgId);
+    if (existing.originDomainId !== self.domainId) {
+      throw conflict(
+        `object '${existing.id}' is a read-only replica (authoritative domain '${existing.originDomainId}') — it cannot be mutated locally`
+      );
+    }
+  }
+
   const type = await requireObjectType(tx, input.typeId);
   const nextProperties = (input.properties ?? existing.properties) as Record<string, unknown>;
   const nextLabels = (input.labels ?? existing.labels) as Record<string, unknown>;
@@ -332,6 +425,10 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
   const nextName = input.name ?? existing.name;
   const nextDomainId = input.domainId === undefined ? existing.domainId : input.domainId;
   const nextVersion = existing.version + 1;
+  const nextRevision = input.federationImport?.revision ?? existing.revision + 1;
+  const nextProvenance = input.federationImport
+    ? (input.federationImport.provenance ?? null)
+    : existing.provenance;
   const beforeHash = existing.contentHash;
   const afterHash = computeObjectContentHash({
     id: existing.id,
@@ -353,7 +450,8 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
       properties: nextProperties,
       labels: nextLabels,
       version: nextVersion,
-      revision: existing.revision + 1,
+      revision: nextRevision,
+      provenance: nextProvenance,
       contentHash: afterHash,
       updatedAt: new Date()
     })
@@ -371,6 +469,27 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
     afterHash,
     requestId: input.requestId
   });
+  // See the identical note in `createObject` — never re-journal an imported row's own history.
+  if (!input.federationImport) {
+    await appendJournalEntry(tx, {
+      orgId: input.orgId,
+      entryKind: journalEntryKindFor(input.typeId, false),
+      contentHash: afterHash,
+      payload: {
+        id: existing.id,
+        orgId: input.orgId,
+        domainId: nextDomainId,
+        typeId: input.typeId,
+        name: nextName,
+        urn: existing.urn,
+        properties: nextProperties,
+        labels: nextLabels,
+        originDomainId: row.originDomainId,
+        revision: nextRevision,
+        version: nextVersion
+      }
+    });
+  }
   await eventBus.publish(tx, {
     orgId: input.orgId,
     type: `scp.object.updated`,
@@ -393,6 +512,8 @@ export interface UpsertObjectByUrnInput {
   domainId?: string | null;
   properties?: Record<string, unknown>;
   labels?: Record<string, unknown>;
+  /** M6: see `FederationImportContext`'s doc comment above `createObject`. */
+  federationImport?: FederationImportContext;
 }
 
 /**
@@ -422,7 +543,8 @@ export async function upsertObjectByUrn(
       name: input.name,
       domainId: input.domainId,
       properties: input.properties,
-      labels: input.labels
+      labels: input.labels,
+      federationImport: input.federationImport
     });
     return { object: created, created: true };
   }
@@ -434,6 +556,94 @@ export async function upsertObjectByUrn(
     throw conflict(`urn '${input.urn}' refers to a soft-deleted object`);
   }
 
+  // M6 single-writer authority — checked BEFORE the idempotent-no-op shortcut below, so a
+  // byte-identical replay against a replica this caller doesn't own still gets rejected rather
+  // than silently "succeeding" via the content-equality fast path (an authority check reached only
+  // through `updateObject` would never fire for that case).
+  if (input.federationImport) {
+    if (existing.originDomainId !== input.federationImport.originDomainId) {
+      throw conflict(
+        `single-writer authority violation: object '${existing.id}' is authoritatively owned by domain '${existing.originDomainId}', not '${input.federationImport.originDomainId}'`
+      );
+    }
+  } else {
+    const self = await ensureFederationSelf(tx, input.orgId);
+    if (existing.originDomainId !== self.domainId) {
+      throw conflict(
+        `object '${existing.id}' is a read-only replica (authoritative domain '${existing.originDomainId}') — it cannot be mutated locally`
+      );
+    }
+  }
+
+  // M6 hand-fill reconciliation (DESIGN §13: "reconciled — CONFIRMED OR REPLACED — when a signed
+  // bundle later arrives"): a hand-filled row (`provenance: 'manual'`) was created by an operator
+  // who could not have known the real object's id (a human can't hand-type a UUID they've never
+  // seen) — `handfill-repo.ts` generates a local placeholder id for it. When the REAL, signature-
+  // verified import for the SAME urn later arrives carrying the object's true id, an ordinary
+  // UPDATE would silently keep the WRONG (locally-generated) id forever — every future entry that
+  // references the object by its real id (a relationship endpoint, a `domainId` parent, ...) would
+  // then fail to resolve locally, since this org's row would still be filed under the placeholder
+  // id. So this case REPLACES the id in place via `UPDATE ... SET id = ...` — never a hard DELETE
+  // (`scp_app` is deliberately never granted DELETE on `objects`, DESIGN.md §4.1's append/soft-
+  // delete-only discipline). If some OTHER row already references the placeholder id via a foreign
+  // key (a relationship endpoint created against the unverified hand-filled row), this UPDATE
+  // fails closed with a foreign-key violation rather than silently orphaning it — an acceptable
+  // v1 scope boundary (hand-filled rows are expected to accumulate local references rarely, if
+  // ever, before reconciliation). Never fires for an ordinary (non-hand-filled) reconciliation,
+  // where the id is already correct and stable.
+  if (
+    input.federationImport &&
+    existing.provenance === "manual" &&
+    input.id &&
+    input.id !== existing.id
+  ) {
+    const nextDomainId = input.domainId === undefined ? existing.domainId : input.domainId;
+    const nextProperties = input.properties ?? {};
+    const nextLabels = input.labels ?? {};
+    const nextVersion = existing.version + 1;
+    const afterHash = computeObjectContentHash({
+      id: input.id,
+      orgId: input.orgId,
+      domainId: nextDomainId,
+      typeId: input.typeId,
+      name: input.name,
+      urn: input.urn,
+      properties: nextProperties,
+      labels: nextLabels,
+      version: nextVersion
+    });
+    const [row] = await tx
+      .update(objects)
+      .set({
+        id: input.id,
+        name: input.name,
+        domainId: nextDomainId,
+        properties: nextProperties,
+        labels: nextLabels,
+        version: nextVersion,
+        revision: input.federationImport.revision,
+        originDomainId: input.federationImport.originDomainId,
+        provenance: input.federationImport.provenance ?? null,
+        contentHash: afterHash,
+        updatedAt: new Date()
+      })
+      .where(eq(objects.id, existing.id))
+      .returning();
+    if (!row) throw new Error("failed to reconcile hand-filled object onto its authoritative id");
+
+    await appendAuditEvent(tx, {
+      orgId: input.orgId,
+      domainId: nextDomainId,
+      actorId: input.actorObjectId,
+      action: `${input.typeId}.update`,
+      subjectId: row.id,
+      beforeHash: existing.contentHash,
+      afterHash,
+      requestId: input.requestId
+    });
+    return { object: toGraphObject(row), created: false };
+  }
+
   // True idempotency: replaying the exact same PUT body against an unchanged row is a no-op —
   // no version/revision bump, no audit event, no outbox event. Without this, a byte-identical
   // replay would still increment `version` forever, which is "safe" for federation convergence
@@ -442,7 +652,16 @@ export async function upsertObjectByUrn(
   const nextDomainId = input.domainId === undefined ? existing.domainId : input.domainId;
   const nextProperties = input.properties ?? {};
   const nextLabels = input.labels ?? {};
+  // M6: a hand-filled row (`provenance: 'manual'`) whose content happens to already match an
+  // arriving REAL import must still fall through to `updateObject` — never take the no-op fast
+  // path — so `provenance` actually clears and `revision` actually advances. Otherwise a
+  // byte-identical signed bundle would leave the object permanently stuck flagged "unverified"
+  // even though it was JUST verified (DESIGN §13 hand-fill reconciliation).
+  const provenanceWouldChange =
+    input.federationImport !== undefined &&
+    (input.federationImport.provenance ?? null) !== existing.provenance;
   if (
+    !provenanceWouldChange &&
     existing.name === input.name &&
     existing.domainId === nextDomainId &&
     canonicalJson(existing.properties) === canonicalJson(nextProperties) &&
@@ -460,7 +679,8 @@ export async function upsertObjectByUrn(
     name: input.name,
     domainId: input.domainId,
     properties: input.properties ?? {},
-    labels: input.labels ?? {}
+    labels: input.labels ?? {},
+    federationImport: input.federationImport
   });
   return { object: updated, created: false };
 }
@@ -473,13 +693,37 @@ export async function deleteObject(
     actorObjectId: string;
     requestId: string;
     idOrUrn: string;
+    /** M6: see `FederationImportContext`'s doc comment above `createObject`. */
+    federationImport?: FederationImportContext;
   }
 ): Promise<void> {
   const existing = await lockObjectRow(tx, input.orgId, input.typeId, input.idOrUrn);
 
+  if (input.federationImport) {
+    if (existing.originDomainId !== input.federationImport.originDomainId) {
+      throw conflict(
+        `single-writer authority violation: object '${existing.id}' is authoritatively owned by domain '${existing.originDomainId}', not '${input.federationImport.originDomainId}'`
+      );
+    }
+    if (input.federationImport.revision <= existing.revision) return; // stale replay — no-op
+  } else {
+    const self = await ensureFederationSelf(tx, input.orgId);
+    if (existing.originDomainId !== self.domainId) {
+      throw conflict(
+        `object '${existing.id}' is a read-only replica (authoritative domain '${existing.originDomainId}') — it cannot be mutated locally`
+      );
+    }
+  }
+
+  const nextRevision = input.federationImport?.revision ?? existing.revision + 1;
   await tx
     .update(objects)
-    .set({ deletedAt: new Date(), version: existing.version + 1, updatedAt: new Date() })
+    .set({
+      deletedAt: new Date(),
+      version: existing.version + 1,
+      revision: nextRevision,
+      updatedAt: new Date()
+    })
     .where(eq(objects.id, existing.id));
 
   await appendAuditEvent(tx, {
@@ -492,6 +736,14 @@ export async function deleteObject(
     afterHash: null,
     requestId: input.requestId
   });
+  if (!input.federationImport) {
+    await appendJournalEntry(tx, {
+      orgId: input.orgId,
+      entryKind: journalEntryKindFor(input.typeId, true),
+      contentHash: existing.contentHash,
+      payload: { id: existing.id, typeId: input.typeId, urn: existing.urn }
+    });
+  }
   await eventBus.publish(tx, {
     orgId: input.orgId,
     type: `scp.object.deleted`,

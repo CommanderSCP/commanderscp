@@ -103,6 +103,22 @@ jobs:
       - run: pnpm build
       - run: bash scripts/e2e-m5.sh
 
+  e2e-m6:
+    name: "8c. E2E (M6 federation two-domain round-trip, main only)"
+    # Same reason as e2e-m0/e2e-m4/e2e-m5: needs a real Docker daemon (compose) — the general
+    # runner has none. This one needs it twice over: the compose stack itself runs TWO fully
+    # isolated scpd+postgres pairs on separate Docker networks with no shared network at all
+    # (DESIGN.md §13's "no network path exists between the domains" requirement, enforced
+    # structurally by Docker's own network isolation, not a firewall rule).
+    runs-on: homelab-commanderscp-linux-docker-build
+    needs: [static-checks, codegen-drift, unit-tests]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: pnpm build
+      - run: bash scripts/e2e-m6.sh
+
   e2e-web:
     name: "9. E2E (Web UI, Playwright/Chromium, main only)"
     # Same reason as e2e-m0: needs a real Docker daemon (compose) — the general runner has none.

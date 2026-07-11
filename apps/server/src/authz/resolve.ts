@@ -34,7 +34,10 @@ export type Permission =
   | "policy:write"
   | "freeze:write"
   | "freeze:override"
-  | "change:emergency";
+  | "change:emergency"
+  // M6 federation (DESIGN.md §13) — pairing/export/import/hand-fill vs read-only status/self.
+  | "federation:read"
+  | "federation:write";
 
 export interface PermissionCheck {
   orgId: string;

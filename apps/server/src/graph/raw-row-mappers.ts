@@ -20,6 +20,7 @@ export type RawObjectRow = {
   labels: unknown;
   origin_domain_id: string;
   revision: string | number;
+  provenance: string | null;
   version: string | number;
   created_at: Date | string;
   updated_at: Date | string;
@@ -42,6 +43,7 @@ export function mapRawObjectRow(row: RawObjectRow): GraphObject {
     labels: (row.labels as Record<string, unknown>) ?? {},
     originDomainId: row.origin_domain_id,
     revision: Number(row.revision),
+    provenance: row.provenance as GraphObject["provenance"],
     version: Number(row.version),
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),

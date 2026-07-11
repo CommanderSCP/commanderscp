@@ -164,7 +164,19 @@ import {
   proposeInitiative as proposeInitiativeRequest,
   listInitiatives as listInitiativesRequest,
   getInitiative as getInitiativeRequest,
-  addInitiativeCampaign as addInitiativeCampaignRequest
+  addInitiativeCampaign as addInitiativeCampaignRequest,
+  // M6: Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN §13).
+  initFederation as initFederationRequest,
+  getFederationSelf as getFederationSelfRequest,
+  listFederationPeers as listFederationPeersRequest,
+  pairPeer as pairPeerRequest,
+  getFederationStatus as getFederationStatusRequest,
+  exportSyncBundle as exportSyncBundleRequest,
+  exportPromotionBundle as exportPromotionBundleRequest,
+  importBundle as importBundleRequest,
+  createOverlay as createOverlayRequest,
+  getMergedOverlayView as getMergedOverlayViewRequest,
+  handFillObject as handFillObjectRequest
 } from "./generated/sdk.gen.js";
 import type {
   ApplyPlanResponse,
@@ -236,7 +248,20 @@ import type {
   InitiativeListResponse,
   InitiativeRollupResponse,
   CreateInitiativeRequest,
-  AddInitiativeCampaignRequest
+  AddInitiativeCampaignRequest,
+  // M6: Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN §13).
+  FederationSelfInfo,
+  InitFederationRequest,
+  FederationPeer,
+  PairPeerRequest,
+  FederationStatusResponse,
+  ExportJournalRequest,
+  SyncBundle,
+  ExportPromotionRequest,
+  PromotionBundle,
+  ImportBundleRequest,
+  ImportResult,
+  HandFillRequest
 } from "@scp/schemas";
 import { ScpApiError } from "./errors.js";
 
@@ -1024,7 +1049,11 @@ export class ScpClient {
       return unwrap(result);
     },
     cancel: async (id: string, reason?: string): Promise<Change> => {
-      const result = await cancelChangeRequest({ client: this.client, path: { id }, body: { reason } });
+      const result = await cancelChangeRequest({
+        client: this.client,
+        path: { id },
+        body: { reason }
+      });
       return unwrap(result);
     },
     /** Promotes a change out of `validating` — the human approval gate before `promoted`.
@@ -1042,7 +1071,11 @@ export class ScpClient {
     /** Manually triggers a rollback — returns the NEW rollback Change (linked via
      *  `rollbackOfObjectId`), not the original. */
     rollback: async (id: string, reason: string): Promise<Change> => {
-      const result = await rollbackChangeRequest({ client: this.client, path: { id }, body: { reason } });
+      const result = await rollbackChangeRequest({
+        client: this.client,
+        path: { id },
+        body: { reason }
+      });
       return unwrap(result);
     }
   };
@@ -1113,8 +1146,15 @@ export class ScpClient {
       upsert: upsertControlByUrnRequest
     }),
     /** Binds a Control to a ControlPlugin instance (DESIGN §10.2). */
-    putBinding: async (idOrUrn: string, req: CreateControlBindingRequest): Promise<ControlBinding> => {
-      const result = await putControlBindingRequest({ client: this.client, path: { idOrUrn }, body: req });
+    putBinding: async (
+      idOrUrn: string,
+      req: CreateControlBindingRequest
+    ): Promise<ControlBinding> => {
+      const result = await putControlBindingRequest({
+        client: this.client,
+        path: { idOrUrn },
+        body: req
+      });
       return unwrap(result);
     }
   };
@@ -1122,7 +1162,10 @@ export class ScpClient {
   readonly controlRuns = {
     /** Persisted control outcomes + evidence for one Change (DESIGN §10.2/§10.4). */
     listForChange: async (changeId: string): Promise<ControlRunListResponse> => {
-      const result = await listChangeControlRunsRequest({ client: this.client, path: { idOrUrn: changeId } });
+      const result = await listChangeControlRunsRequest({
+        client: this.client,
+        path: { idOrUrn: changeId }
+      });
       return unwrap(result);
     }
   };
@@ -1143,7 +1186,11 @@ export class ScpClient {
     /** Casts a vote AS THE AUTHENTICATED CALLER — DESIGN §10.2 N-of-M quorum; there is no way to
      *  vote on someone else's behalf through this API. */
     vote: async (id: string, req: CastApprovalVoteRequest = {}): Promise<ApprovalVote> => {
-      const result = await castApprovalVoteRequest({ client: this.client, path: { id }, body: req });
+      const result = await castApprovalVoteRequest({
+        client: this.client,
+        path: { id },
+        body: req
+      });
       return unwrap(result);
     }
   };
@@ -1204,7 +1251,11 @@ export class ScpClient {
     /** Rolls back every currently-eligible member Change (DESIGN §9.4/§9.5) — each becomes its
      *  own new rollback Change, exactly like `changes.rollback` does per-member. */
     rollback: async (id: string, reason: string): Promise<RollbackCampaignResponse> => {
-      const result = await rollbackCampaignRequest({ client: this.client, path: { id }, body: { reason } });
+      const result = await rollbackCampaignRequest({
+        client: this.client,
+        path: { id },
+        body: { reason }
+      });
       return unwrap(result);
     }
   };
@@ -1225,8 +1276,75 @@ export class ScpClient {
       return unwrap(result);
     },
     addCampaign: async (id: string, req: AddInitiativeCampaignRequest): Promise<void> => {
-      const result = await addInitiativeCampaignRequest({ client: this.client, path: { id }, body: req });
+      const result = await addInitiativeCampaignRequest({
+        client: this.client,
+        path: { id },
+        body: req
+      });
       unwrap(result);
+    }
+  };
+
+  // M6: Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN §13) — `scp federation
+  // init/pair/export/import/status`, overlays, hand-fill.
+  readonly federation = {
+    init: async (
+      req: InitFederationRequest
+    ): Promise<{ domainId: string; name: string; role: string }> => {
+      const result = await initFederationRequest({ client: this.client, body: req });
+      return unwrap(result);
+    },
+    self: async (): Promise<FederationSelfInfo> => {
+      const result = await getFederationSelfRequest({ client: this.client });
+      return unwrap(result);
+    },
+    listPeers: async (): Promise<FederationPeer[]> => {
+      const result = await listFederationPeersRequest({ client: this.client });
+      return unwrap(result);
+    },
+    pair: async (req: PairPeerRequest): Promise<FederationPeer> => {
+      const result = await pairPeerRequest({ client: this.client, body: req });
+      return unwrap(result);
+    },
+    status: async (): Promise<FederationStatusResponse> => {
+      const result = await getFederationStatusRequest({ client: this.client });
+      return unwrap(result);
+    },
+    exportSync: async (req: ExportJournalRequest): Promise<SyncBundle> => {
+      const result = await exportSyncBundleRequest({ client: this.client, body: req });
+      return unwrap(result);
+    },
+    exportPromotion: async (req: ExportPromotionRequest): Promise<PromotionBundle> => {
+      const result = await exportPromotionBundleRequest({ client: this.client, body: req });
+      return unwrap(result);
+    },
+    /** Verifies + applies either bundle kind (server sniffs `header.kind`) — fail-closed on any
+     *  signature/hash-chain check (DESIGN §13). */
+    import: async (bundle: ImportBundleRequest): Promise<ImportResult> => {
+      const result = await importBundleRequest({ client: this.client, body: bundle });
+      return unwrap(result);
+    },
+    createOverlay: async (req: {
+      base: string;
+      typeId: string;
+      name: string;
+      urn?: string;
+      properties?: Record<string, unknown>;
+      labels?: Record<string, unknown>;
+    }) => {
+      const result = await createOverlayRequest({ client: this.client, body: req });
+      return unwrap(result);
+    },
+    getMergedOverlayView: async (baseIdOrUrn: string) => {
+      const result = await getMergedOverlayViewRequest({
+        client: this.client,
+        path: { idOrUrn: baseIdOrUrn }
+      });
+      return unwrap(result);
+    },
+    handFill: async (req: HandFillRequest) => {
+      const result = await handFillObjectRequest({ client: this.client, body: req });
+      return unwrap(result);
     }
   };
 }

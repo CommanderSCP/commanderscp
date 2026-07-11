@@ -38,6 +38,7 @@ import { registerChangeRoutes } from "./routes/changes.js";
 import { registerChangeSourceRoutes } from "./routes/change-sources.js";
 import { registerCampaignRoutes } from "./routes/campaigns.js";
 import { registerInitiativeRoutes } from "./routes/initiatives.js";
+import { registerFederationRoutes } from "./routes/federation.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -61,7 +62,14 @@ export async function buildApp(
   deps.celSandbox ??= getSharedCelSandbox();
 
   const app = Fastify({
-    logger: options.logger ?? true
+    logger: options.logger ?? true,
+    // M6 (DESIGN.md §13 — bundle-parser robustness, M6 PR body "SECURITY-SENSITIVE" flag):
+    // `.scpbundle` files POST straight to /federation/imports as one JSON body; Fastify's
+    // built-in default (1 MiB) would reject legitimate multi-thousand-entry bundles, but an
+    // UNBOUNDED limit is exactly the oversized-payload DoS surface a bundle parser must defend
+    // against. 64 MiB is a generous, explicit, non-infinite ceiling — enforced by Fastify BEFORE
+    // the body is ever handed to JSON.parse or any federation code.
+    bodyLimit: 64 * 1024 * 1024
   }).withTypeProvider<ZodTypeProvider>();
 
   app.setValidatorCompiler(validatorCompiler);
@@ -142,6 +150,9 @@ export async function buildApp(
   // Changes over the same M3/M4 machinery; no new engine, see coordination/campaign-status.ts.
   registerCampaignRoutes(app, deps);
   registerInitiativeRoutes(app, deps);
+  // M6: Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN.md §13) — sync journal export/import,
+  // peer pairing, Promotion Bundles, overlays, hand-fill. See routes/federation.ts's module doc.
+  registerFederationRoutes(app, deps);
 
   app.get("/healthz", async () => ({ status: "ok" }));
 

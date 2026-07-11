@@ -976,6 +976,7 @@ export type ListObjectsResponses = {
             };
             originDomainId: string;
             revision: number;
+            provenance: 'manual' | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -1064,6 +1065,7 @@ export type CreateObjectResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -1140,6 +1142,7 @@ export type DeleteObjectResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -1216,6 +1219,7 @@ export type GetObjectResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -1313,6 +1317,7 @@ export type UpdateObjectResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -1399,6 +1404,7 @@ export type UpsertObjectByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -1422,6 +1428,7 @@ export type UpsertObjectByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -1794,6 +1801,7 @@ export type ListDomainsResponses = {
             };
             originDomainId: string;
             revision: number;
+            provenance: 'manual' | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -1880,6 +1888,7 @@ export type CreateDomainResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -1955,6 +1964,7 @@ export type DeleteDomainResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2030,6 +2040,7 @@ export type GetDomainResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2126,6 +2137,7 @@ export type UpdateDomainResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2211,6 +2223,7 @@ export type UpsertDomainByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2234,6 +2247,7 @@ export type UpsertDomainByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2302,6 +2316,7 @@ export type ListServicesResponses = {
             };
             originDomainId: string;
             revision: number;
+            provenance: 'manual' | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -2388,6 +2403,7 @@ export type CreateServiceResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2463,6 +2479,7 @@ export type DeleteServiceResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2538,6 +2555,7 @@ export type GetServiceResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2634,6 +2652,7 @@ export type UpdateServiceResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2719,6 +2738,7 @@ export type UpsertServiceByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2742,6 +2762,7 @@ export type UpsertServiceByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2810,6 +2831,7 @@ export type ListComponentsResponses = {
             };
             originDomainId: string;
             revision: number;
+            provenance: 'manual' | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -2896,6 +2918,7 @@ export type CreateComponentResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2971,6 +2994,7 @@ export type DeleteComponentResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3046,6 +3070,7 @@ export type GetComponentResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3142,6 +3167,7 @@ export type UpdateComponentResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3227,6 +3253,7 @@ export type UpsertComponentByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3250,6 +3277,7 @@ export type UpsertComponentByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3318,6 +3346,7 @@ export type ListDeploymentTargetsResponses = {
             };
             originDomainId: string;
             revision: number;
+            provenance: 'manual' | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -3404,6 +3433,7 @@ export type CreateDeploymentTargetResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3479,6 +3509,7 @@ export type DeleteDeploymentTargetResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3554,6 +3585,7 @@ export type GetDeploymentTargetResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3650,6 +3682,7 @@ export type UpdateDeploymentTargetResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3735,6 +3768,7 @@ export type UpsertDeploymentTargetByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3758,6 +3792,7 @@ export type UpsertDeploymentTargetByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3826,6 +3861,7 @@ export type ListTeamsResponses = {
             };
             originDomainId: string;
             revision: number;
+            provenance: 'manual' | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -3912,6 +3948,7 @@ export type CreateTeamResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3987,6 +4024,7 @@ export type DeleteTeamResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4062,6 +4100,7 @@ export type GetTeamResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4158,6 +4197,7 @@ export type UpdateTeamResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4243,6 +4283,7 @@ export type UpsertTeamByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4266,6 +4307,7 @@ export type UpsertTeamByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4334,6 +4376,7 @@ export type ListGroupsResponses = {
             };
             originDomainId: string;
             revision: number;
+            provenance: 'manual' | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -4420,6 +4463,7 @@ export type CreateGroupResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4495,6 +4539,7 @@ export type DeleteGroupResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4570,6 +4615,7 @@ export type GetGroupResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4666,6 +4712,7 @@ export type UpdateGroupResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4751,6 +4798,7 @@ export type UpsertGroupByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4774,6 +4822,7 @@ export type UpsertGroupByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4842,6 +4891,7 @@ export type ListUsersResponses = {
             };
             originDomainId: string;
             revision: number;
+            provenance: 'manual' | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -4928,6 +4978,7 @@ export type CreateUserResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5003,6 +5054,7 @@ export type DeleteUserResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5078,6 +5130,7 @@ export type GetUserResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5174,6 +5227,7 @@ export type UpdateUserResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5259,6 +5313,7 @@ export type UpsertUserByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5282,6 +5337,7 @@ export type UpsertUserByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5350,6 +5406,7 @@ export type ListServiceAccountsResponses = {
             };
             originDomainId: string;
             revision: number;
+            provenance: 'manual' | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -5436,6 +5493,7 @@ export type CreateServiceAccountResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5511,6 +5569,7 @@ export type DeleteServiceAccountResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5586,6 +5645,7 @@ export type GetServiceAccountResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5682,6 +5742,7 @@ export type UpdateServiceAccountResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5767,6 +5828,7 @@ export type UpsertServiceAccountByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5790,6 +5852,7 @@ export type UpsertServiceAccountByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -7848,6 +7911,7 @@ export type GraphQueryResponses = {
             };
             originDomainId: string;
             revision: number;
+            provenance: 'manual' | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -7921,6 +7985,7 @@ export type GraphTraverseResponses = {
             };
             originDomainId: string;
             revision: number;
+            provenance: 'manual' | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -9467,6 +9532,7 @@ export type ListPolicysResponses = {
             };
             originDomainId: string;
             revision: number;
+            provenance: 'manual' | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -9553,6 +9619,7 @@ export type CreatePolicyResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -9628,6 +9695,7 @@ export type DeletePolicyResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -9703,6 +9771,7 @@ export type GetPolicyResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -9799,6 +9868,7 @@ export type UpdatePolicyResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -9884,6 +9954,7 @@ export type UpsertPolicyByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -9907,6 +9978,7 @@ export type UpsertPolicyByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -9975,6 +10047,7 @@ export type ListControlsResponses = {
             };
             originDomainId: string;
             revision: number;
+            provenance: 'manual' | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -10061,6 +10134,7 @@ export type CreateControlResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -10136,6 +10210,7 @@ export type DeleteControlResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -10211,6 +10286,7 @@ export type GetControlResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -10307,6 +10383,7 @@ export type UpdateControlResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -10392,6 +10469,7 @@ export type UpsertControlByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -10415,6 +10493,7 @@ export type UpsertControlByUrnResponses = {
         };
         originDomainId: string;
         revision: number;
+        provenance: 'manual' | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -11801,3 +11880,1010 @@ export type AddInitiativeCampaignResponses = {
 };
 
 export type AddInitiativeCampaignResponse = AddInitiativeCampaignResponses[keyof AddInitiativeCampaignResponses];
+
+export type InitFederationData = {
+    body: {
+        name: string;
+        role: 'parent' | 'child';
+    };
+    path?: never;
+    query?: never;
+    url: '/federation/init';
+};
+
+export type InitFederationErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type InitFederationError = InitFederationErrors[keyof InitFederationErrors];
+
+export type InitFederationResponses = {
+    /**
+     * Success
+     */
+    200: {
+        domainId: string;
+        name: string;
+        role: 'unset' | 'parent' | 'child';
+    };
+};
+
+export type InitFederationResponse = InitFederationResponses[keyof InitFederationResponses];
+
+export type GetFederationSelfData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/federation/self';
+};
+
+export type GetFederationSelfErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetFederationSelfError = GetFederationSelfErrors[keyof GetFederationSelfErrors];
+
+export type GetFederationSelfResponses = {
+    /**
+     * Success
+     */
+    200: {
+        domainId: string;
+        name: string;
+        role: 'unset' | 'parent' | 'child';
+        publicKey: string;
+    };
+};
+
+export type GetFederationSelfResponse = GetFederationSelfResponses[keyof GetFederationSelfResponses];
+
+export type ListFederationPeersData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/federation/peers';
+};
+
+export type ListFederationPeersErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListFederationPeersError = ListFederationPeersErrors[keyof ListFederationPeersErrors];
+
+export type ListFederationPeersResponses = {
+    /**
+     * Success
+     */
+    200: Array<{
+        id: string;
+        name: string;
+        role: 'unset' | 'parent' | 'child';
+        baseUrl: string | null;
+        syncScope: {
+            mode: 'full';
+        } | {
+            mode: 'policies_only';
+        } | {
+            mode: 'changes_only';
+        } | {
+            mode: 'status_only';
+        } | {
+            mode: 'custom';
+            labelSelector: {
+                [key: string]: string;
+            };
+        };
+        publicKey: string;
+        pairedAt: string;
+    }>;
+};
+
+export type ListFederationPeersResponse = ListFederationPeersResponses[keyof ListFederationPeersResponses];
+
+export type PairPeerData = {
+    body: {
+        domainId: string;
+        name: string;
+        role: 'parent' | 'child';
+        publicKey: string;
+        baseUrl?: string;
+        syncScope?: {
+            mode: 'full';
+        } | {
+            mode: 'policies_only';
+        } | {
+            mode: 'changes_only';
+        } | {
+            mode: 'status_only';
+        } | {
+            mode: 'custom';
+            labelSelector: {
+                [key: string]: string;
+            };
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/federation/peers';
+};
+
+export type PairPeerErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PairPeerError = PairPeerErrors[keyof PairPeerErrors];
+
+export type PairPeerResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        name: string;
+        role: 'unset' | 'parent' | 'child';
+        baseUrl: string | null;
+        syncScope: {
+            mode: 'full';
+        } | {
+            mode: 'policies_only';
+        } | {
+            mode: 'changes_only';
+        } | {
+            mode: 'status_only';
+        } | {
+            mode: 'custom';
+            labelSelector: {
+                [key: string]: string;
+            };
+        };
+        publicKey: string;
+        pairedAt: string;
+    };
+};
+
+export type PairPeerResponse = PairPeerResponses[keyof PairPeerResponses];
+
+export type GetFederationStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/federation/status';
+};
+
+export type GetFederationStatusErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetFederationStatusError = GetFederationStatusErrors[keyof GetFederationStatusErrors];
+
+export type GetFederationStatusResponses = {
+    /**
+     * Success
+     */
+    200: {
+        self: {
+            domainId: string;
+            name: string;
+            role: 'unset' | 'parent' | 'child';
+            publicKey: string;
+        } | null;
+        peers: Array<{
+            peer: {
+                id: string;
+                name: string;
+                role: 'unset' | 'parent' | 'child';
+                baseUrl: string | null;
+                syncScope: {
+                    mode: 'full';
+                } | {
+                    mode: 'policies_only';
+                } | {
+                    mode: 'changes_only';
+                } | {
+                    mode: 'status_only';
+                } | {
+                    mode: 'custom';
+                    labelSelector: {
+                        [key: string]: string;
+                    };
+                };
+                publicKey: string;
+                pairedAt: string;
+            };
+            lastAppliedSequence: number | null;
+            lastSyncedAt: string | null;
+            recentTransfers: Array<{
+                id: string;
+                peerDomainId: string;
+                direction: 'export' | 'import';
+                kind: 'sync' | 'promotion';
+                status: 'created' | 'submitted' | 'confirmed';
+                sinceSequence: number | null;
+                throughSequence: number | null;
+                createdAt: string;
+                confirmedAt: string | null;
+            }>;
+        }>;
+    };
+};
+
+export type GetFederationStatusResponse = GetFederationStatusResponses[keyof GetFederationStatusResponses];
+
+export type ExportSyncBundleData = {
+    body: {
+        peer: string;
+        sinceSequence?: number;
+    };
+    path?: never;
+    query?: never;
+    url: '/federation/exports';
+};
+
+export type ExportSyncBundleErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ExportSyncBundleError = ExportSyncBundleErrors[keyof ExportSyncBundleErrors];
+
+export type ExportSyncBundleResponses = {
+    /**
+     * Success
+     */
+    200: {
+        header: {
+            formatVersion: 1;
+            kind: 'sync';
+            exporterDomainId: string;
+            peerDomainId: string;
+            sinceSequence: number;
+            throughSequence: number;
+            exportedAt: string;
+        };
+        entries: Array<{
+            id: string;
+            orgId: string;
+            originDomainId: string;
+            sequence: number;
+            entryKind: 'object_upsert' | 'object_tombstone' | 'relationship_upsert' | 'relationship_tombstone' | 'change_status' | 'policy_upsert' | 'approval_evidence' | 'audit_segment' | 'key_rotation';
+            payload: {
+                [key: string]: unknown;
+            };
+            contentHash: string;
+            baseRevision: number | null;
+            conflict: string | null;
+            prevHash: string;
+            rowHash: string;
+            signature: string;
+            createdAt: string;
+        }>;
+        checksum: string;
+        bundleSignature: string;
+    };
+};
+
+export type ExportSyncBundleResponse = ExportSyncBundleResponses[keyof ExportSyncBundleResponses];
+
+export type ExportPromotionBundleData = {
+    body: {
+        peer: string;
+        change: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/federation/exports/promotion';
+};
+
+export type ExportPromotionBundleErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ExportPromotionBundleError = ExportPromotionBundleErrors[keyof ExportPromotionBundleErrors];
+
+export type ExportPromotionBundleResponses = {
+    /**
+     * Success
+     */
+    200: {
+        header: {
+            formatVersion: 1;
+            kind: 'promotion';
+            exporterDomainId: string;
+            peerDomainId: string;
+            sourceChangeObjectId: string;
+            exportedAt: string;
+        };
+        change: {
+            urn: string;
+            name: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            sourceKind: string | null;
+            sourceRef: {
+                [key: string]: unknown;
+            } | null;
+        };
+        controlOutcomes: Array<{
+            controlUrn: string | null;
+            status: string;
+            evidence: {
+                [key: string]: unknown;
+            };
+            detail: string | null;
+        }>;
+        approvals: Array<{
+            record: {
+                approverSubjectId: string;
+                approverIdpSubject: string | null;
+                approvedObjectUrn: string;
+                approvedObjectContentHash: string;
+                decisionId: string | null;
+                timestamp: string;
+            };
+            signature: string;
+            publicKey: string;
+        }>;
+        artifactDigests: Array<string>;
+        checksum: string;
+        bundleSignature: string;
+    };
+};
+
+export type ExportPromotionBundleResponse = ExportPromotionBundleResponses[keyof ExportPromotionBundleResponses];
+
+export type ImportBundleData = {
+    body: {
+        header: {
+            formatVersion: 1;
+            kind: 'sync';
+            exporterDomainId: string;
+            peerDomainId: string;
+            sinceSequence: number;
+            throughSequence: number;
+            exportedAt: string;
+        };
+        entries: Array<{
+            id: string;
+            orgId: string;
+            originDomainId: string;
+            sequence: number;
+            entryKind: 'object_upsert' | 'object_tombstone' | 'relationship_upsert' | 'relationship_tombstone' | 'change_status' | 'policy_upsert' | 'approval_evidence' | 'audit_segment' | 'key_rotation';
+            payload: {
+                [key: string]: unknown;
+            };
+            contentHash: string;
+            baseRevision: number | null;
+            conflict: string | null;
+            prevHash: string;
+            rowHash: string;
+            signature: string;
+            createdAt: string;
+        }>;
+        checksum: string;
+        bundleSignature: string;
+    } | {
+        header: {
+            formatVersion: 1;
+            kind: 'promotion';
+            exporterDomainId: string;
+            peerDomainId: string;
+            sourceChangeObjectId: string;
+            exportedAt: string;
+        };
+        change: {
+            urn: string;
+            name: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            sourceKind: string | null;
+            sourceRef: {
+                [key: string]: unknown;
+            } | null;
+        };
+        controlOutcomes: Array<{
+            controlUrn: string | null;
+            status: string;
+            evidence: {
+                [key: string]: unknown;
+            };
+            detail: string | null;
+        }>;
+        approvals: Array<{
+            record: {
+                approverSubjectId: string;
+                approverIdpSubject: string | null;
+                approvedObjectUrn: string;
+                approvedObjectContentHash: string;
+                decisionId: string | null;
+                timestamp: string;
+            };
+            signature: string;
+            publicKey: string;
+        }>;
+        artifactDigests: Array<string>;
+        checksum: string;
+        bundleSignature: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/federation/imports';
+};
+
+export type ImportBundleErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ImportBundleError = ImportBundleErrors[keyof ImportBundleErrors];
+
+export type ImportBundleResponses = {
+    /**
+     * Success
+     */
+    200: {
+        peerDomainId: string;
+        appliedEntries: number;
+        skippedEntries: number;
+        lastAppliedSequence: number;
+        kind: 'sync';
+    } | {
+        localChangeObjectId: string;
+        localChangeUrn: string;
+        importedFromDomain: string;
+        approvalsAccepted: number;
+        approvalsRejected: number;
+        kind: 'promotion';
+    };
+};
+
+export type ImportBundleResponse = ImportBundleResponses[keyof ImportBundleResponses];
+
+export type CreateOverlayData = {
+    body: {
+        base: string;
+        typeId: string;
+        name: string;
+        urn?: string;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/federation/overlays';
+};
+
+export type CreateOverlayErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateOverlayError = CreateOverlayErrors[keyof CreateOverlayErrors];
+
+export type CreateOverlayResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        provenance: 'manual' | null;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type CreateOverlayResponse = CreateOverlayResponses[keyof CreateOverlayResponses];
+
+export type GetMergedOverlayViewData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/federation/overlays/{idOrUrn}';
+};
+
+export type GetMergedOverlayViewErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetMergedOverlayViewError = GetMergedOverlayViewErrors[keyof GetMergedOverlayViewErrors];
+
+export type GetMergedOverlayViewResponses = {
+    /**
+     * Success
+     */
+    200: {
+        base: {
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            typeId: string;
+            name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            provenance: 'manual' | null;
+            version: number;
+            createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+        };
+        overlays: Array<{
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            typeId: string;
+            name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            provenance: 'manual' | null;
+            version: number;
+            createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+        }>;
+        merged: {
+            [key: string]: unknown;
+        };
+    };
+};
+
+export type GetMergedOverlayViewResponse = GetMergedOverlayViewResponses[keyof GetMergedOverlayViewResponses];
+
+export type HandFillObjectData = {
+    body: {
+        peer: string;
+        typeId: string;
+        urn: string;
+        name: string;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/federation/hand-fill';
+};
+
+export type HandFillObjectErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type HandFillObjectError = HandFillObjectErrors[keyof HandFillObjectErrors];
+
+export type HandFillObjectResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        provenance: 'manual' | null;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type HandFillObjectResponse = HandFillObjectResponses[keyof HandFillObjectResponses];

@@ -8,6 +8,7 @@ import { hasRoleAtScope } from "../authz/resolve.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { computeObjectContentHash, computeRelationshipContentHash } from "../graph/content-hash.js";
 import { ensureInstanceKey, signAttestation, type SignedAttestation } from "./attestation.js";
+import { appendJournalEntry } from "../federation/journal-repo.js";
 
 /**
  * N-of-M approval quorum (DESIGN §10.2). SECURITY-SENSITIVE surfaces (M4 PR body flag: "approval
@@ -116,7 +117,11 @@ export async function materializeApprovalRequest(
   }
 }
 
-export async function getApprovalRequest(tx: TenantTx, orgId: string, id: string): Promise<ApprovalRequestRow> {
+export async function getApprovalRequest(
+  tx: TenantTx,
+  orgId: string,
+  id: string
+): Promise<ApprovalRequestRow> {
   const rows = await tx
     .select()
     .from(approvalRequests)
@@ -134,7 +139,9 @@ export async function listApprovalRequestsForChange(
   const rows = await tx
     .select()
     .from(approvalRequests)
-    .where(and(eq(approvalRequests.orgId, orgId), eq(approvalRequests.changeObjectId, changeObjectId)));
+    .where(
+      and(eq(approvalRequests.orgId, orgId), eq(approvalRequests.changeObjectId, changeObjectId))
+    );
   return rows as ApprovalRequestRow[];
 }
 
@@ -147,11 +154,17 @@ export interface ApprovalVoteRow {
   votedAt: Date;
 }
 
-export async function listVotesForRequest(tx: TenantTx, orgId: string, approvalRequestId: string): Promise<ApprovalVoteRow[]> {
+export async function listVotesForRequest(
+  tx: TenantTx,
+  orgId: string,
+  approvalRequestId: string
+): Promise<ApprovalVoteRow[]> {
   const rows = await tx
     .select()
     .from(approvalVotes)
-    .where(and(eq(approvalVotes.orgId, orgId), eq(approvalVotes.approvalRequestId, approvalRequestId)));
+    .where(
+      and(eq(approvalVotes.orgId, orgId), eq(approvalVotes.approvalRequestId, approvalRequestId))
+    );
   return rows as unknown as ApprovalVoteRow[];
 }
 
@@ -161,9 +174,17 @@ export interface QuorumStatus {
   required: number;
 }
 
-export async function quorumStatus(tx: TenantTx, orgId: string, request: ApprovalRequestRow): Promise<QuorumStatus> {
+export async function quorumStatus(
+  tx: TenantTx,
+  orgId: string,
+  request: ApprovalRequestRow
+): Promise<QuorumStatus> {
   const votes = await listVotesForRequest(tx, orgId, request.id);
-  return { satisfied: votes.length >= request.requiredCount, count: votes.length, required: request.requiredCount };
+  return {
+    satisfied: votes.length >= request.requiredCount,
+    count: votes.length,
+    required: request.requiredCount
+  };
 }
 
 export interface CastApprovalVoteInput {
@@ -185,7 +206,10 @@ export interface CastApprovalVoteInput {
  * several approval requests on the SAME change — `approves` is a coarser, per-change signal; the
  * `approval_votes` row is the fine-grained source of truth quorum counting actually uses).
  */
-export async function castApprovalVote(tx: TenantTx, input: CastApprovalVoteInput): Promise<ApprovalVoteRow> {
+export async function castApprovalVote(
+  tx: TenantTx,
+  input: CastApprovalVoteInput
+): Promise<ApprovalVoteRow> {
   const request = await getApprovalRequest(tx, input.orgId, input.approvalRequestId);
 
   const eligible = await hasRoleAtScope(tx, {
@@ -201,7 +225,7 @@ export async function castApprovalVote(tx: TenantTx, input: CastApprovalVoteInpu
   }
 
   const changeObject = await getObjectByIdOrUrnAnyType(tx, input.orgId, request.changeObjectId);
-  const key = await ensureInstanceKey(tx);
+  const key = await ensureInstanceKey(tx, input.orgId);
   const attestation = signAttestation(key, {
     approverSubjectId: input.voterObjectId,
     approverIdpSubject: input.voterIdpSubject ?? null,
@@ -237,10 +261,29 @@ export async function castApprovalVote(tx: TenantTx, input: CastApprovalVoteInpu
     row = inserted as unknown as ApprovalVoteRow;
   } catch (err) {
     if (isUniqueViolation(err, "approval_votes_no_double_vote")) {
-      throw conflict(`subject '${input.voterObjectId}' has already voted on approval request '${request.id}'`);
+      throw conflict(
+        `subject '${input.voterObjectId}' has already voted on approval request '${request.id}'`
+      );
     }
     throw err;
   }
+
+  // M6 (DESIGN §13): approvals-as-evidence ride the journal so a Promotion Bundle exported later
+  // can carry this attestation, and so a peer syncing with a `full`/`changes_only` scope can see
+  // it happened, WITHOUT it ever becoming authority anywhere but here (§13 "approvals transfer as
+  // evidence, never as authority" — this entry is read-only history, never replayed as a vote).
+  await appendJournalEntry(tx, {
+    orgId: input.orgId,
+    entryKind: "approval_evidence",
+    contentHash: attestation.record.approvedObjectContentHash,
+    payload: {
+      approvalRequestId: input.approvalRequestId,
+      changeObjectId: request.changeObjectId,
+      changeUrn: changeObject.urn,
+      voterObjectId: input.voterObjectId,
+      attestation
+    }
+  });
 
   // Idempotent upsert of the graph-visible `approves` relationship (voter -> change). A
   // pre-existing edge (from an earlier vote on a DIFFERENT approval request for the same change)
@@ -293,7 +336,11 @@ export async function castApprovalVote(tx: TenantTx, input: CastApprovalVoteInpu
   if (status.satisfied && request.status !== "satisfied") {
     await tx
       .update(approvalRequests)
-      .set({ status: "satisfied", satisfiedAt: new Date(), satisfiedDecisionId: input.decisionId ?? null })
+      .set({
+        status: "satisfied",
+        satisfiedAt: new Date(),
+        satisfiedDecisionId: input.decisionId ?? null
+      })
       .where(eq(approvalRequests.id, request.id));
   }
 

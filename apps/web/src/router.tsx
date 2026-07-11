@@ -14,6 +14,7 @@ import { CampaignListPage } from "./routes/campaign-list";
 import { CampaignDetailPage } from "./routes/campaign-detail";
 import { InitiativeListPage } from "./routes/initiative-list";
 import { InitiativeDetailPage } from "./routes/initiative-detail";
+import { FederationStatusPage } from "./routes/federation-status";
 
 /**
  * Code-based TanStack Router route tree (BUILD_AND_TEST.md §8 M2 item 2 — "TanStack Router...
@@ -103,10 +104,16 @@ const initiativeDetailRoute = createRoute({
   component: InitiativeDetailPage
 });
 
+const federationStatusRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/federation",
+  component: FederationStatusPage
+});
+
 // Static segments (`/login`, `/device`, `/pats`, `/graph/...`, `/changes`, `/changes/...`,
-// `/campaigns`, `/campaigns/...`, `/initiatives`, `/initiatives/...`) always out-rank the single
-// dynamic `$basePath` segment below at the same depth — standard router precedence — so those
-// pages never get shadowed by "an unknown registry named 'device'".
+// `/campaigns`, `/campaigns/...`, `/initiatives`, `/initiatives/...`, `/federation`) always
+// out-rank the single dynamic `$basePath` segment below at the same depth — standard router
+// precedence — so those pages never get shadowed by "an unknown registry named 'device'".
 const registryListRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/$basePath",
@@ -132,6 +139,7 @@ const routeTree = rootRoute.addChildren([
     campaignDetailRoute,
     initiativeListRoute,
     initiativeDetailRoute,
+    federationStatusRoute,
     registryListRoute,
     registryDetailRoute
   ])

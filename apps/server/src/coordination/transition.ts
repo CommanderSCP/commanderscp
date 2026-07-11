@@ -9,6 +9,8 @@ import { eventBus } from "../events/event-bus.js";
 import { findEdge, isLegalTransition } from "./transitions.js";
 import { evaluateLifecycleGate, type GateDeps } from "./gates.js";
 import { insertDecision } from "./decisions-repo.js";
+import { appendJournalEntry } from "../federation/journal-repo.js";
+import { changeStatusContentHash } from "./changes-repo.js";
 
 type ChangeRow = typeof changes.$inferSelect;
 
@@ -142,7 +144,10 @@ export async function transitionChange(
     reasonTree:
       gate.verdict === "allow"
         ? { summary: `transition '${fromState}' -> '${toState}' allowed`, gate: gate.reasonTree }
-        : { summary: `transition '${fromState}' -> '${toState}' blocked by gate`, gate: gate.reasonTree }
+        : {
+            summary: `transition '${fromState}' -> '${toState}' blocked by gate`,
+            gate: gate.reasonTree
+          }
   });
 
   // DESIGN §10.3: a freeze override is ALWAYS a high-severity, mandatory-reason audit event —
@@ -188,9 +193,7 @@ export async function transitionChange(
       lastHeartbeatAt: now,
       watchdogFlaggedAt: null,
       updatedAt: now,
-      ...(toState === "rolled_back" && input.reason
-        ? { rollbackTriggerReason: input.reason }
-        : {})
+      ...(toState === "rolled_back" && input.reason ? { rollbackTriggerReason: input.reason } : {})
     })
     .where(eq(changes.objectId, existing.objectId))
     .returning();
@@ -207,6 +210,26 @@ export async function transitionChange(
     decisionId: decision.id,
     requestId: input.requestId
   });
+  {
+    // M6 (DESIGN §13): every state change rides the journal too — this is what lets a promotion
+    // that just happened in a LOCAL change (possibly one instantiated from a Promotion Bundle)
+    // sync its status back to a peer (§13 "each wave's gate is the target domain's own local gate
+    // outcome, reported back via the journal").
+    const payload = {
+      objectId: input.changeObjectId,
+      fromState,
+      toState,
+      trigger: edge?.trigger ?? null,
+      reason: input.reason ?? null,
+      importedFromDomain: existing.importedFromDomain
+    };
+    await appendJournalEntry(tx, {
+      orgId: input.orgId,
+      entryKind: "change_status",
+      contentHash: changeStatusContentHash(payload),
+      payload
+    });
+  }
   await eventBus.publish(tx, {
     orgId: input.orgId,
     type: "scp.change.transitioned",

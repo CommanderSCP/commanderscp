@@ -11,6 +11,9 @@ import { requireRelationshipType } from "./type-registry-repo.js";
 import { validateProperties } from "./property-validation.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { eventBus } from "../events/event-bus.js";
+import { ensureFederationSelf } from "../federation/self-repo.js";
+import { appendJournalEntry } from "../federation/journal-repo.js";
+import type { FederationImportContext } from "./objects-repo.js";
 
 function toRelationship(row: typeof relationships.$inferSelect): Relationship {
   return {
@@ -94,6 +97,8 @@ export interface CreateRelationshipInput {
   properties?: Record<string, unknown>;
   /** Mirrors `objects.labels` (schema.ts doc) — IaC applies (`iac/plans-repo.ts`) set the `scp:managed-by`/`scp:stack` markers here. */
   labels?: Record<string, unknown>;
+  /** M6: see `graph/objects-repo.ts`'s `FederationImportContext` doc comment. */
+  federationImport?: FederationImportContext;
 }
 
 export async function createRelationship(
@@ -132,6 +137,11 @@ export async function createRelationship(
     labels
   });
 
+  const originDomainId =
+    input.federationImport?.originDomainId ??
+    (await ensureFederationSelf(tx, input.orgId)).domainId;
+  const revision = input.federationImport?.revision ?? 1;
+
   let row: typeof relationships.$inferSelect | undefined;
   try {
     [row] = await tx
@@ -144,13 +154,35 @@ export async function createRelationship(
         toId: input.toId,
         properties,
         labels,
-        originDomainId: input.orgId,
-        revision: 1,
+        originDomainId,
+        revision,
         contentHash
       })
       .returning();
   } catch (err) {
     if (isUniqueViolation(err, "relationships_org_type_from_to_key")) {
+      // M6 idempotent replay: a re-imported create for an edge that already exists (created by
+      // the same origin domain) is a no-op, not an error — the DoD's "double-import is a no-op"
+      // applies to relationships too.
+      if (input.federationImport) {
+        const existing = await tx.query.relationships.findFirst({
+          where: (t, { eq: eqOp, and: andOp }) =>
+            andOp(
+              eqOp(t.orgId, input.orgId),
+              eqOp(t.typeId, input.typeId),
+              eqOp(t.fromId, input.fromId),
+              eqOp(t.toId, input.toId)
+            )
+        });
+        if (existing && existing.originDomainId === input.federationImport.originDomainId) {
+          return toRelationship(existing);
+        }
+        if (existing) {
+          throw conflict(
+            `single-writer authority violation: relationship '${existing.id}' is authoritatively owned by domain '${existing.originDomainId}', not '${input.federationImport.originDomainId}'`
+          );
+        }
+      }
       throw conflict(
         `relationship '${input.typeId}' from '${input.fromId}' to '${input.toId}' already exists`
       );
@@ -169,6 +201,24 @@ export async function createRelationship(
     afterHash: contentHash,
     requestId: input.requestId
   });
+  if (!input.federationImport) {
+    await appendJournalEntry(tx, {
+      orgId: input.orgId,
+      entryKind: "relationship_upsert",
+      contentHash,
+      payload: {
+        id,
+        orgId: input.orgId,
+        typeId: input.typeId,
+        fromId: input.fromId,
+        toId: input.toId,
+        properties,
+        labels,
+        originDomainId,
+        revision
+      }
+    });
+  }
   await eventBus.publish(tx, {
     orgId: input.orgId,
     type: "scp.relationship.created",
@@ -237,7 +287,14 @@ export async function listRelationships(
 
 export async function deleteRelationship(
   tx: TenantTx,
-  input: { orgId: string; actorObjectId: string; requestId: string; id: string }
+  input: {
+    orgId: string;
+    actorObjectId: string;
+    requestId: string;
+    id: string;
+    /** M6: see `graph/objects-repo.ts`'s `FederationImportContext` doc comment. */
+    federationImport?: FederationImportContext;
+  }
 ): Promise<void> {
   const existing = await tx.query.relationships.findFirst({
     where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
@@ -245,9 +302,26 @@ export async function deleteRelationship(
   });
   if (!existing) throw notFound(`relationship '${input.id}' not found`);
 
+  if (input.federationImport) {
+    if (existing.originDomainId !== input.federationImport.originDomainId) {
+      throw conflict(
+        `single-writer authority violation: relationship '${existing.id}' is authoritatively owned by domain '${existing.originDomainId}', not '${input.federationImport.originDomainId}'`
+      );
+    }
+    if (input.federationImport.revision <= existing.revision) return; // stale replay — no-op
+  } else {
+    const self = await ensureFederationSelf(tx, input.orgId);
+    if (existing.originDomainId !== self.domainId) {
+      throw conflict(
+        `relationship '${existing.id}' is a read-only replica (authoritative domain '${existing.originDomainId}') — it cannot be mutated locally`
+      );
+    }
+  }
+
+  const nextRevision = input.federationImport?.revision ?? existing.revision + 1;
   await tx
     .update(relationships)
-    .set({ deletedAt: new Date() })
+    .set({ deletedAt: new Date(), revision: nextRevision })
     .where(eq(relationships.id, existing.id));
 
   await appendAuditEvent(tx, {
@@ -259,6 +333,19 @@ export async function deleteRelationship(
     afterHash: null,
     requestId: input.requestId
   });
+  if (!input.federationImport) {
+    await appendJournalEntry(tx, {
+      orgId: input.orgId,
+      entryKind: "relationship_tombstone",
+      contentHash: existing.contentHash,
+      payload: {
+        id: existing.id,
+        typeId: existing.typeId,
+        fromId: existing.fromId,
+        toId: existing.toId
+      }
+    });
+  }
   await eventBus.publish(tx, {
     orgId: input.orgId,
     type: "scp.relationship.deleted",

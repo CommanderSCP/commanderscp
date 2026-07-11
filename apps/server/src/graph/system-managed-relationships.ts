@@ -10,6 +10,14 @@
  *  - `approves` (DESIGN §10.2 approval EVIDENCE): a fabricated one is a graph-visible fake
  *    "X approved this". Created ONLY by the approval-vote path (`governance/approvals-repo.ts`'s
  *    `castApprovalVote`); removed only by a rollback of the underlying vote.
+ *  - `annotates` (DESIGN §13 federation OVERLAYS, M6): a non-owning domain's only legal way to
+ *    contribute to an object it doesn't own. Per-type overlay rules bound what may be layered
+ *    (policy overlays may only ADD strictness, never weaken/remove a base requirement) — a rule
+ *    only `federation/overlay-repo.ts`'s dedicated `createOverlay` enforces before calling
+ *    `createRelationship` directly. If any actor holding plain `relationship:write` could create
+ *    an `annotates` edge via the generic endpoint, they could layer a WEAKENING "overlay" that
+ *    policy-merge-at-read-time code would need to separately distrust — closing the creation
+ *    vector here means readers can trust every `annotates` edge they see was strictness-checked.
  *  - `coordinates` (DESIGN §9.5 campaign/initiative MEMBERSHIP): CRITICAL (M5 adversarial review) —
  *    campaign rollback and initiative roll-up read campaign/initiative membership, and a member
  *    Change swept into a rollback is a real, side-effectful revert. If any actor holding org-scoped
@@ -25,7 +33,11 @@
  *    `campaign_wave_targets` (`campaign-rollback.ts`) — this block is defense-in-depth on the
  *    creation side, closing the injection VECTOR outright.
  */
-export const SYSTEM_MANAGED_RELATIONSHIP_TYPE_IDS: ReadonlySet<string> = new Set(["approves", "coordinates"]);
+export const SYSTEM_MANAGED_RELATIONSHIP_TYPE_IDS: ReadonlySet<string> = new Set([
+  "approves",
+  "coordinates",
+  "annotates"
+]);
 
 export function isSystemManagedRelationshipType(typeId: string): boolean {
   return SYSTEM_MANAGED_RELATIONSHIP_TYPE_IDS.has(typeId);

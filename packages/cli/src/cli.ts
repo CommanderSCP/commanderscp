@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { Command } from "commander";
 import { ScpApiError, ScpClient } from "@scp/sdk";
 import type { ListObjectsQuery, ListQuery } from "@scp/sdk";
@@ -30,7 +30,12 @@ import type {
   Relationship,
   RelationshipListResponse,
   UpdateObjectRequest,
-  UpsertObjectRequest
+  UpsertObjectRequest,
+  // M6: Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN §13).
+  FederationPeer,
+  FederationStatusResponse,
+  ImportBundleRequest,
+  SyncScope
 } from "@scp/schemas";
 import { DesiredStateManifestSchema } from "@scp/schemas";
 // Node-only hashing (`node:crypto`) — deliberately a separate subpath from `@scp/schemas`'
@@ -170,6 +175,49 @@ function initiativeRow(i: Initiative): Record<string, string> {
     description: i.description ?? "",
     createdAt: i.createdAt
   };
+}
+
+// -------------------------------------------------------------------------------------
+// M6 Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN.md §13) — row formatters.
+// -------------------------------------------------------------------------------------
+
+function peerRow(p: FederationPeer): Record<string, string> {
+  return {
+    id: p.id,
+    name: p.name,
+    role: p.role,
+    baseUrl: p.baseUrl ?? "",
+    syncScope: p.syncScope.mode,
+    pairedAt: p.pairedAt
+  };
+}
+
+function printFederationStatus(status: FederationStatusResponse, output: OutputFormat): void {
+  if (output === "json") {
+    console.log(JSON.stringify(status, null, 2));
+    return;
+  }
+  console.log(
+    status.self
+      ? `Self: ${status.self.name} (${status.self.domainId}) role=${status.self.role}`
+      : "Self: not initialized — run `scp federation init`"
+  );
+  if (status.peers.length === 0) {
+    console.log("No paired peers.");
+    return;
+  }
+  printResult(status.peers, "table", (item) => {
+    const p = item as FederationStatusResponse["peers"][number];
+    return {
+      peer: `${p.peer.name} (${p.peer.id})`,
+      role: p.peer.role,
+      // DESIGN §13: air-gapped peers are explicitly "as of <bundle/date>", never presented as live.
+      syncedThrough:
+        p.lastAppliedSequence !== null ? `seq ${p.lastAppliedSequence}` : "never synced",
+      asOf: p.lastSyncedAt ?? "never",
+      recentTransfers: String(p.recentTransfers.length)
+    };
+  });
 }
 
 // -------------------------------------------------------------------------------------
@@ -346,7 +394,9 @@ function printExplainResult(result: ChangeExplainResponse, output: OutputFormat)
   if (controlRuns.length > 0) {
     console.log(`\nControl runs (${controlRuns.length}):`);
     for (const run of controlRuns) {
-      console.log(`  [${run.createdAt}] control ${run.controlObjectId} -> ${run.status}${run.detail ? `: ${run.detail}` : ""}`);
+      console.log(
+        `  [${run.createdAt}] control ${run.controlObjectId} -> ${run.status}${run.detail ? `: ${run.detail}` : ""}`
+      );
       if (Object.keys(run.evidence).length > 0) {
         console.log(`    evidence: ${JSON.stringify(run.evidence)}`);
       }
@@ -1323,7 +1373,9 @@ export function buildProgram(): Command {
   // change, in order. `decision get/list` are read-only: Decisions are written by the
   // coordination engine itself (policy/guard verdicts), never created directly via the CLI.
   // -------------------------------------------------------------------------------------
-  const changeCmd = program.command("change").description("Manage Changes (DESIGN.md §9 lifecycle)");
+  const changeCmd = program
+    .command("change")
+    .description("Manage Changes (DESIGN.md §9 lifecycle)");
 
   changeCmd
     .command("propose")
@@ -1397,7 +1449,9 @@ export function buildProgram(): Command {
 
   changeCmd
     .command("explain <id>")
-    .description("Explain a Change — its compiled plan (waves/targets) and every Decision made about it")
+    .description(
+      "Explain a Change — its compiled plan (waves/targets) and every Decision made about it"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(async (id: string, opts: BaseCliOpts) => {
@@ -1421,15 +1475,23 @@ export function buildProgram(): Command {
   changeCmd
     .command("promote <id>")
     .description("Promote a Change out of `validating` — the human approval gate before `promoted`")
-    .option("--reason <text>", "reason for promoting (also the mandatory reason for --override-freeze)")
-    .option("--override-freeze", "override an active freeze blocking this transition (requires freeze:override + --reason — DESIGN §10.3)")
+    .option(
+      "--reason <text>",
+      "reason for promoting (also the mandatory reason for --override-freeze)"
+    )
+    .option(
+      "--override-freeze",
+      "override an active freeze blocking this transition (requires freeze:override + --reason — DESIGN §10.3)"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
-    .action(async (id: string, opts: BaseCliOpts & { reason?: string; overrideFreeze?: boolean }) => {
-      const client = await clientFromStoredCredentials(opts);
-      const promoted = await client.changes.promote(id, opts.reason, opts.overrideFreeze);
-      printResult(promoted, opts.output, (item) => changeDetailRow(item as Change));
-    });
+    .action(
+      async (id: string, opts: BaseCliOpts & { reason?: string; overrideFreeze?: boolean }) => {
+        const client = await clientFromStoredCredentials(opts);
+        const promoted = await client.changes.promote(id, opts.reason, opts.overrideFreeze);
+        printResult(promoted, opts.output, (item) => changeDetailRow(item as Change));
+      }
+    );
 
   changeCmd
     .command("rollback <id>")
@@ -1533,7 +1595,9 @@ export function buildProgram(): Command {
       }
     );
 
-  const approvalCmd = program.command("approval").description("Manage approval requests (DESIGN §10.2 — N-of-M quorum)");
+  const approvalCmd = program
+    .command("approval")
+    .description("Manage approval requests (DESIGN §10.2 — N-of-M quorum)");
 
   approvalCmd
     .command("list")
@@ -1571,7 +1635,9 @@ export function buildProgram(): Command {
 
   approvalCmd
     .command("approve <id>")
-    .description("Cast your vote on an approval request — always self-attested, one vote per subject")
+    .description(
+      "Cast your vote on an approval request — always self-attested, one vote per subject"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(async (id: string, opts: BaseCliOpts) => {
@@ -1594,7 +1660,13 @@ export function buildProgram(): Command {
     .option("--output <format>", "json|table", "table")
     .action(
       async (
-        opts: BaseCliOpts & { scope: string; startsAt: string; endsAt: string; reason: string; name?: string }
+        opts: BaseCliOpts & {
+          scope: string;
+          startsAt: string;
+          endsAt: string;
+          reason: string;
+          name?: string;
+        }
       ) => {
         const client = await clientFromStoredCredentials(opts);
         const freeze = await client.freezes.create({
@@ -1633,7 +1705,9 @@ export function buildProgram(): Command {
   const policyCmd = program.commands.find((c) => c.name() === "policy")!;
   policyCmd
     .command("evaluate <changeId>")
-    .description("Dry-run governance evaluation for a change — verdict + reason tree, no transition attempted")
+    .description(
+      "Dry-run governance evaluation for a change — verdict + reason tree, no transition attempted"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(async (changeId: string, opts: BaseCliOpts) => {
@@ -1719,7 +1793,9 @@ export function buildProgram(): Command {
 
   campaignCmd
     .command("explain <id>")
-    .description("Explain a Campaign — its compiled plan (waves/targets) and every Decision made about it")
+    .description(
+      "Explain a Campaign — its compiled plan (waves/targets) and every Decision made about it"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(async (id: string, opts: BaseCliOpts) => {
@@ -1764,7 +1840,9 @@ export function buildProgram(): Command {
 
   const initiativeCmd = program
     .command("initiative")
-    .description("Manage Initiatives (DESIGN.md §9.5 — group Campaigns with a derived roll-up status)");
+    .description(
+      "Manage Initiatives (DESIGN.md §9.5 — group Campaigns with a derived roll-up status)"
+    );
 
   initiativeCmd
     .command("create")
@@ -1777,7 +1855,12 @@ export function buildProgram(): Command {
     .option("--output <format>", "json|table", "table")
     .action(
       async (
-        opts: BaseCliOpts & { name: string; campaigns?: string; description?: string; labels?: string }
+        opts: BaseCliOpts & {
+          name: string;
+          campaigns?: string;
+          description?: string;
+          labels?: string;
+        }
       ) => {
         const client = await clientFromStoredCredentials(opts);
         const created = await client.initiatives.propose({
@@ -1826,6 +1909,266 @@ export function buildProgram(): Command {
         return;
       }
       console.log(`Added campaign ${opts.campaign} to initiative ${id}`);
+    });
+
+  // -------------------------------------------------------------------------------------
+  // federation (M6 Federation Basics — DESIGN.md §13, BUILD_AND_TEST.md §8 M6). `export`/`import`
+  // work on `.scpbundle` files on disk (the built-in file transport — "the air gap is the design
+  // center", §13) so they're the ones CI's two-domain E2E drives via a real file-copy across an
+  // isolated compose network. `promote` is the Promotion Bundle's own export verb — kept distinct
+  // from `export` (which only ever produces sync bundles) so the CLI surface mirrors the two
+  // distinct bundle kinds `packages/schemas/src/federation.ts` defines.
+  // -------------------------------------------------------------------------------------
+  const federationCmd = program
+    .command("federation")
+    .description(
+      "Manage federation (DESIGN.md §13 — signed sync journal, peer pairing, Promotion Bundles)"
+    );
+
+  federationCmd
+    .command("init")
+    .description("Designate this domain's federation role")
+    .requiredOption("--name <name>", "this domain's display name")
+    .requiredOption("--role <role>", "parent|child")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { name: string; role: "parent" | "child" }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.federation.init({ name: opts.name, role: opts.role });
+      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+    });
+
+  federationCmd
+    .command("self")
+    .description(
+      "Show this domain's own federation identity + public key (copy this to a peer for out-of-band pairing)"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const self = await client.federation.self();
+      printResult(self, opts.output, (item) => item as unknown as Record<string, string>);
+    });
+
+  federationCmd
+    .command("pair")
+    .description(
+      "Pair a peer domain (child-initiated — dial the parent, or exchange identities out-of-band for air-gapped peers)"
+    )
+    .requiredOption(
+      "--domain-id <id>",
+      "the peer's federation domain id (from their `scp federation self`)"
+    )
+    .requiredOption("--name <name>", "a display name for the peer")
+    .requiredOption("--role <role>", "parent|child — the peer's role as seen from here")
+    .requiredOption(
+      "--public-key <base64>",
+      "the peer's Ed25519 public key (from their `scp federation self`)"
+    )
+    .option(
+      "--base-url-of-peer <url>",
+      "the peer's API base URL (child->parent mTLS transport only)"
+    )
+    .option(
+      "--sync-scope <mode>",
+      "full|policies_only|changes_only|status_only (custom/label-selector not exposed via CLI yet)",
+      "full"
+    )
+    .option("--base-url <url>", "this domain's own API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          domainId: string;
+          name: string;
+          role: "parent" | "child";
+          publicKey: string;
+          baseUrlOfPeer?: string;
+          syncScope: string;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const syncScope = { mode: opts.syncScope } as SyncScope;
+        const peer = await client.federation.pair({
+          domainId: opts.domainId,
+          name: opts.name,
+          role: opts.role,
+          publicKey: opts.publicKey,
+          baseUrl: opts.baseUrlOfPeer,
+          syncScope
+        });
+        printResult(peer, opts.output, (item) => peerRow(item as FederationPeer));
+      }
+    );
+
+  federationCmd
+    .command("peers")
+    .description("List paired federation peers")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const peers = await client.federation.listPeers();
+      printResult(peers, opts.output, (item) => peerRow(item as FederationPeer));
+    });
+
+  federationCmd
+    .command("status")
+    .description(
+      "Cross-domain status: every peer, this side's sync freshness, recent bundle transfers"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const status = await client.federation.status();
+      printFederationStatus(status, opts.output);
+    });
+
+  federationCmd
+    .command("export")
+    .description(
+      "Export a signed .scpbundle of journal entries since a cursor (the built-in file transport)"
+    )
+    .requiredOption("--peer <idOrName>", "peer to export for")
+    .option("--since <sequence>", "sequence to export since (default: from genesis)")
+    .requiredOption("--out <file>", "output .scpbundle file path")
+    .option("--base-url <url>", "API base URL override")
+    .action(async (opts: BaseCliOpts & { peer: string; since?: string; out: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const bundle = await client.federation.exportSync({
+        peer: opts.peer,
+        sinceSequence: opts.since !== undefined ? Number(opts.since) : undefined
+      });
+      await writeFile(opts.out, JSON.stringify(bundle, null, 2), "utf8");
+      console.log(
+        `Exported ${bundle.entries.length} entries (sequence ${bundle.header.sinceSequence + 1}..${bundle.header.throughSequence}) to ${opts.out}`
+      );
+    });
+
+  federationCmd
+    .command("promote")
+    .description(
+      "Export a Promotion Bundle for a Change (change + control evidence + artifact digests + approval attestations)"
+    )
+    .requiredOption("--peer <idOrName>", "destination peer")
+    .requiredOption("--change <idOrUrn>", "the Change to promote")
+    .requiredOption("--out <file>", "output .scpbundle file path")
+    .option("--base-url <url>", "API base URL override")
+    .action(async (opts: BaseCliOpts & { peer: string; change: string; out: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const bundle = await client.federation.exportPromotion({
+        peer: opts.peer,
+        change: opts.change
+      });
+      await writeFile(opts.out, JSON.stringify(bundle, null, 2), "utf8");
+      console.log(`Exported promotion bundle for change ${opts.change} to ${opts.out}`);
+    });
+
+  federationCmd
+    .command("import <file>")
+    .description(
+      "Verify + apply a .scpbundle (sync or promotion, auto-detected) — REJECTS on any signature/hash-chain failure, applies nothing"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (file: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      // Defensive byte-size ceiling BEFORE ever parsing the file — belt-and-braces alongside the
+      // server's own bounded Fastify `bodyLimit` (routes/federation.ts). `.scpbundle` is a plain
+      // JSON document (no archive/compression), so there is no zip-bomb class of attack to defend
+      // against beyond "don't read an arbitrarily huge file into memory."
+      const raw = await readFile(file, "utf8");
+      const MAX_BUNDLE_BYTES = 64 * 1024 * 1024;
+      if (Buffer.byteLength(raw, "utf8") > MAX_BUNDLE_BYTES) {
+        throw new Error(
+          `bundle file exceeds the ${MAX_BUNDLE_BYTES}-byte import ceiling — refusing to parse`
+        );
+      }
+      const parsed: unknown = JSON.parse(raw);
+      const result = await client.federation.import(parsed as ImportBundleRequest);
+      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+    });
+
+  federationCmd
+    .command("hand-fill")
+    .description(
+      "Manually enter a parent-origin object as an unverified shadow copy (air-gapped, no bundle transport at all)"
+    )
+    .requiredOption("--peer <idOrName>", "the parent peer this is claimed to originate from")
+    .requiredOption("--type <typeId>", "object type id")
+    .requiredOption("--urn <urn>", "the object's URN")
+    .requiredOption("--name <name>", "the object's name")
+    .option("--properties <json>", "JSON object")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          peer: string;
+          type: string;
+          urn: string;
+          name: string;
+          properties?: string;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const object = await client.federation.handFill({
+          peer: opts.peer,
+          typeId: opts.type,
+          urn: opts.urn,
+          name: opts.name,
+          properties: parseJsonOption(opts.properties, "--properties")
+        });
+        printResult(object, opts.output, (item) => item as unknown as Record<string, string>);
+      }
+    );
+
+  const overlayCmd = federationCmd
+    .command("overlay")
+    .description(
+      "Shared-authority overlays (DESIGN.md §13 — annotate a foreign-origin base object without mutating it)"
+    );
+
+  overlayCmd
+    .command("create")
+    .description("Create a local overlay annotating a base object")
+    .requiredOption("--base <idOrUrn>", "the base object to annotate")
+    .requiredOption("--type <typeId>", "the overlay object's type id")
+    .requiredOption("--name <name>", "the overlay object's name")
+    .option("--properties <json>", "JSON object")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & { base: string; type: string; name: string; properties?: string }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const overlay = await client.federation.createOverlay({
+          base: opts.base,
+          typeId: opts.type,
+          name: opts.name,
+          properties: parseJsonOption(opts.properties, "--properties")
+        });
+        printResult(overlay, opts.output, (item) => item as unknown as Record<string, string>);
+      }
+    );
+
+  overlayCmd
+    .command("view <baseIdOrUrn>")
+    .description("Read-time merge of a base object with its local overlays (base is never mutated)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (baseIdOrUrn: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const view = await client.federation.getMergedOverlayView(baseIdOrUrn);
+      if (opts.output === "json") {
+        console.log(JSON.stringify(view, null, 2));
+        return;
+      }
+      console.log(`Base: ${view.base.urn} (${view.overlays.length} overlay(s))`);
+      console.log(JSON.stringify(view.merged, null, 2));
     });
 
   return program;
