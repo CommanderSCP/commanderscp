@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import http from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SubprocessPluginHost } from "./host.js";
 
@@ -87,6 +88,96 @@ describe("SubprocessPluginHost: child environment (CRITICAL #3)", () => {
     // stripped env and then the child died") — proves stripping env didn't break the child.
     const caps = await host.executor("env-probe").describeCapabilities();
     expect(caps.supportsTrigger).toBe(true);
+  });
+
+  it("threads PluginHostInstanceConfig.secrets/allowedHosts through as SCP_PLUGIN_SECRETS_JSON/SCP_PLUGIN_ALLOWED_HOSTS_JSON (M7)", async () => {
+    const childProcess = await import("node:child_process");
+    const spawnSpy = vi.mocked(childProcess.spawn);
+    spawnSpy.mockClear();
+
+    host = new SubprocessPluginHost({ callTimeoutMs: 10_000 });
+    await host.start([
+      {
+        id: "secrets-probe",
+        module: "fake-executor",
+        orgId: "org-1",
+        domainId: "domain-1",
+        secrets: { "github-app-private-key": "-----BEGIN PRIVATE KEY-----fake-for-test-----" },
+        allowedHosts: ["api.github.com"]
+      }
+    ]);
+
+    const spawnCall = spawnSpy.mock.calls[0]!;
+    const childEnv = (spawnCall[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
+    expect(JSON.parse(childEnv?.SCP_PLUGIN_SECRETS_JSON ?? "{}")).toEqual({
+      "github-app-private-key": "-----BEGIN PRIVATE KEY-----fake-for-test-----"
+    });
+    expect(JSON.parse(childEnv?.SCP_PLUGIN_ALLOWED_HOSTS_JSON ?? "[]")).toEqual(["api.github.com"]);
+  });
+});
+
+/**
+ * M7 SSRF mitigation (subprocess-entry.ts's `scopedFetchHttpClient`) — an out-of-allowlist target
+ * host must be rejected BEFORE any network call is attempted, over the REAL subprocess boundary
+ * (not just the pure function in isolation): a real local HTTP server proves both "allowed reaches
+ * the server" and "disallowed never does", using `@scp/plugin-webhook-notify` (already
+ * independently tested against nock in its own package) as the real network-calling plugin under
+ * the subprocess host.
+ */
+describe("SubprocessPluginHost: egress allowlist enforcement (M7 SSRF mitigation)", () => {
+  it("an allowed host is reached; a disallowed host is rejected before any connection is attempted", async () => {
+    let requestCount = 0;
+    const server = http.createServer((_req, res) => {
+      requestCount += 1;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("could not determine bound port");
+    const url = `http://127.0.0.1:${address.port}/hook`;
+
+    try {
+      host = new SubprocessPluginHost({ callTimeoutMs: 10_000 });
+      await host.start([
+        {
+          id: "allowed-notify",
+          module: "webhook-notify",
+          orgId: "org-1",
+          domainId: "domain-1",
+          config: { url },
+          allowedHosts: ["127.0.0.1"]
+        },
+        {
+          id: "disallowed-notify",
+          module: "webhook-notify",
+          orgId: "org-1",
+          domainId: "domain-1",
+          config: { url },
+          allowedHosts: ["some-other-host.invalid"]
+        }
+      ]);
+
+      const allowedResult = await host.notification("allowed-notify").send({
+        subject: "s",
+        body: "b",
+        severity: "info"
+      });
+      expect(allowedResult.delivered).toBe(true);
+      expect(requestCount).toBe(1);
+
+      const disallowedResult = await host.notification("disallowed-notify").send({
+        subject: "s",
+        body: "b",
+        severity: "info"
+      });
+      expect(disallowedResult.delivered).toBe(false);
+      expect(disallowedResult.detail).toContain("allowedHosts");
+      // The disallowed call never reached the server at all — still exactly 1 from the allowed call.
+      expect(requestCount).toBe(1);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
 

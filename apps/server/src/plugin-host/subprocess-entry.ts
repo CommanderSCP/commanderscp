@@ -13,11 +13,14 @@
  *
  * Config surface (documented framing choice, mirrors host.ts's `spawnChild`): the module to load
  * and the instance's identity/config arrive as env vars — `SCP_PLUGIN_MODULE`,
- * `SCP_PLUGIN_INSTANCE_ID`, `SCP_PLUGIN_ORG_ID`, `SCP_PLUGIN_DOMAIN_ID`, `SCP_PLUGIN_CONFIG_JSON`
- * — rather than argv, because they're simple strings the host already fully controls and never
- * touch a shell (`spawn()`'s array-argv form has no quoting/escaping surface either way, but env
- * vars keep the process's argv itself uninteresting/unloggable-as-a-command-line, which matters
- * once `config` can carry secrets-adjacent values in a later milestone).
+ * `SCP_PLUGIN_INSTANCE_ID`, `SCP_PLUGIN_ORG_ID`, `SCP_PLUGIN_DOMAIN_ID`, `SCP_PLUGIN_CONFIG_JSON`,
+ * and (M7) `SCP_PLUGIN_SECRETS_JSON` (resolved, already-decrypted secret values —
+ * `envSecretsAccessor()` below) and `SCP_PLUGIN_ALLOWED_HOSTS_JSON` (the egress allowlist —
+ * `scopedFetchHttpClient()` below) — rather than argv, because they're simple strings the host
+ * already fully controls and never touch a shell (`spawn()`'s array-argv form has no
+ * quoting/escaping surface either way, but env vars keep the process's argv itself
+ * uninteresting/unloggable-as-a-command-line, which matters now that `SCP_PLUGIN_SECRETS_JSON`
+ * genuinely does carry secret material).
  *
  * Wire protocol: newline-delimited JSON-RPC 2.0 (rpc-protocol.ts). CRITICAL: this process's
  * stdout carries ONLY protocol messages — never `console.log`/plain text, or it corrupts the RPC
@@ -116,16 +119,34 @@ function stderrLogger(instanceId: string): Logger {
 }
 
 /**
- * `PluginContext.http` (DESIGN.md §11: "egress-controlled, instrumented"). M3 backs it with a
- * plain `fetch` and NO egress scoping/allowlist enforcement — acceptable for M3 because the only
- * shipped plugin (fake-executor) never calls it, and no real network-calling executor plugin
- * lands before M7. TODO(M7 / security review): enforce an egress allowlist (per plugin instance
- * config) here, or front this with a real scoping proxy, before any plugin that actually reaches
- * the network ships.
+ * `PluginContext.http` (DESIGN.md §11: "egress-controlled, instrumented"). M3 shipped this backed
+ * by a plain `fetch` with NO egress scoping/allowlist enforcement at all — acceptable for M3
+ * because the only shipped plugin (fake-executor) never called it. M7 closes that TODO: every
+ * plugin instance's `PluginHostInstanceConfig.allowedHosts` (resolved from `executor_bindings`/
+ * `notification_bindings.allowed_hosts` — contract.ts's doc comment) arrives here via
+ * `SCP_PLUGIN_ALLOWED_HOSTS_JSON` and is enforced BEFORE the request is ever dispatched — an
+ * out-of-allowlist URL throws instead of reaching `fetch()` at all (SSRF mitigation: a plugin
+ * can't be redirected into hitting an attacker-controlled or internal-only host it wasn't
+ * explicitly configured to reach).
+ *
+ * Empty/unset `allowedHosts` preserves the M3-M6 unscoped behavior — required for
+ * `webhook-control` (DESIGN §10.2's "generic webhook escape hatch": its entire purpose is POSTing
+ * to an arbitrary operator-configured URL, which by definition isn't a fixed allowlist) and for
+ * `federation-https` (peer URLs come from `federation_peers`, not a plugin-instance-level
+ * allowlist). Every M7 network-calling plugin (github/argocd/webhook-notify) is expected to set
+ * `allowedHosts` explicitly at binding-creation time for real SSRF protection.
  */
-function unscopedFetchHttpClient(): ScopedHttpClient {
+function scopedFetchHttpClient(allowedHosts: string[]): ScopedHttpClient {
   return {
     async request(req): Promise<ScopedHttpResponse> {
+      if (allowedHosts.length > 0) {
+        const targetHost = new URL(req.url).hostname;
+        if (!allowedHosts.includes(targetHost)) {
+          throw new Error(
+            `scoped http client: host '${targetHost}' is not in the configured allowedHosts allowlist`
+          );
+        }
+      }
       const res = await fetch(req.url, {
         method: req.method,
         headers: req.headers,
@@ -147,10 +168,28 @@ function unscopedFetchHttpClient(): ScopedHttpClient {
   };
 }
 
-/** No secrets are wired in M3 — there is no plugin-instance secrets config API yet — so this
- *  always resolves `undefined`, same as "not configured"; never throws. */
-function noSecretsAccessor(): SecretsAccessor {
-  return { get: async () => undefined };
+/**
+ * M3's `noSecretsAccessor()` always resolved `undefined` — "there is no plugin-instance secrets
+ * config API yet". M7 adds one (`executor_bindings`/`notification_bindings.secret_refs`,
+ * `secrets/secrets-repo.ts`'s `resolveSecretRefs`) and threads the RESOLVED (already-decrypted)
+ * values through `SCP_PLUGIN_SECRETS_JSON` (host.ts's spawn env — contract.ts's
+ * `PluginHostInstanceConfig.secrets` doc comment) — this reads that map. Never logs it (this
+ * function's own body is the only place these plaintext values exist in this process, until a
+ * plugin's own code — e.g. `ctx.secrets.get()` callers — receives one by explicit key). Unset
+ * `SCP_PLUGIN_SECRETS_JSON` (any pre-M7 caller, or a plugin instance with no secretRefs
+ * configured) parses to `{}`, preserving "no secrets configured" as the honest default.
+ */
+function envSecretsAccessor(): SecretsAccessor {
+  let resolved: Record<string, string> | undefined;
+  return {
+    async get(key: string): Promise<string | undefined> {
+      resolved ??= JSON.parse(process.env.SCP_PLUGIN_SECRETS_JSON ?? "{}") as Record<
+        string,
+        string
+      >;
+      return resolved[key];
+    }
+  };
 }
 
 function requireEnv(name: string): string {
@@ -218,14 +257,15 @@ async function main(): Promise<void> {
   const orgId = requireEnv("SCP_PLUGIN_ORG_ID");
   const domainId = requireEnv("SCP_PLUGIN_DOMAIN_ID");
   const config: unknown = JSON.parse(process.env.SCP_PLUGIN_CONFIG_JSON ?? "{}");
+  const allowedHosts = JSON.parse(process.env.SCP_PLUGIN_ALLOWED_HOSTS_JSON ?? "[]") as string[];
 
   const plugin = await loadPlugin(moduleName);
   const ctx: PluginContext = {
     orgId,
     domainId,
     logger: stderrLogger(instanceId),
-    secrets: noSecretsAccessor(),
-    http: unscopedFetchHttpClient(),
+    secrets: envSecretsAccessor(),
+    http: scopedFetchHttpClient(allowedHosts),
     config
   };
 
