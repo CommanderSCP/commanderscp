@@ -290,6 +290,16 @@ if [[ "$MODE" == "helm" ]]; then
   if [[ -n "$NAMESPACE" ]]; then
     HELM_ARGS+=(--namespace "$NAMESPACE" --create-namespace)
   fi
+  # Optional operator pass-through: any extra `helm --set` values (space-separated
+  # key=value pairs) via SCP_EXTRA_HELM_SET — e.g. enabling the eval in-cluster postgres, an
+  # ingress host, a serviceMonitor, or a real external-postgres existingSecret. Purely additive;
+  # unset by default, so this changes nothing for callers that don't use it. Deliberately kept out
+  # of the retarget/verify path — these are plain chart values, not image references.
+  if [[ -n "${SCP_EXTRA_HELM_SET:-}" ]]; then
+    for kv in ${SCP_EXTRA_HELM_SET}; do
+      HELM_ARGS+=(--set "$kv")
+    done
+  fi
 
   echo "   KNOWN GAP (see helm/README.md): the eval in-cluster postgres template hardcodes"
   echo "   'image: postgres:16' and is not retargetable via values — if you enable"

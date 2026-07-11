@@ -164,3 +164,49 @@ Admin DB env — the migrations Job ONLY.
       name: {{ include "commanderscp.postgresSecretName" . }}
       key: {{ .Values.postgres.existingSecretKeys.admin }}
 {{- end -}}
+
+{{/*
+wait-for-postgres init container — a plain TCP-connect retry loop against the DB host:port parsed
+from whichever DB connection-string env var the caller injects (the migrations Job passes the
+admin DATABASE_URL; api/worker pass SCP_RUNTIME_DATABASE_URL). Same image, no extra tooling
+(pg_isready isn't in the scpd image — DESIGN §16's "no extra toolchain" principle). This makes
+api/worker/migrations resilient to the DB not yet accepting connections when the pod first starts
+— without it, a pod that boots before postgres is ready (common on a slow/loaded cluster, or
+right after `postgres.evalInCluster` first schedules) crashes with a DB-connection error (exit 1),
+restarts, and — for api — can lose the one-time bootstrap-admin password to the churned container
+logs. Reused by all three workloads via `include ... (dict "root" . "dbEnvVar" "<NAME>")`.
+*/}}
+{{- define "commanderscp.waitForPostgresInitContainer" -}}
+{{- $root := .root -}}
+- name: wait-for-postgres
+  image: {{ include "commanderscp.image" $root }}
+  imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+  command:
+    - node
+    - -e
+    - |
+      const net = require("node:net");
+      const url = new URL(process.env.{{ .dbEnvVar }});
+      const host = url.hostname, port = Number(url.port || 5432);
+      const deadline = Date.now() + 120000;
+      (function attempt() {
+        const sock = net.createConnection({ host, port }, () => {
+          console.log(`wait-for-postgres: connected to ${host}:${port}`); sock.end(); process.exit(0);
+        });
+        sock.on("error", (err) => {
+          sock.destroy();
+          if (Date.now() > deadline) { console.error(`wait-for-postgres: giving up after 120s: ${err.message}`); process.exit(1); }
+          console.log(`wait-for-postgres: ${host}:${port} not ready (${err.message}), retrying...`); setTimeout(attempt, 2000);
+        });
+      })();
+  securityContext:
+    {{- toYaml $root.Values.containerSecurityContext | nindent 4 }}
+  env:
+    - name: {{ .dbEnvVar }}
+      valueFrom:
+        secretKeyRef:
+          name: {{ include "commanderscp.postgresSecretName" $root }}
+          key: {{ if eq .dbEnvVar "DATABASE_URL" }}{{ $root.Values.postgres.existingSecretKeys.admin }}{{ else }}{{ $root.Values.postgres.existingSecretKeys.app }}{{ end }}
+  resources:
+    {{- toYaml $root.Values.migrations.resources | nindent 4 }}
+{{- end -}}

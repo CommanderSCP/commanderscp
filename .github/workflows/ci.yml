@@ -36,15 +36,25 @@ jobs:
       - run: pnpm typecheck
 
   codegen-drift:
-    name: "3. Codegen drift"
+    name: "3. Codegen drift + API breaking-change gate"
     runs-on: homelab-commanderscp-linux-general
     needs: build
     steps:
+      # fetch-depth: 0 so tools/openapi/check.sh's `git merge-base origin/main HEAD` (below) can
+      # resolve the base spec to diff against — a shallow checkout has no merge base.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/setup
       - run: pnpm build
       - run: pnpm gen
       - run: git diff --exit-code
+      # API breaking-change gate (BUILD_AND_TEST.md §6 stage 3, §7 "API breaking change"): the
+      # vendored oasdiff (tools/openapi/bin/, Apache-2.0) diffs the committed spec at the merge
+      # base against the freshly-emitted working-tree spec and fails on any ERR-level break within
+      # /v1. Air-gapped — no network call. Only runs when origin/main is resolvable (skips cleanly
+      # on the very first push of a new repo where there's no base spec yet).
+      - run: tools/openapi/check.sh
 
   unit-tests:
     name: "4. Unit tests"

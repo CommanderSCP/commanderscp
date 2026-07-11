@@ -1,0 +1,95 @@
+name: Deploy Drills (M8 kind / air-gap / Ansible)
+
+# The three heavy M8 deployment drills (BUILD_AND_TEST.md §8 M8 DoD). These are OPT-IN
+# (workflow_dispatch + nightly schedule), NEVER merge-gating — same posture as
+# nightly-live-sandbox.yml. Why not per-PR gates:
+#   - The kind + air-gap drills stand up a full `kind` Kubernetes cluster (and, for air-gap, a
+#     Calico CNI so NetworkPolicy is genuinely enforced). Whether the self-hosted
+#     `homelab-commanderscp-linux-docker-build` runner supports nested-kind reliably was NOT
+#     verifiable from the environment this milestone was built in — so per the milestone's own
+#     "be HONEST about what's CI-gated vs. manual, don't fake it" instruction, these run here,
+#     nightly/on-demand, not as a merge gate.
+#   - Each drill is minutes-long (two full image builds + a bundle build + cluster bring-up).
+#
+# HONEST SCOPE — what was actually run vs. what is CI infrastructure not yet exercised on the
+# homelab runners (see the m8-hardening-packaging-rc PR body for the authoritative breakdown):
+#   * scripts/kind-drill.sh    — RUN GREEN LOCALLY (colima kind): install (old image) -> golden
+#                                path -> zero-downtime helm upgrade (a REAL new migration applied
+#                                while old pods served) -> data preserved -> rollback.
+#   * scripts/ansible-drill.sh — RUN GREEN LOCALLY: scp.platform Ansible collection drives a real
+#                                signed-bundle compose install then upgrade, health-checked.
+#   * scripts/airgap-drill.sh  — the genuine zero-egress drill (kind + Calico-enforced default-deny
+#                                + a deliberate-egress-attempt that MUST fail + golden path from a
+#                                local registry via the signed bundle). See the PR body for exactly
+#                                how far this was validated locally.
+# These job definitions themselves have not necessarily been run ON the homelab runners — they are
+# the exact commands a human runs, wired for `workflow_dispatch`, not claimed as passing CI yet.
+
+on:
+  schedule:
+    - cron: "37 5 * * *" # nightly, off-peak, arbitrary minute
+  workflow_dispatch:
+    inputs:
+      drill:
+        description: "Which drill to run (all | kind | ansible | airgap)"
+        required: false
+        default: "all"
+
+jobs:
+  kind-drill:
+    name: "kind: install -> golden path -> zero-downtime upgrade -> rollback"
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event.inputs.drill == 'all' || github.event.inputs.drill == 'kind'
+    runs-on: homelab-commanderscp-linux-docker-build
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # kind-drill.sh builds an "old" image from an earlier commit on this branch
+      - uses: ./.github/actions/setup
+      - run: pnpm build
+      - name: Run the kind install/upgrade/rollback drill
+        run: bash scripts/kind-drill.sh
+
+  ansible-drill:
+    name: "ansible: bundle -> compose install -> compose upgrade (scp.platform)"
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event.inputs.drill == 'all' || github.event.inputs.drill == 'ansible'
+    runs-on: homelab-commanderscp-linux-docker-build
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: pnpm build
+      - name: Install skopeo, cosign, ansible (documented §1 prerequisites for this drill)
+        run: |
+          # Homelab runners are expected to have these pre-provisioned (BUILD_AND_TEST.md §1).
+          # This step is a no-op if they are already on PATH; it exists so the drill's tool
+          # requirements are explicit and a fresh runner can be made to work.
+          command -v skopeo && command -v cosign && command -v ansible-playbook || {
+            echo "skopeo/cosign/ansible must be provisioned on this runner — see BUILD_AND_TEST.md §1" >&2
+            exit 1
+          }
+      - name: Run the Ansible-driven compose install+upgrade drill
+        run: bash scripts/ansible-drill.sh
+
+  airgap-drill:
+    name: "air-gap: bundle -> local registry -> Calico zero-egress kind install"
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event.inputs.drill == 'all' || github.event.inputs.drill == 'airgap'
+    runs-on: homelab-commanderscp-linux-docker-build
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: pnpm build
+      - name: Verify drill prerequisites (kind/helm/kubectl/skopeo/cosign)
+        run: |
+          for b in kind helm kubectl skopeo cosign; do
+            command -v "$b" >/dev/null || { echo "missing $b — see BUILD_AND_TEST.md §1" >&2; exit 1; }
+          done
+      - name: Run the genuine zero-egress air-gap install drill
+        run: bash scripts/airgap-drill.sh

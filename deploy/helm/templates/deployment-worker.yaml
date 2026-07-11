@@ -55,6 +55,8 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      initContainers:
+        {{- include "commanderscp.waitForPostgresInitContainer" (dict "root" . "dbEnvVar" "SCP_RUNTIME_DATABASE_URL") | nindent 8 }}
       containers:
         - name: worker
           image: {{ include "commanderscp.image" . }}
