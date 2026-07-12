@@ -49,6 +49,23 @@ jobs:
           fetch-depth: 0 # kind-drill.sh builds an "old" image from an earlier commit on this branch
       - uses: ./.github/actions/setup
       - run: pnpm build
+      # Drill prerequisites (kind/kubectl/helm). Installed in-workflow via the same setup-action
+      # pattern the `integration` CI job uses for helm/cosign/skopeo — a nightly/on-demand
+      # build-time fetch, NOT a product runtime dependency, so it doesn't violate CLAUDE.md #5. The
+      # homelab `linux-docker-build` runner ships Docker but not these k8s tools (confirmed by a
+      # workflow_dispatch spike: `kind: command not found`); rather than bake them into the runner
+      # image (homelab-runners, Rule #5), the drill self-provisions them.
+      - name: Install helm
+        uses: azure/setup-helm@v4
+        with:
+          version: latest
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+      - name: Install kind (binary only — kind-drill.sh creates its own cluster)
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+          version: v0.27.0
       - name: Run the kind install/upgrade/rollback drill
         run: bash scripts/kind-drill.sh
 
