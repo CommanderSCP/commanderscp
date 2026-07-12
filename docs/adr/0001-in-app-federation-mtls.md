@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Proposed** — pending owner review (M9.3) |
+| **Status** | **Accepted** — owner-approved 2026-07-11 (M9.3); the three open questions resolved below |
 | **Date** | 2026-07-11 |
 | **Deciders** | Owner (jag8765) |
 | **Relates to** | [DESIGN.md §13 (Federation)](../DESIGN.md), PROJECT_CHARTER.md (federation, air-gap principles), M8 PR #15 adversarial review MAJOR #3, [BUILD_AND_TEST.md §8 M9](../BUILD_AND_TEST.md) |
@@ -39,9 +39,9 @@ Add **optional, fail-closed in-app mTLS** on the three federation transport endp
 
 3. **Fail-closed on misconfiguration.** If in-app mTLS is enabled but the CA bundle (or cert/key) is missing/unreadable, the process **fails at boot** — matching the existing `oidc?` / `loadFederationMtlsMaterial` config pattern (`apps/server/src/config.ts`, `subprocess-entry.ts` both throw on partial config). Never fail-open.
 
-4. **Cert-identity → domain mapping.** The peer cert's identity (CN, or a SAN URI — decided at implementation) maps to `federationPeers.id` (= the peer's `federation_self.domainId`, `apps/server/src/db/schema.ts`). The expected identity (or the CA that signs the peer's cert) is recorded **at pairing/enrollment** (`apps/server/src/federation/peers-repo.ts` `pairPeer`), which is already child-initiated.
+4. **Cert-identity → domain mapping.** The peer cert's identity — a **SAN URI** (owner decision, 2026-07-11: standard for machine/service identity, avoids CN parsing ambiguity, and lets the URI encode the domain id unambiguously, e.g. `spiffe://…/<domainId>` or `urn:scp:domain:<domainId>`) — maps to `federationPeers.id` (= the peer's `federation_self.domainId`, `apps/server/src/db/schema.ts`). The expected identity (or the CA that signs the peer's cert) is recorded **at pairing/enrollment** (`apps/server/src/federation/peers-repo.ts` `pairPeer`), which is already child-initiated. A presented cert whose SAN URI does not resolve to a known peer is rejected.
 
-5. **Defense-in-depth — additive, not a replacement.** A federation request must pass mTLS **AND** bearer+RBAC **AND** (for imports) Ed25519 signature verification. **Ed25519 signatures remain THE integrity/authenticity authority** — mTLS adds *transport peer identity*, not message integrity. Recommended v1 hardening (**SHOULD**): bind the mTLS peer identity to the bundle's claimed `exporterDomainId`, rejecting a request whose transport peer ≠ the domain the bundle claims to originate from — this stops an otherwise-valid peer from relaying/replaying another domain's bundle.
+5. **Defense-in-depth — additive, not a replacement.** A federation request must pass mTLS **AND** bearer+RBAC **AND** (for imports) Ed25519 signature verification. **Ed25519 signatures remain THE integrity/authenticity authority** — mTLS adds *transport peer identity*, not message integrity. Hardening (owner decision, 2026-07-11: **SHOULD** for v1 — advisory, not a hard requirement, keeping room for future relay/multi-hop topologies): bind the mTLS peer identity to the bundle's claimed `exporterDomainId`, rejecting a request whose transport peer ≠ the domain the bundle claims to originate from — this stops an otherwise-valid peer from relaying/replaying another domain's bundle. When the binding fails it is logged and surfaced (a Decision), not silently ignored, so a MUST can be turned on later without code change.
 
 6. **Optionality + scope.** Default **disabled**. Only the three HTTP transport routes are gated. The air-gap **file transport** (`scp federation export/import`) is HTTP-independent and **unaffected**.
 
@@ -50,7 +50,9 @@ Add **optional, fail-closed in-app mTLS** on the three federation transport endp
    - **App terminates TLS** (direct exposure / TLS-passthrough proxy) → use in-app mTLS.
    - Enabling **both** is redundant-but-harmless (edge verifies, app re-verifies). The load-bearing caveat: in-app mTLS only works if the TLS connection actually reaches the app — any TLS-terminating hop in front strips the client cert.
 
-**Configuration** (matching `config.ts` house style — a new optional nested block, `undefined` = disabled, partial config throws at boot): `federationServerMtls?: { caFile, certFile, keyFile }` from `SCP_FEDERATION_SERVER_MTLS_*` env, mirroring the existing client-side `SCP_FEDERATION_MTLS_*`. Helm: a `federation.serverMtls` values block rendering the env + mounting the CA/cert/key secret, sibling to the existing `federation.mtls` (client) and `ingress.mtls` (edge) knobs.
+8. **Certificate revocation via a file-based CRL (owner decision, 2026-07-11).** The listener is configured with a **CRL** (`crlFile`) alongside the CA bundle. A presented cert whose serial is on the CRL fails Node's TLS verification (`socket.authorized === false`, with an `authorizationError` such as `CERT_REVOKED`), and is rejected fail-closed by the per-route hook via the *same* `authorized === true` check that already rejects an untrusted-CA cert — so revocation needs no separate code path, only that the CRL be supplied to the TLS context. **Air-gap-first, by requirement:** the CRL is a **file** delivered out-of-band over the same channel as the CA material and `.scpbundle` files — **no OCSP and no network CRL-distribution-point fetch** (both would violate CLAUDE.md #5). It is loaded at boot and **reloadable without a full restart** (a file-watch or SIGHUP reload of the TLS context — implementation choice) so a revocation can take effect in a running air-gapped instance by dropping in a new CRL file. **Stale-CRL policy** (an air-gap tension worth calling out): a CRL past its `nextUpdate` no longer reflects revocations issued after that time, yet in a disconnected domain a CRL may *legitimately* be stale between physical deliveries. v1 proposes to **warn loudly and continue** on an expired CRL, with a config knob to **hard-fail** for higher-assurance domains that would rather reject all federation than trust a stale revocation list — never silently trust it. (This is the one genuinely air-gap-specific design tension in the feature; flagged for the implementer to get right, not to silently pick.)
+
+**Configuration** (matching `config.ts` house style — a new optional nested block, `undefined` = disabled, partial config throws at boot): `federationServerMtls?: { caFile, certFile, keyFile, crlFile, crlHardFailOnExpiry }` from `SCP_FEDERATION_SERVER_MTLS_*` env (`…_CA_FILE`, `…_CERT_FILE`, `…_KEY_FILE`, `…_CRL_FILE`, `…_CRL_HARD_FAIL_ON_EXPIRY`), mirroring the existing client-side `SCP_FEDERATION_MTLS_*`. Helm: a `federation.serverMtls` values block rendering the env + mounting the CA/cert/key/**CRL** secret, sibling to the existing `federation.mtls` (client) and `ingress.mtls` (edge) knobs. Because CRLs rotate more often than CA roots, the CRL should be mountable/updatable independently (e.g. its own key in the secret, or a dedicated ConfigMap/Secret) so a refresh doesn't require re-rolling the CA material.
 
 ## Consequences
 
@@ -58,12 +60,14 @@ Add **optional, fail-closed in-app mTLS** on the three federation transport endp
 - Transport-level peer identity for federation — defense-in-depth beyond bearer+RBAC+Ed25519; closes MAJOR #3.
 - Works in TLS-passthrough / direct-exposure topologies where ingress-mTLS isn't available.
 - Fail-closed on both missing-cert and misconfiguration; explainable (`decision_id`).
+- **Revocation that survives air-gap** — file-based CRL, no OCSP/network dependency; a revoked peer cert is rejected, and a fresh CRL can be dropped into a running disconnected instance.
 - No new required stateful dependency (#4 preserved); no API/SDK/CLI surface change; air-gap file transport untouched (#5).
 
 **Negative / cost**
 - To use it, the app must terminate TLS — an operational change for k8s deploys that terminate at ingress (those keep `ingress.mtls`).
 - `requestCert: true` asks *all* clients for a cert; harmless for browsers/CLI under `rejectUnauthorized: false`, but a few exotic clients/proxies mishandle a cert request — must be documented.
 - Certificate/CA lifecycle + rotation become an operator burden.
+- **CRL freshness** is an added operator burden in air-gap (a stale CRL between physical deliveries; the warn-vs-hard-fail-on-expiry knob is a genuine operational trade-off the operator must set per domain).
 - Adds config surface + boot-time validation.
 
 ## Alternatives considered
@@ -72,8 +76,14 @@ Add **optional, fail-closed in-app mTLS** on the three federation transport endp
 2. **Application-layer signed peer-identity header** — rejected: reinvents mTLS, worse. Ed25519 bundle signatures already give message-level authenticity; transport peer identity is exactly what TLS client certs are for.
 3. **Do nothing (bearer + RBAC + Ed25519 only)** — rejected: bearer authenticates a token, not the peer; Ed25519 authenticates the signer, not the connection. MAJOR #3 explicitly flagged the transport-identity gap.
 
-## Open questions (implementation-time, not blocking this decision)
+## Resolved decisions (owner review, 2026-07-11)
 
-- **CN vs SAN-URI** for the cert-identity field, and the exact value recorded at pairing.
-- Whether the `exporterDomainId == peer-cert-identity` binding is a hard **MUST** or advisory **SHOULD** in v1 (this ADR proposes SHOULD).
-- **Certificate revocation** (CRL/OCSP) — proposed out of scope for v1; the operational answer is CA-bundle rotation + short-lived certs. Note as future work.
+- **Cert identity: SAN URI** (not CN) — encodes the domain id unambiguously; maps to `federationPeers.id`.
+- **`exporterDomainId` == peer-cert binding: SHOULD** (advisory in v1, logged/surfaced when it fails so a MUST is a later config flip, not a code change).
+- **Revocation: file-based CRL, in scope for v1** — air-gap-deliverable (no OCSP / no network CRL-DP), reloadable without full restart, with a warn-vs-hard-fail-on-expiry knob.
+
+## Remaining implementation-time notes (refinements, not blockers)
+
+- Exact **SAN URI scheme** to standardize on (`spiffe://` vs a `urn:scp:domain:<id>` form) and the precise value recorded at `pairPeer` — pick one and document it in the peer-pairing flow.
+- **CRL reload mechanism** — file-watch vs SIGHUP; must atomically swap the TLS context's CRL without dropping in-flight connections.
+- **Stale-CRL default** — ship `crlHardFailOnExpiry` defaulting to `false` (warn-and-continue) with the hard-fail path fully implemented and tested, so higher-assurance domains can opt in.
