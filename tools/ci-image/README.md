@@ -39,19 +39,23 @@ docker load`), main-branch pushes only.
 install` / cache-plus-network-fetch-on-miss step anymore — that's the whole point of this
   change. See the job's own comments in `ci.yml` for the full mechanics.
 
-This is deliberately **the simplest thing that works with no registry**, per this change's own
-scope (close the `e2e-web` Chromium network-fetch gap, not stand up an image-publishing
-pipeline). What a real production setup would need instead, not built here:
+As of **M9**, this uses **build-once → publish to GHCR → pull** (realizing what earlier notes here
+flagged as a follow-up). The `ci-image` job in `ci.yml` tags the image by a content hash of
+`tools/ci-image/Dockerfile` + `pnpm-lock.yaml`, pulls `ghcr.io/commanderscp/scp-ci-image:<hash>`,
+and rebuilds + pushes **only on a cache miss** (the toolchain or lockfile actually changed); the
+`e2e-web` job pulls the same tag. This means:
 
-- Build `tools/ci-image` on a **schedule or on `Dockerfile`/lockfile changes only**, not on every
-  main-branch push — rebuilding a multi-GB image every merge is wasteful once there's a registry
-  to cache it in.
-- **Push to a registry** (the homelab's own, air-gap-compatible per CLAUDE.md principle 5) and tag
-  it (e.g. by lockfile hash or a `vN` scheme), so jobs `docker pull` a pinned tag directly —
-  no same-run artifact hand-off, and the image is reusable across workflow runs and reproducible
-  by digest.
-- Give other CI jobs (not just `e2e-web`) the option to run inside this image too, e.g. the
-  `integration` job's Testcontainers Postgres suite, once there's a registry making that cheap.
+- the multi-GB image is **rebuilt only on `Dockerfile`/lockfile changes**, not every main push;
+- the Chromium download from `cdn.playwright.dev` happens **only on that occasional rebuild** (with
+  retries baked into the Dockerfile) — so per-merge CI has **zero external network dependency for
+  tooling**, the air-gap posture CLAUDE.md #5 requires;
+- the image is reusable across workflow runs (no same-run artifact hand-off) and pinned by tag.
+
+Auth is the workflow's `GITHUB_TOKEN` (the repo is private → the package is private); no extra
+secret is needed **as long as the org permits `GITHUB_TOKEN` `packages:write`** — the same GHCR
+publish model the homelab uses. If the org restricts that, point the login at a GHCR PAT secret
+instead. Still open as a possible future step: let other CI jobs (e.g. the `integration`
+Testcontainers suite) run inside this image too, now that it's a pullable artifact.
 
 ## Known gaps / follow-ups (tracked, not silently skipped)
 
