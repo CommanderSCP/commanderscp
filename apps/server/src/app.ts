@@ -82,7 +82,32 @@ export async function buildApp(
     // UNBOUNDED limit is exactly the oversized-payload DoS surface a bundle parser must defend
     // against. 64 MiB is a generous, explicit, non-infinite ceiling — enforced by Fastify BEFORE
     // the body is ever handed to JSON.parse or any federation code.
-    bodyLimit: 64 * 1024 * 1024
+    bodyLimit: 64 * 1024 * 1024,
+    // M9.3 (ADR-0001, `docs/adr/0001-in-app-federation-mtls.md`) — when in-app federation mTLS is
+    // configured, the WHOLE process listens as HTTPS (there is only ever one Fastify instance /
+    // one `.listen()` call — main.ts), not just the federation routes: Node has no per-route TLS
+    // concept, only per-listener. `requestCert: true, rejectUnauthorized: false` is mandatory, not
+    // a relaxed default — this SAME listener also serves browsers/CLI/SDK traffic that must NOT be
+    // required to present a client certificate; `rejectUnauthorized: false` asks for a cert but
+    // never refuses the HANDSHAKE over its absence, so enforcement happens per-route instead
+    // (`federation/mtls-enforcement.ts`'s `enforceFederationMtls`, called explicitly as the first
+    // statement in each of the three federation transport routes' handlers in
+    // `routes/federation.ts` — see that module's doc comment for why this is a plain function
+    // call rather than a registered Fastify hook). When `federationServerMtls` is unset (the
+    // default), `https` is omitted entirely and Fastify builds a plain `http.Server`, byte-for-byte
+    // the pre-M9.3 behavior.
+    ...(deps.config.federationServerMtls
+      ? {
+          https: {
+            key: deps.config.federationServerMtls.key,
+            cert: deps.config.federationServerMtls.cert,
+            ca: deps.config.federationServerMtls.ca,
+            crl: deps.config.federationServerMtls.crl,
+            requestCert: true,
+            rejectUnauthorized: false
+          }
+        }
+      : {})
   }).withTypeProvider<ZodTypeProvider>();
 
   app.setValidatorCompiler(validatorCompiler);

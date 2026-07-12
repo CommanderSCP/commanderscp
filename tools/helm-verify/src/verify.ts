@@ -78,6 +78,8 @@ interface Container {
     capabilities?: { drop?: string[] };
     seccompProfile?: { type?: string };
   };
+  readinessProbe?: { httpGet?: { path?: string; port?: string; scheme?: string } };
+  livenessProbe?: { httpGet?: { path?: string; port?: string; scheme?: string } };
 }
 
 interface PodSpec {
@@ -209,6 +211,40 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
     }
   }
 
+  // M9.3 (ADR-0001, in-app federation mTLS) — the kitchen-sink render opts into
+  // federation.serverMtls.enabled. Since Node has no per-route TLS (the WHOLE listener becomes
+  // HTTPS), the readiness/liveness probes MUST follow or they fail their own TLS handshake
+  // against a plain-HTTP-expecting client — a structural check so a future values.yaml/template
+  // change that forgets this doesn't silently ship broken probes.
+  if (label === "kitchen-sink") {
+    for (const [name, doc] of [
+      ["api", apiDeploy],
+      ["worker", workerDeploy]
+    ] as const) {
+      if (!doc) continue;
+      const containers = podSpecOf(doc)?.containers ?? [];
+      for (const container of containers) {
+        assert(
+          container.readinessProbe?.httpGet?.scheme === "HTTPS",
+          `[${label}] ${name} Deployment container '${container.name}': readinessProbe must use scheme: HTTPS when federation.serverMtls.enabled (got ${JSON.stringify(container.readinessProbe?.httpGet?.scheme)})`
+        );
+        assert(
+          container.livenessProbe?.httpGet?.scheme === "HTTPS",
+          `[${label}] ${name} Deployment container '${container.name}': livenessProbe must use scheme: HTTPS when federation.serverMtls.enabled (got ${JSON.stringify(container.livenessProbe?.httpGet?.scheme)})`
+        );
+      }
+      const env = containers.flatMap((c) => c.env ?? []);
+      assert(
+        env.some((e) => e.name === "SCP_FEDERATION_SERVER_MTLS_CA_FILE"),
+        `[${label}] ${name} Deployment must receive SCP_FEDERATION_SERVER_MTLS_CA_FILE when federation.serverMtls.enabled`
+      );
+      assert(
+        env.some((e) => e.name === "SCP_FEDERATION_SERVER_MTLS_CRL_FILE"),
+        `[${label}] ${name} Deployment must receive SCP_FEDERATION_SERVER_MTLS_CRL_FILE when federation.serverMtls.crl.enabled`
+      );
+    }
+  }
+
   // NetworkPolicy — default-deny AND at least one explicit allow, both present.
   const networkPolicies = docs.filter((d) => d.kind === "NetworkPolicy");
   assert(networkPolicies.length >= 2, `[${label}] expected multiple NetworkPolicies (default-deny + explicit allows), got ${networkPolicies.length}`);
@@ -278,6 +314,10 @@ function main(): void {
       "--set", "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0",
       "--set", "federation.mtls.enabled=true",
       "--set", "federation.mtls.existingSecret=my-fed-cert",
+      "--set", "federation.serverMtls.enabled=true",
+      "--set", "federation.serverMtls.existingSecret=my-fed-server-mtls",
+      "--set", "federation.serverMtls.crl.enabled=true",
+      "--set", "federation.serverMtls.crl.existingSecret=my-fed-server-mtls-crl",
       "--set", "ingress.enabled=true",
       "--set", "ingress.host=scp.example.com",
       "--set", "ingress.mtls.enabled=true",

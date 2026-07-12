@@ -1,7 +1,7 @@
 import path from "node:path";
 import os from "node:os";
 import { buildApp } from "./app.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, loadFederationServerMtlsConfig } from "./config.js";
 import { createDb, createPool } from "./db/client.js";
 import { runMigrations } from "./db/migrate.js";
 import { provisionPgBossRole, provisionRuntimeRole, runtimeCredentials } from "./db/provision.js";
@@ -139,17 +139,60 @@ async function main(): Promise<void> {
     });
   }
 
-  // Plain HTTP(S) listen — no `requestCert`/`rejectUnauthorized`. This process never verifies an
-  // incoming client TLS certificate itself (adversarial review MAJOR #3 on PR #15):
-  // `federation-https` (plugin-host/subprocess-entry.ts) presents a client cert when THIS domain
-  // dials OUT to a parent, but a PARENT receiving a child's pull here authenticates it by bearer
-  // token + RBAC only, same as pre-M8. Server-side mTLS enforcement today lives at the deployment
-  // edge (`deploy/helm/templates/ingress.yaml`'s `ingress.mtls` — nginx client-cert-verification
-  // annotations, see deploy/helm/README.md's "Federation mTLS" section). An in-app enforcement
-  // path (this server itself verifying peer certs, independent of whatever proxy sits in front of
-  // it) is tracked follow-up, not implemented here.
+  // M9.3 (ADR-0001): when `config.federationServerMtls` is set, `buildApp` (app.ts) already
+  // constructed this Fastify instance with `https: {..., requestCert: true, rejectUnauthorized:
+  // false}` — the listen call itself is unchanged either way, Fastify just binds an `https.Server`
+  // instead of `http.Server` under the hood. Per-route enforcement (rejecting an unauthorized/
+  // unregistered peer on the three federation transport routes) lives in
+  // `federation/mtls-enforcement.ts`'s `enforceFederationMtls`, not here. When
+  // `federationServerMtls` is unset (the default), this is byte-for-byte the pre-M9.3 plain-HTTP
+  // behavior; server-side mTLS
+  // enforcement then lives only at the deployment edge (`deploy/helm/templates/ingress.yaml`'s
+  // `ingress.mtls` — nginx client-cert-verification annotations, see deploy/helm/README.md's
+  // "Federation mTLS" section).
   await app.listen({ port: config.port, host: config.host });
-  app.log.info(`scp (${config.role}) listening on http://${config.host}:${config.port}`);
+  const scheme = config.federationServerMtls ? "https" : "http";
+  app.log.info(`scp (${config.role}) listening on ${scheme}://${config.host}:${config.port}`);
+
+  // M9.3 (ADR-0001 §8): CRL reload without a full restart, so a revocation can take effect in a
+  // running (possibly air-gapped) instance by dropping in a new CRL file and signaling this
+  // process — no network fetch, matching CLAUDE.md principle 5. Re-runs the SAME loader used at
+  // boot (`loadFederationServerMtlsConfig`), so a reload is held to the identical validation (CA/
+  // cert/key still required together, the same warn-vs-hard-fail-on-expiry policy for the CRL);
+  // `tls.Server#setSecureContext` atomically swaps the context for all FUTURE handshakes without
+  // dropping already-established connections. A reload failure (e.g. an operator drops in a
+  // corrupt file) is logged and the PREVIOUS material stays in effect — a bad reload attempt must
+  // never take down an already-running, correctly-configured listener.
+  if (config.federationServerMtls) {
+    process.on("SIGHUP", () => {
+      try {
+        const fresh = loadFederationServerMtlsConfig(process.env);
+        if (!fresh) {
+          throw new Error(
+            "SCP_FEDERATION_SERVER_MTLS_* env vars are no longer set — refusing to reload " +
+              "in-app federation mTLS out from under a running listener (restart the process " +
+              "instead if you intend to disable it)"
+          );
+        }
+        (app.server as unknown as import("node:tls").Server).setSecureContext({
+          ca: fresh.ca,
+          cert: fresh.cert,
+          key: fresh.key,
+          crl: fresh.crl
+        });
+        app.log.info(
+          { crlLoaded: !!fresh.crl },
+          "federation server mTLS: reloaded CA/cert/key/CRL material on SIGHUP"
+        );
+      } catch (err) {
+        app.log.error(
+          { err },
+          "federation server mTLS: SIGHUP reload FAILED — continuing with the PREVIOUSLY loaded " +
+            "material (fail-safe: a bad reload attempt must not drop TLS on a running listener)"
+        );
+      }
+    });
+  }
 
   // BUILD_AND_TEST.md §5.3 — eval-stack demo data (SCP_SEED_DEMO, off by default; the compose
   // eval stack turns it on). Needs the server actually listening (it talks to itself over HTTP,

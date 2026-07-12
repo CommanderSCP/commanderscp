@@ -62,12 +62,25 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+          # M9.3 (ADR-0001): when in-app federation mTLS is enabled, apps/server's ONE Fastify
+          # listener speaks HTTPS for ALL traffic (there is no per-route TLS) — the probes must
+          # follow, or they fail their own TLS handshake against a plain-HTTP-expecting client.
           readinessProbe:
-            httpGet: { path: /healthz, port: http }
+            httpGet:
+              path: /healthz
+              port: http
+              {{- if .Values.federation.serverMtls.enabled }}
+              scheme: HTTPS
+              {{- end }}
             initialDelaySeconds: 3
             periodSeconds: 5
           livenessProbe:
-            httpGet: { path: /healthz, port: http }
+            httpGet:
+              path: /healthz
+              port: http
+              {{- if .Values.federation.serverMtls.enabled }}
+              scheme: HTTPS
+              {{- end }}
             initialDelaySeconds: 10
             periodSeconds: 10
           resources:
@@ -81,6 +94,16 @@ spec:
             - name: federation-mtls
               mountPath: /etc/scp/federation-mtls
               readOnly: true
+            {{- end }}
+            {{- if .Values.federation.serverMtls.enabled }}
+            - name: federation-server-mtls
+              mountPath: /etc/scp/federation-server-mtls
+              readOnly: true
+            {{- if .Values.federation.serverMtls.crl.enabled }}
+            - name: federation-server-mtls-crl
+              mountPath: /etc/scp/federation-server-mtls-crl
+              readOnly: true
+            {{- end }}
             {{- end }}
       volumes:
         - name: tmp
@@ -96,4 +119,17 @@ spec:
         - name: federation-mtls
           secret:
             secretName: {{ .Values.federation.mtls.existingSecret }}
+        {{- end }}
+        {{- if .Values.federation.serverMtls.enabled }}
+        - name: federation-server-mtls
+          secret:
+            secretName: {{ .Values.federation.serverMtls.existingSecret }}
+        {{- if .Values.federation.serverMtls.crl.enabled }}
+        - name: federation-server-mtls-crl
+          secret:
+            # A SEPARATE Secret from federation-server-mtls above (ADR-0001 §8) — refreshing the
+            # CRL (which rotates far more often than CA/server-cert material) only ever touches
+            # THIS Secret, never re-rolling the CA/cert/key one.
+            secretName: {{ .Values.federation.serverMtls.crl.existingSecret }}
+        {{- end }}
         {{- end }}

@@ -159,39 +159,64 @@ risk). Mode 2 is fully functional under docker-compose/VM deployments today. Wir
 launch Kubernetes Jobs via the API (using the RBAC + template this chart already ships) is tracked
 follow-up work. `managedIac.enabled` defaults to `false`.
 
-## Federation mTLS — what's enforced vs. deferred (corrected, adversarial review MAJOR #3)
+## Federation mTLS — three distinct knobs, and which one you need
 
-**`federation.mtls.enabled: true` is CLIENT-side presentation only.** It mounts a
-`kubernetes.io/tls`-shaped Secret and wires real client-certificate presentation into the
-`federation-https` subprocess (M8 — `apps/server/src/plugin-host/subprocess-entry.ts`'s
-`loadFederationMtlsMaterial`, proven by `plugin-host/federation-mtls.test.ts` against a real
-mTLS-enforcing test server): when THIS domain acts as a CHILD dialing a parent, it presents a real
-client cert. That is genuinely implemented and tested — an earlier version of this doc, and the
-PR body, described this as "mTLS enforced" without qualification, which overstated it.
+This chart ships THREE separate mTLS-related values blocks. They cover different points in the
+transport path and are not interchangeable — pick based on where TLS terminates in your topology.
 
-**What that does NOT do: make THIS domain's own API, acting as a PARENT, verify an incoming
-child's client certificate.** `apps/server/src/main.ts` starts the API with a plain `app.listen`
-(no `requestCert`/`rejectUnauthorized`) — a parent receiving a child's pull today accepts any (or
-no) client certificate; the request is authenticated by bearer token + RBAC only, exactly as
-pre-M8. `federation.mtls` alone does not close that gap.
+| Values key | What it controls | Direction | Enforced by |
+|---|---|---|---|
+| `federation.mtls` | CLIENT-side certificate **presentation** — when THIS domain acts as a CHILD dialing a parent, `federation-https` presents a real client cert. | Outbound (this domain -> a parent) | `apps/server/src/plugin-host/subprocess-entry.ts`'s `loadFederationMtlsMaterial`, proven by `plugin-host/federation-mtls.test.ts` |
+| `ingress.mtls` | EDGE server-side **verification** — nginx ingress-controller annotations that require+verify an incoming client cert before any request reaches the `api` Service. | Inbound, TLS terminated at the ingress | `templates/ingress.yaml` (nginx-specific annotations), verified structurally by `tools/helm-verify` |
+| `federation.serverMtls` | IN-APP server-side **verification** (M9.3, [ADR-0001](../../docs/adr/0001-in-app-federation-mtls.md)) — apps/server's OWN Fastify listener terminates TLS itself and verifies an incoming peer's client cert, fail-closed, on the three federation transport routes. | Inbound, TLS terminated by the app itself | `apps/server/src/federation/mtls-enforcement.ts` + `config.ts`'s `loadFederationServerMtlsConfig`, proven by `federation/mtls.integration.test.ts`'s attack-matrix suite |
 
-**The deployment-level fix, shipped in this chart: `ingress.mtls`** (`templates/ingress.yaml`,
-`values.yaml`). When enabled, it adds nginx ingress-controller annotations
-(`auth-tls-verify-client: "on"`, `auth-tls-secret: <ns>/<ingress.mtls.caSecretName>`) that make the
-ingress controller itself require and verify a client certificate, against a CA you provide,
-before any request — including a federation pull — reaches the `api` Service. This is a REAL
-server-side enforcement point, gated behind a values flag, verified structurally by
-`tools/helm-verify`. Caveats: (a) it's nginx-specific — a different ingress controller needs its
-own equivalent annotations; (b) it enforces on the WHOLE Ingress (this chart serves the entire API
-on one host/path today), not scoped to `/v1/federation/*` alone; (c) an in-app enforcement path
-(the API server itself calling `requestCert`/verifying peer certs, independent of whatever sits in
-front of it) remains a follow-up, not yet implemented.
+**`federation.mtls.enabled: true`** mounts a `kubernetes.io/tls`-shaped Secret and wires real
+client-certificate presentation into the `federation-https` subprocess: when THIS domain acts as a
+CHILD dialing a parent, it presents a real client cert. That is genuinely implemented and tested —
+an earlier version of this doc, and the PR body, described this as "mTLS enforced" without
+qualification, which overstated it. **On its own it does NOT make this domain's own API, acting as
+a PARENT, verify an incoming child's client certificate** — that needs one of the two rows below.
+
+**Precedence / which to pick:**
+- **TLS terminated at an ingress** (the common k8s shape) -> use `ingress.mtls`. When enabled, it
+  adds nginx ingress-controller annotations (`auth-tls-verify-client: "on"`,
+  `auth-tls-secret: <ns>/<ingress.mtls.caSecretName>`) that make the ingress controller itself
+  require and verify a client certificate, against a CA you provide, before any request —
+  including a federation pull — reaches the `api` Service. Caveats: (a) it's nginx-specific — a
+  different ingress controller needs its own equivalent annotations; (b) it enforces on the WHOLE
+  Ingress (this chart serves the entire API on one host/path today), not scoped to
+  `/v1/federation/*` alone.
+- **App terminates TLS itself** (direct exposure, or a TLS-passthrough proxy that does NOT
+  terminate TLS — an ingress in front normally DOES terminate TLS, so this is an alternative
+  topology, not a layering-on-top) -> use `federation.serverMtls`. `enabled: true` mounts a Secret
+  with `ca.crt`/`tls.crt`/`tls.key` (the CA that signs PEER client certs, plus this listener's own
+  server certificate) and turns apps/server's Fastify listener into HTTPS end to end
+  (`requestCert: true, rejectUnauthorized: false` at the TLS layer — the same listener still
+  serves browsers/CLI/SDK traffic that presents no client cert; enforcement is per-route, on only
+  the three federation transport routes). **`federation.serverMtls.crl` is a SEPARATE Secret from
+  the CA/cert/key one**, deliberately — a CRL refresh (which happens far more often than CA
+  rotation) never requires re-rolling CA material. `federation.serverMtls.crlHardFailOnExpiry`
+  (default `false`) controls whether an expired CRL refuses to boot (`true`) or is dropped from the
+  TLS context with a loud warning, continuing WITHOUT revocation enforcement until a fresh CRL
+  arrives (`false` — the air-gap-friendly default: a disconnected domain may legitimately go a
+  while between physical CRL deliveries). Because turning this on makes the WHOLE listener HTTPS
+  (Node has no per-route TLS), this chart's own readiness/liveness probes automatically switch to
+  `scheme: HTTPS` when `federation.serverMtls.enabled` — verified structurally by
+  `tools/helm-verify`. An Ingress placed in front of a `federation.serverMtls`-enabled deployment
+  would need its own backend-protocol-HTTPS equivalent annotation (not rendered by this chart —
+  the two topologies above are normally alternatives, not layered).
+- Enabling both `ingress.mtls` and `federation.serverMtls` is redundant-but-harmless (the edge
+  verifies, the app re-verifies) PROVIDED the ingress is configured as a genuine TLS-passthrough —
+  if it terminates TLS (the nginx default), the app never sees the client cert at all and
+  `federation.serverMtls` degrades to "CA/cert configured but no peer ever presents a cert",
+  which itself fails closed (rejected, not silently allowed) but isn't the intended defense-in-depth
+  layering.
 
 **The primary integrity control for federation sync remains the Ed25519 journal signatures**
 (DESIGN §13) — every synced journal entry is signed and independently re-verified on import
-regardless of transport-level identity, mTLS or not. mTLS (client presentation + `ingress.mtls`
-enforcement) is a defense-in-depth transport-identity layer on top of that, not a replacement for
-it.
+regardless of transport-level identity, mTLS or not. Every mTLS layer above (client presentation +
+`ingress.mtls` + `federation.serverMtls`) is defense-in-depth transport-**identity**, never a
+replacement for that signature verification.
 
 Separately: the scheduled sync loop that actually calls `pull()`/`push()` on an interval for
 connected children does not exist yet — only the air-gapped **file** transport (`scp federation

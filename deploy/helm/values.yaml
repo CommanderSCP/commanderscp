@@ -176,6 +176,42 @@ federation:
     # Secret must contain tls.crt / tls.key (and optionally ca.crt to trust a private/self-signed
     # parent-side CA) — the standard `kubernetes.io/tls` secret shape.
     existingSecret: ""
+  # -----------------------------------------------------------------------------------------
+  # In-app federation mTLS (M9.3, ADR-0001 — docs/adr/0001-in-app-federation-mtls.md) — the
+  # THIRD, distinct mTLS knob in this chart (see deploy/helm/README.md's "Federation mTLS"
+  # section for the full three-way distinction + precedence):
+  #   - federation.mtls    = CLIENT-side presentation (this domain dialing OUT as a child)
+  #   - ingress.mtls        = EDGE server-side verification (nginx ingress, TLS terminated there)
+  #   - federation.serverMtls (this block) = IN-APP server-side verification (apps/server's OWN
+  #     Fastify listener terminates TLS itself and verifies an incoming peer's client cert on the
+  #     three federation transport routes) — for topologies where TLS is NOT terminated at an
+  #     ingress (direct exposure, or a TLS-passthrough proxy). Fail-closed, optional, disabled by
+  #     default; enabling it turns the WHOLE listener into HTTPS (not just federation traffic —
+  #     Node has no per-route TLS), so readiness/liveness probes and any Ingress in front of it
+  #     must be updated to speak HTTPS too (this chart's templates already handle the probe
+  #     scheme; an Ingress in front needs its own `backend-protocol: HTTPS`-equivalent annotation,
+  #     which is NOT rendered by this chart — the two topologies are normally alternatives, not
+  #     layered, per the README section referenced above).
+  # -----------------------------------------------------------------------------------------
+  serverMtls:
+    enabled: false
+    # Secret containing ca.crt (the CA that signs PEER client certs — verified against incoming
+    # federation requests), tls.crt + tls.key (THIS listener's own server certificate/key,
+    # presented to every connection, federation or not). Required when enabled.
+    existingSecret: ""
+    # The CRL is a SEPARATE secret/key from the CA/cert/key above — deliberately independently
+    # updatable (ADR-0001 §8: CRLs rotate far more often than CA roots; a revocation refresh must
+    # never require re-rolling CA material). Optional: in-app mTLS runs fine with no CRL at all
+    # (CA-trust + registered-peer checks only, no revocation checking).
+    crl:
+      enabled: false
+      existingSecret: ""
+      secretKey: crl.pem
+    # Mirrors SCP_FEDERATION_SERVER_MTLS_CRL_HARD_FAIL_ON_EXPIRY (config.ts's
+    # `loadFederationServerMtlsConfig` doc comment) — default `false` (warn loudly and continue
+    # WITHOUT revocation enforcement on a stale CRL, air-gap-friendly); `true` refuses to boot on
+    # an expired CRL instead of trusting a stale revocation list.
+    crlHardFailOnExpiry: false
 
 ingress:
   enabled: false
@@ -185,14 +221,16 @@ ingress:
   tls:
     enabled: false
     secretName: ""
-  # SERVER-SIDE mTLS enforcement (adversarial review MAJOR #3) — federation.mtls above is
-  # CLIENT-side presentation only (federation-https presenting a cert TO a parent); it does NOT
-  # make this domain's own API verify an incoming child's cert (apps/server's API server itself
-  # has no requestCert/rejectUnauthorized). When enabled, this renders nginx ingress-controller
-  # annotations that require and verify a client cert (against caSecretName, a Secret containing
-  # ca.crt) before any request reaches the api Service — the deployment-level mechanism for
-  # enforcing what federation.mtls only presents. See deploy/helm/README.md's "Federation mTLS"
-  # section for what's enforced vs. deferred, and for non-nginx-controller equivalents.
+  # EDGE server-side mTLS enforcement (adversarial review MAJOR #3; M9.3 added the alternative
+  # in-app path, `federation.serverMtls` above) — federation.mtls above is CLIENT-side
+  # presentation only (federation-https presenting a cert TO a parent); on its own it does NOT
+  # make this domain's own API verify an incoming child's cert. When enabled, this renders nginx
+  # ingress-controller annotations that require and verify a client cert (against caSecretName, a
+  # Secret containing ca.crt) before any request reaches the api Service — the EDGE-side
+  # enforcement mechanism, for topologies where TLS terminates at the ingress. See
+  # deploy/helm/README.md's "Federation mTLS" section for the full three-way distinction
+  # (`federation.mtls` / `ingress.mtls` / `federation.serverMtls`) and precedence, and for
+  # non-nginx-controller equivalents.
   mtls:
     enabled: false
     # Secret (same namespace as this release) containing ca.crt — the CA that signed the client
