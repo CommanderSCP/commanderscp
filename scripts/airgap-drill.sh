@@ -66,6 +66,15 @@ SCPD_REF="${AIRGAP_DRILL_SCPD_REF:-scp:dev}"
 RUNNER_IAC_REF="${AIRGAP_DRILL_RUNNER_IAC_REF:-scp-runner-iac:dev}"
 POSTGRES_REF="${AIRGAP_DRILL_POSTGRES_REF:-postgres:16}"
 
+# KUBECONFIG isolation + namespace pin (see scripts/kind-drill.sh for the full rationale): this drill
+# can run inside an ARC runner POD living in the homelab k3s, whose ambient in-cluster kubeconfig +
+# SA namespace (github-runners) would otherwise leak into helm/kubectl/install.sh instead of the
+# fresh kind cluster. A dedicated kind-only KUBECONFIG + HELM_NAMESPACE=default keeps every
+# kubectl/helm/install.sh call targeting only this drill's kind cluster and its `default` namespace.
+KUBECONFIG="$(mktemp -d)/airgap-drill.kubeconfig"
+export KUBECONFIG
+export HELM_NAMESPACE=default
+
 log "checking prerequisites"
 for bin in docker kind kubectl helm skopeo cosign node; do
   command -v "$bin" >/dev/null 2>&1 || { echo "missing required tool: $bin" >&2; exit 1; }
@@ -99,9 +108,22 @@ apiVersion: kind.x-k8s.io/v1alpha4
 networking:
   disableDefaultCNI: true
   podSubnet: "192.168.0.0/16"
+# Registry mirror (kind's official local-registry pattern). Images are pushed by the runner to
+# 127.0.0.1:${REGISTRY_PORT} (the registry's host-published port — reachable from the ARC runner
+# pod, which CANNOT resolve the registry's docker container name), and in-cluster pulls of that same
+# host:port are rewritten by containerd to the registry container on the shared 'kind' network. This
+# decouples the runner-side PUSH address from the cluster-side PULL address — a single container-name
+# ref can't satisfy both inside a docker-in-docker ARC runner (it does on a plain workstation).
+containerdConfigPatches:
+- |-
+  [plugins."io.containerd.grpc.v1.cri".registry.mirrors."127.0.0.1:${REGISTRY_PORT}"]
+    endpoint = ["http://${REGISTRY_CONTAINER}:5000"]
 EOF
-kind create cluster --name "$CLUSTER_NAME" --config "${SCRATCH}/kind-config.yaml" --wait 60s || true
+kind create cluster --name "$CLUSTER_NAME" --config "${SCRATCH}/kind-config.yaml" --kubeconfig "$KUBECONFIG" --wait 60s || true
 kubectl config use-context "kind-${CLUSTER_NAME}"
+# Pin the context namespace: inside an ARC pod, an empty context namespace makes client-go fall back
+# to the pod's SA namespace (github-runners), diverging from helm's `default`. See kind-drill.sh.
+kubectl config set-context --current --namespace=default
 
 log "installing Calico (vendored manifest if present, else the pinned upstream URL at cluster-build time)"
 # NOTE: fetching the Calico manifest is a BUILD-TIME action of standing up the drill's cluster, not
@@ -116,7 +138,18 @@ kubectl -n kube-system rollout status deployment/coredns --timeout=120s
 kubectl wait --for=condition=Ready nodes --all --timeout=120s
 
 log "preloading postgres:16 into the cluster (eval DB; the chart's eval-postgres template pins the literal tag, IfNotPresent — no registry/internet pull needed)"
-kind load docker-image "$POSTGRES_REF" --name "$CLUSTER_NAME"
+# `kind load docker-image` runs `docker save | ctr import --all-platforms`, which fails on a
+# containerd-store docker daemon (common on ARC runners): the multi-arch `postgres:16` tag lacks the
+# non-host-platform blobs `--all-platforms` wants ("content digest ... not found"), and even a
+# `docker pull --platform` leaves the tag pointing at the multi-arch index. Instead use skopeo to
+# extract JUST the linux/amd64 platform into a docker-archive (single-platform, self-contained) and
+# load that — deterministic regardless of the daemon's image-store backend. (The registry read here
+# is drill SETUP / build-time, the same air-gap category as `kind create cluster` pulling
+# kindest/node and the Calico manifest fetch above — not a runtime call by the product.)
+PG_ARCHIVE="${SCRATCH}/postgres-amd64.tar"
+skopeo copy --override-os=linux --override-arch=amd64 \
+  "docker://docker.io/library/${POSTGRES_REF}" "docker-archive:${PG_ARCHIVE}:${POSTGRES_REF}"
+kind load image-archive "$PG_ARCHIVE" --name "$CLUSTER_NAME"
 
 log "starting a local registry:2 (the air-gap customer-registry stand-in) and connecting it to kind's network"
 docker rm -f "$REGISTRY_CONTAINER" 2>/dev/null || true
@@ -127,8 +160,11 @@ for i in $(seq 1 20); do
   [ "$i" -eq 20 ] && { echo "local registry never came up" >&2; exit 1; }
   sleep 1
 done
-# The in-cluster nodes reach the registry by its container name on the shared 'kind' docker network.
-REG_IN_CLUSTER="${REGISTRY_CONTAINER}:5000"
+# Push AND reference images at 127.0.0.1:${REGISTRY_PORT}: the runner reaches the registry there (its
+# host-published port, verified by the curl check above), and the kind nodes' containerd mirror
+# (configured in kind-config.yaml) rewrites that host:port to the registry container on the 'kind'
+# network for in-cluster pulls. One ref that works from both sides of the docker-in-docker boundary.
+REG_IN_CLUSTER="127.0.0.1:${REGISTRY_PORT}"
 
 log "install.sh: cosign-verify -> retarget-push into the local registry -> helm install (NetworkPolicy on)"
 # The chart's default-deny egress NetworkPolicy is on by default (networkPolicy.enabled=true). We
@@ -147,6 +183,30 @@ log "install.sh: cosign-verify -> retarget-push into the local registry -> helm 
     ./install.sh --registry "${REG_IN_CLUSTER}/scp" --pubkey "${BUNDLE_OUT}/cosign.pub" \
       --mode helm --insecure-registry --release-name "$RELEASE_NAME"
 )
+
+# Capture the bootstrap admin one-time password by polling api logs (current + previous, accumulated).
+# The api pod can restart once during startup on a loaded kind cluster, and the password is printed
+# ONCE and never stored (apps/server/src/auth/local-auth.ts) — see scripts/kind-drill.sh. Captured
+# here (right after install) and reused in the golden path below.
+log "capturing the bootstrap admin one-time password by polling api logs"
+CAPTURE_LOG="${SCRATCH}/airgap-api-capture.log"
+: > "$CAPTURE_LOG"
+PW=""
+for _ in $(seq 1 90); do
+  API_POD="$(kubectl get pods -l app.kubernetes.io/component=api -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  if [ -n "$API_POD" ]; then
+    kubectl logs "$API_POD" --tail=-1 2>/dev/null >> "$CAPTURE_LOG" || true
+    kubectl logs "$API_POD" --previous --tail=-1 2>/dev/null >> "$CAPTURE_LOG" || true
+    LINE="$(grep -i "one-time password" "$CAPTURE_LOG" | tail -n1 || true)"
+    if [ -n "$LINE" ]; then
+      PW="$(printf '%s' "$LINE" | sed -n 's/.*shown once): \([^"]*\).*/\1/p')"
+      [ -n "$PW" ] && break
+    fi
+  fi
+  sleep 2
+done
+[ -n "$PW" ] || { echo "FAIL: could not capture the bootstrap one-time password after polling api logs" >&2; tail -60 "$CAPTURE_LOG" >&2 || true; exit 1; }
+log "captured bootstrap admin one-time password"
 
 log "waiting for all pods Ready under the enforced default-deny egress policy"
 kubectl wait --for=condition=Ready pods -l app.kubernetes.io/name=commanderscp --all --timeout=240s || {
@@ -207,11 +267,7 @@ PF_PID=$!
 sleep 3
 BASE_URL="http://127.0.0.1:18095"
 for i in $(seq 1 30); do curl -fsS "${BASE_URL}/healthz" >/dev/null 2>&1 && break; sleep 1; done
-API_POD="$(kubectl get pods -l app.kubernetes.io/component=api -o jsonpath='{.items[0].metadata.name}')"
-LINE="$(kubectl logs "$API_POD" --tail=-1 2>/dev/null | grep -i 'one-time password' | tail -1 || true)"
-[ -n "$LINE" ] || LINE="$(kubectl logs "$API_POD" --previous --tail=-1 2>/dev/null | grep -i 'one-time password' | tail -1 || true)"
-PW="$(printf '%s' "$LINE" | sed -n 's/.*shown once): \([^"]*\).*/\1/p')"
-[ -n "$PW" ] || { echo "FAIL: could not extract bootstrap password" >&2; exit 1; }
+# PW was captured earlier (right after install.sh) via the restart-robust poll — reuse it here.
 TOKEN="$(curl -fsS -X POST "${BASE_URL}/api/v1/auth/login" -H 'content-type: application/json' -d "{\"username\":\"admin\",\"password\":\"${PW}\"}" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
 [ -n "$TOKEN" ] || { echo "FAIL: login returned no token" >&2; exit 1; }
 CREATE="$(curl -fsS -X POST "${BASE_URL}/api/v1/services" -H "authorization: Bearer ${TOKEN}" -H 'content-type: application/json' -d '{"name":"airgap-drill-service"}')"

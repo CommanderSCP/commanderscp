@@ -25,7 +25,12 @@ Chart name, truncated/sanitized per Helm chart conventions.
 {{- define "commanderscp.labels" -}}
 helm.sh/chart: {{ include "commanderscp.chart" . }}
 {{ include "commanderscp.selectorLabels" . }}
-app.kubernetes.io/version: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
+{{/* image.tag can be digest-pinned (e.g. "1.0.0@sha256:...") — that's a valid image REF (see
+     commanderscp.image) but NOT a valid k8s LABEL (labels are <=63 chars, [A-Za-z0-9._-], and must
+     start/end alphanumeric). Every air-gap install via deploy/airgap/assets/install.sh digest-pins,
+     so the raw tag broke the version label (a real bug the M9.4 air-gap drill surfaced). Sanitize:
+     drop the @digest, cap at 63, and trim any non-alphanumeric edge left by truncation. */}}
+app.kubernetes.io/version: {{ .Values.image.tag | default .Chart.AppVersion | splitList "@" | first | trunc 63 | trimSuffix "-" | trimSuffix "_" | trimSuffix "." | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 

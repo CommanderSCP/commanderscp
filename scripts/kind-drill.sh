@@ -54,6 +54,16 @@ WORKTREE_DIR=""
 PF_PID=""
 POLL_PID=""
 
+# KUBECONFIG isolation: this drill can run inside an ARC runner POD that itself lives in a
+# Kubernetes cluster (the homelab k3s), whose ambient in-cluster credentials + default namespace
+# (`github-runners`) helm/kubectl would otherwise target instead of the kind cluster we create
+# (confirmed via a workflow_dispatch spike: `helm install` hit `namespaces "github-runners" not
+# found` against the fresh kind cluster). Point KUBECONFIG at a dedicated kind-only file and pin
+# helm's namespace so every kubectl/helm call below targets ONLY the kind cluster's `default` ns.
+KUBECONFIG="$(mktemp -d)/kind-drill.kubeconfig"
+export KUBECONFIG
+export HELM_NAMESPACE=default
+
 log() { echo "==> $*"; }
 
 cleanup() {
@@ -83,13 +93,20 @@ git worktree add --detach "$WORKTREE_DIR" "$OLD_BASELINE_REF" --quiet
 docker build -t "scp:${OLD_IMAGE_TAG}" "$WORKTREE_DIR"
 
 log "creating kind cluster '${CLUSTER_NAME}'"
-kind create cluster --name "$CLUSTER_NAME" --wait 120s
+kind create cluster --name "$CLUSTER_NAME" --kubeconfig "$KUBECONFIG" --wait 120s
 
 log "loading both images into kind"
 kind load docker-image "scp:${OLD_IMAGE_TAG}" --name "$CLUSTER_NAME"
 kind load docker-image "scp:${NEW_IMAGE_TAG}" --name "$CLUSTER_NAME"
 
 kubectl config use-context "kind-${CLUSTER_NAME}"
+# Pin the context namespace to `default` explicitly. Inside an ARC runner POD, a kubeconfig context
+# with NO namespace makes client-go fall back to the pod's own service-account namespace
+# (`github-runners`, from /var/run/secrets/.../namespace) — so kubectl would query that namespace
+# while helm (HELM_NAMESPACE=default, above) installs into `default`. Without this, `kubectl wait
+# pods --all` returns "no matching resources found" against the wrong namespace (confirmed in the
+# spike). Harmless on a workstation (namespace is `default` there anyway).
+kubectl config set-context --current --namespace=default
 
 # SINGLE api replica for the install (api.replicaCount=1 + hpa disabled): the golden path
 # extracts the bootstrap admin's one-time password from the api pod's logs, and that line is
@@ -106,10 +123,41 @@ helm install "$RELEASE_NAME" deploy/helm \
   --set api.replicaCount=1 \
   --set api.hpa.enabled=false \
   --set worker.replicaCount=1 \
-  --wait --timeout 240s
+  --timeout 240s
+
+# The bootstrap admin's one-time password is printed exactly ONCE, on the api's admin-CREATING boot,
+# and is never stored (apps/server/src/auth/local-auth.ts). On a loaded kind cluster the api pod can
+# restart once during startup, after which a plain `kubectl logs` shows only "admin already exists,
+# skipping" and even `--previous` can miss the first boot's logs. So we DON'T `--wait` on the install
+# above; instead we poll the api logs from first boot (accumulating current + previous container
+# logs) to capture the password reliably, and only THEN wait for full readiness.
+log "capturing the bootstrap admin one-time password by polling api logs from first boot"
+CAPTURE_LOG="/tmp/kind-drill-api-capture.log"
+: > "$CAPTURE_LOG"
+ADMIN_PASSWORD=""
+for _ in $(seq 1 90); do
+  API_POD="$(kubectl get pods -l app.kubernetes.io/component=api -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  if [ -n "$API_POD" ]; then
+    kubectl logs "$API_POD" --tail=-1 2>/dev/null >> "$CAPTURE_LOG" || true
+    kubectl logs "$API_POD" --previous --tail=-1 2>/dev/null >> "$CAPTURE_LOG" || true
+    LINE="$(grep -i "one-time password" "$CAPTURE_LOG" | tail -n1 || true)"
+    if [ -n "$LINE" ]; then
+      ADMIN_PASSWORD="$(printf '%s' "$LINE" | sed -n 's/.*shown once): \([^"]*\).*/\1/p')"
+      [ -n "$ADMIN_PASSWORD" ] && break
+    fi
+  fi
+  sleep 2
+done
+if [ -z "$ADMIN_PASSWORD" ]; then
+  echo "FAIL: could not capture the bootstrap one-time password after polling api logs" >&2
+  echo "--- accumulated api logs (tail) ---" >&2
+  tail -60 "$CAPTURE_LOG" >&2 || true
+  exit 1
+fi
+log "captured bootstrap admin one-time password"
 
 log "waiting for all pods Ready"
-kubectl wait --for=condition=Ready pods --all --timeout=120s
+kubectl wait --for=condition=Ready pods --all --timeout=180s
 
 log "port-forwarding to the api Service"
 kubectl port-forward "svc/${RELEASE_NAME}-commanderscp-api" 18090:80 >/tmp/kind-drill-pf.log 2>&1 &
@@ -123,35 +171,7 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
-log "golden path: extract bootstrap admin password, login, register a service"
-# `--tail=-1` (all lines) + a `--previous` fallback: robust against the api container having
-# restarted after logging the one-time password (the line would then be in the previous
-# container's logs, invisible to a plain `kubectl logs`). The `|| true` on each grep pipeline is
-# load-bearing: this script runs under `set -euo pipefail`, and grep exiting 1 on no-match would
-# otherwise (via pipefail) kill the whole script at the command substitution -- BEFORE the graceful
-# "not found, try --previous / fail with a message" logic below ever runs.
-API_POD="$(kubectl get pods -l app.kubernetes.io/component=api -o jsonpath='{.items[0].metadata.name}')"
-BOOTSTRAP_LOG_LINE="$(kubectl logs "$API_POD" --tail=-1 2>/dev/null | grep -i "one-time password" | tail -n1 || true)"
-if [ -z "$BOOTSTRAP_LOG_LINE" ]; then
-  BOOTSTRAP_LOG_LINE="$(kubectl logs "$API_POD" --previous --tail=-1 2>/dev/null | grep -i "one-time password" | tail -n1 || true)"
-fi
-if [ -z "$BOOTSTRAP_LOG_LINE" ]; then
-  echo "could not find the bootstrap admin log line in ${API_POD} (current or previous container)" >&2
-  echo "--- ${API_POD} current logs (tail) ---" >&2
-  kubectl logs "$API_POD" --tail=40 2>&1 | tail -40 >&2 || true
-  exit 1
-fi
-# Extract with grep/sed rather than inline `node -e "...()..."` inside $(...): the ancient
-# system bash (3.2 on macOS) miscounts parens inside a double-quoted inline-node string within a
-# command substitution, producing a spurious "syntax error near unexpected token '('". grep/sed
-# is both portable to bash 3.2 and dependency-free. The pino log line is JSON; the password is
-# printed as `...shown once): <PASSWORD>"` (the trailing `"` closes the JSON string).
-ADMIN_PASSWORD="$(printf '%s' "$BOOTSTRAP_LOG_LINE" | sed -n 's/.*shown once): \([^"]*\).*/\1/p')"
-if [ -z "$ADMIN_PASSWORD" ]; then
-  echo "could not parse the one-time password out of: $BOOTSTRAP_LOG_LINE" >&2
-  exit 1
-fi
-
+log "golden path: login as bootstrap admin (one-time password captured above), register a service"
 LOGIN_RESPONSE="$(curl -fsS -X POST "${BASE_URL}/api/v1/auth/login" -H "content-type: application/json" \
   -d "{\"username\":\"admin\",\"password\":\"${ADMIN_PASSWORD}\"}")"
 TOKEN="$(printf '%s' "$LOGIN_RESPONSE" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"

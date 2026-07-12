@@ -11,19 +11,24 @@ name: Deploy Drills (M8 kind / air-gap / Ansible)
 #     nightly/on-demand, not as a merge gate.
 #   - Each drill is minutes-long (two full image builds + a bundle build + cluster bring-up).
 #
-# HONEST SCOPE — what was actually run vs. what is CI infrastructure not yet exercised on the
-# homelab runners (see the m8-hardening-packaging-rc PR body for the authoritative breakdown):
-#   * scripts/kind-drill.sh    — RUN GREEN LOCALLY (colima kind): install (old image) -> golden
-#                                path -> zero-downtime helm upgrade (a REAL new migration applied
-#                                while old pods served) -> data preserved -> rollback.
-#   * scripts/ansible-drill.sh — RUN GREEN LOCALLY: scp.platform Ansible collection drives a real
-#                                signed-bundle compose install then upgrade, health-checked.
-#   * scripts/airgap-drill.sh  — the genuine zero-egress drill (kind + Calico-enforced default-deny
-#                                + a deliberate-egress-attempt that MUST fail + golden path from a
-#                                local registry via the signed bundle). See the PR body for exactly
-#                                how far this was validated locally.
-# These job definitions themselves have not necessarily been run ON the homelab runners — they are
-# the exact commands a human runs, wired for `workflow_dispatch`, not claimed as passing CI yet.
+# STATUS (M9.4, 2026-07-12): all three drills RUN GREEN on the homelab
+# `homelab-commanderscp-linux-docker-build` ARC runner — nested-kind IS viable there (the M8 open
+# question, now answered). Recorded green runs:
+#   * scripts/kind-drill.sh    — install (old image) -> golden path -> zero-downtime helm upgrade
+#                                (a REAL new migration applied while old pods served) -> data
+#                                preserved -> rollback.  Green: run 29194162892.
+#   * scripts/ansible-drill.sh — scp.platform Ansible collection drives a real signed-bundle compose
+#                                install then upgrade, health-checked.  Green: run 29194484761.
+#   * scripts/airgap-drill.sh  — genuine zero-egress drill (kind + Calico-enforced default-deny + a
+#                                deliberate-egress-attempt that MUST fail + golden path from a local
+#                                registry via the signed bundle).  Green: run 29196926938.
+# Getting them green on the ARC runner (vs. a plain workstation) needed the M9.4 fixes on this
+# branch: install kind/kubectl/helm/skopeo/cosign in-workflow; KUBECONFIG isolation + context-
+# namespace pin (an ARC pod's ambient in-cluster kubeconfig/SA-namespace otherwise leaks in);
+# restart-robust one-time-password capture; a skopeo single-platform postgres load + a kind
+# containerd-mirror local registry (docker-in-docker dual-addressing); and a real chart fix
+# (digest-pinned image tags aren't valid k8s labels — deploy/helm _helpers.tpl). Kept nightly +
+# on-demand, still NEVER merge-gating (each run is minutes-long: image builds + bundle + cluster).
 
 on:
   schedule:
@@ -49,47 +54,88 @@ jobs:
           fetch-depth: 0 # kind-drill.sh builds an "old" image from an earlier commit on this branch
       - uses: ./.github/actions/setup
       - run: pnpm build
+      # Drill prerequisites (kind/kubectl/helm). Installed in-workflow via the same setup-action
+      # pattern the `integration` CI job uses for helm/cosign/skopeo — a nightly/on-demand
+      # build-time fetch, NOT a product runtime dependency, so it doesn't violate CLAUDE.md #5. The
+      # homelab `linux-docker-build` runner ships Docker but not these k8s tools (confirmed by a
+      # workflow_dispatch spike: `kind: command not found`); rather than bake them into the runner
+      # image (homelab-runners, Rule #5), the drill self-provisions them.
+      - name: Install helm
+        uses: azure/setup-helm@v4
+        with:
+          version: latest
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+      - name: Install kind (binary only — kind-drill.sh creates its own cluster)
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+          version: v0.27.0
       - name: Run the kind install/upgrade/rollback drill
         run: bash scripts/kind-drill.sh
 
   ansible-drill:
     name: "ansible: bundle -> compose install -> compose upgrade (scp.platform)"
+    # Serialized after kind-drill (needs + always()): the three drills each stand up a full kind
+    # cluster / compose stack, and running them CONCURRENTLY starved the single homelab node — a
+    # `drill=all`/nightly run failed with Postgres transaction aborts + upgrade timeouts, while each
+    # drill passes cleanly alone. `always()` keeps this independent of kind's result (it still runs
+    # if kind failed or was skipped, e.g. `drill=ansible`); `needs` only orders them one-at-a-time.
+    needs: kind-drill
     if: >-
+      always() && (
       github.event_name == 'schedule' ||
-      github.event.inputs.drill == 'all' || github.event.inputs.drill == 'ansible'
+      github.event.inputs.drill == 'all' || github.event.inputs.drill == 'ansible')
     runs-on: homelab-commanderscp-linux-docker-build
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - run: pnpm build
-      - name: Install skopeo, cosign, ansible (documented §1 prerequisites for this drill)
+      # Drill prerequisites installed in-workflow (same pattern as the integration CI job) —
+      # nightly/on-demand build-time fetch, not a product runtime dependency.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+      - name: Install skopeo + ansible
         run: |
-          # Homelab runners are expected to have these pre-provisioned (BUILD_AND_TEST.md §1).
-          # This step is a no-op if they are already on PATH; it exists so the drill's tool
-          # requirements are explicit and a fresh runner can be made to work.
-          command -v skopeo && command -v cosign && command -v ansible-playbook || {
-            echo "skopeo/cosign/ansible must be provisioned on this runner — see BUILD_AND_TEST.md §1" >&2
-            exit 1
-          }
+          sudo apt-get update -qq
+          command -v skopeo >/dev/null 2>&1 || sudo apt-get install -y -qq skopeo
+          command -v ansible-playbook >/dev/null 2>&1 || sudo apt-get install -y -qq ansible
       - name: Run the Ansible-driven compose install+upgrade drill
         run: bash scripts/ansible-drill.sh
 
   airgap-drill:
     name: "air-gap: bundle -> local registry -> Calico zero-egress kind install"
+    needs: ansible-drill  # serialized (see ansible-drill) so the three drills never contend on the single node
     if: >-
+      always() && (
       github.event_name == 'schedule' ||
-      github.event.inputs.drill == 'all' || github.event.inputs.drill == 'airgap'
+      github.event.inputs.drill == 'all' || github.event.inputs.drill == 'airgap')
     runs-on: homelab-commanderscp-linux-docker-build
     timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - run: pnpm build
-      - name: Verify drill prerequisites (kind/helm/kubectl/skopeo/cosign)
+      # Drill prerequisites installed in-workflow (same pattern as the integration CI job) —
+      # nightly/on-demand build-time fetch, not a product runtime dependency.
+      - name: Install helm
+        uses: azure/setup-helm@v4
+        with:
+          version: latest
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+      - name: Install kind (binary only — the drill creates its own cluster)
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+          version: v0.27.0
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+      - name: Install skopeo
         run: |
-          for b in kind helm kubectl skopeo cosign; do
-            command -v "$b" >/dev/null || { echo "missing $b — see BUILD_AND_TEST.md §1" >&2; exit 1; }
-          done
+          command -v skopeo >/dev/null 2>&1 && exit 0
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq skopeo
       - name: Run the genuine zero-egress air-gap install drill
         run: bash scripts/airgap-drill.sh
