@@ -54,6 +54,16 @@ WORKTREE_DIR=""
 PF_PID=""
 POLL_PID=""
 
+# KUBECONFIG isolation: this drill can run inside an ARC runner POD that itself lives in a
+# Kubernetes cluster (the homelab k3s), whose ambient in-cluster credentials + default namespace
+# (`github-runners`) helm/kubectl would otherwise target instead of the kind cluster we create
+# (confirmed via a workflow_dispatch spike: `helm install` hit `namespaces "github-runners" not
+# found` against the fresh kind cluster). Point KUBECONFIG at a dedicated kind-only file and pin
+# helm's namespace so every kubectl/helm call below targets ONLY the kind cluster's `default` ns.
+KUBECONFIG="$(mktemp -d)/kind-drill.kubeconfig"
+export KUBECONFIG
+export HELM_NAMESPACE=default
+
 log() { echo "==> $*"; }
 
 cleanup() {
@@ -83,7 +93,7 @@ git worktree add --detach "$WORKTREE_DIR" "$OLD_BASELINE_REF" --quiet
 docker build -t "scp:${OLD_IMAGE_TAG}" "$WORKTREE_DIR"
 
 log "creating kind cluster '${CLUSTER_NAME}'"
-kind create cluster --name "$CLUSTER_NAME" --wait 120s
+kind create cluster --name "$CLUSTER_NAME" --kubeconfig "$KUBECONFIG" --wait 120s
 
 log "loading both images into kind"
 kind load docker-image "scp:${OLD_IMAGE_TAG}" --name "$CLUSTER_NAME"
