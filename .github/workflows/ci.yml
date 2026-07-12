@@ -232,39 +232,43 @@ jobs:
       - run: bash scripts/e2e-m7.sh
 
   ci-image:
-    name: "9a. Build CI runner image (tools/ci-image, main only)"
-    # Builds the versioned CI runner image BUILD_AND_TEST.md §6 calls for ("Required tooling
-    # (Node, pnpm store, Playwright browsers, oasdiff) is baked into a versioned CI runner image
-    # built from tools/ci-image/Dockerfile") and hands it to the e2e-web job below via a workflow
-    # artifact (docker save/load) — this repo has no container registry yet, so this is the
-    # simplest thing that actually works on self-hosted runners with no registry to push to: build
-    # once per workflow run, pass the image tar between jobs. See tools/ci-image/Dockerfile's own
-    # header comment for exactly what gets baked in (Node 22, corepack-pinned pnpm, a warmed pnpm
+    name: "9a. Ensure CI runner image in GHCR (tools/ci-image, main only)"
+    # BUILD_AND_TEST.md §6's versioned CI runner image (Node 22, corepack-pinned pnpm + a warmed
     # store, Playwright's Chromium + OS deps version-matched to pnpm-lock.yaml, the Docker CLI +
-    # compose plugin, the vendored oasdiff binary) and why each is safe/expected to touch the
-    # network at IMAGE BUILD time without violating CLAUDE.md principle 5's "no runtime network
-    # calls" (build-time vendoring vs. run-time fetching are different things).
+    # compose plugin, the vendored oasdiff binary — see tools/ci-image/Dockerfile).
     #
-    # HONEST SCOPE: a real production setup would build this on a schedule or only when
-    # tools/ci-image/Dockerfile (or pnpm-lock.yaml) actually changes, and push it to a registry
-    # that e2e-web then pulls a pinned tag from — much cheaper than rebuilding a multi-GB image on
-    # every main-branch push, and shareable across workflow runs without a same-run artifact
-    # hand-off. That registry+publish pipeline does not exist in this repo and standing one up is
-    # out of scope for "close the e2e-web Chromium network-fetch gap" — tracked as follow-up in
-    # tools/ci-image/README.md.
+    # Model: BUILD ONCE -> PUBLISH TO GHCR -> PULL (this realizes what the Dockerfile header and
+    # tools/ci-image/README.md previously flagged as a follow-up). The image is tagged by a content
+    # hash of the only two inputs that determine it — tools/ci-image/Dockerfile + pnpm-lock.yaml —
+    # so it is rebuilt ONLY on a cache miss (the toolchain/lockfile actually changed); every other
+    # main push just pulls it. That kills both the per-push multi-GB rebuild AND the per-push
+    # dependency on cdn.playwright.dev: the Chromium download now happens only on a cache miss,
+    # with retries baked into the Dockerfile — closing the air-gap gap the build-every-push
+    # approach had (CLAUDE.md #5, CI runs offline). Auth is the workflow's GITHUB_TOKEN (repo is
+    # private -> the package is private); no extra secret, assuming the org permits GITHUB_TOKEN
+    # packages:write (the same GHCR publish model the homelab already uses).
     runs-on: homelab-commanderscp-linux-docker-build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
-      - name: Build tools/ci-image (build context is the repo root — see Dockerfile header comment)
-        run: docker build -f tools/ci-image/Dockerfile -t scp-ci-image:${{ github.sha }} .
-      - name: Save image for hand-off to the e2e-web job
-        run: docker save scp-ci-image:${{ github.sha }} | gzip > /tmp/scp-ci-image.tar.gz
-      - uses: actions/upload-artifact@v4
-        with:
-          name: scp-ci-image
-          path: /tmp/scp-ci-image.tar.gz
-          retention-days: 1
+      - name: Compute the toolchain image tag (hash of Dockerfile + lockfile)
+        id: img
+        run: echo "ref=ghcr.io/commanderscp/scp-ci-image:$(cat tools/ci-image/Dockerfile pnpm-lock.yaml | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Pull the pre-built image, or build+push once on a cache miss (toolchain changed)
+        run: |
+          IMAGE="${{ steps.img.outputs.ref }}"
+          if docker pull "$IMAGE"; then
+            echo "cache hit: $IMAGE already in GHCR — no build needed."
+          else
+            echo "cache miss: building $IMAGE (Dockerfile/lockfile changed) and pushing to GHCR."
+            docker build -f tools/ci-image/Dockerfile -t "$IMAGE" .
+            docker push "$IMAGE"
+          fi
 
   e2e-web:
     name: "9. E2E (Web UI, Playwright/Chromium, main only)"
@@ -272,15 +276,19 @@ jobs:
     runs-on: homelab-commanderscp-linux-docker-build
     needs: [static-checks, codegen-drift, unit-tests, ci-image]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
 
-      - name: Load the baked CI runner image (tools/ci-image)
-        uses: actions/download-artifact@v4
-        with:
-          name: scp-ci-image
-          path: /tmp
-      - run: gunzip -c /tmp/scp-ci-image.tar.gz | docker load
+      - name: Compute the same toolchain image tag as the ci-image job
+        id: img
+        run: echo "ref=ghcr.io/commanderscp/scp-ci-image:$(cat tools/ci-image/Dockerfile pnpm-lock.yaml | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - name: Log in to GHCR and pull the baked CI runner image
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker pull "${{ steps.img.outputs.ref }}"
 
       # Everything scripts/e2e-web.sh needs — Node 22, pnpm + its pre-warmed store, Playwright's
       # Chromium + its OS-level deps, the Docker CLI + compose plugin — is baked into
@@ -318,5 +326,5 @@ jobs:
             --network host \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$(pwd):/workspace" -w /workspace \
-            scp-ci-image:${{ github.sha }} \
+            "${{ steps.img.outputs.ref }}" \
             bash -c "pnpm install --offline --frozen-lockfile && bash scripts/e2e-web.sh"
