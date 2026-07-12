@@ -76,9 +76,16 @@ jobs:
 
   ansible-drill:
     name: "ansible: bundle -> compose install -> compose upgrade (scp.platform)"
+    # Serialized after kind-drill (needs + always()): the three drills each stand up a full kind
+    # cluster / compose stack, and running them CONCURRENTLY starved the single homelab node — a
+    # `drill=all`/nightly run failed with Postgres transaction aborts + upgrade timeouts, while each
+    # drill passes cleanly alone. `always()` keeps this independent of kind's result (it still runs
+    # if kind failed or was skipped, e.g. `drill=ansible`); `needs` only orders them one-at-a-time.
+    needs: kind-drill
     if: >-
+      always() && (
       github.event_name == 'schedule' ||
-      github.event.inputs.drill == 'all' || github.event.inputs.drill == 'ansible'
+      github.event.inputs.drill == 'all' || github.event.inputs.drill == 'ansible')
     runs-on: homelab-commanderscp-linux-docker-build
     timeout-minutes: 40
     steps:
@@ -99,9 +106,11 @@ jobs:
 
   airgap-drill:
     name: "air-gap: bundle -> local registry -> Calico zero-egress kind install"
+    needs: ansible-drill  # serialized (see ansible-drill) so the three drills never contend on the single node
     if: >-
+      always() && (
       github.event_name == 'schedule' ||
-      github.event.inputs.drill == 'all' || github.event.inputs.drill == 'airgap'
+      github.event.inputs.drill == 'all' || github.event.inputs.drill == 'airgap')
     runs-on: homelab-commanderscp-linux-docker-build
     timeout-minutes: 50
     steps:
