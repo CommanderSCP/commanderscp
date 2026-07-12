@@ -1298,6 +1298,73 @@ Managed executors hold only scoped, vaulted credentials.
 
 Coordination and execution remain architecturally separated even when CommanderSCP provides both.
 
+Amendment approved 2026-07-12.
+
+For classes of change that are inherently host-reaching, a managed executor may hold host login-grade credentials and may open a scoped network path to the hosts it changes.
+
+This widens the credential constraint of the 2026-07-08 amendment for host-reaching classes only.
+
+Host-reaching managed execution applies only to the following enumerated classes:
+
+- Small Infrastructure-as-Code deployments
+- Operating-system package install, upgrade, and version pinning
+- Configuration file and template rendering and push
+- cron and systemd unit changes
+
+Extending this class allowlist requires owner sign-off.
+
+Host-reaching managed execution is permitted only under all of the following containment preconditions:
+
+- Operations come from a closed, cosign-signed task catalog; tenant-supplied shell is never accepted
+- Runners are single-shot and ephemeral
+- Credentials are issued per run, narrowly scoped, and short-lived
+- Network egress is restricted per run to a positive allowlist of the resolved targets
+- The class passes the six-gate admission test
+
+Managed execution is never a default; the six-gate admission test is the only route into it.
+
+Rollback for host-reaching classes is best-effort convergent, evidenced by captured prior state.
+
+---
+
+## Bundled Executor Backends
+
+Scope decision approved 2026-07-12.
+
+Where a domain lacks an execution system for a class of change, CommanderSCP may distribute and optionally deploy unmodified upstream executor backends.
+
+This is a product-scope decision, not an amendment to the coordination principle.
+
+Bundled backends keep their own infrastructure credentials and their own reconciliation loops.
+
+CommanderSCP holds only a scoped API token to a bundled backend.
+
+Bundled backends are operator-installed.
+
+CommanderSCP never applies or upgrades backend manifests.
+
+Bundling distributes existing systems; it never reimplements them.
+
+A bundled ArgoCD does not make CommanderSCP an ArgoCD replacement.
+
+Enabling a bundled backend adds that backend's own stateful services to the opting-in domain.
+
+PostgreSQL remains the only stateful dependency CommanderSCP itself requires.
+
+Opting into a bundled backend ends managed-execution eligibility for the classes it covers.
+
+The bundled backend allowlist is the SCP Standard Stack.
+
+The Standard Stack is ArgoCD, Argo Workflows, Argo Events, and Harbor.
+
+ArgoCD is bundled with Valkey as its cache, an owned and tested supported deviation from upstream composition.
+
+ArgoCD ships first; the remaining Standard Stack backends follow on the roadmap.
+
+Flux is explicitly deferred.
+
+Extending the backend allowlist beyond the Standard Stack requires owner sign-off.
+
 ---
 
 # Change Model
