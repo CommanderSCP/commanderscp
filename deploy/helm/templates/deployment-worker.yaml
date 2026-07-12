@@ -74,12 +74,25 @@ spec:
           # worker's /healthz still answers (role=worker still boots the Fastify app — DESIGN
           # §16's "role flag" split is per-process work scheduling, not a separate binary/API
           # surface) — same liveness signal as api, cheap and accurate.
+          # M9.3 (ADR-0001): the probes must speak HTTPS too when in-app federation mTLS is
+          # enabled — see deployment-api.yaml's identical comment (there is only one listener,
+          # per process, and it's HTTPS-or-not for ALL traffic, not just federation routes).
           readinessProbe:
-            httpGet: { path: /healthz, port: http }
+            httpGet:
+              path: /healthz
+              port: http
+              {{- if .Values.federation.serverMtls.enabled }}
+              scheme: HTTPS
+              {{- end }}
             initialDelaySeconds: 3
             periodSeconds: 5
           livenessProbe:
-            httpGet: { path: /healthz, port: http }
+            httpGet:
+              path: /healthz
+              port: http
+              {{- if .Values.federation.serverMtls.enabled }}
+              scheme: HTTPS
+              {{- end }}
             initialDelaySeconds: 10
             periodSeconds: 10
           resources:
@@ -93,6 +106,16 @@ spec:
             - name: federation-mtls
               mountPath: /etc/scp/federation-mtls
               readOnly: true
+            {{- end }}
+            {{- if .Values.federation.serverMtls.enabled }}
+            - name: federation-server-mtls
+              mountPath: /etc/scp/federation-server-mtls
+              readOnly: true
+            {{- if .Values.federation.serverMtls.crl.enabled }}
+            - name: federation-server-mtls-crl
+              mountPath: /etc/scp/federation-server-mtls-crl
+              readOnly: true
+            {{- end }}
             {{- end }}
             {{- if .Values.managedIac.enabled }}
             - name: managed-iac-workspace
@@ -112,6 +135,16 @@ spec:
         - name: federation-mtls
           secret:
             secretName: {{ .Values.federation.mtls.existingSecret }}
+        {{- end }}
+        {{- if .Values.federation.serverMtls.enabled }}
+        - name: federation-server-mtls
+          secret:
+            secretName: {{ .Values.federation.serverMtls.existingSecret }}
+        {{- if .Values.federation.serverMtls.crl.enabled }}
+        - name: federation-server-mtls-crl
+          secret:
+            secretName: {{ .Values.federation.serverMtls.crl.existingSecret }}
+        {{- end }}
         {{- end }}
         {{- if .Values.managedIac.enabled }}
         - name: managed-iac-workspace

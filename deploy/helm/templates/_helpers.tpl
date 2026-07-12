@@ -165,6 +165,27 @@ since those three differ between the migrations Job and the api/worker Deploymen
 - name: SCP_FEDERATION_MTLS_CA_FILE
   value: /etc/scp/federation-mtls/ca.crt
 {{- end }}
+{{/*
+M9.3 (ADR-0001) — in-app federation mTLS (apps/server itself terminating TLS and verifying an
+incoming peer's client cert, `config.ts`'s `loadFederationServerMtls Config`). CA/cert/key come
+from ONE secret/mount (`federation-server-mtls`); the CRL is DELIBERATELY a separate mount
+(`federation-server-mtls-crl`) so a revocation-list refresh never requires re-rolling CA material
+— see this file's volume/volumeMount definitions in deployment-api.yaml/deployment-worker.yaml.
+*/}}
+{{- if .Values.federation.serverMtls.enabled }}
+- name: SCP_FEDERATION_SERVER_MTLS_CA_FILE
+  value: /etc/scp/federation-server-mtls/ca.crt
+- name: SCP_FEDERATION_SERVER_MTLS_CERT_FILE
+  value: /etc/scp/federation-server-mtls/tls.crt
+- name: SCP_FEDERATION_SERVER_MTLS_KEY_FILE
+  value: /etc/scp/federation-server-mtls/tls.key
+- name: SCP_FEDERATION_SERVER_MTLS_CRL_HARD_FAIL_ON_EXPIRY
+  value: {{ .Values.federation.serverMtls.crlHardFailOnExpiry | quote }}
+{{- if .Values.federation.serverMtls.crl.enabled }}
+- name: SCP_FEDERATION_SERVER_MTLS_CRL_FILE
+  value: /etc/scp/federation-server-mtls-crl/{{ .Values.federation.serverMtls.crl.secretKey }}
+{{- end }}
+{{- end }}
 {{- end -}}
 
 {{/*

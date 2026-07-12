@@ -33,6 +33,10 @@ import { importSyncBundle } from "../federation/import-repo.js";
 import { exportPromotionBundle, importPromotionBundle } from "../federation/promotion-repo.js";
 import { createOverlay, getMergedOverlayView } from "../federation/overlay-repo.js";
 import { handFillObject } from "../federation/handfill-repo.js";
+import {
+  enforceFederationMtls,
+  recordImportExporterBindingAdvisory
+} from "../federation/mtls-enforcement.js";
 
 /** `z.union` (unlike `z.discriminatedUnion`, which needs a TOP-LEVEL discriminant key — `kind`
  *  here is nested under `header`) doesn't give TypeScript enough to narrow
@@ -244,6 +248,11 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       }
     },
     handler: async (request, reply) => {
+      // M9.3 (ADR-0001) — a transport-identity gate ADDITIONAL to (never replacing) the
+      // requireAuth+authorize below; no-op when `federationServerMtls` is unset. See
+      // federation/mtls-enforcement.ts's module doc for why this runs as a plain function call
+      // here rather than a Fastify `onRequest` hook.
+      await enforceFederationMtls(deps, request);
       const auth = await requireAuth(deps, request);
       const bundle = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         await authorize(tx, {
@@ -279,6 +288,8 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       }
     },
     handler: async (request, reply) => {
+      // M9.3 (ADR-0001) — see the /exports route above for what this does and doesn't change.
+      await enforceFederationMtls(deps, request);
       const auth = await requireAuth(deps, request);
       const bundle = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         await authorize(tx, {
@@ -320,6 +331,8 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       }
     },
     handler: async (request, reply) => {
+      // M9.3 (ADR-0001) — see the /exports route above for what this does and doesn't change.
+      await enforceFederationMtls(deps, request);
       const auth = await requireAuth(deps, request);
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         await authorize(tx, {
@@ -328,6 +341,18 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
           permission: "federation:write",
           scopeObjectId: auth.orgId
         });
+        // M9.3 (ADR-0001 §5) — the mTLS transport-peer-vs-bundle-exporter SHOULD binding: advisory
+        // only (never rejects), recorded as a Decision on mismatch. No-op when mTLS isn't enforced
+        // on this request (`request.mtlsPeerDomainId` unset — see mtls-enforcement.ts).
+        await recordImportExporterBindingAdvisory(
+          tx,
+          {
+            orgId: auth.orgId,
+            mtlsPeerDomainId: request.mtlsPeerDomainId,
+            exporterDomainId: request.body.header.exporterDomainId
+          },
+          request.log
+        );
         if (isPromotionBundle(request.body)) {
           const imported = await importPromotionBundle(tx, auth.orgId, request.body);
           return { kind: "promotion" as const, ...imported };
