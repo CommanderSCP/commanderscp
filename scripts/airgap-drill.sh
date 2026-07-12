@@ -85,7 +85,14 @@ if ! docker image inspect "$SCPD_REF" >/dev/null 2>&1; then
   [ "$SCPD_REF" = "scp:dev" ] && docker build -t scp:dev . || { echo "missing $SCPD_REF" >&2; exit 1; }
 fi
 docker image inspect "$RUNNER_IAC_REF" >/dev/null 2>&1 || docker build -t "$RUNNER_IAC_REF" apps/runner-iac
-docker image inspect "$POSTGRES_REF" >/dev/null 2>&1 || docker pull "$POSTGRES_REF"
+# Force a SINGLE-platform (linux/amd64) postgres image. On a docker daemon using the containerd
+# image store (common on ARC runners), a multi-arch tag makes `kind load docker-image` below (which
+# runs `docker save | ctr import --all-platforms`) fail with "content digest ... not found" for the
+# platforms whose blobs aren't local. Removing any existing multi-arch index and re-pulling only
+# amd64 guarantees `docker save` exports the single platform `kind load` can import. (scpd/runner-iac
+# are built locally = single-arch already, so only this pulled image needs it.)
+docker rmi "$POSTGRES_REF" >/dev/null 2>&1 || true
+docker pull --platform=linux/amd64 "$POSTGRES_REF"
 
 log "building @scp/airgap + a REAL signed bundle (ephemeral test cosign key)"
 pnpm --filter @scp/airgap build >/dev/null
