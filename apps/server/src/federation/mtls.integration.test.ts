@@ -139,6 +139,42 @@ describe.skipIf(!opensslAvailable())("in-app federation mTLS (M9.3, ADR-0001)", 
     });
   }
 
+  /** A real HTTPS GET presenting NO client certificate (with an optional bearer token) — models a
+   *  normal API/UI/CLI client or a k8s probe, none of which ever present a client cert. Used to
+   *  prove enabling in-app mTLS (which flips the whole listener to HTTPS with `requestCert: true`)
+   *  does not reject certless clients on non-transport routes. */
+  function httpsGet(opts: {
+    port: number;
+    path: string;
+    ca: Buffer;
+    token?: string;
+  }): Promise<{ status: number; json: unknown }> {
+    return new Promise((resolve, reject) => {
+      const req = https.request(
+        {
+          hostname: "127.0.0.1",
+          port: opts.port,
+          path: opts.path,
+          method: "GET",
+          ca: opts.ca,
+          // NO cert/key — that is the whole point of this helper.
+          rejectUnauthorized: false,
+          agent: false,
+          headers: opts.token ? { authorization: `Bearer ${opts.token}` } : {}
+        },
+        (res) => {
+          let raw = "";
+          res.on("data", (chunk: Buffer) => (raw += chunk.toString("utf8")));
+          res.on("end", () =>
+            resolve({ status: res.statusCode ?? 0, json: raw ? JSON.parse(raw) : undefined })
+          );
+        }
+      );
+      req.on("error", reject);
+      req.end();
+    });
+  }
+
   /** Plain (non-TLS) HTTP POST — for the "mTLS disabled -> plain HTTP still works, no regression"
    *  check. */
   function httpPost(
@@ -441,6 +477,32 @@ describe.skipIf(!opensslAvailable())("in-app federation mTLS (M9.3, ADR-0001)", 
     expect(bundle.header.peerDomainId).toBe(setup.peers["child-a"]!.domainId);
     expect(bundle.checksum).toBeTruthy();
     expect(bundle.bundleSignature).toBeTruthy();
+  });
+
+  it("in-app mTLS ENABLED: a no-client-cert request to a NON-transport route still succeeds (mTLS does not brick normal clients / k8s probes)", async () => {
+    const ca = createTestCa();
+    const setup = await setupOrgWithPeers(ca, [{ key: "child-a" }]);
+    const real = await bootServer(mtlsEnvFor(ca));
+
+    // /healthz is the k8s liveness/readiness probe path — no auth, and critically NO client cert.
+    // Under `requestCert: true, rejectUnauthorized: false` the TLS handshake still completes for a
+    // certless client, and /healthz never calls the federation mTLS gate, so it must answer 200.
+    // If this failed, enabling in-app mTLS would take down every probe (and every browser/CLI
+    // client that never presents a client cert) — the whole point of `rejectUnauthorized: false`.
+    const health = await httpsGet({ port: real.port, path: "/healthz", ca: ca.caCrtPem });
+    expect(health.status).toBe(200);
+
+    // An UNGATED authenticated route (GET /api/v1/federation/self) with a valid bearer token but NO
+    // client cert. Only the three transport routes require a cert; a normal client on any other
+    // route must not be rejected for lacking one. 401 would mean "refused for missing cert/auth" —
+    // which must not happen for a valid token on an ungated route (200 if authorized, 403 at most).
+    const self = await httpsGet({
+      port: real.port,
+      path: "/api/v1/federation/self",
+      ca: ca.caCrtPem,
+      token: setup.adminToken
+    });
+    expect(self.status).not.toBe(401);
   });
 
   it("mTLS DISABLED (default): plain HTTP works, no client certificate required — no regression", async () => {
