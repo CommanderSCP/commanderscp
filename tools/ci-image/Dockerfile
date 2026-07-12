@@ -123,6 +123,13 @@ RUN pnpm fetch
 # NETWORK ACCESS HAPPENS HERE, at image build time only — see the file-level comment above for why
 # that's expected and fine, and distinct from the "no runtime network calls" guarantee this image
 # gives to the CI jobs that later run inside it.
+# cdn.playwright.dev can be slow or briefly unreachable from a self-hosted runner. Playwright
+# retries internally, but back-to-back at a 30s timeout; a longer connection timeout plus a few
+# spaced outer attempts survives a slow / briefly-down CDN. This build is now OCCASIONAL — it runs
+# only on a cache miss, when tools/ci-image/Dockerfile or pnpm-lock.yaml changes (see
+# .github/workflows/ci.yml's ci-image job, which pulls the pre-built image from GHCR and rebuilds
+# only then) — so spending a few minutes retrying here is cheap insurance, not a per-push cost.
+ENV PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=180000
 RUN set -eux; \
     PLAYWRIGHT_VERSION="$(grep -m1 "@playwright/test@" pnpm-lock.yaml \
         | sed -E "s/.*@playwright\/test@([0-9][^:(',]*).*/\1/")"; \
@@ -131,7 +138,17 @@ RUN set -eux; \
         exit 1; \
     fi; \
     echo "Baking in Playwright Chromium for @playwright/test@${PLAYWRIGHT_VERSION} (resolved from pnpm-lock.yaml)"; \
-    npx --yes "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium
+    for attempt in 1 2 3 4 5; do \
+        echo "playwright chromium install attempt ${attempt}/5"; \
+        if npx --yes "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium; then \
+            echo "chromium installed on attempt ${attempt}"; break; \
+        fi; \
+        if [ "${attempt}" = "5" ]; then \
+            echo "tools/ci-image/Dockerfile: chromium download failed after 5 attempts (cdn.playwright.dev unreachable?)" >&2; \
+            exit 1; \
+        fi; \
+        s=$((attempt * 20)); echo "download failed; sleeping ${s}s then retrying"; sleep "${s}"; \
+    done
 
 # --- oasdiff -----------------------------------------------------------------------------------
 # NOT downloaded here — a plain file copy of the binary vendored/committed under
