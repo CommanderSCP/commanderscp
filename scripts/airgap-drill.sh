@@ -108,6 +108,16 @@ apiVersion: kind.x-k8s.io/v1alpha4
 networking:
   disableDefaultCNI: true
   podSubnet: "192.168.0.0/16"
+# Registry mirror (kind's official local-registry pattern). Images are pushed by the runner to
+# 127.0.0.1:${REGISTRY_PORT} (the registry's host-published port — reachable from the ARC runner
+# pod, which CANNOT resolve the registry's docker container name), and in-cluster pulls of that same
+# host:port are rewritten by containerd to the registry container on the shared 'kind' network. This
+# decouples the runner-side PUSH address from the cluster-side PULL address — a single container-name
+# ref can't satisfy both inside a docker-in-docker ARC runner (it does on a plain workstation).
+containerdConfigPatches:
+- |-
+  [plugins."io.containerd.grpc.v1.cri".registry.mirrors."127.0.0.1:${REGISTRY_PORT}"]
+    endpoint = ["http://${REGISTRY_CONTAINER}:5000"]
 EOF
 kind create cluster --name "$CLUSTER_NAME" --config "${SCRATCH}/kind-config.yaml" --kubeconfig "$KUBECONFIG" --wait 60s || true
 kubectl config use-context "kind-${CLUSTER_NAME}"
@@ -150,8 +160,11 @@ for i in $(seq 1 20); do
   [ "$i" -eq 20 ] && { echo "local registry never came up" >&2; exit 1; }
   sleep 1
 done
-# The in-cluster nodes reach the registry by its container name on the shared 'kind' docker network.
-REG_IN_CLUSTER="${REGISTRY_CONTAINER}:5000"
+# Push AND reference images at 127.0.0.1:${REGISTRY_PORT}: the runner reaches the registry there (its
+# host-published port, verified by the curl check above), and the kind nodes' containerd mirror
+# (configured in kind-config.yaml) rewrites that host:port to the registry container on the 'kind'
+# network for in-cluster pulls. One ref that works from both sides of the docker-in-docker boundary.
+REG_IN_CLUSTER="127.0.0.1:${REGISTRY_PORT}"
 
 log "install.sh: cosign-verify -> retarget-push into the local registry -> helm install (NetworkPolicy on)"
 # The chart's default-deny egress NetworkPolicy is on by default (networkPolicy.enabled=true). We
