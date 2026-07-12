@@ -1306,10 +1306,11 @@ This widens the credential constraint of the 2026-07-08 amendment for host-reach
 
 Host-reaching managed execution applies only to the following enumerated classes:
 
-- Small Infrastructure-as-Code deployments
 - Operating-system package install, upgrade, and version pinning
 - Configuration file and template rendering and push
 - cron and systemd unit changes
+
+Small Infrastructure-as-Code deployments remain the non-host-reaching managed class of the 2026-07-08 amendment, executed via the isolated cloud-API runner, and do not hold host credentials.
 
 Extending this class allowlist requires owner sign-off.
 
@@ -1319,9 +1320,9 @@ Host-reaching managed execution is permitted only under all of the following con
 - Runners are single-shot and ephemeral
 - Credentials are issued per run, narrowly scoped, and short-lived
 - Network egress is restricted per run to a positive allowlist of the resolved targets
-- The class passes the six-gate admission test
+- The class passes the six-gate boundary test
 
-Managed execution is never a default; the six-gate admission test is the only route into it.
+Managed execution is never a default; the six-gate boundary test is the only route into it.
 
 Rollback for host-reaching classes is best-effort convergent, evidenced by captured prior state.
 

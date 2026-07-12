@@ -55,7 +55,7 @@ would drift.
 | coordinate-now | **GitHub Actions** | plugin built (App auth) — *[gap: observe driver unwired]* |
 | coordinate-now | **ArgoCD** (BYO) | plugin built — *[gap: mock-tested only; agentkit trial is the real-cluster validation]* |
 | coordinate-now | **TFC/TFE, Atlantis, workflow-wrapped tofu** | covered by terraform Mode-1 URL-template pattern today |
-| bundle-candidate | **ArgoCD** (supply-side) | canonical Mode B; v1 allowlist = ArgoCD only; **operator-installed, never applied by scpd** |
+| bundle-candidate | **ArgoCD** (supply-side) | canonical Mode B; allowlist = the SCP Standard Stack (Argo CD ships first — see below); **operator-installed, never applied by scpd** |
 | bundle-candidate | **OpenTofu** | already effectively bundled inside `scp-runner-iac`; never BUSL Terraform |
 | coordinate-later | **GitLab (SCM+CI)** | highest-leverage next dedicated plugin — charter-named twice, one API covers both, opens the enterprise + air-gapped profiles |
 | coordinate-later | **Flux · AWX/AAP · Satellite/Foreman** | demand-gated; each starts with a 1-day API spike |
@@ -98,7 +98,7 @@ gates, approvals, decisions, audit) is **always SCP's, never bundled or optional
 - **Charter allowlist impact.** This extends the Mode-B bundle allowlist from `{ArgoCD}` to
   `{Argo CD, Argo Workflows, Argo Events, Harbor}` (+ Valkey as Argo CD's cache), all **operator-installed**
   (scpd never applies/upgrades their manifests). Owned runners (Mode C): `scp-runner-iac`, `scp-runner-ops`.
-  *The charter "Bundled Executor Backends" amendment draft must be updated from "ArgoCD only" to this set.*
+  *(Reflected in the charter's "Bundled Executor Backends" amendment and ADR-0002 — allowlist = this set.)*
 - **Honest cost (guardian).** This *is* the turnkey platform-in-a-box the guardian flagged. Legitimate
   because it is opt-in and every piece is unmodified upstream — but each bundled backend is permanent
   CVE-tracking + air-gap re-vendoring surface, so the allowlist stays **charter-anchored** and each
@@ -165,7 +165,7 @@ same wave → add a discovery-time control ("every DeploymentTarget has a depend
    SSTI/Jinja2 RCE closure machine-checked; SSH-CA blast-radius analysis + HSM/KMS; enumerated class
    allowlist in the charter. *(Blocking Mode C build.)*
 2. **Mode B (bundling):** owner-signed charter **scope decision** (distributor/operator role);
-   **v1 backend allowlist = ArgoCD only**; resolve the Valkey-vs-unmodified-upstream contradiction as
+   **backend allowlist = the SCP Standard Stack** (Argo CD ships first); resolve the Valkey-vs-unmodified-upstream contradiction as
    an owned, tested deviation; bundled backends are **operator-installed** (scpd never applies
    manifests — keeps credential asymmetry true even transiently); honest "enabling Mode B adds Valkey
    for that domain" note.

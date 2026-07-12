@@ -3,7 +3,7 @@
 > **Status: Exploration — pending owner decision.** Not approved, not scheduled. This note captures a
 > multi-lens design exploration (2026-07-12) so the owner can make a go/no-go and shape direction. If
 > approved, it becomes concrete edits to `PROJECT_CHARTER.md` + `docs/DESIGN.md §12` and two ADRs
-> (see [Required doc changes](#required-doc-changes)). Where anything here conflicts with the charter,
+> (see [Required doc changes](#required-doc-changes-if-approved)). Where anything here conflicts with the charter,
 > the charter governs.
 
 ## The steer
