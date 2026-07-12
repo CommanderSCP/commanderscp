@@ -100,6 +100,13 @@ kind load docker-image "scp:${OLD_IMAGE_TAG}" --name "$CLUSTER_NAME"
 kind load docker-image "scp:${NEW_IMAGE_TAG}" --name "$CLUSTER_NAME"
 
 kubectl config use-context "kind-${CLUSTER_NAME}"
+# Pin the context namespace to `default` explicitly. Inside an ARC runner POD, a kubeconfig context
+# with NO namespace makes client-go fall back to the pod's own service-account namespace
+# (`github-runners`, from /var/run/secrets/.../namespace) — so kubectl would query that namespace
+# while helm (HELM_NAMESPACE=default, above) installs into `default`. Without this, `kubectl wait
+# pods --all` returns "no matching resources found" against the wrong namespace (confirmed in the
+# spike). Harmless on a workstation (namespace is `default` there anyway).
+kubectl config set-context --current --namespace=default
 
 # SINGLE api replica for the install (api.replicaCount=1 + hpa disabled): the golden path
 # extracts the bootstrap admin's one-time password from the api pod's logs, and that line is
