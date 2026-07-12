@@ -12,6 +12,7 @@ import { connectNatsFanout, type NatsFanoutHandle } from "./events/nats-fanout.j
 import { loginAndSeedDemoData } from "./seed.js";
 import { SubprocessPluginHost } from "./plugin-host/host.js";
 import { startReconcileLoop } from "./coordination/reconcile.js";
+import { startObserveLoop } from "./coordination/observe.js";
 import { startWatchdogLoop } from "./coordination/watchdog.js";
 import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
 import {
@@ -128,10 +129,14 @@ async function main(): Promise<void> {
     // production caller at all before this — scheduled here the same way the reconcile loop is,
     // one queue per capability, both under the same `role === "all" || "worker"` guard.
     const watchdogLoop = await startWatchdogLoop(boss, db, pluginHost, config.secretsMasterKey);
+    // M10.2 observe()-driver: the PULL side of change detection (webhook is push). Same queue-per-
+    // capability pattern under the same `role === "all" || "worker"` guard; a much slower cadence.
+    const observeLoop = await startObserveLoop(boss, db, pluginHost, config.secretsMasterKey);
 
     app.addHook("onClose", async () => {
       await reconcileLoop.stop();
       await watchdogLoop.stop();
+      await observeLoop.stop();
       await pluginHost.stop();
       await relay.stop();
       await boss.stop({ graceful: false, timeout: 1000 }).catch(() => undefined);
