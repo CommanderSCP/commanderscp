@@ -80,15 +80,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - run: pnpm build
-      - name: Install skopeo, cosign, ansible (documented §1 prerequisites for this drill)
+      # Drill prerequisites installed in-workflow (same pattern as the integration CI job) —
+      # nightly/on-demand build-time fetch, not a product runtime dependency.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+      - name: Install skopeo + ansible
         run: |
-          # Homelab runners are expected to have these pre-provisioned (BUILD_AND_TEST.md §1).
-          # This step is a no-op if they are already on PATH; it exists so the drill's tool
-          # requirements are explicit and a fresh runner can be made to work.
-          command -v skopeo && command -v cosign && command -v ansible-playbook || {
-            echo "skopeo/cosign/ansible must be provisioned on this runner — see BUILD_AND_TEST.md §1" >&2
-            exit 1
-          }
+          sudo apt-get update -qq
+          command -v skopeo >/dev/null 2>&1 || sudo apt-get install -y -qq skopeo
+          command -v ansible-playbook >/dev/null 2>&1 || sudo apt-get install -y -qq ansible
       - name: Run the Ansible-driven compose install+upgrade drill
         run: bash scripts/ansible-drill.sh
 
@@ -103,10 +103,25 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - run: pnpm build
-      - name: Verify drill prerequisites (kind/helm/kubectl/skopeo/cosign)
+      # Drill prerequisites installed in-workflow (same pattern as the integration CI job) —
+      # nightly/on-demand build-time fetch, not a product runtime dependency.
+      - name: Install helm
+        uses: azure/setup-helm@v4
+        with:
+          version: latest
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+      - name: Install kind (binary only — the drill creates its own cluster)
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+          version: v0.27.0
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+      - name: Install skopeo
         run: |
-          for b in kind helm kubectl skopeo cosign; do
-            command -v "$b" >/dev/null || { echo "missing $b — see BUILD_AND_TEST.md §1" >&2; exit 1; }
-          done
+          command -v skopeo >/dev/null 2>&1 && exit 0
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq skopeo
       - name: Run the genuine zero-egress air-gap install drill
         run: bash scripts/airgap-drill.sh

@@ -66,6 +66,15 @@ SCPD_REF="${AIRGAP_DRILL_SCPD_REF:-scp:dev}"
 RUNNER_IAC_REF="${AIRGAP_DRILL_RUNNER_IAC_REF:-scp-runner-iac:dev}"
 POSTGRES_REF="${AIRGAP_DRILL_POSTGRES_REF:-postgres:16}"
 
+# KUBECONFIG isolation + namespace pin (see scripts/kind-drill.sh for the full rationale): this drill
+# can run inside an ARC runner POD living in the homelab k3s, whose ambient in-cluster kubeconfig +
+# SA namespace (github-runners) would otherwise leak into helm/kubectl/install.sh instead of the
+# fresh kind cluster. A dedicated kind-only KUBECONFIG + HELM_NAMESPACE=default keeps every
+# kubectl/helm/install.sh call targeting only this drill's kind cluster and its `default` namespace.
+KUBECONFIG="$(mktemp -d)/airgap-drill.kubeconfig"
+export KUBECONFIG
+export HELM_NAMESPACE=default
+
 log "checking prerequisites"
 for bin in docker kind kubectl helm skopeo cosign node; do
   command -v "$bin" >/dev/null 2>&1 || { echo "missing required tool: $bin" >&2; exit 1; }
@@ -100,8 +109,11 @@ networking:
   disableDefaultCNI: true
   podSubnet: "192.168.0.0/16"
 EOF
-kind create cluster --name "$CLUSTER_NAME" --config "${SCRATCH}/kind-config.yaml" --wait 60s || true
+kind create cluster --name "$CLUSTER_NAME" --config "${SCRATCH}/kind-config.yaml" --kubeconfig "$KUBECONFIG" --wait 60s || true
 kubectl config use-context "kind-${CLUSTER_NAME}"
+# Pin the context namespace: inside an ARC pod, an empty context namespace makes client-go fall back
+# to the pod's SA namespace (github-runners), diverging from helm's `default`. See kind-drill.sh.
+kubectl config set-context --current --namespace=default
 
 log "installing Calico (vendored manifest if present, else the pinned upstream URL at cluster-build time)"
 # NOTE: fetching the Calico manifest is a BUILD-TIME action of standing up the drill's cluster, not
@@ -147,6 +159,30 @@ log "install.sh: cosign-verify -> retarget-push into the local registry -> helm 
     ./install.sh --registry "${REG_IN_CLUSTER}/scp" --pubkey "${BUNDLE_OUT}/cosign.pub" \
       --mode helm --insecure-registry --release-name "$RELEASE_NAME"
 )
+
+# Capture the bootstrap admin one-time password by polling api logs (current + previous, accumulated).
+# The api pod can restart once during startup on a loaded kind cluster, and the password is printed
+# ONCE and never stored (apps/server/src/auth/local-auth.ts) — see scripts/kind-drill.sh. Captured
+# here (right after install) and reused in the golden path below.
+log "capturing the bootstrap admin one-time password by polling api logs"
+CAPTURE_LOG="${SCRATCH}/airgap-api-capture.log"
+: > "$CAPTURE_LOG"
+PW=""
+for _ in $(seq 1 90); do
+  API_POD="$(kubectl get pods -l app.kubernetes.io/component=api -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  if [ -n "$API_POD" ]; then
+    kubectl logs "$API_POD" --tail=-1 2>/dev/null >> "$CAPTURE_LOG" || true
+    kubectl logs "$API_POD" --previous --tail=-1 2>/dev/null >> "$CAPTURE_LOG" || true
+    LINE="$(grep -i "one-time password" "$CAPTURE_LOG" | tail -n1 || true)"
+    if [ -n "$LINE" ]; then
+      PW="$(printf '%s' "$LINE" | sed -n 's/.*shown once): \([^"]*\).*/\1/p')"
+      [ -n "$PW" ] && break
+    fi
+  fi
+  sleep 2
+done
+[ -n "$PW" ] || { echo "FAIL: could not capture the bootstrap one-time password after polling api logs" >&2; tail -60 "$CAPTURE_LOG" >&2 || true; exit 1; }
+log "captured bootstrap admin one-time password"
 
 log "waiting for all pods Ready under the enforced default-deny egress policy"
 kubectl wait --for=condition=Ready pods -l app.kubernetes.io/name=commanderscp --all --timeout=240s || {
@@ -207,11 +243,7 @@ PF_PID=$!
 sleep 3
 BASE_URL="http://127.0.0.1:18095"
 for i in $(seq 1 30); do curl -fsS "${BASE_URL}/healthz" >/dev/null 2>&1 && break; sleep 1; done
-API_POD="$(kubectl get pods -l app.kubernetes.io/component=api -o jsonpath='{.items[0].metadata.name}')"
-LINE="$(kubectl logs "$API_POD" --tail=-1 2>/dev/null | grep -i 'one-time password' | tail -1 || true)"
-[ -n "$LINE" ] || LINE="$(kubectl logs "$API_POD" --previous --tail=-1 2>/dev/null | grep -i 'one-time password' | tail -1 || true)"
-PW="$(printf '%s' "$LINE" | sed -n 's/.*shown once): \([^"]*\).*/\1/p')"
-[ -n "$PW" ] || { echo "FAIL: could not extract bootstrap password" >&2; exit 1; }
+# PW was captured earlier (right after install.sh) via the restart-robust poll — reuse it here.
 TOKEN="$(curl -fsS -X POST "${BASE_URL}/api/v1/auth/login" -H 'content-type: application/json' -d "{\"username\":\"admin\",\"password\":\"${PW}\"}" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
 [ -n "$TOKEN" ] || { echo "FAIL: login returned no token" >&2; exit 1; }
 CREATE="$(curl -fsS -X POST "${BASE_URL}/api/v1/services" -H "authorization: Bearer ${TOKEN}" -H 'content-type: application/json' -d '{"name":"airgap-drill-service"}')"
