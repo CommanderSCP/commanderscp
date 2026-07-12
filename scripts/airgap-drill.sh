@@ -85,14 +85,7 @@ if ! docker image inspect "$SCPD_REF" >/dev/null 2>&1; then
   [ "$SCPD_REF" = "scp:dev" ] && docker build -t scp:dev . || { echo "missing $SCPD_REF" >&2; exit 1; }
 fi
 docker image inspect "$RUNNER_IAC_REF" >/dev/null 2>&1 || docker build -t "$RUNNER_IAC_REF" apps/runner-iac
-# Force a SINGLE-platform (linux/amd64) postgres image. On a docker daemon using the containerd
-# image store (common on ARC runners), a multi-arch tag makes `kind load docker-image` below (which
-# runs `docker save | ctr import --all-platforms`) fail with "content digest ... not found" for the
-# platforms whose blobs aren't local. Removing any existing multi-arch index and re-pulling only
-# amd64 guarantees `docker save` exports the single platform `kind load` can import. (scpd/runner-iac
-# are built locally = single-arch already, so only this pulled image needs it.)
-docker rmi "$POSTGRES_REF" >/dev/null 2>&1 || true
-docker pull --platform=linux/amd64 "$POSTGRES_REF"
+docker image inspect "$POSTGRES_REF" >/dev/null 2>&1 || docker pull "$POSTGRES_REF"
 
 log "building @scp/airgap + a REAL signed bundle (ephemeral test cosign key)"
 pnpm --filter @scp/airgap build >/dev/null
@@ -135,7 +128,18 @@ kubectl -n kube-system rollout status deployment/coredns --timeout=120s
 kubectl wait --for=condition=Ready nodes --all --timeout=120s
 
 log "preloading postgres:16 into the cluster (eval DB; the chart's eval-postgres template pins the literal tag, IfNotPresent — no registry/internet pull needed)"
-kind load docker-image "$POSTGRES_REF" --name "$CLUSTER_NAME"
+# `kind load docker-image` runs `docker save | ctr import --all-platforms`, which fails on a
+# containerd-store docker daemon (common on ARC runners): the multi-arch `postgres:16` tag lacks the
+# non-host-platform blobs `--all-platforms` wants ("content digest ... not found"), and even a
+# `docker pull --platform` leaves the tag pointing at the multi-arch index. Instead use skopeo to
+# extract JUST the linux/amd64 platform into a docker-archive (single-platform, self-contained) and
+# load that — deterministic regardless of the daemon's image-store backend. (The registry read here
+# is drill SETUP / build-time, the same air-gap category as `kind create cluster` pulling
+# kindest/node and the Calico manifest fetch above — not a runtime call by the product.)
+PG_ARCHIVE="${SCRATCH}/postgres-amd64.tar"
+skopeo copy --override-os=linux --override-arch=amd64 \
+  "docker://docker.io/library/${POSTGRES_REF}" "docker-archive:${PG_ARCHIVE}:${POSTGRES_REF}"
+kind load image-archive "$PG_ARCHIVE" --name "$CLUSTER_NAME"
 
 log "starting a local registry:2 (the air-gap customer-registry stand-in) and connecting it to kind's network"
 docker rm -f "$REGISTRY_CONTAINER" 2>/dev/null || true
