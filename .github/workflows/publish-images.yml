@@ -1,0 +1,60 @@
+name: Publish product images (scpd + scp-runner-iac)
+
+# Publishes the PRODUCT images to GHCR so real deployments (first consumer: the
+# homelab-gitops ArgoCD app for the agentkit coordination trial) can pull them —
+# until now nothing published scpd anywhere: the air-gap bundle builds it into a
+# .scpbundle and compose builds it locally, but a cluster deploy needs a registry.
+#
+# MANUAL (workflow_dispatch) by design, not per-merge: a deploy consumes a PINNED
+# tag (homelab-gitops convention: pin by sha/digest, never track :latest), so
+# publishing is a deliberate release act — run this, then bump the pinned tag in
+# the consuming gitops repo. Tags:
+#   ghcr.io/commanderscp/scpd:sha-<full commit sha>
+#   ghcr.io/commanderscp/scp-runner-iac:sha-<full commit sha>
+# plus a moving :latest for humans browsing the registry (never deployed from).
+# Auth: the workflow GITHUB_TOKEN (packages:write) — same proven pattern as
+# ci.yml's ci-image job. Runs on the docker-build runner (needs a Docker daemon).
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref_note:
+        description: "Optional note for the run log (what/why you're publishing)"
+        required: false
+        default: ""
+
+jobs:
+  publish:
+    name: "Build + push scpd and scp-runner-iac to GHCR"
+    runs-on: homelab-commanderscp-linux-docker-build
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build + push scpd (root Dockerfile, repo-root context)
+        run: |
+          IMAGE="ghcr.io/commanderscp/scpd"
+          docker build -t "$IMAGE:sha-${{ github.sha }}" -t "$IMAGE:latest" .
+          docker push "$IMAGE:sha-${{ github.sha }}"
+          docker push "$IMAGE:latest"
+      - name: Build + push scp-runner-iac (apps/runner-iac)
+        run: |
+          IMAGE="ghcr.io/commanderscp/scp-runner-iac"
+          docker build -t "$IMAGE:sha-${{ github.sha }}" -t "$IMAGE:latest" apps/runner-iac
+          docker push "$IMAGE:sha-${{ github.sha }}"
+          docker push "$IMAGE:latest"
+      - name: Emit pinned refs + digests (paste into the consuming gitops values)
+        run: |
+          {
+            echo "## Published images"
+            echo '```'
+            echo "scpd:           ghcr.io/commanderscp/scpd:sha-${{ github.sha }}"
+            docker inspect --format='  digest: {{index .RepoDigests 0}}' "ghcr.io/commanderscp/scpd:sha-${{ github.sha }}" || true
+            echo "scp-runner-iac: ghcr.io/commanderscp/scp-runner-iac:sha-${{ github.sha }}"
+            docker inspect --format='  digest: {{index .RepoDigests 0}}' "ghcr.io/commanderscp/scp-runner-iac:sha-${{ github.sha }}" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
