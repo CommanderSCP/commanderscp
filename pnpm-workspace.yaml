@@ -4,3 +4,36 @@ packages:
   - "packages/plugins/*"
   - "tools/*"
   - "deploy/airgap"
+
+# lodash-es@4.17.21 (transitively via apps/server -> cel-js -> chevrotain, which
+# hard-pins an exact lodash-es version in every published release) is affected by:
+#   - GHSA-r5fr-rjxr-66jc (HIGH, code injection via `_.template` imports key names)
+#   - GHSA-f23m-r3pf-42rh (moderate, prototype pollution via `_.unset`/`_.omit`)
+#   - GHSA-xxjr-mmjv-4gpg (moderate, prototype pollution via `_.unset`/`_.omit`)
+# chevrotain>=11.1.1 only bumps lodash-es to 4.17.23 (still vulnerable to the HIGH,
+# whose fix requires >=4.18.0); chevrotain@12 drops lodash-es entirely but is a
+# major bump with no cel-js release compatible with it (every cel-js version pins
+# chevrotain to an exact 11.0.3). Pinning the patched lodash-es release directly
+# is the safe fix. NOTE: lodash-es@4.18.0 is marked deprecated upstream ("Bad
+# release. Please use lodash-es@4.17.23 instead") — use 4.18.1, which carries the
+# fix and is not deprecated. Re-evaluate if cel-js ever ships against chevrotain@12+.
+overrides:
+  lodash-es: 4.18.1
+
+# --- pnpm audit disposition notes (M9.2 hygiene pass, 2026-07) ---
+#
+# GHSA-67mh-4wv8-2f99 (moderate): esbuild <=0.24.2 dev-server request/response
+# read, reached via apps/server's devDependency drizzle-kit@0.31.10 ->
+# @esbuild-kit/esm-loader -> @esbuild-kit/core-utils (pinned to esbuild ~0.18.20).
+# `@esbuild-kit/*` is deprecated upstream ("merged into tsx") with no further
+# releases, and drizzle-kit's latest STABLE release (0.31.10, still current as of
+# this note) has not replaced it — only the not-yet-stable 1.0.0-rc line drops
+# @esbuild-kit in favor of get-tsconfig/jiti, which is too risky to adopt for a
+# migration-generation tool ahead of a real 1.0.0 release. Disposition: dev-only,
+# not shipped — drizzle-kit is a devDependency (never in apps/server's prod
+# dependency graph; verify with `pnpm --filter @scp/server list --prod --depth 0`)
+# and is pruned by `pnpm prune --prod` in the Dockerfile `build` stage before the
+# `runtime` stage copies `/app` (see root Dockerfile), so it never reaches the
+# production image. `pnpm audit --prod` does not report this advisory. No
+# ignore/override added — revisit when drizzle-kit ships a stable (non-RC)
+# release without @esbuild-kit.
