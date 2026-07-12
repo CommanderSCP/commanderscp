@@ -3,23 +3,26 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { unwrapDriverError } from "../db/pg-errors.js";
 
 /**
- * Defensive graph guardrail (adversarial review of PR #15): the `impact-of` recursive CTE
- * (graph/named-queries.ts's `transitiveReverseClosure`, and graph/traverse.ts's own walk) does
- * NOT node-dedupe between recursion steps — only the final `SELECT DISTINCT` does — so
- * intermediate row count grows roughly as (effective fan-in)^depth on a shared-component
- * topology. Measured (see the M8 PR body's Load/perf section): a ~11-way fan-out at depth 10 ran
- * 7+ minutes and then exhausted disk via recursive-CTE temp-file spill; even a ~3-way fan-out
- * over 10 hops tripped a 30s ad hoc timeout during that same load test.
+ * Defensive graph guardrail (adversarial review of PR #15): the five reachability named queries
+ * (graph/named-queries.ts's `transitiveReverseClosure`, backing `impact-of`/`dependents-of`/
+ * `consumers-of`/`blast-radius`/`domains-impacted`) used to NOT node-dedupe between recursion
+ * steps — only the final `SELECT DISTINCT` did — so intermediate row count grew roughly as
+ * (effective fan-in)^depth on a shared-component topology. Measured (see the M8 PR body's
+ * Load/perf section): a ~11-way fan-out at depth 10 ran 7+ minutes and then exhausted disk via
+ * recursive-CTE temp-file spill; even a ~3-way fan-out over 10 hops tripped a 30s ad hoc timeout
+ * during that same load test.
  *
- * FIXING the CTE (making it node-dedupe between steps) is a separate, PENDING OWNER DECISION —
- * deliberately not done here (it changes the query's semantics: which of possibly-several
- * shortest paths through a shared component gets reported first). This module does only the
- * narrower, uncontroversial thing: bound the RUNTIME so a pathological topology fails cleanly
- * (an 408, not a hung worker/connection or a disk-exhaustion incident) instead of running
- * unbounded. `apps/server/src/load-test/graph-scale.ts` already uses the identical
- * `set_config('statement_timeout', ...)` pattern as its own safety net during load testing (see
- * its module doc) — this is the same mechanism, wired into the actual API routes with a much
- * tighter, production-appropriate default.
+ * M9.1 FIXED the CTE itself (node-level dedup between recursion steps — see
+ * `transitiveReverseClosure`'s doc comment for the approach and the correctness argument for why
+ * the returned node set is unchanged). `graph/traverse.ts`'s own generic walk is a separate
+ * capability with the same shape of cost and was NOT touched by that fix — it still relies solely
+ * on this timeout guardrail. This module's job stays exactly what it was: bound the RUNTIME so
+ * ANY pathological topology (including ones this fix doesn't cover, or a future regression) fails
+ * cleanly (a 408, not a hung worker/connection or a disk-exhaustion incident) instead of running
+ * unbounded — belt-and-braces, not a substitute for the CTE fix. `apps/server/src/load-test/
+ * graph-scale.ts` already uses the identical `set_config('statement_timeout', ...)` pattern as its
+ * own safety net during load testing (see its module doc) — this is the same mechanism, wired
+ * into the actual API routes with a much tighter, production-appropriate default.
  */
 
 /** Thrown when the wrapped query is cancelled by the statement_timeout this module set — never a
