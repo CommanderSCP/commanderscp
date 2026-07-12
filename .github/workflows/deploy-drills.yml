@@ -11,19 +11,24 @@ name: Deploy Drills (M8 kind / air-gap / Ansible)
 #     nightly/on-demand, not as a merge gate.
 #   - Each drill is minutes-long (two full image builds + a bundle build + cluster bring-up).
 #
-# HONEST SCOPE — what was actually run vs. what is CI infrastructure not yet exercised on the
-# homelab runners (see the m8-hardening-packaging-rc PR body for the authoritative breakdown):
-#   * scripts/kind-drill.sh    — RUN GREEN LOCALLY (colima kind): install (old image) -> golden
-#                                path -> zero-downtime helm upgrade (a REAL new migration applied
-#                                while old pods served) -> data preserved -> rollback.
-#   * scripts/ansible-drill.sh — RUN GREEN LOCALLY: scp.platform Ansible collection drives a real
-#                                signed-bundle compose install then upgrade, health-checked.
-#   * scripts/airgap-drill.sh  — the genuine zero-egress drill (kind + Calico-enforced default-deny
-#                                + a deliberate-egress-attempt that MUST fail + golden path from a
-#                                local registry via the signed bundle). See the PR body for exactly
-#                                how far this was validated locally.
-# These job definitions themselves have not necessarily been run ON the homelab runners — they are
-# the exact commands a human runs, wired for `workflow_dispatch`, not claimed as passing CI yet.
+# STATUS (M9.4, 2026-07-12): all three drills RUN GREEN on the homelab
+# `homelab-commanderscp-linux-docker-build` ARC runner — nested-kind IS viable there (the M8 open
+# question, now answered). Recorded green runs:
+#   * scripts/kind-drill.sh    — install (old image) -> golden path -> zero-downtime helm upgrade
+#                                (a REAL new migration applied while old pods served) -> data
+#                                preserved -> rollback.  Green: run 29194162892.
+#   * scripts/ansible-drill.sh — scp.platform Ansible collection drives a real signed-bundle compose
+#                                install then upgrade, health-checked.  Green: run 29194484761.
+#   * scripts/airgap-drill.sh  — genuine zero-egress drill (kind + Calico-enforced default-deny + a
+#                                deliberate-egress-attempt that MUST fail + golden path from a local
+#                                registry via the signed bundle).  Green: run 29196926938.
+# Getting them green on the ARC runner (vs. a plain workstation) needed the M9.4 fixes on this
+# branch: install kind/kubectl/helm/skopeo/cosign in-workflow; KUBECONFIG isolation + context-
+# namespace pin (an ARC pod's ambient in-cluster kubeconfig/SA-namespace otherwise leaks in);
+# restart-robust one-time-password capture; a skopeo single-platform postgres load + a kind
+# containerd-mirror local registry (docker-in-docker dual-addressing); and a real chart fix
+# (digest-pinned image tags aren't valid k8s labels — deploy/helm _helpers.tpl). Kept nightly +
+# on-demand, still NEVER merge-gating (each run is minutes-long: image builds + bundle + cluster).
 
 on:
   schedule:
