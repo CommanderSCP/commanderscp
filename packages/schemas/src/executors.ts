@@ -150,9 +150,19 @@ export const DiscoveryProposalRelationshipSchema = z.object({
   fromUrn: z.string(),
   toUrn: z.string()
 });
+/** A proposed executor binding (M12 P3b) — so `discovery accept` can wire an imported object to an
+ *  execution-system in the same step, not just create the object. `objectName` references a proposed
+ *  object BY NAME (resolved to its freshly-created id at accept, alongside the object's own creation). */
+export const DiscoveryProposalBindingSchema = z.object({
+  objectName: z.string().min(1),
+  executionSystemId: z.string().min(1),
+  externalRef: z.string().min(1).optional()
+});
 export const DiscoveryProposalSchema = z.object({
   objects: z.array(DiscoveryProposalObjectSchema),
-  relationships: z.array(DiscoveryProposalRelationshipSchema)
+  relationships: z.array(DiscoveryProposalRelationshipSchema),
+  /** Optional executor bindings to create alongside the objects (import → coordinate in one accept). */
+  bindings: z.array(DiscoveryProposalBindingSchema).optional()
 });
 export type DiscoveryProposal = z.infer<typeof DiscoveryProposalSchema>;
 
@@ -177,7 +187,8 @@ export type AcceptDiscoveryRequest = z.infer<typeof AcceptDiscoveryRequestSchema
 
 export const AcceptDiscoveryResponseSchema = z.object({
   createdObjectIds: z.array(z.string().uuid()),
-  createdRelationshipIds: z.array(z.string().uuid())
+  createdRelationshipIds: z.array(z.string().uuid()),
+  createdBindingIds: z.array(z.string().uuid())
 });
 export type AcceptDiscoveryResponse = z.infer<typeof AcceptDiscoveryResponseSchema>;
 

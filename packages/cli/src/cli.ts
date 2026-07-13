@@ -2218,6 +2218,73 @@ export function buildProgram(): Command {
       console.log(`Deleted secret '${key}'`);
     });
 
+  // -----------------------------------------------------------------------------------------
+  // `scp connect` (M12 P4) — one command to register an execution system SCP will coordinate
+  // (Mode A / BYO): stores the token, creates the `execution-system` object, and best-effort
+  // validates connectivity. Wraps `secret put` + `object create` so an operator doesn't hand-craft
+  // the properties JSON. After this, `scp discovery run --module argocd-discovery` imports the apps.
+  // -----------------------------------------------------------------------------------------
+  const connectCmd = program
+    .command("connect")
+    .description("Register an existing execution system for SCP to coordinate (Mode A)");
+
+  connectCmd
+    .command("argocd")
+    .description("Register an existing Argo CD server (stores the token, creates an execution-system)")
+    .requiredOption("--url <url>", "Argo CD API server base URL, e.g. https://argocd.example.com")
+    .requiredOption("--token <token>", "an Argo CD API token (scoped per your Argo CD RBAC)")
+    .option("--name <name>", "name for the execution-system object", "argocd")
+    .option("--token-key <key>", "secrets-store key to hold the token (default: <name>-argocd-token)")
+    .option("--no-validate", "skip the best-effort connectivity check")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          url: string;
+          token: string;
+          name: string;
+          tokenKey?: string;
+          validate: boolean;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const serverUrl = opts.url.replace(/\/+$/, "");
+        const tokenKey = opts.tokenKey ?? `${opts.name}-argocd-token`;
+
+        if (opts.validate) {
+          // Best-effort: hit Argo CD's version endpoint with the token. A failure warns but does not
+          // block (air-gapped/proxied setups may not be reachable from the operator's shell).
+          try {
+            const res = await fetch(`${serverUrl}/api/version`, {
+              headers: { authorization: `Bearer ${opts.token}` }
+            });
+            if (!res.ok) {
+              console.warn(`WARN: Argo CD ${serverUrl}/api/version returned HTTP ${res.status} — registering anyway`);
+            } else {
+              console.log(`Connectivity to ${serverUrl}: OK`);
+            }
+          } catch (err) {
+            console.warn(`WARN: could not reach ${serverUrl} (${String(err)}) — registering anyway`);
+          }
+        }
+
+        await client.secrets.put(tokenKey, { value: opts.token });
+        const created = await client.object("execution-system").create(
+          {
+            name: opts.name,
+            properties: { kind: "argocd", serverUrl, tokenSecretKey: tokenKey }
+          },
+          { idempotencyKey: randomUUID() }
+        );
+        console.log(`Registered execution-system '${opts.name}' (${created.id}). Token stored as secret '${tokenKey}'.`);
+        console.log(`Next: scp discovery run --module argocd-discovery --instance-id ${opts.name} \\`);
+        console.log(`        --config '{"serverUrl":"${serverUrl}","tokenSecretKey":"${tokenKey}","executionSystemId":"${created.id}"}' \\`);
+        console.log(`        --secret-refs '{"${tokenKey}":"${tokenKey}"}'   # then: scp discovery accept <proposalId>`);
+        printResult(created, opts.output, (item) => objectRow(item as GraphObject));
+      }
+    );
+
   const executorCmd = program
     .command("executor")
     .description("Configure ExecutorPlugin instances (DESIGN §12)");

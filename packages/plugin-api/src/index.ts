@@ -276,6 +276,9 @@ export interface FederationTransportPlugin {
 export interface DiscoveryProposal {
   objects: Array<{ typeId: string; name: string; properties?: Record<string, unknown> }>;
   relationships: Array<{ typeId: string; fromUrn: string; toUrn: string }>;
+  /** Optional executor bindings to create at accept (M12 P3b) — `objectName` references one of
+   *  `objects` by name, so an imported object can be wired to an execution-system in one step. */
+  bindings?: Array<{ objectName: string; executionSystemId: string; externalRef?: string }>;
 }
 
 export interface DiscoveryPlugin {

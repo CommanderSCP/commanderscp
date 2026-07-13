@@ -36,6 +36,7 @@ import type { AppDeps } from "../types.js";
 import type { PluginModule } from "../plugin-host/contract.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
+import type { TenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { badRequest, notFound } from "../errors.js";
 import { validateProperties } from "../graph/property-validation.js";
@@ -88,6 +89,41 @@ function validatePluginConfig(module: string, config: unknown): void {
   const manifest = MANIFEST_BY_MODULE[module];
   if (!manifest) return;
   validateProperties(manifest.configSchema, config ?? {}, `plugin-config:${module}`);
+}
+
+/**
+ * Bind a target object to a registered `execution-system` (Mode A). Loads the system, derives the
+ * plugin module from its `kind` (allowlist-checked) + a shared instance id, and upserts the binding
+ * — serverUrl/token are resolved from the system at dispatch, never stored on the binding. Shared by
+ * `PUT /binding` (executionSystemId path) and `POST /discovery/accept` (proposal bindings, M12 P3b).
+ */
+async function bindTargetToExecutionSystem(
+  tx: TenantTx,
+  orgId: string,
+  targetObjectId: string,
+  executionSystemId: string,
+  externalRef?: string
+) {
+  const sys = await getObjectByIdOrUrnAnyType(tx, orgId, executionSystemId);
+  if (sys.typeId !== "execution-system") {
+    throw badRequest(`'${executionSystemId}' is a '${sys.typeId}', not an execution-system`);
+  }
+  const props = sys.properties as { kind?: string; serverUrl?: string };
+  if (!props.serverUrl) {
+    throw badRequest(`execution-system '${sys.id}' is missing a 'serverUrl' property`);
+  }
+  const module = (props.kind ?? "").trim();
+  if (!isKnownExecutorModule(module)) {
+    throw badRequest(`execution-system kind '${module}' is not a known executor module`);
+  }
+  return upsertExecutorBinding(tx, {
+    orgId,
+    targetObjectId,
+    pluginModule: module,
+    pluginInstanceId: executionSystemInstanceId(sys.id),
+    executionSystemId: sys.id,
+    externalRef
+  });
 }
 
 /**
@@ -273,29 +309,14 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
         });
 
         if (body.executionSystemId) {
-          // Mode A: derive the module + a shared instance id from the registered execution-system.
-          const sys = await getObjectByIdOrUrnAnyType(tx, auth.orgId, body.executionSystemId);
-          if (sys.typeId !== "execution-system") {
-            throw badRequest(`'${body.executionSystemId}' is a '${sys.typeId}', not an execution-system`);
-          }
-          const props = sys.properties as { kind?: string; serverUrl?: string };
-          if (!props.serverUrl) {
-            throw badRequest(`execution-system '${sys.id}' is missing a 'serverUrl' property`);
-          }
-          const module = (props.kind ?? "").trim();
-          if (!isKnownExecutorModule(module)) {
-            throw badRequest(`execution-system kind '${module}' is not a known executor module`);
-          }
-          return upsertExecutorBinding(tx, {
-            orgId: auth.orgId,
-            targetObjectId: target.id,
-            pluginModule: module,
-            // Shared instance id ⇒ every binding on this system shares one observe poll + trigger
-            // instance; serverUrl/token are resolved from the system at dispatch, not stored here.
-            pluginInstanceId: executionSystemInstanceId(sys.id),
-            executionSystemId: sys.id,
-            externalRef: body.externalRef
-          });
+          // Mode A: module + shared instance id + serverUrl/token all resolve from the system.
+          return bindTargetToExecutionSystem(
+            tx,
+            auth.orgId,
+            target.id,
+            body.executionSystemId,
+            body.externalRef
+          );
         }
 
         return upsertExecutorBinding(tx, {
@@ -560,6 +581,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
         });
 
         const urnToId = new Map<string, string>();
+        const nameToId = new Map<string, string>();
         const createdObjectIds: string[] = [];
         for (const proposedObject of request.body.proposal.objects) {
           const created = await createObject(tx, {
@@ -573,6 +595,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           });
           createdObjectIds.push(created.id);
           urnToId.set(created.urn, created.id);
+          nameToId.set(proposedObject.name, created.id); // for proposal bindings (M12 P3b)
         }
 
         const createdRelationshipIds: string[] = [];
@@ -596,7 +619,25 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           createdRelationshipIds.push(created.id);
         }
 
-        return { createdObjectIds, createdRelationshipIds };
+        // M12 P3b: wire imported objects to an execution-system in the SAME accept — so
+        // import→coordinate is one command. Each proposal binding references an object BY NAME
+        // (created in this batch) or by id/URN (a pre-existing object).
+        const createdBindingIds: string[] = [];
+        for (const proposedBinding of request.body.proposal.bindings ?? []) {
+          const targetId =
+            nameToId.get(proposedBinding.objectName) ??
+            (await getObjectByIdOrUrnAnyType(tx, auth.orgId, proposedBinding.objectName)).id;
+          const created = await bindTargetToExecutionSystem(
+            tx,
+            auth.orgId,
+            targetId,
+            proposedBinding.executionSystemId,
+            proposedBinding.externalRef
+          );
+          createdBindingIds.push(created.id);
+        }
+
+        return { createdObjectIds, createdRelationshipIds, createdBindingIds };
       });
       reply.status(201).send(result);
     }

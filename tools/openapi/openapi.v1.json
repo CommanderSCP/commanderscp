@@ -51548,6 +51548,31 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "bindings": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "objectName": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "executionSystemId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "externalRef": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "objectName",
+                          "executionSystemId"
+                        ],
+                        "additionalProperties": false
+                      }
                     }
                   },
                   "required": [
@@ -51764,6 +51789,31 @@
                           ],
                           "additionalProperties": false
                         }
+                      },
+                      "bindings": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "objectName": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "executionSystemId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "externalRef": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "objectName",
+                            "executionSystemId"
+                          ],
+                          "additionalProperties": false
+                        }
                       }
                     },
                     "required": [
@@ -51805,11 +51855,20 @@
                         "format": "uuid",
                         "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                       }
+                    },
+                    "createdBindingIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                      }
                     }
                   },
                   "required": [
                     "createdObjectIds",
-                    "createdRelationshipIds"
+                    "createdRelationshipIds",
+                    "createdBindingIds"
                   ],
                   "additionalProperties": false
                 }
