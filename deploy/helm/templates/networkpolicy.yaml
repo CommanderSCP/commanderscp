@@ -86,6 +86,33 @@ spec:
         - { protocol: TCP, port: 4222 }
 ---
 {{- end }}
+{{- if .Values.bundledExecutor.argocd.enabled }}
+# Egress: bundled Argo CD (Mode B) — api/worker AND the post-install auto-wire hook reach the
+# in-cluster Argo CD API (http on 80, server.insecure) in its own namespace. In-cluster destination,
+# so a precise namespaceSelector (not the RFC1918 ipBlock) is the correct allow. NOTE: when
+# networkPolicy is enabled, the auto-wire hook ALSO needs egress to the kube API + DNS to read Argo
+# CD's admin secret — add those to your cluster's baseline egress (a documented follow-up).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "commanderscp.fullname" . }}-allow-argocd
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "commanderscp.selectorLabels" . | nindent 6 }}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.bundledExecutor.argocd.namespace }}
+      ports:
+        - { protocol: TCP, port: 80 }
+        - { protocol: TCP, port: 443 }
+---
+{{- end }}
 # Ingress: to `api` only, from anywhere in-cluster (an ingress controller in another namespace, or
 # a same-namespace client) — `worker`/`migrations` pods never accept inbound traffic at all
 # (they carry the same pod-selector label set, but nothing here opens ingress for them since the

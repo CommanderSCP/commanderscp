@@ -40,6 +40,10 @@ interface Opts {
   runnerIacSource: "docker-daemon" | "docker";
   postgresRef: string;
   postgresSource: "docker-daemon" | "docker";
+  argocdRef: string;
+  argocdSource: "docker-daemon" | "docker";
+  valkeyRef: string;
+  valkeySource: "docker-daemon" | "docker";
 }
 
 function sourceTypeOption(value: string): "docker-daemon" | "docker" {
@@ -62,6 +66,10 @@ async function main(): Promise<void> {
     .option("--runner-iac-source <type>", "docker-daemon|docker", "docker-daemon")
     .option("--postgres-ref <ref>", "eval postgres image reference to bundle", "postgres:16")
     .option("--postgres-source <type>", "docker-daemon|docker", "docker-daemon")
+    .option("--argocd-ref <ref>", "bundled Argo CD image (Mode B) to bundle", "quay.io/argoproj/argocd:v3.4.5")
+    .option("--argocd-source <type>", "docker-daemon|docker", "docker")
+    .option("--valkey-ref <ref>", "bundled Argo CD's Valkey cache image to bundle", "valkey/valkey:8-alpine")
+    .option("--valkey-source <type>", "docker-daemon|docker", "docker")
     .parse(process.argv);
 
   const raw = program.opts<Record<string, string>>();
@@ -73,7 +81,11 @@ async function main(): Promise<void> {
     runnerIacRef: raw.runnerIacRef!,
     runnerIacSource: sourceTypeOption(raw.runnerIacSource!),
     postgresRef: raw.postgresRef!,
-    postgresSource: sourceTypeOption(raw.postgresSource!)
+    postgresSource: sourceTypeOption(raw.postgresSource!),
+    argocdRef: raw.argocdRef!,
+    argocdSource: sourceTypeOption(raw.argocdSource!),
+    valkeyRef: raw.valkeyRef!,
+    valkeySource: sourceTypeOption(raw.valkeySource!)
   };
 
   if (!skopeo.skopeoAvailable()) {
@@ -86,7 +98,12 @@ async function main(): Promise<void> {
   const images: ImageSourceArg[] = [
     { name: "scpd", ref: opts.scpdRef, sourceType: opts.scpdSource },
     { name: "scp-runner-iac", ref: opts.runnerIacRef, sourceType: opts.runnerIacSource },
-    { name: "postgres-eval", ref: opts.postgresRef, sourceType: opts.postgresSource }
+    { name: "postgres-eval", ref: opts.postgresRef, sourceType: opts.postgresSource },
+    // Bundled executor backends (Mode B) — Argo CD + its Valkey cache. Ride the signed bundle like
+    // scp-runner-iac; pulled only by domains that enable bundledExecutor.argocd. install.sh
+    // retargets them onto bundledExecutor.argocd.image/.valkeyImage.
+    { name: "argocd", ref: opts.argocdRef, sourceType: opts.argocdSource },
+    { name: "valkey", ref: opts.valkeyRef, sourceType: opts.valkeySource }
   ];
 
   const bundleDirName = `scp-bundle-${opts.version}`;
