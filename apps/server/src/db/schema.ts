@@ -1164,6 +1164,10 @@ export const executorBindings = pgTable(
     // object id — backward-compatible with pre-M12 bindings. This is what lets one execution system
     // coordinate many objects whose ids differ from their external names (Mode A / import).
     externalRef: text("external_ref"),
+    // Optional reference to an `execution-system` graph object (M12 P2). When set, the plugin's
+    // serverUrl + token are resolved FROM that object (not this binding's inline config), and the
+    // plugin instance is keyed on the system id so all bindings on one system share one observe poll.
+    executionSystemId: uuid("execution_system_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },

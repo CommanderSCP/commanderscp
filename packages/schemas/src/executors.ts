@@ -12,20 +12,30 @@ import { cursorPageResponseSchema } from "./common.js";
 // ExecutorPlugin instance).
 // -------------------------------------------------------------------------------------------
 
-export const CreateExecutorBindingRequestSchema = z.object({
-  pluginModule: z.string().min(1),
-  pluginInstanceId: z.string().min(1),
-  config: z.record(z.string(), z.unknown()).optional(),
-  /** `{ configFieldName: secretKey }` — `secretKey` must already exist (`PUT /secrets/{key}`);
-   *  the plaintext value is resolved server-side and never appears in this request/response. */
-  secretRefs: z.record(z.string(), z.string()).optional(),
-  /** Egress allowlist (hostnames) for this instance's `ctx.http` — empty/omitted means the
-   *  plugin's own manifest defaults apply. */
-  allowedHosts: z.array(z.string()).optional(),
-  /** The executor-specific target identifier this object maps to (e.g. an Argo CD Application
-   *  name), passed as `trigger().targetRef`. Omitted ⇒ reconcile uses the object id (legacy). */
-  externalRef: z.string().min(1).optional()
-});
+export const CreateExecutorBindingRequestSchema = z
+  .object({
+    /** Inline binding: the plugin module + a stable instance id. Optional because an
+     *  execution-system-backed binding derives both from the referenced `execution-system` object. */
+    pluginModule: z.string().min(1).optional(),
+    pluginInstanceId: z.string().min(1).optional(),
+    config: z.record(z.string(), z.unknown()).optional(),
+    /** `{ configFieldName: secretKey }` — `secretKey` must already exist (`PUT /secrets/{key}`);
+     *  the plaintext value is resolved server-side and never appears in this request/response. */
+    secretRefs: z.record(z.string(), z.string()).optional(),
+    /** Egress allowlist (hostnames) for this instance's `ctx.http` — empty/omitted means the
+     *  plugin's own manifest defaults apply. */
+    allowedHosts: z.array(z.string()).optional(),
+    /** The executor-specific target identifier this object maps to (e.g. an Argo CD Application
+     *  name), passed as `trigger().targetRef`. Omitted ⇒ reconcile uses the object id (legacy). */
+    externalRef: z.string().min(1).optional(),
+    /** Reference (id or URN) to a registered `execution-system` graph object (Mode A). When set, the
+     *  plugin module, serverUrl, and token are resolved FROM that object — omit pluginModule/config. */
+    executionSystemId: z.string().min(1).optional()
+  })
+  .refine((b) => (b.executionSystemId ? !b.pluginModule : Boolean(b.pluginModule && b.pluginInstanceId)), {
+    message:
+      "provide EITHER executionSystemId (execution-system-backed) OR pluginModule + pluginInstanceId (inline) — not both, and not neither"
+  });
 export type CreateExecutorBindingRequest = z.infer<typeof CreateExecutorBindingRequestSchema>;
 
 export const ExecutorBindingSchema = z.object({
@@ -36,7 +46,8 @@ export const ExecutorBindingSchema = z.object({
   config: z.unknown(),
   secretRefs: z.record(z.string(), z.string()),
   allowedHosts: z.array(z.string()),
-  externalRef: z.string().nullable()
+  externalRef: z.string().nullable(),
+  executionSystemId: z.string().nullable()
 });
 export type ExecutorBinding = z.infer<typeof ExecutorBindingSchema>;
 

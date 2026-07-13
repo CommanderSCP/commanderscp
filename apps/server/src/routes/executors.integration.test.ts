@@ -78,6 +78,48 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
       pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`
     });
     expect(binding.externalRef).toBeNull();
+    expect(binding.executionSystemId).toBeNull();
+  });
+
+  it("execution-system-backed binding derives module + a SHARED instance id from the system (M12 P2)", async () => {
+    const org = await createTestOrg(server, "m12-execution-system");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    // Register the execution system ONCE — token stored separately, referenced by key.
+    await admin.secrets.put("argocd-prod-token", { value: "a-scoped-argocd-token" });
+    const sys = await admin.object("execution-system").create({
+      name: `argocd-prod-${randomUUID().slice(0, 8)}`,
+      properties: {
+        kind: "fake-executor",
+        serverUrl: "https://argocd.example",
+        tokenSecretKey: "argocd-prod-token"
+      }
+    });
+    // Bind a component to it — no module/instance/config in the request; all derived from the system.
+    const comp1 = await admin.components.create({ name: `svc-${randomUUID().slice(0, 8)}` });
+    const b1 = await admin.executors.putBinding(comp1.id, {
+      executionSystemId: sys.id,
+      externalRef: "my-app"
+    });
+    expect(b1.executionSystemId).toBe(sys.id);
+    expect(b1.pluginModule).toBe("fake-executor"); // from the system's `kind`
+    expect(b1.pluginInstanceId).toBe(`execution-system:${sys.id}`); // shared instance key
+    expect(b1.externalRef).toBe("my-app");
+
+    // A SECOND component on the SAME system gets the SAME instance id — so they share one observe
+    // poll + one trigger instance, without re-specifying the server/token.
+    const comp2 = await admin.components.create({ name: `svc2-${randomUUID().slice(0, 8)}` });
+    const b2 = await admin.executors.putBinding(comp2.id, { executionSystemId: sys.id });
+    expect(b2.pluginInstanceId).toBe(b1.pluginInstanceId);
+  });
+
+  it("execution-system binding is REJECTED when the reference is not an execution-system object", async () => {
+    const org = await createTestOrg(server, "m12-execution-system-invalid");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const comp = await admin.components.create({ name: `svc-${randomUUID().slice(0, 8)}` });
+    // Point executionSystemId at a Component (wrong type) → 400.
+    await expect(
+      admin.executors.putBinding(comp.id, { executionSystemId: comp.id })
+    ).rejects.toBeInstanceOf(ScpApiError);
   });
 
   it("notification binding PUT/list/DELETE round-trips", async () => {
@@ -111,6 +153,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
         "github",
         "github-discovery",
         "argocd",
+        "argocd-discovery",
         "terraform",
         "managed-iac",
         "webhook-notify",

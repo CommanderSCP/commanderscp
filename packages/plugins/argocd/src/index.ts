@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import type {
   AbortResult,
   Cursor,
+  DiscoveryPlugin,
+  DiscoveryProposal,
   ExecutionPhase,
   ExecutionStatus,
   ExecutorCapabilities,
@@ -403,6 +405,66 @@ export function createArgoCdExecutorPlugin(): ExecutorPlugin {
 export const manifest: PluginManifest = {
   id: "argocd",
   kind: "executor",
+  version: "0.1.0",
+  configSchema: {
+    type: "object",
+    required: ["serverUrl"],
+    properties: {
+      serverUrl: { type: "string", format: "uri" },
+      tokenSecretKey: { type: "string" }
+    }
+  }
+};
+
+// -------------------------------------------------------------------------------------------
+// DiscoveryPlugin (M12 P3, docs/proposals/import-existing-executors.md) — "import my existing
+// Argo CD": enumerate its Applications (the SAME `GET /api/v1/applications` observe() already
+// uses) and PROPOSE one `component` per Application, recording the Application NAME on
+// `properties.argocdApplication` so a subsequent execution-system binding's `externalRef` (M12 P2)
+// coordinates the right app. NEVER auto-commits — `POST /discovery/accept` materializes the
+// proposal. Same one-npm-package-two-plugins shape as @scp/plugin-github (executor + discovery).
+// -------------------------------------------------------------------------------------------
+interface ArgoAppForDiscovery {
+  metadata: { name: string };
+  spec?: { project?: string; destination?: { namespace?: string; server?: string } };
+}
+
+async function discover(ctx: PluginContext): Promise<DiscoveryProposal> {
+  const config = asConfig(ctx.config);
+  const { status, body } = await apiRequest(ctx, config, "GET", "/api/v1/applications");
+  if (status < 200 || status >= 300) {
+    throw new Error(`argocd discovery: server returned HTTP ${status}`);
+  }
+  const list = body as { items?: ArgoAppForDiscovery[] };
+  const objects: DiscoveryProposal["objects"] = [];
+  for (const app of list.items ?? []) {
+    const name = app.metadata?.name;
+    if (!name) continue;
+    objects.push({
+      typeId: "component",
+      name,
+      properties: {
+        // The exact Argo CD Application name — an execution-system binding's `externalRef` points
+        // here so `trigger()`/`observe()` address the right app (M12 P1/P2).
+        argocdApplication: name,
+        discoveredFrom: `argocd:${config.serverUrl}`,
+        ...(app.spec?.project ? { argocdProject: app.spec.project } : {}),
+        ...(app.spec?.destination?.namespace ? { namespace: app.spec.destination.namespace } : {})
+      }
+    });
+  }
+  return { objects, relationships: [] };
+}
+
+export const argoCdDiscoveryPlugin: DiscoveryPlugin = { discover };
+
+export function createArgoCdDiscoveryPlugin(): DiscoveryPlugin {
+  return argoCdDiscoveryPlugin;
+}
+
+export const discoveryManifest: PluginManifest = {
+  id: "argocd-discovery",
+  kind: "discovery",
   version: "0.1.0",
   configSchema: {
     type: "object",

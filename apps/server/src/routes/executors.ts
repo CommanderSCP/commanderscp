@@ -24,7 +24,10 @@ import {
   manifest as githubExecutorManifest,
   discoveryManifest as githubDiscoveryManifest
 } from "@scp/plugin-github";
-import { manifest as argocdManifest } from "@scp/plugin-argocd";
+import {
+  manifest as argocdManifest,
+  discoveryManifest as argocdDiscoveryManifest
+} from "@scp/plugin-argocd";
 import { manifest as terraformManifest } from "@scp/plugin-terraform";
 import { manifest as managedIacManifest } from "@scp/plugin-managed-iac";
 import { manifest as webhookNotifyManifest } from "@scp/plugin-webhook-notify";
@@ -41,7 +44,8 @@ import { createRelationship } from "../graph/relationships-repo.js";
 import {
   upsertExecutorBinding,
   getExecutorBinding,
-  isKnownExecutorModule
+  isKnownExecutorModule,
+  executionSystemInstanceId
 } from "../coordination/executor-bindings-repo.js";
 import {
   upsertNotificationBinding,
@@ -59,7 +63,7 @@ import {
 /** Only `github-discovery` is a real `DiscoveryPlugin` module today — same allowlist discipline
  *  as `executor-bindings-repo.ts`'s `KNOWN_EXECUTOR_MODULES` (a free-form request field must never
  *  reach `host.start()` unchecked). */
-const KNOWN_DISCOVERY_MODULES: PluginModule[] = ["github-discovery"];
+const KNOWN_DISCOVERY_MODULES: PluginModule[] = ["github-discovery", "argocd-discovery"];
 
 /** Every bundled plugin's manifest, keyed by the module name a binding references. Used to
  *  validate a binding's tenant-supplied `config` against the plugin's declared `configSchema`
@@ -70,6 +74,7 @@ const MANIFEST_BY_MODULE: Record<string, { configSchema: unknown }> = {
   github: githubExecutorManifest,
   "github-discovery": githubDiscoveryManifest,
   argocd: argocdManifest,
+  "argocd-discovery": argocdDiscoveryManifest,
   terraform: terraformManifest,
   "managed-iac": managedIacManifest,
   "webhook-notify": webhookNotifyManifest,
@@ -117,6 +122,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           githubExecutorManifest,
           githubDiscoveryManifest,
           argocdManifest,
+          argocdDiscoveryManifest,
           terraformManifest,
           managedIacManifest,
           webhookNotifyManifest,
@@ -244,19 +250,19 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
-      // M8 hardening (BUILD_AND_TEST.md §8 M8 item 6, "create-time module allowlist"): reject an
-      // unknown/wrong-kind/operator-plane `pluginModule` HERE, at WRITE time — mirroring the
-      // discovery-create route's `KNOWN_DISCOVERY_MODULES` check below — rather than only ever
-      // discovering it later, confusingly, the first time the coordination engine tries to
-      // dispatch to this binding (`executor-bindings-repo.ts`'s `resolveExecutorPluginInstance`
-      // already refused it there; this closes the same gap earlier, defense in depth).
-      if (!isKnownExecutorModule(request.body.pluginModule)) {
-        throw badRequest(`unknown or non-executor plugin module '${request.body.pluginModule}'`);
+      const body = request.body;
+      // INLINE bindings validate the module + config up front (outside the tx). System-backed
+      // bindings derive both from the referenced execution-system object, validated inside the tx.
+      if (!body.executionSystemId) {
+        // M8 hardening (BUILD_AND_TEST.md §8 M8 item 6, "create-time module allowlist"): reject an
+        // unknown/wrong-kind/operator-plane `pluginModule` HERE, at WRITE time (defense in depth vs.
+        // `resolveExecutorPluginInstance`).
+        if (!isKnownExecutorModule(body.pluginModule!)) {
+          throw badRequest(`unknown or non-executor plugin module '${body.pluginModule}'`);
+        }
+        // Reject e.g. a managed-iac binding that tries to set server-governed fields (CRITICAL #1).
+        validatePluginConfig(body.pluginModule!, body.config);
       }
-      // Validate the tenant config against the plugin's declared schema BEFORE storing it —
-      // rejects e.g. a managed-iac binding that tries to set the server-governed runnerImage/
-      // networkMode/workspace fields (CRITICAL #1 item 5). Outside the tx: pure input validation.
-      validatePluginConfig(request.body.pluginModule, request.body.config);
       const binding = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const target = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.idOrUrn);
         await authorize(tx, {
@@ -265,15 +271,42 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           permission: "object:write",
           scopeObjectId: target.id
         });
+
+        if (body.executionSystemId) {
+          // Mode A: derive the module + a shared instance id from the registered execution-system.
+          const sys = await getObjectByIdOrUrnAnyType(tx, auth.orgId, body.executionSystemId);
+          if (sys.typeId !== "execution-system") {
+            throw badRequest(`'${body.executionSystemId}' is a '${sys.typeId}', not an execution-system`);
+          }
+          const props = sys.properties as { kind?: string; serverUrl?: string };
+          if (!props.serverUrl) {
+            throw badRequest(`execution-system '${sys.id}' is missing a 'serverUrl' property`);
+          }
+          const module = (props.kind ?? "").trim();
+          if (!isKnownExecutorModule(module)) {
+            throw badRequest(`execution-system kind '${module}' is not a known executor module`);
+          }
+          return upsertExecutorBinding(tx, {
+            orgId: auth.orgId,
+            targetObjectId: target.id,
+            pluginModule: module,
+            // Shared instance id ⇒ every binding on this system shares one observe poll + trigger
+            // instance; serverUrl/token are resolved from the system at dispatch, not stored here.
+            pluginInstanceId: executionSystemInstanceId(sys.id),
+            executionSystemId: sys.id,
+            externalRef: body.externalRef
+          });
+        }
+
         return upsertExecutorBinding(tx, {
           orgId: auth.orgId,
           targetObjectId: target.id,
-          pluginModule: request.body.pluginModule,
-          pluginInstanceId: request.body.pluginInstanceId,
-          config: request.body.config,
-          secretRefs: request.body.secretRefs,
-          allowedHosts: request.body.allowedHosts,
-          externalRef: request.body.externalRef
+          pluginModule: body.pluginModule!,
+          pluginInstanceId: body.pluginInstanceId!,
+          config: body.config,
+          secretRefs: body.secretRefs,
+          allowedHosts: body.allowedHosts,
+          externalRef: body.externalRef
         });
       });
       reply.status(200).send(binding);
