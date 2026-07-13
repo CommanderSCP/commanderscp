@@ -44,7 +44,12 @@ function helmAvailable(): boolean {
 interface K8sDoc {
   apiVersion?: string;
   kind?: string;
-  metadata?: { name?: string; annotations?: Record<string, string>; labels?: Record<string, string> };
+  metadata?: {
+    name?: string;
+    namespace?: string;
+    annotations?: Record<string, string>;
+    labels?: Record<string, string>;
+  };
   spec?: Record<string, unknown>;
   data?: Record<string, string>;
   [key: string]: unknown;
