@@ -53,6 +53,9 @@ export interface ArgoCdConfig {
    *  `tokenSecretKey`; this field exists so nock-fixture tests don't need a live SecretsAccessor. */
   token?: string;
   statePath?: string;
+  /** DISCOVERY only (M12 P3b): when set, `discover()` also proposes a binding of each imported
+   *  component to this execution-system, so `discovery accept` coordinates them in one step. */
+  executionSystemId?: string;
 }
 
 interface DedupState {
@@ -70,7 +73,8 @@ function asConfig(config: unknown): ArgoCdConfig {
     serverUrl: c.serverUrl.replace(/\/$/, ""),
     tokenSecretKey: c.tokenSecretKey,
     token: c.token,
-    statePath: c.statePath
+    statePath: c.statePath,
+    executionSystemId: c.executionSystemId
   };
 }
 
@@ -437,6 +441,7 @@ async function discover(ctx: PluginContext): Promise<DiscoveryProposal> {
   }
   const list = body as { items?: ArgoAppForDiscovery[] };
   const objects: DiscoveryProposal["objects"] = [];
+  const bindings: NonNullable<DiscoveryProposal["bindings"]> = [];
   for (const app of list.items ?? []) {
     const name = app.metadata?.name;
     if (!name) continue;
@@ -452,8 +457,13 @@ async function discover(ctx: PluginContext): Promise<DiscoveryProposal> {
         ...(app.spec?.destination?.namespace ? { namespace: app.spec.destination.namespace } : {})
       }
     });
+    // P3b: if the run named an execution-system, propose the binding too so `accept` wires
+    // coordination in the same step (externalRef = the app name → trigger()/observe() hit it).
+    if (config.executionSystemId) {
+      bindings.push({ objectName: name, executionSystemId: config.executionSystemId, externalRef: name });
+    }
   }
-  return { objects, relationships: [] };
+  return { objects, relationships: [], ...(bindings.length ? { bindings } : {}) };
 }
 
 export const argoCdDiscoveryPlugin: DiscoveryPlugin = { discover };

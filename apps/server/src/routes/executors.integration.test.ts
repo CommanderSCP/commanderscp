@@ -122,6 +122,36 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     ).rejects.toBeInstanceOf(ScpApiError);
   });
 
+  it("discovery accept creates the proposed execution-system bindings — import→coordinate in ONE step (M12 P3b)", async () => {
+    const org = await createTestOrg(server, "m12-accept-bindings");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    await admin.secrets.put("sys-token", { value: "t" });
+    const sys = await admin.object("execution-system").create({
+      name: `sys-${randomUUID().slice(0, 8)}`,
+      properties: { kind: "fake-executor", serverUrl: "https://argocd.x", tokenSecretKey: "sys-token" }
+    });
+    const appName = `imported-app-${randomUUID().slice(0, 8)}`;
+
+    // A proposal (as argocd-discovery would emit with an execution-system): a component + a binding
+    // of that component (by NAME) to the system.
+    const result = await admin.discovery.accept({
+      proposal: {
+        objects: [{ typeId: "component", name: appName, properties: { argocdApplication: appName } }],
+        relationships: [],
+        bindings: [{ objectName: appName, executionSystemId: sys.id, externalRef: appName }]
+      }
+    });
+    expect(result.createdObjectIds).toHaveLength(1);
+    expect(result.createdBindingIds).toHaveLength(1);
+
+    // The imported component is coordinated — bound to the system, module derived, external app named.
+    const binding = await admin.executors.getBinding(result.createdObjectIds[0]!);
+    expect(binding.executionSystemId).toBe(sys.id);
+    expect(binding.pluginModule).toBe("fake-executor");
+    expect(binding.pluginInstanceId).toBe(`execution-system:${sys.id}`);
+    expect(binding.externalRef).toBe(appName);
+  });
+
   it("notification binding PUT/list/DELETE round-trips", async () => {
     const org = await createTestOrg(server, "m7-notify-binding");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });

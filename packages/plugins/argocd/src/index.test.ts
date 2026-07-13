@@ -644,6 +644,23 @@ describe("discover() (M12 P3 — import an existing Argo CD)", () => {
     expect(api?.properties?.argocdApplication).toBe("api-prod");
     // No destination namespace on this app ⇒ the property is simply omitted.
     expect(api?.properties?.namespace).toBeUndefined();
+    // No executionSystemId in config ⇒ no bindings proposed (discovery-only import).
+    expect(proposal.bindings).toBeUndefined();
+  });
+
+  it("when config carries executionSystemId, ALSO proposes a binding per app so accept coordinates them (M12 P3b)", async () => {
+    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token", executionSystemId: "sys-123" });
+    nock(SERVER_URL)
+      .get("/api/v1/applications")
+      .reply(200, { items: [{ metadata: { name: "web-prod" } }, { metadata: { name: "api-prod" } }] });
+
+    const proposal = await createArgoCdDiscoveryPlugin().discover(ctx);
+    expect(proposal.objects).toHaveLength(2);
+    expect(proposal.bindings).toHaveLength(2);
+    const web = proposal.bindings?.find((b) => b.objectName === "web-prod");
+    expect(web?.executionSystemId).toBe("sys-123");
+    // externalRef defaults to the exact app name so the binding coordinates the right Application.
+    expect(web?.externalRef).toBe("web-prod");
   });
 
   it("returns an empty proposal (never throws) when Argo CD has no Applications", async () => {

@@ -13528,6 +13528,11 @@ export type RunDiscoveryResponses = {
             fromUrn: string;
             toUrn: string;
         }>;
+        bindings?: Array<{
+            objectName: string;
+            executionSystemId: string;
+            externalRef?: string;
+        }>;
     };
 };
 
@@ -13548,6 +13553,11 @@ export type AcceptDiscoveryProposalData = {
                 typeId: string;
                 fromUrn: string;
                 toUrn: string;
+            }>;
+            bindings?: Array<{
+                objectName: string;
+                executionSystemId: string;
+                externalRef?: string;
             }>;
         };
     };
@@ -13601,6 +13611,7 @@ export type AcceptDiscoveryProposalResponses = {
     201: {
         createdObjectIds: Array<string>;
         createdRelationshipIds: Array<string>;
+        createdBindingIds: Array<string>;
     };
 };
 
