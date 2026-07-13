@@ -22,7 +22,15 @@ import { buildManifest, renderManifestJson, renderManifestSh } from "./manifest.
 import { computeChecksums, formatChecksums } from "./checksums.js";
 import { buildAirgapCompose } from "./compose-retarget.js";
 import { renderOfflineInstallDoc } from "./offline-install-doc.js";
-import { ASSETS_DIR, BUILD_AND_TEST_DOC, COMPOSE_FILE, DESIGN_DOC, HELM_CHART_DIR } from "./repo-paths.js";
+import {
+  ASSETS_DIR,
+  BUILD_AND_TEST_DOC,
+  BUNDLED_HELM_CHART_DIR,
+  BUNDLED_WRAPPER,
+  COMPOSE_FILE,
+  DESIGN_DOC,
+  HELM_CHART_DIR
+} from "./repo-paths.js";
 import type { BundleImage } from "./types.js";
 
 interface ImageSourceArg {
@@ -252,6 +260,13 @@ async function main(): Promise<void> {
   // ---- 3. Helm chart, compose files, docs ----------------------------------------------------
   process.stderr.write("\n-- copying helm chart, compose files, docs --\n");
   await cp(HELM_CHART_DIR, path.join(bundleRoot, "helm"), { recursive: true });
+  // The bundled-backends chart + its one-command wrapper ride the bundle too: install.sh applies the
+  // Standard Stack via `scp-bundled.sh enable <backend> --chart helm-bundled` AFTER the SCP install
+  // (the vendored manifests exceed Helm's 1 MB release-Secret limit, so they can't ride the SCP
+  // release — see deploy/helm-bundled/Chart.yaml). Carries the 12 MB of vendored manifests offline.
+  await cp(BUNDLED_HELM_CHART_DIR, path.join(bundleRoot, "helm-bundled"), { recursive: true });
+  await copyFile(BUNDLED_WRAPPER, path.join(bundleRoot, "scp-bundled.sh"));
+  await chmod(path.join(bundleRoot, "scp-bundled.sh"), 0o755);
 
   await mkdir(path.join(bundleRoot, "compose"), { recursive: true });
   const composeSource = await readFile(COMPOSE_FILE, "utf8");

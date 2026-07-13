@@ -176,76 +176,22 @@ managedIac:
 # block renders nothing (the "never load-bearing / two-container floor" guarantee — helm-verify
 # asserts no Valkey/Argo CD is emitted with the profile off).
 # -------------------------------------------------------------------------------------------
+# Bundled executor backends (Mode B, ADR-0002) — the FULL definitions (vendored manifests, images,
+# Harbor secret-gen) live in the SEPARATE `deploy/helm-bundled` chart, applied out-of-release via
+# scripts/scp-bundled.sh (the vendored manifests exceed Helm's 1 MB release-Secret limit; see
+# deploy/helm-bundled/Chart.yaml). This MAIN chart keeps only the SLIM knobs its own resources use:
+# the post-install auto-wire hook (templates/bundled-argocd-autowire-job.yaml) and the
+# allow-argocd / allow-harbor NetworkPolicy egress rules (templates/networkpolicy.yaml). Enabling a
+# backend flips the matching `enabled` here (turns on the hook + egress) AND applies the bundled
+# chart — `scripts/scp-bundled.sh enable <backend>` does both in one command.
 bundledExecutor:
   argocd:
     enabled: false
-    # Own namespace so the bundled backend keeps its own RBAC + cluster credentials, isolated from
-    # scpd (which never gets those — SCP only ever holds the scoped Argo CD API token below).
     namespace: scp-argocd
-    # VENDORED, RETARGETABLE image refs — the air-gap install.sh rewrites these to the customer
-    # registry at a pinned digest (never hardcoded in a template; avoids the eval-postgres air-gap
-    # trap). Empty ⇒ the profile fails closed rather than pulling from the internet, exactly like
-    # managedIac.runnerImage.
-    image: "" # Argo CD (Apache-2.0)
-    valkeyImage: "" # Valkey (BSD-3) — Argo CD's cache; an OWNED, TESTED deviation from upstream's Redis
-    # The scoped, non-admin account SCP mints in the bundled Argo CD and coordinates through. The
-    # post-install auto-wire hook mints its token (Argo CD's own /api/v1/account/{name}/token),
-    # stores it as an SCP secret, and seeds the `argocd` executor binding pointed at the in-cluster
-    # Argo CD Service — so enabling this profile yields a ready executor with zero token plumbing.
     scpAccount: scp-coordinator
-    # Argo CD component resource requests/limits (its Deployments run live, unlike managedIac which
-    # only renders RBAC + a reference Job). Modest defaults sized for a coordination-tier install.
-    resources:
-      server:
-        requests: { cpu: 100m, memory: 128Mi }
-        limits: { cpu: 500m, memory: 256Mi }
-      repoServer:
-        requests: { cpu: 100m, memory: 128Mi }
-        limits: { cpu: 500m, memory: 256Mi }
-      applicationController:
-        requests: { cpu: 250m, memory: 256Mi }
-        limits: { cpu: "1", memory: 512Mi }
-      valkey:
-        requests: { cpu: 50m, memory: 64Mi }
-        limits: { cpu: 200m, memory: 128Mi }
-  # Argo Workflows (Mode B — bundled CI / build / test). Vendored, unmodified upstream v4.0.7 into
-  # its own namespace; off by default; two retargetable images (fail-closed when empty). Coordinated
-  # via the generic pipeline executor (M10.6) — the bundle DEPLOYS it; SCP never runs CI itself.
-  argoWorkflows:
-    enabled: false
-    namespace: scp-argo-workflows
-    serverImage: "" # argocli (argo-server / UI) — retargeted by the air-gap install.sh
-    controllerImage: "" # workflow-controller — retargeted
-  # Argo Events (Mode B — event sources/sensors that can feed SCP's observe() path). Vendored,
-  # unmodified upstream v1.9.10; off by default; one retargetable image.
-  argoEvents:
-    enabled: false
-    namespace: scp-argo-events
-    image: "" # argo-events controller — retargeted
-  # Harbor (Mode B — bundled OCI registry + Trivy scanner). OBSERVE-ONLY from SCP's side: SCP reads
-  # image/scan state, never pushes (the credential-asymmetry invariant — SCP holds a scoped read
-  # token, never Harbor's admin/infra creds). Vendored, unmodified upstream v2.15.1 MINUS its
-  # Secrets; those are SCP-GENERATED per install (bundled-harbor-secrets.yaml) rather than frozen to
-  # static values — random, cross-referenced, persisted across upgrade via `lookup`. Off by default.
   harbor:
     enabled: false
     namespace: scp-harbor
-    # Nine goharbor images, each retargeted INDIVIDUALLY so the air-gap install.sh can pin each by
-    # @digest (a single registry-prefix can't carry a digest; install.sh guarantees digest-pinned
-    # images). Defaults are the upstream v2.15.1 refs so a CONNECTED install works out of the box;
-    # the air-gap install.sh rewrites all nine to `<registry>/<name>:<version>@<digest>`.
-    coreImage: docker.io/goharbor/harbor-core:v2.15.1
-    dbImage: docker.io/goharbor/harbor-db:v2.15.1
-    jobserviceImage: docker.io/goharbor/harbor-jobservice:v2.15.1
-    portalImage: docker.io/goharbor/harbor-portal:v2.15.1
-    registryctlImage: docker.io/goharbor/harbor-registryctl:v2.15.1
-    registryImage: docker.io/goharbor/registry-photon:v2.15.1
-    nginxImage: docker.io/goharbor/nginx-photon:v2.15.1
-    redisImage: docker.io/goharbor/redis-photon:v2.15.1
-    trivyImage: docker.io/goharbor/trivy-adapter-photon:v2.15.1
-    # Optional operator-set initial admin password; empty ⇒ SCP generates a random one (retrievable
-    # from the harbor-core Secret's HARBOR_ADMIN_PASSWORD key). Never a static vendored default.
-    adminPassword: ""
 
 # -------------------------------------------------------------------------------------------
 # Federation mTLS transport identity (DESIGN §13, M8 hardening) — host-level, operator-owned

@@ -26,11 +26,14 @@
  */
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { parseAllDocuments } from "yaml";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CHART_DIR = path.resolve(__dirname, "../../../deploy/helm");
+const BUNDLED_CHART_DIR = path.resolve(__dirname, "../../../deploy/helm-bundled");
 
 function helmAvailable(): boolean {
   try {
@@ -65,12 +68,30 @@ function assert(condition: unknown, msg: string): void {
   if (!condition) fail(msg);
 }
 
-function renderChart(releaseName: string, setArgs: string[]): K8sDoc[] {
-  const args = ["template", releaseName, CHART_DIR, ...setArgs];
-  const output = execFileSync("helm", args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
+function renderDir(dir: string, releaseName: string, setArgs: string[]): K8sDoc[] {
+  const args = ["template", releaseName, dir, ...setArgs];
+  const output = execFileSync("helm", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   return parseAllDocuments(output)
     .map((doc) => doc.toJS() as K8sDoc | null)
     .filter((doc): doc is K8sDoc => doc != null && typeof doc === "object" && "kind" in doc);
+}
+
+function renderChart(releaseName: string, setArgs: string[]): K8sDoc[] {
+  return renderDir(CHART_DIR, releaseName, setArgs);
+}
+
+function renderBundledChart(setArgs: string[]): K8sDoc[] {
+  return renderDir(BUNDLED_CHART_DIR, "scp-bundled", setArgs);
+}
+
+/** Size of `helm package <dir>` base64-encoded — a close proxy for the Helm release Secret, which
+ *  stores base64(gzip(whole chart)) and is capped at Kubernetes' 1 MB Secret limit. */
+function packagedChartBase64Size(dir: string): number {
+  const out = mkdtempSync(path.join(os.tmpdir(), "helm-verify-pkg-"));
+  execFileSync("helm", ["package", dir, "--destination", out], { stdio: "ignore" });
+  const tgz = readdirSync(out).find((f) => f.endsWith(".tgz"));
+  if (!tgz) throw new Error(`helm package produced no .tgz in ${out}`);
+  return readFileSync(path.join(out, tgz)).toString("base64").length;
 }
 
 interface Container {
@@ -263,78 +284,47 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
     }
   }
 
-  // Bundled Argo CD (Mode B) — isolation + air-gap correctness, NOT SCP's strict pod-hardening
-  // (see the workloads filter above). Profile OFF ⇒ nothing renders (two-container floor); profile
-  // ON ⇒ upstream Argo CD lands isolated in its own namespace with every image RETARGETED (an
-  // un-rewritten upstream ref would 404 in an air-gapped registry).
+  // Bundled backends (Mode B) now live in the SEPARATE `deploy/helm-bundled` chart, delivered via
+  // `helm template | kubectl apply` — they exceed Helm's 1 MB release-Secret limit, so they must
+  // NEVER ride the main chart's stored release (the M11 regression that motivated the split; see
+  // verifyBundledChart + the packaged-size guard in main). Regression guard: the MAIN chart must
+  // render ZERO resources into any bundled-backend namespace, on EVERY value set — if a vendored
+  // file or render template crept back into deploy/helm, this fails.
   const bundledNamespaces = ["scp-argocd", "scp-argo-workflows", "scp-argo-events", "scp-harbor"];
-  const bundled = docs.filter((d) => bundledNamespaces.includes(d.metadata?.namespace ?? ""));
-  if (label === "defaults") {
-    assert(
-      bundled.length === 0,
-      `[${label}] all bundledExecutor backends are off by default — expected 0 resources in ${bundledNamespaces.join("/")}, got ${bundled.length} (the "never load-bearing / two-container floor" guarantee)`
-    );
-  }
+  // The ONLY main-chart resources allowed in a bundled namespace are the auto-wire hook's tiny
+  // cross-namespace RBAC (a Role + RoleBinding in scp-argocd, to read Argo CD's admin secret) —
+  // identified by the argocd-autowire component label. Anything else means a VENDORED backend
+  // (Deployment/CRD/ConfigMap/…) crept back into the release-stored main chart.
+  const strayBundled = docs.filter(
+    (d) =>
+      bundledNamespaces.includes(d.metadata?.namespace ?? "") &&
+      d.metadata?.labels?.["app.kubernetes.io/component"] !== "argocd-autowire"
+  );
+  assert(
+    strayBundled.length === 0,
+    `[${label}] the main chart rendered ${strayBundled.length} non-autowire resource(s) into a bundled-backend namespace (${strayBundled
+      .map((d) => `${d.kind}/${d.metadata?.name}`)
+      .join(", ")}) — bundled backends must live ONLY in deploy/helm-bundled, never the release-stored main chart`
+  );
   if (label === "kitchen-sink") {
-    const server = bundled.find(
-      (d) => d.kind === "Deployment" && d.metadata?.name === "argocd-server"
+    // What the main chart DOES keep for bundled backends: enabling argocd/harbor turns on the SCP-
+    // side integration — the post-install auto-wire hook Job (mints the scoped Argo CD token) and
+    // the allow-argocd / allow-harbor NetworkPolicy egress. Assert both render here.
+    const autowireJob = docs.find(
+      (d) => d.kind === "Job" && String(d.metadata?.name).includes("argocd-autowire")
     );
-    assert(server, `[${label}] bundled Argo CD enabled but no argocd-server Deployment in scp-argocd`);
-    // Every bundled backend must render at least one workload in its own namespace.
-    for (const ns of bundledNamespaces) {
+    assert(autowireJob, `[${label}] bundledExecutor.argocd.enabled but no argocd-autowire hook Job in the main chart`);
+    const hookAnn = autowireJob?.metadata?.annotations?.["helm.sh/hook"] ?? "";
+    assert(
+      hookAnn.includes("post-install"),
+      `[${label}] argocd-autowire Job must be a post-install hook (got "${hookAnn}")`
+    );
+    for (const be of ["argocd", "harbor"]) {
       assert(
-        bundled.some((d) => d.metadata?.namespace === ns),
-        `[${label}] bundled backend namespace '${ns}' rendered no resources`
+        docs.some((d) => d.kind === "NetworkPolicy" && String(d.metadata?.name).includes(`allow-${be}`)),
+        `[${label}] bundledExecutor.${be}.enabled but no allow-${be} NetworkPolicy egress in the main chart`
       );
     }
-    const bundledImages = bundled
-      .flatMap((d) => {
-        const ps = (d.spec as { template?: { spec?: PodSpec } } | undefined)?.template?.spec;
-        return [...(ps?.containers ?? []), ...(ps?.initContainers ?? [])];
-      })
-      .map((c) => c.image)
-      .filter((i): i is string => Boolean(i));
-    assert(bundledImages.length > 0, `[${label}] bundled Argo CD rendered no container images`);
-    for (const img of bundledImages) {
-      assert(
-        !img.includes("quay.io/argoproj") &&
-          !img.includes("public.ecr.aws") &&
-          !img.includes("docker.io/goharbor"),
-        `[${label}] bundled backend image '${img}' is NOT retargeted — the air-gap install.sh must rewrite every image to the customer registry (an upstream ref breaks air-gapped installs)`
-      );
-    }
-    // Harbor (M11.4) is bundled with its Secrets STRIPPED and SCP-GENERATED instead. The whole
-    // approach hinges on cross-referenced values staying consistent across separate Secret
-    // resources — a mismatch renders green here but leaves Harbor unable to boot (core can't reach
-    // its DB, or the registry rejects core's pushes). Lock those invariants into CI:
-    const harborSec = (name: string): Record<string, string> | undefined => {
-      const d = bundled.find(
-        (x) => x.kind === "Secret" && x.metadata?.namespace === "scp-harbor" && x.metadata?.name === name
-      ) as { stringData?: Record<string, string> } | undefined;
-      return d?.stringData;
-    };
-    const hCore = harborSec("harbor-core");
-    const hDb = harborSec("harbor-database");
-    const hJob = harborSec("harbor-jobservice");
-    const hHt = harborSec("harbor-registry-htpasswd");
-    assert(hCore && hDb && hJob && hHt, `[${label}] bundled Harbor enabled but its SCP-generated Secrets did not all render (core/database/jobservice/registry-htpasswd)`);
-    assert(
-      Boolean(hCore!["POSTGRESQL_PASSWORD"]) && hCore!["POSTGRESQL_PASSWORD"] === hDb!["POSTGRES_PASSWORD"],
-      `[${label}] Harbor Postgres password mismatch: harbor-core POSTGRESQL_PASSWORD must equal harbor-database POSTGRES_PASSWORD (core would fail to connect)`
-    );
-    assert(
-      Boolean(hCore!["REGISTRY_CREDENTIAL_PASSWORD"]) &&
-        hCore!["REGISTRY_CREDENTIAL_PASSWORD"] === hJob!["REGISTRY_CREDENTIAL_PASSWORD"],
-      `[${label}] Harbor registry-credential mismatch: harbor-core must equal harbor-jobservice REGISTRY_CREDENTIAL_PASSWORD`
-    );
-    assert(
-      (hHt!["REGISTRY_HTPASSWD"] ?? "").startsWith("harbor_registry_user:$2"),
-      `[${label}] Harbor registry htpasswd is not a bcrypt entry for harbor_registry_user (registry auth would fail)`
-    );
-    assert(
-      (hCore!["tls.crt"] ?? "").includes("BEGIN CERTIFICATE") && (hCore!["tls.key"] ?? "").includes("PRIVATE KEY"),
-      `[${label}] Harbor token-signing cert/key missing from harbor-core (registry token verification would fail)`
-    );
   }
 
   // NetworkPolicy — default-deny AND at least one explicit allow, both present.
@@ -383,6 +373,77 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
   }
 }
 
+/** Assertions for the SEPARATE bundled-backends chart (deploy/helm-bundled), rendered with every
+ *  backend enabled + images retargeted. This is where the bundled-backend isolation / air-gap /
+ *  Harbor-secret-cross-reference checks live now that the backends no longer ride the main chart. */
+function verifyBundledChart(docs: K8sDoc[]): void {
+  const label = "bundled";
+  const bundledNamespaces = ["scp-argocd", "scp-argo-workflows", "scp-argo-events", "scp-harbor"];
+  const bundled = docs.filter((d) => bundledNamespaces.includes(d.metadata?.namespace ?? ""));
+
+  // Every enabled backend renders at least one resource in its own namespace, and Argo CD's server.
+  assert(
+    bundled.some((d) => d.kind === "Deployment" && d.metadata?.name === "argocd-server"),
+    `[${label}] bundled Argo CD enabled but no argocd-server Deployment in scp-argocd`
+  );
+  for (const ns of bundledNamespaces) {
+    assert(
+      bundled.some((d) => d.metadata?.namespace === ns),
+      `[${label}] bundled backend namespace '${ns}' rendered no resources`
+    );
+  }
+
+  // Every image must be RETARGETED — an un-rewritten upstream ref 404s in an air-gapped registry.
+  const bundledImages = bundled
+    .flatMap((d) => {
+      const ps = (d.spec as { template?: { spec?: PodSpec } } | undefined)?.template?.spec;
+      return [...(ps?.containers ?? []), ...(ps?.initContainers ?? [])];
+    })
+    .map((c) => c.image)
+    .filter((i): i is string => Boolean(i));
+  assert(bundledImages.length > 0, `[${label}] bundled backends rendered no container images`);
+  for (const img of bundledImages) {
+    assert(
+      !img.includes("quay.io/argoproj") &&
+        !img.includes("public.ecr.aws") &&
+        !img.includes("docker.io/goharbor"),
+      `[${label}] bundled backend image '${img}' is NOT retargeted — the air-gap install.sh must rewrite every image to the customer registry (an upstream ref breaks air-gapped installs)`
+    );
+  }
+
+  // Harbor is bundled with its Secrets STRIPPED and SCP-GENERATED instead. The approach hinges on
+  // cross-referenced values staying consistent across separate Secret resources — a mismatch renders
+  // green but leaves Harbor unable to boot (core can't reach its DB, or the registry rejects pushes).
+  const harborSec = (name: string): Record<string, string> | undefined => {
+    const d = bundled.find(
+      (x) => x.kind === "Secret" && x.metadata?.namespace === "scp-harbor" && x.metadata?.name === name
+    ) as { stringData?: Record<string, string> } | undefined;
+    return d?.stringData;
+  };
+  const hCore = harborSec("harbor-core");
+  const hDb = harborSec("harbor-database");
+  const hJob = harborSec("harbor-jobservice");
+  const hHt = harborSec("harbor-registry-htpasswd");
+  assert(hCore && hDb && hJob && hHt, `[${label}] bundled Harbor enabled but its SCP-generated Secrets did not all render (core/database/jobservice/registry-htpasswd)`);
+  assert(
+    Boolean(hCore!["POSTGRESQL_PASSWORD"]) && hCore!["POSTGRESQL_PASSWORD"] === hDb!["POSTGRES_PASSWORD"],
+    `[${label}] Harbor Postgres password mismatch: harbor-core POSTGRESQL_PASSWORD must equal harbor-database POSTGRES_PASSWORD (core would fail to connect)`
+  );
+  assert(
+    Boolean(hCore!["REGISTRY_CREDENTIAL_PASSWORD"]) &&
+      hCore!["REGISTRY_CREDENTIAL_PASSWORD"] === hJob!["REGISTRY_CREDENTIAL_PASSWORD"],
+    `[${label}] Harbor registry-credential mismatch: harbor-core must equal harbor-jobservice REGISTRY_CREDENTIAL_PASSWORD`
+  );
+  assert(
+    (hHt!["REGISTRY_HTPASSWD"] ?? "").startsWith("harbor_registry_user:$2"),
+    `[${label}] Harbor registry htpasswd is not a bcrypt entry for harbor_registry_user (registry auth would fail)`
+  );
+  assert(
+    (hCore!["tls.crt"] ?? "").includes("BEGIN CERTIFICATE") && (hCore!["tls.key"] ?? "").includes("PRIVATE KEY"),
+    `[${label}] Harbor token-signing cert/key missing from harbor-core (registry token verification would fail)`
+  );
+}
+
 function main(): void {
   if (!helmAvailable()) {
     console.log(
@@ -423,6 +484,31 @@ function main(): void {
       "--set", "oidc.issuer=https://idp.example.com",
       "--set", "oidc.clientId=scp",
       "--set", "oidc.redirectUri=https://scp.example.com/callback",
+      // Main-chart bundled integration: only the SLIM enabled flags exist here now (they turn on the
+      // auto-wire hook + allow-argocd/allow-harbor NetworkPolicy). The vendored render lives in the
+      // separate bundled chart, verified below.
+      "--set", "bundledExecutor.argocd.enabled=true",
+      "--set", "bundledExecutor.harbor.enabled=true"
+    ])
+  );
+
+  // Size-regression guard: the MAIN chart's Helm release Secret must stay under Kubernetes' 1 MB
+  // limit. Helm stores base64(gzip(whole chart)) in the release — a vendored backend manifest
+  // creeping into deploy/helm would blow past 1 MB and break `helm install` outright (the M11
+  // regression that motivated the deploy/helm-bundled split). Package + measure.
+  console.log("helm-verify: checking the main chart's packaged size stays under Helm's 1 MB release limit...");
+  const mainPkg = packagedChartBase64Size(CHART_DIR);
+  assert(
+    mainPkg < 1_048_576,
+    `main chart packaged base64 size ${mainPkg} exceeds Kubernetes' 1 MB Secret limit — 'helm install' would fail; keep vendored backends in deploy/helm-bundled`
+  );
+  console.log(`  main chart ~${Math.round(mainPkg / 1024)} KB base64 (limit 1024 KB) — OK`);
+
+  // Bundled-backends chart (deploy/helm-bundled): render with every backend enabled + images
+  // retargeted, and assert isolation, image retargeting, and the Harbor secret cross-references.
+  console.log("helm-verify: rendering the bundled-backends chart (deploy/helm-bundled)...");
+  verifyBundledChart(
+    renderBundledChart([
       "--set", "bundledExecutor.argocd.enabled=true",
       "--set", "bundledExecutor.argocd.image=registry.example.com/scp/argocd:v3.4.5",
       "--set", "bundledExecutor.argocd.valkeyImage=registry.example.com/scp/valkey:8.2.3",

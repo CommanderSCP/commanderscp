@@ -10,6 +10,8 @@ export const REPO_ROOT = path.resolve(PACKAGE_ROOT, "../..");
 export const ASSETS_DIR = path.resolve(PACKAGE_ROOT, "assets");
 
 export const HELM_CHART_DIR = path.resolve(REPO_ROOT, "deploy/helm");
+export const BUNDLED_HELM_CHART_DIR = path.resolve(REPO_ROOT, "deploy/helm-bundled");
+export const BUNDLED_WRAPPER = path.resolve(REPO_ROOT, "scripts/scp-bundled.sh");
 export const COMPOSE_FILE = path.resolve(REPO_ROOT, "deploy/compose/docker-compose.yml");
 export const BUILD_AND_TEST_DOC = path.resolve(REPO_ROOT, "docs/BUILD_AND_TEST.md");
 export const DESIGN_DOC = path.resolve(REPO_ROOT, "docs/DESIGN.md");

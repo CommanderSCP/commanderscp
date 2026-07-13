@@ -1,0 +1,24 @@
+apiVersion: v2
+name: commanderscp-bundled
+description: >-
+  CommanderSCP Standard Stack — the optional bundled executor backends (Argo CD + Valkey, Argo
+  Workflows, Argo Events, Harbor), Mode B (docs/adr/0002-execution-strategy.md). Rendered from
+  vendored, UNMODIFIED upstream manifests. Delivered SEPARATELY from the main `commanderscp` chart
+  via `helm template … | kubectl apply --server-side` — NOT `helm install`: the vendored manifests
+  (Argo Workflows alone is 11 MB) far exceed Helm's 1 MB release-Secret limit, so they must never
+  live inside a stored Helm release. The `scripts/scp-bundled.sh` wrapper makes enabling a backend a
+  single command. See deploy/helm-bundled/README.md and docs/BUILD_AND_TEST.md §8 M11.
+type: application
+version: 1.0.0-rc.0
+appVersion: "1.0.0-rc.0"
+kubeVersion: ">=1.28.0-0"
+home: https://github.com/CommanderSCP/commanderscp
+sources:
+  - https://github.com/CommanderSCP/commanderscp
+keywords:
+  - commanderscp
+  - bundled-executor-backends
+  - argocd
+  - harbor
+maintainers:
+  - name: CommanderSCP
