@@ -307,5 +307,25 @@ networkPolicy:
   # scope precisely instead of relying on the private-range default.
   postgresCidr: ""
   natsCidr: ""
+  # Egress allowances for the execution systems SCP coordinates (Mode A / BYO-coordinate — Argo CD,
+  # GitHub, …). Opt-in and additive, same as every other rule in this file: empty (default) renders
+  # NO extra NetworkPolicy at all, so the default-deny baseline is completely unchanged. Each entry
+  # renders its own NetworkPolicy egress allow from the chart's own pods (api/worker/migrations —
+  # commanderscp.selectorLabels, same podSelector every other SCP-side policy here uses), scoped to
+  # `ports`, to EITHER in-cluster namespaces (`namespaces`, matched via the standard
+  # kubernetes.io/metadata.name namespaceSelector — for a coordinated executor running in this same
+  # cluster, e.g. an existing Argo CD) OR explicit CIDRs (`cidrs`, via ipBlock — for an
+  # out-of-cluster executor, e.g. github.com's published ranges or an on-prem Argo CD by IP). A
+  # single entry may set both; at least one of the two should be non-empty or the rule allows
+  # nothing.
+  #
+  # executorEgress:
+  #   - name: argocd                 # required; suffixes the rendered policy name
+  #     namespaces: [argocd]         # namespaceSelector on kubernetes.io/metadata.name (in-cluster)
+  #     cidrs: []                    # ipBlock CIDRs (out-of-cluster / external executors)
+  #     ports:
+  #       - { protocol: TCP, port: 8080 }
+  #       - { protocol: TCP, port: 80 }
+  executorEgress: []
   extraIngressRules: []
   extraEgressRules: []

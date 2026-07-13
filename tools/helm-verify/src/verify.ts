@@ -346,6 +346,55 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
   });
   assert(explicitAllowEgress, `[${label}] expected at least one NetworkPolicy with an explicit egress allow (e.g. DNS)`);
 
+  // Executor egress allowlist (networkPolicy.executorEgress, Mode A / BYO-coordinate — SCP's
+  // outbound observe/trigger/status/abort calls to a coordinated Argo CD/GitHub/etc). Opt-in and
+  // additive: empty (the "defaults" render) must produce ZERO allow-executor-* NetworkPolicies —
+  // the default-deny baseline stays byte-for-byte unchanged — while a configured entry (the
+  // "kitchen-sink" render below) must produce exactly the configured policy, with BOTH a
+  // namespaceSelector `to` entry (in-cluster executor) and an ipBlock `to` entry (external
+  // executor) and the configured ports actually present.
+  const executorPolicies = networkPolicies.filter((np) =>
+    String(np.metadata?.name ?? "").includes("-allow-executor-")
+  );
+  if (label === "defaults") {
+    assert(
+      executorPolicies.length === 0,
+      `[${label}] networkPolicy.executorEgress is empty by default — expected NO allow-executor-* NetworkPolicy, got ${executorPolicies.length}`
+    );
+  }
+  if (label === "kitchen-sink") {
+    const argocdExecPolicy = executorPolicies.find((np) =>
+      String(np.metadata?.name ?? "").endsWith("-allow-executor-argocd")
+    );
+    assert(
+      argocdExecPolicy,
+      `[${label}] networkPolicy.executorEgress set but no allow-executor-argocd NetworkPolicy rendered`
+    );
+    if (argocdExecPolicy) {
+      interface ExecEgressTo {
+        namespaceSelector?: { matchLabels?: Record<string, string> };
+        ipBlock?: { cidr?: string };
+      }
+      const spec = argocdExecPolicy.spec as
+        | { egress?: { to?: ExecEgressTo[]; ports?: { port?: number }[] }[] }
+        | undefined;
+      const rule = spec?.egress?.[0];
+      assert(
+        Array.isArray(rule?.to) &&
+          rule!.to!.some((t) => t.namespaceSelector?.matchLabels?.["kubernetes.io/metadata.name"] === "argocd"),
+        `[${label}] allow-executor-argocd must carry a namespaceSelector 'to' entry for namespace argocd`
+      );
+      assert(
+        Array.isArray(rule?.to) && rule!.to!.some((t) => t.ipBlock?.cidr === "203.0.113.0/24"),
+        `[${label}] allow-executor-argocd must carry an ipBlock 'to' entry for the configured CIDR`
+      );
+      assert(
+        Array.isArray(rule?.ports) && rule!.ports!.some((p) => p.port === 8080) && rule!.ports!.some((p) => p.port === 80),
+        `[${label}] allow-executor-argocd must carry the configured ports (8080, 80)`
+      );
+    }
+  }
+
   // Adversarial review MAJOR #2: on the DEFAULT (unconfigured networkPolicy.postgresCidr/natsCidr)
   // values, the Postgres/NATS egress rules must NEVER allow "any destination" — a NetworkPolicy
   // egress rule entry with `ports` but no `to` at all means every destination on that port,
@@ -488,7 +537,10 @@ function main(): void {
       // auto-wire hook + allow-argocd/allow-harbor NetworkPolicy). The vendored render lives in the
       // separate bundled chart, verified below.
       "--set", "bundledExecutor.argocd.enabled=true",
-      "--set", "bundledExecutor.harbor.enabled=true"
+      "--set", "bundledExecutor.harbor.enabled=true",
+      // Executor egress allowlist (Mode A / BYO-coordinate) — one entry exercising BOTH `to` shapes
+      // at once (an in-cluster namespaceSelector AND an external ipBlock) plus multiple ports.
+      "--set-json", 'networkPolicy.executorEgress=[{"name":"argocd","namespaces":["argocd"],"cidrs":["203.0.113.0/24"],"ports":[{"protocol":"TCP","port":8080},{"protocol":"TCP","port":80}]}]'
     ])
   );
 

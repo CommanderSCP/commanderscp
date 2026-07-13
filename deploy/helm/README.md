@@ -47,7 +47,10 @@ Every container this chart renders (api, worker, migrations Job) gets, by defaul
   only automounts a token when `managedIac.enabled` (needs the Kubernetes API to launch runner
   Jobs)
 - Default-deny NetworkPolicy + explicit allows (DNS, Postgres, optionally NATS, ingress to `api`
-  only) — see `templates/networkpolicy.yaml`'s own doc comment for exactly what's allowed and why
+  only) — see `templates/networkpolicy.yaml`'s own doc comment for exactly what's allowed and why.
+  Coordinating an existing execution system (Mode A / BYO-coordinate — an existing Argo CD,
+  GitHub, …) needs its own egress allow too: opt in per-executor via `networkPolicy.executorEgress`
+  (empty by default — no behavior change until you list one).
 
 **Least privilege for database credentials** (`SCP_SKIP_MIGRATIONS`, `apps/server/src/config.ts`):
 only the migrations Job ever holds the admin/superuser-capable `DATABASE_URL`. `api`/`worker` pods
