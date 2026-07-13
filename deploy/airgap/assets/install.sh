@@ -347,6 +347,21 @@ if [[ "$MODE" == "helm" ]]; then
     ARGO_EVENTS_REF="${ARGO_EVENTS_RETARGETED_REF:-${REGISTRY}/argo-events:${BUNDLE_VERSION}@${ARGO_EVENTS_DIGEST}}"
     HELM_ARGS+=(--set "bundledExecutor.argoEvents.image=${ARGO_EVENTS_REF}")
   fi
+  # Bundled Harbor (Mode B — registry + Trivy). Nine images, each retargeted+digest-pinned onto its
+  # own `bundledExecutor.harbor.*Image` value (a single prefix can't carry a digest — see
+  # bundled-harbor.yaml). Only wired when the bundle carries Harbor (keyed off HARBOR_CORE_DIGEST).
+  if [[ -n "${HARBOR_CORE_DIGEST:-}" ]]; then
+    HELM_ARGS+=(
+      --set "bundledExecutor.harbor.coreImage=${HARBOR_CORE_RETARGETED_REF:-${REGISTRY}/harbor-core:${BUNDLE_VERSION}@${HARBOR_CORE_DIGEST}}"
+      --set "bundledExecutor.harbor.dbImage=${HARBOR_DB_RETARGETED_REF:-${REGISTRY}/harbor-db:${BUNDLE_VERSION}@${HARBOR_DB_DIGEST}}"
+      --set "bundledExecutor.harbor.jobserviceImage=${HARBOR_JOBSERVICE_RETARGETED_REF:-${REGISTRY}/harbor-jobservice:${BUNDLE_VERSION}@${HARBOR_JOBSERVICE_DIGEST}}"
+      --set "bundledExecutor.harbor.portalImage=${HARBOR_PORTAL_RETARGETED_REF:-${REGISTRY}/harbor-portal:${BUNDLE_VERSION}@${HARBOR_PORTAL_DIGEST}}"
+      --set "bundledExecutor.harbor.registryctlImage=${HARBOR_REGISTRYCTL_RETARGETED_REF:-${REGISTRY}/harbor-registryctl:${BUNDLE_VERSION}@${HARBOR_REGISTRYCTL_DIGEST}}"
+      --set "bundledExecutor.harbor.registryImage=${HARBOR_REGISTRY_RETARGETED_REF:-${REGISTRY}/harbor-registry:${BUNDLE_VERSION}@${HARBOR_REGISTRY_DIGEST}}"
+      --set "bundledExecutor.harbor.nginxImage=${HARBOR_NGINX_RETARGETED_REF:-${REGISTRY}/harbor-nginx:${BUNDLE_VERSION}@${HARBOR_NGINX_DIGEST}}"
+      --set "bundledExecutor.harbor.redisImage=${HARBOR_REDIS_RETARGETED_REF:-${REGISTRY}/harbor-redis:${BUNDLE_VERSION}@${HARBOR_REDIS_DIGEST}}"
+      --set "bundledExecutor.harbor.trivyImage=${HARBOR_TRIVY_RETARGETED_REF:-${REGISTRY}/harbor-trivy:${BUNDLE_VERSION}@${HARBOR_TRIVY_DIGEST}}")
+  fi
   if [[ -n "$NAMESPACE" ]]; then
     HELM_ARGS+=(--namespace "$NAMESPACE" --create-namespace)
   fi
