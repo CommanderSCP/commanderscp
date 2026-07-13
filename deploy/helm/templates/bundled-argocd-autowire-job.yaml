@@ -1,0 +1,127 @@
+{{- if .Values.bundledExecutor.argocd.enabled }}
+{{- $a := .Values.bundledExecutor.argocd -}}
+{{- $ns := $a.namespace -}}
+{{- $sa := printf "%s-argocd-autowire" (include "commanderscp.fullname" .) -}}
+{{- $tokenKey := "bundled-argocd-token" -}}
+{{/*
+Bundled Argo CD auto-wire — post-install,post-upgrade hook (M11, the "zero token plumbing" step).
+Runs `bundled-argocd-autowire-bin.js`: waits for the bundled Argo CD + its initial-admin secret,
+mints a SCOPED (get/sync only) token for the scp-coordinator account, and stores it in SCP's
+encrypted secret store as '{{ $tokenKey }}'. Post-install so it runs AFTER the migrations pre-hook,
+the api Deployment (which seeds the bootstrap org), AND the bundled Argo CD are up. It talks to the
+SCP DB with the same admin creds the migrations Job uses (install-time bootstrap, not scpd at
+runtime) and reads Argo CD's admin secret cross-namespace via a scoped Role in {{ $ns }} — it never
+holds Argo CD's kube credentials, only a scoped API token.
+*/}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $sa }}
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: argocd-autowire
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $sa }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: argocd-autowire
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+rules:
+  # Read ONLY Argo CD's generated initial-admin secret, to log in and mint the scoped token.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $sa }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: argocd-autowire
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $sa }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "commanderscp.fullname" . }}-argocd-autowire-{{ .Release.Revision }}
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: argocd-autowire
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        {{- include "commanderscp.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: argocd-autowire
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ $sa }}
+      automountServiceAccountToken: true
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: argocd-autowire
+          image: {{ include "commanderscp.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["node", "dist/bundled-argocd-autowire-bin.js"]
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            {{- include "commanderscp.commonEnv" . | nindent 12 }}
+            {{- include "commanderscp.adminDbEnv" . | nindent 12 }}
+            - name: SCP_ARGOCD_SERVER_URL
+              value: http://argocd-server.{{ $ns }}.svc
+            - name: SCP_ARGOCD_ADMIN_SECRET_NS
+              value: {{ $ns | quote }}
+            - name: SCP_ARGOCD_ADMIN_SECRET_NAME
+              value: argocd-initial-admin-secret
+            - name: SCP_ARGOCD_ACCOUNT
+              value: {{ $a.scpAccount | quote }}
+            - name: SCP_ARGOCD_TOKEN_SECRET_KEY
+              value: {{ $tokenKey | quote }}
+            # Trust the in-cluster kube API CA for the cross-namespace secret read.
+            - name: NODE_EXTRA_CA_CERTS
+              value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

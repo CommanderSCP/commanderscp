@@ -715,7 +715,7 @@ Exactly **two containers**: `postgres:16` and `scp` (api + worker + UI in one pr
 
 ### Air-gapped bundle — a first-class CI artifact on every release
 
-`scp-bundle-<version>.tar.gz` contains: all images — scpd, `scp-runner-iac`, and the evaluation postgres — as **OCI layout** (skopeo-copy-able into any private registry), the Helm chart, the compose file, bundled plugins, checksums, **cosign signatures**, offline docs, and an **install/upgrade script that retargets image references to the customer's registry** (grafted — removes the most error-prone manual step of offline installs). The same bundle format is the upgrade package, so disconnected upgradeability is exercised from v1.
+`scp-bundle-<version>.tar.gz` contains: all images — scpd, `scp-runner-iac`, the evaluation postgres, and the bundled Standard-Stack backends (Argo CD + Valkey, Mode B) — as **OCI layout** (skopeo-copy-able into any private registry), the Helm chart, the compose file, bundled plugins, checksums, **cosign signatures**, offline docs, and an **install/upgrade script that retargets image references to the customer's registry** (grafted — removes the most error-prone manual step of offline installs). The same bundle format is the upgrade package, so disconnected upgradeability is exercised from v1.
 
 ### VM / on-prem / static instance updates — Ansible collection (review decision)
 

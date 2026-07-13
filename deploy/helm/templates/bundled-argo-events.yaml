@@ -1,0 +1,20 @@
+{{- if .Values.bundledExecutor.argoEvents.enabled -}}
+{{- $e := .Values.bundledExecutor.argoEvents -}}
+{{- if not $e.image }}{{ fail "bundledExecutor.argoEvents.enabled=true but .image is empty — the vendored, retargeted argo-events image is required (set by the air-gap install.sh). Fail-closed." }}{{- end -}}
+# =============================================================================================
+# Bundled Argo Events (Mode B). Vendored, UNMODIFIED upstream v1.9.10
+# (deploy/helm/vendor/argo-events/install.yaml, sha256-pinned) rendered into {{ $e.namespace }} via
+# commanderscp.renderVendoredBackend, with only the controller image retargeted. Event sources/
+# sensors defined here can POST to SCP's change-source webhook — feeding the observe() path (M10.2)
+# for domains that can't be webhooked directly by their upstream systems.
+# =============================================================================================
+{{- include "commanderscp.renderVendoredBackend" (dict
+    "ctx" .
+    "namespace" $e.namespace
+    "component" "bundled-argo-events"
+    "manifest" (.Files.Get "vendor/argo-events/install.yaml")
+    "replaces" (list
+      (list "quay.io/argoproj/argo-events:v1.9.10" $e.image)
+    )
+  ) }}
+{{- end }}

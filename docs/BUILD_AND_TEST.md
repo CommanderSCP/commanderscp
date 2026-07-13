@@ -398,6 +398,20 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
 
 ---
 
+### M11 — SCP Standard Stack (bundled executor backends)
+- **Goal:** ship the opt-in, air-gap-vendored **Standard Stack** bundles (Mode B — [ADR-0002](adr/0002-execution-strategy.md), `docs/proposals/bundled-executor-backends.md`), starting with **Argo CD**, so a domain lacking an executor gets one FROM SCP while SCP still only COORDINATES it (the backend keeps its own kube creds; SCP holds a scoped API token — credential-asymmetry invariant unamended). Off by default; the coordination core is unchanged. **`scp-runner-ops` (Mode C) is not part of M11.**
+- **Contents:**
+  - **M11.1 Bundle framework** — the reusable opt-in Helm profile shape (`bundledExecutor.*`, `enabled: false`, fail-closed empty image refs) + vendored-OCI-in-the-signed-bundle + the post-install auto-wire hook, established by the Argo CD bundle.
+  - **M11.2 Argo CD + Valkey** — vendored, UNMODIFIED upstream Argo CD **v3.4.5** (`deploy/helm/vendor/argocd/install.yaml`, sha256-pinned) rendered into its own namespace (`scp-argocd`) with three byte-level substitutions only: argocd image → retargeted image, upstream redis → **Valkey** (owned deviation), ClusterRoleBinding subject namespace → `scp-argocd`. Scoped apiKey account + get/sync-only RBAC + `server.insecure` injected into Argo CD's own ConfigMaps (operator config, not a fork). The **auto-wire hook** (`bundled-argocd-autowire-bin.ts`, a `migrate-bin`-style DB-seed) mints a scoped account token and stores it as SCP secret `bundled-argocd-token`. `allow-argocd` NetworkPolicy; `build-bundle.ts` + `install.sh` carry + retarget the argocd/valkey images.
+  - **M11.3 Argo Workflows + Argo Events** — vendored, UNMODIFIED upstream (Workflows **v4.0.7**, split into 4 ordered <5 MB parts to fit Helm's per-file limit, reassembled byte-for-byte; Events **v1.9.10**) rendered into their own namespaces via the shared `commanderscp.renderVendoredBackend` helper (surgical namespace + ClusterRoleBinding-subject re-homing; CRDs passthrough), images retargeted. **Deploy-tier** (no auto-wire) — coordinating Workflows is the generic pipeline executor's job (M10.6); Argo Events can POST to the change-source webhook to feed observe() (M10.2). SCP never runs CI itself.
+  - **M11.4 Harbor** (bundled registry, **observe-only**) — Helm-chart-based (helm-template-then-vendor of a full registry stack: own Postgres/Redis/Trivy), the heaviest bundle; a focused fast-follow.
+- **Done / verified by:**
+  - **helm-verify:** profile-OFF ⇒ **zero** `scp-argocd` resources (the "never load-bearing / two-container floor" guarantee); profile-ON ⇒ `argocd-server` isolated in `scp-argocd`, **every image retargeted** (no `quay.io/argoproj` / `public.ecr.aws` ref survives — the air-gap contract), SCP's strict pod-hardening applied to SCP's OWN resources only (bundled backend is unmodified upstream, isolated), and the auto-wire Job passes SCP hardening.
+  - **Air-gap:** the argocd + valkey images ride the signed `scp-bundle` (`build-bundle.ts` image list) and `install.sh` retargets them to the customer registry via values (never hardcoded — avoids the eval-postgres trap); the tamper-rejection suite (`@scp/airgap`) stays green.
+  - **E2E (kind/homelab drill):** enabling the profile deploys Argo CD; the auto-wire hook mints a scoped token + stores it; binding an object to the `argocd` executor drives a real Application sync — the token round-trip validated against a LIVE Argo CD (the piece helm-verify can't cover).
+
+---
+
 ## 9. Verification Mapping
 
 Every MVP Scope item from the charter, the milestone that delivers it, and the test layer that proves it (deepest layer listed; lower layers also cover it).

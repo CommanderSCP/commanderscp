@@ -166,6 +166,64 @@ managedIac:
   workspaceRoot: /var/lib/scp/managed-iac
 
 # -------------------------------------------------------------------------------------------
+# Bundled executor backends (Mode B — DESIGN §12, ADR-0002, docs/proposals/bundled-executor-
+# backends.md). OPT-IN, OFF BY DEFAULT. When enabled, SCP DISTRIBUTES + deploys an UNMODIFIED
+# upstream execution backend a domain lacks, and coordinates it through the SAME executor plugin a
+# BYO instance uses — the backend keeps its OWN infrastructure credentials and reconcile loop; SCP
+# holds only a scoped API token, so the credential-asymmetry invariant holds UNAMENDED. v1 allowlist
+# = Argo CD (the SCP Standard Stack). Images ride the signed air-gap bundle, pulled ONLY where the
+# profile is enabled; NEVER a live upstream subchart (air-gap invariant, §16). When OFF, this whole
+# block renders nothing (the "never load-bearing / two-container floor" guarantee — helm-verify
+# asserts no Valkey/Argo CD is emitted with the profile off).
+# -------------------------------------------------------------------------------------------
+bundledExecutor:
+  argocd:
+    enabled: false
+    # Own namespace so the bundled backend keeps its own RBAC + cluster credentials, isolated from
+    # scpd (which never gets those — SCP only ever holds the scoped Argo CD API token below).
+    namespace: scp-argocd
+    # VENDORED, RETARGETABLE image refs — the air-gap install.sh rewrites these to the customer
+    # registry at a pinned digest (never hardcoded in a template; avoids the eval-postgres air-gap
+    # trap). Empty ⇒ the profile fails closed rather than pulling from the internet, exactly like
+    # managedIac.runnerImage.
+    image: "" # Argo CD (Apache-2.0)
+    valkeyImage: "" # Valkey (BSD-3) — Argo CD's cache; an OWNED, TESTED deviation from upstream's Redis
+    # The scoped, non-admin account SCP mints in the bundled Argo CD and coordinates through. The
+    # post-install auto-wire hook mints its token (Argo CD's own /api/v1/account/{name}/token),
+    # stores it as an SCP secret, and seeds the `argocd` executor binding pointed at the in-cluster
+    # Argo CD Service — so enabling this profile yields a ready executor with zero token plumbing.
+    scpAccount: scp-coordinator
+    # Argo CD component resource requests/limits (its Deployments run live, unlike managedIac which
+    # only renders RBAC + a reference Job). Modest defaults sized for a coordination-tier install.
+    resources:
+      server:
+        requests: { cpu: 100m, memory: 128Mi }
+        limits: { cpu: 500m, memory: 256Mi }
+      repoServer:
+        requests: { cpu: 100m, memory: 128Mi }
+        limits: { cpu: 500m, memory: 256Mi }
+      applicationController:
+        requests: { cpu: 250m, memory: 256Mi }
+        limits: { cpu: "1", memory: 512Mi }
+      valkey:
+        requests: { cpu: 50m, memory: 64Mi }
+        limits: { cpu: 200m, memory: 128Mi }
+  # Argo Workflows (Mode B — bundled CI / build / test). Vendored, unmodified upstream v4.0.7 into
+  # its own namespace; off by default; two retargetable images (fail-closed when empty). Coordinated
+  # via the generic pipeline executor (M10.6) — the bundle DEPLOYS it; SCP never runs CI itself.
+  argoWorkflows:
+    enabled: false
+    namespace: scp-argo-workflows
+    serverImage: "" # argocli (argo-server / UI) — retargeted by the air-gap install.sh
+    controllerImage: "" # workflow-controller — retargeted
+  # Argo Events (Mode B — event sources/sensors that can feed SCP's observe() path). Vendored,
+  # unmodified upstream v1.9.10; off by default; one retargetable image.
+  argoEvents:
+    enabled: false
+    namespace: scp-argo-events
+    image: "" # argo-events controller — retargeted
+
+# -------------------------------------------------------------------------------------------
 # Federation mTLS transport identity (DESIGN §13, M8 hardening) — host-level, operator-owned
 # client certificate the federation-https subprocess presents to the parent. Air-gap file
 # transport is unaffected either way.

@@ -40,6 +40,16 @@ interface Opts {
   runnerIacSource: "docker-daemon" | "docker";
   postgresRef: string;
   postgresSource: "docker-daemon" | "docker";
+  argocdRef: string;
+  argocdSource: "docker-daemon" | "docker";
+  valkeyRef: string;
+  valkeySource: "docker-daemon" | "docker";
+  argoWorkflowsCliRef: string;
+  argoWorkflowsCliSource: "docker-daemon" | "docker";
+  argoWorkflowsControllerRef: string;
+  argoWorkflowsControllerSource: "docker-daemon" | "docker";
+  argoEventsRef: string;
+  argoEventsSource: "docker-daemon" | "docker";
 }
 
 function sourceTypeOption(value: string): "docker-daemon" | "docker" {
@@ -62,6 +72,16 @@ async function main(): Promise<void> {
     .option("--runner-iac-source <type>", "docker-daemon|docker", "docker-daemon")
     .option("--postgres-ref <ref>", "eval postgres image reference to bundle", "postgres:16")
     .option("--postgres-source <type>", "docker-daemon|docker", "docker-daemon")
+    .option("--argocd-ref <ref>", "bundled Argo CD image (Mode B) to bundle", "quay.io/argoproj/argocd:v3.4.5")
+    .option("--argocd-source <type>", "docker-daemon|docker", "docker")
+    .option("--valkey-ref <ref>", "bundled Argo CD's Valkey cache image to bundle", "valkey/valkey:8-alpine")
+    .option("--valkey-source <type>", "docker-daemon|docker", "docker")
+    .option("--argo-workflows-cli-ref <ref>", "bundled Argo Workflows argocli image", "quay.io/argoproj/argocli:v4.0.7")
+    .option("--argo-workflows-cli-source <type>", "docker-daemon|docker", "docker")
+    .option("--argo-workflows-controller-ref <ref>", "bundled Argo Workflows controller image", "quay.io/argoproj/workflow-controller:v4.0.7")
+    .option("--argo-workflows-controller-source <type>", "docker-daemon|docker", "docker")
+    .option("--argo-events-ref <ref>", "bundled Argo Events image", "quay.io/argoproj/argo-events:v1.9.10")
+    .option("--argo-events-source <type>", "docker-daemon|docker", "docker")
     .parse(process.argv);
 
   const raw = program.opts<Record<string, string>>();
@@ -73,7 +93,17 @@ async function main(): Promise<void> {
     runnerIacRef: raw.runnerIacRef!,
     runnerIacSource: sourceTypeOption(raw.runnerIacSource!),
     postgresRef: raw.postgresRef!,
-    postgresSource: sourceTypeOption(raw.postgresSource!)
+    postgresSource: sourceTypeOption(raw.postgresSource!),
+    argocdRef: raw.argocdRef!,
+    argocdSource: sourceTypeOption(raw.argocdSource!),
+    valkeyRef: raw.valkeyRef!,
+    valkeySource: sourceTypeOption(raw.valkeySource!),
+    argoWorkflowsCliRef: raw.argoWorkflowsCliRef!,
+    argoWorkflowsCliSource: sourceTypeOption(raw.argoWorkflowsCliSource!),
+    argoWorkflowsControllerRef: raw.argoWorkflowsControllerRef!,
+    argoWorkflowsControllerSource: sourceTypeOption(raw.argoWorkflowsControllerSource!),
+    argoEventsRef: raw.argoEventsRef!,
+    argoEventsSource: sourceTypeOption(raw.argoEventsSource!)
   };
 
   if (!skopeo.skopeoAvailable()) {
@@ -86,7 +116,19 @@ async function main(): Promise<void> {
   const images: ImageSourceArg[] = [
     { name: "scpd", ref: opts.scpdRef, sourceType: opts.scpdSource },
     { name: "scp-runner-iac", ref: opts.runnerIacRef, sourceType: opts.runnerIacSource },
-    { name: "postgres-eval", ref: opts.postgresRef, sourceType: opts.postgresSource }
+    { name: "postgres-eval", ref: opts.postgresRef, sourceType: opts.postgresSource },
+    // Bundled executor backends (Mode B) — Argo CD + its Valkey cache. Ride the signed bundle like
+    // scp-runner-iac; pulled only by domains that enable bundledExecutor.argocd. install.sh
+    // retargets them onto bundledExecutor.argocd.image/.valkeyImage.
+    { name: "argocd", ref: opts.argocdRef, sourceType: opts.argocdSource },
+    { name: "valkey", ref: opts.valkeyRef, sourceType: opts.valkeySource },
+    { name: "argo-workflows-cli", ref: opts.argoWorkflowsCliRef, sourceType: opts.argoWorkflowsCliSource },
+    {
+      name: "argo-workflows-controller",
+      ref: opts.argoWorkflowsControllerRef,
+      sourceType: opts.argoWorkflowsControllerSource
+    },
+    { name: "argo-events", ref: opts.argoEventsRef, sourceType: opts.argoEventsSource }
   ];
 
   const bundleDirName = `scp-bundle-${opts.version}`;

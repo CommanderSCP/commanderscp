@@ -327,6 +327,26 @@ if [[ "$MODE" == "helm" ]]; then
     --set "image.repository=${SCPD_REPOSITORY}"
     --set "image.tag=${SCPD_TAG}"
     --set "managedIac.runnerImage=${RUNNER_IAC_REF}")
+  # Bundled executor backends (Mode B — Argo CD + Valkey). Same retarget-by-known-parts approach as
+  # scp-runner-iac; only wired when this bundle actually carries them (older bundles won't), so a
+  # non-bundle install is unaffected. Both are values-driven (never hardcoded in a template),
+  # avoiding the eval-postgres air-gap trap noted below.
+  if [[ -n "${ARGOCD_DIGEST:-}" ]]; then
+    ARGOCD_REF="${ARGOCD_RETARGETED_REF:-${REGISTRY}/argocd:${BUNDLE_VERSION}@${ARGOCD_DIGEST}}"
+    VALKEY_REF="${VALKEY_RETARGETED_REF:-${REGISTRY}/valkey:${BUNDLE_VERSION}@${VALKEY_DIGEST}}"
+    HELM_ARGS+=(--set "bundledExecutor.argocd.image=${ARGOCD_REF}"
+      --set "bundledExecutor.argocd.valkeyImage=${VALKEY_REF}")
+  fi
+  if [[ -n "${ARGO_WORKFLOWS_CLI_DIGEST:-}" ]]; then
+    ARGO_WF_CLI_REF="${ARGO_WORKFLOWS_CLI_RETARGETED_REF:-${REGISTRY}/argo-workflows-cli:${BUNDLE_VERSION}@${ARGO_WORKFLOWS_CLI_DIGEST}}"
+    ARGO_WF_CTRL_REF="${ARGO_WORKFLOWS_CONTROLLER_RETARGETED_REF:-${REGISTRY}/argo-workflows-controller:${BUNDLE_VERSION}@${ARGO_WORKFLOWS_CONTROLLER_DIGEST}}"
+    HELM_ARGS+=(--set "bundledExecutor.argoWorkflows.serverImage=${ARGO_WF_CLI_REF}"
+      --set "bundledExecutor.argoWorkflows.controllerImage=${ARGO_WF_CTRL_REF}")
+  fi
+  if [[ -n "${ARGO_EVENTS_DIGEST:-}" ]]; then
+    ARGO_EVENTS_REF="${ARGO_EVENTS_RETARGETED_REF:-${REGISTRY}/argo-events:${BUNDLE_VERSION}@${ARGO_EVENTS_DIGEST}}"
+    HELM_ARGS+=(--set "bundledExecutor.argoEvents.image=${ARGO_EVENTS_REF}")
+  fi
   if [[ -n "$NAMESPACE" ]]; then
     HELM_ARGS+=(--namespace "$NAMESPACE" --create-namespace)
   fi
