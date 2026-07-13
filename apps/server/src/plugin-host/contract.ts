@@ -86,6 +86,7 @@ export type PluginModule =
   | "github"
   | "github-discovery"
   | "argocd"
+  | "argocd-discovery"
   | "terraform"
   | "managed-iac"
   | "webhook-notify"

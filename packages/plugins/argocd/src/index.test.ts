@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import nock from "nock";
 import type { PluginContext, SecretsAccessor, TriggerIntent } from "@scp/plugin-api";
-import { createArgoCdExecutorPlugin } from "./index.js";
+import { createArgoCdExecutorPlugin, createArgoCdDiscoveryPlugin } from "./index.js";
 import { createNodeHttpTestClient } from "./test-node-http-client.js";
 
 const SERVER_URL = "http://argocd.test";
@@ -611,5 +611,51 @@ describe("authorization header", () => {
 
     expect(scope.isDone()).toBe(true);
     expect(seenAuthHeader).toBeUndefined();
+  });
+});
+
+describe("discover() (M12 P3 — import an existing Argo CD)", () => {
+  it("enumerates Applications and proposes one component per app, recording the exact Application name", async () => {
+    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+    const scope = nock(SERVER_URL)
+      .get("/api/v1/applications")
+      .reply(200, {
+        items: [
+          { metadata: { name: "web-prod" }, spec: { project: "default", destination: { namespace: "web" } } },
+          { metadata: { name: "api-prod" }, spec: { project: "platform" } }
+        ]
+      });
+
+    const proposal = await createArgoCdDiscoveryPlugin().discover(ctx);
+    expect(scope.isDone()).toBe(true);
+    expect(proposal.relationships).toEqual([]);
+    expect(proposal.objects).toHaveLength(2);
+
+    const web = proposal.objects.find((o) => o.name === "web-prod");
+    expect(web?.typeId).toBe("component");
+    // The exact app name is recorded so an execution-system binding's externalRef (M12 P1/P2)
+    // addresses the right Application.
+    expect(web?.properties?.argocdApplication).toBe("web-prod");
+    expect(web?.properties?.namespace).toBe("web");
+    expect(web?.properties?.argocdProject).toBe("default");
+    expect(web?.properties?.discoveredFrom).toBe(`argocd:${SERVER_URL}`);
+
+    const api = proposal.objects.find((o) => o.name === "api-prod");
+    expect(api?.properties?.argocdApplication).toBe("api-prod");
+    // No destination namespace on this app ⇒ the property is simply omitted.
+    expect(api?.properties?.namespace).toBeUndefined();
+  });
+
+  it("returns an empty proposal (never throws) when Argo CD has no Applications", async () => {
+    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+    nock(SERVER_URL).get("/api/v1/applications").reply(200, { items: [] });
+    const proposal = await createArgoCdDiscoveryPlugin().discover(ctx);
+    expect(proposal.objects).toEqual([]);
+  });
+
+  it("throws on a non-2xx list response (so the discovery run surfaces the failure, not a silent empty import)", async () => {
+    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+    nock(SERVER_URL).get("/api/v1/applications").reply(403, {});
+    await expect(createArgoCdDiscoveryPlugin().discover(ctx)).rejects.toThrow(/HTTP 403/);
   });
 });

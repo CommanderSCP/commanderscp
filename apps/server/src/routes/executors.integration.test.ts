@@ -153,6 +153,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
         "github",
         "github-discovery",
         "argocd",
+        "argocd-discovery",
         "terraform",
         "managed-iac",
         "webhook-notify",

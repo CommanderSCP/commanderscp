@@ -66,7 +66,7 @@ scp discovery accept <proposalId>                  # create components + coordin
 
 - **P1 — Trigger fix + `external_ref`** (foundational, independently valuable): add `external_ref` to bindings (schema/migration/repo/API/CLI `--target-ref`); reconcile uses it. Mode A coordinates a real app with a manual bind. Verified by extending the argocd plugin's trigger test + an integration test.
 - **P2 — `execution-system` type + binding→system resolution**: seed the type; add `execution_system_id`; resolve plugin config from the system; observe() keys on it.
-- **P3 — `argocd-discovery` + accept-creates-bindings**: the discovery module + proposal `bindings[]` + accept wiring.
+- **P3 — `argocd-discovery`** (DONE): a `DiscoveryPlugin` in the `@scp/plugin-argocd` package (mirrors github's executor+discovery split) that enumerates Applications (`GET /api/v1/applications`) and proposes one `component` per app with `properties.argocdApplication = <name>` recorded (so an execution-system binding's `externalRef` addresses the right app). Wired into the plugin host + `KNOWN_DISCOVERY_MODULES` + the manifest catalog. **Follow-on (P3b, deferred):** extend `DiscoveryProposal` with `bindings[]` + have `discovery accept` create them, so import→coordinate is one shot (today: `discovery accept` creates the components, then bind them via `--execution-system`).
 - **P4 — `scp connect argocd`** + connectivity validation; docs.
 - **P5 (fast-follow) — UI "Connect Argo CD" wizard.**
 

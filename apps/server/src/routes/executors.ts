@@ -24,7 +24,10 @@ import {
   manifest as githubExecutorManifest,
   discoveryManifest as githubDiscoveryManifest
 } from "@scp/plugin-github";
-import { manifest as argocdManifest } from "@scp/plugin-argocd";
+import {
+  manifest as argocdManifest,
+  discoveryManifest as argocdDiscoveryManifest
+} from "@scp/plugin-argocd";
 import { manifest as terraformManifest } from "@scp/plugin-terraform";
 import { manifest as managedIacManifest } from "@scp/plugin-managed-iac";
 import { manifest as webhookNotifyManifest } from "@scp/plugin-webhook-notify";
@@ -60,7 +63,7 @@ import {
 /** Only `github-discovery` is a real `DiscoveryPlugin` module today — same allowlist discipline
  *  as `executor-bindings-repo.ts`'s `KNOWN_EXECUTOR_MODULES` (a free-form request field must never
  *  reach `host.start()` unchecked). */
-const KNOWN_DISCOVERY_MODULES: PluginModule[] = ["github-discovery"];
+const KNOWN_DISCOVERY_MODULES: PluginModule[] = ["github-discovery", "argocd-discovery"];
 
 /** Every bundled plugin's manifest, keyed by the module name a binding references. Used to
  *  validate a binding's tenant-supplied `config` against the plugin's declared `configSchema`
@@ -71,6 +74,7 @@ const MANIFEST_BY_MODULE: Record<string, { configSchema: unknown }> = {
   github: githubExecutorManifest,
   "github-discovery": githubDiscoveryManifest,
   argocd: argocdManifest,
+  "argocd-discovery": argocdDiscoveryManifest,
   terraform: terraformManifest,
   "managed-iac": managedIacManifest,
   "webhook-notify": webhookNotifyManifest,
@@ -118,6 +122,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           githubExecutorManifest,
           githubDiscoveryManifest,
           argocdManifest,
+          argocdDiscoveryManifest,
           terraformManifest,
           managedIacManifest,
           webhookNotifyManifest,
