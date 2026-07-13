@@ -262,19 +262,26 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
   // (see the workloads filter above). Profile OFF ⇒ nothing renders (two-container floor); profile
   // ON ⇒ upstream Argo CD lands isolated in its own namespace with every image RETARGETED (an
   // un-rewritten upstream ref would 404 in an air-gapped registry).
-  const bundledNs = "scp-argocd";
-  const bundled = docs.filter((d) => d.metadata?.namespace === bundledNs);
+  const bundledNamespaces = ["scp-argocd", "scp-argo-workflows", "scp-argo-events"];
+  const bundled = docs.filter((d) => bundledNamespaces.includes(d.metadata?.namespace ?? ""));
   if (label === "defaults") {
     assert(
       bundled.length === 0,
-      `[${label}] bundledExecutor.argocd is off by default — expected 0 '${bundledNs}' resources, got ${bundled.length} (the "never load-bearing / two-container floor" guarantee)`
+      `[${label}] all bundledExecutor backends are off by default — expected 0 resources in ${bundledNamespaces.join("/")}, got ${bundled.length} (the "never load-bearing / two-container floor" guarantee)`
     );
   }
   if (label === "kitchen-sink") {
     const server = bundled.find(
       (d) => d.kind === "Deployment" && d.metadata?.name === "argocd-server"
     );
-    assert(server, `[${label}] bundled Argo CD enabled but no argocd-server Deployment in '${bundledNs}'`);
+    assert(server, `[${label}] bundled Argo CD enabled but no argocd-server Deployment in scp-argocd`);
+    // Every bundled backend must render at least one workload in its own namespace.
+    for (const ns of bundledNamespaces) {
+      assert(
+        bundled.some((d) => d.metadata?.namespace === ns),
+        `[${label}] bundled backend namespace '${ns}' rendered no resources`
+      );
+    }
     const bundledImages = bundled
       .flatMap((d) => {
         const ps = (d.spec as { template?: { spec?: PodSpec } } | undefined)?.template?.spec;
@@ -379,7 +386,12 @@ function main(): void {
       "--set", "oidc.redirectUri=https://scp.example.com/callback",
       "--set", "bundledExecutor.argocd.enabled=true",
       "--set", "bundledExecutor.argocd.image=registry.example.com/scp/argocd:v3.4.5",
-      "--set", "bundledExecutor.argocd.valkeyImage=registry.example.com/scp/valkey:8.2.3"
+      "--set", "bundledExecutor.argocd.valkeyImage=registry.example.com/scp/valkey:8.2.3",
+      "--set", "bundledExecutor.argoWorkflows.enabled=true",
+      "--set", "bundledExecutor.argoWorkflows.serverImage=registry.example.com/scp/argocli:v4.0.7",
+      "--set", "bundledExecutor.argoWorkflows.controllerImage=registry.example.com/scp/workflow-controller:v4.0.7",
+      "--set", "bundledExecutor.argoEvents.enabled=true",
+      "--set", "bundledExecutor.argoEvents.image=registry.example.com/scp/argo-events:v1.9.10"
     ])
   );
 

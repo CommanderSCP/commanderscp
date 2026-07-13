@@ -1,0 +1,28 @@
+{{- if .Values.bundledExecutor.argoWorkflows.enabled -}}
+{{- $w := .Values.bundledExecutor.argoWorkflows -}}
+{{- if not $w.serverImage }}{{ fail "bundledExecutor.argoWorkflows.enabled=true but .serverImage is empty — the vendored, retargeted argocli image is required (set by the air-gap install.sh). Fail-closed." }}{{- end -}}
+{{- if not $w.controllerImage }}{{ fail "bundledExecutor.argoWorkflows.enabled=true but .controllerImage is empty — the vendored, retargeted workflow-controller image is required." }}{{- end -}}
+# =============================================================================================
+# Bundled Argo Workflows (Mode B — bundled CI/build/test). Vendored, UNMODIFIED upstream v4.0.7
+# rendered into {{ $w.namespace }} via commanderscp.renderVendoredBackend, with only the two images
+# retargeted. SCP DEPLOYS it here; coordinating it (trigger/observe) is the generic pipeline
+# executor's job (M10.6) — SCP never runs CI itself. NOTE: upstream install.yaml is 11 MB (over
+# Helm's 5 MB per-file limit), so it is vendored SPLIT into 4 ordered <5 MB parts (their
+# concatenation is byte-for-byte the original, sha256
+# 4e7112cd10dbb5a03c33653cda7509bdb8e876dcc64cf050c4c387aa07bf8524) and reassembled here.
+# =============================================================================================
+{{- $manifest := "" -}}
+{{- range $p := (list "install-part-01.yaml" "install-part-02.yaml" "install-part-03.yaml" "install-part-04.yaml") -}}
+{{- $manifest = printf "%s\n---\n%s" $manifest ($.Files.Get (printf "vendor/argo-workflows/%s" $p)) -}}
+{{- end -}}
+{{- include "commanderscp.renderVendoredBackend" (dict
+    "ctx" .
+    "namespace" $w.namespace
+    "component" "bundled-argo-workflows"
+    "manifest" $manifest
+    "replaces" (list
+      (list "quay.io/argoproj/argocli:v4.0.7" $w.serverImage)
+      (list "quay.io/argoproj/workflow-controller:v4.0.7" $w.controllerImage)
+    )
+  ) }}
+{{- end }}

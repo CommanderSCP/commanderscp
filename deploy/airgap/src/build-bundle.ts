@@ -44,6 +44,12 @@ interface Opts {
   argocdSource: "docker-daemon" | "docker";
   valkeyRef: string;
   valkeySource: "docker-daemon" | "docker";
+  argoWorkflowsCliRef: string;
+  argoWorkflowsCliSource: "docker-daemon" | "docker";
+  argoWorkflowsControllerRef: string;
+  argoWorkflowsControllerSource: "docker-daemon" | "docker";
+  argoEventsRef: string;
+  argoEventsSource: "docker-daemon" | "docker";
 }
 
 function sourceTypeOption(value: string): "docker-daemon" | "docker" {
@@ -70,6 +76,12 @@ async function main(): Promise<void> {
     .option("--argocd-source <type>", "docker-daemon|docker", "docker")
     .option("--valkey-ref <ref>", "bundled Argo CD's Valkey cache image to bundle", "valkey/valkey:8-alpine")
     .option("--valkey-source <type>", "docker-daemon|docker", "docker")
+    .option("--argo-workflows-cli-ref <ref>", "bundled Argo Workflows argocli image", "quay.io/argoproj/argocli:v4.0.7")
+    .option("--argo-workflows-cli-source <type>", "docker-daemon|docker", "docker")
+    .option("--argo-workflows-controller-ref <ref>", "bundled Argo Workflows controller image", "quay.io/argoproj/workflow-controller:v4.0.7")
+    .option("--argo-workflows-controller-source <type>", "docker-daemon|docker", "docker")
+    .option("--argo-events-ref <ref>", "bundled Argo Events image", "quay.io/argoproj/argo-events:v1.9.10")
+    .option("--argo-events-source <type>", "docker-daemon|docker", "docker")
     .parse(process.argv);
 
   const raw = program.opts<Record<string, string>>();
@@ -85,7 +97,13 @@ async function main(): Promise<void> {
     argocdRef: raw.argocdRef!,
     argocdSource: sourceTypeOption(raw.argocdSource!),
     valkeyRef: raw.valkeyRef!,
-    valkeySource: sourceTypeOption(raw.valkeySource!)
+    valkeySource: sourceTypeOption(raw.valkeySource!),
+    argoWorkflowsCliRef: raw.argoWorkflowsCliRef!,
+    argoWorkflowsCliSource: sourceTypeOption(raw.argoWorkflowsCliSource!),
+    argoWorkflowsControllerRef: raw.argoWorkflowsControllerRef!,
+    argoWorkflowsControllerSource: sourceTypeOption(raw.argoWorkflowsControllerSource!),
+    argoEventsRef: raw.argoEventsRef!,
+    argoEventsSource: sourceTypeOption(raw.argoEventsSource!)
   };
 
   if (!skopeo.skopeoAvailable()) {
@@ -103,7 +121,14 @@ async function main(): Promise<void> {
     // scp-runner-iac; pulled only by domains that enable bundledExecutor.argocd. install.sh
     // retargets them onto bundledExecutor.argocd.image/.valkeyImage.
     { name: "argocd", ref: opts.argocdRef, sourceType: opts.argocdSource },
-    { name: "valkey", ref: opts.valkeyRef, sourceType: opts.valkeySource }
+    { name: "valkey", ref: opts.valkeyRef, sourceType: opts.valkeySource },
+    { name: "argo-workflows-cli", ref: opts.argoWorkflowsCliRef, sourceType: opts.argoWorkflowsCliSource },
+    {
+      name: "argo-workflows-controller",
+      ref: opts.argoWorkflowsControllerRef,
+      sourceType: opts.argoWorkflowsControllerSource
+    },
+    { name: "argo-events", ref: opts.argoEventsRef, sourceType: opts.argoEventsSource }
   ];
 
   const bundleDirName = `scp-bundle-${opts.version}`;

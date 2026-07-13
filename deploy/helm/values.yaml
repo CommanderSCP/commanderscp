@@ -208,6 +208,20 @@ bundledExecutor:
       valkey:
         requests: { cpu: 50m, memory: 64Mi }
         limits: { cpu: 200m, memory: 128Mi }
+  # Argo Workflows (Mode B — bundled CI / build / test). Vendored, unmodified upstream v4.0.7 into
+  # its own namespace; off by default; two retargetable images (fail-closed when empty). Coordinated
+  # via the generic pipeline executor (M10.6) — the bundle DEPLOYS it; SCP never runs CI itself.
+  argoWorkflows:
+    enabled: false
+    namespace: scp-argo-workflows
+    serverImage: "" # argocli (argo-server / UI) — retargeted by the air-gap install.sh
+    controllerImage: "" # workflow-controller — retargeted
+  # Argo Events (Mode B — event sources/sensors that can feed SCP's observe() path). Vendored,
+  # unmodified upstream v1.9.10; off by default; one retargetable image.
+  argoEvents:
+    enabled: false
+    namespace: scp-argo-events
+    image: "" # argo-events controller — retargeted
 
 # -------------------------------------------------------------------------------------------
 # Federation mTLS transport identity (DESIGN §13, M8 hardening) — host-level, operator-owned
