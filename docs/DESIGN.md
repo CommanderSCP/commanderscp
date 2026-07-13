@@ -575,7 +575,7 @@ interface DiscoveryPlugin {                                 // grafted: charter 
 
 ## 12. MVP Executor Integrations
 
-The coordination boundary is enforced **structurally**, twice: (1) the ExecutorPlugin verb set has no execute/deploy primitive — `trigger` can only invoke automation the target system already defines; (2) **credential asymmetry** — SCP holds credentials to execution systems' APIs, never to the infrastructure those systems manage. One deliberate, scoped exception exists by review decision: the **SCP-managed IaC executor** (below), where SCP itself supplies the execution system and holds scoped, vaulted infrastructure credentials confined to its isolated runner. Every `trigger` is recorded as a CoordinationAction with the resulting external run URL.
+The coordination boundary is enforced **structurally**, twice: (1) the ExecutorPlugin verb set has no execute/deploy primitive — `trigger` can only invoke automation the target system already defines; (2) **credential asymmetry** — SCP holds credentials to execution systems' APIs, never to the infrastructure those systems manage. SCP fills execution gaps through **three modes** on this one unchanged interface — the full strategy, the four-arm ownership test, and the six-gate boundary test are normative in [ADR-0002](adr/0002-execution-strategy.md): **Mode A — BYO-coordinate** (default: the domain already runs the system; SCP holds a scoped API token to it); **Mode B — bundle-coordinate** (SCP distributes and optionally deploys an unmodified upstream backend the domain lacks — the backend keeps its own infrastructure credentials and reconcile loop, so credential asymmetry holds *unamended*; charter "Bundled Executor Backends", 2026-07-12); **Mode C — managed-execute** (SCP itself runs the change in an isolated ephemeral runner for the long tail no executor covers — the sole, scoped bending of the credential-asymmetry invariant, per the charter's Managed Execution Exception). Every `trigger` is recorded as a CoordinationAction with the resulting external run URL.
 
 ### GitHub (also the primary Discovery source)
 
@@ -603,7 +603,31 @@ The coordination boundary is enforced **structurally**, twice: (1) the ExecutorP
 
 **Mode 2 — SCP-managed IaC releases (no pipeline exists).** For trivial-to-moderate IaC deployments, SCP performs release management itself through the built-in **`scp-managed-iac` ExecutorPlugin** paired with the separate **`scp-runner-iac` image** (review decision, 2026-07-08): the plugin is a thin orchestrator inside scpd; each run launches an ephemeral runner container from that image — a Kubernetes Job in production, `docker run` under compose/VM — containing pinned `terraform`/`tofu` binaries and a minimal run shim, nothing else. Org-supplied credentials are held scoped and encrypted in SCP's secret store and injected only into the ephemeral runner for the duration of the run. The plan output is persisted as the change's evidence; apply proceeds only when the change's gates pass — the same policies, controls, approvals, waves, and rollback (apply of the prior state ref) as any other change. **The scpd image carries no IaC toolchain**: the runner image ships in the same signed bundle at the same version tag and is pulled only by domains that enable Mode 2. The coordination core is unchanged: it still speaks only observe/trigger/status/abort; the execution system behind the interface happens to be shipped by SCP.
 
-**Boundary note — charter amended.** The charter's coordination principle states SCP "does not provision infrastructure"; Mode 2 is a deliberate, scoped exception decided in owner review (2026-07-08) for orgs without execution pipelines, now codified in the charter's **Managed Execution Exception** (approved and applied the same day).
+**`scp-runner-ops` — the second managed runner (proposed, host-reaching).** Where a domain has no executor for the long tail of small operational changes, a general Ansible-based runner performs them from a **closed, cosign-signed task catalog** — the three host-reaching charter-enumerated classes only (OS package install/upgrade/pin; config/template render+push; cron/systemd unit changes; small IaC stays with the cloud-API `scp-runner-iac`), **never tenant-supplied shell**. Unlike `scp-runner-iac` (which reaches cloud APIs under `--network none`), host-reaching execution holds host login-grade credentials and opens a **per-run positive network allowlist** to the resolved targets — the scoped credential-asymmetry bending the charter's 2026-07-12 amendment authorizes. Hard preconditions before build (see [ADR-0002](adr/0002-execution-strategy.md) Consequences): machine-checked SSTI/Jinja2 closure (parameters data-only, dangerous lookups fail-closed, permanent SSTI-fuzz gate), an SSH-CA blast-radius analysis with HSM/KMS-grade key protection and air-gap-workable revocation, and best-effort-convergent rollback for host classes. Detail: [managed-execution-tier.md](proposals/managed-execution-tier.md).
+
+**Boundary note — charter amended.** The charter's coordination principle states SCP "does not provision infrastructure"; Mode 2 is a deliberate, scoped exception decided in owner review (2026-07-08) for orgs without execution pipelines, now codified in the charter's **Managed Execution Exception** (approved and applied the same day). The 2026-07-12 amendment extends it to host-reaching classes (above), and the sibling scope decision below adds bundled backends.
+
+### Bundled executor backends (Mode B)
+
+Where a domain lacks a mature executor, SCP can **bundle** one — canonically Argo CD for k8s CD — and coordinate it through the same `argocd` plugin a BYO instance uses. The backend keeps its own kube credentials and reconcile loop; SCP holds only a **scoped API token**, so the credential-asymmetry invariant holds *unamended* (charter scope decision, 2026-07-12). Mechanics mirror the runner-image pattern: pinned upstream images vendored into the signed bundle as OCI layout (never a live subchart — §16); an opt-in, off-by-default Helm profile in its own namespace; an idempotent, non-fatal install hook that mints a scoped token and auto-seeds the executor binding; **operator-installed — `scpd` never applies or upgrades backend manifests**. The bundle allowlist is the **SCP Standard Stack** (Argo CD + Valkey; Argo Workflows + Argo Events for CI/build/test; Harbor for the registry — all CNCF-graduated, permissive, air-gap-vendorable). Argo CD ships first; patch bumps ride *off* the SCP release train, minor/major *on* it. Enabling a backend adds that backend's own stateful services for that domain (Valkey for Argo CD; Postgres + Redis + storage for Harbor) — Postgres remains the only dependency SCP *itself* requires. SCP never executes CI: bundled Argo Workflows *runs* tests/builds, SCP consumes results as gate evidence. Mode B's product value is gated on the `observe()` polling driver (tracked follow-up). Detail: [bundled-executor-backends.md](proposals/bundled-executor-backends.md), [ADR-0002](adr/0002-execution-strategy.md).
+
+### Per-layer composition — one service is a mix
+
+A real service spans layers, each modeled as its own graph object with its own **1:1 executor binding**; one change strings heterogeneous executors across waves (per-wave-target binding resolution — `apps/server/src/coordination/reconcile.ts`). Managed-execute is **never** a layer default; the six-gate test is the only router into it.
+
+| Layer | Default strategy · out-of-the-box option |
+|---|---|
+| App build/test (CI) | Coordinate-BYO; CI is primarily gate **evidence** · bundled Argo Workflows |
+| Artifact/registry | Observe-only · bundled Harbor |
+| k8s GitOps CD | Coordinate-BYO (Argo CD/Flux) · bundle Argo CD where absent |
+| VM/host app deploy | Coordinate-BYO (AWX/AAP) · `scp-runner-ops` only where all six gates hold |
+| Cloud IaC | Coordinate Mode-1 (TFC/Atlantis) · `scp-runner-iac` where pipeline-less |
+| Host OS/config/packages | Coordinate-BYO (Satellite/AWX) · `scp-runner-ops` only where all six gates hold |
+| DB migrations | Never executed by SCP; rides CD/CI; SCP contributes ordering + gate policy |
+| Edge/DNS/certs | Collapses into IaC/CD; standalone edge observe/ignore |
+| Secrets | Never execute, never hold (fails gate 6); rotation = gate controls |
+
+*Caveat: the plan compiler cannot invent missing `depends_on` edges — a missing infra→app edge silently fan-outs into one wave; add a discovery-time control. Full matrix + agentkit worked example: [execution-strategy.md](proposals/execution-strategy.md).*
 
 ---
 
@@ -766,3 +790,11 @@ Kubernetes installs upgrade with `helm upgrade` (pre-upgrade migrations Job). Fo
 | Managed Execution charter amendment | Approved and applied to PROJECT_CHARTER.md ("Managed Execution Exception") | §12 |
 | Federation connectivity | All network federation is child-initiated (child pulls config, pushes status); the parent never dials a child. Parent view of air-gapped children = bundle-transfer tracking (submitted → confirmed) + last-known state, never presented as live | §13 |
 | Managed-IaC runner image | Split into its own `scp-runner-iac` image: pinned tofu/terraform + run shim, same version tag and signed bundle, pulled only where Mode 2 is enabled, launched per run as an ephemeral Job/container; scpd carries no IaC toolchain | §11, §12, §16 |
+
+### Resolved in owner review (2026-07-12)
+
+| Decision | Outcome | Where |
+|---|---|---|
+| Execution strategy | Three modes on one executor interface (BYO-coordinate / bundle-coordinate / managed-execute), one four-arm ownership test, one six-gate boundary test; verdict is per-(class, layer, domain) graph data; bundling flips gate 1 (auto-revokes managed-execute eligibility); CI = evidence-by-default; GitLab plugin before the generic pipeline executor | [ADR-0002](adr/0002-execution-strategy.md), §12 |
+| Managed execution — host-reach amendment | `scp-runner-ops` (Ansible + closed cosign-signed catalog) may hold host login-grade credentials + a scoped per-run network path for four enumerated classes only; real charter amendment; preconditions: machine-checked SSTI closure, SSH-CA blast-radius analysis + HSM/KMS, best-effort-convergent rollback | charter Managed Execution Exception (2026-07-12), §12 |
+| Bundled executor backends | Scope decision (distributor role in-scope; **not** a coordination-principle amendment): SCP bundles + operator-installs unmodified upstream backends the domain lacks, coordinating them via the same plugin; allowlist = the SCP Standard Stack (Argo CD + Valkey, Argo Workflows + Argo Events, Harbor); credential asymmetry unamended | charter Bundled Executor Backends (2026-07-12), §12, §16 |

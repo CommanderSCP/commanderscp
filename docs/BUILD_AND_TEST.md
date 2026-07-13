@@ -379,6 +379,25 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
 
 ---
 
+### M10 — Execution strategy foundations
+- **Goal:** land the **now + near** horizons of the approved execution strategy (owner decisions 2026-07-12; [ADR-0002](adr/0002-execution-strategy.md), `docs/proposals/execution-strategy.md`): the governing docs, the `observe()` polling driver, real-cluster ArgoCD hardening, the CI-evidence wave-gate control, the GitLab dedicated plugin, and the generic pipeline executor. **`scp-runner-ops` (Mode C host-reaching) and the bundled Standard Stack backends are explicitly OUT of M10** — each is gated on its own preconditions (SSTI closure + SSH-CA analysis for the runner; per-backend vendoring + license pass for the bundles; ADR-0002 Consequences) and lands in later milestones. (Beyond the original M0–M8 MVP scope; §9's Verification Mapping tracks charter MVP items only and is unchanged.)
+- **Contents:**
+  - **M10.1 Governing docs** — the approved package (this PR): the charter amendment (Mode C host-reach + the Mode B scope decision + the Standard Stack allowlist), [ADR-0002](adr/0002-execution-strategy.md) (four-arm ownership test + six-gate boundary test + bundling-flips-gate-1), the DESIGN §12/§19 edits (referencing §16 packaging) (three-mode strategy + Mode B + layer-composition table), and this milestone.
+  - **M10.2 `observe()`/status polling driver** — a worker loop drives each bound executor's `observe()` on an interval with **persisted per-binding cursors**, ingesting events on the same `change_source_events` → `webhook-processor` path the inbound webhook uses. This is the fallback for domains whose executors cannot reach SCP's ingress (air-gapped/tailnet-only) and the prerequisite that makes Mode B's coordination value real (the known gap: today only inbound webhooks create Changes).
+  - **M10.3 ArgoCD real-cluster hardening** — the `argocd` plugin exercised against a real cluster via the agentkit gamma→prod trial (converts it from mock-tested to demonstrated); per-cluster = per-`pluginInstanceId` binding pattern documented.
+  - **M10.4 CI-evidence wave-gate control** — a concrete "CI green for digest X" control (a `github-check`/`webhook-control` binding) evaluable at `evaluateWaveGate`, so CI evidence can gate the infra→app boundary — the composition model's signature move.
+  - **M10.5 GitLab dedicated plugin** — SCM + CI in one (trigger tokens, cancel, system/webhooks); opens the enterprise-VM and air-gapped-gov org profiles.
+  - **M10.6 Generic pipeline executor** — extract `@scp/plugin-pipeline-generic` from the terraform Mode-1 shape (Mode 1 becomes a preset); a **required structured-evidence report schema** (`additionalProperties:false`) on the inbound `scp change report`/webhook path — the discipline that separates it from a "call any URL" bus and makes every coordinate-generic verdict real.
+- **Done / verified by:**
+  - **Docs:** charter amendment + ADR-0002 (Status: Accepted) + DESIGN §12/§19 edits (referencing §16 packaging) + this milestone merged; the three proposals linked as the exploratory record.
+  - **Observe driver:** integration test (Testcontainers Postgres) — a bound executor's `observe()` output creates a Change with **no inbound webhook**; cursor persists across a worker restart; re-observing an already-seen event is a no-op (idempotent).
+  - **ArgoCD:** the agentkit trial drives ≥1 real gamma→prod change to `succeeded` through the `argocd` plugin against a live cluster; per-instance binding docs merged.
+  - **CI-evidence control:** integration test — a wave gate **blocks** until the bound control reports CI-green for the target digest, then **allows**; a Decision with the control outcome is persisted.
+  - **GitLab:** conformance suite (`plugin-testkit`) + nock coverage for trigger/status/abort/observe; contract parity with the `github` plugin.
+  - **Generic executor:** contract test that the structured-evidence schema **rejects** malformed/unknown-field reports; the terraform Mode-1 plugin refactored onto the generic preset with its existing suite green.
+
+---
+
 ## 9. Verification Mapping
 
 Every MVP Scope item from the charter, the milestone that delivers it, and the test layer that proves it (deepest layer listed; lower layers also cover it).
