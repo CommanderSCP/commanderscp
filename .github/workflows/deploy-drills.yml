@@ -36,7 +36,7 @@ on:
   workflow_dispatch:
     inputs:
       drill:
-        description: "Which drill to run (all | kind | ansible | airgap)"
+        description: "Which drill to run (all | kind | ansible | airgap | bundled-argocd)"
         required: false
         default: "all"
 
@@ -139,3 +139,36 @@ jobs:
           sudo apt-get install -y -qq skopeo
       - name: Run the genuine zero-egress air-gap install drill
         run: bash scripts/airgap-drill.sh
+
+  bundled-argocd-drill:
+    name: "bundled Argo CD: install -> live token mint+store -> scoped-token auth -> idempotent re-mint"
+    needs: airgap-drill  # serialized (see ansible-drill) so the drills never contend on the single node
+    if: >-
+      always() && (
+      github.event_name == 'schedule' ||
+      github.event.inputs.drill == 'all' || github.event.inputs.drill == 'bundled-argocd')
+    runs-on: homelab-commanderscp-linux-docker-build
+    # 55, not 40: the drill does a full scpd docker build + kind bring-up + in-cluster pull of the
+    # heavy Argo CD stack + TWO helm operations (install, then the wrapper's upgrade), each with its
+    # own --wait/--timeout up to ARGOCD_DRILL_INSTALL_TIMEOUT (900s default), plus the idempotency
+    # re-run. The job ceiling must comfortably exceed the drill's own patience.
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: pnpm build
+      # Drill prerequisites installed in-workflow (same pattern as kind-drill / the integration CI
+      # job) — nightly/on-demand build-time fetch, not a product runtime dependency.
+      - name: Install helm
+        uses: azure/setup-helm@v4
+        with:
+          version: latest
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+      - name: Install kind (binary only — the drill creates its own cluster)
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+          version: v0.27.0
+      - name: Run the bundled Argo CD auto-wire E2E drill
+        run: bash scripts/bundled-argocd-drill.sh

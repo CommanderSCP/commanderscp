@@ -327,31 +327,30 @@ if [[ "$MODE" == "helm" ]]; then
     --set "image.repository=${SCPD_REPOSITORY}"
     --set "image.tag=${SCPD_TAG}"
     --set "managedIac.runnerImage=${RUNNER_IAC_REF}")
-  # Bundled executor backends (Mode B — Argo CD + Valkey). Same retarget-by-known-parts approach as
-  # scp-runner-iac; only wired when this bundle actually carries them (older bundles won't), so a
-  # non-bundle install is unaffected. Both are values-driven (never hardcoded in a template),
-  # avoiding the eval-postgres air-gap trap noted below.
+  # Bundled executor backends (Mode B) are delivered SEPARATELY from the SCP release — via the
+  # deploy/helm-bundled chart + scp-bundled.sh, applied AFTER the SCP install below — NOT the main
+  # chart: their vendored manifests exceed Helm's 1 MB release-Secret limit (packaging them into the
+  # SCP release breaks `helm install` outright). Here we only record which backends THIS bundle
+  # carries and each one's retargeted, digest-pinned image --set args (values-driven, never a
+  # hardcoded template ref — avoiding the eval-postgres air-gap trap noted below).
+  BUNDLED_APPLY=()
+  BUNDLED_SET_ARGOCD=(); BUNDLED_SET_WORKFLOWS=(); BUNDLED_SET_EVENTS=(); BUNDLED_SET_HARBOR=()
   if [[ -n "${ARGOCD_DIGEST:-}" ]]; then
-    ARGOCD_REF="${ARGOCD_RETARGETED_REF:-${REGISTRY}/argocd:${BUNDLE_VERSION}@${ARGOCD_DIGEST}}"
-    VALKEY_REF="${VALKEY_RETARGETED_REF:-${REGISTRY}/valkey:${BUNDLE_VERSION}@${VALKEY_DIGEST}}"
-    HELM_ARGS+=(--set "bundledExecutor.argocd.image=${ARGOCD_REF}"
-      --set "bundledExecutor.argocd.valkeyImage=${VALKEY_REF}")
+    BUNDLED_SET_ARGOCD=(--set "bundledExecutor.argocd.image=${ARGOCD_RETARGETED_REF:-${REGISTRY}/argocd:${BUNDLE_VERSION}@${ARGOCD_DIGEST}}"
+      --set "bundledExecutor.argocd.valkeyImage=${VALKEY_RETARGETED_REF:-${REGISTRY}/valkey:${BUNDLE_VERSION}@${VALKEY_DIGEST}}")
+    BUNDLED_APPLY+=(argocd)
   fi
   if [[ -n "${ARGO_WORKFLOWS_CLI_DIGEST:-}" ]]; then
-    ARGO_WF_CLI_REF="${ARGO_WORKFLOWS_CLI_RETARGETED_REF:-${REGISTRY}/argo-workflows-cli:${BUNDLE_VERSION}@${ARGO_WORKFLOWS_CLI_DIGEST}}"
-    ARGO_WF_CTRL_REF="${ARGO_WORKFLOWS_CONTROLLER_RETARGETED_REF:-${REGISTRY}/argo-workflows-controller:${BUNDLE_VERSION}@${ARGO_WORKFLOWS_CONTROLLER_DIGEST}}"
-    HELM_ARGS+=(--set "bundledExecutor.argoWorkflows.serverImage=${ARGO_WF_CLI_REF}"
-      --set "bundledExecutor.argoWorkflows.controllerImage=${ARGO_WF_CTRL_REF}")
+    BUNDLED_SET_WORKFLOWS=(--set "bundledExecutor.argoWorkflows.serverImage=${ARGO_WORKFLOWS_CLI_RETARGETED_REF:-${REGISTRY}/argo-workflows-cli:${BUNDLE_VERSION}@${ARGO_WORKFLOWS_CLI_DIGEST}}"
+      --set "bundledExecutor.argoWorkflows.controllerImage=${ARGO_WORKFLOWS_CONTROLLER_RETARGETED_REF:-${REGISTRY}/argo-workflows-controller:${BUNDLE_VERSION}@${ARGO_WORKFLOWS_CONTROLLER_DIGEST}}")
+    BUNDLED_APPLY+=(argo-workflows)
   fi
   if [[ -n "${ARGO_EVENTS_DIGEST:-}" ]]; then
-    ARGO_EVENTS_REF="${ARGO_EVENTS_RETARGETED_REF:-${REGISTRY}/argo-events:${BUNDLE_VERSION}@${ARGO_EVENTS_DIGEST}}"
-    HELM_ARGS+=(--set "bundledExecutor.argoEvents.image=${ARGO_EVENTS_REF}")
+    BUNDLED_SET_EVENTS=(--set "bundledExecutor.argoEvents.image=${ARGO_EVENTS_RETARGETED_REF:-${REGISTRY}/argo-events:${BUNDLE_VERSION}@${ARGO_EVENTS_DIGEST}}")
+    BUNDLED_APPLY+=(argo-events)
   fi
-  # Bundled Harbor (Mode B — registry + Trivy). Nine images, each retargeted+digest-pinned onto its
-  # own `bundledExecutor.harbor.*Image` value (a single prefix can't carry a digest — see
-  # bundled-harbor.yaml). Only wired when the bundle carries Harbor (keyed off HARBOR_CORE_DIGEST).
   if [[ -n "${HARBOR_CORE_DIGEST:-}" ]]; then
-    HELM_ARGS+=(
+    BUNDLED_SET_HARBOR=(
       --set "bundledExecutor.harbor.coreImage=${HARBOR_CORE_RETARGETED_REF:-${REGISTRY}/harbor-core:${BUNDLE_VERSION}@${HARBOR_CORE_DIGEST}}"
       --set "bundledExecutor.harbor.dbImage=${HARBOR_DB_RETARGETED_REF:-${REGISTRY}/harbor-db:${BUNDLE_VERSION}@${HARBOR_DB_DIGEST}}"
       --set "bundledExecutor.harbor.jobserviceImage=${HARBOR_JOBSERVICE_RETARGETED_REF:-${REGISTRY}/harbor-jobservice:${BUNDLE_VERSION}@${HARBOR_JOBSERVICE_DIGEST}}"
@@ -361,6 +360,7 @@ if [[ "$MODE" == "helm" ]]; then
       --set "bundledExecutor.harbor.nginxImage=${HARBOR_NGINX_RETARGETED_REF:-${REGISTRY}/harbor-nginx:${BUNDLE_VERSION}@${HARBOR_NGINX_DIGEST}}"
       --set "bundledExecutor.harbor.redisImage=${HARBOR_REDIS_RETARGETED_REF:-${REGISTRY}/harbor-redis:${BUNDLE_VERSION}@${HARBOR_REDIS_DIGEST}}"
       --set "bundledExecutor.harbor.trivyImage=${HARBOR_TRIVY_RETARGETED_REF:-${REGISTRY}/harbor-trivy:${BUNDLE_VERSION}@${HARBOR_TRIVY_DIGEST}}")
+    BUNDLED_APPLY+=(harbor)
   fi
   if [[ -n "$NAMESPACE" ]]; then
     HELM_ARGS+=(--namespace "$NAMESPACE" --create-namespace)
@@ -385,9 +385,29 @@ if [[ "$MODE" == "helm" ]]; then
 
   echo "   helm ${HELM_ARGS[*]}"
   if [[ $DRY_RUN -eq 1 ]]; then
-    echo "   [dry-run] not running helm upgrade --install"
+    echo "   [dry-run] not running helm upgrade --install (bundled backends this bundle would enable: ${#BUNDLED_APPLY[@]})"
   else
     helm "${HELM_ARGS[@]}"
+    # Apply each bundled backend THIS bundle carries, via the one-command wrapper: deploy/helm-bundled
+    # rendered + `kubectl apply --server-side` (the vendored manifests exceed Helm's 1 MB release-
+    # Secret limit, so they are NEVER part of the SCP release), and for argocd/harbor the wrapper also
+    # flips the SCP release's auto-wire hook + NetworkPolicy. This deploys the Standard Stack the only
+    # way that fits under Kubernetes' Secret limit.
+    NS_ARGS=(); [[ -n "$NAMESPACE" ]] && NS_ARGS=(--scp-namespace "$NAMESPACE")
+    for be in ${BUNDLED_APPLY[@]+"${BUNDLED_APPLY[@]}"}; do
+      echo "   == enabling bundled backend: ${be} =="
+      BSET=()
+      case "$be" in
+        argocd)         BSET=(${BUNDLED_SET_ARGOCD[@]+"${BUNDLED_SET_ARGOCD[@]}"}) ;;
+        argo-workflows) BSET=(${BUNDLED_SET_WORKFLOWS[@]+"${BUNDLED_SET_WORKFLOWS[@]}"}) ;;
+        argo-events)    BSET=(${BUNDLED_SET_EVENTS[@]+"${BUNDLED_SET_EVENTS[@]}"}) ;;
+        harbor)         BSET=(${BUNDLED_SET_HARBOR[@]+"${BUNDLED_SET_HARBOR[@]}"}) ;;
+      esac
+      bash "${SCRIPT_DIR}/scp-bundled.sh" enable "$be" \
+        --chart "${SCRIPT_DIR}/helm-bundled" --scp-chart "${SCRIPT_DIR}/helm" \
+        --scp-release "$RELEASE_NAME" \
+        ${NS_ARGS[@]+"${NS_ARGS[@]}"} ${BSET[@]+"${BSET[@]}"}
+    done
   fi
 else
   SCPD_REF="${SCPD_RETARGETED_REF:-${REGISTRY}/scpd:${BUNDLE_VERSION}@${SCPD_DIGEST}}"
