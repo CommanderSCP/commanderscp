@@ -120,6 +120,39 @@ describe("coordination engine: full fake-executor loop", () => {
     ).toBe(true);
   });
 
+  it("reconcile passes the binding's externalRef (e.g. an Argo CD Application name) as trigger().targetRef — NOT the graph object id (M12 P1)", async () => {
+    // This is the Mode A / import fix: a graph object whose SCP id differs from its external name
+    // must trigger the EXTERNAL resource, not a resource named after its UUID. The fake-executor
+    // mints its externalId as `${targetRef}<delim>${uuid}` (mintExternalId), so the externalId that
+    // lands on the wave target reveals exactly which targetRef reconcile used.
+    const externalName = `imported-app-${uuidv7().slice(0, 8)}`;
+    const comp = await admin.components.create({ name: `ext-ref-${uuidv7().slice(0, 8)}` });
+    await admin.executors.putBinding(comp.id, {
+      pluginModule: "fake-executor",
+      pluginInstanceId: `ext-ref-inst-${uuidv7().slice(0, 8)}`,
+      externalRef: externalName
+    });
+
+    const change = await admin.changes.propose({ name: "coordinate an imported app", targets: [comp.id] });
+    expect(change.state).toBe("proposed");
+
+    const target = await waitUntil(
+      async () => {
+        const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+          tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, comp.id))
+        );
+        return rows[0]?.executorRef ? rows[0] : undefined;
+      },
+      { describe: `wave target for ${comp.id} records an executorRef`, timeoutMs: 20_000 }
+    );
+
+    const ref = target.executorRef as unknown as ExternalRunRef;
+    // The trigger targeted the external name, so the minted externalId starts with it — and NOT
+    // with the graph object's UUID (the pre-M12 behavior that would 404 against a real Argo CD).
+    expect(ref.externalId.startsWith(externalName)).toBe(true);
+    expect(ref.externalId.startsWith(comp.id)).toBe(false);
+  });
+
   it("rollback is its own Change, executed through the same plan/wave machinery, and restores the prior known-good executor state", async () => {
     const target = await admin.components.create({ name: "coord-rollback-target" });
 

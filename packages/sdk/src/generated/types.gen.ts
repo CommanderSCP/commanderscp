@@ -13203,6 +13203,7 @@ export type GetExecutorBindingResponses = {
             [key: string]: string;
         };
         allowedHosts: Array<string>;
+        externalRef: string | null;
     };
 };
 
@@ -13219,6 +13220,7 @@ export type PutExecutorBindingData = {
             [key: string]: string;
         };
         allowedHosts?: Array<string>;
+        externalRef?: string;
     };
     path: {
         idOrUrn: string;
@@ -13279,6 +13281,7 @@ export type PutExecutorBindingResponses = {
             [key: string]: string;
         };
         allowedHosts: Array<string>;
+        externalRef: string | null;
     };
 };
 

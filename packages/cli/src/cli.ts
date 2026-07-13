@@ -2236,6 +2236,10 @@ export function buildProgram(): Command {
       "JSON object mapping configFieldName -> secret key (`scp secret put`)"
     )
     .option("--allowed-hosts <list>", "comma-separated egress allowlist (hostnames)")
+    .option(
+      "--target-ref <ref>",
+      "executor-specific target id (e.g. an Argo CD Application name); defaults to the object id"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(
@@ -2247,6 +2251,7 @@ export function buildProgram(): Command {
           config?: string;
           secretRefs?: string;
           allowedHosts?: string;
+          targetRef?: string;
         }
       ) => {
         const client = await clientFromStoredCredentials(opts);
@@ -2256,7 +2261,8 @@ export function buildProgram(): Command {
           config: parseJsonOption(opts.config, "--config") as Record<string, unknown> | undefined,
           secretRefs: parseJsonOption(opts.secretRefs, "--secret-refs") as
             Record<string, string> | undefined,
-          allowedHosts: parseList(opts.allowedHosts)
+          allowedHosts: parseList(opts.allowedHosts),
+          externalRef: opts.targetRef
         });
         printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
       }

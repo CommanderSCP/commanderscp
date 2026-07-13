@@ -272,7 +272,8 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           pluginInstanceId: request.body.pluginInstanceId,
           config: request.body.config,
           secretRefs: request.body.secretRefs,
-          allowedHosts: request.body.allowedHosts
+          allowedHosts: request.body.allowedHosts,
+          externalRef: request.body.externalRef
         });
       });
       reply.status(200).send(binding);

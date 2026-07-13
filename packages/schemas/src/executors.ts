@@ -21,7 +21,10 @@ export const CreateExecutorBindingRequestSchema = z.object({
   secretRefs: z.record(z.string(), z.string()).optional(),
   /** Egress allowlist (hostnames) for this instance's `ctx.http` — empty/omitted means the
    *  plugin's own manifest defaults apply. */
-  allowedHosts: z.array(z.string()).optional()
+  allowedHosts: z.array(z.string()).optional(),
+  /** The executor-specific target identifier this object maps to (e.g. an Argo CD Application
+   *  name), passed as `trigger().targetRef`. Omitted ⇒ reconcile uses the object id (legacy). */
+  externalRef: z.string().min(1).optional()
 });
 export type CreateExecutorBindingRequest = z.infer<typeof CreateExecutorBindingRequestSchema>;
 
@@ -32,7 +35,8 @@ export const ExecutorBindingSchema = z.object({
   pluginInstanceId: z.string(),
   config: z.unknown(),
   secretRefs: z.record(z.string(), z.string()),
-  allowedHosts: z.array(z.string())
+  allowedHosts: z.array(z.string()),
+  externalRef: z.string().nullable()
 });
 export type ExecutorBinding = z.infer<typeof ExecutorBindingSchema>;
 
