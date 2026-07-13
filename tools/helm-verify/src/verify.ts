@@ -267,7 +267,7 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
   // (see the workloads filter above). Profile OFF ⇒ nothing renders (two-container floor); profile
   // ON ⇒ upstream Argo CD lands isolated in its own namespace with every image RETARGETED (an
   // un-rewritten upstream ref would 404 in an air-gapped registry).
-  const bundledNamespaces = ["scp-argocd", "scp-argo-workflows", "scp-argo-events"];
+  const bundledNamespaces = ["scp-argocd", "scp-argo-workflows", "scp-argo-events", "scp-harbor"];
   const bundled = docs.filter((d) => bundledNamespaces.includes(d.metadata?.namespace ?? ""));
   if (label === "defaults") {
     assert(
@@ -297,10 +297,44 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
     assert(bundledImages.length > 0, `[${label}] bundled Argo CD rendered no container images`);
     for (const img of bundledImages) {
       assert(
-        !img.includes("quay.io/argoproj") && !img.includes("public.ecr.aws"),
-        `[${label}] bundled Argo CD image '${img}' is NOT retargeted — the air-gap install.sh must rewrite every image to the customer registry (an upstream ref breaks air-gapped installs)`
+        !img.includes("quay.io/argoproj") &&
+          !img.includes("public.ecr.aws") &&
+          !img.includes("docker.io/goharbor"),
+        `[${label}] bundled backend image '${img}' is NOT retargeted — the air-gap install.sh must rewrite every image to the customer registry (an upstream ref breaks air-gapped installs)`
       );
     }
+    // Harbor (M11.4) is bundled with its Secrets STRIPPED and SCP-GENERATED instead. The whole
+    // approach hinges on cross-referenced values staying consistent across separate Secret
+    // resources — a mismatch renders green here but leaves Harbor unable to boot (core can't reach
+    // its DB, or the registry rejects core's pushes). Lock those invariants into CI:
+    const harborSec = (name: string): Record<string, string> | undefined => {
+      const d = bundled.find(
+        (x) => x.kind === "Secret" && x.metadata?.namespace === "scp-harbor" && x.metadata?.name === name
+      ) as { stringData?: Record<string, string> } | undefined;
+      return d?.stringData;
+    };
+    const hCore = harborSec("harbor-core");
+    const hDb = harborSec("harbor-database");
+    const hJob = harborSec("harbor-jobservice");
+    const hHt = harborSec("harbor-registry-htpasswd");
+    assert(hCore && hDb && hJob && hHt, `[${label}] bundled Harbor enabled but its SCP-generated Secrets did not all render (core/database/jobservice/registry-htpasswd)`);
+    assert(
+      Boolean(hCore!["POSTGRESQL_PASSWORD"]) && hCore!["POSTGRESQL_PASSWORD"] === hDb!["POSTGRES_PASSWORD"],
+      `[${label}] Harbor Postgres password mismatch: harbor-core POSTGRESQL_PASSWORD must equal harbor-database POSTGRES_PASSWORD (core would fail to connect)`
+    );
+    assert(
+      Boolean(hCore!["REGISTRY_CREDENTIAL_PASSWORD"]) &&
+        hCore!["REGISTRY_CREDENTIAL_PASSWORD"] === hJob!["REGISTRY_CREDENTIAL_PASSWORD"],
+      `[${label}] Harbor registry-credential mismatch: harbor-core must equal harbor-jobservice REGISTRY_CREDENTIAL_PASSWORD`
+    );
+    assert(
+      (hHt!["REGISTRY_HTPASSWD"] ?? "").startsWith("harbor_registry_user:$2"),
+      `[${label}] Harbor registry htpasswd is not a bcrypt entry for harbor_registry_user (registry auth would fail)`
+    );
+    assert(
+      (hCore!["tls.crt"] ?? "").includes("BEGIN CERTIFICATE") && (hCore!["tls.key"] ?? "").includes("PRIVATE KEY"),
+      `[${label}] Harbor token-signing cert/key missing from harbor-core (registry token verification would fail)`
+    );
   }
 
   // NetworkPolicy — default-deny AND at least one explicit allow, both present.
@@ -396,7 +430,17 @@ function main(): void {
       "--set", "bundledExecutor.argoWorkflows.serverImage=registry.example.com/scp/argocli:v4.0.7",
       "--set", "bundledExecutor.argoWorkflows.controllerImage=registry.example.com/scp/workflow-controller:v4.0.7",
       "--set", "bundledExecutor.argoEvents.enabled=true",
-      "--set", "bundledExecutor.argoEvents.image=registry.example.com/scp/argo-events:v1.9.10"
+      "--set", "bundledExecutor.argoEvents.image=registry.example.com/scp/argo-events:v1.9.10",
+      "--set", "bundledExecutor.harbor.enabled=true",
+      "--set", "bundledExecutor.harbor.coreImage=registry.example.com/goharbor/harbor-core:v2.15.1@sha256:aaaa",
+      "--set", "bundledExecutor.harbor.dbImage=registry.example.com/goharbor/harbor-db:v2.15.1@sha256:bbbb",
+      "--set", "bundledExecutor.harbor.jobserviceImage=registry.example.com/goharbor/harbor-jobservice:v2.15.1@sha256:cccc",
+      "--set", "bundledExecutor.harbor.portalImage=registry.example.com/goharbor/harbor-portal:v2.15.1@sha256:dddd",
+      "--set", "bundledExecutor.harbor.registryctlImage=registry.example.com/goharbor/harbor-registryctl:v2.15.1@sha256:eeee",
+      "--set", "bundledExecutor.harbor.registryImage=registry.example.com/goharbor/registry-photon:v2.15.1@sha256:ffff",
+      "--set", "bundledExecutor.harbor.nginxImage=registry.example.com/goharbor/nginx-photon:v2.15.1@sha256:0000",
+      "--set", "bundledExecutor.harbor.redisImage=registry.example.com/goharbor/redis-photon:v2.15.1@sha256:1111",
+      "--set", "bundledExecutor.harbor.trivyImage=registry.example.com/goharbor/trivy-adapter-photon:v2.15.1@sha256:2222"
     ])
   );
 
