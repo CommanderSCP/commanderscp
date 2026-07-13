@@ -1,0 +1,49 @@
+{{- if .Values.bundledExecutor.argocd.enabled -}}
+{{- $a := .Values.bundledExecutor.argocd -}}
+{{- if not $a.image }}{{ fail "bundledExecutor.argocd.enabled=true but .image is empty — the vendored, retargeted Argo CD image is required (the air-gap install.sh sets it). Fail-closed, like managedIac.runnerImage." }}{{- end -}}
+{{- if not $a.valkeyImage }}{{ fail "bundledExecutor.argocd.enabled=true but .valkeyImage is empty — the vendored Valkey image is required." }}{{- end -}}
+{{- $ns := $a.namespace -}}
+# =============================================================================================
+# Bundled Argo CD (Mode B — ADR-0002, docs/proposals/bundled-executor-backends.md). OPT-IN.
+# The vendored, UNMODIFIED upstream manifests/install.yaml @ v3.4.5
+# (deploy/helm/vendor/argocd/install.yaml, sha256-pinned) rendered into {{ $ns }}, with exactly
+# three byte-level substitutions — never a fork of the engine:
+#   1. the upstream argocd image  -> {{ $a.image }}  (retargeted, air-gap-vendored)
+#   2. upstream's redis cache     -> {{ $a.valkeyImage }}  (the owned Valkey deviation)
+#   3. ClusterRoleBinding subject namespace -> {{ $ns }}
+# The 3 cluster-scoped CRDs + ClusterRoles + ClusterRoleBindings pass through as-is (never
+# fromYaml'd — they carry the multi-MB ApplicationSet schema); every NAMESPACED resource gets
+# metadata.namespace={{ $ns }} so the backend lives isolated in its own namespace with its own
+# RBAC and its OWN cluster credentials — scpd holds only the scoped API token the auto-wire hook
+# seeds, never Argo CD's kube creds (credential-asymmetry invariant, unamended). Docs are collected
+# and join'd with a clean "\n---\n" so every resource is a well-separated document.
+# =============================================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bundled-argocd
+{{- $raw := .Files.Get "vendor/argocd/install.yaml" -}}
+{{- $raw = $raw | replace "quay.io/argoproj/argocd:v3.4.5" $a.image -}}
+{{- $raw = $raw | replace "public.ecr.aws/docker/library/redis:8.2.3-alpine" $a.valkeyImage -}}
+{{- $raw = $raw | replace "namespace: argocd" (printf "namespace: %s" $ns) -}}
+{{- $clusterScoped := list "CustomResourceDefinition" "ClusterRole" "ClusterRoleBinding" -}}
+{{- $out := list -}}
+{{- range $doc := splitList "\n---\n" $raw -}}
+{{- $t := trim $doc -}}
+{{- if $t -}}
+{{- $kind := regexFind "(?m)^kind: [A-Za-z]+" $t | trimPrefix "kind: " | trim -}}
+{{- if has $kind $clusterScoped -}}
+{{- $out = append $out $t -}}
+{{- else if $kind -}}
+{{- $obj := fromYaml $t -}}
+{{- $_ := set $obj.metadata "namespace" $ns -}}
+{{- $out = append $out (trim (toYaml $obj)) -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+---
+{{ $out | join "\n---\n" }}
+{{- end }}

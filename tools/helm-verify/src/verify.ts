@@ -120,7 +120,20 @@ function assertHardenedContainer(scope: string, container: Container): void {
 
 function verifyRender(label: string, docs: K8sDoc[]): void {
   const workloadKinds = new Set(["Deployment", "Job"]);
-  const workloads = docs.filter((d) => workloadKinds.has(d.kind ?? "") && d.metadata?.name && !String(d.metadata.name).includes("postgres-eval"));
+  // Bundled executor backends (Mode B — e.g. Argo CD) render UNMODIFIED upstream into their OWN
+  // namespace; SCP asserts isolation + air-gap on them (see verifyBundledArgocd below), NOT its
+  // strict pod-hardening: upstream Argo CD hardens per-container (allowPrivilegeEscalation/
+  // readOnlyRootFilesystem/runAsNonRoot on the container) but not pod-level runAsNonRoot, and
+  // re-hardening it would fork the engine (the guardian's "unmodified upstream" prohibition). SCP's
+  // OWN resources render namespace-agnostic (they take the release namespace), so an explicit
+  // metadata.namespace is the marker of a bundled backend to exclude here.
+  const workloads = docs.filter(
+    (d) =>
+      workloadKinds.has(d.kind ?? "") &&
+      d.metadata?.name &&
+      !String(d.metadata.name).includes("postgres-eval") &&
+      !d.metadata?.namespace
+  );
 
   assert(workloads.length > 0, `[${label}] expected at least one Deployment/Job in the render`);
 
@@ -245,6 +258,39 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
     }
   }
 
+  // Bundled Argo CD (Mode B) — isolation + air-gap correctness, NOT SCP's strict pod-hardening
+  // (see the workloads filter above). Profile OFF ⇒ nothing renders (two-container floor); profile
+  // ON ⇒ upstream Argo CD lands isolated in its own namespace with every image RETARGETED (an
+  // un-rewritten upstream ref would 404 in an air-gapped registry).
+  const bundledNs = "scp-argocd";
+  const bundled = docs.filter((d) => d.metadata?.namespace === bundledNs);
+  if (label === "defaults") {
+    assert(
+      bundled.length === 0,
+      `[${label}] bundledExecutor.argocd is off by default — expected 0 '${bundledNs}' resources, got ${bundled.length} (the "never load-bearing / two-container floor" guarantee)`
+    );
+  }
+  if (label === "kitchen-sink") {
+    const server = bundled.find(
+      (d) => d.kind === "Deployment" && d.metadata?.name === "argocd-server"
+    );
+    assert(server, `[${label}] bundled Argo CD enabled but no argocd-server Deployment in '${bundledNs}'`);
+    const bundledImages = bundled
+      .flatMap((d) => {
+        const ps = (d.spec as { template?: { spec?: PodSpec } } | undefined)?.template?.spec;
+        return [...(ps?.containers ?? []), ...(ps?.initContainers ?? [])];
+      })
+      .map((c) => c.image)
+      .filter((i): i is string => Boolean(i));
+    assert(bundledImages.length > 0, `[${label}] bundled Argo CD rendered no container images`);
+    for (const img of bundledImages) {
+      assert(
+        !img.includes("quay.io/argoproj") && !img.includes("public.ecr.aws"),
+        `[${label}] bundled Argo CD image '${img}' is NOT retargeted — the air-gap install.sh must rewrite every image to the customer registry (an upstream ref breaks air-gapped installs)`
+      );
+    }
+  }
+
   // NetworkPolicy — default-deny AND at least one explicit allow, both present.
   const networkPolicies = docs.filter((d) => d.kind === "NetworkPolicy");
   assert(networkPolicies.length >= 2, `[${label}] expected multiple NetworkPolicies (default-deny + explicit allows), got ${networkPolicies.length}`);
@@ -330,7 +376,10 @@ function main(): void {
       "--set", "oidc.enabled=true",
       "--set", "oidc.issuer=https://idp.example.com",
       "--set", "oidc.clientId=scp",
-      "--set", "oidc.redirectUri=https://scp.example.com/callback"
+      "--set", "oidc.redirectUri=https://scp.example.com/callback",
+      "--set", "bundledExecutor.argocd.enabled=true",
+      "--set", "bundledExecutor.argocd.image=registry.example.com/scp/argocd:v3.4.5",
+      "--set", "bundledExecutor.argocd.valkeyImage=registry.example.com/scp/valkey:8.2.3"
     ])
   );
 
