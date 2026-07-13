@@ -3,6 +3,7 @@ import { v7 as uuidv7 } from "uuid";
 import type { ControlOutcomeStatus } from "@scp/plugin-api";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { controlBindings, controlRuns } from "../db/schema.js";
+import { assertNotReservedInstanceId } from "../coordination/executor-bindings-repo.js";
 
 /**
  * Control graph objects (`objects` rows of type `control`, DESIGN §10.2) are managed through the
@@ -42,6 +43,10 @@ export interface UpsertControlBindingInput {
 }
 
 export async function upsertControlBinding(tx: TenantTx, input: UpsertControlBindingInput): Promise<ControlBindingRow> {
+  // Control instance ids are caller-supplied and share ONE flat PluginHost keyspace with
+  // executor/notification instances — they must not squat the reserved `execution-system:<id>`
+  // namespace (see assertNotReservedInstanceId).
+  assertNotReservedInstanceId(input.pluginInstanceId);
   const existing = await getControlBinding(tx, input.orgId, input.controlObjectId);
   if (existing) {
     const [row] = await tx

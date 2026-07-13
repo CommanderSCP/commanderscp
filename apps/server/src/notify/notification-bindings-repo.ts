@@ -3,6 +3,7 @@ import { v7 as uuidv7 } from "uuid";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { notificationBindings } from "../db/schema.js";
 import type { PluginModule } from "../plugin-host/contract.js";
+import { assertNotReservedInstanceId } from "../coordination/executor-bindings-repo.js";
 
 /**
  * `notification_bindings` (DESIGN §11 `NotificationPlugin`, BUILD_AND_TEST.md §8 M7 item 4) — an
@@ -73,6 +74,11 @@ export async function upsertNotificationBinding(
   tx: TenantTx,
   input: UpsertNotificationBindingInput
 ): Promise<NotificationBindingRow> {
+  // Notification instance ids are caller-supplied (the route takes `:instanceId` straight from the
+  // URL) and share ONE flat PluginHost keyspace with executor/control instances — so they must not
+  // squat the reserved `execution-system:<id>` namespace, which would silently re-point a real
+  // execution-system's coordination traffic (host.start() skips an already-registered id).
+  assertNotReservedInstanceId(input.pluginInstanceId);
   const rows = await tx
     .select({ id: notificationBindings.id })
     .from(notificationBindings)

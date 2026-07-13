@@ -103,7 +103,8 @@ describe("SubprocessPluginHost: child environment (CRITICAL #3)", () => {
         orgId: "org-1",
         domainId: "domain-1",
         secrets: { "github-app-private-key": "-----BEGIN PRIVATE KEY-----fake-for-test-----" },
-        allowedHosts: ["api.github.com"]
+        allowedHosts: ["api.github.com"],
+        allowInternalEgress: true
       }
     ]);
 
@@ -113,6 +114,23 @@ describe("SubprocessPluginHost: child environment (CRITICAL #3)", () => {
       "github-app-private-key": "-----BEGIN PRIVATE KEY-----fake-for-test-----"
     });
     expect(JSON.parse(childEnv?.SCP_PLUGIN_ALLOWED_HOSTS_JSON ?? "[]")).toEqual(["api.github.com"]);
+    // Its own env var (never SCP_PLUGIN_CONFIG_JSON) — the operator-provenance internal-egress flag.
+    expect(childEnv?.SCP_PLUGIN_ALLOW_INTERNAL_EGRESS).toBe("true");
+  });
+
+  it("defaults SCP_PLUGIN_ALLOW_INTERNAL_EGRESS to 'false' when the instance config omits allowInternalEgress (SSRF default-deny)", async () => {
+    const childProcess = await import("node:child_process");
+    const spawnSpy = vi.mocked(childProcess.spawn);
+    spawnSpy.mockClear();
+
+    host = new SubprocessPluginHost({ callTimeoutMs: 10_000 });
+    await host.start([
+      { id: "no-flag", module: "fake-executor", orgId: "org-1", domainId: "domain-1" }
+    ]);
+
+    const spawnCall = spawnSpy.mock.calls[0]!;
+    const childEnv = (spawnCall[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
+    expect(childEnv?.SCP_PLUGIN_ALLOW_INTERNAL_EGRESS).toBe("false");
   });
 });
 
@@ -195,6 +213,59 @@ describe("SubprocessPluginHost: egress guard enforcement (M7 SSRF mitigation)", 
       });
       expect(outcome.status).toBe("pass");
       expect(controlHits).toBe(1);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("PERMITS a tenant-module instance to reach a loopback/private target ONLY when allowInternalEgress is set (execution-system operator grant) — over the real subprocess boundary", async () => {
+    // Simulates a Mode-A in-cluster executor: `webhook-notify` is a TENANT module (never in
+    // OPERATOR_PLANE_MODULES), so under default rules loopback/private is blocked. The ONLY thing
+    // that flips it is `allowInternalEgress` — which host.ts threads from a persisted
+    // execution-system object's property, NOT tenant config. This drives BOTH the granted and the
+    // ungranted instance at the SAME loopback server: exactly one reaches it. If the env-var path
+    // (host.ts → subprocess-entry.ts's `allowInternalPrivate` OR) regressed, either the grant would
+    // stop working (hits 0) or the default would leak (hits 2).
+    let hits = 0;
+    const server = http.createServer((_req, res) => {
+      hits += 1;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ status: "pass", evidence: { ok: true } }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("could not determine bound port");
+    const base = `http://127.0.0.1:${address.port}`;
+
+    try {
+      host = new SubprocessPluginHost({ callTimeoutMs: 10_000 });
+      await host.start([
+        {
+          id: "es-granted",
+          module: "webhook-notify", // tenant module, but its execution-system granted internal egress
+          orgId: "org-1",
+          domainId: "domain-1",
+          config: { url: `${base}/hook` },
+          allowInternalEgress: true
+        },
+        {
+          id: "es-ungranted",
+          module: "webhook-notify", // same module, NO grant → loopback stays blocked (default-deny)
+          orgId: "org-1",
+          domainId: "domain-1",
+          config: { url: `${base}/hook` }
+        }
+      ]);
+
+      expect(
+        (await host.notification("es-granted").send({ subject: "s", body: "b", severity: "info" }))
+          .delivered
+      ).toBe(true);
+      expect(
+        (await host.notification("es-ungranted").send({ subject: "s", body: "b", severity: "info" }))
+          .delivered
+      ).toBe(false);
+      expect(hits).toBe(1); // only the granted instance ever reached the loopback server
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

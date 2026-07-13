@@ -57,6 +57,9 @@ Two additive, nullable columns on `executor_bindings`:
 ```bash
 scp connect argocd --url https://argocd.mine --token <TOKEN> --name prod
   # → stores the token secret, creates the execution-system object, VALIDATES connectivity (GET /applications)
+  # for an IN-CLUSTER / private-address Argo CD (e.g. http://argocd-server.argocd.svc), add
+  #   --allow-internal-egress   → sets execution-system.allowInternalEgress so SCP's SSRF egress guard
+  #   permits this system's private ClusterIP (per-system, operator-vetted — see docs/adr/0003)
 scp discovery run   --execution-system prod        # enumerate → proposal
 scp discovery accept <proposalId>                  # create components + coordinated_by + bindings
   # → SCP now observes/triggers/status/aborts your existing apps.

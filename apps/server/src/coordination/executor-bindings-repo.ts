@@ -11,7 +11,32 @@ import type { PluginHostInstanceConfig, PluginModule } from "../plugin-host/cont
 /** Stable plugin-instance id for an execution-system-backed binding — every binding that references
  *  the same execution system shares this id, so they share one observe() poll + cursor. */
 export function executionSystemInstanceId(executionSystemId: string): string {
-  return `execution-system:${executionSystemId}`;
+  return `${EXECUTION_SYSTEM_INSTANCE_PREFIX}${executionSystemId}`;
+}
+
+/** RESERVED plugin-instance-id namespace: only `executionSystemInstanceId()` may mint ids under it. */
+export const EXECUTION_SYSTEM_INSTANCE_PREFIX = "execution-system:";
+
+/**
+ * Refuse a caller-chosen `pluginInstanceId` inside the reserved execution-system namespace.
+ *
+ * `PluginHostInstanceConfig.id` is ONE flat keyspace, and `SubprocessPluginHost.start()` silently
+ * skips an id that is already registered (host.ts — deliberate idempotency). Execution-system instance
+ * ids are deterministic (`execution-system:<uuid>`), so without this guard a tenant could create an
+ * INLINE binding whose `pluginInstanceId` squats the id a legitimate execution-system-backed instance
+ * will later use: whichever config spawns first wins for the life of the process, and every subsequent
+ * (correctly-resolved) start() for the real system is silently discarded — quietly re-pointing that
+ * system's trigger/observe/status/abort traffic at a tenant-controlled config. The window reopens on
+ * every worker restart. Inline bindings never get an internal-egress grant, so this is a hijack of
+ * coordination traffic rather than an SSRF — but it is exactly as unacceptable, and free to close.
+ */
+export function assertNotReservedInstanceId(pluginInstanceId: string): void {
+  if (pluginInstanceId.startsWith(EXECUTION_SYSTEM_INSTANCE_PREFIX)) {
+    throw new Error(
+      `pluginInstanceId '${pluginInstanceId}' uses the reserved '${EXECUTION_SYSTEM_INSTANCE_PREFIX}' namespace — ` +
+        `bind via --execution-system instead of naming its instance id directly`
+    );
+  }
 }
 
 /**
@@ -105,6 +130,13 @@ export async function upsertExecutorBinding(
   tx: TenantTx,
   input: UpsertExecutorBindingInput
 ): Promise<ExecutorBindingRow> {
+  // Repo-level net for the reserved instance-id namespace. An execution-system-backed binding's id is
+  // SERVER-derived (executionSystemInstanceId) and legitimately uses the prefix; anything else is
+  // caller-supplied and must not squat it. Enforced here, not only in the routes, so a future write
+  // path can't reintroduce the hole by forgetting the check.
+  if (!input.executionSystemId) {
+    assertNotReservedInstanceId(input.pluginInstanceId);
+  }
   const existing = await getExecutorBinding(tx, input.orgId, input.targetObjectId);
   if (existing) {
     const [row] = await tx
@@ -196,6 +228,50 @@ export interface ResolvedExecutorInstance {
  *    durability) so an executor's idempotency cache survives a subprocess restart rather than
  *    silently degrading to in-memory-only.
  */
+/**
+ * SCP_INTERNAL_EGRESS_HOSTS — the operator's allowlist of hostnames a plugin may reach even when they
+ * resolve to a loopback/private address (an in-cluster Argo CD ClusterIP, an on-prem executor by
+ * RFC1918 name). Comma-separated hostnames (NOT URLs, NOT CIDRs), e.g.
+ * `argocd-server.argocd.svc.cluster.local`. Unset (the default) ⇒ NO plugin may ever reach an internal
+ * address — the pre-existing SSRF posture (egress-guard.ts, MAJOR #6) is completely unchanged.
+ *
+ * This is the HARD security boundary for internal egress, and it lives here — at the same host-level,
+ * operator-configured, NEVER-tenant-suppliable trust tier as SCP_MANAGED_IAC_RUNNER_IMAGE above —
+ * precisely BECAUSE it must not depend on graph/RBAC state being right. An execution-system's
+ * `allowInternalEgress` property (layer 2) is a per-system DECLARATION of intent, not a grant: a
+ * tenant who sets it on a system pointing at an un-allowlisted host gets nothing. Both layers must
+ * agree (`resolveInternalEgress`), so a mistake in who-can-write-what can never become an SSRF.
+ * See docs/adr/0003-internal-egress-for-execution-systems.md.
+ */
+function internalEgressHostAllowlist(): Set<string> {
+  return new Set(
+    (process.env.SCP_INTERNAL_EGRESS_HOSTS ?? "")
+      .split(",")
+      .map((h) => h.trim().toLowerCase())
+      .filter((h) => h.length > 0)
+  );
+}
+
+/**
+ * Layer 1 (operator env allowlist) AND layer 2 (the execution-system's declared intent) must BOTH
+ * permit, else no internal egress. Fail-closed on every edge: not declared, unparseable serverUrl, or
+ * a host the operator never allowlisted ⇒ false. Exported so the discovery path (routes/executors.ts)
+ * resolves it identically to the binding path — one function, one answer.
+ */
+export function resolveInternalEgress(
+  serverUrl: string | undefined,
+  declaredByExecutionSystem: boolean
+): boolean {
+  if (!declaredByExecutionSystem || !serverUrl) return false;
+  let hostname: string;
+  try {
+    hostname = new URL(serverUrl).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return internalEgressHostAllowlist().has(hostname);
+}
+
 function managedIacServerSettings(): {
   runnerImage: string | undefined;
   networkMode: string;
@@ -247,6 +323,11 @@ export async function resolveExecutorPluginInstance(
   let pluginInstanceId = binding.pluginInstanceId;
   let tenantConfig = (binding.config ?? {}) as Record<string, unknown>;
   let secretRefs = binding.secretRefs;
+  // Two-layer internal-egress allowance (ADR-0003): the execution-system's declared intent AND the
+  // operator's SCP_INTERNAL_EGRESS_HOSTS allowlist must BOTH permit. Never from tenant binding config.
+  let allowInternalEgress = false;
+  // Tenant-supplied by default; REPLACED by the execution-system's own host when it backs this binding.
+  let effectiveAllowedHosts = binding.allowedHosts;
 
   if (binding.executionSystemId) {
     const sys = await getObjectByIdOrUrnAnyType(tx, input.orgId, binding.executionSystemId);
@@ -255,7 +336,27 @@ export async function resolveExecutorPluginInstance(
         `executor binding for target '${input.targetObjectId}' references '${binding.executionSystemId}', which is a '${sys.typeId}', not an execution-system`
       );
     }
-    const props = sys.properties as { kind?: string; serverUrl?: string; tokenSecretKey?: string };
+    const props = sys.properties as {
+      kind?: string;
+      serverUrl?: string;
+      tokenSecretKey?: string;
+      allowInternalEgress?: boolean;
+    };
+    // Layer 2 (declared intent) is checked against layer 1 (the operator's env allowlist) inside
+    // resolveInternalEgress — the property alone NEVER grants anything.
+    allowInternalEgress = resolveInternalEgress(props.serverUrl, props.allowInternalEgress === true);
+    // Pin egress to the system's OWN host (server-governed), so an internal-egress grant can only ever
+    // reach the registered system — never a tenant-chosen `binding.allowedHosts` entry. This, not the
+    // permission gate alone, is what keeps the allowance narrow (egress-guard.ts, MAJOR #6).
+    if (props.serverUrl) {
+      try {
+        effectiveAllowedHosts = [new URL(props.serverUrl).hostname];
+      } catch {
+        throw new Error(
+          `execution-system '${sys.id}' has an unparseable 'serverUrl' — refusing to resolve a binding against it`
+        );
+      }
+    }
     if (!props.serverUrl) {
       throw new Error(`execution-system '${sys.id}' is missing a 'serverUrl' property`);
     }
@@ -303,7 +404,8 @@ export async function resolveExecutorPluginInstance(
       // Tenant config first, server-governed fields LAST (they win — CRITICAL #1 / MAJOR #4).
       config: { ...tenantConfig, ...serverInjected },
       secrets: resolvedSecrets,
-      allowedHosts: binding.allowedHosts
+      allowedHosts: effectiveAllowedHosts,
+      allowInternalEgress
     }
   };
 }
