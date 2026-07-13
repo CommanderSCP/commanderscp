@@ -40,6 +40,24 @@ metadata:
 {{- else if $kind -}}
 {{- $obj := fromYaml $t -}}
 {{- $_ := set $obj.metadata "namespace" $ns -}}
+{{- /* Configure (not fork) Argo CD: a scoped apiKey account + its get/sync-only RBAC, and
+       server.insecure so in-cluster SCP↔Argo CD calls are plain HTTP behind the NetworkPolicy
+       (no self-signed-TLS dance). This is standard Argo CD operator config layered into its own
+       ConfigMaps, never a change to the engine. */ -}}
+{{- if eq $kind "ConfigMap" -}}
+{{- $data := default dict $obj.data -}}
+{{- $cmName := default "" $obj.metadata.name -}}
+{{- if eq $cmName "argocd-cm" -}}
+{{- $_ := set $data (printf "accounts.%s" $a.scpAccount) "apiKey" -}}
+{{- else if eq $cmName "argocd-rbac-cm" -}}
+{{- $existing := default "" (get $data "policy.csv") -}}
+{{- $scoped := printf "p, %s, applications, get, */*, allow\np, %s, applications, sync, */*, allow" $a.scpAccount $a.scpAccount -}}
+{{- $_ := set $data "policy.csv" (printf "%s\n%s\n" (trim $existing) $scoped) -}}
+{{- else if eq $cmName "argocd-cmd-params-cm" -}}
+{{- $_ := set $data "server.insecure" "true" -}}
+{{- end -}}
+{{- $_ := set $obj "data" $data -}}
+{{- end -}}
 {{- $out = append $out (trim (toYaml $obj)) -}}
 {{- end -}}
 {{- end -}}
