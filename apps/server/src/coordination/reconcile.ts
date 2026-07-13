@@ -32,7 +32,7 @@ import { evaluateWaveGate } from "./gates.js";
 import { insertDecision } from "./decisions-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import { DEFAULT_EXECUTOR_INSTANCE_ID, DEFAULT_EXECUTOR_MODULE } from "./executor-config.js";
-import { resolveExecutorPluginInstance } from "./executor-bindings-repo.js";
+import { getExecutorBinding, resolveExecutorPluginInstance } from "./executor-bindings-repo.js";
 import { processChangeSourceEvents } from "./webhook-processor.js";
 import { matchPoliciesForTargets } from "../governance/policy-resolve.js";
 import { resolvePolicies } from "../governance/policy-model.js";
@@ -622,6 +622,13 @@ async function triggerWaveTarget(
       let kind: TriggerIntent["kind"];
       let priorStateRef: unknown = null;
 
+      // The executor-specific target id (e.g. an Argo CD Application name) this object maps to.
+      // Falls back to the object id for legacy bindings — so a binding whose object id already IS
+      // the external name (pre-M12) is unaffected. This is what lets Mode A / imported objects
+      // trigger the right external resource when their SCP id differs from their external name.
+      const binding = await getExecutorBinding(tx, orgId, targetObjectId);
+      const externalRef = binding?.externalRef ?? null;
+
       if (isRollback && change.rollbackOfObjectId) {
         // Restore exactly what the ORIGINAL change's trigger of this same target would have
         // reverted (DESIGN §9.4: "referencing the prior known-good executor state").
@@ -649,7 +656,7 @@ async function triggerWaveTarget(
       }
 
       const claimed = await claimWaveTargetForTriggering(tx, orgId, waveTargetId);
-      return claimed ? { kind, priorStateRef } : null;
+      return claimed ? { kind, priorStateRef, externalRef } : null;
     });
 
     if (!claim) return; // no longer pending/triggering — another tick already handled it.
@@ -657,7 +664,7 @@ async function triggerWaveTarget(
     // Step 2 — OUTSIDE any open transaction, on purpose (see doc comment above).
     const ref = await client.trigger({
       kind: claim.kind,
-      targetRef: targetObjectId,
+      targetRef: claim.externalRef ?? targetObjectId,
       priorStateRef: claim.priorStateRef,
       idempotencyKey
     });

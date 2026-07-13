@@ -1159,6 +1159,11 @@ export const executorBindings = pgTable(
     config: jsonb("config").notNull().default({}),
     secretRefs: jsonb("secret_refs").notNull().default({}), // { configFieldName: secretKey }
     allowedHosts: jsonb("allowed_hosts").notNull().default([]),
+    // The EXECUTOR-SPECIFIC target identifier this graph object maps to (e.g. an Argo CD Application
+    // name), passed as `trigger().targetRef`. Nullable: when unset, reconcile falls back to the
+    // object id — backward-compatible with pre-M12 bindings. This is what lets one execution system
+    // coordinate many objects whose ids differ from their external names (Mode A / import).
+    externalRef: text("external_ref"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },

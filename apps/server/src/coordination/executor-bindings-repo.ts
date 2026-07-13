@@ -23,6 +23,7 @@ export interface ExecutorBindingRow {
   config: unknown;
   secretRefs: Record<string, string>;
   allowedHosts: string[];
+  externalRef: string | null;
 }
 
 function toRow(row: {
@@ -33,6 +34,7 @@ function toRow(row: {
   config: unknown;
   secretRefs: unknown;
   allowedHosts: unknown;
+  externalRef?: string | null;
 }): ExecutorBindingRow {
   return {
     id: row.id,
@@ -41,7 +43,8 @@ function toRow(row: {
     pluginInstanceId: row.pluginInstanceId,
     config: row.config,
     secretRefs: (row.secretRefs ?? {}) as Record<string, string>,
-    allowedHosts: (row.allowedHosts ?? []) as string[]
+    allowedHosts: (row.allowedHosts ?? []) as string[],
+    externalRef: row.externalRef ?? null
   };
 }
 
@@ -84,6 +87,7 @@ export interface UpsertExecutorBindingInput {
   config?: unknown;
   secretRefs?: Record<string, string>;
   allowedHosts?: string[];
+  externalRef?: string | null;
 }
 
 export async function upsertExecutorBinding(
@@ -100,6 +104,7 @@ export async function upsertExecutorBinding(
         config: input.config ?? {},
         secretRefs: input.secretRefs ?? {},
         allowedHosts: input.allowedHosts ?? [],
+        externalRef: input.externalRef ?? null,
         updatedAt: new Date()
       })
       .where(eq(executorBindings.id, existing.id))
@@ -116,7 +121,8 @@ export async function upsertExecutorBinding(
       pluginInstanceId: input.pluginInstanceId,
       config: input.config ?? {},
       secretRefs: input.secretRefs ?? {},
-      allowedHosts: input.allowedHosts ?? []
+      allowedHosts: input.allowedHosts ?? [],
+      externalRef: input.externalRef ?? null
     })
     .returning();
   return toRow(row!);

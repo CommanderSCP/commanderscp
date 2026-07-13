@@ -55,13 +55,29 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
       pluginModule: "fake-executor",
       pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`,
       config: { statePath: "/tmp/whatever" },
-      allowedHosts: ["example.test"]
+      allowedHosts: ["example.test"],
+      // M12 P1: the executor-specific target id (e.g. an Argo CD Application name) this object maps
+      // to. reconcile passes it as trigger().targetRef (falling back to the object id when unset).
+      externalRef: "my-argocd-app"
     });
     expect(binding.targetObjectId).toBe(component.id);
     expect(binding.pluginModule).toBe("fake-executor");
+    expect(binding.externalRef).toBe("my-argocd-app");
 
     const fetched = await admin.executors.getBinding(component.id);
     expect(fetched).toEqual(binding);
+    expect(fetched.externalRef).toBe("my-argocd-app");
+  });
+
+  it("executor binding defaults externalRef to null when omitted (backward-compatible with pre-M12 bindings)", async () => {
+    const org = await createTestOrg(server, "m12-executor-external-ref-null");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const component = await admin.components.create({ name: `comp-${randomUUID().slice(0, 8)}` });
+    const binding = await admin.executors.putBinding(component.id, {
+      pluginModule: "fake-executor",
+      pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`
+    });
+    expect(binding.externalRef).toBeNull();
   });
 
   it("notification binding PUT/list/DELETE round-trips", async () => {

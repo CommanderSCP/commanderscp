@@ -127,6 +127,13 @@
       "when": 1784200000000,
       "tag": "0017_executor_observe_cursors",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1784300000000,
+      "tag": "0018_executor_external_ref",
+      "breakpoints": true
     }
   ]
 }

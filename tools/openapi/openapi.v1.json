@@ -50465,6 +50465,10 @@
                     "items": {
                       "type": "string"
                     }
+                  },
+                  "externalRef": {
+                    "type": "string",
+                    "minLength": 1
                   }
                 },
                 "required": [
@@ -50516,6 +50520,16 @@
                       "items": {
                         "type": "string"
                       }
+                    },
+                    "externalRef": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -50525,7 +50539,8 @@
                     "pluginInstanceId",
                     "config",
                     "secretRefs",
-                    "allowedHosts"
+                    "allowedHosts",
+                    "externalRef"
                   ],
                   "additionalProperties": false
                 }
@@ -50723,6 +50738,16 @@
                       "items": {
                         "type": "string"
                       }
+                    },
+                    "externalRef": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -50732,7 +50757,8 @@
                     "pluginInstanceId",
                     "config",
                     "secretRefs",
-                    "allowedHosts"
+                    "allowedHosts",
+                    "externalRef"
                   ],
                   "additionalProperties": false
                 }
