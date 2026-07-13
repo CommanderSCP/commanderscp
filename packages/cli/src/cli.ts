@@ -2224,9 +2224,13 @@ export function buildProgram(): Command {
 
   executorCmd
     .command("bind <idOrUrn>")
-    .description("Bind a Component/DeploymentTarget to a configured ExecutorPlugin instance")
-    .requiredOption("--module <module>", "plugin module: github|argocd|terraform|managed-iac")
-    .requiredOption("--instance-id <id>", "stable id for this plugin instance")
+    .description("Bind a Component/DeploymentTarget to an ExecutorPlugin instance or execution-system")
+    .option("--module <module>", "plugin module: github|argocd|terraform|managed-iac (inline binding)")
+    .option("--instance-id <id>", "stable id for this plugin instance (inline binding)")
+    .option(
+      "--execution-system <idOrUrn>",
+      "bind via a registered execution-system object (module/serverUrl/token resolved from it)"
+    )
     .option(
       "--config <json>",
       "JSON object — the plugin's own config shape (see `scp plugin manifests`)"
@@ -2246,8 +2250,9 @@ export function buildProgram(): Command {
       async (
         idOrUrn: string,
         opts: BaseCliOpts & {
-          module: string;
-          instanceId: string;
+          module?: string;
+          instanceId?: string;
+          executionSystem?: string;
           config?: string;
           secretRefs?: string;
           allowedHosts?: string;
@@ -2255,15 +2260,23 @@ export function buildProgram(): Command {
         }
       ) => {
         const client = await clientFromStoredCredentials(opts);
-        const result = await client.executors.putBinding(idOrUrn, {
-          pluginModule: opts.module,
-          pluginInstanceId: opts.instanceId,
-          config: parseJsonOption(opts.config, "--config") as Record<string, unknown> | undefined,
-          secretRefs: parseJsonOption(opts.secretRefs, "--secret-refs") as
-            Record<string, string> | undefined,
-          allowedHosts: parseList(opts.allowedHosts),
-          externalRef: opts.targetRef
-        });
+        const result = await client.executors.putBinding(
+          idOrUrn,
+          opts.executionSystem
+            ? { executionSystemId: opts.executionSystem, externalRef: opts.targetRef }
+            : {
+                pluginModule: opts.module,
+                pluginInstanceId: opts.instanceId,
+                config: parseJsonOption(opts.config, "--config") as
+                  | Record<string, unknown>
+                  | undefined,
+                secretRefs: parseJsonOption(opts.secretRefs, "--secret-refs") as
+                  | Record<string, string>
+                  | undefined,
+                allowedHosts: parseList(opts.allowedHosts),
+                externalRef: opts.targetRef
+              }
+        );
         printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
       }
     );

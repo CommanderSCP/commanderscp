@@ -153,6 +153,44 @@ describe("coordination engine: full fake-executor loop", () => {
     expect(ref.externalId.startsWith(comp.id)).toBe(false);
   });
 
+  it("an execution-system-backed binding resolves the plugin from the system + drives the trigger end-to-end (M12 P2)", async () => {
+    // Register the execution system once; a component bound to it must resolve the module/config
+    // FROM the system at dispatch (resolveExecutorPluginInstance's system branch) and trigger the
+    // external target — proving Mode A coordination works without inline per-binding config.
+    await admin.secrets.put("sys-token", { value: "a-token" });
+    const sys = await admin.object("execution-system").create({
+      name: `exec-sys-${uuidv7().slice(0, 8)}`,
+      properties: {
+        kind: "fake-executor",
+        serverUrl: "https://exec.example",
+        tokenSecretKey: "sys-token"
+      }
+    });
+    const externalName = `sys-app-${uuidv7().slice(0, 8)}`;
+    const comp = await admin.components.create({ name: `sys-comp-${uuidv7().slice(0, 8)}` });
+    const binding = await admin.executors.putBinding(comp.id, {
+      executionSystemId: sys.id,
+      externalRef: externalName
+    });
+    expect(binding.pluginInstanceId).toBe(`execution-system:${sys.id}`);
+
+    const change = await admin.changes.propose({ name: "coordinate via execution-system", targets: [comp.id] });
+    expect(change.state).toBe("proposed");
+
+    const target = await waitUntil(
+      async () => {
+        const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+          tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, comp.id))
+        );
+        return rows[0]?.executorRef ? rows[0] : undefined;
+      },
+      { describe: `wave target for ${comp.id} records an executorRef`, timeoutMs: 20_000 }
+    );
+    // Dispatched through the system-resolved fake-executor instance, targeting the external name.
+    const ref = target.executorRef as unknown as ExternalRunRef;
+    expect(ref.externalId.startsWith(externalName)).toBe(true);
+  });
+
   it("rollback is its own Change, executed through the same plan/wave machinery, and restores the prior known-good executor state", async () => {
     const target = await admin.components.create({ name: "coord-rollback-target" });
 

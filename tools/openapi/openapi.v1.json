@@ -50469,12 +50469,12 @@
                   "externalRef": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "executionSystemId": {
+                    "type": "string",
+                    "minLength": 1
                   }
                 },
-                "required": [
-                  "pluginModule",
-                  "pluginInstanceId"
-                ],
                 "additionalProperties": false
               }
             }
@@ -50530,6 +50530,16 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "executionSystemId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -50540,7 +50550,8 @@
                     "config",
                     "secretRefs",
                     "allowedHosts",
-                    "externalRef"
+                    "externalRef",
+                    "executionSystemId"
                   ],
                   "additionalProperties": false
                 }
@@ -50748,6 +50759,16 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "executionSystemId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -50758,7 +50779,8 @@
                     "config",
                     "secretRefs",
                     "allowedHosts",
-                    "externalRef"
+                    "externalRef",
+                    "executionSystemId"
                   ],
                   "additionalProperties": false
                 }

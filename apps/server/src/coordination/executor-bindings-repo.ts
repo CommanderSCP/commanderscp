@@ -5,7 +5,14 @@ import { v7 as uuidv7 } from "uuid";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { executorBindings } from "../db/schema.js";
 import { resolveSecretRefs } from "../secrets/secrets-repo.js";
+import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import type { PluginHostInstanceConfig, PluginModule } from "../plugin-host/contract.js";
+
+/** Stable plugin-instance id for an execution-system-backed binding — every binding that references
+ *  the same execution system shares this id, so they share one observe() poll + cursor. */
+export function executionSystemInstanceId(executionSystemId: string): string {
+  return `execution-system:${executionSystemId}`;
+}
 
 /**
  * `executor_bindings` — the registry-object gap `coordination/executor-config.ts`'s M3 doc
@@ -24,6 +31,7 @@ export interface ExecutorBindingRow {
   secretRefs: Record<string, string>;
   allowedHosts: string[];
   externalRef: string | null;
+  executionSystemId: string | null;
 }
 
 function toRow(row: {
@@ -35,6 +43,7 @@ function toRow(row: {
   secretRefs: unknown;
   allowedHosts: unknown;
   externalRef?: string | null;
+  executionSystemId?: string | null;
 }): ExecutorBindingRow {
   return {
     id: row.id,
@@ -44,7 +53,8 @@ function toRow(row: {
     config: row.config,
     secretRefs: (row.secretRefs ?? {}) as Record<string, string>,
     allowedHosts: (row.allowedHosts ?? []) as string[],
-    externalRef: row.externalRef ?? null
+    externalRef: row.externalRef ?? null,
+    executionSystemId: row.executionSystemId ?? null
   };
 }
 
@@ -88,6 +98,7 @@ export interface UpsertExecutorBindingInput {
   secretRefs?: Record<string, string>;
   allowedHosts?: string[];
   externalRef?: string | null;
+  executionSystemId?: string | null;
 }
 
 export async function upsertExecutorBinding(
@@ -105,6 +116,7 @@ export async function upsertExecutorBinding(
         secretRefs: input.secretRefs ?? {},
         allowedHosts: input.allowedHosts ?? [],
         externalRef: input.externalRef ?? null,
+        executionSystemId: input.executionSystemId ?? null,
         updatedAt: new Date()
       })
       .where(eq(executorBindings.id, existing.id))
@@ -122,7 +134,8 @@ export async function upsertExecutorBinding(
       config: input.config ?? {},
       secretRefs: input.secretRefs ?? {},
       allowedHosts: input.allowedHosts ?? [],
-      externalRef: input.externalRef ?? null
+      externalRef: input.externalRef ?? null,
+      executionSystemId: input.executionSystemId ?? null
     })
     .returning();
   return toRow(row!);
@@ -224,25 +237,52 @@ export async function resolveExecutorPluginInstance(
 ): Promise<ResolvedExecutorInstance | undefined> {
   const binding = await getExecutorBinding(tx, input.orgId, input.targetObjectId);
   if (!binding) return undefined;
-  if (!isKnownExecutorModule(binding.pluginModule)) {
+
+  // Resolve the effective plugin identity + config from one of two sources:
+  //   - execution-system-backed (M12 P2): a shared `execution-system` graph object supplies the
+  //     module (its `kind`), serverUrl, and token — so many bindings coordinate one system without
+  //     re-specifying its URL/token, and all share ONE plugin instance (hence one observe poll).
+  //   - inline (pre-M12, unchanged): the binding itself carries module/config/secretRefs.
+  let pluginModule: string = binding.pluginModule;
+  let pluginInstanceId = binding.pluginInstanceId;
+  let tenantConfig = (binding.config ?? {}) as Record<string, unknown>;
+  let secretRefs = binding.secretRefs;
+
+  if (binding.executionSystemId) {
+    const sys = await getObjectByIdOrUrnAnyType(tx, input.orgId, binding.executionSystemId);
+    if (sys.typeId !== "execution-system") {
+      throw new Error(
+        `executor binding for target '${input.targetObjectId}' references '${binding.executionSystemId}', which is a '${sys.typeId}', not an execution-system`
+      );
+    }
+    const props = sys.properties as { kind?: string; serverUrl?: string; tokenSecretKey?: string };
+    if (!props.serverUrl) {
+      throw new Error(`execution-system '${sys.id}' is missing a 'serverUrl' property`);
+    }
+    pluginModule = (props.kind ?? "").trim();
+    pluginInstanceId = executionSystemInstanceId(sys.id);
+    // The plugin reads its token via `ctx.secrets.get(<tokenSecretKey>)` (e.g. the Argo CD plugin);
+    // the system's tokenSecretKey is both the config field name AND the secrets-table key.
+    tenantConfig = {
+      serverUrl: props.serverUrl,
+      ...(props.tokenSecretKey ? { tokenSecretKey: props.tokenSecretKey } : {})
+    };
+    secretRefs = props.tokenSecretKey ? { [props.tokenSecretKey]: props.tokenSecretKey } : {};
+  }
+
+  if (!isKnownExecutorModule(pluginModule)) {
     throw new Error(
-      `executor binding for target '${input.targetObjectId}' references unknown plugin module '${binding.pluginModule}'`
+      `executor binding for target '${input.targetObjectId}' resolves to unknown or non-executor plugin module '${pluginModule}'`
     );
   }
 
-  const resolvedSecrets = await resolveSecretRefs(
-    tx,
-    input.orgId,
-    binding.secretRefs,
-    input.masterKey
-  );
+  const resolvedSecrets = await resolveSecretRefs(tx, input.orgId, secretRefs, input.masterKey);
 
-  const tenantConfig = (binding.config ?? {}) as Record<string, unknown>;
   const serverInjected: Record<string, unknown> = {
-    statePath: join(pluginStateDir(), `${sanitizeInstanceId(binding.pluginInstanceId)}.json`)
+    statePath: join(pluginStateDir(), `${sanitizeInstanceId(pluginInstanceId)}.json`)
   };
 
-  if (binding.pluginModule === "managed-iac") {
+  if (pluginModule === "managed-iac") {
     const settings = managedIacServerSettings();
     if (!settings.runnerImage) {
       throw new Error(
@@ -256,8 +296,8 @@ export async function resolveExecutorPluginInstance(
 
   return {
     instanceConfig: {
-      id: binding.pluginInstanceId,
-      module: binding.pluginModule,
+      id: pluginInstanceId,
+      module: pluginModule as PluginModule,
       orgId: input.orgId,
       domainId: input.domainId ?? "default",
       // Tenant config first, server-governed fields LAST (they win — CRITICAL #1 / MAJOR #4).

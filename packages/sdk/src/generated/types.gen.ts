@@ -13204,6 +13204,7 @@ export type GetExecutorBindingResponses = {
         };
         allowedHosts: Array<string>;
         externalRef: string | null;
+        executionSystemId: string | null;
     };
 };
 
@@ -13211,8 +13212,8 @@ export type GetExecutorBindingResponse = GetExecutorBindingResponses[keyof GetEx
 
 export type PutExecutorBindingData = {
     body: {
-        pluginModule: string;
-        pluginInstanceId: string;
+        pluginModule?: string;
+        pluginInstanceId?: string;
         config?: {
             [key: string]: unknown;
         };
@@ -13221,6 +13222,7 @@ export type PutExecutorBindingData = {
         };
         allowedHosts?: Array<string>;
         externalRef?: string;
+        executionSystemId?: string;
     };
     path: {
         idOrUrn: string;
@@ -13282,6 +13284,7 @@ export type PutExecutorBindingResponses = {
         };
         allowedHosts: Array<string>;
         externalRef: string | null;
+        executionSystemId: string | null;
     };
 };
 
