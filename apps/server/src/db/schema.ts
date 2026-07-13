@@ -5,6 +5,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -528,6 +529,28 @@ export const changeSourceEvents = pgTable(
     index("change_source_events_unprocessed").on(table.processedAt, table.createdAt),
     unique("change_source_events_dedupe").on(table.orgId, table.sourceKind, table.dedupeKey)
   ]
+);
+
+/**
+ * observe()-driver watermarks (M10.2) — one cursor per (org, executor plugin INSTANCE) that the
+ * pull-based change-detection loop (`coordination/observe.ts`) passes to
+ * `ExecutorPlugin.observe(since)`. Bindings that share a `plugin_instance_id` share observe scope
+ * (identical configured source), so the cursor is instance-scoped, not binding-scoped. The loop
+ * polls each observe-capable binding, normalizes returned events into `change_source_events` (the
+ * SAME queue the inbound-webhook route feeds — poll-vs-push equivalence, DESIGN §12), and advances
+ * `cursor_token`. This is the fallback for connected-but-unwebhookable and air-gapped domains whose
+ * executors cannot reach SCP's ingress. Upsert-in-place only (no delete route).
+ */
+export const executorObserveCursors = pgTable(
+  "executor_observe_cursors",
+  {
+    orgId: uuid("org_id").notNull(),
+    pluginInstanceId: text("plugin_instance_id").notNull(),
+    /** Opaque watermark the plugin minted/interprets (the driver stores it verbatim). */
+    cursorToken: text("cursor_token"),
+    lastPolledAt: timestamp("last_polled_at", { withTimezone: true })
+  },
+  (table) => [primaryKey({ columns: [table.orgId, table.pluginInstanceId] })]
 );
 
 /**

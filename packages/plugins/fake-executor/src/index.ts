@@ -76,6 +76,10 @@ interface FakeExecutorConfig {
   forcePhase?: Record<string, ExecutionPhase>;
   /** When set, state is persisted here (JSON) instead of an in-memory Map — see module doc. */
   statePath?: string;
+  /** Deterministic `observe()` output for the observe()-driver tests (coordination/observe.ts):
+   *  the events this instance emits, filtered by the `since` watermark on `occurredAt` so a poll
+   *  with an advanced cursor returns only newer events — exactly a real pull executor's behavior. */
+  observeEvents?: ExecutorEvent[];
 }
 
 function readConfig(config: unknown): FakeExecutorConfig {
@@ -137,10 +141,15 @@ export class FakeExecutorPlugin implements ExecutorPlugin {
     await rename(tmpPath, statePath);
   }
 
-  async observe(_ctx: PluginContext, _since?: Cursor): Promise<ExecutorEvent[]> {
-    // No push-based events for the fake executor (BUILD_AND_TEST.md §8 M3 item 7 brief) — the
-    // coordination engine drives it purely by trigger/status.
-    return [];
+  async observe(ctx: PluginContext, since?: Cursor): Promise<ExecutorEvent[]> {
+    // Default: no push-based events (the coordination engine drives the fake executor purely by
+    // trigger/status). When `config.observeEvents` is set (observe()-driver tests), emit them,
+    // honoring the `since` watermark on `occurredAt` so an advanced cursor returns only newer ones.
+    const events = readConfig(ctx.config).observeEvents ?? [];
+    if (!since?.token) return events;
+    return events.filter(
+      (e) => typeof e.occurredAt === "string" && e.occurredAt > since.token
+    );
   }
 
   async trigger(ctx: PluginContext, intent: TriggerIntent): Promise<ExternalRunRef> {

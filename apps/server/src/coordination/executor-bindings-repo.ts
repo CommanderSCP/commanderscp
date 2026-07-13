@@ -60,6 +60,22 @@ export async function getExecutorBinding(
   return rows[0] ? toRow(rows[0]) : undefined;
 }
 
+/**
+ * All executor bindings for an org — the observe()-driver (`coordination/observe.ts`) enumerates
+ * these, dedupes by `pluginInstanceId` (bindings sharing an instance share observe scope), and polls
+ * each observe-capable instance once per tick.
+ */
+export async function listExecutorBindings(
+  tx: TenantTx,
+  orgId: string
+): Promise<ExecutorBindingRow[]> {
+  const rows = await tx
+    .select()
+    .from(executorBindings)
+    .where(eq(executorBindings.orgId, orgId));
+  return rows.map(toRow);
+}
+
 export interface UpsertExecutorBindingInput {
   orgId: string;
   targetObjectId: string;
