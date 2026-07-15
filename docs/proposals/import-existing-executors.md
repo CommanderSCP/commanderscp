@@ -45,7 +45,7 @@ Two additive, nullable columns on `executor_bindings`:
 
 `discover(ctx)` reads the execution-system's `serverUrl` + token, calls `GET /api/v1/applications`, and returns a proposal of:
 - one `component` per Application (`properties.argocdApplication = <name>`, plus namespace/project/repo metadata),
-- a `coordinated_by` relationship (component → execution-system),
+- ~~a `coordinated_by` relationship (component → execution-system)~~ — **CORRECTION (2026-07-15): this was never true.** The plugin returns `relationships: []` ([argocd/src/index.ts:466](../../packages/plugins/argocd/src/index.ts)), and `coordinated_by` was never a registered relationship type (the real `coordinates` is `{campaign,initiative} → {change,campaign}`, unrelated). Imported components are therefore graph ORPHANS: the coordination link exists only in the `executor_bindings` projection table, not in the graph. Confirmed live on the homelab import (50 apps → 50 components, 0 relationships). Superseded by [service-component-model.md](service-component-model.md).
 - **a proposed executor binding** per component (`module: argocd`, `executionSystemId`, `externalRef: <name>`).
 
 ### 4. `discovery accept` also creates the proposed bindings
@@ -61,7 +61,8 @@ scp connect argocd --url https://argocd.mine --token <TOKEN> --name prod
   #   --allow-internal-egress   → sets execution-system.allowInternalEgress so SCP's SSRF egress guard
   #   permits this system's private ClusterIP (per-system, operator-vetted — see docs/adr/0003)
 scp discovery run   --execution-system prod        # enumerate → proposal
-scp discovery accept <proposalId>                  # create components + coordinated_by + bindings
+scp discovery accept <proposalId>                  # create components + bindings (NOT relationships — see the
+                                                   # correction in §3; imported components land as orphans)
   # → SCP now observes/triggers/status/aborts your existing apps.
 ```
 
