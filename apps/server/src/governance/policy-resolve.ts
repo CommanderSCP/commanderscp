@@ -27,21 +27,56 @@ interface ChainEntry {
   labels: Record<string, unknown>;
 }
 
-/** Target -> ... -> org root, with depth 0 = org root, increasing toward the target. Mirrors
- *  authz/resolve.ts's `scope_expand` CTE shape exactly (same containment walk, same depth bound). */
+/**
+ * Target -> ... -> org root, with depth 0 = org root, increasing toward the target. Mirrors
+ * authz/resolve.ts's `scopeExpandCte` (same containment routes, same depth bound) — the two MUST agree
+ * on what contains what, or a policy would govern an object its RBAC scope doesn't, and vice versa.
+ *
+ * Walks TWO routes up (see `scopeExpandCte` for the full rationale): `objects.domain_id`, and the
+ * `contains` edge from a component to its SERVICE (migration 0021). Until 0021 this walked domain_id
+ * only, so a service-scoped policy governed nothing — even though this file's own header, and
+ * DESIGN §10, have always described the chain as `org -> domain -> service -> component`.
+ *
+ * DEPTH MATTERS HERE in a way it does not for authz: policy-model.ts sorts by `matchedAt.depth`
+ * descending, so the DEEPEST match wins (most specific beats least). With two routes the chain is a
+ * DAG rather than a line — a component's domain is reachable BOTH directly (`component.domain_id`)
+ * and via its service (`service.domain_id`), at different walk depths. Taking the wrong one would let
+ * a domain-scoped policy outrank a service-scoped one. So we keep the MAXIMUM walk depth per id
+ * (`DISTINCT ON (id) ... ORDER BY id, depth DESC`) = the longest path from the target = the LEAST
+ * specific reading, which after the `maxDepth - depth` inversion below yields exactly
+ * org(0) < domain(1) < service(2) < component(3).
+ */
 async function containmentChain(tx: TenantTx, orgId: string, objectId: string): Promise<ChainEntry[]> {
   const result = await tx.execute<{ id: string; depth: number; labels: Record<string, unknown> }>(sql`
     WITH RECURSIVE chain AS (
-      SELECT o.id, o.domain_id, o.labels, 0 AS depth
+      SELECT o.id, o.labels, 0 AS depth
       FROM objects o
       WHERE o.id = ${objectId}::uuid AND o.org_id = ${orgId}
-      UNION ALL
-      SELECT o.id, o.domain_id, o.labels, c.depth + 1
-      FROM objects o
-      JOIN chain c ON o.id = c.domain_id
+      UNION
+      -- One recursive term (PostgreSQL allows the self-reference exactly once); the two routes are a
+      -- LATERAL union of parents.
+      SELECT parent.id, parent.labels, c.depth + 1
+      FROM chain c
+      CROSS JOIN LATERAL (
+        -- 1. containing domain, via the child's domain_id
+        SELECT parent_o.id, parent_o.labels
+        FROM objects child_o
+        JOIN objects parent_o ON parent_o.id = child_o.domain_id
+        WHERE child_o.id = c.id AND child_o.org_id = ${orgId} AND parent_o.org_id = ${orgId}
+        UNION ALL
+        -- 2. containing service, via the contains edge walked BACKWARDS (to_id = c.id, from_id = svc)
+        SELECT svc.id, svc.labels
+        FROM relationships r
+        JOIN objects svc ON svc.id = r.from_id AND svc.org_id = ${orgId}
+        WHERE r.to_id = c.id
+          AND r.org_id = ${orgId}
+          AND r.type_id = 'contains'
+          AND r.deleted_at IS NULL
+      ) parent
       WHERE c.depth < 10
     )
-    SELECT id, depth, labels FROM chain
+    -- Max walk depth per id (see the doc comment): preserves service-beats-domain precedence.
+    SELECT DISTINCT ON (id) id, depth, labels FROM chain ORDER BY id, depth DESC
   `);
   // Reverse so index 0 = org root (max depth in the recursive walk) — matches policy-model.ts's
   // "0 = org root, increasing toward the target" depth convention.
