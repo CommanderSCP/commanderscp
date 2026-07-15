@@ -114,6 +114,23 @@ export interface PluginHostInstanceConfig {
    *  operator-configured arbitrary URL) — every M7 network-calling plugin (github/argocd/
    *  webhook-notify) sets this explicitly from its own binding config instead. */
   allowedHosts?: string[];
+  /** Relax the SSRF egress guard's internal-IP block (loopback/private ranges) for THIS instance's
+   *  `ctx.http` — so a self-hosted SCP can coordinate an execution system reachable only at a private
+   *  address (an in-cluster Argo CD ClusterIP, an on-prem executor by RFC1918 IP; charter principle 5
+   *  "self-hosting & air-gap first-class"). `linkLocal`/`unspecified` (cloud metadata) stay blocked
+   *  for every plugin regardless.
+   *
+   *  NEVER set this from anything a tenant can write. It is computed ONLY by
+   *  `executor-bindings-repo.ts`'s `resolveInternalEgress`, which requires BOTH layers to agree
+   *  (ADR-0003): (1) the operator's host-level `SCP_INTERNAL_EGRESS_HOSTS` allowlist — the hard
+   *  boundary, same trust tier as `SCP_MANAGED_IAC_RUNNER_IMAGE`/`SCP_FEDERATION_MTLS_*`, unset by
+   *  default ⇒ nothing is ever reachable; and (2) the execution-system's `allowInternalEgress`
+   *  property — a per-system DECLARATION of intent, not a grant. Deliberately layered so that graph
+   *  state or an RBAC misconfiguration can never, on its own, produce an SSRF: a tenant who declares
+   *  the property on a system pointing at an un-allowlisted host gets nothing (egress-guard.ts,
+   *  MAJOR #6). Threaded to the subprocess via its own env var (host.ts) so tenant `config`/`secrets`
+   *  can neither reach nor override it. Omitted/false is the fail-closed default. */
+  allowInternalEgress?: boolean;
 }
 
 export interface PluginHost {

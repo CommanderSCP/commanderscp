@@ -2236,6 +2236,12 @@ export function buildProgram(): Command {
     .option("--name <name>", "name for the execution-system object", "argocd")
     .option("--token-key <key>", "secrets-store key to hold the token (default: <name>-argocd-token)")
     .option("--no-validate", "skip the best-effort connectivity check")
+    .option(
+      "--allow-internal-egress",
+      "declare that this system may be reached at a private/in-cluster address (e.g. an in-cluster " +
+        "Argo CD ClusterIP). This is a DECLARATION, not a grant: the server also requires its host to " +
+        "be in the operator's SCP_INTERNAL_EGRESS_HOSTS allowlist, or egress stays blocked (ADR-0003)"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(
@@ -2246,6 +2252,7 @@ export function buildProgram(): Command {
           name: string;
           tokenKey?: string;
           validate: boolean;
+          allowInternalEgress?: boolean;
         }
       ) => {
         const client = await clientFromStoredCredentials(opts);
@@ -2273,7 +2280,12 @@ export function buildProgram(): Command {
         const created = await client.object("execution-system").create(
           {
             name: opts.name,
-            properties: { kind: "argocd", serverUrl, tokenSecretKey: tokenKey }
+            properties: {
+              kind: "argocd",
+              serverUrl,
+              tokenSecretKey: tokenKey,
+              ...(opts.allowInternalEgress ? { allowInternalEgress: true } : {})
+            }
           },
           { idempotencyKey: randomUUID() }
         );

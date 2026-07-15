@@ -46,7 +46,9 @@ import {
   upsertExecutorBinding,
   getExecutorBinding,
   isKnownExecutorModule,
-  executionSystemInstanceId
+  executionSystemInstanceId,
+  resolveInternalEgress,
+  EXECUTION_SYSTEM_INSTANCE_PREFIX
 } from "../coordination/executor-bindings-repo.js";
 import {
   upsertNotificationBinding,
@@ -100,11 +102,32 @@ function validatePluginConfig(module: string, config: unknown): void {
 async function bindTargetToExecutionSystem(
   tx: TenantTx,
   orgId: string,
+  subjectObjectId: string,
   targetObjectId: string,
   executionSystemId: string,
   externalRef?: string
 ) {
   const sys = await getObjectByIdOrUrnAnyType(tx, orgId, executionSystemId);
+  // Authorize FIRST — before the typeId check below — so an unauthorized caller can't use the
+  // "'x' is a 'y', not an execution-system" error as a type/existence oracle for objects they may
+  // not read.
+  //
+  // `object:WRITE`, not object:read: referencing a system makes SCP dispatch with that system's
+  // DECRYPTED token (and, if both egress layers agree, its internal-egress reach) — a use-of-
+  // credentials capability, not a read. object:read would be no bar at all: the built-in Viewer role
+  // (auto-assigned at org root to every first-time login) holds object:read, and authz walks
+  // containment to the org root, so every org member would pass. object:write matches the bar this
+  // same route already requires on the binding TARGET.
+  //
+  // Known trade (ADR-0003): a system shared by many teams must grant them object:write on it, which
+  // also lets them modify its serverUrl. A distinct "use" capability would be the finer answer, but
+  // that means new RBAC; revisit if shared-system delegation becomes real.
+  await authorize(tx, {
+    orgId,
+    subjectObjectId,
+    permission: "object:write",
+    scopeObjectId: sys.id
+  });
   if (sys.typeId !== "execution-system") {
     throw badRequest(`'${executionSystemId}' is a '${sys.typeId}', not an execution-system`);
   }
@@ -296,6 +319,15 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
         if (!isKnownExecutorModule(body.pluginModule!)) {
           throw badRequest(`unknown or non-executor plugin module '${body.pluginModule}'`);
         }
+        // An inline binding may not squat the reserved `execution-system:<id>` instance-id namespace —
+        // the plugin-host keyspace is flat and start() skips an already-registered id, so squatting it
+        // would silently re-point a real system's coordination traffic at tenant-controlled config.
+        if (body.pluginInstanceId?.startsWith(EXECUTION_SYSTEM_INSTANCE_PREFIX)) {
+          throw badRequest(
+            `pluginInstanceId may not start with the reserved '${EXECUTION_SYSTEM_INSTANCE_PREFIX}' namespace — ` +
+              `use --execution-system to bind via a registered system`
+          );
+        }
         // Reject e.g. a managed-iac binding that tries to set server-governed fields (CRITICAL #1).
         validatePluginConfig(body.pluginModule!, body.config);
       }
@@ -313,6 +345,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           return bindTargetToExecutionSystem(
             tx,
             auth.orgId,
+            auth.subjectObjectId,
             target.id,
             body.executionSystemId,
             body.externalRef
@@ -519,6 +552,13 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
       if (!(KNOWN_DISCOVERY_MODULES as string[]).includes(request.body.pluginModule)) {
         throw badRequest(`unknown discovery plugin module '${request.body.pluginModule}'`);
       }
+      // Same reserved-namespace guard as the inline-binding path: a discovery run registers a plugin
+      // instance under a caller-chosen id, so it must not be able to squat `execution-system:<id>`.
+      if (request.body.pluginInstanceId.startsWith(EXECUTION_SYSTEM_INSTANCE_PREFIX)) {
+        throw badRequest(
+          `pluginInstanceId may not start with the reserved '${EXECUTION_SYSTEM_INSTANCE_PREFIX}' namespace`
+        );
+      }
       validatePluginConfig(request.body.pluginModule, request.body.config);
       const proposal = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         await authorize(tx, {
@@ -527,10 +567,73 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           permission: "object:read",
           scopeObjectId: auth.orgId
         });
+        // Execution-system-backed discovery (e.g. argocd-discovery names its system in
+        // `config.executionSystemId`): the PERSISTED system — not the request — is the source of truth
+        // for where this plugin may talk, with what token, and whether internal egress is permitted.
+        // Mirrors executor-bindings-repo.ts's resolveExecutorPluginInstance discipline ("tenant config
+        // first, server-governed fields LAST — they win", CRITICAL #1 / MAJOR #4): a caller may NAME a
+        // system, never supply its serverUrl/token/egress allowance. Without this, an internal-egress
+        // grant on system X would authorize egress to an arbitrary caller-supplied `config.serverUrl` in
+        // the SAME request — a tenant-controlled SSRF into loopback/RFC1918 (egress-guard.ts, MAJOR #6).
+        let allowInternalEgress = false;
+        let effectiveConfig = request.body.config;
+        let effectiveAllowedHosts = request.body.allowedHosts;
+        let effectiveSecretRefs = request.body.secretRefs ?? {};
+        const execSysRef = (request.body.config as Record<string, unknown> | undefined)
+          ?.executionSystemId;
+        if (typeof execSysRef === "string" && execSysRef.length > 0) {
+          const sys = await getObjectByIdOrUrnAnyType(tx, auth.orgId, execSysRef);
+          // Authorize at the REFERENCED SYSTEM's own scope (and BEFORE the typeId check, so the error
+          // isn't a type oracle). object:WRITE for the same reason as bindTargetToExecutionSystem:
+          // naming a system here dispatches a plugin with its decrypted token, and the handler's
+          // org-root object:read above is satisfied by every org member (the Viewer role holds
+          // object:read), so an object:read check here would be effectively no gate at all.
+          await authorize(tx, {
+            orgId: auth.orgId,
+            subjectObjectId: auth.subjectObjectId,
+            permission: "object:write",
+            scopeObjectId: sys.id
+          });
+          if (sys.typeId !== "execution-system") {
+            throw badRequest(`'${execSysRef}' is a '${sys.typeId}', not an execution-system`);
+          }
+          const props = sys.properties as {
+            serverUrl?: string;
+            tokenSecretKey?: string;
+            allowInternalEgress?: boolean;
+          };
+          if (!props.serverUrl) {
+            throw badRequest(`execution-system '${sys.id}' is missing a 'serverUrl' property`);
+          }
+          let systemHost: string;
+          try {
+            systemHost = new URL(props.serverUrl).hostname;
+          } catch {
+            throw badRequest(`execution-system '${sys.id}' has an unparseable 'serverUrl'`);
+          }
+          // Two-layer (ADR-0003): the system's declared intent AND the operator's
+          // SCP_INTERNAL_EGRESS_HOSTS allowlist must both permit — same resolver as the binding path.
+          allowInternalEgress = resolveInternalEgress(
+            props.serverUrl,
+            props.allowInternalEgress === true
+          );
+          effectiveConfig = {
+            ...((request.body.config as Record<string, unknown>) ?? {}),
+            // Server-governed — these WIN over anything the caller sent.
+            serverUrl: props.serverUrl,
+            ...(props.tokenSecretKey ? { tokenSecretKey: props.tokenSecretKey } : {})
+          };
+          effectiveSecretRefs = props.tokenSecretKey
+            ? { [props.tokenSecretKey]: props.tokenSecretKey }
+            : {};
+          // Pin egress to the registered system's OWN host, so the allowance can never be aimed
+          // anywhere else — this, not the permission gate, is what makes the grant narrow.
+          effectiveAllowedHosts = [systemHost];
+        }
         const resolvedSecrets = await resolveSecretRefs(
           tx,
           auth.orgId,
-          request.body.secretRefs ?? {},
+          effectiveSecretRefs,
           deps.config.secretsMasterKey
         );
         await host.start([
@@ -539,9 +642,10 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
             module: request.body.pluginModule as PluginModule,
             orgId: auth.orgId,
             domainId: "default",
-            config: request.body.config,
+            config: effectiveConfig,
             secrets: resolvedSecrets,
-            allowedHosts: request.body.allowedHosts
+            allowedHosts: effectiveAllowedHosts,
+            allowInternalEgress
           }
         ]);
         return host.discovery(request.body.pluginInstanceId).discover();
@@ -630,6 +734,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           const created = await bindTargetToExecutionSystem(
             tx,
             auth.orgId,
+            auth.subjectObjectId,
             targetId,
             proposedBinding.executionSystemId,
             proposedBinding.externalRef

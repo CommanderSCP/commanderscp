@@ -379,7 +379,12 @@ export class SubprocessPluginHost implements PluginHost {
       // logged; `minimalChildEnv()` above already ensures the child inherits nothing else from
       // this process's own environment.
       SCP_PLUGIN_SECRETS_JSON: JSON.stringify(instance.config.secrets ?? {}),
-      SCP_PLUGIN_ALLOWED_HOSTS_JSON: JSON.stringify(instance.config.allowedHosts ?? [])
+      SCP_PLUGIN_ALLOWED_HOSTS_JSON: JSON.stringify(instance.config.allowedHosts ?? []),
+      // SSRF internal-egress allowance for THIS instance (contract.ts's `allowInternalEgress`). Set
+      // by the resolver ONLY from a persisted execution-system object's operator-set property — same
+      // server-provenance discipline as the mtls paths below and never reachable from tenant config.
+      // Its own env var (not `SCP_PLUGIN_CONFIG_JSON`), so a plugin's `config` can never spoof it.
+      SCP_PLUGIN_ALLOW_INTERNAL_EGRESS: String(instance.config.allowInternalEgress === true)
     };
     // M8 hardening (DESIGN.md §13, BUILD_AND_TEST.md §8 M8 item 6 "Federation mTLS transport
     // identity"): forward the HOST-level (operator-configured, NEVER tenant-suppliable — same

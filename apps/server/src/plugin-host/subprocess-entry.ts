@@ -383,9 +383,15 @@ async function main(): Promise<void> {
   const domainId = requireEnv("SCP_PLUGIN_DOMAIN_ID");
   const config: unknown = JSON.parse(process.env.SCP_PLUGIN_CONFIG_JSON ?? "{}");
   const allowedHosts = JSON.parse(process.env.SCP_PLUGIN_ALLOWED_HOSTS_JSON ?? "[]") as string[];
-  // Loopback/private egress permitted ONLY for operator-plane escape hatches — by MODULE identity,
-  // never tenant config (MAJOR #6 follow-up).
-  const allowInternalPrivate = OPERATOR_PLANE_MODULES.has(moduleName);
+  // Loopback/private egress permitted for (a) operator-plane escape hatches by MODULE identity, or
+  // (b) an instance whose backing execution-system object an operator explicitly marked
+  // `allowInternalEgress` (host.ts injects `SCP_PLUGIN_ALLOW_INTERNAL_EGRESS` from that persisted
+  // object only — never from tenant config; MAJOR #6 follow-up). Either way, `linkLocal`/`unspecified`
+  // (cloud metadata) stay blocked for every plugin (egress-guard.ts). A tenant binding's own
+  // `config.url = http://10.x` still resolves `false` here — it is not an execution-system property.
+  const allowInternalPrivate =
+    OPERATOR_PLANE_MODULES.has(moduleName) ||
+    process.env.SCP_PLUGIN_ALLOW_INTERNAL_EGRESS === "true";
   // M8: client-certificate material, gated on module identity (only federation-https ever sees
   // the SCP_FEDERATION_MTLS_* env vars in the first place — host.ts's `spawnInstance` — but this
   // module-identity check is defence in depth against the vars ever leaking to another module).
