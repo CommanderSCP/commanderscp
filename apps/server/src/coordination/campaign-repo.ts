@@ -56,6 +56,8 @@ export interface ProposeCampaignInput {
   description?: string;
   labels?: Record<string, unknown>;
   topologyIdOrUrn?: string;
+  /** WHICH pipeline every fanned-out change rolls (M12 P4A). Omitted => 'software'. */
+  purpose?: "infra" | "software";
   /** Object ids or URNs this campaign fans out to — one member Change per target, per wave. */
   targets: string[];
 }
@@ -116,6 +118,10 @@ export async function proposeCampaign(
     domainId: input.domainId,
     properties: {
       targets: targetObjectIds,
+      // Read back by `campaign-reconcile.ts` via `purposeOf` and stamped onto every change this
+      // campaign fans out (M12 P4A). Always written — a campaign object that omitted it would read
+      // as 'software' anyway, and persisting it explicitly keeps the campaign self-describing.
+      purpose: input.purpose ?? "software",
       ...(input.description !== undefined ? { description: input.description } : {}),
       ...(topologyObjectId !== undefined ? { topologyObjectId, topologyVersion } : {})
     },

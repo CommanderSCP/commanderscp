@@ -169,6 +169,13 @@
       "when": 1784800000000,
       "tag": "0023_executor_binding_purpose",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1784900000000,
+      "tag": "0024_wave_target_purpose",
+      "breakpoints": true
     }
   ]
 }

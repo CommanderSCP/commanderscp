@@ -492,6 +492,12 @@ export const sourceMappings = pgTable(
     repoPattern: text("repo_pattern"), // glob, matched against source_ref.repo
     pathPattern: text("path_pattern"), // glob, matched against source_ref.path (optional)
     componentObjectId: uuid("component_object_id").notNull(),
+    // WHICH pipeline of that component this source drives (M12 P4A, migration 0024): 'infra' |
+    // 'software'. A change IS a release and comes from ONE source per pipeline (the infra repo vs the
+    // app repo), so the mapping is where the release declares its pipeline — deliberately NOT inferred
+    // from source_kind, because `github` can run Terraform OR deploy an app. Defaults to 'software',
+    // so every pre-P4A mapping resolves exactly the binding reconcile triggers today.
+    purpose: text("purpose").notNull().default("software"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [index("source_mappings_org_source").on(table.orgId, table.sourceKind)]
@@ -600,6 +606,11 @@ export const changeWaveTargets = pgTable(
     orgId: uuid("org_id").notNull(),
     waveId: uuid("wave_id").notNull(),
     targetObjectId: uuid("target_object_id").notNull(),
+    // WHICH pipeline of the target this wave rolls (M12 P4A, migration 0024) — what reconcile resolves
+    // the executor binding by, now that a target can hold both an infra and a software one (P3).
+    // Flows in from the source mapping that matched the release. Defaults to 'software': every
+    // pre-P4A wave target rolls exactly what it rolled before.
+    purpose: text("purpose").notNull().default("software"),
     executorPluginId: text("executor_plugin_id"),
     executorRef: jsonb("executor_ref"), // ExternalRunRef once triggered
     /** Captured before trigger — what a rollback of this wave target would restore (DESIGN §9.4). */

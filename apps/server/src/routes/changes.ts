@@ -106,7 +106,8 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
           correlationKey: body.correlationKey,
           emergency: body.emergency,
           topologyIdOrUrn: body.topology,
-          targets: body.targets
+          targets: body.targets,
+          purpose: body.purpose
         });
       });
       reply.status(201).send(change);

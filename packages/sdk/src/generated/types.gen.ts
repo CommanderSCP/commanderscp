@@ -8589,6 +8589,7 @@ export type ProposeChangeData = {
         correlationKey?: string;
         emergency?: boolean;
         topology?: string;
+        purpose?: 'infra' | 'software';
         targets: Array<string>;
     };
     path?: never;
@@ -8850,6 +8851,7 @@ export type ExplainChangeResponses = {
                     targetObjectId: string;
                     targetUrn?: string;
                     targetName?: string;
+                    purpose: 'infra' | 'software';
                     executorPluginId: string | null;
                     executorRef: {
                         [key: string]: unknown;
@@ -9457,6 +9459,7 @@ export type ListSourceMappingsResponses = {
             repoPattern: string | null;
             pathPattern: string | null;
             componentObjectId: string;
+            purpose: 'infra' | 'software';
             createdAt: string;
         }>;
         nextCursor: string | null;
@@ -9471,6 +9474,7 @@ export type CreateSourceMappingData = {
         repoPattern?: string;
         pathPattern?: string;
         component: string;
+        purpose?: 'infra' | 'software';
     };
     path: {
         sourceKind: string;
@@ -9539,6 +9543,7 @@ export type CreateSourceMappingResponses = {
         repoPattern: string | null;
         pathPattern: string | null;
         componentObjectId: string;
+        purpose: 'infra' | 'software';
         createdAt: string;
     };
 };
@@ -11321,6 +11326,7 @@ export type ProposeCampaignData = {
             [key: string]: unknown;
         };
         topology?: string;
+        purpose?: 'infra' | 'software';
         targets: Array<string>;
     };
     path?: never;
