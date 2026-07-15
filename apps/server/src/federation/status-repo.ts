@@ -7,7 +7,7 @@ import { getCursor } from "./cursors-repo.js";
 import { listRecentTransfers } from "./bundle-transfers-repo.js";
 
 /**
- * `GET /federation/status` — the parent cross-domain status view (DESIGN.md §13): every known
+ * `GET /federation/status` — the commander cross-domain status view (DESIGN.md §13): every known
  * peer, this side's own sync freshness against it, and bundle-transfer history. Bounded per §13:
  * for an air-gapped peer this is explicitly "as of" the last confirmed transfer, never presented
  * as live — the CLI/UI layer is responsible for rendering `lastSyncedAt` with that framing rather

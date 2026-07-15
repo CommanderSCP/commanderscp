@@ -9,8 +9,8 @@
   </defs>
   <rect width="1560" height="1080" fill="#ffffff"/>
 
-  <text x="40" y="44" font-size="22" font-weight="700" fill="#0f172a">CommanderSCP — Parent Instance (Global Coordination Layer)</text>
-  <text x="40" y="68" font-size="13" fill="#64748b">One scpd image · api + worker roles · PostgreSQL is the only required stateful dependency · same binary as every child</text>
+  <text x="40" y="44" font-size="22" font-weight="700" fill="#0f172a">CommanderSCP — Commander Instance (Global Coordination Layer)</text>
+  <text x="40" y="68" font-size="13" fill="#64748b">One scpd image · api + worker roles · PostgreSQL is the only required stateful dependency · same binary as every outpost</text>
 
   <!-- clients row -->
   <g font-size="11.5" fill="#1d4ed8">
@@ -32,7 +32,7 @@
 
   <!-- instance outer -->
   <rect x="40" y="168" width="1210" height="822" rx="14" fill="none" stroke="#334155" stroke-width="2"/>
-  <text x="60" y="192" font-size="13" font-weight="700" fill="#334155">scpd — parent instance · one container image · api / worker role flag</text>
+  <text x="60" y="192" font-size="13" font-weight="700" fill="#334155">scpd — commander instance · one container image · api / worker role flag</text>
 
   <!-- api role -->
   <rect x="64" y="210" width="350" height="452" rx="10" fill="#eff6ff" stroke="#1d4ed8"/>
@@ -82,16 +82,16 @@
 
   <!-- federation engine -->
   <rect x="854" y="210" width="372" height="300" rx="10" fill="#f0fdfa" stroke="#0f766e"/>
-  <text x="866" y="234" font-size="13" font-weight="700" fill="#0f766e">Federation Engine — parent side</text>
+  <text x="866" y="234" font-size="13" font-weight="700" fill="#0f766e">Federation Engine — commander side</text>
   <g font-size="11.5" fill="#134e4a">
     <rect x="866" y="246" width="348" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#5eead4"/>
     <text x="876" y="273">Sync-journal builder — outbox-derived · hash-chained</text>
     <rect x="866" y="296" width="348" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#5eead4"/>
     <text x="876" y="323">Ed25519 domain key — signs segments + attestations</text>
     <rect x="866" y="346" width="348" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#5eead4"/>
-    <text x="876" y="373">Child key registry — exchanged at pairing · rotation</text>
+    <text x="876" y="373">Outpost key registry — exchanged at pairing · rotation</text>
     <rect x="866" y="396" width="348" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#5eead4"/>
-    <text x="876" y="423">Child-initiated mTLS — pull config · push status</text>
+    <text x="876" y="423">Outpost-initiated mTLS — pull config · push status</text>
     <rect x="866" y="446" width="348" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#5eead4"/>
     <text x="876" y="473">Bundle export/import — .scpbundle for air-gap</text>
   </g>
@@ -99,7 +99,7 @@
 
   <!-- global config authority -->
   <rect x="854" y="524" width="372" height="148" rx="10" fill="#fefce8" stroke="#a16207"/>
-  <text x="866" y="546" font-size="12.5" font-weight="700" fill="#a16207">Authoritative global config — origin: parent</text>
+  <text x="866" y="546" font-size="12.5" font-weight="700" fill="#a16207">Authoritative global config — origin: commander</text>
   <g font-size="11" fill="#713f12">
     <rect x="866" y="558" width="118" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
     <text x="925" y="577" text-anchor="middle">domain registry</text>
@@ -113,7 +113,7 @@
     <text x="1095" y="615" text-anchor="middle">campaigns · initiatives</text>
     <rect x="866" y="634" width="140" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
     <text x="936" y="653" text-anchor="middle">control definitions</text>
-    <text x="1016" y="653" font-size="10.5" font-style="italic" fill="#a16207">single-writer · read-only at children</text>
+    <text x="1016" y="653" font-size="10.5" font-style="italic" fill="#a16207">single-writer · read-only at outposts</text>
   </g>
 
   <!-- plugin host (under worker/federation columns only) -->
@@ -130,7 +130,7 @@
     <text x="847" y="733" text-anchor="middle">webhook-notify</text>
     <rect x="916" y="712" width="126" height="34" rx="6" fill="#ffffff" opacity="0.8" stroke="#fed7aa"/>
     <text x="979" y="733" text-anchor="middle">webhook-control</text>
-    <text x="456" y="764" font-size="10.5" font-style="italic" fill="#9a3412">executor plugins typically run in child domains — see child-instance diagram</text>
+    <text x="456" y="764" font-size="10.5" font-style="italic" fill="#9a3412">executor plugins typically run in outpost domains — see outpost-instance diagram</text>
   </g>
   <line x1="700" y1="662" x2="700" y2="678" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)"/>
 
@@ -173,18 +173,18 @@
   <text x="1113" y="928" text-anchor="middle" font-size="10" fill="#14532d">filesystem default · S3 optional</text>
   <text x="1113" y="944" text-anchor="middle" font-size="10" fill="#14532d">bundles · evidence · audit anchors</text>
 
-  <!-- children (right) -->
-  <text x="1290" y="204" font-size="13" font-weight="700" fill="#334155">Child domain instances</text>
+  <!-- outposts (right) -->
+  <text x="1290" y="204" font-size="13" font-weight="700" fill="#334155">Outpost domain instances</text>
   <rect x="1290" y="220" width="230" height="64" rx="10" fill="#f8fafc" stroke="#0f766e"/>
-  <text x="1405" y="246" text-anchor="middle" font-size="11.5" font-weight="700" fill="#0f172a">Commercial child</text>
+  <text x="1405" y="246" text-anchor="middle" font-size="11.5" font-weight="700" fill="#0f172a">Commercial outpost</text>
   <text x="1405" y="264" text-anchor="middle" font-size="10" fill="#475569">connected — pulls journal (mTLS)</text>
   <text x="1405" y="300" text-anchor="middle" font-size="9.5" fill="#0f766e">config ↓ read-only · status ↑</text>
   <rect x="1290" y="310" width="230" height="64" rx="10" fill="#f8fafc" stroke="#0f766e"/>
-  <text x="1405" y="336" text-anchor="middle" font-size="11.5" font-weight="700" fill="#0f172a">GovCloud / FedRAMP child</text>
+  <text x="1405" y="336" text-anchor="middle" font-size="11.5" font-weight="700" fill="#0f172a">GovCloud / FedRAMP outpost</text>
   <text x="1405" y="354" text-anchor="middle" font-size="10" fill="#475569">connected · stricter local policy</text>
   <text x="1405" y="390" text-anchor="middle" font-size="9.5" fill="#0f766e">config ↓ read-only · status ↑</text>
   <rect x="1290" y="400" width="230" height="64" rx="10" fill="#f8fafc" stroke="#0f766e" stroke-dasharray="6 4"/>
-  <text x="1405" y="426" text-anchor="middle" font-size="11.5" font-weight="700" fill="#0f172a">Air-gapped child</text>
+  <text x="1405" y="426" text-anchor="middle" font-size="11.5" font-weight="700" fill="#0f172a">Air-gapped outpost</text>
   <text x="1405" y="444" text-anchor="middle" font-size="10" fill="#475569">bundle files · removable media</text>
   <text x="1405" y="480" text-anchor="middle" font-size="9.5" fill="#0f766e">.scpbundle ⇄ sneakernet · hand-fill</text>
 
@@ -193,13 +193,13 @@
   <line x1="1250" y1="432" x2="1290" y2="432" stroke="#0f766e" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#arrTeal)" marker-start="url(#arrTeal)"/>
 
   <rect x="1290" y="520" width="230" height="150" rx="10" fill="#f8fafc" stroke="#64748b" stroke-dasharray="5 4"/>
-  <text x="1302" y="544" font-size="11.5" font-weight="700" fill="#334155">Parent UI — cross-domain view</text>
+  <text x="1302" y="544" font-size="11.5" font-weight="700" fill="#334155">Commander UI — cross-domain view</text>
   <text x="1302" y="564" font-size="10.5" fill="#475569">every domain · sync freshness</text>
   <text x="1302" y="582" font-size="10.5" fill="#475569">in-flight changes per domain</text>
   <text x="1302" y="600" font-size="10.5" fill="#475569">campaign / initiative roll-up</text>
   <text x="1302" y="618" font-size="10.5" fill="#475569">air-gapped: last-known + transfer status</text>
-  <text x="1302" y="642" font-size="10" font-style="italic" fill="#64748b">child-initiated only — parent never</text>
-  <text x="1302" y="658" font-size="10" font-style="italic" fill="#64748b">dials a child or edits its data</text>
+  <text x="1302" y="642" font-size="10" font-style="italic" fill="#64748b">outpost-initiated only — commander never</text>
+  <text x="1302" y="658" font-size="10" font-style="italic" fill="#64748b">dials an outpost or edits its data</text>
 
   <!-- legend -->
   <line x1="40" y1="1024" x2="90" y2="1024" stroke="#0f766e" stroke-width="1.8"/>

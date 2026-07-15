@@ -11,16 +11,16 @@ import { federationSelf } from "../db/schema.js";
  * Created LAZILY with `role: 'unset'` the first time anything needs it — DESIGN §4.1 "every row is
  * born federation-ready" means `objects.originDomainId` needs a real domain id from the very first
  * object an org ever creates, well before an operator has necessarily run
- * `scp federation init --role parent|child`. `role` only changes via an explicit
- * `initFederationSelf` call (never inferred), so a domain silently defaults to neither parent nor
- * child — federation stays fully opt-in per DESIGN §13 ("federation enhances operation, it is
- * never required for it").
+ * `scp federation init --role commander|outpost|retrans`. `role` only changes via an explicit
+ * `initFederationSelf` call (never inferred), so a domain silently defaults to none of
+ * commander/outpost/retrans — federation stays fully opt-in per DESIGN §13 ("federation enhances
+ * operation, it is never required for it").
  */
 export interface FederationSelf {
   orgId: string;
   domainId: string;
   name: string;
-  role: "unset" | "parent" | "child";
+  role: "unset" | "commander" | "outpost" | "retrans";
 }
 
 function toFederationSelf(row: typeof federationSelf.$inferSelect): FederationSelf {
@@ -65,7 +65,7 @@ export async function ensureFederationSelf(tx: TenantTx, orgId: string): Promise
 export interface InitFederationInput {
   orgId: string;
   name: string;
-  role: "parent" | "child";
+  role: "commander" | "outpost" | "retrans";
 }
 
 /** `scp federation init` — explicitly designates this domain's role and (optionally) renames it.

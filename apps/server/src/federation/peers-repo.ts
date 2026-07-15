@@ -9,9 +9,9 @@ import { maxAppliedSequenceForPeer } from "./cursors-repo.js";
 
 /**
  * Peer pairing + the peer public-key registry (DESIGN.md §13). Pairing itself is always initiated
- * from THIS side dialing/registering the other — never the reverse (§13 child-initiated-only; for
- * air-gapped peers, an out-of-band exchange of each side's `scp federation status` output). This
- * module only persists the result; it does not perform any network handshake itself (that's
+ * from THIS side dialing/registering the other — never the reverse (§13 outpost-initiated-only;
+ * for air-gapped peers, an out-of-band exchange of each side's `scp federation status` output).
+ * This module only persists the result; it does not perform any network handshake itself (that's
  * `packages/plugins/federation-https`'s job for the connected-mTLS case).
  */
 
@@ -19,7 +19,7 @@ export interface FederationPeerRow {
   id: string; // = peer's own federation domain id
   orgId: string;
   name: string;
-  role: "parent" | "child";
+  role: "commander" | "outpost" | "retrans";
   baseUrl: string | null;
   syncScope: SyncScope;
   pairedAt: string;
@@ -34,7 +34,7 @@ function toPeerRow(
     id: peer.id,
     orgId: peer.orgId,
     name: peer.name,
-    role: peer.role as "parent" | "child",
+    role: peer.role as "commander" | "outpost" | "retrans",
     baseUrl: peer.baseUrl,
     syncScope: peer.syncScope as SyncScope,
     pairedAt: peer.pairedAt.toISOString(),
@@ -118,7 +118,7 @@ export interface PairPeerInput {
   orgId: string;
   domainId: string;
   name: string;
-  role: "parent" | "child";
+  role: "commander" | "outpost" | "retrans";
   publicKey: string;
   baseUrl?: string;
   syncScope?: SyncScope;

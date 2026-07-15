@@ -148,7 +148,7 @@ export async function proposeChange(
   // M6 (DESIGN §13 journal entry kinds — richer than the generic `object_upsert` `createObject`
   // above already wrote for this change's underlying graph object): a `change_status` snapshot
   // carrying the full projection-row state, for peers syncing with a `changes_only` scope and for
-  // the parent cross-domain status view. Written even for an IMPORTED change (importedFromDomain
+  // the commander cross-domain status view. Written even for an IMPORTED change (importedFromDomain
   // set) — its LOCAL lifecycle from here on is this domain's own to report, distinct from the
   // origin domain's own journal entry for the promotion itself.
   {

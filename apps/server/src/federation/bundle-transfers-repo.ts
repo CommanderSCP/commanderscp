@@ -6,10 +6,10 @@ import { bundleTransfers } from "../db/schema.js";
 
 /**
  * Bundle-transfer tracking (DESIGN.md §13: "export created -> transfer submitted -> confirmed when
- * a returned bundle carries the child's import cursor"). Purely observational bookkeeping — never
- * consulted for authority/idempotency decisions (the journal's own sequence/hash chain is what
- * makes replication safe); this just gives the parent UI/CLI something to show for an air-gapped
- * peer's outstanding handoffs.
+ * a returned bundle carries the outpost's import cursor"). Purely observational bookkeeping —
+ * never consulted for authority/idempotency decisions (the journal's own sequence/hash chain is
+ * what makes replication safe); this just gives the commander UI/CLI something to show for an
+ * air-gapped peer's outstanding handoffs.
  */
 
 function toBundleTransfer(row: typeof bundleTransfers.$inferSelect): BundleTransfer {

@@ -121,9 +121,9 @@ SCP_CONFIG_DIR="$CONFIG_DIR_A" SCP_API_URL="$API_URL_A" "${CLI_BIN[@]}" login --
 echo "==> scp login (domain B)"
 SCP_CONFIG_DIR="$CONFIG_DIR_B" SCP_API_URL="$API_URL_B" "${CLI_BIN[@]}" login --username admin --password "$ADMIN_PASSWORD_B"
 
-echo "==> scp federation init (domain A = parent, domain B = child)"
-SCP_CONFIG_DIR="$CONFIG_DIR_A" SCP_API_URL="$API_URL_A" "${CLI_BIN[@]}" federation init --name domainA --role parent --output json
-SCP_CONFIG_DIR="$CONFIG_DIR_B" SCP_API_URL="$API_URL_B" "${CLI_BIN[@]}" federation init --name domainB --role child --output json
+echo "==> scp federation init (domain A = commander, domain B = outpost)"
+SCP_CONFIG_DIR="$CONFIG_DIR_A" SCP_API_URL="$API_URL_A" "${CLI_BIN[@]}" federation init --name domainA --role commander --output json
+SCP_CONFIG_DIR="$CONFIG_DIR_B" SCP_API_URL="$API_URL_B" "${CLI_BIN[@]}" federation init --name domainB --role outpost --output json
 
 echo "==> scp federation self (exchange public keys out-of-band — no network path exists between the two scpd containers)"
 SELF_A_JSON="$(SCP_CONFIG_DIR="$CONFIG_DIR_A" SCP_API_URL="$API_URL_A" "${CLI_BIN[@]}" federation self --output json)"
@@ -135,11 +135,11 @@ DOMAIN_B_PUBKEY="$(echo "$SELF_B_JSON" | json_field publicKey)"
 echo "domain A id: $DOMAIN_A_ID"
 echo "domain B id: $DOMAIN_B_ID"
 
-echo "==> scp federation pair (each side registers the other, from its own side — DESIGN §13 child-initiated-only)"
+echo "==> scp federation pair (each side registers the other, from its own side — DESIGN §13 outpost-initiated-only)"
 SCP_CONFIG_DIR="$CONFIG_DIR_A" SCP_API_URL="$API_URL_A" "${CLI_BIN[@]}" federation pair \
-  --domain-id "$DOMAIN_B_ID" --name domainB --role child --public-key "$DOMAIN_B_PUBKEY" --output json
+  --domain-id "$DOMAIN_B_ID" --name domainB --role outpost --public-key "$DOMAIN_B_PUBKEY" --output json
 SCP_CONFIG_DIR="$CONFIG_DIR_B" SCP_API_URL="$API_URL_B" "${CLI_BIN[@]}" federation pair \
-  --domain-id "$DOMAIN_A_ID" --name domainA --role parent --public-key "$DOMAIN_A_PUBKEY" --output json
+  --domain-id "$DOMAIN_A_ID" --name domainA --role commander --public-key "$DOMAIN_A_PUBKEY" --output json
 echo "PASS: both domains paired"
 
 echo "==> register a service in domain A: scp service register --name billing-svc"
@@ -228,9 +228,9 @@ if [ -z "$LAST_APPLIED_SEQ" ] || [ "$LAST_APPLIED_SEQ" -le 0 ]; then
 fi
 echo "PASS: convergence — domain A's federation status reflects domain B's returned journal"
 
-echo "==> scp audit verify (domain A) — audit-chain integrity holds on the parent side"
+echo "==> scp audit verify (domain A) — audit-chain integrity holds on the commander side"
 SCP_CONFIG_DIR="$CONFIG_DIR_A" SCP_API_URL="$API_URL_A" "${CLI_BIN[@]}" audit verify
-echo "==> scp audit verify (domain B) — audit-chain integrity holds on the child side"
+echo "==> scp audit verify (domain B) — audit-chain integrity holds on the outpost side"
 SCP_CONFIG_DIR="$CONFIG_DIR_B" SCP_API_URL="$API_URL_B" "${CLI_BIN[@]}" audit verify
 
 echo "==> M6 two-domain federation round-trip e2e: ALL CHECKS PASSED"

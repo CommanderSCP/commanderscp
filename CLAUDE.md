@@ -9,7 +9,7 @@ CommanderSCP is a **Federated Systems Coordination Platform**: a graph-native sy
 | [PROJECT_CHARTER.md](PROJECT_CHARTER.md) | **Authoritative.** Vision, requirements, principles, MVP scope. Where anything conflicts with it, the charter governs. |
 | [docs/DESIGN.md](docs/DESIGN.md) | Initial architecture. v0.1 Draft — **proposed, pending review**. |
 | [docs/BUILD_AND_TEST.md](docs/BUILD_AND_TEST.md) | Toolchain, bootstrap, test strategy, milestones M0–M8. v0.1 Draft — **proposed, pending review**. |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Architecture diagrams (parent instance, child instance, multi-domain overview) with legends. SVG sources in `docs/diagrams/` — keep them in sync with DESIGN.md. |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Architecture diagrams (commander instance, outpost instance, multi-domain overview) with legends. SVG sources in `docs/diagrams/` — keep them in sync with DESIGN.md. |
 
 ## Current status
 
@@ -29,7 +29,7 @@ These are invariants. Never trade them away for implementation convenience.
 
 ## Proposed stack (pending review — see DESIGN.md for rationale)
 
-TypeScript 5.x / Node 22 everywhere. Fastify 5 + Zod (single contract source → OpenAPI 3.1 → generated SDK → CLI/IaC). PostgreSQL 16 serves as graph store, default event bus (outbox + pg-boss + LISTEN/NOTIFY), scheduler, and audit log; NATS JetStream is an optional event-bus backend built early in MVP. Drizzle ORM with expand/contract migrations. React 18 + Vite SPA served by the API process. pnpm workspaces + Turborepo monorepo. CEL (cel-js) for policy expressions. Plugins run under a subprocess isolation host. Federation is hub-and-spoke: a parent instance is the source of truth for global config, child domain instances hold it read-only and report status upward, exchanging signed journals over mTLS HTTPS or air-gap bundle files. Deployment: two-container docker compose for dev/eval, one Helm chart for Kubernetes (api/worker scaled independently), signed air-gap bundles, and an Ansible collection for VM/on-prem fleet updates.
+TypeScript 5.x / Node 22 everywhere. Fastify 5 + Zod (single contract source → OpenAPI 3.1 → generated SDK → CLI/IaC). PostgreSQL 16 serves as graph store, default event bus (outbox + pg-boss + LISTEN/NOTIFY), scheduler, and audit log; NATS JetStream is an optional event-bus backend built early in MVP. Drizzle ORM with expand/contract migrations. React 18 + Vite SPA served by the API process. pnpm workspaces + Turborepo monorepo. CEL (cel-js) for policy expressions. Plugins run under a subprocess isolation host. Federation is hub-and-spoke: a commander instance is the source of truth for global config, outpost domain instances hold it read-only and report status upward, exchanging signed journals over mTLS HTTPS or air-gap bundle files. Deployment: two-container docker compose for dev/eval, one Helm chart for Kubernetes (api/worker scaled independently), signed air-gap bundles, and an Ansible collection for VM/on-prem fleet updates.
 
 ## Working conventions
 

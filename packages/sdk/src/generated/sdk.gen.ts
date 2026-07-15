@@ -1633,7 +1633,7 @@ export const addInitiativeCampaign = <ThrowOnError extends boolean = false>(opti
 });
 
 /**
- * Designate this domain's federation role (parent|child)
+ * Designate this domain's federation role (commander|outpost|retrans)
  */
 export const initFederation = <ThrowOnError extends boolean = false>(options: Options<InitFederationData, ThrowOnError>): RequestResult<InitFederationResponses, InitFederationErrors, ThrowOnError> => (options.client ?? client).post<InitFederationResponses, InitFederationErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -1747,7 +1747,7 @@ export const getMergedOverlayView = <ThrowOnError extends boolean = false>(optio
 });
 
 /**
- * Manually enter a parent-origin object as an unverified shadow copy (air-gapped, no bundle transport)
+ * Manually enter a commander-origin object as an unverified shadow copy (air-gapped, no bundle transport)
  */
 export const handFillObject = <ThrowOnError extends boolean = false>(options: Options<HandFillObjectData, ThrowOnError>): RequestResult<HandFillObjectResponses, HandFillObjectErrors, ThrowOnError> => (options.client ?? client).post<HandFillObjectResponses, HandFillObjectErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],

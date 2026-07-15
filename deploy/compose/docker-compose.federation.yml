@@ -19,7 +19,7 @@
 # Both `scp` services share the identical `image:` tag so Compose builds the "scp" image exactly
 # ONCE (not once per service — the default when two `build:` blocks share a context but no
 # `image:` name) and reuses it for both containers. Real deployments do the same: "one binary,
-# roles not products" (CLAUDE.md) — a parent and a child domain run the SAME published image.
+# roles not products" (CLAUDE.md) — a commander and an outpost domain run the SAME published image.
 
 services:
   domain-a-postgres:

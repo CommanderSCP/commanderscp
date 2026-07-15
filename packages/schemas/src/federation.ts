@@ -8,7 +8,24 @@ import { z } from "zod";
  * same split as `audit.ts` / `audit-chain.ts`.
  */
 
-export const FederationRoleSchema = z.enum(["unset", "parent", "child"]);
+/**
+ * The three federation-role tiers (owner decision, 2026-07-15 — clean break from the earlier
+ * `parent`/`child` vocabulary; see docs/adr/0004-service-naming-commander-outpost-retrans.md):
+ *
+ *  - `commander` — the top/central service: the single source of truth for global config (the
+ *    charter's Global Coordination Layer). Replaces the old `parent` role.
+ *  - `outpost` — a lower/environment-specific domain instance (e.g. `commercial-amer`,
+ *    `commercial-apac`, `federal`, `airgap-1`). One per environment/region. Replaces the old
+ *    `child` role.
+ *  - `retrans` (retransmission) — a NEW role for the CDS (cross-domain solution) boundary. It
+ *    deliberately does much LESS than an outpost: it still validates (signature/hash-chain
+ *    verification, same fail-closed checks as any import), but does essentially nothing beyond
+ *    that plus pushing the artifact up through the CDS. It never originates config, never holds
+ *    local authoritative objects, and never terminates a promotion — it is a store-and-forward
+ *    validation relay. No new CDS transfer logic ships with this declaration; that lands with the
+ *    dedicated CDS work.
+ */
+export const FederationRoleSchema = z.enum(["unset", "commander", "outpost", "retrans"]);
 export type FederationRole = z.infer<typeof FederationRoleSchema>;
 
 /** Sync scope, configurable per peer (DESIGN §13: "full graph / policies-only / changes-only /
@@ -64,18 +81,18 @@ export type FederationSelfInfo = z.infer<typeof FederationSelfSchema>;
 
 export const InitFederationRequestSchema = z.object({
   name: z.string().min(1).max(200),
-  role: z.enum(["parent", "child"])
+  role: z.enum(["commander", "outpost", "retrans"])
 });
 export type InitFederationRequest = z.infer<typeof InitFederationRequestSchema>;
 
-/** `POST /federation/peers` — pairing (DESIGN §13). Child-initiated in the connected-mTLS case
- *  (the child dials the parent to exchange keys); for air-gapped peers this is an out-of-band
+/** `POST /federation/peers` — pairing (DESIGN §13). Outpost-initiated in the connected-mTLS case
+ *  (the outpost dials the commander to exchange keys); for air-gapped peers this is an out-of-band
  *  exchange of each side's public identity (`scp federation status` prints it; the operator
  *  copies it to the other side's `scp federation pair` call). */
 export const PairPeerRequestSchema = z.object({
   domainId: z.string().uuid(),
   name: z.string().min(1).max(200),
-  role: z.enum(["parent", "child"]),
+  role: z.enum(["commander", "outpost", "retrans"]),
   publicKey: z.string().min(1),
   baseUrl: z.string().url().optional(),
   syncScope: SyncScopeSchema.optional()
@@ -109,7 +126,7 @@ export const BundleTransferSchema = z.object({
 });
 export type BundleTransfer = z.infer<typeof BundleTransferSchema>;
 
-/** `GET /federation/status` — parent cross-domain view (DESIGN §13): every known peer, its sync
+/** `GET /federation/status` — commander cross-domain view (DESIGN §13): every known peer, its sync
  *  freshness (`lastAppliedSequence` from this side's own cursor), and bundle-transfer status.
  *  Bounded for air-gapped peers: the UI/CLI must label this "as of `lastSyncedAt`", never live. */
 export const FederationPeerStatusSchema = z.object({
@@ -243,10 +260,10 @@ export const ImportResultSchema = z.union([
 ]);
 export type ImportResult = z.infer<typeof ImportResultSchema>;
 
-/** `POST /federation/hand-fill` — DESIGN §13: air-gapped children with no bundle transport
- *  manually enter a parent-origin object as an unverified `provenance: manual` shadow copy. */
+/** `POST /federation/hand-fill` — DESIGN §13: air-gapped outposts with no bundle transport
+ *  manually enter a commander-origin object as an unverified `provenance: manual` shadow copy. */
 export const HandFillRequestSchema = z.object({
-  peer: z.string().min(1), // the parent peer this is claimed to originate from
+  peer: z.string().min(1), // the commander peer this is claimed to originate from
   typeId: z.string().min(1),
   urn: z.string().min(1),
   name: z.string().min(1),

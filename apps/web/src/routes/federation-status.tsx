@@ -19,8 +19,12 @@ function formatDateTime(value: string | null): string {
 }
 
 function roleBadge(role: string): React.JSX.Element {
+  // "commander" (the single coordinating instance, DESIGN §13) gets the highlighted variant;
+  // "outpost", "retrans", and "unset" all render as the same plain badge — this page doesn't
+  // (yet) treat retrans as visually distinct, matching its minimal, not-yet-built-out semantics
+  // (ADR-0004).
   return (
-    <Badge variant={role === "parent" ? "info" : "secondary"} className="capitalize">
+    <Badge variant={role === "commander" ? "info" : "secondary"} className="capitalize">
       {role}
     </Badge>
   );
@@ -36,7 +40,7 @@ function transferStatusBadge(status: string): React.JSX.Element {
 }
 
 /**
- * `/federation` — read-only federation status view (BUILD_AND_TEST.md §8 M6 item 7, "parent
+ * `/federation` — read-only federation status view (BUILD_AND_TEST.md §8 M6 item 7, "commander
  * federation status UI"; DESIGN.md §13). Consumes ONLY `client.federation.status()`/`.self()`
  * (the generated SDK, per CLAUDE.md's API -> SDK -> CLI/IaC -> UI parity principle) — the exact
  * same endpoints `scp federation status`/`scp federation self` call. Deliberately read-only:

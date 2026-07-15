@@ -195,20 +195,20 @@ bundledExecutor:
 
 # -------------------------------------------------------------------------------------------
 # Federation mTLS transport identity (DESIGN §13, M8 hardening) — host-level, operator-owned
-# client certificate the federation-https subprocess presents to the parent. Air-gap file
+# client certificate the federation-https subprocess presents to the commander. Air-gap file
 # transport is unaffected either way.
 # -------------------------------------------------------------------------------------------
 federation:
   mtls:
     enabled: false
     # Secret must contain tls.crt / tls.key (and optionally ca.crt to trust a private/self-signed
-    # parent-side CA) — the standard `kubernetes.io/tls` secret shape.
+    # commander-side CA) — the standard `kubernetes.io/tls` secret shape.
     existingSecret: ""
   # -----------------------------------------------------------------------------------------
   # In-app federation mTLS (M9.3, ADR-0001 — docs/adr/0001-in-app-federation-mtls.md) — the
   # THIRD, distinct mTLS knob in this chart (see deploy/helm/README.md's "Federation mTLS"
   # section for the full three-way distinction + precedence):
-  #   - federation.mtls    = CLIENT-side presentation (this domain dialing OUT as a child)
+  #   - federation.mtls    = CLIENT-side presentation (this domain dialing OUT as an outpost)
   #   - ingress.mtls        = EDGE server-side verification (nginx ingress, TLS terminated there)
   #   - federation.serverMtls (this block) = IN-APP server-side verification (apps/server's OWN
   #     Fastify listener terminates TLS itself and verifies an incoming peer's client cert on the
@@ -251,8 +251,8 @@ ingress:
     secretName: ""
   # EDGE server-side mTLS enforcement (adversarial review MAJOR #3; M9.3 added the alternative
   # in-app path, `federation.serverMtls` above) — federation.mtls above is CLIENT-side
-  # presentation only (federation-https presenting a cert TO a parent); on its own it does NOT
-  # make this domain's own API verify an incoming child's cert. When enabled, this renders nginx
+  # presentation only (federation-https presenting a cert TO a commander); on its own it does NOT
+  # make this domain's own API verify an incoming outpost's cert. When enabled, this renders nginx
   # ingress-controller annotations that require and verify a client cert (against caSecretName, a
   # Secret containing ca.crt) before any request reaches the api Service — the EDGE-side
   # enforcement mechanism, for topologies where TLS terminates at the ingress. See

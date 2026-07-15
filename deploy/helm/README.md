@@ -169,16 +169,16 @@ transport path and are not interchangeable — pick based on where TLS terminate
 
 | Values key | What it controls | Direction | Enforced by |
 |---|---|---|---|
-| `federation.mtls` | CLIENT-side certificate **presentation** — when THIS domain acts as a CHILD dialing a parent, `federation-https` presents a real client cert. | Outbound (this domain -> a parent) | `apps/server/src/plugin-host/subprocess-entry.ts`'s `loadFederationMtlsMaterial`, proven by `plugin-host/federation-mtls.test.ts` |
+| `federation.mtls` | CLIENT-side certificate **presentation** — when THIS domain acts as an OUTPOST dialing a commander, `federation-https` presents a real client cert. | Outbound (this domain -> a commander) | `apps/server/src/plugin-host/subprocess-entry.ts`'s `loadFederationMtlsMaterial`, proven by `plugin-host/federation-mtls.test.ts` |
 | `ingress.mtls` | EDGE server-side **verification** — nginx ingress-controller annotations that require+verify an incoming client cert before any request reaches the `api` Service. | Inbound, TLS terminated at the ingress | `templates/ingress.yaml` (nginx-specific annotations), verified structurally by `tools/helm-verify` |
 | `federation.serverMtls` | IN-APP server-side **verification** (M9.3, [ADR-0001](../../docs/adr/0001-in-app-federation-mtls.md)) — apps/server's OWN Fastify listener terminates TLS itself and verifies an incoming peer's client cert, fail-closed, on the three federation transport routes. | Inbound, TLS terminated by the app itself | `apps/server/src/federation/mtls-enforcement.ts` + `config.ts`'s `loadFederationServerMtlsConfig`, proven by `federation/mtls.integration.test.ts`'s attack-matrix suite |
 
 **`federation.mtls.enabled: true`** mounts a `kubernetes.io/tls`-shaped Secret and wires real
-client-certificate presentation into the `federation-https` subprocess: when THIS domain acts as a
-CHILD dialing a parent, it presents a real client cert. That is genuinely implemented and tested —
-an earlier version of this doc, and the PR body, described this as "mTLS enforced" without
+client-certificate presentation into the `federation-https` subprocess: when THIS domain acts as an
+OUTPOST dialing a commander, it presents a real client cert. That is genuinely implemented and
+tested — an earlier version of this doc, and the PR body, described this as "mTLS enforced" without
 qualification, which overstated it. **On its own it does NOT make this domain's own API, acting as
-a PARENT, verify an incoming child's client certificate** — that needs one of the two rows below.
+a COMMANDER, verify an incoming outpost's client certificate** — that needs one of the two rows below.
 
 **Precedence / which to pick:**
 - **TLS terminated at an ingress** (the common k8s shape) -> use `ingress.mtls`. When enabled, it
@@ -222,7 +222,7 @@ regardless of transport-level identity, mTLS or not. Every mTLS layer above (cli
 replacement for that signature verification.
 
 Separately: the scheduled sync loop that actually calls `pull()`/`push()` on an interval for
-connected children does not exist yet — only the air-gapped **file** transport (`scp federation
+connected outposts does not exist yet — only the air-gapped **file** transport (`scp federation
 export/import`) has a caller today. The transport is real and independently testable; nothing
 schedules it yet.
 

@@ -250,7 +250,7 @@ describe.skipIf(!opensslAvailable())("in-app federation mTLS (M9.3, ADR-0001)", 
    *  already knowing the CRL/CA it needs at construction time). */
   async function setupOrgWithPeers(
     ca: TestCa,
-    peerSpecs: { key: string; role?: "parent" | "child" }[]
+    peerSpecs: { key: string; role?: "commander" | "outpost" }[]
   ): Promise<{
     orgId: string;
     selfDomainId: string;
@@ -275,7 +275,7 @@ describe.skipIf(!opensslAvailable())("in-app federation mTLS (M9.3, ADR-0001)", 
           orgId: org.orgId,
           domainId,
           name: spec.key,
-          role: spec.role ?? "child",
+          role: spec.role ?? "outpost",
           publicKey: keys.publicKey
         })
       );
@@ -516,7 +516,7 @@ describe.skipIf(!opensslAvailable())("in-app federation mTLS (M9.3, ADR-0001)", 
         orgId: org.orgId,
         domainId: randomUUID(),
         name: "plain-child",
-        role: "child",
+        role: "outpost",
         publicKey: generateEd25519KeypairB64().publicKey
       })
     );

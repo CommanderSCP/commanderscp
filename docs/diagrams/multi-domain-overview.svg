@@ -15,10 +15,10 @@
   <text x="40" y="40" font-size="22" font-weight="700" fill="#0f172a">CommanderSCP — Multi-Domain Overview</text>
   <text x="40" y="64" font-size="13" fill="#64748b">Hub-and-spoke federation · promotion Commercial → GovCloud → Air-gapped · every export signed, every import verified · every domain runs the same image</text>
 
-  <!-- parent -->
+  <!-- commander -->
   <rect x="400" y="88" width="760" height="180" rx="14" fill="#f0fdfa" stroke="#0f766e" stroke-width="2.5"/>
-  <text x="780" y="116" text-anchor="middle" font-size="15" font-weight="700" fill="#0f766e">Parent instance — Global Coordination Layer</text>
-  <text x="780" y="134" text-anchor="middle" font-size="10.5" fill="#134e4a">scpd (api + worker) + PostgreSQL — same image as every child</text>
+  <text x="780" y="116" text-anchor="middle" font-size="15" font-weight="700" fill="#0f766e">Commander instance — Global Coordination Layer</text>
+  <text x="780" y="134" text-anchor="middle" font-size="10.5" fill="#134e4a">scpd (api + worker) + PostgreSQL — same image as every outpost</text>
   <g font-size="10.5" fill="#134e4a">
     <rect x="420" y="146" width="350" height="30" rx="6" fill="#ffffff" opacity="0.85" stroke="#5eead4"/>
     <text x="595" y="165" text-anchor="middle">authoritative global config (single-writer origin)</text>
@@ -29,17 +29,17 @@
     <rect x="790" y="182" width="350" height="30" rx="6" fill="#ffffff" opacity="0.85" stroke="#5eead4"/>
     <text x="965" y="201" text-anchor="middle">cross-domain status UI — all domains · sync freshness</text>
     <rect x="420" y="218" width="350" height="30" rx="6" fill="#ffffff" opacity="0.85" stroke="#5eead4"/>
-    <text x="595" y="237" text-anchor="middle">global policies · release topologies → children (read-only)</text>
+    <text x="595" y="237" text-anchor="middle">global policies · release topologies → outposts (read-only)</text>
     <rect x="790" y="218" width="350" height="30" rx="6" fill="#ffffff" opacity="0.85" stroke="#5eead4"/>
-    <text x="965" y="237" text-anchor="middle">signs journal segments · verifies child status + audit</text>
+    <text x="965" y="237" text-anchor="middle">signs journal segments · verifies outpost status + audit</text>
   </g>
 
   <!-- sync arrows -->
   <polyline points="480,268 260,330 260,380" fill="none" stroke="#0f766e" stroke-width="1.8" marker-end="url(#arrTeal)" marker-start="url(#arrTeal)"/>
-  <text x="230" y="322" font-size="9.5" fill="#0f766e">mTLS ⇅ — child-initiated</text>
+  <text x="230" y="322" font-size="9.5" fill="#0f766e">mTLS ⇅ — outpost-initiated</text>
   <text x="230" y="338" font-size="9.5" fill="#0f766e">config ↓ (RO) · status ↑</text>
   <line x1="780" y1="268" x2="780" y2="380" stroke="#0f766e" stroke-width="1.8" marker-end="url(#arrTeal)" marker-start="url(#arrTeal)"/>
-  <text x="792" y="310" font-size="9.5" fill="#0f766e">mTLS ⇅ — GovCloud dials the parent;</text>
+  <text x="792" y="310" font-size="9.5" fill="#0f766e">mTLS ⇅ — GovCloud dials the commander;</text>
   <text x="792" y="326" font-size="9.5" fill="#0f766e">nothing dials in · config ↓ (RO) · status ↑</text>
   <rect x="1235" y="300" width="180" height="48" rx="10" fill="#f8fafc" stroke="#64748b" stroke-dasharray="5 4"/>
   <text x="1325" y="320" text-anchor="middle" font-size="10.5" font-weight="700" fill="#374151">removable media</text>
@@ -47,15 +47,15 @@
   <polyline points="1100,268 1325,300" fill="none" stroke="#0f766e" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#arrTeal)" marker-start="url(#arrTeal)"/>
   <line x1="1325" y1="348" x2="1325" y2="380" stroke="#0f766e" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#arrTeal)" marker-start="url(#arrTeal)"/>
   <text x="1170" y="254" font-size="9.5" fill="#0f766e">export / import .scpbundle ⇅ (signed)</text>
-  <text x="1170" y="270" font-size="9.5" fill="#64748b">parent view: transfer submitted → last-known on return</text>
+  <text x="1170" y="270" font-size="9.5" fill="#64748b">commander view: transfer submitted → last-known on return</text>
 
-  <!-- commercial child -->
+  <!-- commercial outpost -->
   <rect x="40" y="380" width="440" height="470" rx="14" fill="#ffffff" stroke="#334155" stroke-width="2"/>
-  <text x="60" y="406" font-size="14" font-weight="700" fill="#0f172a">Commercial domain — child instance</text>
+  <text x="60" y="406" font-size="14" font-weight="700" fill="#0f172a">Commercial domain — outpost instance</text>
   <text x="60" y="424" font-size="10.5" fill="#64748b">scpd (api + worker) · PostgreSQL · plugin host (subprocess)</text>
   <g font-size="10.5">
     <rect x="56" y="440" width="408" height="44" rx="6" fill="#fefce8" stroke="#a16207"/>
-    <text x="66" y="458" fill="#713f12">parent config — read-only replicas</text>
+    <text x="66" y="458" fill="#713f12">commander config — read-only replicas</text>
     <text x="66" y="476" fill="#713f12">local policies may only add strictness (+ overlays)</text>
     <rect x="56" y="494" width="408" height="44" rx="6" fill="#fefce8" stroke="#a16207"/>
     <text x="66" y="512" fill="#713f12">gates: CEL policies · scans (Trivy · Snyk…) · tests</text>
@@ -74,17 +74,17 @@
     <text x="66" y="746" fill="#7f1d1d">→ prior revision · artifact digest · IaC state ref</text>
     <rect x="56" y="764" width="408" height="44" rx="6" fill="#f0fdfa" stroke="#0f766e"/>
     <text x="66" y="782" fill="#134e4a">journal: signs local objects with domain key</text>
-    <text x="66" y="800" fill="#134e4a">child-initiated: pull config · push status ↑</text>
+    <text x="66" y="800" fill="#134e4a">outpost-initiated: pull config · push status ↑</text>
   </g>
   <text x="260" y="832" text-anchor="middle" font-size="10.5" font-style="italic" fill="#64748b">fully operational when disconnected</text>
 
-  <!-- govcloud child -->
+  <!-- govcloud outpost -->
   <rect x="560" y="380" width="440" height="470" rx="14" fill="#ffffff" stroke="#334155" stroke-width="2"/>
-  <text x="580" y="406" font-size="14" font-weight="700" fill="#0f172a">GovCloud / FedRAMP domain — child</text>
+  <text x="580" y="406" font-size="14" font-weight="700" fill="#0f172a">GovCloud / FedRAMP domain — outpost</text>
   <text x="580" y="424" font-size="10.5" fill="#64748b">scpd (api + worker) · PostgreSQL · plugin host (subprocess)</text>
   <g font-size="10.5">
     <rect x="576" y="440" width="408" height="44" rx="6" fill="#fefce8" stroke="#a16207"/>
-    <text x="586" y="458" fill="#713f12">parent config — read-only replicas</text>
+    <text x="586" y="458" fill="#713f12">commander config — read-only replicas</text>
     <text x="586" y="476" fill="#713f12">stricter local policy: security review required</text>
     <rect x="576" y="494" width="408" height="44" rx="6" fill="#fefce8" stroke="#a16207"/>
     <text x="586" y="512" fill="#713f12">gates: CEL policies · scans · tests · CAB (webhook)</text>
@@ -103,17 +103,17 @@
     <text x="586" y="746" fill="#7f1d1d">campaign-scoped rollback supported</text>
     <rect x="576" y="764" width="408" height="44" rx="6" fill="#f0fdfa" stroke="#0f766e"/>
     <text x="586" y="782" fill="#134e4a">journal: signs local objects with domain key</text>
-    <text x="586" y="800" fill="#134e4a">child-initiated: pull config · push status ↑</text>
+    <text x="586" y="800" fill="#134e4a">outpost-initiated: pull config · push status ↑</text>
   </g>
   <text x="780" y="832" text-anchor="middle" font-size="10.5" font-style="italic" fill="#64748b">fully operational when disconnected</text>
 
-  <!-- air-gapped child -->
+  <!-- air-gapped outpost -->
   <rect x="1080" y="380" width="440" height="470" rx="14" fill="#ffffff" stroke="#334155" stroke-width="2" stroke-dasharray="8 5"/>
-  <text x="1100" y="406" font-size="14" font-weight="700" fill="#0f172a">Air-gapped domain — child (no network)</text>
+  <text x="1100" y="406" font-size="14" font-weight="700" fill="#0f172a">Air-gapped domain — outpost (no network)</text>
   <text x="1100" y="424" font-size="10.5" fill="#64748b">scpd (api + worker) · PostgreSQL · plugin host (subprocess)</text>
   <g font-size="10.5">
     <rect x="1096" y="440" width="408" height="44" rx="6" fill="#fefce8" stroke="#a16207"/>
-    <text x="1106" y="458" fill="#713f12">parent config via signed bundle import</text>
+    <text x="1106" y="458" fill="#713f12">commander config via signed bundle import</text>
     <text x="1106" y="476" fill="#713f12">hand-fill ⇒ provenance: manual — reconciled on import</text>
     <rect x="1096" y="494" width="408" height="44" rx="6" fill="#fefce8" stroke="#a16207"/>
     <text x="1106" y="512" fill="#713f12">gates: local policies (strictest) · offline scans</text>
@@ -132,7 +132,7 @@
     <text x="1106" y="746" fill="#7f1d1d">→ prior revision · state ref held locally</text>
     <rect x="1096" y="764" width="408" height="44" rx="6" fill="#f0fdfa" stroke="#0f766e"/>
     <text x="1106" y="782" fill="#134e4a">journal accumulates offline — export by bundle</text>
-    <text x="1106" y="800" fill="#134e4a">status · audit segments → media → parent</text>
+    <text x="1106" y="800" fill="#134e4a">status · audit segments → media → commander</text>
   </g>
   <text x="1300" y="832" text-anchor="middle" font-size="10.5" font-style="italic" fill="#64748b">designed here first — the air gap is the design center</text>
 
@@ -165,6 +165,6 @@
   <text x="552" y="1012" font-size="10" fill="#334155" font-weight="700">Single-writer authority: every object owned by exactly one domain.</text>
   <text x="552" y="1028" font-size="10" fill="#475569">Shared needs → overlays (annotates) · journal reserves base_revision / conflict.</text>
   <rect x="1090" y="994" width="430" height="44" rx="8" fill="#f8fafc" stroke="#64748b" stroke-dasharray="5 4"/>
-  <text x="1102" y="1012" font-size="10" fill="#334155" font-weight="700">Legend: solid = mTLS (child-initiated) · dashed = air-gap file.</text>
+  <text x="1102" y="1012" font-size="10" fill="#334155" font-weight="700">Legend: solid = mTLS (outpost-initiated) · dashed = air-gap file.</text>
   <text x="1102" y="1028" font-size="10" fill="#475569">All exports Ed25519-signed + hash-chained; all imports verified.</text>
 </svg>
