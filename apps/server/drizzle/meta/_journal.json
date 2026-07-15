@@ -148,6 +148,13 @@
       "when": 1784500000000,
       "tag": "0020_commander_outpost_retrans",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1784600000000,
+      "tag": "0021_service_contains_component",
+      "breakpoints": true
     }
   ]
 }

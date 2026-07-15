@@ -67,7 +67,7 @@ So service-level enforcement requires **updating both containment queries** to t
 |---|---|---|
 | **(a)** infra managed **by the component** | a fleet of static instances with its *own* infra pipeline **and** its own software-deploy pipeline — both belong to one component | **two bindings on one component** (§5) |
 | **(b)** infra shared **across a service** | microservices whose only per-component thing is the image deployment | a binding on the **service**, resolvable from a component (§5) |
-| **(c)** infra shared **across a subset of components** | between (a) and (b) | **a new construct** (§6) |
+| **(c)** infra shared **across a subset of components** | the agentkit **gamma** env; **prod** is a separate set | **`deployment-target`** — resolved, no new type (§6) |
 
 ## 5. Bindings: 1:1 → 1:N, and service-level resolution
 
@@ -116,17 +116,18 @@ They are orphans and, per owner instruction, must be assigned. That is blocked o
 
 ## Phasing (proposed)
 
-- **P1 — membership.** Register `service --contains--> component` (`one_to_many`). Migration + CLI. Unblocks assigning the homelab's 50.
+- **P1 — membership. LANDED** (migration `0021`). Registered `service --contains--> component` (`one_to_many`), with integration tests proving the one-service-per-component guarantee **behaviourally** (asserting the second edge isn't written) rather than by error-string. Unblocks assigning the homelab's 50.
 - **P2 — containment.** Teach `authz/resolve.ts` + `governance/policy-resolve.ts` to traverse it; decide the RBAC-inheritance question (§3). **Without this, "enforce at the service level" does not work.**
 - **P3 — bindings 1:N.** `purpose` discriminator, index change, `getExecutorBinding` call-site audit, service-level fallback resolution for (b).
 - **P4 — waves.** Let a wave target a `(component, purpose)` rather than a bare object id — otherwise 1:N is unusable by coordination.
 - **P5 — create-strict + organize-after.** The strict create path and the assign/merge API.
 - **Deferred:** case (c) (§6), pending a driving example.
 
-## Decisions needed before implementation
+## Decisions — RESOLVED (owner, 2026-07-15)
 
-1. §2: relationship name.
-2. §3: **does service membership confer RBAC inheritance?** (real authz change)
-3. §5: `purpose` closed enum or free-form; how a wave names a binding.
-4. §6: new grouping type now, or defer (c)?
-5. §7: strict create path shape; organize-after surface.
+1. **§2 name: `contains`** — `service --contains--> component`, `one_to_many`. Owner accepted the forced inversion rather than adding a `many_to_one` cardinality. **Landed** as migration `0021`.
+2. **§3: yes — membership confers RBAC inheritance.** Verified rather than assumed: group-as-role-binding-subject **already works** (`authz/resolve.ts`'s `subject_expand` CTE walks `member_of`), and local groups mean **no IdP dependency** — the owner's homelab/dev requirement. **Gap found:** `oidc.ts` has *zero* group handling, so **IdP→SCP group sync does not exist** and is new work if IdP groups are to be bound to a service/org.
+3. **§5 `purpose` = `infra | software`** (closed enum). `data`/migrations **withdrawn**: SCP's own migrations are a Helm pre-upgrade *hook inside* the deploy, not a separate pipeline — the common shape, and the counter-example to my own suggestion. Adding a value later is additive (oasdiff warns only), so it costs nothing if it earns a slot.
+4. **§6: NO new grouping type — (b) and (c) are both `deployment-target`.** Owner confirmed shared infra "corresponds to a thing components are deployed onto": the agentkit **gamma** env and **prod** env are each a set of shared infra, so each is a deployment-target — and gamma→prod promotion is simply the same components on different targets. Ownership (`owns`: team→component) and hosting (`hosted_on`: component→deployment-target) are **orthogonal**, so "different teams per component" doesn't conflict. Shared infra ⇒ bind the infra pipeline to the **target**; component-owned infra ⇒ bind it to the **component**.
+5. **§7: the generic `POST /objects/component` must REJECT service-less components**, which *forces* `discovery/accept` onto its own import path. Anything less makes the rule decorative — a typed-only check is bypassed by one curl at the generic endpoint. Import then stays permissive **by construction**, not by politeness.
+6. **Merge is real product surface.** Owner: *"the infra is now an app in itself… infra and software are simply 2 pieces of the whole."* Import maps 1 Argo CD app → 1 component, so a component-owned-infra case imports as **two** components that must merge into one carrying two bindings.
