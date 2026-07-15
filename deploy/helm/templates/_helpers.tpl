@@ -154,6 +154,14 @@ since those three differ between the migrations Job and the api/worker Deploymen
       key: {{ .Values.oidc.existingSecretClientSecretKey }}
 {{- end }}
 {{- end }}
+{{- if .Values.internalEgressHosts }}
+{{- /* Operator half of the two-layer internal-egress model (ADR-0003) — same host-level,
+       never-tenant-suppliable trust tier as the SCP_MANAGED_IAC_* / SCP_FEDERATION_MTLS_* vars
+       below. Empty (default) renders nothing at all, so the SSRF egress guard's deny posture is
+       untouched for every existing install. */}}
+- name: SCP_INTERNAL_EGRESS_HOSTS
+  value: {{ join "," .Values.internalEgressHosts | quote }}
+{{- end }}
 {{- if .Values.managedIac.enabled }}
 - name: SCP_MANAGED_IAC_RUNNER_IMAGE
   value: {{ .Values.managedIac.runnerImage | quote }}

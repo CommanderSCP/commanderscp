@@ -292,6 +292,27 @@ containerSecurityContext:
   seccompProfile:
     type: RuntimeDefault
 
+# Hostnames a coordination plugin may reach even though they resolve to a LOOPBACK/PRIVATE address —
+# i.e. the operator's half of the two-layer internal-egress model (docs/adr/0003-internal-egress-for-
+# execution-systems.md). Renders SCP_INTERNAL_EGRESS_HOSTS. Hostnames only: not URLs, not CIDRs.
+#
+# Empty (default) => NO plugin ever reaches an internal address: SCP's SSRF egress guard refuses
+# loopback/RFC1918/CGNAT/ULA for every tenant-configurable module, which is the correct posture for a
+# public/cloud executor and is UNCHANGED for every existing install. Set this only for a SELF-HOSTED
+# executor reachable solely at an in-cluster/private address (e.g. an in-cluster Argo CD ClusterIP —
+# charter principle 5). Link-local/cloud-metadata (169.254.x) stays blocked regardless, always.
+#
+# This is the HARD boundary and it deliberately lives here, in deployment config, NOT in the graph —
+# so it cannot depend on graph/RBAC state being right. An execution-system's `allowInternalEgress`
+# property is only a DECLARATION of intent; BOTH must agree before egress is permitted, and a host
+# listed here is reachable by any execution-system in this deployment that points at it (this bounds
+# the deployment; it does not isolate tenants from each other — same granularity as the NetworkPolicy
+# below, which you almost certainly want to configure at the same time via `networkPolicy.executorEgress`).
+#
+# internalEgressHosts:
+#   - argocd-server.argocd.svc.cluster.local
+internalEgressHosts: []
+
 networkPolicy:
   # Default-deny + explicit allows (M8 — see templates/networkpolicy.yaml): DNS egress, egress to
   # Postgres (and NATS if eventBus.backend=nats), ingress from the ingress controller/other pods
