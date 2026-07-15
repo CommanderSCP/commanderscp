@@ -11956,7 +11956,7 @@ export type AddInitiativeCampaignResponse = AddInitiativeCampaignResponses[keyof
 export type InitFederationData = {
     body: {
         name: string;
-        role: 'parent' | 'child';
+        role: 'commander' | 'outpost' | 'retrans';
     };
     path?: never;
     query?: never;
@@ -11997,7 +11997,7 @@ export type InitFederationResponses = {
     200: {
         domainId: string;
         name: string;
-        role: 'unset' | 'parent' | 'child';
+        role: 'unset' | 'commander' | 'outpost' | 'retrans';
     };
 };
 
@@ -12044,7 +12044,7 @@ export type GetFederationSelfResponses = {
     200: {
         domainId: string;
         name: string;
-        role: 'unset' | 'parent' | 'child';
+        role: 'unset' | 'commander' | 'outpost' | 'retrans';
         publicKey: string;
     };
 };
@@ -12092,7 +12092,7 @@ export type ListFederationPeersResponses = {
     200: Array<{
         id: string;
         name: string;
-        role: 'unset' | 'parent' | 'child';
+        role: 'unset' | 'commander' | 'outpost' | 'retrans';
         baseUrl: string | null;
         syncScope: {
             mode: 'full';
@@ -12119,7 +12119,7 @@ export type PairPeerData = {
     body: {
         domainId: string;
         name: string;
-        role: 'parent' | 'child';
+        role: 'commander' | 'outpost' | 'retrans';
         publicKey: string;
         baseUrl?: string;
         syncScope?: {
@@ -12187,7 +12187,7 @@ export type PairPeerResponses = {
     201: {
         id: string;
         name: string;
-        role: 'unset' | 'parent' | 'child';
+        role: 'unset' | 'commander' | 'outpost' | 'retrans';
         baseUrl: string | null;
         syncScope: {
             mode: 'full';
@@ -12252,14 +12252,14 @@ export type GetFederationStatusResponses = {
         self: {
             domainId: string;
             name: string;
-            role: 'unset' | 'parent' | 'child';
+            role: 'unset' | 'commander' | 'outpost' | 'retrans';
             publicKey: string;
         } | null;
         peers: Array<{
             peer: {
                 id: string;
                 name: string;
-                role: 'unset' | 'parent' | 'child';
+                role: 'unset' | 'commander' | 'outpost' | 'retrans';
                 baseUrl: string | null;
                 syncScope: {
                     mode: 'full';

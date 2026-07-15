@@ -389,8 +389,8 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
   }
 
   // M6 single-writer authority (DESIGN §13 — SECURITY-SENSITIVE): the two cases below are the
-  // enforcement point "a domain cannot mutate a replica it doesn't own" / "a child cannot claim
-  // authorship of a parent-origin object" — every ordinary write funnels through here.
+  // enforcement point "a domain cannot mutate a replica it doesn't own" / "an outpost cannot claim
+  // authorship of a commander-origin object" — every ordinary write funnels through here.
   if (input.federationImport) {
     // Importing a peer's update: the incoming entry's claimed authority MUST match who already
     // owns this row. If a bundle claims domain C authored an update to an object domain A

@@ -1929,10 +1929,10 @@ export function buildProgram(): Command {
     .command("init")
     .description("Designate this domain's federation role")
     .requiredOption("--name <name>", "this domain's display name")
-    .requiredOption("--role <role>", "parent|child")
+    .requiredOption("--role <role>", "commander|outpost|retrans")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
-    .action(async (opts: BaseCliOpts & { name: string; role: "parent" | "child" }) => {
+    .action(async (opts: BaseCliOpts & { name: string; role: "commander" | "outpost" | "retrans" }) => {
       const client = await clientFromStoredCredentials(opts);
       const result = await client.federation.init({ name: opts.name, role: opts.role });
       printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
@@ -1954,21 +1954,24 @@ export function buildProgram(): Command {
   federationCmd
     .command("pair")
     .description(
-      "Pair a peer domain (child-initiated — dial the parent, or exchange identities out-of-band for air-gapped peers)"
+      "Pair a peer domain (outpost-initiated — dial the commander, or exchange identities out-of-band for air-gapped peers)"
     )
     .requiredOption(
       "--domain-id <id>",
       "the peer's federation domain id (from their `scp federation self`)"
     )
     .requiredOption("--name <name>", "a display name for the peer")
-    .requiredOption("--role <role>", "parent|child — the peer's role as seen from here")
+    .requiredOption(
+      "--role <role>",
+      "commander|outpost|retrans — the peer's role as seen from here"
+    )
     .requiredOption(
       "--public-key <base64>",
       "the peer's Ed25519 public key (from their `scp federation self`)"
     )
     .option(
       "--base-url-of-peer <url>",
-      "the peer's API base URL (child->parent mTLS transport only)"
+      "the peer's API base URL (outpost->commander mTLS transport only)"
     )
     .option(
       "--sync-scope <mode>",
@@ -1982,7 +1985,7 @@ export function buildProgram(): Command {
         opts: BaseCliOpts & {
           domainId: string;
           name: string;
-          role: "parent" | "child";
+          role: "commander" | "outpost" | "retrans";
           publicKey: string;
           baseUrlOfPeer?: string;
           syncScope: string;
@@ -2094,9 +2097,9 @@ export function buildProgram(): Command {
   federationCmd
     .command("hand-fill")
     .description(
-      "Manually enter a parent-origin object as an unverified shadow copy (air-gapped, no bundle transport at all)"
+      "Manually enter a commander-origin object as an unverified shadow copy (air-gapped, no bundle transport at all)"
     )
-    .requiredOption("--peer <idOrName>", "the parent peer this is claimed to originate from")
+    .requiredOption("--peer <idOrName>", "the commander peer this is claimed to originate from")
     .requiredOption("--type <typeId>", "object type id")
     .requiredOption("--urn <urn>", "the object's URN")
     .requiredOption("--name <name>", "the object's name")

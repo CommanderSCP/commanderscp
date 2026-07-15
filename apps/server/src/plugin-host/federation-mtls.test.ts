@@ -22,7 +22,7 @@ vi.mock("node:child_process", async (importOriginal) => {
  * unit test of the Agent-construction code in isolation — this spawns a REAL `federation-https`
  * subprocess (`SubprocessPluginHost`) and drives it against a REAL `node:https` server requiring
  * (`requestCert: true`) and verifying (`rejectUnauthorized: true`) client certificates, exactly the
- * posture a real parent domain's `federation-https` server-side listener would run.
+ * posture a real commander domain's `federation-https` server-side listener would run.
  *
  * No Postgres needed (this is entirely plugin-host + subprocess + a loopback TLS server), so this
  * lives under `pnpm test`, not the Testcontainers integration suite — same tier as
@@ -123,7 +123,7 @@ describe("federation-https mTLS client certificate (M8 hardening)", () => {
         module: "federation-https",
         orgId: "org-1",
         domainId: "domain-1",
-        config: { parentBaseUrl: testServer.baseUrl, selfPeerName: "child-domain-test" }
+        config: { commanderBaseUrl: testServer.baseUrl, selfPeerName: "outpost-domain-test" }
       }
     ]);
 
@@ -150,7 +150,7 @@ describe("federation-https mTLS client certificate (M8 hardening)", () => {
         module: "federation-https",
         orgId: "org-1",
         domainId: "domain-1",
-        config: { parentBaseUrl: testServer.baseUrl, selfPeerName: "child-domain-test" }
+        config: { commanderBaseUrl: testServer.baseUrl, selfPeerName: "outpost-domain-test" }
       }
     ]);
 
@@ -175,7 +175,7 @@ describe("federation-https mTLS client certificate (M8 hardening)", () => {
         module: "federation-https",
         orgId: "org-1",
         domainId: "domain-1",
-        config: { parentBaseUrl: testServer.baseUrl, selfPeerName: "child-domain-test" }
+        config: { commanderBaseUrl: testServer.baseUrl, selfPeerName: "outpost-domain-test" }
       }
     ]);
 

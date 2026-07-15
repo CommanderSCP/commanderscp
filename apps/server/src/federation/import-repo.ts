@@ -321,7 +321,7 @@ export async function importSyncBundle(
   //    first sync ever received from this origin (cursor.sequence === 0), where there is by
   //    definition no prior state to demand exact continuity from. DESIGN.md §13 explicitly
   //    anticipates starting mid-chain here ("`scp federation export`... + optional snapshot for
-  //    bootstrap"): a child may bootstrap from a snapshot/later cursor rather than absolute
+  //    bootstrap"): an outpost may bootstrap from a snapshot/later cursor rather than absolute
   //    sequence 1. In that one case, trust-on-first-sync applies: verification anchors to the
   //    bundle's OWN first entry (still checking every entry's signature and the chain's INTERNAL
   //    contiguity from there) rather than demanding the impossible ("prove this is really

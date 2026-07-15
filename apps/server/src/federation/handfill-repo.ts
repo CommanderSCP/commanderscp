@@ -5,14 +5,14 @@ import { upsertObjectByUrn } from "../graph/objects-repo.js";
 import { FEDERATION_IMPORT_ACTOR_ID } from "./import-repo.js";
 
 /**
- * Hand-fill for air-gapped children with no bundle transport at all (DESIGN.md §13): "manually
- * entered parent-origin objects are stored as `provenance: manual` shadow copies, flagged as
+ * Hand-fill for air-gapped outposts with no bundle transport at all (DESIGN.md §13): "manually
+ * entered commander-origin objects are stored as `provenance: manual` shadow copies, flagged as
  * unverified in API and UI, and reconciled (confirmed or replaced) the next time a signed bundle
  * arrives."
  *
  * Reconciliation happens FOR FREE through the exact same single-writer-authority machinery a real
  * import uses (graph/objects-repo.ts): a hand-filled row is created here with
- * `federationImport: { originDomainId: <claimed parent's id>, revision: 0, provenance: 'manual' }`
+ * `federationImport: { originDomainId: <claimed commander's id>, revision: 0, provenance: 'manual' }`
  * — revision 0 so ANY later real import (which always carries `revision >= 1`) is guaranteed to
  * be treated as newer and overwrite it, and `originDomainId` already matches the peer the operator
  * claimed it came from, so the single-writer authority check in `updateObject` passes and the

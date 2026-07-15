@@ -179,8 +179,8 @@ export const objects = pgTable(
     revision: bigint("revision", { mode: "number" }).notNull().default(1),
     contentHash: text("content_hash").notNull(),
     // M6 (DESIGN.md §13): NULL = normally authored/imported-and-confirmed row. 'manual' = a
-    // hand-filled shadow copy of a parent-origin object entered via `scp federation hand-fill`
-    // for an air-gapped child with no bundle transport available yet — unverified until a signed
+    // hand-filled shadow copy of a commander-origin object entered via `scp federation hand-fill`
+    // for an air-gapped outpost with no bundle transport available yet — unverified until a signed
     // bundle later arrives and `federation/reconcile.ts` confirms or replaces it (DESIGN §13).
     provenance: text("provenance"),
     // lifecycle
@@ -911,28 +911,29 @@ export const campaignWaveTargets = pgTable(
 
 /** This org's own federation identity within this instance — a singleton row per org, created
  *  lazily on first federation use (`federation/self-repo.ts` `ensureFederationSelf`). `role` is
- *  set explicitly by the operator (`scp federation init --role parent|child`), never inferred. */
+ *  set explicitly by the operator (`scp federation init --role commander|outpost|retrans`), never
+ *  inferred. */
 export const federationSelf = pgTable("federation_self", {
   orgId: uuid("org_id").primaryKey(),
   domainId: uuid("domain_id").notNull().unique(), // this domain's own stable identity (UUIDv7, generated once, never reused)
   name: text("name").notNull(),
-  role: text("role").notNull().default("unset"), // 'unset' | 'parent' | 'child'
+  role: text("role").notNull().default("unset"), // 'unset' | 'commander' | 'outpost' | 'retrans'
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
 });
 
 /** Known peer domains (DESIGN §13 "peer pairing"), one row per paired remote domain. `syncScope`
  *  is configurable per peer (§13: full graph / policies-only / changes-only / status-only /
- *  label-selector custom). Pairing is always initiated by dialing OUT (§13 child-initiated-only)
+ *  label-selector custom). Pairing is always initiated by dialing OUT (§13 outpost-initiated-only)
  *  or, for air-gapped peers, by an out-of-band exchange of each side's public identity
- *  (`scp federation pair`) — never a live handshake the parent initiates. */
+ *  (`scp federation pair`) — never a live handshake the commander initiates. */
 export const federationPeers = pgTable(
   "federation_peers",
   {
     id: uuid("id").primaryKey(), // = the peer's own federation_self.domainId
     orgId: uuid("org_id").notNull(),
     name: text("name").notNull(),
-    role: text("role").notNull(), // as seen from here: 'parent' | 'child'
-    baseUrl: text("base_url"), // set on a child's record of its parent — what federation-https dials
+    role: text("role").notNull(), // as seen from here: 'commander' | 'outpost' | 'retrans'
+    baseUrl: text("base_url"), // set on an outpost's record of its commander — what federation-https dials
     syncScope: jsonb("sync_scope").notNull().default({ mode: "full" }),
     pairedAt: timestamp("paired_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
@@ -1040,7 +1041,7 @@ export const syncCursors = pgTable(
 );
 
 /** Bundle-transfer tracking (DESIGN §13: "export created -> transfer submitted -> confirmed when
- *  a returned bundle carries the child's import cursor"). One row per `.scpbundle` this side
+ *  a returned bundle carries the outpost's import cursor"). One row per `.scpbundle` this side
  *  produced or consumed. */
 export const bundleTransfers = pgTable(
   "bundle_transfers",

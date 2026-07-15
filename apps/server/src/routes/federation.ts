@@ -73,7 +73,7 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     config: {
       openapi: {
         operationId: "initFederation",
-        summary: "Designate this domain's federation role (parent|child)",
+        summary: "Designate this domain's federation role (commander|outpost|retrans)",
         tags: ["federation"]
       }
     },
@@ -471,7 +471,7 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       openapi: {
         operationId: "handFillObject",
         summary:
-          "Manually enter a parent-origin object as an unverified shadow copy (air-gapped, no bundle transport)",
+          "Manually enter a commander-origin object as an unverified shadow copy (air-gapped, no bundle transport)",
         tags: ["federation"]
       }
     },

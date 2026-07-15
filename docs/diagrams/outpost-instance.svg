@@ -12,12 +12,12 @@
   </defs>
   <rect width="1560" height="1300" fill="#ffffff"/>
 
-  <text x="40" y="40" font-size="22" font-weight="700" fill="#0f172a">CommanderSCP — Child Domain Instance (detailed)</text>
-  <text x="40" y="64" font-size="13" fill="#64748b">Same scpd image as the parent · enrolled to a parent · fully operational when disconnected</text>
+  <text x="40" y="40" font-size="22" font-weight="700" fill="#0f172a">CommanderSCP — Outpost Domain Instance (detailed)</text>
+  <text x="40" y="64" font-size="13" fill="#64748b">Same scpd image as the commander · enrolled to a commander · fully operational when disconnected</text>
 
   <!-- federation inbound band -->
   <rect x="40" y="88" width="180" height="68" rx="10" fill="#f0fdfa" stroke="#0f766e"/>
-  <text x="130" y="115" text-anchor="middle" font-size="11.5" font-weight="700" fill="#0f766e">Parent instance</text>
+  <text x="130" y="115" text-anchor="middle" font-size="11.5" font-weight="700" fill="#0f766e">Commander instance</text>
   <text x="130" y="133" text-anchor="middle" font-size="10" fill="#134e4a">global config authority</text>
   <rect x="40" y="170" width="180" height="54" rx="10" fill="#f3f4f6" stroke="#64748b"/>
   <text x="130" y="192" text-anchor="middle" font-size="11" font-weight="700" fill="#374151">Operator</text>
@@ -41,7 +41,7 @@
   <text x="275" y="190" text-anchor="middle" font-size="9.5" fill="#64748b">manual entry</text>
 
   <rect x="800" y="88" width="400" height="136" rx="10" fill="#fefce8" stroke="#a16207"/>
-  <text x="812" y="110" font-size="12.5" font-weight="700" fill="#a16207">Parent-origin config — read-only replicas</text>
+  <text x="812" y="110" font-size="12.5" font-weight="700" fill="#a16207">Commander-origin config — read-only replicas</text>
   <g font-size="11" fill="#713f12">
     <rect x="812" y="118" width="120" height="28" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
     <text x="872" y="136" text-anchor="middle">global policies</text>
@@ -53,23 +53,23 @@
     <text x="1049" y="168" text-anchor="middle">domain registry</text>
   </g>
   <text x="812" y="198" font-size="9.5" font-style="italic" fill="#a16207">hand-filled ⇒ provenance: manual (unverified) — reconciled on next signed import</text>
-  <text x="812" y="214" font-size="9.5" font-style="italic" fill="#a16207">child may only add stricter local policy + overlays (annotates)</text>
+  <text x="812" y="214" font-size="9.5" font-style="italic" fill="#a16207">outpost may only add stricter local policy + overlays (annotates)</text>
   <line x1="770" y1="156" x2="800" y2="156" stroke="#0f766e" stroke-width="1.6" marker-end="url(#arrTeal)"/>
 
   <rect x="1250" y="88" width="270" height="136" rx="10" fill="#f0fdfa" stroke="#0f766e"/>
-  <text x="1262" y="110" font-size="12.5" font-weight="700" fill="#0f766e">Federation export — child → parent</text>
+  <text x="1262" y="110" font-size="12.5" font-weight="700" fill="#0f766e">Federation export — outpost → commander</text>
   <g font-size="10.5" fill="#134e4a">
     <rect x="1262" y="118" width="246" height="28" rx="6" fill="#ffffff" opacity="0.8" stroke="#5eead4"/>
     <text x="1272" y="136">status · changes · audit segments</text>
     <rect x="1262" y="150" width="246" height="28" rx="6" fill="#ffffff" opacity="0.8" stroke="#5eead4"/>
-    <text x="1272" y="168">signed with the child's Ed25519 key</text>
+    <text x="1272" y="168">signed with the outpost's Ed25519 key</text>
     <rect x="1262" y="182" width="246" height="28" rx="6" fill="#ffffff" opacity="0.8" stroke="#5eead4"/>
-    <text x="1272" y="200">child-initiated push (mTLS) or bundle ↑</text>
+    <text x="1272" y="200">outpost-initiated push (mTLS) or bundle ↑</text>
   </g>
 
   <!-- instance outer -->
   <rect x="40" y="252" width="1480" height="800" rx="14" fill="none" stroke="#334155" stroke-width="2"/>
-  <text x="60" y="276" font-size="13" font-weight="700" fill="#334155">scpd — child domain instance · child is the single-writer authority for all local objects</text>
+  <text x="60" y="276" font-size="13" font-weight="700" fill="#334155">scpd — outpost domain instance · outpost is the single-writer authority for all local objects</text>
 
   <!-- api role -->
   <rect x="64" y="292" width="300" height="330" rx="10" fill="#eff6ff" stroke="#1d4ed8"/>
@@ -149,7 +149,7 @@
   <text x="1000" y="314" font-size="12.5" font-weight="700" fill="#a16207">Governance Engine — feeds every gate</text>
   <g font-size="11" fill="#713f12">
     <rect x="1000" y="326" width="486" height="38" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
-    <text x="1010" y="350">CEL policies — stricter-wins: global (parent) ⊆ local (child)</text>
+    <text x="1010" y="350">CEL policies — stricter-wins: global (commander) ⊆ local (outpost)</text>
     <rect x="1000" y="368" width="486" height="38" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
     <text x="1010" y="392">security scans: Trivy · Snyk · Semgrep · Grype (control plugins)</text>
     <rect x="1000" y="410" width="486" height="38" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
@@ -209,7 +209,7 @@
     <rect x="598" y="828" width="170" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
     <text x="683" y="847" text-anchor="middle">approvals + attestations</text>
     <rect x="776" y="828" width="190" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
-    <text x="871" y="847" text-anchor="middle">parent-origin replicas (RO)</text>
+    <text x="871" y="847" text-anchor="middle">commander-origin replicas (RO)</text>
   </g>
   <text x="76" y="884" font-size="10" font-style="italic" fill="#166534">all engine state lives here — any worker resumes any change after a crash</text>
 

@@ -80,7 +80,7 @@ function generateEd25519KeypairB64(): { publicKey: string; privateKey: string } 
 async function pair(
   a: IsolatedDomain,
   b: IsolatedDomain,
-  role: "child" | "parent",
+  role: "outpost" | "commander",
   syncScope?: SyncScope
 ) {
   const key = await withTenantTx(b.db, b.orgId, (tx) => ensureInstanceKey(tx, b.orgId));
@@ -148,11 +148,11 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
       ensureFederationSelf(tx, domainB.orgId)
     );
 
-    // Pairing is always initiated FROM each side (DESIGN §13 child-initiated-only, or an
+    // Pairing is always initiated FROM each side (DESIGN §13 outpost-initiated-only, or an
     // out-of-band exchange for air-gapped peers) — never a live handshake one side pushes onto
     // the other. Both sides register each other explicitly with the real exchanged public keys.
-    await pair(domainA, domainB, "child");
-    await pair(domainB, domainA, "parent");
+    await pair(domainA, domainB, "outpost");
+    await pair(domainB, domainA, "commander");
   }, 60_000);
 
   afterAll(async () => {
@@ -503,7 +503,7 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
       // origin needs victim registered as a peer so it can export toward it (the ordinary
       // out-of-band exchange); the reverse direction (victim's record of origin) is set up manually
       // below because this test drives origin's KEY ROTATION on victim's side explicitly.
-      await pair(origin, victim, "child");
+      await pair(origin, victim, "outpost");
       // origin's REAL signing key K1 (its instance key) — the key that later "leaks" to the attacker.
       const k1 = await withTenantTx(origin.db, origin.orgId, (tx) =>
         ensureInstanceKey(tx, origin.orgId)
@@ -513,7 +513,7 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
           orgId: victim.orgId,
           domainId: originSelf.domainId,
           name: origin.orgName,
-          role: "parent",
+          role: "commander",
           publicKey: k1.publicKey
         })
       );
@@ -544,7 +544,7 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
           orgId: victim.orgId,
           domainId: originSelf.domainId,
           name: origin.orgName,
-          role: "parent",
+          role: "commander",
           publicKey: k2.publicKey
         })
       );
@@ -602,7 +602,7 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
     }
   });
 
-  it("hand-filled parent config reconciles correctly when a signed bundle later arrives", async () => {
+  it("hand-filled commander-origin config reconciles correctly when a signed bundle later arrives", async () => {
     const urn = `urn:scp:${domainA.orgName}:service:handfill-target-${Date.now()}`;
 
     const handFilled = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
@@ -744,8 +744,8 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
       // The EXPORTER's peer record carries the scope (it decides what to share with this peer) —
       // export-side filtering reads domainA's record of scopedDomain. The importer's record is
       // scoped identically so its defense-in-depth re-filter agrees.
-      await pair(domainA, scopedDomain, "child", { mode: "policies_only" });
-      await pair(scopedDomain, domainA, "parent", { mode: "policies_only" });
+      await pair(domainA, scopedDomain, "outpost", { mode: "policies_only" });
+      await pair(scopedDomain, domainA, "commander", { mode: "policies_only" });
 
       const service = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
         createObject(tx, {
@@ -814,8 +814,8 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
       ensureFederationSelf(tx, domainA.orgId)
     );
 
-    await pair(domainA, domainB, "child");
-    await pair(domainB, domainA, "parent");
+    await pair(domainA, domainB, "outpost");
+    await pair(domainB, domainA, "commander");
   }, 60_000);
 
   afterAll(async () => {

@@ -45838,7 +45838,7 @@
     "/federation/init": {
       "post": {
         "operationId": "initFederation",
-        "summary": "Designate this domain's federation role (parent|child)",
+        "summary": "Designate this domain's federation role (commander|outpost|retrans)",
         "tags": [
           "federation"
         ],
@@ -45858,8 +45858,9 @@
                   "role": {
                     "type": "string",
                     "enum": [
-                      "parent",
-                      "child"
+                      "commander",
+                      "outpost",
+                      "retrans"
                     ]
                   }
                 },
@@ -45893,8 +45894,9 @@
                       "type": "string",
                       "enum": [
                         "unset",
-                        "parent",
-                        "child"
+                        "commander",
+                        "outpost",
+                        "retrans"
                       ]
                     }
                   },
@@ -46028,8 +46030,9 @@
                       "type": "string",
                       "enum": [
                         "unset",
-                        "parent",
-                        "child"
+                        "commander",
+                        "outpost",
+                        "retrans"
                       ]
                     },
                     "publicKey": {
@@ -46167,8 +46170,9 @@
                   "role": {
                     "type": "string",
                     "enum": [
-                      "parent",
-                      "child"
+                      "commander",
+                      "outpost",
+                      "retrans"
                     ]
                   },
                   "publicKey": {
@@ -46291,8 +46295,9 @@
                       "type": "string",
                       "enum": [
                         "unset",
-                        "parent",
-                        "child"
+                        "commander",
+                        "outpost",
+                        "retrans"
                       ]
                     },
                     "baseUrl": {
@@ -46569,8 +46574,9 @@
                         "type": "string",
                         "enum": [
                           "unset",
-                          "parent",
-                          "child"
+                          "commander",
+                          "outpost",
+                          "retrans"
                         ]
                       },
                       "baseUrl": {
@@ -46811,8 +46817,9 @@
                               "type": "string",
                               "enum": [
                                 "unset",
-                                "parent",
-                                "child"
+                                "commander",
+                                "outpost",
+                                "retrans"
                               ]
                             },
                             "publicKey": {
@@ -46852,8 +46859,9 @@
                                 "type": "string",
                                 "enum": [
                                   "unset",
-                                  "parent",
-                                  "child"
+                                  "commander",
+                                  "outpost",
+                                  "retrans"
                                 ]
                               },
                               "baseUrl": {
@@ -49538,7 +49546,7 @@
     "/federation/hand-fill": {
       "post": {
         "operationId": "handFillObject",
-        "summary": "Manually enter a parent-origin object as an unverified shadow copy (air-gapped, no bundle transport)",
+        "summary": "Manually enter a commander-origin object as an unverified shadow copy (air-gapped, no bundle transport)",
         "tags": [
           "federation"
         ],

@@ -92,7 +92,7 @@ export const GraphObjectSchema = z.object({
   labels: JsonRecordSchema,
   originDomainId: z.string().uuid(),
   revision: z.number().int(),
-  // M6 (DESIGN.md §13): 'manual' = a hand-filled, unverified shadow copy of a parent-origin
+  // M6 (DESIGN.md §13): 'manual' = a hand-filled, unverified shadow copy of a commander-origin
   // object (`scp federation hand-fill`) awaiting reconciliation against a later signed bundle.
   // NULL = normal (either authored here, or a bundle-imported replica already confirmed by
   // signature verification).
