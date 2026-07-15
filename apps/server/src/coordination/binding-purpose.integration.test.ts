@@ -122,6 +122,29 @@ describe("executor bindings: 1:N per target, keyed by purpose", () => {
     ).rejects.toThrow();
   });
 
+  it("READ PATH: an infra binding is retrievable via the API, not just creatable", async () => {
+    // The gap this closes: P3's first cut threaded `purpose` through every WRITE and none of the
+    // reads, so PUT could create an infra binding that no API call could ever return — GET silently
+    // answered with the software one. Write-complete, read-incomplete.
+    const comp = await admin.object("component").create({ name: "readback-comp" });
+    await bind(comp.id, "software", "sw");
+    await bind(comp.id, "infra", "inf");
+
+    const dflt = await admin.executors.getBinding(comp.id);
+    expect(dflt.purpose).toBe("software"); // unqualified read is unchanged for every existing caller
+    expect(dflt.pluginInstanceId).toBe("sw");
+
+    const infra = await admin.executors.getBinding(comp.id, "infra");
+    expect(infra.purpose).toBe("infra");
+    expect(infra.pluginInstanceId).toBe("inf");
+  });
+
+  it("READ PATH: 404s for a purpose with no binding (rather than falling back to another)", async () => {
+    const comp = await admin.object("component").create({ name: "sw-only" });
+    await bind(comp.id, "software", "sw");
+    await expect(admin.executors.getBinding(comp.id, "infra")).rejects.toThrow();
+  });
+
   it("the DB constraint — not just the upsert — enforces one binding per (target, purpose)", async () => {
     // Concurrent binds of the SAME purpose: exactly one row must exist afterwards, whether the app
     // upsert or UNIQUE(org_id, target_object_id, purpose) settles it. (The P2 review found the

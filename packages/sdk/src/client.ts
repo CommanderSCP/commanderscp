@@ -1430,8 +1430,17 @@ export class ScpClient {
       });
       return unwrap(result);
     },
-    getBinding: async (idOrUrn: string): Promise<ExecutorBinding> => {
-      const result = await getExecutorBindingRequest({ client: this.client, path: { idOrUrn } });
+    /** `purpose` omitted ⇒ 'software' (server-side default) — a target may hold one binding per
+     *  purpose (M12 P3), so reading an `infra` pipeline requires naming it. */
+    getBinding: async (
+      idOrUrn: string,
+      purpose?: "infra" | "software"
+    ): Promise<ExecutorBinding> => {
+      const result = await getExecutorBindingRequest({
+        client: this.client,
+        path: { idOrUrn },
+        ...(purpose ? { query: { purpose } } : {})
+      });
       return unwrap(result);
     }
   };

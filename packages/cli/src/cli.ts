@@ -2377,12 +2377,13 @@ export function buildProgram(): Command {
 
   executorCmd
     .command("get <idOrUrn>")
-    .description("Get a target's configured executor binding")
+    .description("Get a target's configured executor binding (one purpose; default: software)")
+    .option("--purpose <purpose>", "which pipeline to read: infra|software (default: software)")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
-    .action(async (idOrUrn: string, opts: BaseCliOpts) => {
+    .action(async (idOrUrn: string, opts: BaseCliOpts & { purpose?: "infra" | "software" }) => {
       const client = await clientFromStoredCredentials(opts);
-      const result = await client.executors.getBinding(idOrUrn);
+      const result = await client.executors.getBinding(idOrUrn, opts.purpose);
       printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
     });
 

@@ -50716,7 +50716,7 @@
       },
       "get": {
         "operationId": "getExecutorBinding",
-        "summary": "Get a target's configured executor binding",
+        "summary": "Get a target's configured executor binding for one purpose (default: software)",
         "tags": [
           "executors"
         ],
@@ -50729,6 +50729,19 @@
               "$schema": "https://json-schema.org/draft/2020-12/schema",
               "type": "string",
               "minLength": 1
+            }
+          },
+          {
+            "name": "purpose",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+              "enum": [
+                "infra",
+                "software"
+              ]
             }
           }
         ],

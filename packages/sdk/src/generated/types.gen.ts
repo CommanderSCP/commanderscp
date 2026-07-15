@@ -13147,7 +13147,9 @@ export type GetExecutorBindingData = {
     path: {
         idOrUrn: string;
     };
-    query?: never;
+    query?: {
+        purpose?: 'infra' | 'software';
+    };
     url: '/executors/{idOrUrn}/binding';
 };
 
