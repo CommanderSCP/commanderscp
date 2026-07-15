@@ -155,6 +155,13 @@
       "when": 1784600000000,
       "tag": "0021_service_contains_component",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1784700000000,
+      "tag": "0022_contains_single_service_constraint",
+      "breakpoints": true
     }
   ]
 }

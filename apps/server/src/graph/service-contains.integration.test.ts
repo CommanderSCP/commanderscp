@@ -104,6 +104,29 @@ describe("service --contains--> component (membership, one service per component
     expect(edges.items).toHaveLength(0);
   });
 
+  it("the DB itself enforces one service per component — not just assertCardinality (race backstop)", async () => {
+    // assertCardinality is a SELECT-then-INSERT under READ COMMITTED with no row lock, so two
+    // concurrent creates can both pass the check and both insert (found by adversarial review of P2).
+    // Once `contains` bounds RBAC reach, a doubly-contained component is reachable from BOTH services'
+    // bindings — so migration 0022 backs the invariant with a partial unique index. This drives the
+    // two creates CONCURRENTLY (Promise.allSettled), which the sequential tests above cannot catch:
+    // exactly one must win, whether it loses at the app check or the DB constraint.
+    const s1 = await admin.object("service").create({ name: "race-a" });
+    const s2 = await admin.object("service").create({ name: "race-b" });
+    const comp = await admin.object("component").create({ name: "race-target" });
+
+    const results = await Promise.allSettled([
+      admin.relationships.create({ typeId: "contains", fromId: s1.id, toId: comp.id }),
+      admin.relationships.create({ typeId: "contains", fromId: s2.id, toId: comp.id })
+    ]);
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    expect(fulfilled).toHaveLength(1);
+
+    // The invariant that actually matters: exactly one live service-ancestor, whoever won.
+    const edges = await admin.relationships.list({ typeId: "contains", toId: comp.id });
+    expect(edges.items).toHaveLength(1);
+  });
+
   it("frees the component once the edge is deleted (re-assignable, so organize-after works)", async () => {
     const svc1 = await admin.object("service").create({ name: "notifications" });
     const svc2 = await admin.object("service").create({ name: "messaging" });

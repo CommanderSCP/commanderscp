@@ -37,14 +37,30 @@ interface ChainEntry {
  * only, so a service-scoped policy governed nothing — even though this file's own header, and
  * DESIGN §10, have always described the chain as `org -> domain -> service -> component`.
  *
- * DEPTH MATTERS HERE in a way it does not for authz: policy-model.ts sorts by `matchedAt.depth`
- * descending, so the DEEPEST match wins (most specific beats least). With two routes the chain is a
- * DAG rather than a line — a component's domain is reachable BOTH directly (`component.domain_id`)
- * and via its service (`service.domain_id`), at different walk depths. Taking the wrong one would let
- * a domain-scoped policy outrank a service-scoped one. So we keep the MAXIMUM walk depth per id
- * (`DISTINCT ON (id) ... ORDER BY id, depth DESC`) = the longest path from the target = the LEAST
- * specific reading, which after the `maxDepth - depth` inversion below yields exactly
- * org(0) < domain(1) < service(2) < component(3).
+ * DEPTH, and what it does and does NOT guarantee — read this before relying on it.
+ *
+ * With two routes the chain is a DAG rather than a line, so an ancestor can be reached at more than
+ * one walk depth. We keep the MAXIMUM per id (`DISTINCT ON (id) ... ORDER BY id, depth DESC`) — the
+ * longest path from the target, i.e. the least-specific reading — which the `maxDepth - depth`
+ * inversion below turns into "higher = more specific".
+ *
+ * That reconciles the case where the SAME node is reachable by both routes (a component's own domain,
+ * reachable directly AND via its service's domain): the domain settles at the deeper walk depth, so it
+ * ranks BELOW the service. In the common shape — component and service sharing a domain — this does
+ * yield org < domain < service < component.
+ *
+ * It does NOT, however, make a service strictly outrank a component's own domain in general. If a
+ * component's `domain_id` differs from its service's (e.g. C in domain Dx, S in domain Dy, S contains
+ * C — reachable via the organize-after-import flow), then Dx and S are each exactly ONE hop from C and
+ * TIE. They are structurally equidistant; max-depth cannot separate them, and no ordering of these two
+ * routes is obviously "correct" — a component genuinely sits in both.
+ *
+ * This is INERT today, which is why it is documented rather than fixed: `matchedAt.depth`'s only
+ * consumer is policy-model.ts, which groups by policy NAME and merges order-independently (max
+ * severity, union of effects), using depth solely to order a display-only `contributors` array. No
+ * policy is dropped, reordered into a different outcome, or under-enforced by a tie. It WOULD become a
+ * real precedence bug the moment any code compares `matchedAt.depth` across differently-named policies
+ * to pick a single "most specific" winner — if you are about to write that, fix this first.
  */
 async function containmentChain(tx: TenantTx, orgId: string, objectId: string): Promise<ChainEntry[]> {
   const result = await tx.execute<{ id: string; depth: number; labels: Record<string, unknown> }>(sql`

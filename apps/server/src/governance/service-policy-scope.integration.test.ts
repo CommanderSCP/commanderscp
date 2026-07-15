@@ -92,9 +92,11 @@ describe("policy resolution: service scope governs the service's components", ()
     expect(matched.find((m) => m.name === "ledger-service-policy")).toBeUndefined();
   });
 
-  it("PRECEDENCE: a service-scoped policy is MORE specific than a domain-scoped one", async () => {
+  it("PRECEDENCE: a service-scoped policy is more specific than an ORG-ROOT-scoped one", async () => {
     // The DAG hazard: the component's domain is reachable directly AND via its service. If the walk
-    // kept the shorter path for the domain, the domain would tie or outrank the service.
+    // kept the shorter path, the ancestor would rank too specific.
+    // NOTE the honest scope of this test: it compares service vs the ORG ROOT. It does NOT prove
+    // "service beats domain" in general — see the caveat test below and containmentChain's doc.
     const domainPolicy = await policyFor("domain-wide-policy", org.orgId);
     const svcPolicy = await policyFor("service-specific-policy", svcId);
 
@@ -112,6 +114,46 @@ describe("policy resolution: service scope governs the service's components", ()
     expect(svc, "the service-scoped policy should match").toBeDefined();
     // Deeper = more specific = wins (policy-model.ts sorts by matchedAt.depth DESC).
     expect(svc!.matchedAt.depth).toBeGreaterThan(dom!.matchedAt.depth);
+  });
+
+  it("KNOWN LIMIT: a component's OWN domain and its service TIE when the domains differ", async () => {
+    // Documented in containmentChain: if C.domain_id != S.domain_id, then C's own domain and its
+    // service are each exactly ONE hop from C and are structurally equidistant — max-depth cannot
+    // separate them. Pinned here so the behaviour is a known, tested fact rather than a surprise.
+    //
+    // INERT today: policy-model.ts groups by policy NAME and merges order-independently, using depth
+    // only to order a display-only `contributors` array — so a tie changes no outcome. If this test
+    // ever starts mattering for enforcement, containmentChain's depth model needs fixing first.
+    const otherDomain = await admin.object("domain").create({ name: "other-domain" });
+    const svcElsewhere = await admin.object("service").create({
+      name: "svc-in-other-domain",
+      domainId: otherDomain.id
+    });
+    const comp = await admin.object("component").create({ name: "comp-in-root-domain" });
+    await admin.relationships.create({
+      typeId: "contains",
+      fromId: svcElsewhere.id,
+      toId: comp.id
+    });
+
+    const domPolicy = await policyFor("tie-domain-policy", otherDomain.id);
+    const svcPolicy = await policyFor("tie-service-policy", svcElsewhere.id);
+
+    const matched = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      matchPoliciesForTargets(tx, {
+        orgId: org.orgId,
+        targetObjectIds: [comp.id],
+        actorObjectId: actorId
+      })
+    );
+    const dom = matched.find((m) => m.policyObjectId === domPolicy.id);
+    const svc = matched.find((m) => m.policyObjectId === svcPolicy.id);
+    // Both govern the component (that much IS guaranteed) ...
+    expect(dom, "the service's domain still governs via the service hop").toBeDefined();
+    expect(svc).toBeDefined();
+    // ... and the service is at least as specific as that domain. `toBeGreaterThan` would be the
+    // stronger claim, and it is exactly the one containmentChain does NOT make.
+    expect(svc!.matchedAt.depth).toBeGreaterThanOrEqual(dom!.matchedAt.depth);
   });
 
   it("a soft-deleted `contains` edge stops the service policy governing the component", async () => {
