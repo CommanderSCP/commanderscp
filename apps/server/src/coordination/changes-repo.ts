@@ -67,6 +67,16 @@ export interface ProposeChangeInput {
   topologyIdOrUrn?: string;
   /** Object ids or URNs this change targets — resolved to ids and stashed in properties for the plan compiler. */
   targets: string[];
+  /**
+   * WHICH pipeline of its targets this change rolls (M12 P4A): 'infra' | 'software'. Omitted ⇒
+   * 'software', so every existing caller and every pre-P4A change is unchanged.
+   *
+   * Deliberately per-CHANGE, not per-target: a change IS a release, and a release comes from ONE
+   * source per pipeline (the infra repo vs the app repo), so one change drives one pipeline. A release
+   * needing both is two releases. This also keeps `properties.targets` a plain string[] — it is
+   * PERSISTED on every existing change object, and restructuring it would break them all.
+   */
+  purpose?: "infra" | "software";
   /** Set only when this Change IS a rollback of another change (coordination/rollback.ts). */
   rollbackOfObjectId?: string;
   /** M6 (DESIGN §13): set when this Change was instantiated from a Promotion Bundle —
@@ -118,7 +128,21 @@ export async function proposeChange(
     urn: input.urn,
     name: input.name,
     domainId: input.domainId,
-    properties: { ...input.properties, targets: targetObjectIds },
+    // Purpose precedence (M12 P4A): the typed field wins; failing that, whatever the caller's own
+    // properties already say; failing that, 'software'.
+    //
+    // The `?? purposeOf(input.properties)` middle rung is load-bearing, not defensive padding. This
+    // spread writes `purpose` AFTER `...input.properties`, so a bare `input.purpose ?? "software"`
+    // silently CLOBBERS a purpose the caller passed inside properties. Federation promotion
+    // (`federation/promotion-repo.ts`) does exactly that — it replays a bundle's change properties
+    // verbatim — so an infra release promoted across domains would arrive as 'software' and trigger
+    // the receiving domain's software binding. Inheriting here fixes it for every such caller at
+    // once, rather than one call site at a time.
+    properties: {
+      ...input.properties,
+      targets: targetObjectIds,
+      purpose: input.purpose ?? purposeOf(input.properties)
+    },
     labels: input.labels
   });
 
@@ -279,6 +303,39 @@ export function targetObjectIdsOf(
 ): string[] {
   const targets = properties?.targets;
   return Array.isArray(targets) ? targets.filter((t): t is string => typeof t === "string") : [];
+}
+
+/**
+ * WHICH pipeline a change rolls, read back off its persisted properties (M12 P4A) — the counterpart
+ * to `targetObjectIdsOf`, and the ONLY place that knows how purpose is stored on a change.
+ *
+ * ABSENT reads as 'software'. That covers every pre-P4A change, and 'software' is what reconcile
+ * triggered unconditionally before P4A, so those changes roll exactly what they always rolled.
+ *
+ * PRESENT BUT UNRECOGNISED throws, deliberately, rather than also degrading to 'software'. The two
+ * inputs look similar and are not: absent means "nobody said", which has a right answer; a value
+ * this version doesn't know means somebody DID say, and said something we cannot honour. Coercing
+ * that to 'software' would trigger the software pipeline for a release that explicitly declared it
+ * was not software — the exact wrong-pipeline failure P4A exists to prevent, and unrecoverable in a
+ * way that refusing is not. It is a REACHABLE case, not a theoretical one: purposes are additive by
+ * design (0023), federation is hub-and-spoke with air-gap bundles, and `federation/promotion-repo.ts`
+ * replays a peer's change properties verbatim — so a commander a version ahead of an outpost can
+ * hand this function a purpose it has never heard of. Version skew is the steady state, not a bug.
+ *
+ * Narrowed against the enum rather than cast: `properties` is free-form jsonb, so a blind `as` would
+ * let junk reach `getExecutorBinding`, which matches no binding and silently falls back to the
+ * default fake-executor — a "nothing happened, no error" failure.
+ */
+export function purposeOf(
+  properties: Record<string, unknown> | null | undefined
+): "infra" | "software" {
+  const raw = properties?.purpose;
+  if (raw === undefined || raw === null) return "software";
+  if (raw === "infra" || raw === "software") return raw;
+  throw badRequest(
+    `change carries purpose '${String(raw)}', which this version does not recognise — refusing to guess which pipeline to drive. ` +
+      `If this change was promoted from another domain, that domain is likely running a newer CommanderSCP.`
+  );
 }
 
 export interface ListChangesQuery {

@@ -1386,6 +1386,11 @@ export function buildProgram(): Command {
     .option("--source-kind <kind>", "originating source kind (e.g. github, argocd)")
     .option("--correlation-key <key>", "correlation key for grouping related changes")
     .option("--emergency", "mark this change as an emergency (DESIGN.md §9)")
+    .option(
+      "--purpose <purpose>",
+      "infra|software — WHICH pipeline this change rolls, selecting each target's executor binding. " +
+        "Defaults to software (the only pipeline that existed before M12 P4A)"
+    )
     .option("--properties <json>", "JSON object")
     .option("--labels <json>", "JSON object")
     .option("--base-url <url>", "API base URL override")
@@ -1395,6 +1400,7 @@ export function buildProgram(): Command {
         opts: BaseCliOpts & {
           name: string;
           targets: string;
+          purpose?: "infra" | "software";
           topology?: string;
           sourceKind?: string;
           correlationKey?: string;
@@ -1412,6 +1418,7 @@ export function buildProgram(): Command {
             sourceKind: opts.sourceKind,
             correlationKey: opts.correlationKey,
             emergency: opts.emergency,
+            purpose: opts.purpose,
             properties: parseJsonOption(opts.properties, "--properties"),
             labels: parseJsonOption(opts.labels, "--labels")
           },
@@ -1737,6 +1744,11 @@ export function buildProgram(): Command {
     .requiredOption("--targets <list>", "comma-separated object ids/URNs this campaign targets")
     .option("--topology <idOrUrn>", "release-topology object id or URN to compile the plan against")
     .option("--description <text>", "campaign description")
+    .option(
+      "--purpose <purpose>",
+      "infra|software — WHICH pipeline every change this campaign fans out rolls " +
+        "(e.g. infra for 'patch the base AMI everywhere'). Defaults to software"
+    )
     .option("--labels <json>", "JSON object")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
@@ -1747,6 +1759,7 @@ export function buildProgram(): Command {
           targets: string;
           topology?: string;
           description?: string;
+          purpose?: "infra" | "software";
           labels?: string;
         }
       ) => {
@@ -1757,6 +1770,7 @@ export function buildProgram(): Command {
             targets: parseList(opts.targets) ?? [],
             topology: opts.topology,
             description: opts.description,
+            purpose: opts.purpose,
             labels: parseJsonOption(opts.labels, "--labels")
           },
           { idempotencyKey: randomUUID() }

@@ -359,7 +359,8 @@ export async function resolveExecutorPluginInstance(
     targetObjectId: string;
     masterKey: Buffer;
     domainId?: string;
-    /** Which pipeline to resolve. Defaults to 'software' — pre-P3 behaviour (P4 lets a wave name it). */
+    /** Which pipeline to resolve. Defaults to 'software' — pre-P3 behaviour. P4A supplies this from
+     *  the wave target, so reconcile starts the instance for the pipeline it is about to trigger. */
     purpose?: BindingPurpose;
   }
 ): Promise<ResolvedExecutorInstance | undefined> {

@@ -185,6 +185,8 @@ export async function importPromotionBundle(
     actorObjectId: FEDERATION_IMPORT_ACTOR_ID,
     requestId: `federation-promotion:${bundle.header.sourceChangeObjectId}`,
     name: bundle.change.name,
+    // Carries the exporting domain's `purpose` through verbatim, so a promoted INFRA release rolls
+    // this domain's infra pipeline too (M12 P4A) — see `proposeChange`'s purpose precedence.
     properties: { ...bundle.change.properties, importedControlOutcomes: bundle.controlOutcomes },
     sourceKind: "federation",
     sourceRef: {

@@ -93,7 +93,10 @@ describe("executor bindings: 1:N per target, keyed by purpose", () => {
 
   it("reconcile's lookup ('software') is unaffected by an infra binding existing", async () => {
     // The regression that would matter most: adding an infra pipeline must not change which binding
-    // reconcile triggers, since a wave cannot name a purpose until P4.
+    // a 'software' lookup resolves. (When this was written P4 did not exist and reconcile could only
+    // ever ask for 'software'; P4A now lets a wave target name its purpose, and
+    // `wave-target-purpose.integration.test.ts` covers the routing end to end. This stays as the
+    // narrow unit-level guarantee the resolver itself owes.)
     const comp = await admin.object("component").create({ name: "both-pipelines" });
     await bind(comp.id, "software", "gh-deploy");
     await bind(comp.id, "infra", "gh-terraform");

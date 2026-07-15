@@ -5,6 +5,7 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { changePlans, changeWaveTargets, changeWaves, relationships } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
 import { compilePlan, type DependsOnEdge, type TopologyWaveSpec } from "./plan-compiler.js";
+import { purposeOf } from "./changes-repo.js";
 
 /** Reads `depends_on` edges among `targetIds` directly from the graph (DESIGN §9.3: "wave order
  * is computed from graph `depends_on` edges"). Both endpoints must be in `targetIds` — edges
@@ -54,6 +55,18 @@ export async function compileAndPersistPlan(
   }
 ): Promise<ChangePlan> {
   const dependsOn = await loadDependsOnEdges(tx, input.orgId, input.targetObjectIds);
+
+  // WHICH pipeline this change rolls (M12 P4A), read from the change itself rather than threaded
+  // through every caller — compileAndPersistPlan is invoked from reconcile, campaigns, rollback,
+  // promotion and the routes, and a plan is always FOR a change, so the change is the honest source.
+  // Every wave target of this change inherits it: one release = one source = one pipeline (owner,
+  // 2026-07-15), so purpose is a property of the change, not of each target. Pre-P4A changes have no
+  // `properties.purpose` and fall back to 'software' — exactly what reconcile triggered before.
+  const changeRow = await tx.query.objects.findFirst({
+    where: (t, { eq: eqOp, and: andOp }) =>
+      andOp(eqOp(t.id, input.changeObjectId), eqOp(t.orgId, input.orgId))
+  });
+  const changePurpose = purposeOf(changeRow?.properties as Record<string, unknown> | undefined);
 
   let topologyDocument: Record<string, unknown> | null = null;
   if (input.topologyObjectId) {
@@ -115,6 +128,10 @@ export async function compileAndPersistPlan(
           orgId: input.orgId,
           waveId: waveRow.id,
           targetObjectId,
+          // Every wave target of this change rolls the change's pipeline (M12 P4A). Persisted per
+          // target — not re-read from the change at trigger time — so a plan stays a SNAPSHOT, the
+          // same discipline the topology document already follows here.
+          purpose: changePurpose,
           status: "pending"
         })
         .returning();
@@ -131,6 +148,7 @@ function toChangeWaveTargetShape(row: typeof changeWaveTargets.$inferSelect): Ch
     id: row.id,
     waveId: row.waveId,
     targetObjectId: row.targetObjectId,
+    purpose: (row.purpose as "infra" | "software" | null) ?? "software",
     executorPluginId: row.executorPluginId,
     executorRef: (row.executorRef as Record<string, unknown> | null) ?? null,
     status: row.status,

@@ -14,6 +14,7 @@ function toSourceMapping(row: typeof sourceMappings.$inferSelect): SourceMapping
     repoPattern: row.repoPattern,
     pathPattern: row.pathPattern,
     componentObjectId: row.componentObjectId,
+    purpose: (row.purpose as "infra" | "software" | null) ?? "software",
     createdAt: row.createdAt.toISOString()
   };
 }
@@ -24,6 +25,7 @@ export interface CreateSourceMappingInput {
   repoPattern?: string;
   pathPattern?: string;
   componentIdOrUrn: string;
+  purpose?: "infra" | "software";
 }
 
 export async function createSourceMapping(
@@ -39,7 +41,8 @@ export async function createSourceMapping(
       sourceKind: input.sourceKind,
       repoPattern: input.repoPattern ?? null,
       pathPattern: input.pathPattern ?? null,
-      componentObjectId: component.id
+      componentObjectId: component.id,
+      purpose: input.purpose ?? "software"
     })
     .returning();
   if (!row) throw new Error("failed to insert source mapping");

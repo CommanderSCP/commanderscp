@@ -93,13 +93,13 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
 
   for (const row of rows) {
     const hint = extractHint(row.sourceKind, row.headers, row.payload);
-    const componentObjectId = await matchComponentForSource(tx, orgId, {
+    const match = await matchComponentForSource(tx, orgId, {
       sourceKind: row.sourceKind,
       repo: hint.repo,
       path: hint.path
     });
 
-    if (!componentObjectId) {
+    if (!match) {
       // No `source_mappings` row matched — nothing to correlate against, so there's no target to
       // propose a Change for. Marked processed anyway: persist-then-process's "replayable"
       // promise covers retrying TRANSIENT failures, not waiting forever for a mapping that may
@@ -120,7 +120,11 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
       sourceKind: row.sourceKind,
       sourceRef: (row.payload as Record<string, unknown>) ?? {},
       correlationKey: hint.correlationKey,
-      targets: [componentObjectId]
+      targets: [match.componentObjectId],
+      // WHICH pipeline this release drives, straight from the mapping that matched it (M12 P4A).
+      // One release = one source = one pipeline, so the purpose belongs to the CHANGE rather than to
+      // each target — a release needing both would be two releases, from two sources.
+      purpose: match.purpose
     });
 
     if (hint.correlationKey) {

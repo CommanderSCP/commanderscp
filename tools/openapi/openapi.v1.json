@@ -32205,6 +32205,13 @@
                   "topology": {
                     "type": "string"
                   },
+                  "purpose": {
+                    "type": "string",
+                    "enum": [
+                      "infra",
+                      "software"
+                    ]
+                  },
                   "targets": {
                     "minItems": 1,
                     "type": "array",
@@ -33631,6 +33638,13 @@
                                         "targetName": {
                                           "type": "string"
                                         },
+                                        "purpose": {
+                                          "type": "string",
+                                          "enum": [
+                                            "infra",
+                                            "software"
+                                          ]
+                                        },
                                         "executorPluginId": {
                                           "anyOf": [
                                             {
@@ -33690,6 +33704,7 @@
                                         "id",
                                         "waveId",
                                         "targetObjectId",
+                                        "purpose",
                                         "executorPluginId",
                                         "executorRef",
                                         "status",
@@ -36059,6 +36074,13 @@
                   "component": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "purpose": {
+                    "type": "string",
+                    "enum": [
+                      "infra",
+                      "software"
+                    ]
                   }
                 },
                 "required": [
@@ -36117,6 +36139,13 @@
                       "format": "uuid",
                       "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                     },
+                    "purpose": {
+                      "type": "string",
+                      "enum": [
+                        "infra",
+                        "software"
+                      ]
+                    },
                     "createdAt": {
                       "type": "string",
                       "format": "date-time",
@@ -36130,6 +36159,7 @@
                     "repoPattern",
                     "pathPattern",
                     "componentObjectId",
+                    "purpose",
                     "createdAt"
                   ],
                   "additionalProperties": false
@@ -36382,6 +36412,13 @@
                             "format": "uuid",
                             "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                           },
+                          "purpose": {
+                            "type": "string",
+                            "enum": [
+                              "infra",
+                              "software"
+                            ]
+                          },
                           "createdAt": {
                             "type": "string",
                             "format": "date-time",
@@ -36395,6 +36432,7 @@
                           "repoPattern",
                           "pathPattern",
                           "componentObjectId",
+                          "purpose",
                           "createdAt"
                         ],
                         "additionalProperties": false
@@ -42989,6 +43027,13 @@
                   },
                   "topology": {
                     "type": "string"
+                  },
+                  "purpose": {
+                    "type": "string",
+                    "enum": [
+                      "infra",
+                      "software"
+                    ]
                   },
                   "targets": {
                     "minItems": 1,

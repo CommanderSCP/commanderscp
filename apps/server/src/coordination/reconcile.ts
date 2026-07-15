@@ -479,6 +479,10 @@ async function reconcileExecutingChange(
           change,
           target.id,
           target.targetObjectId,
+          // WHICH pipeline this target rolls (M12 P4A) — snapshotted onto the wave target at plan
+          // time from the change's source mapping. This is what finally makes an `infra` binding
+          // triggerable; before P4A reconcile hardcoded 'software'.
+          (target.purpose as "infra" | "software" | null) ?? DEFAULT_BINDING_PURPOSE,
           isRollback,
           host,
           masterKey
@@ -505,6 +509,9 @@ async function reconcileExecutingChange(
         orgId,
         host,
         target.targetObjectId,
+        // The status poll must address the SAME instance the trigger used, so it resolves the same
+        // purpose — otherwise it would poll the software pipeline for an infra run's ref.
+        (target.purpose as "infra" | "software" | null) ?? DEFAULT_BINDING_PURPOSE,
         target.executorPluginId ?? null,
         masterKey
       );
@@ -598,6 +605,7 @@ async function triggerWaveTarget(
   change: ChangeRow,
   waveTargetId: string,
   targetObjectId: string,
+  purpose: "infra" | "software",
   isRollback: boolean,
   host: PluginHost,
   masterKey: Buffer
@@ -614,6 +622,7 @@ async function triggerWaveTarget(
       orgId,
       host,
       targetObjectId,
+      purpose,
       null,
       masterKey
     );
@@ -630,12 +639,14 @@ async function triggerWaveTarget(
       // Falls back to the object id for legacy bindings — so a binding whose object id already IS
       // the external name (pre-M12) is unaffected. This is what lets Mode A / imported objects
       // trigger the right external resource when their SCP id differs from their external name.
-      // P3: a target may now hold BOTH an infra and a software binding, so "the" binding no longer
-      // exists — reconcile must NAME the pipeline it drives. 'software' is what every pre-P3 binding
-      // was migrated to (migration 0023's default), so this preserves today's behaviour exactly. An
-      // 'infra' binding is registerable and pollable now, but NOT triggerable until a wave can name a
-      // purpose — P4, because CompiledWave.targets carries bare object ids with no notion of a binding.
-      const binding = await getExecutorBinding(tx, orgId, targetObjectId, DEFAULT_BINDING_PURPOSE);
+      // P3: a target may hold BOTH an infra and a software binding, so "the" binding no longer
+      // exists — reconcile must NAME the pipeline it drives. P4A supplies that name: `purpose` rides
+      // in on the wave target, snapshotted at plan time from the change (and thence from the source
+      // mapping that matched the release), which is what finally makes an infra binding TRIGGERABLE
+      // rather than merely registerable and readable. Anything unrecognised resolves to 'software' —
+      // the value P3 migrated every existing binding to, and the only one reconcile ever asked for
+      // before P4A — so pre-P4A wave targets trigger exactly what they always did.
+      const binding = await getExecutorBinding(tx, orgId, targetObjectId, purpose);
       const externalRef = binding?.externalRef ?? null;
 
       if (isRollback && change.rollbackOfObjectId) {
@@ -713,11 +724,15 @@ async function ensureExecutorInstanceStarted(
   orgId: string,
   host: PluginHost,
   targetObjectId: string,
+  purpose: "infra" | "software",
   persistedExecutorPluginId: string | null,
   masterKey: Buffer
 ): Promise<string> {
+  // MUST resolve the SAME purpose the trigger will use (M12 P4A). Resolving without it would start
+  // the target's SOFTWARE plugin instance and then trigger against the INFRA binding — a mismatch
+  // that would silently drive the wrong pipeline.
   const resolved = await withTenantTx(db, orgId, (tx) =>
-    resolveExecutorPluginInstance(tx, { orgId, targetObjectId, masterKey })
+    resolveExecutorPluginInstance(tx, { orgId, targetObjectId, masterKey, purpose })
   );
 
   if (

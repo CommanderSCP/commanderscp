@@ -170,7 +170,16 @@ export async function observeOrgTick(
   for (const [pluginInstanceId, binding] of oneBindingPerInstance) {
     try {
       const resolved = await withTenantTx(db, orgId, (tx) =>
-        resolveExecutorPluginInstance(tx, { orgId, targetObjectId: binding.targetObjectId, masterKey })
+        // MUST resolve by the deduped binding's OWN purpose (M12 P4A). Without it this defaults to
+        // 'software', so for a target holding both pipelines the 'infra' entry resolves the SOFTWARE
+        // binding's instance: that instance gets polled twice in a tick and the infra instance is
+        // never observed at all — silently, since resolve succeeds and returns a valid instance.
+        resolveExecutorPluginInstance(tx, {
+          orgId,
+          targetObjectId: binding.targetObjectId,
+          masterKey,
+          purpose: binding.purpose
+        })
       );
       if (!resolved) continue;
       await host.start([resolved.instanceConfig]);

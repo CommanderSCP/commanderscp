@@ -16,12 +16,22 @@ export interface CorrelationHint {
   path?: string;
 }
 
-/** Returns the first matching component object id, or `null` if no `source_mappings` row matches. */
+/** What a source event resolves to: the component, and WHICH of its pipelines the source drives. */
+export interface SourceMatch {
+  componentObjectId: string;
+  /** From the matched mapping (M12 P4A). The infra repo maps to 'infra', the app repo to 'software' —
+   *  the release itself says which pipeline it is, rather than being inferred from sourceKind (a
+   *  GitHub Actions workflow can run Terraform OR deploy an app). Pre-P4A mappings default to
+   *  'software', so every existing mapping resolves exactly what it resolved before. */
+  purpose: "infra" | "software";
+}
+
+/** Returns the first matching component + its pipeline, or `null` if no `source_mappings` row matches. */
 export async function matchComponentForSource(
   tx: TenantTx,
   orgId: string,
   hint: CorrelationHint
-): Promise<string | null> {
+): Promise<SourceMatch | null> {
   const rows = await tx
     .select()
     .from(sourceMappings)
@@ -30,7 +40,10 @@ export async function matchComponentForSource(
   for (const row of rows) {
     if (row.repoPattern && (!hint.repo || !globMatch(row.repoPattern, hint.repo))) continue;
     if (row.pathPattern && (!hint.path || !globMatch(row.pathPattern, hint.path))) continue;
-    return row.componentObjectId;
+    return {
+      componentObjectId: row.componentObjectId,
+      purpose: (row.purpose as "infra" | "software" | null) ?? "software"
+    };
   }
   return null;
 }
