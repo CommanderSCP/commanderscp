@@ -353,6 +353,35 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
   // "kitchen-sink" render below) must produce exactly the configured policy, with BOTH a
   // namespaceSelector `to` entry (in-cluster executor) and an ipBlock `to` entry (external
   // executor) and the configured ports actually present.
+  // Internal-egress allowlist (internalEgressHosts -> SCP_INTERNAL_EGRESS_HOSTS, ADR-0003). The
+  // application-layer twin of networkPolicy.executorEgress below: it is the HARD boundary for the
+  // plugin SSRF egress guard, so the default MUST render nothing at all — an accidental default here
+  // would silently let every tenant-configurable plugin reach loopback/RFC1918, which is exactly the
+  // hole (MAJOR #6) the guard exists to close. When set, both the api and worker Deployments must
+  // carry it (the worker is where the plugin host actually lives).
+  {
+    const envOf = (doc: unknown) =>
+      (podSpecOf(doc as never)?.containers ?? []).flatMap((c) => c.env ?? []);
+    const apiEgressEnv = envOf(apiDeploy).find((e) => e.name === "SCP_INTERNAL_EGRESS_HOSTS");
+    const workerEgressEnv = envOf(workerDeploy).find((e) => e.name === "SCP_INTERNAL_EGRESS_HOSTS");
+    if (label === "defaults") {
+      assert(
+        !apiEgressEnv && !workerEgressEnv,
+        `[${label}] internalEgressHosts is empty by default — SCP_INTERNAL_EGRESS_HOSTS must NOT be rendered (the SSRF guard's deny posture must stay untouched)`
+      );
+    }
+    if (label === "kitchen-sink") {
+      assert(
+        workerEgressEnv?.value === "argocd-server.argocd.svc.cluster.local",
+        `[${label}] internalEgressHosts set but the worker Deployment's SCP_INTERNAL_EGRESS_HOSTS is ${JSON.stringify(workerEgressEnv?.value)}`
+      );
+      assert(
+        apiEgressEnv?.value === "argocd-server.argocd.svc.cluster.local",
+        `[${label}] internalEgressHosts set but the api Deployment's SCP_INTERNAL_EGRESS_HOSTS is ${JSON.stringify(apiEgressEnv?.value)}`
+      );
+    }
+  }
+
   const executorPolicies = networkPolicies.filter((np) =>
     String(np.metadata?.name ?? "").includes("-allow-executor-")
   );
@@ -540,7 +569,11 @@ function main(): void {
       "--set", "bundledExecutor.harbor.enabled=true",
       // Executor egress allowlist (Mode A / BYO-coordinate) — one entry exercising BOTH `to` shapes
       // at once (an in-cluster namespaceSelector AND an external ipBlock) plus multiple ports.
-      "--set-json", 'networkPolicy.executorEgress=[{"name":"argocd","namespaces":["argocd"],"cidrs":["203.0.113.0/24"],"ports":[{"protocol":"TCP","port":8080},{"protocol":"TCP","port":80}]}]'
+      "--set-json", 'networkPolicy.executorEgress=[{"name":"argocd","namespaces":["argocd"],"cidrs":["203.0.113.0/24"],"ports":[{"protocol":"TCP","port":8080},{"protocol":"TCP","port":80}]}]',
+      // Operator half of the two-layer internal-egress model (ADR-0003) — the application-layer SSRF
+      // guard's hard boundary. Pairs with networkPolicy.executorEgress above: the same "what may this
+      // pod reach" decision, enforced once at the k8s layer and once inside the plugin host.
+      "--set-json", 'internalEgressHosts=["argocd-server.argocd.svc.cluster.local"]'
     ])
   );
 
