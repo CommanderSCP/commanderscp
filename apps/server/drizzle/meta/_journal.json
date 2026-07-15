@@ -162,6 +162,13 @@
       "when": 1784700000000,
       "tag": "0022_contains_single_service_constraint",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1784800000000,
+      "tag": "0023_executor_binding_purpose",
+      "breakpoints": true
     }
   ]
 }

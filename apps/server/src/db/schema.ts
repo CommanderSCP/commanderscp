@@ -1169,11 +1169,20 @@ export const executorBindings = pgTable(
     // serverUrl + token are resolved FROM that object (not this binding's inline config), and the
     // plugin instance is keyed on the system id so all bindings on one system share one observe poll.
     executionSystemId: uuid("execution_system_id"),
+    // WHICH pipeline this binding drives for the target (M12 P3, migration 0023): 'infra' | 'software'.
+    // A component may own BOTH (owner model: "all services involve infra and software"), so bindings
+    // are 1:N per target, keyed by purpose. Defaults to 'software': every pre-P3 binding is the one
+    // reconcile triggers today, and reconcile asks for 'software' — so 1:N changed no behaviour.
+    purpose: text("purpose").notNull().default("software"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [
-    unique("executor_bindings_org_target_key").on(table.orgId, table.targetObjectId),
+    unique("executor_bindings_org_target_purpose_key").on(
+      table.orgId,
+      table.targetObjectId,
+      table.purpose
+    ),
     index("executor_bindings_org").on(table.orgId)
   ]
 );

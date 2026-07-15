@@ -13196,6 +13196,7 @@ export type GetExecutorBindingResponses = {
     200: {
         id: string;
         targetObjectId: string;
+        purpose: 'infra' | 'software';
         pluginModule: string;
         pluginInstanceId: string;
         config: unknown;
@@ -13223,6 +13224,7 @@ export type PutExecutorBindingData = {
         allowedHosts?: Array<string>;
         externalRef?: string;
         executionSystemId?: string;
+        purpose?: 'infra' | 'software';
     };
     path: {
         idOrUrn: string;
@@ -13276,6 +13278,7 @@ export type PutExecutorBindingResponses = {
     200: {
         id: string;
         targetObjectId: string;
+        purpose: 'infra' | 'software';
         pluginModule: string;
         pluginInstanceId: string;
         config: unknown;

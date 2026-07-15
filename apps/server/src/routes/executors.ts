@@ -18,7 +18,8 @@ import {
   RunDiscoveryRequestSchema,
   SecretConfiguredResponseSchema,
   SecretKeyListResponseSchema,
-  SecretKeyParamSchema
+  SecretKeyParamSchema,
+  type BindingPurpose
 } from "@scp/schemas";
 import {
   manifest as githubExecutorManifest,
@@ -105,7 +106,8 @@ async function bindTargetToExecutionSystem(
   subjectObjectId: string,
   targetObjectId: string,
   executionSystemId: string,
-  externalRef?: string
+  externalRef?: string,
+  purpose?: BindingPurpose
 ) {
   const sys = await getObjectByIdOrUrnAnyType(tx, orgId, executionSystemId);
   // Authorize FIRST — before the typeId check below — so an unauthorized caller can't use the
@@ -142,6 +144,7 @@ async function bindTargetToExecutionSystem(
   return upsertExecutorBinding(tx, {
     orgId,
     targetObjectId,
+    purpose,
     pluginModule: module,
     pluginInstanceId: executionSystemInstanceId(sys.id),
     executionSystemId: sys.id,
@@ -348,7 +351,8 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
             auth.subjectObjectId,
             target.id,
             body.executionSystemId,
-            body.externalRef
+            body.externalRef,
+            body.purpose
           );
         }
 
@@ -356,6 +360,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           orgId: auth.orgId,
           targetObjectId: target.id,
           pluginModule: body.pluginModule!,
+          purpose: body.purpose,
           pluginInstanceId: body.pluginInstanceId!,
           config: body.config,
           secretRefs: body.secretRefs,
