@@ -18,7 +18,9 @@ import {
   RunDiscoveryRequestSchema,
   SecretConfiguredResponseSchema,
   SecretKeyListResponseSchema,
-  SecretKeyParamSchema
+  SecretKeyParamSchema,
+  BindingPurposeSchema,
+  type BindingPurpose
 } from "@scp/schemas";
 import {
   manifest as githubExecutorManifest,
@@ -48,6 +50,7 @@ import {
   isKnownExecutorModule,
   executionSystemInstanceId,
   resolveInternalEgress,
+  DEFAULT_BINDING_PURPOSE,
   EXECUTION_SYSTEM_INSTANCE_PREFIX
 } from "../coordination/executor-bindings-repo.js";
 import {
@@ -105,7 +108,8 @@ async function bindTargetToExecutionSystem(
   subjectObjectId: string,
   targetObjectId: string,
   executionSystemId: string,
-  externalRef?: string
+  externalRef?: string,
+  purpose?: BindingPurpose
 ) {
   const sys = await getObjectByIdOrUrnAnyType(tx, orgId, executionSystemId);
   // Authorize FIRST — before the typeId check below — so an unauthorized caller can't use the
@@ -142,6 +146,7 @@ async function bindTargetToExecutionSystem(
   return upsertExecutorBinding(tx, {
     orgId,
     targetObjectId,
+    purpose,
     pluginModule: module,
     pluginInstanceId: executionSystemInstanceId(sys.id),
     executionSystemId: sys.id,
@@ -348,7 +353,8 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
             auth.subjectObjectId,
             target.id,
             body.executionSystemId,
-            body.externalRef
+            body.externalRef,
+            body.purpose
           );
         }
 
@@ -356,6 +362,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           orgId: auth.orgId,
           targetObjectId: target.id,
           pluginModule: body.pluginModule!,
+          purpose: body.purpose,
           pluginInstanceId: body.pluginInstanceId!,
           config: body.config,
           secretRefs: body.secretRefs,
@@ -372,6 +379,11 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     url: "/api/v1/executors/:idOrUrn/binding",
     schema: {
       params: RegistryIdOrUrnParamSchema,
+      // A target may hold one binding PER PURPOSE (M12 P3), so "the" binding no longer exists.
+      // Optional + defaulting to 'software' keeps every existing caller's behaviour identical, while
+      // making an `infra` binding readable at all — without it, PUT could create a binding that no
+      // API call could ever return.
+      querystring: z.object({ purpose: BindingPurposeSchema.optional() }),
       response: {
         200: ExecutorBindingSchema,
         401: ProblemSchema,
@@ -382,7 +394,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     config: {
       openapi: {
         operationId: "getExecutorBinding",
-        summary: "Get a target's configured executor binding",
+        summary: "Get a target's configured executor binding for one purpose (default: software)",
         tags: ["executors"]
       }
     },
@@ -396,8 +408,13 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           permission: "object:read",
           scopeObjectId: target.id
         });
-        const row = await getExecutorBinding(tx, auth.orgId, target.id);
-        if (!row) throw notFound(`no executor binding configured for '${request.params.idOrUrn}'`);
+        const purpose = request.query.purpose ?? DEFAULT_BINDING_PURPOSE;
+        const row = await getExecutorBinding(tx, auth.orgId, target.id, purpose);
+        if (!row) {
+          throw notFound(
+            `no '${purpose}' executor binding configured for '${request.params.idOrUrn}'`
+          );
+        }
         return row;
       });
       reply.status(200).send(binding);

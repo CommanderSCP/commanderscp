@@ -2326,6 +2326,12 @@ export function buildProgram(): Command {
       "--target-ref <ref>",
       "executor-specific target id (e.g. an Argo CD Application name); defaults to the object id"
     )
+    .option(
+      "--purpose <purpose>",
+      "which pipeline this binding drives: infra|software (default: software). A target may hold ONE " +
+        "binding per purpose, so this is what adds an infra pipeline alongside a software one rather " +
+        "than replacing it"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(
@@ -2339,13 +2345,18 @@ export function buildProgram(): Command {
           secretRefs?: string;
           allowedHosts?: string;
           targetRef?: string;
+          purpose?: "infra" | "software";
         }
       ) => {
         const client = await clientFromStoredCredentials(opts);
         const result = await client.executors.putBinding(
           idOrUrn,
           opts.executionSystem
-            ? { executionSystemId: opts.executionSystem, externalRef: opts.targetRef }
+            ? {
+                executionSystemId: opts.executionSystem,
+                externalRef: opts.targetRef,
+                purpose: opts.purpose
+              }
             : {
                 pluginModule: opts.module,
                 pluginInstanceId: opts.instanceId,
@@ -2356,7 +2367,8 @@ export function buildProgram(): Command {
                   | Record<string, string>
                   | undefined,
                 allowedHosts: parseList(opts.allowedHosts),
-                externalRef: opts.targetRef
+                externalRef: opts.targetRef,
+                purpose: opts.purpose
               }
         );
         printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
@@ -2365,12 +2377,13 @@ export function buildProgram(): Command {
 
   executorCmd
     .command("get <idOrUrn>")
-    .description("Get a target's configured executor binding")
+    .description("Get a target's configured executor binding (one purpose; default: software)")
+    .option("--purpose <purpose>", "which pipeline to read: infra|software (default: software)")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
-    .action(async (idOrUrn: string, opts: BaseCliOpts) => {
+    .action(async (idOrUrn: string, opts: BaseCliOpts & { purpose?: "infra" | "software" }) => {
       const client = await clientFromStoredCredentials(opts);
-      const result = await client.executors.getBinding(idOrUrn);
+      const result = await client.executors.getBinding(idOrUrn, opts.purpose);
       printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
     });
 

@@ -32,7 +32,11 @@ import { evaluateWaveGate } from "./gates.js";
 import { insertDecision } from "./decisions-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import { DEFAULT_EXECUTOR_INSTANCE_ID, DEFAULT_EXECUTOR_MODULE } from "./executor-config.js";
-import { getExecutorBinding, resolveExecutorPluginInstance } from "./executor-bindings-repo.js";
+import {
+  getExecutorBinding,
+  resolveExecutorPluginInstance,
+  DEFAULT_BINDING_PURPOSE
+} from "./executor-bindings-repo.js";
 import { processChangeSourceEvents } from "./webhook-processor.js";
 import { matchPoliciesForTargets } from "../governance/policy-resolve.js";
 import { resolvePolicies } from "../governance/policy-model.js";
@@ -626,7 +630,12 @@ async function triggerWaveTarget(
       // Falls back to the object id for legacy bindings — so a binding whose object id already IS
       // the external name (pre-M12) is unaffected. This is what lets Mode A / imported objects
       // trigger the right external resource when their SCP id differs from their external name.
-      const binding = await getExecutorBinding(tx, orgId, targetObjectId);
+      // P3: a target may now hold BOTH an infra and a software binding, so "the" binding no longer
+      // exists — reconcile must NAME the pipeline it drives. 'software' is what every pre-P3 binding
+      // was migrated to (migration 0023's default), so this preserves today's behaviour exactly. An
+      // 'infra' binding is registerable and pollable now, but NOT triggerable until a wave can name a
+      // purpose — P4, because CompiledWave.targets carries bare object ids with no notion of a binding.
+      const binding = await getExecutorBinding(tx, orgId, targetObjectId, DEFAULT_BINDING_PURPOSE);
       const externalRef = binding?.externalRef ?? null;
 
       if (isRollback && change.rollbackOfObjectId) {

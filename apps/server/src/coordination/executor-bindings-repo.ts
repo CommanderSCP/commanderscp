@@ -47,9 +47,18 @@ export function assertNotReservedInstanceId(pluginInstanceId: string): void {
  * `control_bindings` (1:1 binding per graph object, same upsert-by-lookup shape).
  */
 
+/** WHICH pipeline a binding drives (M12 P3). Closed set — see migration 0023 for why not 'data'. */
+export type BindingPurpose = "infra" | "software";
+
+/** The purpose reconcile triggers, and the value every pre-P3 binding was migrated to. Making this
+ *  explicit (rather than an inline literal at each call site) is what keeps "1:N did not change
+ *  today's behaviour" checkable in one place. */
+export const DEFAULT_BINDING_PURPOSE: BindingPurpose = "software";
+
 export interface ExecutorBindingRow {
   id: string;
   targetObjectId: string;
+  purpose: BindingPurpose;
   pluginModule: string;
   pluginInstanceId: string;
   config: unknown;
@@ -62,6 +71,7 @@ export interface ExecutorBindingRow {
 function toRow(row: {
   id: string;
   targetObjectId: string;
+  purpose?: string | null;
   pluginModule: string;
   pluginInstanceId: string;
   config: unknown;
@@ -73,6 +83,7 @@ function toRow(row: {
   return {
     id: row.id,
     targetObjectId: row.targetObjectId,
+    purpose: (row.purpose as BindingPurpose | null) ?? DEFAULT_BINDING_PURPOSE,
     pluginModule: row.pluginModule,
     pluginInstanceId: row.pluginInstanceId,
     config: row.config,
@@ -83,19 +94,46 @@ function toRow(row: {
   };
 }
 
+/**
+ * The binding driving ONE pipeline of a target. `purpose` is required-by-default rather than
+ * optional-and-arbitrary: before P3 this did `.limit(1)` with no ORDER BY, which was fine under
+ * UNIQUE(org,target) but would return an ARBITRARY row once a target can hold both an infra and a
+ * software binding. Every caller must say which pipeline it means; defaulting to 'software' keeps
+ * pre-P3 behaviour identical, since that is what every migrated binding is.
+ */
 export async function getExecutorBinding(
   tx: TenantTx,
   orgId: string,
-  targetObjectId: string
+  targetObjectId: string,
+  purpose: BindingPurpose = DEFAULT_BINDING_PURPOSE
 ): Promise<ExecutorBindingRow | undefined> {
   const rows = await tx
     .select()
     .from(executorBindings)
     .where(
-      and(eq(executorBindings.orgId, orgId), eq(executorBindings.targetObjectId, targetObjectId))
+      and(
+        eq(executorBindings.orgId, orgId),
+        eq(executorBindings.targetObjectId, targetObjectId),
+        eq(executorBindings.purpose, purpose)
+      )
     )
     .limit(1);
   return rows[0] ? toRow(rows[0]) : undefined;
+}
+
+/** Every pipeline bound to one target (infra AND software) — for the GET route and organize-after. */
+export async function listExecutorBindingsForTarget(
+  tx: TenantTx,
+  orgId: string,
+  targetObjectId: string
+): Promise<ExecutorBindingRow[]> {
+  const rows = await tx
+    .select()
+    .from(executorBindings)
+    .where(
+      and(eq(executorBindings.orgId, orgId), eq(executorBindings.targetObjectId, targetObjectId))
+    );
+  return rows.map(toRow);
 }
 
 /**
@@ -117,6 +155,8 @@ export async function listExecutorBindings(
 export interface UpsertExecutorBindingInput {
   orgId: string;
   targetObjectId: string;
+  /** Omitted ⇒ 'software' (DEFAULT_BINDING_PURPOSE) — the behaviour-preserving default. */
+  purpose?: BindingPurpose;
   pluginModule: string;
   pluginInstanceId: string;
   config?: unknown;
@@ -137,7 +177,11 @@ export async function upsertExecutorBinding(
   if (!input.executionSystemId) {
     assertNotReservedInstanceId(input.pluginInstanceId);
   }
-  const existing = await getExecutorBinding(tx, input.orgId, input.targetObjectId);
+  // Key the "is this an update or an insert" lookup on (target, PURPOSE). Without the purpose the
+  // lookup found "the" binding and UPDATED it — which is exactly how binding a component's infra
+  // pipeline after its software pipeline silently destroyed the first one before P3.
+  const purpose = input.purpose ?? DEFAULT_BINDING_PURPOSE;
+  const existing = await getExecutorBinding(tx, input.orgId, input.targetObjectId, purpose);
   if (existing) {
     const [row] = await tx
       .update(executorBindings)
@@ -161,6 +205,7 @@ export async function upsertExecutorBinding(
       id: uuidv7(),
       orgId: input.orgId,
       targetObjectId: input.targetObjectId,
+      purpose,
       pluginModule: input.pluginModule,
       pluginInstanceId: input.pluginInstanceId,
       config: input.config ?? {},
@@ -309,9 +354,21 @@ function sanitizeInstanceId(instanceId: string): string {
  */
 export async function resolveExecutorPluginInstance(
   tx: TenantTx,
-  input: { orgId: string; targetObjectId: string; masterKey: Buffer; domainId?: string }
+  input: {
+    orgId: string;
+    targetObjectId: string;
+    masterKey: Buffer;
+    domainId?: string;
+    /** Which pipeline to resolve. Defaults to 'software' — pre-P3 behaviour (P4 lets a wave name it). */
+    purpose?: BindingPurpose;
+  }
 ): Promise<ResolvedExecutorInstance | undefined> {
-  const binding = await getExecutorBinding(tx, input.orgId, input.targetObjectId);
+  const binding = await getExecutorBinding(
+    tx,
+    input.orgId,
+    input.targetObjectId,
+    input.purpose ?? DEFAULT_BINDING_PURPOSE
+  );
   if (!binding) return undefined;
 
   // Resolve the effective plugin identity + config from one of two sources:

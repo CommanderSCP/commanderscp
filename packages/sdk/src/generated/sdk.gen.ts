@@ -1800,7 +1800,7 @@ export const listSecretKeys = <ThrowOnError extends boolean = false>(options?: O
 });
 
 /**
- * Get a target's configured executor binding
+ * Get a target's configured executor binding for one purpose (default: software)
  */
 export const getExecutorBinding = <ThrowOnError extends boolean = false>(options: Options<GetExecutorBindingData, ThrowOnError>): RequestResult<GetExecutorBindingResponses, GetExecutorBindingErrors, ThrowOnError> => (options.client ?? client).get<GetExecutorBindingResponses, GetExecutorBindingErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],

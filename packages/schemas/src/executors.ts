@@ -12,6 +12,12 @@ import { cursorPageResponseSchema } from "./common.js";
 // ExecutorPlugin instance).
 // -------------------------------------------------------------------------------------------
 
+/** WHICH pipeline a binding drives (M12 P3). Closed set; `data` was considered and withdrawn (SCP's
+ *  own migrations are a Helm hook inside the deploy, not a separate pipeline). Adding a value later is
+ *  additive. See docs/proposals/service-component-model.md. */
+export const BindingPurposeSchema = z.enum(["infra", "software"]);
+export type BindingPurpose = z.infer<typeof BindingPurposeSchema>;
+
 export const CreateExecutorBindingRequestSchema = z
   .object({
     /** Inline binding: the plugin module + a stable instance id. Optional because an
@@ -30,7 +36,11 @@ export const CreateExecutorBindingRequestSchema = z
     externalRef: z.string().min(1).optional(),
     /** Reference (id or URN) to a registered `execution-system` graph object (Mode A). When set, the
      *  plugin module, serverUrl, and token are resolved FROM that object — omit pluginModule/config. */
-    executionSystemId: z.string().min(1).optional()
+    executionSystemId: z.string().min(1).optional(),
+    /** WHICH pipeline this binding drives. A target may hold one binding per purpose (infra AND
+     *  software), so this is what distinguishes "add the infra pipeline" from "replace the software
+     *  one". Omitted ⇒ 'software' — the pre-P3 behaviour every existing binding was migrated to. */
+    purpose: BindingPurposeSchema.optional()
   })
   .refine((b) => (b.executionSystemId ? !b.pluginModule : Boolean(b.pluginModule && b.pluginInstanceId)), {
     message:
@@ -41,6 +51,7 @@ export type CreateExecutorBindingRequest = z.infer<typeof CreateExecutorBindingR
 export const ExecutorBindingSchema = z.object({
   id: z.string().uuid(),
   targetObjectId: z.string().uuid(),
+  purpose: BindingPurposeSchema,
   pluginModule: z.string(),
   pluginInstanceId: z.string(),
   config: z.unknown(),
