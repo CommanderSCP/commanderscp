@@ -8,10 +8,12 @@ import { forbidden } from "../errors.js";
  *
  *  - **Subject expansion**: the acting subject (a `user`/`service-account` graph object) plus
  *    every group/team it transitively belongs to via built-in `member_of` relationships.
- *  - **Scope (containment) expansion**: the target object plus every containing ancestor,
- *    walking `objects.domain_id` up to the org root (every object's chain terminates there —
+ *  - **Scope (containment) expansion**: the target object plus every containing ancestor, by two
+ *    routes — `objects.domain_id` up to the org root (every object's chain terminates there —
  *    graph/objects-repo.ts defaults `domainId` to the org root object at creation time, so this
- *    walk never needs NULL special-casing beyond the root itself).
+ *    walk never needs NULL special-casing beyond the root itself), AND the `contains` edge from a
+ *    component to its service (migration 0021), which is what finally makes DESIGN §7's documented
+ *    `component -> service -> domain -> organization` chain real. See `scopeExpandCte`.
  *
  * `role_bindings` rows whose `(subject, scope)` pair matches either expansion, and whose role
  * grants the requested permission, are collected; an explicit `deny` at ANY matching scope wins
@@ -47,6 +49,56 @@ export interface PermissionCheck {
   scopeObjectId: string;
 }
 
+/**
+ * The scope (containment) expansion, shared by `hasPermission` and `hasRoleAtScope` so the two can
+ * never drift — they answer different questions ("has permission P" vs "holds role R") but MUST agree
+ * on what "at-or-above this scope" means, or an Approver bound at a service would be eligible for one
+ * check and not the other.
+ *
+ * Walks the target object plus every containing ancestor, by TWO routes:
+ *
+ *  1. `objects.domain_id` — up to the org root (objects-repo.ts defaults `domainId` to the org root at
+ *     creation, so every chain terminates there).
+ *  2. `contains` — a component's SERVICE is a containing scope (migration 0021,
+ *     docs/proposals/service-component-model.md). DESIGN §7 has always described the chain as
+ *     `component -> service -> domain -> organization`; until 0021 there was no service edge to walk,
+ *     so the documented behaviour did not exist. This is what makes a service-scoped role binding
+ *     reach that service's components.
+ *
+ * The `contains` edge is registered service -> component, so it is walked BACKWARDS here
+ * (`r.to_id` = the object being checked, `r.from_id` = its service). That asymmetry is the security
+ * property: a binding at a SERVICE reaches its components, but a binding at a COMPONENT never reaches
+ * the service (a service has no incoming `contains` edge), nor its sibling components.
+ *
+ * Both routes live in ONE recursive term via LATERAL: PostgreSQL permits the CTE self-reference
+ * exactly once, so two recursive branches would error ("recursive reference ... more than once").
+ * `UNION` (not `UNION ALL`) dedupes — with two routes the chain is a DAG, not a line (a component's
+ * domain is reachable directly AND via its service), and dedupe is what keeps that from re-walking.
+ */
+function scopeExpandCte(orgId: string, scopeObjectId: string) {
+  return sql`
+    scope_expand AS (
+      SELECT ${scopeObjectId}::uuid AS scope_id, 0 AS depth
+      UNION
+      SELECT p.parent_id, se.depth + 1
+      FROM scope_expand se
+      CROSS JOIN LATERAL (
+        SELECT o.domain_id AS parent_id
+        FROM objects o
+        WHERE o.id = se.scope_id AND o.domain_id IS NOT NULL
+        UNION ALL
+        SELECT r.from_id
+        FROM relationships r
+        WHERE r.to_id = se.scope_id
+          AND r.org_id = ${orgId}
+          AND r.type_id = 'contains'
+          AND r.deleted_at IS NULL
+      ) p
+      WHERE p.parent_id IS NOT NULL AND se.depth < 10
+    )
+  `;
+}
+
 export async function hasPermission(tx: TenantTx, check: PermissionCheck): Promise<boolean> {
   const result = await tx.execute<{ effect: string }>(sql`
     WITH RECURSIVE subject_expand AS (
@@ -58,14 +110,7 @@ export async function hasPermission(tx: TenantTx, check: PermissionCheck): Promi
       WHERE r.org_id = ${check.orgId} AND r.type_id = 'member_of' AND r.deleted_at IS NULL
         AND se.depth < 10
     ),
-    scope_expand AS (
-      SELECT ${check.scopeObjectId}::uuid AS scope_id, 0 AS depth
-      UNION ALL
-      SELECT o.domain_id, se.depth + 1
-      FROM objects o
-      JOIN scope_expand se ON o.id = se.scope_id
-      WHERE o.domain_id IS NOT NULL AND se.depth < 10
-    )
+    ${scopeExpandCte(check.orgId, check.scopeObjectId)}
     SELECT DISTINCT rb.effect
     FROM role_bindings rb
     JOIN roles rl ON rl.id = rb.role_id
@@ -122,14 +167,7 @@ export async function hasRoleAtScope(tx: TenantTx, check: RoleCheck): Promise<bo
       WHERE r.org_id = ${check.orgId} AND r.type_id = 'member_of' AND r.deleted_at IS NULL
         AND se.depth < 10
     ),
-    scope_expand AS (
-      SELECT ${check.scopeObjectId}::uuid AS scope_id, 0 AS depth
-      UNION ALL
-      SELECT o.domain_id, se.depth + 1
-      FROM objects o
-      JOIN scope_expand se ON o.id = se.scope_id
-      WHERE o.domain_id IS NOT NULL AND se.depth < 10
-    )
+    ${scopeExpandCte(check.orgId, check.scopeObjectId)}
     SELECT DISTINCT rb.effect
     FROM role_bindings rb
     JOIN roles rl ON rl.id = rb.role_id
