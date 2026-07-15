@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { sourceMappings } from "../db/schema.js";
 import { globMatch } from "./glob-match.js";
@@ -26,7 +26,40 @@ export interface SourceMatch {
   purpose: "infra" | "software";
 }
 
-/** Returns the first matching component + its pipeline, or `null` if no `source_mappings` row matches. */
+/**
+ * Returns the matching component + its pipeline, or `null` if no `source_mappings` row matches.
+ * More than one row can match one event, so the order below is the whole contract of this function.
+ *
+ * PRECEDENCE — most-constrained first, oldest first to break ties:
+ *
+ *   1. MOST CONSTRAINED WINS. A mapping is ranked by how many of its two globs it actually sets:
+ *      repo+path (2) beats one of them (1) beats a catch-all that sets neither (0). Both patterns
+ *      are NULLABLE and the matcher SKIPS a null one, so a catch-all matches EVERY event of its
+ *      sourceKind and therefore overlaps with every specific mapping beside it — "catch-all plus a
+ *      specific override" is a normal operator setup, and this rank is what makes the override
+ *      actually override rather than race the fallback.
+ *   2. OLDEST WINS (created_at, then id — the primary key, so the order is TOTAL and no two rows
+ *      can tie). Deliberately oldest and not newest: an established mapping keeps its releases when
+ *      someone later adds an equally-constrained one. A new ambiguous mapping then visibly never
+ *      fires, instead of silently stealing another component's pipeline.
+ *
+ * Two things this rank deliberately does NOT do, because an operator will otherwise assume they
+ * happen (both fall through to rule 2, oldest-wins):
+ *   - It does not rank repo-only above path-only, or vice versa. They are equally constrained and
+ *     there is no principled reason to prefer either.
+ *   - It does not compare glob against glob. `acme/app` and `acme/*` are BOTH rank 1; the exact
+ *     pattern does not beat the wildcard one.
+ * If either matters to an operator, the fix is a mapping that sets both patterns (rank 2), not a
+ * cleverer ranking here.
+ *
+ * Ordered in SQL rather than sorted in TS so that the precedence cannot be lost by a caller
+ * re-querying, and by existing columns rather than a new `priority` column: ordering the data we
+ * already have is enough (CLAUDE.md priority 1, Simplicity).
+ *
+ * Before M12 P4A an ambiguous match only picked WHICH COMPONENT; since P4A the winning row also
+ * carries `purpose`, so it picks WHICH PIPELINE — an unordered match could route an infra release
+ * into the app's deploy pipeline depending on the query plan.
+ */
 export async function matchComponentForSource(
   tx: TenantTx,
   orgId: string,
@@ -35,7 +68,13 @@ export async function matchComponentForSource(
   const rows = await tx
     .select()
     .from(sourceMappings)
-    .where(and(eq(sourceMappings.orgId, orgId), eq(sourceMappings.sourceKind, hint.sourceKind)));
+    .where(and(eq(sourceMappings.orgId, orgId), eq(sourceMappings.sourceKind, hint.sourceKind)))
+    .orderBy(
+      sql`(case when ${sourceMappings.repoPattern} is not null then 1 else 0 end
+           + case when ${sourceMappings.pathPattern} is not null then 1 else 0 end) desc`,
+      asc(sourceMappings.createdAt),
+      asc(sourceMappings.id)
+    );
 
   for (const row of rows) {
     if (row.repoPattern && (!hint.repo || !globMatch(row.repoPattern, hint.repo))) continue;
