@@ -138,6 +138,41 @@ spec:
         - { protocol: TCP, port: 443 }
 ---
 {{- end }}
+{{- range .Values.networkPolicy.executorEgress }}
+# Egress: executor allowlist entry {{ .name | quote }} (Mode A / BYO-coordinate, DESIGN §12) — SCP
+# api/worker make outbound observe/trigger/status/abort calls to the execution systems they
+# coordinate (Argo CD, GitHub, …); this is the core of the platform (principle 1, CLAUDE.md), so
+# without SOME egress allow here a coordinated executor is entirely unreachable under default-deny.
+# Purely additive and opt-in: rendered ONLY per entry in `networkPolicy.executorEgress` (empty by
+# default ⇒ this block renders nothing at all, so the default-deny baseline is unchanged unless an
+# operator explicitly lists an executor). Same podSelector as every other SCP-side policy in this
+# file — never widened to the whole namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "commanderscp.fullname" $ }}-allow-executor-{{ .name }}
+  labels:
+    {{- include "commanderscp.labels" $ | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "commanderscp.selectorLabels" $ | nindent 6 }}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        {{- range .namespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+        {{- range .cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        {{- toYaml .ports | nindent 8 }}
+---
+{{- end }}
 # Ingress: to `api` only, from anywhere in-cluster (an ingress controller in another namespace, or
 # a same-namespace client) — `worker`/`migrations` pods never accept inbound traffic at all
 # (they carry the same pod-selector label set, but nothing here opens ingress for them since the
