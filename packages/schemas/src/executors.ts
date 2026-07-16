@@ -62,6 +62,19 @@ export const ExecutorBindingSchema = z.object({
 });
 export type ExecutorBinding = z.infer<typeof ExecutorBindingSchema>;
 
+/** All of a target's bindings (M12 P5c) — a target holds at most one per purpose, so no pagination. */
+export const ExecutorBindingListResponseSchema = z.object({
+  items: z.array(ExecutorBindingSchema)
+});
+export type ExecutorBindingListResponse = z.infer<typeof ExecutorBindingListResponseSchema>;
+
+/** Body for `PATCH /executors/{idOrUrn}/binding` (M12 P5c) — relabel the binding named by the
+ *  `?purpose=` query (its CURRENT purpose) to this NEW `purpose`. */
+export const RepurposeExecutorBindingRequestSchema = z.object({
+  purpose: BindingPurposeSchema
+});
+export type RepurposeExecutorBindingRequest = z.infer<typeof RepurposeExecutorBindingRequestSchema>;
+
 // -------------------------------------------------------------------------------------------
 // Notification bindings (DESIGN §11 NotificationPlugin — an org's configured channels).
 // -------------------------------------------------------------------------------------------

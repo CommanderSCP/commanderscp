@@ -179,6 +179,10 @@ export function RegistryDetailPage(): React.JSX.Element {
         </div>
       )}
 
+      {(object.typeId === "component" || object.typeId === "deployment-target") && (
+        <TargetBindingsCard targetId={object.id} detailKey={detailKey} />
+      )}
+
       <p className="text-xs text-slate-400">
         &quot;Why?&quot; / Decision links aren&apos;t available yet — the Decision Engine lands in a
         later milestone (M4).
@@ -277,6 +281,93 @@ function ComponentServiceCard({
         {setServiceMutation.isError && (
           <p className="text-sm text-red-600">
             {setServiceMutation.error instanceof Error ? setServiceMutation.error.message : "Failed"}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * A target's executor bindings (M12 P5c) — one per pipeline (infra/software). Lists each binding
+ * with its module/instance and lets an operator DETACH it or RELABEL which pipeline it drives. This
+ * is the UI half of the P5c binding primitives; creating a binding still lives on the Plugins page.
+ */
+function TargetBindingsCard({
+  targetId,
+  detailKey
+}: {
+  targetId: string;
+  detailKey: unknown[];
+}): React.JSX.Element {
+  const queryClient = useQueryClient();
+  const bindingsKey = [...detailKey, "executor-bindings"];
+  const bindingsQuery = useQuery({
+    queryKey: bindingsKey,
+    queryFn: () => client.executors.listBindings(targetId)
+  });
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: bindingsKey });
+
+  const deleteMutation = useMutation({
+    mutationFn: (purpose: "infra" | "software") => client.executors.deleteBinding(targetId, purpose),
+    onSuccess: invalidate
+  });
+  const repurposeMutation = useMutation({
+    mutationFn: (from: "infra" | "software") =>
+      client.executors.repurposeBinding(targetId, from === "software" ? "infra" : "software", from),
+    onSuccess: invalidate
+  });
+  const pending = deleteMutation.isPending || repurposeMutation.isPending;
+  const error = deleteMutation.error ?? repurposeMutation.error;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Executor bindings</CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        {(bindingsQuery.data?.length ?? 0) === 0 ? (
+          <p className="text-sm text-slate-500" data-testid="no-bindings">
+            No executor bindings. Configure one from the Plugins page.
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-2" data-testid="bindings-list">
+            {bindingsQuery.data?.map((b) => (
+              <li
+                key={b.id}
+                className="flex items-center justify-between gap-3 rounded border border-slate-200 p-2"
+              >
+                <div className="flex flex-col">
+                  <span className="text-sm font-medium text-slate-900">
+                    <Badge variant="secondary">{b.purpose}</Badge> {b.pluginModule}
+                  </span>
+                  <span className="font-mono text-xs text-slate-500">{b.pluginInstanceId}</span>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    disabled={pending}
+                    onClick={() => repurposeMutation.mutate(b.purpose)}
+                    data-testid={`repurpose-${b.purpose}`}
+                  >
+                    Make {b.purpose === "software" ? "infra" : "software"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={pending}
+                    onClick={() => deleteMutation.mutate(b.purpose)}
+                    data-testid={`unbind-${b.purpose}`}
+                  >
+                    Detach
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        {error && (
+          <p className="text-sm text-red-600">
+            {error instanceof Error ? error.message : "Failed"}
           </p>
         )}
       </CardContent>
