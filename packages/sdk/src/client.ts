@@ -44,6 +44,7 @@ import {
   upsertServiceByUrn as upsertServiceByUrnRequest,
   createComponent as createComponentRequest,
   setComponentService as setComponentServiceRequest,
+  mergeComponents as mergeComponentsRequest,
   listComponents as listComponentsRequest,
   getComponent as getComponentRequest,
   updateComponent as updateComponentRequest,
@@ -204,6 +205,7 @@ import type {
   CreateObjectRequest,
   CreateComponentRequest,
   UpsertComponentRequest,
+  MergeComponentsResponse,
   CreateObjectTypeRequest,
   CreateRelationshipRequest,
   CreateRelationshipTypeRequest,
@@ -899,6 +901,22 @@ export class ScpClient {
           client: this.client,
           path: { idOrUrn },
           body: { service: serviceIdOrUrn }
+        });
+        return unwrap(result);
+      },
+      /**
+       * Merge `loserIdOrUrn` into `survivorIdOrUrn` (M12 P5d) — moves the loser's executor bindings
+       * onto the survivor and soft-deletes the loser. Rejects (409) on a binding-purpose collision
+       * (relabel one first) or if either component has an in-flight change / live graph edges.
+       */
+      merge: async (
+        survivorIdOrUrn: string,
+        loserIdOrUrn: string
+      ): Promise<MergeComponentsResponse> => {
+        const result = await mergeComponentsRequest({
+          client: this.client,
+          path: { idOrUrn: survivorIdOrUrn },
+          body: { loser: loserIdOrUrn }
         });
         return unwrap(result);
       }

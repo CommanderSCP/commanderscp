@@ -5,6 +5,8 @@ import {
   GraphObjectSchema,
   ObjectListQuerySchema,
   ObjectListResponseSchema,
+  MergeComponentsRequestSchema,
+  MergeComponentsResponseSchema,
   ProblemSchema,
   RegistryIdOrUrnParamSchema,
   RegistryUrnParamSchema,
@@ -26,6 +28,7 @@ import {
   upsertObjectByUrn
 } from "../graph/objects-repo.js";
 import { createComponentInService, setComponentService } from "../graph/components-repo.js";
+import { mergeComponents } from "../coordination/component-merge-repo.js";
 
 /**
  * Strict `component` routes (M12 P5a, docs/proposals/organize-after.md). `component` is deliberately
@@ -263,6 +266,40 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
         })
       );
       reply.status(200).send(result.component);
+    }
+  });
+
+  // POST /components/:idOrUrn/merge — driving-case merge (M12 P5d): fold `loser` into this component
+  // (the survivor). Moves the loser's executor bindings here and soft-deletes it. `mergeComponents`
+  // does the both-endpoint authz, the edge-free / no-in-flight-change guards, and the Q1 binding-
+  // purpose-collision REJECT.
+  typed.route({
+    method: "POST",
+    url: `${base}/:idOrUrn/merge`,
+    schema: {
+      params: RegistryIdOrUrnParamSchema,
+      body: MergeComponentsRequestSchema,
+      response: { 200: MergeComponentsResponseSchema, 400: ProblemSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema, 409: ProblemSchema }
+    },
+    config: {
+      openapi: {
+        operationId: "mergeComponents",
+        summary: "Merge another (freshly-imported, binding-only) component into this one — moves its executor bindings here and soft-deletes it",
+        tags: ["components"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const result = await withTenantTx(deps.db, auth.orgId, async (tx) =>
+        mergeComponents(tx, {
+          orgId: auth.orgId,
+          actorObjectId: auth.subjectObjectId,
+          requestId: request.id,
+          survivorIdOrUrn: request.params.idOrUrn,
+          loserIdOrUrn: request.body.loser
+        })
+      );
+      reply.status(200).send(result);
     }
   });
 }

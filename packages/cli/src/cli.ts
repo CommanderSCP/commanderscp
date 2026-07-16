@@ -1289,6 +1289,24 @@ export function buildProgram(): Command {
       printResult(updated, opts.output, (item) => objectRow(item as GraphObject));
     });
 
+  // `scp component merge <survivor> --loser <loser>` — driving-case merge (M12 P5d): fold a freshly-
+  // imported, binding-only component into <survivor> (moves its bindings, soft-deletes it). 409 on a
+  // binding-purpose collision (relabel one first via `scp executor repurpose`).
+  componentCmd
+    .command("merge <survivorIdOrUrn>")
+    .description("Merge another component into this one (moves its executor bindings, soft-deletes it)")
+    .requiredOption("--loser <idOrUrn>", "the component to merge in and soft-delete (id or URN)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (survivorIdOrUrn: string, opts: BaseCliOpts & { loser: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.components.merge(survivorIdOrUrn, opts.loser);
+      printResult(result, opts.output, (r) => ({
+        survivor: (r as { survivor: GraphObject }).survivor.id,
+        movedBindings: (r as { movedBindingPurposes: string[] }).movedBindingPurposes.join(", ") || "none"
+      }));
+    });
+
   const deploymentTargetCmd = registerTypedResourceCrud(
     program,
     "deployment-target",
