@@ -2465,6 +2465,48 @@ export function buildProgram(): Command {
       printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
     });
 
+  // M12 P5c binding primitives: list all / detach / relabel-purpose.
+  executorCmd
+    .command("bindings <idOrUrn>")
+    .description("List every executor binding (all purposes) configured for a target")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrUrn: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const items = await client.executors.listBindings(idOrUrn);
+      printResult(items, opts.output, (item) => item as unknown as Record<string, string>);
+    });
+
+  executorCmd
+    .command("unbind <idOrUrn>")
+    .description("Delete a target's executor binding for one purpose (default: software)")
+    .option("--purpose <purpose>", "which pipeline to detach: infra|software (default: software)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrUrn: string, opts: BaseCliOpts & { purpose?: "infra" | "software" }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.executors.deleteBinding(idOrUrn, opts.purpose);
+      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+    });
+
+  executorCmd
+    .command("repurpose <idOrUrn>")
+    .description("Relabel which pipeline (infra|software) a target's binding drives")
+    .requiredOption("--to <purpose>", "the new purpose: infra|software")
+    .option("--from <purpose>", "the binding's current purpose (default: software)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        idOrUrn: string,
+        opts: BaseCliOpts & { to: "infra" | "software"; from?: "infra" | "software" }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const result = await client.executors.repurposeBinding(idOrUrn, opts.to, opts.from);
+        printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+      }
+    );
+
   const notifyCmd = program
     .command("notify")
     .description("Configure NotificationPlugin channels (DESIGN §11)");

@@ -182,6 +182,9 @@ import {
   putChangeSourceWebhookSecret as putChangeSourceWebhookSecretRequest,
   putExecutorBinding as putExecutorBindingRequest,
   getExecutorBinding as getExecutorBindingRequest,
+  listExecutorBindings as listExecutorBindingsRequest,
+  deleteExecutorBinding as deleteExecutorBindingRequest,
+  repurposeExecutorBinding as repurposeExecutorBindingRequest,
   putNotificationBinding as putNotificationBindingRequest,
   listNotificationBindings as listNotificationBindingsRequest,
   deleteNotificationBinding as deleteNotificationBindingRequest,
@@ -1436,6 +1439,38 @@ export class ScpClient {
         client: this.client,
         path: { idOrUrn },
         ...(purpose ? { query: { purpose } } : {})
+      });
+      return unwrap(result);
+    },
+    /** Every pipeline bound to a target (both purposes) — M12 P5c. Excludes a soft-deleted target's. */
+    listBindings: async (idOrUrn: string): Promise<ExecutorBinding[]> => {
+      const result = await listExecutorBindingsRequest({ client: this.client, path: { idOrUrn } });
+      return unwrap(result).items;
+    },
+    /** Delete a target's binding for one purpose (default 'software') — M12 P5c. Returns the removed binding. */
+    deleteBinding: async (
+      idOrUrn: string,
+      purpose?: "infra" | "software"
+    ): Promise<ExecutorBinding> => {
+      const result = await deleteExecutorBindingRequest({
+        client: this.client,
+        path: { idOrUrn },
+        ...(purpose ? { query: { purpose } } : {})
+      });
+      return unwrap(result);
+    },
+    /** Relabel which pipeline a target's binding drives — M12 P5c. `fromPurpose` (default 'software')
+     *  names the current binding; `toPurpose` is the new label. */
+    repurposeBinding: async (
+      idOrUrn: string,
+      toPurpose: "infra" | "software",
+      fromPurpose?: "infra" | "software"
+    ): Promise<ExecutorBinding> => {
+      const result = await repurposeExecutorBindingRequest({
+        client: this.client,
+        path: { idOrUrn },
+        body: { purpose: toPurpose },
+        ...(fromPurpose ? { query: { purpose: fromPurpose } } : {})
       });
       return unwrap(result);
     }

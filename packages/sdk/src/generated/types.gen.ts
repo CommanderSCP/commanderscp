@@ -13243,6 +13243,77 @@ export type ListSecretKeysResponses = {
 
 export type ListSecretKeysResponse = ListSecretKeysResponses[keyof ListSecretKeysResponses];
 
+export type DeleteExecutorBindingData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: {
+        purpose?: 'infra' | 'software';
+    };
+    url: '/executors/{idOrUrn}/binding';
+};
+
+export type DeleteExecutorBindingErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteExecutorBindingError = DeleteExecutorBindingErrors[keyof DeleteExecutorBindingErrors];
+
+export type DeleteExecutorBindingResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        targetObjectId: string;
+        purpose: 'infra' | 'software';
+        pluginModule: string;
+        pluginInstanceId: string;
+        config: unknown;
+        secretRefs: {
+            [key: string]: string;
+        };
+        allowedHosts: Array<string>;
+        externalRef: string | null;
+        executionSystemId: string | null;
+    };
+};
+
+export type DeleteExecutorBindingResponse = DeleteExecutorBindingResponses[keyof DeleteExecutorBindingResponses];
+
 export type GetExecutorBindingData = {
     body?: never;
     path: {
@@ -13313,6 +13384,90 @@ export type GetExecutorBindingResponses = {
 };
 
 export type GetExecutorBindingResponse = GetExecutorBindingResponses[keyof GetExecutorBindingResponses];
+
+export type RepurposeExecutorBindingData = {
+    body: {
+        purpose: 'infra' | 'software';
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: {
+        purpose?: 'infra' | 'software';
+    };
+    url: '/executors/{idOrUrn}/binding';
+};
+
+export type RepurposeExecutorBindingErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RepurposeExecutorBindingError = RepurposeExecutorBindingErrors[keyof RepurposeExecutorBindingErrors];
+
+export type RepurposeExecutorBindingResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        targetObjectId: string;
+        purpose: 'infra' | 'software';
+        pluginModule: string;
+        pluginInstanceId: string;
+        config: unknown;
+        secretRefs: {
+            [key: string]: string;
+        };
+        allowedHosts: Array<string>;
+        externalRef: string | null;
+        executionSystemId: string | null;
+    };
+};
+
+export type RepurposeExecutorBindingResponse = RepurposeExecutorBindingResponses[keyof RepurposeExecutorBindingResponses];
 
 export type PutExecutorBindingData = {
     body: {
@@ -13395,6 +13550,77 @@ export type PutExecutorBindingResponses = {
 };
 
 export type PutExecutorBindingResponse = PutExecutorBindingResponses[keyof PutExecutorBindingResponses];
+
+export type ListExecutorBindingsData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/executors/{idOrUrn}/bindings';
+};
+
+export type ListExecutorBindingsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListExecutorBindingsError = ListExecutorBindingsErrors[keyof ListExecutorBindingsErrors];
+
+export type ListExecutorBindingsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            targetObjectId: string;
+            purpose: 'infra' | 'software';
+            pluginModule: string;
+            pluginInstanceId: string;
+            config: unknown;
+            secretRefs: {
+                [key: string]: string;
+            };
+            allowedHosts: Array<string>;
+            externalRef: string | null;
+            executionSystemId: string | null;
+        }>;
+    };
+};
+
+export type ListExecutorBindingsResponse = ListExecutorBindingsResponses[keyof ListExecutorBindingsResponses];
 
 export type DeleteNotificationBindingData = {
     body?: never;

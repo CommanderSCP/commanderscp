@@ -1,9 +1,10 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, exists, isNull, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { executorBindings } from "../db/schema.js";
+import { executorBindings, objects } from "../db/schema.js";
+import { conflict } from "../errors.js";
 import { resolveSecretRefs } from "../secrets/secrets-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import type { PluginHostInstanceConfig, PluginModule } from "../plugin-host/contract.js";
@@ -121,7 +122,24 @@ export async function getExecutorBinding(
   return rows[0] ? toRow(rows[0]) : undefined;
 }
 
-/** Every pipeline bound to one target (infra AND software) — for the GET route and organize-after. */
+/**
+ * WHERE fragment: the binding's target object is still LIVE (not soft-deleted). A binding whose
+ * target was soft-deleted must NOT be returned — `observe.ts` (via `listExecutorBindings`) would
+ * otherwise poll the gone target's plugin instance every tick forever (M12 P5c bug; there is no
+ * `executor_bindings.deleted_at`, so the binding row outlives its target unless a query excludes it).
+ * A correlated EXISTS keeps the SELECT binding-columns-only so `toRow` is unchanged. Applied to BOTH
+ * list functions — a soft-deleted target should surface no bindings anywhere.
+ */
+function targetObjectIsLive(tx: TenantTx) {
+  return exists(
+    tx
+      .select({ one: sql`1` })
+      .from(objects)
+      .where(and(eq(objects.id, executorBindings.targetObjectId), isNull(objects.deletedAt)))
+  );
+}
+
+/** Every pipeline bound to one LIVE target (infra AND software) — the GET-list route and organize-after. */
 export async function listExecutorBindingsForTarget(
   tx: TenantTx,
   orgId: string,
@@ -131,15 +149,21 @@ export async function listExecutorBindingsForTarget(
     .select()
     .from(executorBindings)
     .where(
-      and(eq(executorBindings.orgId, orgId), eq(executorBindings.targetObjectId, targetObjectId))
+      and(
+        eq(executorBindings.orgId, orgId),
+        eq(executorBindings.targetObjectId, targetObjectId),
+        targetObjectIsLive(tx)
+      )
     );
   return rows.map(toRow);
 }
 
 /**
- * All executor bindings for an org — the observe()-driver (`coordination/observe.ts`) enumerates
- * these, dedupes by `pluginInstanceId` (bindings sharing an instance share observe scope), and polls
- * each observe-capable instance once per tick.
+ * All executor bindings for an org whose target is still LIVE — the observe()-driver
+ * (`coordination/observe.ts`) enumerates these, dedupes by `pluginInstanceId` (bindings sharing an
+ * instance share observe scope), and polls each observe-capable instance once per tick. The
+ * live-target filter is load-bearing: without it, soft-deleting a component leaves its binding polled
+ * forever (M12 P5c).
  */
 export async function listExecutorBindings(
   tx: TenantTx,
@@ -148,7 +172,7 @@ export async function listExecutorBindings(
   const rows = await tx
     .select()
     .from(executorBindings)
-    .where(eq(executorBindings.orgId, orgId));
+    .where(and(eq(executorBindings.orgId, orgId), targetObjectIsLive(tx)));
   return rows.map(toRow);
 }
 
@@ -214,6 +238,67 @@ export async function upsertExecutorBinding(
       externalRef: input.externalRef ?? null,
       executionSystemId: input.executionSystemId ?? null
     })
+    .returning();
+  return toRow(row!);
+}
+
+/**
+ * Deletes a target's binding for one purpose (M12 P5c) — a HARD delete (executor_bindings has no
+ * soft-delete column; a binding is config, not an audited graph object). Detaching a binding is the
+ * primitive that was missing: before P5c a binding could be created and repointed but never removed,
+ * so a stale/mis-imported binding polled forever. Returns the deleted row (for the route to report),
+ * or undefined if no such binding exists (the route 404s).
+ */
+export async function deleteExecutorBinding(
+  tx: TenantTx,
+  orgId: string,
+  targetObjectId: string,
+  purpose: BindingPurpose = DEFAULT_BINDING_PURPOSE
+): Promise<ExecutorBindingRow | undefined> {
+  const [row] = await tx
+    .delete(executorBindings)
+    .where(
+      and(
+        eq(executorBindings.orgId, orgId),
+        eq(executorBindings.targetObjectId, targetObjectId),
+        eq(executorBindings.purpose, purpose)
+      )
+    )
+    .returning();
+  return row ? toRow(row) : undefined;
+}
+
+/**
+ * Relabels which pipeline a target's binding drives (M12 P5c): moves the (target, fromPurpose)
+ * binding to (target, toPurpose). The motivating case is a discovery-imported binding defaulted to
+ * 'software' that is actually the infra pipeline — and it is exactly the merge-collision resolution
+ * owner ruling Q1 mandates ("relabel one to infra first, don't guess"). Rejects (409) if the target
+ * already holds a binding at toPurpose: UNIQUE(org,target,purpose) forbids two, and the caller must
+ * delete/repurpose that one first — surfaced as a clear conflict, not a raw unique-violation. A
+ * same-purpose relabel is an idempotent no-op. Returns undefined if no (target, fromPurpose) binding
+ * exists (route 404s).
+ */
+export async function setExecutorBindingPurpose(
+  tx: TenantTx,
+  orgId: string,
+  targetObjectId: string,
+  fromPurpose: BindingPurpose,
+  toPurpose: BindingPurpose
+): Promise<ExecutorBindingRow | undefined> {
+  const existing = await getExecutorBinding(tx, orgId, targetObjectId, fromPurpose);
+  if (!existing) return undefined;
+  if (fromPurpose === toPurpose) return existing; // idempotent no-op relabel
+
+  const clash = await getExecutorBinding(tx, orgId, targetObjectId, toPurpose);
+  if (clash) {
+    throw conflict(
+      `target '${targetObjectId}' already has a '${toPurpose}' binding — delete or repurpose it before relabelling the '${fromPurpose}' one`
+    );
+  }
+  const [row] = await tx
+    .update(executorBindings)
+    .set({ purpose: toPurpose, updatedAt: new Date() })
+    .where(eq(executorBindings.id, existing.id))
     .returning();
   return toRow(row!);
 }

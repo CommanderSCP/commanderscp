@@ -8,6 +8,8 @@ import {
   CreateNotificationBindingRequestSchema,
   DiscoveryProposalSchema,
   ExecutorBindingSchema,
+  ExecutorBindingListResponseSchema,
+  RepurposeExecutorBindingRequestSchema,
   NotificationBindingListResponseSchema,
   NotificationBindingSchema,
   NotificationInstanceParamSchema,
@@ -47,6 +49,9 @@ import { createRelationship } from "../graph/relationships-repo.js";
 import {
   upsertExecutorBinding,
   getExecutorBinding,
+  listExecutorBindingsForTarget,
+  deleteExecutorBinding,
+  setExecutorBindingPurpose,
   isKnownExecutorModule,
   executionSystemInstanceId,
   resolveInternalEgress,
@@ -414,6 +419,101 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           throw notFound(
             `no '${purpose}' executor binding configured for '${request.params.idOrUrn}'`
           );
+        }
+        return row;
+      });
+      reply.status(200).send(binding);
+    }
+  });
+
+  // GET all of a target's bindings (both purposes) — M12 P5c. The single-binding GET above needs a
+  // purpose; this lists every pipeline bound to the target (and excludes a soft-deleted target's).
+  typed.route({
+    method: "GET",
+    url: "/api/v1/executors/:idOrUrn/bindings",
+    schema: {
+      params: RegistryIdOrUrnParamSchema,
+      response: { 200: ExecutorBindingListResponseSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
+    },
+    config: {
+      openapi: {
+        operationId: "listExecutorBindings",
+        summary: "List every executor binding (all purposes) configured for a target",
+        tags: ["executors"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const items = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        const target = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.idOrUrn);
+        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "object:read", scopeObjectId: target.id });
+        return listExecutorBindingsForTarget(tx, auth.orgId, target.id);
+      });
+      reply.status(200).send({ items });
+    }
+  });
+
+  // DELETE a target's binding for one purpose — M12 P5c (the missing detach primitive). object:write
+  // on the target, mirroring PUT. Hard delete (no soft-delete column); returns the removed binding.
+  typed.route({
+    method: "DELETE",
+    url: "/api/v1/executors/:idOrUrn/binding",
+    schema: {
+      params: RegistryIdOrUrnParamSchema,
+      querystring: z.object({ purpose: BindingPurposeSchema.optional() }),
+      response: { 200: ExecutorBindingSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
+    },
+    config: {
+      openapi: {
+        operationId: "deleteExecutorBinding",
+        summary: "Delete a target's executor binding for one purpose (default: software)",
+        tags: ["executors"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const binding = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        const target = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.idOrUrn);
+        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "object:write", scopeObjectId: target.id });
+        const purpose = request.query.purpose ?? DEFAULT_BINDING_PURPOSE;
+        const row = await deleteExecutorBinding(tx, auth.orgId, target.id, purpose);
+        if (!row) {
+          throw notFound(`no '${purpose}' executor binding configured for '${request.params.idOrUrn}'`);
+        }
+        return row;
+      });
+      reply.status(200).send(binding);
+    }
+  });
+
+  // PATCH: relabel which pipeline a target's binding drives — M12 P5c. `?purpose=` names the CURRENT
+  // purpose (default software); the body carries the NEW one. This is the merge-collision resolution
+  // (owner Q1: relabel one binding to infra before merging), and fixing a mis-imported purpose.
+  typed.route({
+    method: "PATCH",
+    url: "/api/v1/executors/:idOrUrn/binding",
+    schema: {
+      params: RegistryIdOrUrnParamSchema,
+      querystring: z.object({ purpose: BindingPurposeSchema.optional() }),
+      body: RepurposeExecutorBindingRequestSchema,
+      response: { 200: ExecutorBindingSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema, 409: ProblemSchema }
+    },
+    config: {
+      openapi: {
+        operationId: "repurposeExecutorBinding",
+        summary: "Relabel which pipeline (infra|software) a target's executor binding drives",
+        tags: ["executors"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const binding = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        const target = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.idOrUrn);
+        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "object:write", scopeObjectId: target.id });
+        const fromPurpose = request.query.purpose ?? DEFAULT_BINDING_PURPOSE;
+        const row = await setExecutorBindingPurpose(tx, auth.orgId, target.id, fromPurpose, request.body.purpose);
+        if (!row) {
+          throw notFound(`no '${fromPurpose}' executor binding configured for '${request.params.idOrUrn}'`);
         }
         return row;
       });
