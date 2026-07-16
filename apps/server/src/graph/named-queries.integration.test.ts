@@ -169,6 +169,43 @@ describe("named graph queries: fixture graph", () => {
     expect(Object.keys(result.counts ?? {}).length).toBeGreaterThan(0);
   });
 
+  it("blast-radius: domain grouping matches domains-impacted (nearest-domain ancestor, keyed by URN — not the immediate parent)", async () => {
+    // A closure MIXING an object whose immediate parent IS a domain (`serviceInDomain`, domainId =
+    // payments-domain) with objects whose immediate parent is the org root ORGANIZATION (a default
+    // service). The old single-hop blast-radius keyed the latter by `domain:${orgRootUuid}` —
+    // labeling the organization a "domain" and keying by a raw uuid — while domains-impacted rolled
+    // it to the org's URN. The two "count by domain" queries disagreed; they must now agree.
+    const seed = await client.object("service").create({ name: "br-seed" });
+    const orgSvc = await client.object("service").create({ name: "br-org-svc" }); // domainId → org root
+    // orgSvc and serviceInDomain are both impacted if seed changes (they depend_on it)
+    await client.relationships.create({ typeId: "depends_on", fromId: orgSvc.id, toId: seed.id });
+    await client.relationships.create({
+      typeId: "depends_on",
+      fromId: serviceInDomain.id,
+      toId: seed.id
+    });
+
+    const relTypes = ["depends_on", "consumes"];
+    const blast = await client.graph.query("blast-radius", { objectId: seed.id, relTypes });
+    const impacted = await client.graph.query("domains-impacted", { objectId: seed.id, relTypes });
+
+    // The domain sub-map of blast-radius (its `domain:`-prefixed keys) must equal domains-impacted's
+    // grouping exactly — same buckets, same counts. Under the old single-hop code the keys were raw
+    // uuids, so this deep-equal fails.
+    const blastDomains = Object.fromEntries(
+      Object.entries(blast.counts ?? {})
+        .filter(([k]) => k.startsWith("domain:"))
+        .map(([k, v]) => [k.slice("domain:".length), v])
+    );
+    expect(Object.keys(blastDomains).length).toBeGreaterThan(0);
+    expect(blastDomains).toEqual(impacted.counts);
+
+    // And specifically NOT keyed by the raw immediate-parent uuid: `seed`'s own domainId is the org
+    // root uuid, which the fixed code rolls to the org URN — so `domain:${seed.domainId}` (a uuid)
+    // must be absent. This is the precise anti-single-hop assertion.
+    expect(blast.counts?.[`domain:${seed.domainId}`]).toBeUndefined();
+  });
+
   it("paths-between: finds a multi-hop path across mixed relationship types", async () => {
     const result = await client.graph.query("paths-between", {
       objectId: pathA.id,
