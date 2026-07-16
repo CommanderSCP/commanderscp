@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
-import { App, Service, Stack, Team } from "@scp/iac";
+import { App, Component, Service, Stack, Team } from "@scp/iac";
 import {
   createTestOrg,
   createTestUser,
@@ -234,6 +234,57 @@ describe("plans: @scp/iac server-side plan/apply", () => {
         relationships: []
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any)
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("strict create-in-service: a Component-with-service manifest plans, applies, and writes the contains edge (M12 P5a)", async () => {
+    const org = await createTestOrg(server, "plans-strict-ok");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const stackName = `stack-${randomUUID().slice(0, 8)}`;
+
+    const app = new App();
+    const stack = new Stack(app, stackName);
+    const checkout = new Service(stack, "checkout", { name: "Checkout" });
+    new Component(stack, "api", { name: "checkout-api", service: checkout });
+    const manifest = stack.synth();
+
+    const plan = await admin.plans.create(manifest);
+    // 1 service create + 1 component create + 1 contains create.
+    expect(plan.diff.summary).toEqual({ creates: 3, updates: 0, deletes: 0, noops: 0 });
+
+    const { plan: applied } = await admin.plans.apply(plan.id);
+    expect(applied.status).toBe("applied");
+
+    // The component exists AND is contained by its service — the invariant strictness protects.
+    const comp = await admin.components.get(`urn:scp:${stackName}:component:api`);
+    const svc = await admin.services.get(`urn:scp:${stackName}:service:checkout`);
+    const edges = await admin.relationships.list({ typeId: "contains", toId: comp.id });
+    expect(edges.items).toHaveLength(1);
+    expect(edges.items[0]!.fromId).toBe(svc.id);
+  });
+
+  it("strict create-in-service: a raw manifest minting a component with NO owning service is rejected 400 at plan time", async () => {
+    const org = await createTestOrg(server, "plans-strict-reject");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const stackName = `stack-${randomUUID().slice(0, 8)}`;
+
+    // A HAND-AUTHORED manifest (bypassing the `Component` construct, which would emit the edge) —
+    // the server is the real authority: no `contains` edge lands on the component, so the plan is
+    // rejected before any row is written. No plan is stored to later apply.
+    await expect(
+      admin.plans.create({
+        stackName,
+        objects: [
+          {
+            urn: `urn:scp:${stackName}:component:orphan`,
+            typeId: "component",
+            name: "orphan",
+            properties: {},
+            labels: {}
+          }
+        ],
+        relationships: []
+      })
     ).rejects.toMatchObject({ status: 400 });
   });
 

@@ -1,12 +1,20 @@
 import { useState, type FormEvent } from "react";
 import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { CreateObjectRequest } from "@scp/schemas";
 import { client } from "../lib/client";
 import { findRegistry, getRegistryClient } from "../lib/registries";
 import { registryListKey } from "../lib/query-client";
 import { useBasePathParam } from "../lib/use-route-params";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from "../components/ui/select";
 import {
   Table,
   TableBody,
@@ -24,6 +32,8 @@ export function RegistryListPage(): React.JSX.Element {
   const queryClient = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState("");
+  const [serviceId, setServiceId] = useState("");
+  const serviceMember = registry?.serviceMember ?? false;
 
   const listQuery = useQuery({
     queryKey: registryListKey(basePath ?? ""),
@@ -31,10 +41,22 @@ export function RegistryListPage(): React.JSX.Element {
     enabled: !!registry
   });
 
+  // A service-member registry (component, M12 P5a) needs an owning service picked at create time.
+  // Fetch the services list to populate the required selector — only when this registry needs it.
+  const servicesQuery = useQuery({
+    queryKey: registryListKey("services"),
+    queryFn: () => client.services.list({ limit: 100 }),
+    enabled: !!registry && serviceMember
+  });
+
   const createMutation = useMutation({
-    mutationFn: (input: { name: string }) => getRegistryClient(client, registry!).create(input),
+    mutationFn: (input: { name: string; service?: string }) =>
+      // `service` is only set for a service-member registry; it rides through to
+      // `CreateComponentRequest.service`. Cast because the shared client type is the base request.
+      getRegistryClient(client, registry!).create(input as CreateObjectRequest),
     onSuccess: async () => {
       setName("");
+      setServiceId("");
       setShowCreate(false);
       await queryClient.invalidateQueries({ queryKey: registryListKey(basePath ?? "") });
     }
@@ -48,7 +70,12 @@ export function RegistryListPage(): React.JSX.Element {
     event.preventDefault();
     const trimmed = name.trim();
     if (!trimmed) return;
-    createMutation.mutate({ name: trimmed });
+    // Create is strict for a service member — block submit until a service is chosen (the server
+    // would 400 otherwise). The Select is also marked required for accessibility/native validation.
+    if (serviceMember && !serviceId) return;
+    createMutation.mutate(
+      serviceMember ? { name: trimmed, service: serviceId } : { name: trimmed }
+    );
   }
 
   return (
@@ -77,7 +104,35 @@ export function RegistryListPage(): React.JSX.Element {
               data-testid="new-name-input"
             />
           </div>
-          <Button type="submit" disabled={createMutation.isPending} data-testid="submit-create">
+          {serviceMember && (
+            <div className="flex flex-1 flex-col gap-1.5">
+              <label htmlFor="new-service" className="text-sm font-medium text-slate-700">
+                Service
+              </label>
+              <Select value={serviceId} onValueChange={setServiceId} required>
+                <SelectTrigger id="new-service" data-testid="new-service-select">
+                  <SelectValue placeholder="Select a service…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(servicesQuery.data?.items ?? []).map((svc) => (
+                    <SelectItem key={svc.id} value={svc.id}>
+                      {svc.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {servicesQuery.data && servicesQuery.data.items.length === 0 && (
+                <p className="text-xs text-amber-700" data-testid="no-services-hint">
+                  Create a service first — a component must belong to one.
+                </p>
+              )}
+            </div>
+          )}
+          <Button
+            type="submit"
+            disabled={createMutation.isPending || (serviceMember && !serviceId)}
+            data-testid="submit-create"
+          >
             {createMutation.isPending ? "Creating…" : "Create"}
           </Button>
         </form>

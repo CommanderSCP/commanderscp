@@ -16,6 +16,7 @@ import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import { getSharedCelSandbox } from "../governance/cel-sandbox.js";
 import { createInMemoryFakeHost } from "./test-support/fake-plugin-host.js";
 import {
+  createTestComponent,
   createTestOrg,
   listenTestServer,
   type ListeningTestServer,
@@ -63,7 +64,7 @@ describe("wave target purpose: an infra release triggers the infra pipeline", ()
 
   /** A component wired for BOTH pipelines — the shape where getting purpose wrong is observable. */
   async function componentWithBothPipelines(name: string): Promise<string> {
-    const comp = await admin.object("component").create({ name: `${name}-${uuidv7().slice(0, 8)}` });
+    const comp = await createTestComponent(admin, { name: `${name}-${uuidv7().slice(0, 8)}` });
     await bind(comp.id, "software", "sw-pipeline");
     await bind(comp.id, "infra", "inf-pipeline");
     return comp.id;

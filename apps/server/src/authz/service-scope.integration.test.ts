@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
 import {
+  createOrphanComponent,
   createTestOrg,
   createTestUser,
   listenTestServer,
@@ -42,9 +43,9 @@ describe("RBAC: a service-scoped binding reaches its components (and nothing els
 
     const svc = await admin.object("service").create({ name: "payments" });
     const other = await admin.object("service").create({ name: "identity" });
-    const comp = await admin.object("component").create({ name: "payments-api" });
-    const sibling = await admin.object("component").create({ name: "payments-worker" });
-    const lone = await admin.object("component").create({ name: "unassigned-import" });
+    const comp = await createOrphanComponent(admin, "payments-api");
+    const sibling = await createOrphanComponent(admin, "payments-worker");
+    const lone = await createOrphanComponent(admin, "unassigned-import");
     svcId = svc.id;
     otherSvcId = other.id;
     compId = comp.id;
@@ -65,9 +66,7 @@ describe("RBAC: a service-scoped binding reaches its components (and nothing els
     const client = new ScpClient({ baseUrl: server.baseUrl, token: user.token });
 
     // object:write at the component's scope, granted purely via the `contains` edge.
-    const updated = await client
-      .object("component")
-      .update(compId, { labels: { tier: "gold" } });
+    const updated = await client.components.update(compId, { labels: { tier: "gold" } });
     expect(updated.labels).toMatchObject({ tier: "gold" });
   });
 
@@ -75,7 +74,7 @@ describe("RBAC: a service-scoped binding reaches its components (and nothing els
     const user = await createTestUser(server, org, [{ role: "Operator", scope: svcId }]);
     const client = new ScpClient({ baseUrl: server.baseUrl, token: user.token });
     await expect(
-      client.object("component").update(siblingId, { labels: { tier: "silver" } })
+      client.components.update(siblingId, { labels: { tier: "silver" } })
     ).resolves.toBeTruthy();
   });
 
@@ -92,7 +91,7 @@ describe("RBAC: a service-scoped binding reaches its components (and nothing els
     const user = await createTestUser(server, org, [{ role: "Operator", scope: compId }]);
     const client = new ScpClient({ baseUrl: server.baseUrl, token: user.token });
     await expect(
-      client.object("component").update(siblingId, { labels: { hacked: "yes" } })
+      client.components.update(siblingId, { labels: { hacked: "yes" } })
     ).rejects.toThrow(/forbidden/i);
   });
 
@@ -100,7 +99,7 @@ describe("RBAC: a service-scoped binding reaches its components (and nothing els
     const user = await createTestUser(server, org, [{ role: "Operator", scope: otherSvcId }]);
     const client = new ScpClient({ baseUrl: server.baseUrl, token: user.token });
     await expect(
-      client.object("component").update(compId, { labels: { hacked: "yes" } })
+      client.components.update(compId, { labels: { hacked: "yes" } })
     ).rejects.toThrow(/forbidden/i);
   });
 
@@ -109,13 +108,13 @@ describe("RBAC: a service-scoped binding reaches its components (and nothing els
     const user = await createTestUser(server, org, [{ role: "Operator", scope: svcId }]);
     const client = new ScpClient({ baseUrl: server.baseUrl, token: user.token });
     await expect(
-      client.object("component").update(loneCompId, { labels: { tier: "gold" } })
+      client.components.update(loneCompId, { labels: { tier: "gold" } })
     ).rejects.toThrow(/forbidden/i);
   });
 
   it("re-assigning a component moves the grant with it", async () => {
     // organize-after: move the component to `identity`, and the payments binding must stop reaching it.
-    const moved = await admin.object("component").create({ name: "roaming-api" });
+    const moved = await createOrphanComponent(admin, "roaming-api");
     const edge = await admin.relationships.create({
       typeId: "contains",
       fromId: svcId,
@@ -125,7 +124,7 @@ describe("RBAC: a service-scoped binding reaches its components (and nothing els
     const payments = await createTestUser(server, org, [{ role: "Operator", scope: svcId }]);
     const paymentsClient = new ScpClient({ baseUrl: server.baseUrl, token: payments.token });
     await expect(
-      paymentsClient.object("component").update(moved.id, { labels: { a: "1" } })
+      paymentsClient.components.update(moved.id, { labels: { a: "1" } })
     ).resolves.toBeTruthy();
 
     await admin.relationships.delete(edge.id);
@@ -133,18 +132,18 @@ describe("RBAC: a service-scoped binding reaches its components (and nothing els
 
     // The old service must no longer reach it — a stale grant here would be the real bug.
     await expect(
-      paymentsClient.object("component").update(moved.id, { labels: { b: "2" } })
+      paymentsClient.components.update(moved.id, { labels: { b: "2" } })
     ).rejects.toThrow(/forbidden/i);
 
     const identity = await createTestUser(server, org, [{ role: "Operator", scope: otherSvcId }]);
     const identityClient = new ScpClient({ baseUrl: server.baseUrl, token: identity.token });
     await expect(
-      identityClient.object("component").update(moved.id, { labels: { c: "3" } })
+      identityClient.components.update(moved.id, { labels: { c: "3" } })
     ).resolves.toBeTruthy();
   });
 
   it("a soft-deleted `contains` edge stops conferring the grant", async () => {
-    const comp = await admin.object("component").create({ name: "temp-api" });
+    const comp = await createOrphanComponent(admin, "temp-api");
     const edge = await admin.relationships.create({
       typeId: "contains",
       fromId: svcId,
@@ -152,12 +151,12 @@ describe("RBAC: a service-scoped binding reaches its components (and nothing els
     });
     const user = await createTestUser(server, org, [{ role: "Operator", scope: svcId }]);
     const client = new ScpClient({ baseUrl: server.baseUrl, token: user.token });
-    await expect(client.object("component").update(comp.id, { labels: { x: "1" } })).resolves.toBeTruthy();
+    await expect(client.components.update(comp.id, { labels: { x: "1" } })).resolves.toBeTruthy();
 
     await admin.relationships.delete(edge.id);
     // The walk filters `deleted_at IS NULL`; a deleted edge conferring authz would be a real hole.
     await expect(
-      client.object("component").update(comp.id, { labels: { y: "2" } })
+      client.components.update(comp.id, { labels: { y: "2" } })
     ).rejects.toThrow(/forbidden/i);
   });
 });

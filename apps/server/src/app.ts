@@ -35,6 +35,7 @@ import { registerAuditEventRoutes } from "./routes/audit-events.js";
 import { registerEventStreamRoute } from "./routes/events.js";
 import { registerPlanRoutes } from "./routes/plans.js";
 import { registerChangeRoutes } from "./routes/changes.js";
+import { registerComponentRoutes } from "./routes/components.js";
 import { registerChangeSourceRoutes } from "./routes/change-sources.js";
 import { registerCampaignRoutes } from "./routes/campaigns.js";
 import { registerInitiativeRoutes } from "./routes/initiatives.js";
@@ -192,6 +193,9 @@ export async function buildApp(
   for (const resource of TYPED_REGISTRY_RESOURCES) {
     registerTypedRegistryRoutes(app, deps, resource);
   }
+  // M12 P5a: `component` is NOT a template resource (it needs a strict, service-requiring create
+  // that writes the `contains` edge atomically) — its routes are bespoke (routes/components.ts).
+  registerComponentRoutes(app, deps);
   // M2: owns/consumes/depends_on sub-resource ergonomics over the typed resources above
   // (routes/ownership.ts module doc).
   registerOwnershipRoutes(app, deps);

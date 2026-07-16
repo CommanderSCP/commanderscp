@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
 import {
+  createOrphanComponent,
+  createTestComponent,
   createTestOrg,
   listenTestServer,
   type ListeningTestServer,
@@ -47,8 +49,8 @@ describe("service --contains--> component (membership, one service per component
 
   it("a service may contain MANY components", async () => {
     const svc = await admin.object("service").create({ name: "billing" });
-    const a = await admin.object("component").create({ name: "billing-api" });
-    const b = await admin.object("component").create({ name: "billing-worker" });
+    const a = await createOrphanComponent(admin, "billing-api");
+    const b = await createOrphanComponent(admin, "billing-worker");
 
     await admin.relationships.create({ typeId: "contains", fromId: svc.id, toId: a.id });
     await admin.relationships.create({ typeId: "contains", fromId: svc.id, toId: b.id });
@@ -60,7 +62,7 @@ describe("service --contains--> component (membership, one service per component
   it("REFUSES a component in a second service — the actual 'one service per component' guarantee", async () => {
     const svc1 = await admin.object("service").create({ name: "checkout" });
     const svc2 = await admin.object("service").create({ name: "fulfilment" });
-    const comp = await admin.object("component").create({ name: "checkout-api" });
+    const comp = await createOrphanComponent(admin, "checkout-api");
 
     await admin.relationships.create({ typeId: "contains", fromId: svc1.id, toId: comp.id });
 
@@ -80,8 +82,8 @@ describe("service --contains--> component (membership, one service per component
 
   it("REFUSES a wrong-typed endpoint (component -> component, or service -> service)", async () => {
     const svc = await admin.object("service").create({ name: "search" });
-    const compA = await admin.object("component").create({ name: "search-api" });
-    const compB = await admin.object("component").create({ name: "search-indexer" });
+    const compA = await createTestComponent(admin, { name: "search-api" });
+    const compB = await createTestComponent(admin, { name: "search-indexer" });
 
     // from must be a service
     await expect(
@@ -94,11 +96,12 @@ describe("service --contains--> component (membership, one service per component
     ).rejects.toThrow();
   });
 
-  it("does NOT make membership mandatory — a component with no service is still creatable (import must never be blocked)", async () => {
-    // The governing principle: import is permissive, create is strict. Cardinality constrains the
-    // edge when it exists; it never compels one. Requiring a service for NEW components is a separate
-    // change on the strict create path — and `discovery/accept` must bypass it by construction.
-    const orphan = await admin.object("component").create({ name: "imported-from-argocd" });
+  it("import stays permissive — an imported component may have NO service (organize after; M12 P5a)", async () => {
+    // The governing principle: import is permissive, create is strict. `discovery/accept` mints an
+    // orphan by construction (it calls createObject server-side, never the strict route), so an
+    // imported component has no `contains` edge until it is organized. (The strict-route requirement
+    // is covered in components.integration.test.ts.)
+    const orphan = await createOrphanComponent(admin, "imported-from-argocd");
     expect(orphan.id).toBeTruthy();
     const edges = await admin.relationships.list({ typeId: "contains", toId: orphan.id });
     expect(edges.items).toHaveLength(0);
@@ -113,7 +116,7 @@ describe("service --contains--> component (membership, one service per component
     // exactly one must win, whether it loses at the app check or the DB constraint.
     const s1 = await admin.object("service").create({ name: "race-a" });
     const s2 = await admin.object("service").create({ name: "race-b" });
-    const comp = await admin.object("component").create({ name: "race-target" });
+    const comp = await createOrphanComponent(admin, "race-target");
 
     const results = await Promise.allSettled([
       admin.relationships.create({ typeId: "contains", fromId: s1.id, toId: comp.id }),
@@ -130,7 +133,7 @@ describe("service --contains--> component (membership, one service per component
   it("frees the component once the edge is deleted (re-assignable, so organize-after works)", async () => {
     const svc1 = await admin.object("service").create({ name: "notifications" });
     const svc2 = await admin.object("service").create({ name: "messaging" });
-    const comp = await admin.object("component").create({ name: "notify-worker" });
+    const comp = await createOrphanComponent(admin, "notify-worker");
 
     const edge = await admin.relationships.create({
       typeId: "contains",

@@ -3,7 +3,6 @@ import fc from "fast-check";
 import {
   App,
   Campaign,
-  Component,
   Domain,
   Initiative,
   ReleaseTopology,
@@ -26,7 +25,12 @@ import { canonicalJson } from "./canonical.js";
  *     are sorted before being returned (construct.ts's `Stack.synth()`).
  */
 
-const RESOURCE_CTORS = [Service, Component, Domain, Team] as const;
+// Only the uniform `defineResourceConstruct` types belong here — they share the
+// `(scope, id, ResourceProps)` signature this generic loop relies on. `Component` is deliberately
+// EXCLUDED: like the campaign/initiative/topology constructs (see the note below), it is bespoke and
+// needs its own typed props (`service`, to emit its `contains` edge), so it can't be built via the
+// uniform `new Ctor(stack, id, props)` call. Its own synth is pinned in `construct.test.ts`.
+const RESOURCE_CTORS = [Service, Domain, Team] as const;
 
 interface ResourceSpec {
   typeIndex: number;

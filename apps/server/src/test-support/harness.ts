@@ -8,6 +8,8 @@ import { v7 as uuidv7 } from "uuid";
 import { and, eq, isNull } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../app.js";
+import { ScpClient } from "@scp/sdk";
+import type { CreateComponentRequest, GraphObject } from "@scp/schemas";
 import { loadConfig } from "../config.js";
 import { createDb, createPool } from "../db/client.js";
 import { withTenantTx } from "../db/tenant-tx.js";
@@ -455,4 +457,36 @@ export async function waitUntil<T>(
     }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
+}
+
+
+/**
+ * M12 P5a: components can no longer be created bare — the strict `POST /components` requires a
+ * service. This test helper creates a throwaway service (unless one is supplied) and the component
+ * in it, returning the component. Every pre-P5a `client.components.create({ name })` test call
+ * migrates to `createTestComponent(client, { name })` — the components are coordination targets that
+ * just need to EXIST; which service they belong to is irrelevant to those tests.
+ */
+export async function createTestComponent(
+  client: ScpClient,
+  req: Omit<CreateComponentRequest, "service"> & { service?: string }
+): Promise<GraphObject> {
+  const { service, ...rest } = req;
+  const serviceId =
+    service ??
+    (await client.services.create({ name: `svc-${rest.name}-${randomUUID().slice(0, 8)}` })).id;
+  return client.components.create({ ...rest, service: serviceId });
+}
+
+
+/**
+ * M12 P5a: create an ORPHAN component (no service) via the IMPORT path (`discovery/accept`), which is
+ * permissive by design — the strict `POST /components` route requires a service, but imports never
+ * do. Used by the `contains`-model tests that need a service-less component to then assign manually.
+ */
+export async function createOrphanComponent(client: ScpClient, name: string): Promise<GraphObject> {
+  const result = await client.discovery.accept({
+    proposal: { objects: [{ typeId: "component", name, properties: {} }], relationships: [], bindings: [] }
+  });
+  return client.components.get(result.createdObjectIds[0]!);
 }

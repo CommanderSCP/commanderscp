@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
 import {
+  createTestComponent,
   createTestOrg,
   createTestUser,
   listenTestServer,
@@ -36,9 +37,9 @@ describe("change target-authority (M12 P4B Phase 2)", () => {
   it("SECURITY: propose is refused for a target OUTSIDE the actor's authority, but allowed WITHIN it — isolating the target check from the domain check", async () => {
     // `outsideTarget` sits at the org root (default domain); `ownTarget` sits inside a domain the
     // narrow actor administers. The actor holds Administrator ONLY at `ownDomain`.
-    const outsideTarget = await admin.components.create({ name: `chg-outside-${randomUUID().slice(0, 8)}` });
+    const outsideTarget = await createTestComponent(admin, { name: `chg-outside-${randomUUID().slice(0, 8)}` });
     const ownDomain = await admin.domains.create({ name: `chg-own-domain-${randomUUID().slice(0, 8)}` });
-    const ownTarget = await admin.components.create({
+    const ownTarget = await createTestComponent(admin, {
       name: `chg-own-${randomUUID().slice(0, 8)}`,
       domainId: ownDomain.id
     });
@@ -70,7 +71,7 @@ describe("change target-authority (M12 P4B Phase 2)", () => {
   });
 
   it("SECURITY: the generic /objects/change endpoint refuses every write verb, even for the org-root admin", async () => {
-    const target = await admin.components.create({ name: `chg-generic-${randomUUID().slice(0, 8)}` });
+    const target = await createTestComponent(admin, { name: `chg-generic-${randomUUID().slice(0, 8)}` });
 
     // create via the generic route → 403, even for the full-authority admin: an unconditional
     // type-level block, not a permission gap. Without it, this bypasses proposeChange's whole

@@ -3,6 +3,7 @@ import { createHmac } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpApiError, ScpClient } from "@scp/sdk";
 import {
+  createTestComponent,
   createTestOrg,
   listenTestServer,
   type ListeningTestServer
@@ -49,7 +50,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
   it("executor binding PUT/GET round-trips against a real Component target", async () => {
     const org = await createTestOrg(server, "m7-executor-binding");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const component = await admin.components.create({ name: `comp-${randomUUID().slice(0, 8)}` });
+    const component = await createTestComponent(admin, { name: `comp-${randomUUID().slice(0, 8)}` });
 
     const binding = await admin.executors.putBinding(component.id, {
       pluginModule: "fake-executor",
@@ -72,7 +73,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
   it("executor binding defaults externalRef to null when omitted (backward-compatible with pre-M12 bindings)", async () => {
     const org = await createTestOrg(server, "m12-executor-external-ref-null");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const component = await admin.components.create({ name: `comp-${randomUUID().slice(0, 8)}` });
+    const component = await createTestComponent(admin, { name: `comp-${randomUUID().slice(0, 8)}` });
     const binding = await admin.executors.putBinding(component.id, {
       pluginModule: "fake-executor",
       pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`
@@ -95,7 +96,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
       }
     });
     // Bind a component to it — no module/instance/config in the request; all derived from the system.
-    const comp1 = await admin.components.create({ name: `svc-${randomUUID().slice(0, 8)}` });
+    const comp1 = await createTestComponent(admin, { name: `svc-${randomUUID().slice(0, 8)}` });
     const b1 = await admin.executors.putBinding(comp1.id, {
       executionSystemId: sys.id,
       externalRef: "my-app"
@@ -107,7 +108,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
 
     // A SECOND component on the SAME system gets the SAME instance id — so they share one observe
     // poll + one trigger instance, without re-specifying the server/token.
-    const comp2 = await admin.components.create({ name: `svc2-${randomUUID().slice(0, 8)}` });
+    const comp2 = await createTestComponent(admin, { name: `svc2-${randomUUID().slice(0, 8)}` });
     const b2 = await admin.executors.putBinding(comp2.id, { executionSystemId: sys.id });
     expect(b2.pluginInstanceId).toBe(b1.pluginInstanceId);
   });
@@ -115,7 +116,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
   it("execution-system binding is REJECTED when the reference is not an execution-system object", async () => {
     const org = await createTestOrg(server, "m12-execution-system-invalid");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const comp = await admin.components.create({ name: `svc-${randomUUID().slice(0, 8)}` });
+    const comp = await createTestComponent(admin, { name: `svc-${randomUUID().slice(0, 8)}` });
     // Point executionSystemId at a Component (wrong type) → 400.
     await expect(
       admin.executors.putBinding(comp.id, { executionSystemId: comp.id })
@@ -213,7 +214,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
   it("webhook signature verification is fail-closed once a secret is configured: bad signature 401s and is never persisted, a valid one is accepted and correlates", async () => {
     const org = await createTestOrg(server, "m7-webhook-sig");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const component = await admin.components.create({ name: `comp-${randomUUID().slice(0, 8)}` });
+    const component = await createTestComponent(admin, { name: `comp-${randomUUID().slice(0, 8)}` });
     const secret = "integration-test-webhook-secret";
     const repo = `m7-org/${randomUUID().slice(0, 8)}`;
 
@@ -319,7 +320,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
   it("a typed report persists a change_source_event and correlates into a Change via its source mapping", async () => {
     const org = await createTestOrg(server, "p4b-report-correlates");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const component = await admin.components.create({ name: `comp-${randomUUID().slice(0, 8)}` });
+    const component = await createTestComponent(admin, { name: `comp-${randomUUID().slice(0, 8)}` });
     const repo = `report-org/${randomUUID().slice(0, 8)}`;
     await admin.changeSources.createMapping("terraform", { repoPattern: repo, component: component.id });
 
@@ -416,7 +417,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
   it("REJECTS an executor binding whose pluginModule is unknown or the WRONG KIND (e.g. a ControlPlugin/DiscoveryPlugin/NotificationPlugin module) — at WRITE time, not just dispatch", async () => {
     const org = await createTestOrg(server, "m8-executor-module-allowlist");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const component = await admin.components.create({ name: `comp-${randomUUID().slice(0, 8)}` });
+    const component = await createTestComponent(admin, { name: `comp-${randomUUID().slice(0, 8)}` });
 
     for (const wrongModule of [
       "bogus-module-that-does-not-exist",
@@ -466,7 +467,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
   it("REJECTS a managed-iac binding whose config tries to set server-governed fields (runnerImage/networkMode)", async () => {
     const org = await createTestOrg(server, "m7-managed-iac-reject");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const component = await admin.components.create({ name: `comp-${randomUUID().slice(0, 8)}` });
+    const component = await createTestComponent(admin, { name: `comp-${randomUUID().slice(0, 8)}` });
 
     for (const evilConfig of [
       { runnerImage: "attacker/evil:latest" },
@@ -503,7 +504,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
       await import("../coordination/executor-bindings-repo.js");
     const org = await createTestOrg(server, "m7-managed-iac-inject");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const component = await admin.components.create({ name: `comp-${randomUUID().slice(0, 8)}` });
+    const component = await createTestComponent(admin, { name: `comp-${randomUUID().slice(0, 8)}` });
 
     const savedEnv = {
       image: process.env.SCP_MANAGED_IAC_RUNNER_IMAGE,

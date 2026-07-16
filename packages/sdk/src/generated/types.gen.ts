@@ -2772,521 +2772,6 @@ export type UpsertServiceByUrnResponses = {
 
 export type UpsertServiceByUrnResponse = UpsertServiceByUrnResponses[keyof UpsertServiceByUrnResponses];
 
-export type ListComponentsData = {
-    body?: never;
-    path?: never;
-    query?: {
-        cursor?: string;
-        limit?: number;
-        domainId?: string;
-        includeDeleted?: boolean;
-    };
-    url: '/components';
-};
-
-export type ListComponentsErrors = {
-    /**
-     * Error
-     */
-    401: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    403: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-};
-
-export type ListComponentsError = ListComponentsErrors[keyof ListComponentsErrors];
-
-export type ListComponentsResponses = {
-    /**
-     * Success
-     */
-    200: {
-        items: Array<{
-            id: string;
-            orgId: string;
-            domainId: string | null;
-            typeId: string;
-            name: string;
-            urn: string;
-            properties: {
-                [key: string]: unknown;
-            };
-            labels: {
-                [key: string]: unknown;
-            };
-            originDomainId: string;
-            revision: number;
-            provenance: 'manual' | null;
-            version: number;
-            createdAt: string;
-            updatedAt: string;
-            deletedAt: string | null;
-        }>;
-        nextCursor: string | null;
-    };
-};
-
-export type ListComponentsResponse = ListComponentsResponses[keyof ListComponentsResponses];
-
-export type CreateComponentData = {
-    body: {
-        id?: string;
-        urn?: string;
-        name: string;
-        domainId?: string | null;
-        properties?: {
-            [key: string]: unknown;
-        };
-        labels?: {
-            [key: string]: unknown;
-        };
-    };
-    path?: never;
-    query?: never;
-    url: '/components';
-};
-
-export type CreateComponentErrors = {
-    /**
-     * Error
-     */
-    401: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    403: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    409: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-};
-
-export type CreateComponentError = CreateComponentErrors[keyof CreateComponentErrors];
-
-export type CreateComponentResponses = {
-    /**
-     * Success
-     */
-    201: {
-        id: string;
-        orgId: string;
-        domainId: string | null;
-        typeId: string;
-        name: string;
-        urn: string;
-        properties: {
-            [key: string]: unknown;
-        };
-        labels: {
-            [key: string]: unknown;
-        };
-        originDomainId: string;
-        revision: number;
-        provenance: 'manual' | null;
-        version: number;
-        createdAt: string;
-        updatedAt: string;
-        deletedAt: string | null;
-    };
-};
-
-export type CreateComponentResponse = CreateComponentResponses[keyof CreateComponentResponses];
-
-export type DeleteComponentData = {
-    body?: never;
-    path: {
-        idOrUrn: string;
-    };
-    query?: never;
-    url: '/components/{idOrUrn}';
-};
-
-export type DeleteComponentErrors = {
-    /**
-     * Error
-     */
-    401: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    403: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    404: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-};
-
-export type DeleteComponentError = DeleteComponentErrors[keyof DeleteComponentErrors];
-
-export type DeleteComponentResponses = {
-    /**
-     * Success
-     */
-    200: {
-        id: string;
-        orgId: string;
-        domainId: string | null;
-        typeId: string;
-        name: string;
-        urn: string;
-        properties: {
-            [key: string]: unknown;
-        };
-        labels: {
-            [key: string]: unknown;
-        };
-        originDomainId: string;
-        revision: number;
-        provenance: 'manual' | null;
-        version: number;
-        createdAt: string;
-        updatedAt: string;
-        deletedAt: string | null;
-    };
-};
-
-export type DeleteComponentResponse = DeleteComponentResponses[keyof DeleteComponentResponses];
-
-export type GetComponentData = {
-    body?: never;
-    path: {
-        idOrUrn: string;
-    };
-    query?: never;
-    url: '/components/{idOrUrn}';
-};
-
-export type GetComponentErrors = {
-    /**
-     * Error
-     */
-    401: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    403: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    404: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-};
-
-export type GetComponentError = GetComponentErrors[keyof GetComponentErrors];
-
-export type GetComponentResponses = {
-    /**
-     * Success
-     */
-    200: {
-        id: string;
-        orgId: string;
-        domainId: string | null;
-        typeId: string;
-        name: string;
-        urn: string;
-        properties: {
-            [key: string]: unknown;
-        };
-        labels: {
-            [key: string]: unknown;
-        };
-        originDomainId: string;
-        revision: number;
-        provenance: 'manual' | null;
-        version: number;
-        createdAt: string;
-        updatedAt: string;
-        deletedAt: string | null;
-    };
-};
-
-export type GetComponentResponse = GetComponentResponses[keyof GetComponentResponses];
-
-export type UpdateComponentData = {
-    body: {
-        name?: string;
-        domainId?: string | null;
-        properties?: {
-            [key: string]: unknown;
-        };
-        labels?: {
-            [key: string]: unknown;
-        };
-        version?: number;
-    };
-    path: {
-        idOrUrn: string;
-    };
-    query?: never;
-    url: '/components/{idOrUrn}';
-};
-
-export type UpdateComponentErrors = {
-    /**
-     * Error
-     */
-    401: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    403: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    404: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    412: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-};
-
-export type UpdateComponentError = UpdateComponentErrors[keyof UpdateComponentErrors];
-
-export type UpdateComponentResponses = {
-    /**
-     * Success
-     */
-    200: {
-        id: string;
-        orgId: string;
-        domainId: string | null;
-        typeId: string;
-        name: string;
-        urn: string;
-        properties: {
-            [key: string]: unknown;
-        };
-        labels: {
-            [key: string]: unknown;
-        };
-        originDomainId: string;
-        revision: number;
-        provenance: 'manual' | null;
-        version: number;
-        createdAt: string;
-        updatedAt: string;
-        deletedAt: string | null;
-    };
-};
-
-export type UpdateComponentResponse = UpdateComponentResponses[keyof UpdateComponentResponses];
-
-export type UpsertComponentByUrnData = {
-    body: {
-        id?: string;
-        name: string;
-        domainId?: string | null;
-        properties?: {
-            [key: string]: unknown;
-        };
-        labels?: {
-            [key: string]: unknown;
-        };
-    };
-    path: {
-        urn: string;
-    };
-    query?: never;
-    url: '/components/{urn}';
-};
-
-export type UpsertComponentByUrnErrors = {
-    /**
-     * Error
-     */
-    401: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    403: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    409: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-};
-
-export type UpsertComponentByUrnError = UpsertComponentByUrnErrors[keyof UpsertComponentByUrnErrors];
-
-export type UpsertComponentByUrnResponses = {
-    /**
-     * Success
-     */
-    200: {
-        id: string;
-        orgId: string;
-        domainId: string | null;
-        typeId: string;
-        name: string;
-        urn: string;
-        properties: {
-            [key: string]: unknown;
-        };
-        labels: {
-            [key: string]: unknown;
-        };
-        originDomainId: string;
-        revision: number;
-        provenance: 'manual' | null;
-        version: number;
-        createdAt: string;
-        updatedAt: string;
-        deletedAt: string | null;
-    };
-    /**
-     * Success
-     */
-    201: {
-        id: string;
-        orgId: string;
-        domainId: string | null;
-        typeId: string;
-        name: string;
-        urn: string;
-        properties: {
-            [key: string]: unknown;
-        };
-        labels: {
-            [key: string]: unknown;
-        };
-        originDomainId: string;
-        revision: number;
-        provenance: 'manual' | null;
-        version: number;
-        createdAt: string;
-        updatedAt: string;
-        deletedAt: string | null;
-    };
-};
-
-export type UpsertComponentByUrnResponse = UpsertComponentByUrnResponses[keyof UpsertComponentByUrnResponses];
-
 export type ListDeploymentTargetsData = {
     body?: never;
     path?: never;
@@ -5861,6 +5346,545 @@ export type UpsertServiceAccountByUrnResponses = {
 };
 
 export type UpsertServiceAccountByUrnResponse = UpsertServiceAccountByUrnResponses[keyof UpsertServiceAccountByUrnResponses];
+
+export type ListComponentsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+        domainId?: string;
+        includeDeleted?: boolean;
+    };
+    url: '/components';
+};
+
+export type ListComponentsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListComponentsError = ListComponentsErrors[keyof ListComponentsErrors];
+
+export type ListComponentsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            typeId: string;
+            name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            provenance: 'manual' | null;
+            version: number;
+            createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListComponentsResponse = ListComponentsResponses[keyof ListComponentsResponses];
+
+export type CreateComponentData = {
+    body: {
+        id?: string;
+        urn?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+        service: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/components';
+};
+
+export type CreateComponentErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateComponentError = CreateComponentErrors[keyof CreateComponentErrors];
+
+export type CreateComponentResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        provenance: 'manual' | null;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type CreateComponentResponse = CreateComponentResponses[keyof CreateComponentResponses];
+
+export type DeleteComponentData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/components/{idOrUrn}';
+};
+
+export type DeleteComponentErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteComponentError = DeleteComponentErrors[keyof DeleteComponentErrors];
+
+export type DeleteComponentResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        provenance: 'manual' | null;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type DeleteComponentResponse = DeleteComponentResponses[keyof DeleteComponentResponses];
+
+export type GetComponentData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/components/{idOrUrn}';
+};
+
+export type GetComponentErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetComponentError = GetComponentErrors[keyof GetComponentErrors];
+
+export type GetComponentResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        provenance: 'manual' | null;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type GetComponentResponse = GetComponentResponses[keyof GetComponentResponses];
+
+export type UpdateComponentData = {
+    body: {
+        name?: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+        version?: number;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/components/{idOrUrn}';
+};
+
+export type UpdateComponentErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    412: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpdateComponentError = UpdateComponentErrors[keyof UpdateComponentErrors];
+
+export type UpdateComponentResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        provenance: 'manual' | null;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpdateComponentResponse = UpdateComponentResponses[keyof UpdateComponentResponses];
+
+export type UpsertComponentByUrnData = {
+    body: {
+        id?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+        service?: string;
+    };
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/components/{urn}';
+};
+
+export type UpsertComponentByUrnErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpsertComponentByUrnError = UpsertComponentByUrnErrors[keyof UpsertComponentByUrnErrors];
+
+export type UpsertComponentByUrnResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        provenance: 'manual' | null;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        provenance: 'manual' | null;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpsertComponentByUrnResponse = UpsertComponentByUrnResponses[keyof UpsertComponentByUrnResponses];
 
 export type ListDomainOwnersData = {
     body?: never;

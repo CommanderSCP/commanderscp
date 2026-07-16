@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
 import {
+  createTestComponent,
   createTestOrg,
   listenTestServer,
   waitUntil,
@@ -47,14 +48,14 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     });
 
   it("a change with no requires goes straight to validating — behaviour-preserving", async () => {
-    const comp = await admin.components.create({ name: "no-requires" });
+    const comp = await createTestComponent(admin, { name: "no-requires" });
     const change = await admin.changes.propose({ name: "plain release", targets: [comp.id] });
     await reaches(change.id, "validating");
   });
 
   it("a change with an UNSATISFIED requirement parks in waiting, then RELEASES when the provider validates", async () => {
-    const infra = await admin.components.create({ name: "coupling-infra" });
-    const app = await admin.components.create({ name: "coupling-app" });
+    const infra = await createTestComponent(admin, { name: "coupling-infra" });
+    const app = await createTestComponent(admin, { name: "coupling-app" });
 
     // The software release requires `feature-a` provided at the infra object. No provider exists yet.
     const waiter = await admin.changes.propose({
@@ -81,9 +82,9 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
   });
 
   it("a provider of the same key at a DIFFERENT object does NOT release the waiter — `at` is load-bearing", async () => {
-    const infra = await admin.components.create({ name: "spec-infra" });
-    const other = await admin.components.create({ name: "spec-other" });
-    const app = await admin.components.create({ name: "spec-app" });
+    const infra = await createTestComponent(admin, { name: "spec-infra" });
+    const other = await createTestComponent(admin, { name: "spec-other" });
+    const app = await createTestComponent(admin, { name: "spec-app" });
 
     const waiter = await admin.changes.propose({
       name: "waits on key@infra specifically",
@@ -117,8 +118,8 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
   });
 
   it("explain surfaces the wait status — the outstanding requirement (named), then satisfied by the provider (Phase 4)", async () => {
-    const infra = await admin.components.create({ name: "explain-infra" });
-    const app = await admin.components.create({ name: "explain-app" });
+    const infra = await createTestComponent(admin, { name: "explain-infra" });
+    const app = await createTestComponent(admin, { name: "explain-app" });
     const waiter = await admin.changes.propose({
       name: "explained waiter",
       targets: [app.id],
@@ -157,7 +158,7 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
   });
 
   it("a bad `at` reference is a 404 at propose time — never a silent forever-wait", async () => {
-    const app = await admin.components.create({ name: "bad-at-app" });
+    const app = await createTestComponent(admin, { name: "bad-at-app" });
     await expect(
       admin.changes.propose({
         name: "requires a nonexistent object",

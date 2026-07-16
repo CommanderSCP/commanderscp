@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
 import type { ExecutionStatus, ExternalRunRef } from "@scp/plugin-api";
 import {
+  createTestComponent,
   buildTestServer,
   createTestOrg,
   listenTestServer,
@@ -45,6 +46,33 @@ import {
  * subprocess plugin host (actual child `node` processes running `@scp/plugin-fake-executor`),
  * never mocked.
  */
+
+/**
+ * M12 P5a: these describe blocks create components via raw `inject` (no SDK client in scope), and the
+ * strict `POST /components` now requires a service. This creates a throwaway service + the component
+ * over inject and returns the component id — the component is just a coordination target here.
+ */
+async function createComponentViaInject(
+  server: { app: { inject: (o: unknown) => Promise<{ json: () => { id: string } }> } },
+  org: TestOrg,
+  name: string
+): Promise<string> {
+  const svc = await server.app.inject({
+    method: "POST",
+    url: "/api/v1/services",
+    headers: { authorization: `Bearer ${org.adminToken}` },
+    payload: { name: `svc-${name}` }
+  });
+  const serviceId = svc.json().id;
+  const comp = await server.app.inject({
+    method: "POST",
+    url: "/api/v1/components",
+    headers: { authorization: `Bearer ${org.adminToken}` },
+    payload: { name, service: serviceId }
+  });
+  return comp.json().id;
+}
+
 describe("coordination engine: full fake-executor loop", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -72,8 +100,8 @@ describe("coordination engine: full fake-executor loop", () => {
   });
 
   it("propose -> evaluate -> coordinate -> execute -> validate -> promote, waves ordered by depends_on, every transition has a Decision", async () => {
-    const infra = await admin.components.create({ name: "coord-infra" });
-    const app = await admin.components.create({ name: "coord-app" });
+    const infra = await createTestComponent(admin, { name: "coord-infra" });
+    const app = await createTestComponent(admin, { name: "coord-app" });
     await admin.components.addDependsOn(app.id, infra.id); // app depends_on infra
 
     const change = await admin.changes.propose({
@@ -126,7 +154,7 @@ describe("coordination engine: full fake-executor loop", () => {
     // mints its externalId as `${targetRef}<delim>${uuid}` (mintExternalId), so the externalId that
     // lands on the wave target reveals exactly which targetRef reconcile used.
     const externalName = `imported-app-${uuidv7().slice(0, 8)}`;
-    const comp = await admin.components.create({ name: `ext-ref-${uuidv7().slice(0, 8)}` });
+    const comp = await createTestComponent(admin, { name: `ext-ref-${uuidv7().slice(0, 8)}` });
     await admin.executors.putBinding(comp.id, {
       pluginModule: "fake-executor",
       pluginInstanceId: `ext-ref-inst-${uuidv7().slice(0, 8)}`,
@@ -167,7 +195,7 @@ describe("coordination engine: full fake-executor loop", () => {
       }
     });
     const externalName = `sys-app-${uuidv7().slice(0, 8)}`;
-    const comp = await admin.components.create({ name: `sys-comp-${uuidv7().slice(0, 8)}` });
+    const comp = await createTestComponent(admin, { name: `sys-comp-${uuidv7().slice(0, 8)}` });
     const binding = await admin.executors.putBinding(comp.id, {
       executionSystemId: sys.id,
       externalRef: externalName
@@ -192,7 +220,7 @@ describe("coordination engine: full fake-executor loop", () => {
   });
 
   it("rollback is its own Change, executed through the same plan/wave machinery, and restores the prior known-good executor state", async () => {
-    const target = await admin.components.create({ name: "coord-rollback-target" });
+    const target = await createTestComponent(admin, { name: "coord-rollback-target" });
 
     // Change #1: the target's first-ever change — brings the fake executor's internal version to v0.
     const change1 = await admin.changes.propose({ name: "change 1", targets: [target.id] });
@@ -351,14 +379,7 @@ describe("coordination engine: crash resumption", () => {
     const statePath = join(stateDir, "fake-executor-state.json");
 
     try {
-      const createTarget = await server.app.inject({
-        method: "POST",
-        url: "/api/v1/components",
-        headers: { authorization: `Bearer ${org.adminToken}` },
-        payload: { name: "kill-worker-target" }
-      });
-      expect(createTarget.statusCode).toBe(201);
-      const targetObjectId = createTarget.json().id as string;
+      const targetObjectId = await createComponentViaInject(server, org, "kill-worker-target");
 
       const propose = await server.app.inject({
         method: "POST",
@@ -563,14 +584,7 @@ describe("coordination engine: crash resumption", () => {
     );
 
     try {
-      const createTarget = await server.app.inject({
-        method: "POST",
-        url: "/api/v1/components",
-        headers: { authorization: `Bearer ${org.adminToken}` },
-        payload: { name: "kill-subprocess-target" }
-      });
-      expect(createTarget.statusCode).toBe(201);
-      const targetObjectId = createTarget.json().id as string;
+      const targetObjectId = await createComponentViaInject(server, org, "kill-subprocess-target");
 
       const propose = await server.app.inject({
         method: "POST",
@@ -677,22 +691,8 @@ describe("coordination engine: trigger idempotency across a same-tick crash (CRI
   });
 
   it("a fault injected right after trigger() fires for real is retried with the SAME idempotencyKey — the executor dedupes to one real run — and a sibling change's same-tick progress is unaffected", async () => {
-    const createTargetA = await server.app.inject({
-      method: "POST",
-      url: "/api/v1/components",
-      headers: { authorization: `Bearer ${org.adminToken}` },
-      payload: { name: "idem-target-a" }
-    });
-    const createTargetB = await server.app.inject({
-      method: "POST",
-      url: "/api/v1/components",
-      headers: { authorization: `Bearer ${org.adminToken}` },
-      payload: { name: "idem-target-b" }
-    });
-    expect(createTargetA.statusCode).toBe(201);
-    expect(createTargetB.statusCode).toBe(201);
-    const targetAId = createTargetA.json().id as string;
-    const targetBId = createTargetB.json().id as string;
+    const targetAId = await createComponentViaInject(server, org, "idem-target-a");
+    const targetBId = await createComponentViaInject(server, org, "idem-target-b");
 
     const proposeA = await server.app.inject({
       method: "POST",
@@ -881,14 +881,7 @@ describe("coordination engine: reconcile batch fairness (MAJOR #6)", () => {
     // than) every parked change above — under the pre-fix ordering (oldest-`updated_at`-first, no
     // exclusion), the 26 parked changes would occupy every one of the 25 batch slots forever and
     // this one would never be reached.
-    const createFreshTarget = await server.app.inject({
-      method: "POST",
-      url: "/api/v1/components",
-      headers: { authorization: `Bearer ${org.adminToken}` },
-      payload: { name: "fresh-target" }
-    });
-    expect(createFreshTarget.statusCode).toBe(201);
-    const freshTargetId = createFreshTarget.json().id as string;
+    const freshTargetId = await createComponentViaInject(server, org, "fresh-target");
 
     const proposeFresh = await server.app.inject({
       method: "POST",
@@ -944,14 +937,7 @@ describe("coordination engine: watchdog scheduled on the running worker (CRITICA
       // alongside the watchdog, a change left in `proposed` would just get advanced normally
       // before the watchdog ever got a look at it. `validating` is where a real, actively-managed
       // worker can genuinely leave a change stalled.
-      const createTarget = await server.app.inject({
-        method: "POST",
-        url: "/api/v1/components",
-        headers: { authorization: `Bearer ${org.adminToken}` },
-        payload: { name: "watchdog-scheduled-target" }
-      });
-      expect(createTarget.statusCode).toBe(201);
-      const targetId = createTarget.json().id as string;
+      const targetId = await createComponentViaInject(server, org, "watchdog-scheduled-target");
 
       const propose = await server.app.inject({
         method: "POST",
@@ -1247,14 +1233,7 @@ describe("coordination engine: evaluated->coordinated plan compilation is single
   });
 
   it("N concurrent reconcileOrgTick calls racing the SAME freshly-proposed change: exactly ONE plan is ever persisted, and the change is never wrongfully cancelled", async () => {
-    const createTarget = await server.app.inject({
-      method: "POST",
-      url: "/api/v1/components",
-      headers: { authorization: `Bearer ${org.adminToken}` },
-      payload: { name: "eval-race-target" }
-    });
-    expect(createTarget.statusCode).toBe(201);
-    const targetObjectId = createTarget.json().id as string;
+    const targetObjectId = await createComponentViaInject(server, org, "eval-race-target");
 
     const propose = await server.app.inject({
       method: "POST",
@@ -1349,14 +1328,7 @@ describe("coordination engine: webhook-event processing is single-flight across 
   });
 
   it("N concurrent processChangeSourceEvents calls racing the SAME unprocessed event row: exactly ONE Change is ever proposed", async () => {
-    const createComponent = await server.app.inject({
-      method: "POST",
-      url: "/api/v1/components",
-      headers: { authorization: `Bearer ${org.adminToken}` },
-      payload: { name: `webhook-race-comp-${randomSuffix()}` }
-    });
-    expect(createComponent.statusCode).toBe(201);
-    const componentObjectId = createComponent.json().id as string;
+    const componentObjectId = await createComponentViaInject(server, org, `webhook-race-comp-${randomSuffix()}`);
     const repo = `webhook-race-org/${randomSuffix()}`;
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
       createSourceMapping(tx, {

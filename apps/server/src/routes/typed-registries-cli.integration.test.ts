@@ -90,4 +90,40 @@ describe("CLI: M2 typed registry + ownership commands", () => {
       await cli.cleanup();
     }
   });
+
+  it("`scp component register` requires --service and threads it (strict create-in-service, M12 P5a)", async () => {
+    const org = await createTestOrg(server, "cli-component-strict");
+    const cli: CliInvocation = await startCliSession(server.baseUrl);
+    try {
+      await cli.run(["login", "--username", org.adminUsername, "--password", org.adminPassword]);
+      const svc = await cli.runJson<{ id: string }>([
+        "service",
+        "register",
+        "--name",
+        "cli-owning-service"
+      ]);
+
+      // With --service: creates the component (and its `contains` edge, server-side).
+      const comp = await cli.runJson<{ id: string; typeId: string; name: string }>([
+        "component",
+        "register",
+        "--name",
+        "cli-api",
+        "--service",
+        svc.id
+      ]);
+      expect(comp.typeId).toBe("component");
+      expect(comp.name).toBe("cli-api");
+      // (The server writes the component's `contains` edge atomically — verified directly in
+      // components.integration.test.ts / plans.integration.test.ts; here we assert the CLI surface.)
+
+      // Without --service: commander refuses the required option before any request goes out
+      // (non-zero exit → `run()` rejects). This is the CLI half of create-strict.
+      await expect(
+        cli.run(["component", "register", "--name", "cli-orphan"])
+      ).rejects.toThrow(/service/i);
+    } finally {
+      await cli.cleanup();
+    }
+  });
 });
