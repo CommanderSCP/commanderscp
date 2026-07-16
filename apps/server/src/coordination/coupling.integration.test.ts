@@ -116,6 +116,46 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     await reaches(waiter.id, "validating");
   });
 
+  it("explain surfaces the wait status — the outstanding requirement (named), then satisfied by the provider (Phase 4)", async () => {
+    const infra = await admin.components.create({ name: "explain-infra" });
+    const app = await admin.components.create({ name: "explain-app" });
+    const waiter = await admin.changes.propose({
+      name: "explained waiter",
+      targets: [app.id],
+      requires: [{ key: "feat-x", at: infra.id }]
+    });
+    await reaches(waiter.id, "waiting");
+
+    // While parked: waitStatus shows the requirement OUTSTANDING, with the `at` object's name.
+    let explained = await admin.changes.explain(waiter.id);
+    expect(explained.waitStatus).not.toBeNull();
+    expect(explained.waitStatus!.waiting).toBe(true);
+    expect(explained.waitStatus!.requirements).toEqual([
+      { key: "feat-x", at: infra.id, atName: "explain-infra", satisfied: false, satisfiedByChangeId: null }
+    ]);
+
+    // Provide it; the waiter releases.
+    const provider = await admin.changes.propose({
+      name: "explain provider",
+      targets: [infra.id],
+      provides: ["feat-x"]
+    });
+    await reaches(provider.id, "validating");
+    await reaches(waiter.id, "validating");
+
+    // Now waitStatus shows it satisfied, and names the providing change.
+    explained = await admin.changes.explain(waiter.id);
+    expect(explained.waitStatus!.waiting).toBe(false);
+    expect(explained.waitStatus!.requirements[0]).toMatchObject({
+      satisfied: true,
+      satisfiedByChangeId: provider.id
+    });
+
+    // A change that declared no requires has a null waitStatus — unchanged for every pre-P4B change.
+    const plain = await admin.changes.propose({ name: "no coupling", targets: [app.id] });
+    expect((await admin.changes.explain(plain.id)).waitStatus).toBeNull();
+  });
+
   it("a bad `at` reference is a 404 at propose time — never a silent forever-wait", async () => {
     const app = await admin.components.create({ name: "bad-at-app" });
     await expect(

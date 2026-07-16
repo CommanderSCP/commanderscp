@@ -24,26 +24,32 @@ export interface Requirement {
   at: string;
 }
 
+/** A requirement plus WHETHER it is currently satisfied, and by which change if so. */
+export interface RequirementStatus extends Requirement {
+  satisfied: boolean;
+  /** The object id of the change that satisfies this requirement (in validating|promoted), or null. */
+  satisfiedByChangeObjectId: string | null;
+}
+
 /**
- * The subset of `requires` NOT yet satisfied. Empty ⇒ the change is free to execute. Also drives the
- * `waiting` Decision's reason, so an operator can see exactly which prerequisites are outstanding.
- *
- * One jsonb-containment probe per requirement, served by the `obj_props` GIN index
- * (`drizzle/0001:170`, `jsonb_path_ops`) — `properties @> {"provides":[key],"targets":[at]}` is true
- * iff the provider's `provides` array contains `key` AND its `targets` array contains `at`. No new
- * index, no new column: `provides`/`targets` already live in `objects.properties`.
+ * The satisfaction status of EVERY requirement — the single query implementation behind both the
+ * reconcile predicate and the `explain` wait-status surface (Phase 4). One jsonb-containment probe
+ * per requirement, served by the `obj_props` GIN index (`drizzle/0001:170`, `jsonb_path_ops`):
+ * `properties @> {"provides":[key],"targets":[at]}` is true iff the provider's `provides` array
+ * contains `key` AND its `targets` array contains `at`. No new index, no new column — `provides`/
+ * `targets` already live in `objects.properties`.
  */
-export async function unsatisfiedRequirements(
+export async function requirementStatuses(
   tx: TenantTx,
   orgId: string,
   selfChangeObjectId: string,
   requires: Requirement[]
-): Promise<Requirement[]> {
-  const unmet: Requirement[] = [];
+): Promise<RequirementStatus[]> {
+  const statuses: RequirementStatus[] = [];
   for (const req of requires) {
     const probe = JSON.stringify({ provides: [req.key], targets: [req.at] });
-    const result = await tx.execute<{ ok: number }>(sql`
-      SELECT 1 AS ok
+    const result = await tx.execute<{ change_object_id: string }>(sql`
+      SELECT c.object_id AS change_object_id
       FROM changes c
       JOIN objects o ON o.id = c.object_id AND o.org_id = c.org_id
       WHERE c.org_id = ${orgId}::uuid
@@ -53,9 +59,24 @@ export async function unsatisfiedRequirements(
         AND o.properties @> ${probe}::jsonb
       LIMIT 1
     `);
-    if (result.rows.length === 0) unmet.push(req);
+    const satisfiedBy = result.rows[0]?.change_object_id ?? null;
+    statuses.push({ ...req, satisfied: satisfiedBy !== null, satisfiedByChangeObjectId: satisfiedBy });
   }
-  return unmet;
+  return statuses;
+}
+
+/**
+ * The subset of `requires` NOT yet satisfied. Empty ⇒ the change is free to execute. Also drives the
+ * `waiting` Decision's reason, so an operator can see exactly which prerequisites are outstanding.
+ */
+export async function unsatisfiedRequirements(
+  tx: TenantTx,
+  orgId: string,
+  selfChangeObjectId: string,
+  requires: Requirement[]
+): Promise<Requirement[]> {
+  const statuses = await requirementStatuses(tx, orgId, selfChangeObjectId, requires);
+  return statuses.filter((s) => !s.satisfied).map((s) => ({ key: s.key, at: s.at }));
 }
 
 /** True iff every requirement is satisfied (or there are none). */

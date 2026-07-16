@@ -7,6 +7,8 @@ import {
   ChangeListResponseSchema,
   ChangeSchema,
   ChangeTransitionRequestSchema,
+  type Change,
+  type ChangeWaitStatus,
   CreateChangeRequestSchema,
   DecisionIdParamSchema,
   DecisionListQuerySchema,
@@ -17,10 +19,11 @@ import {
 } from "@scp/schemas";
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
-import { withTenantTx } from "../db/tenant-tx.js";
+import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { assertCoordinationTargetsWithinAuthority } from "../coordination/campaign-scope-authz.js";
-import { getChange, listChanges, proposeChange } from "../coordination/changes-repo.js";
+import { getChange, listChanges, proposeChange, requiresOf } from "../coordination/changes-repo.js";
+import { requirementStatuses } from "../coordination/coupling.js";
 import { transitionChange } from "../coordination/transition.js";
 import type { GateDeps } from "../coordination/gates.js";
 import { triggerRollback } from "../coordination/rollback.js";
@@ -45,6 +48,40 @@ import { conflict } from "../errors.js";
  * supports `cancel` from every pre-promotion state; leaving it unreachable via the API would be
  * an arbitrary gap, not a deliberate one).
  */
+/**
+ * M12 P4B Phase 4 — the coupled-pipeline wait status for `explain`: for a change that declared
+ * `requires`, each prerequisite's live satisfaction (and the object name it is `at`, for a readable
+ * "Waiting on …" surface). Null when the change coupled nothing, so unchanged for every pre-P4B
+ * change. Read-only: it re-evaluates the SAME predicate reconcile uses, it does not transition.
+ */
+async function buildWaitStatus(
+  tx: TenantTx,
+  orgId: string,
+  change: Change
+): Promise<ChangeWaitStatus | null> {
+  const requires = requiresOf(change.properties);
+  if (requires.length === 0) return null;
+  const statuses = await requirementStatuses(tx, orgId, change.id, requires);
+  const atIds = [...new Set(statuses.map((s) => s.at))];
+  const atObjects =
+    atIds.length === 0
+      ? []
+      : await tx.query.objects.findMany({
+          where: (o, { and, eq, inArray }) => and(eq(o.orgId, orgId), inArray(o.id, atIds))
+        });
+  const nameById = new Map(atObjects.map((o) => [o.id, o.name]));
+  return {
+    waiting: change.state === "waiting",
+    requirements: statuses.map((s) => ({
+      key: s.key,
+      at: s.at,
+      atName: nameById.get(s.at) ?? null,
+      satisfied: s.satisfied,
+      satisfiedByChangeId: s.satisfiedByChangeObjectId
+    }))
+  };
+}
+
 export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
   // `host: null` — this route runs on the request-serving (`role=api`) tier, which has no
@@ -204,10 +241,11 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
           scopeObjectId: auth.orgId
         });
         const change = await getChange(tx, auth.orgId, request.params.id);
-        const [plan, decisions, controlRuns] = await Promise.all([
+        const [plan, decisions, controlRuns, waitStatus] = await Promise.all([
           getLatestPlanForChange(tx, auth.orgId, request.params.id),
           listDecisionsForSubject(tx, auth.orgId, request.params.id),
-          listControlRunsForChange(tx, auth.orgId, request.params.id)
+          listControlRunsForChange(tx, auth.orgId, request.params.id),
+          buildWaitStatus(tx, auth.orgId, change)
         ]);
         return {
           change,
@@ -222,7 +260,8 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
             detail: r.detail,
             decisionId: r.decisionId,
             createdAt: r.createdAt.toISOString()
-          }))
+          })),
+          waitStatus
         };
       });
       reply.status(200).send(result);

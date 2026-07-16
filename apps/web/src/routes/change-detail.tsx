@@ -347,7 +347,7 @@ export function ChangeDetailPage(): React.JSX.Element {
     );
   }
 
-  const { change, plan, decisions, controlRuns } = explainQuery.data;
+  const { change, plan, decisions, controlRuns, waitStatus } = explainQuery.data;
   const canCancel = CANCELLABLE_STATES.includes(change.state);
   const canPromote = PROMOTABLE_STATES.includes(change.state);
   const canRollback = ROLLBACKABLE_STATES.includes(change.state);
@@ -423,6 +423,50 @@ export function ChangeDetailPage(): React.JSX.Element {
             </>
           )}
         </p>
+      )}
+
+      {waitStatus && (
+        <Card data-testid="wait-status-card">
+          <CardHeader>
+            <CardTitle>
+              {waitStatus.waiting
+                ? `Waiting on ${waitStatus.requirements.filter((r) => !r.satisfied).length} prerequisite(s)`
+                : "Coupled prerequisites"}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            {waitStatus.requirements.map((req) => (
+              <div
+                key={`${req.key}@${req.at}`}
+                className="flex items-center justify-between gap-4 text-sm"
+                data-testid="wait-requirement"
+              >
+                <span className="font-mono text-slate-700">
+                  {req.key} @ {req.atName ?? req.at}
+                </span>
+                {req.satisfied ? (
+                  <Badge variant="success">
+                    satisfied
+                    {req.satisfiedByChangeId && (
+                      <>
+                        {" · "}
+                        <Link
+                          to="/changes/$id"
+                          params={{ id: req.satisfiedByChangeId }}
+                          className="underline"
+                        >
+                          by change
+                        </Link>
+                      </>
+                    )}
+                  </Badge>
+                ) : (
+                  <Badge variant="secondary">outstanding</Badge>
+                )}
+              </div>
+            ))}
+          </CardContent>
+        </Card>
       )}
 
       <Card>

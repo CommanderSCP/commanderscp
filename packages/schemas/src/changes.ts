@@ -203,11 +203,34 @@ export type ChangePlan = z.infer<typeof ChangePlanSchema>;
  *  and each `requireControls` effect's `detail.controlObjectId`/`detail.outcome` — but the actual
  *  EVIDENCE payload only ever lives on `control_runs`; M4 adds this array so `scp change explain`
  *  can reconstruct "policy version + control outcome + evidence" end to end, not just the first two). */
+/** One cross-change prerequisite's live status (M12 P4B Phase 4), for `explain`'s wait-status view. */
+export const ChangeRequirementStatusSchema = z.object({
+  key: z.string(),
+  /** The object id the key must be provided at. */
+  at: z.string().uuid(),
+  /** The object's display name, for a readable "Waiting on …" surface (null if it can't be resolved). */
+  atName: z.string().nullable(),
+  satisfied: z.boolean(),
+  /** The change (validating|promoted) currently providing this key at `at`, or null while outstanding. */
+  satisfiedByChangeId: z.string().uuid().nullable()
+});
+export type ChangeRequirementStatus = z.infer<typeof ChangeRequirementStatusSchema>;
+
+/** A change's coupled-pipeline wait status (M12 P4B Phase 4). Present on `explain` for any change
+ *  that declared `requires`; null otherwise. `waiting` reflects the change's current state. */
+export const ChangeWaitStatusSchema = z.object({
+  waiting: z.boolean(),
+  requirements: z.array(ChangeRequirementStatusSchema)
+});
+export type ChangeWaitStatus = z.infer<typeof ChangeWaitStatusSchema>;
+
 export const ChangeExplainResponseSchema = z.object({
   change: ChangeSchema,
   plan: ChangePlanSchema.nullable(),
   decisions: z.array(DecisionSchema),
-  controlRuns: z.array(ControlRunSchema)
+  controlRuns: z.array(ControlRunSchema),
+  /** Cross-change coupling status (M12 P4B): null when the change declared no `requires`. */
+  waitStatus: ChangeWaitStatusSchema.nullable()
 });
 export type ChangeExplainResponse = z.infer<typeof ChangeExplainResponseSchema>;
 

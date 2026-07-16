@@ -8895,6 +8895,16 @@ export type ExplainChangeResponses = {
             decisionId: string | null;
             createdAt: string;
         }>;
+        waitStatus: {
+            waiting: boolean;
+            requirements: Array<{
+                key: string;
+                at: string;
+                atName: string | null;
+                satisfied: boolean;
+                satisfiedByChangeId: string | null;
+            }>;
+        } | null;
     };
 };
 
