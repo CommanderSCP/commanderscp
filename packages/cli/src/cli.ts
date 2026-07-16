@@ -1274,6 +1274,20 @@ export function buildProgram(): Command {
   registerOwnerCommands(componentCmd, (c) => c.components);
   registerEdgeCommands(componentCmd, "consumes", (c) => c.components);
   registerEdgeCommands(componentCmd, "depends-on", (c) => c.components);
+  // `scp component assign <idOrUrn> --service <s>` — idempotent atomic assign-or-move (M12 P5b).
+  // Sets the component's owning service: assign (no current service), atomic move (different), or
+  // no-op (same). Re-runnable, so it safely bulk-organizes imported orphans.
+  componentCmd
+    .command("assign <idOrUrn>")
+    .description("Assign or move a component into a service (idempotent)")
+    .requiredOption("--service <idOrUrn>", "the service the component should belong to (id or URN)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrUrn: string, opts: BaseCliOpts & { service: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const updated = await client.components.setService(idOrUrn, opts.service);
+      printResult(updated, opts.output, (item) => objectRow(item as GraphObject));
+    });
 
   const deploymentTargetCmd = registerTypedResourceCrud(
     program,

@@ -126,4 +126,39 @@ describe("CLI: M2 typed registry + ownership commands", () => {
       await cli.cleanup();
     }
   });
+
+  it("`scp component assign` moves a component into a service (M12 P5b)", async () => {
+    const org = await createTestOrg(server, "cli-component-assign");
+    const cli: CliInvocation = await startCliSession(server.baseUrl);
+    try {
+      await cli.run(["login", "--username", org.adminUsername, "--password", org.adminPassword]);
+      const svcA = await cli.runJson<{ id: string }>(["service", "register", "--name", "cli-svc-a"]);
+      const svcB = await cli.runJson<{ id: string }>(["service", "register", "--name", "cli-svc-b"]);
+      const comp = await cli.runJson<{ id: string }>([
+        "component",
+        "register",
+        "--name",
+        "cli-movable",
+        "--service",
+        svcA.id
+      ]);
+
+      // Assign (move) into svc-b, then a second run to prove idempotence (no error on same service).
+      const moved = await cli.runJson<{ id: string; typeId: string }>([
+        "component",
+        "assign",
+        comp.id,
+        "--service",
+        svcB.id
+      ]);
+      expect(moved.id).toBe(comp.id);
+      expect(moved.typeId).toBe("component");
+      await cli.run(["component", "assign", comp.id, "--service", svcB.id]); // idempotent — no throw
+
+      // --service is required.
+      await expect(cli.run(["component", "assign", comp.id])).rejects.toThrow(/service/i);
+    } finally {
+      await cli.cleanup();
+    }
+  });
 });

@@ -8,6 +8,7 @@ import {
   ProblemSchema,
   RegistryIdOrUrnParamSchema,
   RegistryUrnParamSchema,
+  SetComponentServiceRequestSchema,
   UpdateObjectRequestSchema,
   UpsertComponentRequestSchema
 } from "@scp/schemas";
@@ -24,7 +25,7 @@ import {
   updateObject,
   upsertObjectByUrn
 } from "../graph/objects-repo.js";
-import { createComponentInService } from "../graph/components-repo.js";
+import { createComponentInService, setComponentService } from "../graph/components-repo.js";
 
 /**
  * Strict `component` routes (M12 P5a, docs/proposals/organize-after.md). `component` is deliberately
@@ -229,6 +230,39 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
         return { object: updated, status: 200 as const };
       });
       reply.status(status).send(object);
+    }
+  });
+
+  // PUT /components/:idOrUrn/service — idempotent atomic assign-or-move (M12 P5b). Sets the
+  // component's sole `contains` parent: assign (no current service), atomic move (different), or
+  // no-op (same). `setComponentService` does the both/three-endpoint authz and single-tx swap.
+  typed.route({
+    method: "PUT",
+    url: `${base}/:idOrUrn/service`,
+    schema: {
+      params: RegistryIdOrUrnParamSchema,
+      body: SetComponentServiceRequestSchema,
+      response: { 200: GraphObjectSchema, 400: ProblemSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema, 409: ProblemSchema }
+    },
+    config: {
+      openapi: {
+        operationId: "setComponentService",
+        summary: "Assign or move a component into a service (idempotent; atomic move — the old and new containment edges swap in one transaction)",
+        tags: ["components"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const result = await withTenantTx(deps.db, auth.orgId, async (tx) =>
+        setComponentService(tx, {
+          orgId: auth.orgId,
+          actorObjectId: auth.subjectObjectId,
+          requestId: request.id,
+          componentIdOrUrn: request.params.idOrUrn,
+          serviceIdOrUrn: request.body.service
+        })
+      );
+      reply.status(200).send(result.component);
     }
   });
 }
