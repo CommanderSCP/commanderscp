@@ -102,15 +102,20 @@ describe("graph query statement_timeout guardrail", () => {
  * sub-millisecond, on a 2-node graph, warm connection) query just finish first" is decided by OS
  * timer/scheduling jitter, not by the query actually being slow — repeated local runs against a
  * 2-node graph at 1ms came back a clean 200 (no cancellation at all) as often as a 408. Widening
- * the *graph* a little (still no depth beyond one hop, still linear — not the old exponential
- * shape) instead widens the gap between "real query cost" and "timeout bound" enough to make the
- * outcome deterministic: a single-level fan-in of WIDTH ordinary objects that all `depends_on` one
- * target (bulk INSERT, same technique the CTE-fix suite below uses) costs ~55-60ms of real,
- * uncancelled Postgres time at WIDTH=1000 (measured locally, low variance) — a comfortable ~4-5x
- * margin over the 10ms bound configured below, confirmed flake-free across 15 consecutive local
- * runs at exactly this width/timeout pair before landing this test. 1000 rows is still trivial to
- * seed (well under the CTE-fix suite's own ~1,260-row fixture) and is emphatically NOT the
- * pathological shape (linear fan-in, one hop — no recursion-step blowup is even possible here).
+ * the *graph* (still no depth beyond one hop, still linear — not the old exponential shape) instead
+ * widens the gap between "real query cost" and "timeout bound" enough to make the outcome
+ * deterministic: a single-level fan-in of WIDTH ordinary objects that all `depends_on` one target
+ * (bulk INSERT, same technique the CTE-fix suite below uses).
+ *
+ * SIZING (corrected). An earlier version used WIDTH=1000 against the 10ms bound below and claimed a
+ * "~4-5x margin, flake-free". That held in ISOLATION but occasionally returned 200 in the FULL
+ * suite: after ~340 prior tests Postgres's shared buffers are warm, so the 1000-row walk finished
+ * under 10ms before the timer fired — a real flake, not a phantom. The walk is CPU-bound and
+ * O(WIDTH), so the fix is simply a much larger margin: WIDTH=30000 costs on the order of hundreds of
+ * ms of unavoidable CPU work (~50-150x the 10ms bound), which no cache warmth or faster machine can
+ * compress below 10ms, and full-suite CPU contention only makes slower (more likely to cancel).
+ * 30k rows is one bulk INSERT (~1s to seed) and is still NOT the pathological shape — linear fan-in,
+ * one hop, no recursion-step blowup is even possible here.
  */
 describe("GET /api/v1/graph/query/:name — GraphQueryTimeoutError maps to HTTP 408 (route level)", () => {
   let server: TestServer;
@@ -150,7 +155,17 @@ describe("GET /api/v1/graph/query/:name — GraphQueryTimeoutError maps to HTTP 
     // A single-level fan-in: WIDTH ordinary service objects, each with its own depends_on edge
     // into one target — genuine, non-exponential work (see module doc for why this width/timeout
     // pair was chosen). Bulk INSERT bypassing the API, same technique as the CTE-fix suite below.
-    const WIDTH = 1000;
+    //
+    // WIDTH sized for a LARGE margin (~50-150x), not a tight one. The prior 1000/10ms pair was
+    // flake-free in ISOLATION but occasionally returned 200 in the FULL suite: by then Postgres's
+    // shared buffers are warm from ~340 prior tests, so the 1000-row walk finished under the 10ms
+    // bound before the timeout fired. A ~10ms recursive walk of 1000 warm rows is CPU-bound and
+    // O(WIDTH), so 30k rows costs ~30x that — hundreds of ms of unavoidable CPU work that no cache
+    // warmth or faster machine can compress below the 10ms bound, while full-suite CPU contention
+    // only makes it slower (more likely to cancel, never less). 30k rows is one bulk INSERT (~1s to
+    // seed) and is still emphatically NOT the pathological shape — linear fan-in, one hop, no
+    // recursion-step blowup.
+    const WIDTH = 30_000;
     const raw = await RawScpAppClient.connect();
     const originDomainId = randomUUID();
     // Same RBAC note as the CTE-fix suite below: point every synthetic object's domain_id at the
