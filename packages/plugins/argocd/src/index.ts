@@ -428,9 +428,28 @@ export const manifest: PluginManifest = {
 // coordinates the right app. NEVER auto-commits — `POST /discovery/accept` materializes the
 // proposal. Same one-npm-package-two-plugins shape as @scp/plugin-github (executor + discovery).
 // -------------------------------------------------------------------------------------------
+interface ArgoAppSource {
+  repoURL?: string;
+  path?: string;
+  targetRevision?: string;
+}
 interface ArgoAppForDiscovery {
   metadata: { name: string };
-  spec?: { project?: string; destination?: { namespace?: string; server?: string } };
+  spec?: {
+    project?: string;
+    destination?: { namespace?: string; server?: string };
+    // Single-source (the common shape) and multi-source (spec.sources[]) Applications — the git repo
+    // the app deploys FROM, which is where its releases correlate (M12 P5, owner Q3 github path).
+    source?: ArgoAppSource;
+    sources?: ArgoAppSource[];
+  };
+}
+
+/** The first source declaring a repoURL — a single-source app's `spec.source`, else the first of
+ *  `spec.sources[]`. Returns undefined for an app with no git source (e.g. a Helm-repo-only app). */
+function primarySource(spec: ArgoAppForDiscovery["spec"]): ArgoAppSource | undefined {
+  if (spec?.source?.repoURL) return spec.source;
+  return spec?.sources?.find((s) => s.repoURL);
 }
 
 async function discover(ctx: PluginContext): Promise<DiscoveryProposal> {
@@ -442,9 +461,11 @@ async function discover(ctx: PluginContext): Promise<DiscoveryProposal> {
   const list = body as { items?: ArgoAppForDiscovery[] };
   const objects: DiscoveryProposal["objects"] = [];
   const bindings: NonNullable<DiscoveryProposal["bindings"]> = [];
+  const sourceMappings: NonNullable<DiscoveryProposal["sourceMappings"]> = [];
   for (const app of list.items ?? []) {
     const name = app.metadata?.name;
     if (!name) continue;
+    const source = primarySource(app.spec);
     objects.push({
       typeId: "component",
       name,
@@ -454,7 +475,11 @@ async function discover(ctx: PluginContext): Promise<DiscoveryProposal> {
         argocdApplication: name,
         discoveredFrom: `argocd:${config.serverUrl}`,
         ...(app.spec?.project ? { argocdProject: app.spec.project } : {}),
-        ...(app.spec?.destination?.namespace ? { namespace: app.spec.destination.namespace } : {})
+        ...(app.spec?.destination?.namespace ? { namespace: app.spec.destination.namespace } : {}),
+        // The git source the app deploys from (M12 P5) — carried as metadata AND used to build the
+        // source_mapping below, so the imported component self-reports releases from this repo.
+        ...(source?.repoURL ? { sourceRepo: source.repoURL } : {}),
+        ...(source?.path ? { sourcePath: source.path } : {})
       }
     });
     // P3b: if the run named an execution-system, propose the binding too so `accept` wires
@@ -462,8 +487,26 @@ async function discover(ctx: PluginContext): Promise<DiscoveryProposal> {
     if (config.executionSystemId) {
       bindings.push({ objectName: name, executionSystemId: config.executionSystemId, externalRef: name });
     }
+    // M12 P5 (owner Q3, github-webhook path): a source_mapping from the app's git repo, so pushes to
+    // it correlate to this component. `source_kind:'github'` (argocd's own events carry no repo, so
+    // the correlation key is the underlying repo's webhook, matched by repo/path globs). Only when
+    // the app actually declares a git repoURL.
+    if (source?.repoURL) {
+      sourceMappings.push({
+        objectName: name,
+        sourceKind: "github",
+        repoPattern: source.repoURL,
+        ...(source.path ? { pathPattern: source.path } : {}),
+        purpose: "software"
+      });
+    }
   }
-  return { objects, relationships: [], ...(bindings.length ? { bindings } : {}) };
+  return {
+    objects,
+    relationships: [],
+    ...(bindings.length ? { bindings } : {}),
+    ...(sourceMappings.length ? { sourceMappings } : {})
+  };
 }
 
 export const argoCdDiscoveryPlugin: DiscoveryPlugin = { discover };

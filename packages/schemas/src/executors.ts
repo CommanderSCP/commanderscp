@@ -182,11 +182,29 @@ export const DiscoveryProposalBindingSchema = z.object({
   executionSystemId: z.string().min(1),
   externalRef: z.string().min(1).optional()
 });
+
+/**
+ * A `source_mapping` to create alongside an imported object (M12 P5, owner ruling Q3, github-webhook
+ * path) — so an imported component actually SELF-REPORTS releases via `observe()`/webhooks, not just
+ * being triggerable. References the object BY NAME (created in the same accept batch), exactly like a
+ * proposal binding. For an argocd import the discover step fills `sourceKind:'github'` +
+ * `repoPattern:<spec.source.repoURL>` (correlation matches on source_kind + repo/path globs; argocd's
+ * own events carry no repo, so releases are correlated from the underlying git repo's webhooks).
+ */
+export const DiscoveryProposalSourceMappingSchema = z.object({
+  objectName: z.string().min(1),
+  sourceKind: z.string().min(1),
+  repoPattern: z.string().min(1).optional(),
+  pathPattern: z.string().min(1).optional(),
+  purpose: BindingPurposeSchema.optional()
+});
 export const DiscoveryProposalSchema = z.object({
   objects: z.array(DiscoveryProposalObjectSchema),
   relationships: z.array(DiscoveryProposalRelationshipSchema),
   /** Optional executor bindings to create alongside the objects (import → coordinate in one accept). */
-  bindings: z.array(DiscoveryProposalBindingSchema).optional()
+  bindings: z.array(DiscoveryProposalBindingSchema).optional(),
+  /** Optional source_mappings to create alongside the objects (M12 P5, Q3) — so imports self-report. */
+  sourceMappings: z.array(DiscoveryProposalSourceMappingSchema).optional()
 });
 export type DiscoveryProposal = z.infer<typeof DiscoveryProposalSchema>;
 
@@ -212,7 +230,8 @@ export type AcceptDiscoveryRequest = z.infer<typeof AcceptDiscoveryRequestSchema
 export const AcceptDiscoveryResponseSchema = z.object({
   createdObjectIds: z.array(z.string().uuid()),
   createdRelationshipIds: z.array(z.string().uuid()),
-  createdBindingIds: z.array(z.string().uuid())
+  createdBindingIds: z.array(z.string().uuid()),
+  createdSourceMappingIds: z.array(z.string().uuid())
 });
 export type AcceptDiscoveryResponse = z.infer<typeof AcceptDiscoveryResponseSchema>;
 

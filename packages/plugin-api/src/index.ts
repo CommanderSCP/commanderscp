@@ -279,6 +279,17 @@ export interface DiscoveryProposal {
   /** Optional executor bindings to create at accept (M12 P3b) — `objectName` references one of
    *  `objects` by name, so an imported object can be wired to an execution-system in one step. */
   bindings?: Array<{ objectName: string; executionSystemId: string; externalRef?: string }>;
+  /** Optional source_mappings to create at accept (M12 P5, owner Q3) — so an imported component
+   *  self-reports releases via observe()/webhooks, not just being triggerable. `objectName`
+   *  references one of `objects` by name; `sourceKind`+`repoPattern`/`pathPattern` are how a
+   *  correlated event finds the component (e.g. github + the app's git repoURL for an argocd import). */
+  sourceMappings?: Array<{
+    objectName: string;
+    sourceKind: string;
+    repoPattern?: string;
+    pathPattern?: string;
+    purpose?: "infra" | "software";
+  }>;
 }
 
 export interface DiscoveryPlugin {

@@ -2690,6 +2690,49 @@ export function buildProgram(): Command {
     .command("change-source")
     .description("Change-source webhook config (DESIGN §8/§9.2/§12)");
 
+  // M12 P5 (owner Q3): source_mapping CRUD — the CLI parity gap (SDK + route existed). This is the
+  // manual/backfill path for existing imports; new argocd imports get a mapping auto-created at accept.
+  changeSourceCmd
+    .command("create-mapping <sourceKind>")
+    .description("Map a source (repo/path globs) to a component so its releases correlate")
+    .requiredOption("--component <idOrUrn>", "the component this source's events belong to")
+    .option("--repo <pattern>", "repo glob (e.g. a GitHub repo URL/slug) — matched against the event's repo")
+    .option("--path <pattern>", "path glob within the repo")
+    .option("--purpose <purpose>", "which pipeline: infra|software (default: software)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        sourceKind: string,
+        opts: BaseCliOpts & {
+          component: string;
+          repo?: string;
+          path?: string;
+          purpose?: "infra" | "software";
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const result = await client.changeSources.createMapping(sourceKind, {
+          component: opts.component,
+          repoPattern: opts.repo,
+          pathPattern: opts.path,
+          purpose: opts.purpose
+        });
+        printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+      }
+    );
+
+  changeSourceCmd
+    .command("list-mappings <sourceKind>")
+    .description("List source_mappings for one source kind")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (sourceKind: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.changeSources.listMappings(sourceKind);
+      printResult(result.items, opts.output, (item) => item as unknown as Record<string, string>);
+    });
+
   changeSourceCmd
     .command("webhook-secret <sourceKind>")
     .description("Configure (or rotate) this org+sourceKind's webhook HMAC signing secret")

@@ -70,6 +70,7 @@ import {
   listSecretKeys,
   resolveSecretRefs
 } from "../secrets/secrets-repo.js";
+import { createSourceMapping } from "../coordination/source-mappings-repo.js";
 
 /** Only `github-discovery` is a real `DiscoveryPlugin` module today — same allowlist discipline
  *  as `executor-bindings-repo.ts`'s `KNOWN_EXECUTOR_MODULES` (a free-form request field must never
@@ -859,7 +860,27 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           createdBindingIds.push(created.id);
         }
 
-        return { createdObjectIds, createdRelationshipIds, createdBindingIds };
+        // M12 P5 (owner Q3): create a source_mapping per imported component so it SELF-REPORTS
+        // releases via observe()/webhooks — not just being triggerable. For an argocd import the
+        // discover step fills github + repoURL (its own events carry no repo; the underlying git repo
+        // is where releases correlate). References the component BY NAME, like a proposal binding.
+        const createdSourceMappingIds: string[] = [];
+        for (const proposedMapping of request.body.proposal.sourceMappings ?? []) {
+          const componentId =
+            nameToId.get(proposedMapping.objectName) ??
+            (await getObjectByIdOrUrnAnyType(tx, auth.orgId, proposedMapping.objectName)).id;
+          const created = await createSourceMapping(tx, {
+            orgId: auth.orgId,
+            sourceKind: proposedMapping.sourceKind,
+            repoPattern: proposedMapping.repoPattern,
+            pathPattern: proposedMapping.pathPattern,
+            componentIdOrUrn: componentId,
+            purpose: proposedMapping.purpose
+          });
+          createdSourceMappingIds.push(created.id);
+        }
+
+        return { createdObjectIds, createdRelationshipIds, createdBindingIds, createdSourceMappingIds };
       });
       reply.status(201).send(result);
     }
