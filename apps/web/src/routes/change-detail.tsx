@@ -31,6 +31,10 @@ const CANCELLABLE_STATES: ChangeState[] = [
   "proposed",
   "evaluated",
   "coordinated",
+  // M12 P4B: a change parked in `waiting` on a cross-change prerequisite is pre-promotion and so is
+  // cancellable (transitions.ts allows waiting->cancelled) — an operator must be able to abort a
+  // waiter whose prerequisite will never arrive.
+  "waiting",
   "executing",
   "validating"
 ];

@@ -1391,6 +1391,15 @@ export function buildProgram(): Command {
       "infra|software — WHICH pipeline this change rolls, selecting each target's executor binding. " +
         "Defaults to software (the only pipeline that existed before M12 P4A)"
     )
+    .option(
+      "--provides <keys>",
+      "M12 P4B coupled pipelines: comma-separated keys this release makes true at its targets when it succeeds"
+    )
+    .option(
+      "--requires <list>",
+      "M12 P4B coupled pipelines: comma-separated prerequisites as key@objectIdOrUrn — this change " +
+        "WAITS until another change provides each key at that object before it executes"
+    )
     .option("--properties <json>", "JSON object")
     .option("--labels <json>", "JSON object")
     .option("--base-url <url>", "API base URL override")
@@ -1401,6 +1410,8 @@ export function buildProgram(): Command {
           name: string;
           targets: string;
           purpose?: "infra" | "software";
+          provides?: string;
+          requires?: string;
           topology?: string;
           sourceKind?: string;
           correlationKey?: string;
@@ -1410,6 +1421,18 @@ export function buildProgram(): Command {
         }
       ) => {
         const client = await clientFromStoredCredentials(opts);
+        // Each `--requires` entry is `key@objectIdOrUrn`. Split on the LAST '@' so a URN (which
+        // contains ':' but not '@') survives; a missing/empty half is a clear error, not a silent drop.
+        const requires = opts.requires
+          ? opts.requires.split(",").map((entry) => {
+              const at = entry.slice(entry.lastIndexOf("@") + 1).trim();
+              const key = entry.slice(0, entry.lastIndexOf("@")).trim();
+              if (entry.lastIndexOf("@") < 0 || !key || !at) {
+                throw new Error(`--requires entry '${entry}' must be 'key@objectIdOrUrn'`);
+              }
+              return { key, at };
+            })
+          : undefined;
         const created = await client.changes.propose(
           {
             name: opts.name,
@@ -1419,6 +1442,8 @@ export function buildProgram(): Command {
             correlationKey: opts.correlationKey,
             emergency: opts.emergency,
             purpose: opts.purpose,
+            provides: parseList(opts.provides),
+            requires,
             properties: parseJsonOption(opts.properties, "--properties"),
             labels: parseJsonOption(opts.labels, "--labels")
           },

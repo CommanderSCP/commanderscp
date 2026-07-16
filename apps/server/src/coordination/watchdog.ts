@@ -27,6 +27,12 @@ export const WATCHDOG_SLA_MS: Record<
   proposed: 5 * 60_000,
   evaluated: 5 * 60_000,
   coordinated: 5 * 60_000,
+  // M12 P4B: a change WAITING on a cross-change prerequisite is an expected long wait (the owner's
+  // rule is "wait forever, warn at a threshold"), not a stall — so it gets the same 24h SLA as
+  // `validating` (which waits on a human `promote`), NOT `executing`'s 30-min stall SLA. The watchdog
+  // only WARNS (it never transitions), and notification bindings are off by default, so past 24h this
+  // costs a Decision row + a log line, never an auto-cancel of a still-legitimately-waiting change.
+  waiting: 24 * 60 * 60_000,
   executing: 30 * 60_000,
   validating: 24 * 60 * 60_000
 };

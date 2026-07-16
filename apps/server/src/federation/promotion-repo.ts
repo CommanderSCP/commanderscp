@@ -180,6 +180,16 @@ export async function importPromotionBundle(
     );
   }
 
+  // M12 P4B (owner ruling, coupled-pipelines.md §8 Q2): STRIP `requires` on promotion. The COMMANDER
+  // is the single coordination point — it held the software release in `waiting` until its infra
+  // prerequisite reached `validating` there, and its promotion of this bundle IS the go-ahead. Re-
+  // evaluating the coupling locally in the receiving outpost would either be redundant (the commander
+  // already enforced it) or DEADLOCK (an outpost whose infra is commander-driven has no local infra
+  // change to satisfy the key). `provides` is preserved — a promoted infra change should still be
+  // able to satisfy a LOCALLY-authored outpost waiter.
+  const { requires: _requiresStrippedOnPromotion, ...promotedProperties } = bundle.change
+    .properties as Record<string, unknown>;
+
   const { change } = await proposeChange(tx, {
     orgId,
     actorObjectId: FEDERATION_IMPORT_ACTOR_ID,
@@ -187,7 +197,7 @@ export async function importPromotionBundle(
     name: bundle.change.name,
     // Carries the exporting domain's `purpose` through verbatim, so a promoted INFRA release rolls
     // this domain's infra pipeline too (M12 P4A) — see `proposeChange`'s purpose precedence.
-    properties: { ...bundle.change.properties, importedControlOutcomes: bundle.controlOutcomes },
+    properties: { ...promotedProperties, importedControlOutcomes: bundle.controlOutcomes },
     sourceKind: "federation",
     sourceRef: {
       ...(bundle.change.sourceRef ?? {}),

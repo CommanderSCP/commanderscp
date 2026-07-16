@@ -6,15 +6,20 @@ import { ChangeStateSchema } from "@scp/schemas";
  * module with zero I/O, per BUILD_AND_TEST.md §4.1: "anything testable as a pure function must
  * be written as a pure function (the design's single guarded transition function... exist partly
  * for this)". `coordination/transition.ts`'s guarded transition function uses `isLegalTransition`
- * below as its legality gate; `drizzle/0007_change_coordination.sql` seeds an identical
- * `state_transitions` table (cross-checked against this constant by
- * `transitions.integration.test.ts`) so the shape is also queryable DB data, not just an
- * in-process constant.
+ * below as its legality gate — the SOLE runtime authority. (`drizzle/0007_change_coordination.sql`
+ * also seeds a `state_transitions` table, but nothing reads it. An earlier version of this comment
+ * claimed a `transitions.integration.test.ts` cross-checks the two; that file has never existed.
+ * `transitions.test.ts` cross-checks THIS constant against a hardcoded edge set instead.)
  *
  * Edge rationale (DESIGN §9.1's diagram + prose):
- *  - The five "happy path" states form a strict chain: proposed -> evaluated -> coordinated ->
- *    executing -> validating -> promoted. Each step corresponds to the engine's own
- *    observe/compare/decide/coordinate progression (coordination/reconcile.ts).
+ *  - The "happy path" states form a chain: proposed -> evaluated -> coordinated -> executing ->
+ *    validating -> promoted. Each step corresponds to the engine's own observe/compare/decide/
+ *    coordinate progression (coordination/reconcile.ts).
+ *  - `waiting` (M12 P4B) is an OPTIONAL detour on the coordinated->executing step: a change with
+ *    unsatisfied `properties.requires` goes coordinated -> waiting and is held there until every
+ *    cross-change prerequisite is satisfied, then waiting -> executing. A change with no `requires`
+ *    takes coordinated -> executing directly, exactly as before — both edges are legal. `cancel` is
+ *    legal from `waiting` too (it is pre-promotion); `rollback` is not (nothing has executed yet).
  *  - `cancel` is legal from every pre-promotion state (proposed/evaluated/coordinated/executing/
  *    validating) — an operator can always abort a change that hasn't been promoted yet.
  *  - `rollback` is legal once the change has actually done something an external system needs
@@ -38,7 +43,10 @@ export const LEGAL_TRANSITIONS: readonly StateTransitionEdge[] = [
   { from: "evaluated", to: "coordinated", trigger: "coordinate" },
   { from: "evaluated", to: "cancelled", trigger: "cancel" },
   { from: "coordinated", to: "executing", trigger: "execute" },
+  { from: "coordinated", to: "waiting", trigger: "await-prerequisites" },
   { from: "coordinated", to: "cancelled", trigger: "cancel" },
+  { from: "waiting", to: "executing", trigger: "prerequisites-satisfied" },
+  { from: "waiting", to: "cancelled", trigger: "cancel" },
   { from: "executing", to: "validating", trigger: "validate" },
   { from: "executing", to: "cancelled", trigger: "cancel" },
   { from: "executing", to: "rolled_back", trigger: "rollback" },

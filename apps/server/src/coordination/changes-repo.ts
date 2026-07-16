@@ -77,6 +77,13 @@ export interface ProposeChangeInput {
    * PERSISTED on every existing change object, and restructuring it would break them all.
    */
   purpose?: "infra" | "software";
+  /** Coupled-pipeline keys this release provides at its targets (M12 P4B). Stored verbatim in
+   *  `properties.provides`. */
+  provides?: string[];
+  /** Cross-change prerequisites (M12 P4B): each `{ key, at }`'s `at` is an idOrUrn RESOLVED to an
+   *  object id here (a bad ref 404s), then stored in `properties.requires`. When set, the change
+   *  parks in `waiting` until every requirement is satisfied. */
+  requires?: { key: string; at: string }[];
   /** Set only when this Change IS a rollback of another change (coordination/rollback.ts). */
   rollbackOfObjectId?: string;
   /** M6 (DESIGN §13): set when this Change was instantiated from a Promotion Bundle —
@@ -107,6 +114,31 @@ export async function proposeChange(
     const target = await getObjectByIdOrUrnAnyType(tx, input.orgId, idOrUrn);
     targetObjectIds.push(target.id);
   }
+
+  // M12 P4B: resolve each requirement's `at` idOrUrn to an object id NOW, so a typo is a 404 at
+  // propose time rather than a change that waits forever on an object that never existed.
+  //
+  // `requires` is TYPED-FIELD-ONLY: a value smuggled in via the free-form `properties` is dropped
+  // (stripped from the spread below), never stored. That is deliberate — an unresolved `at` string
+  // in `properties.requires` would sail past this resolution and become exactly the silent
+  // forever-wait we forbid, and NO legitimate caller needs the properties path: the typed field
+  // covers the API/CLI, and federation promotion STRIPS `requires` (`promotion-repo.ts`) precisely
+  // so it is not re-evaluated in the receiving domain. `provides`, by contrast, IS carried in
+  // properties (federation replay preserves it), so it keeps a properties fallback.
+  const resolvedRequires =
+    input.requires === undefined
+      ? []
+      : await Promise.all(
+          input.requires.map(async (req) => ({
+            key: req.key,
+            at: (await getObjectByIdOrUrnAnyType(tx, input.orgId, req.at)).id
+          }))
+        );
+  const providesValue = input.provides ?? providesOf(input.properties);
+  const requiresValue = resolvedRequires;
+  // Strip any caller-supplied `provides`/`requires` from the raw properties so the ONLY values
+  // stored are the computed ones above (the resolved typed field, or `provides`'s explicit fallback).
+  const { provides: _rawProvides, requires: _rawRequires, ...restProperties } = input.properties ?? {};
 
   let topologyObjectId: string | undefined;
   let topologyVersion: number | undefined;
@@ -139,9 +171,13 @@ export async function proposeChange(
     // the receiving domain's software binding. Inheriting here fixes it for every such caller at
     // once, rather than one call site at a time.
     properties: {
-      ...input.properties,
+      ...restProperties,
       targets: targetObjectIds,
-      purpose: input.purpose ?? purposeOf(input.properties)
+      purpose: input.purpose ?? purposeOf(input.properties),
+      // Only written when non-empty, so a change that couples nothing stays byte-identical to a
+      // pre-P4B change (and the no-wait fast path in reconcile is a pure absence check).
+      ...(providesValue.length > 0 ? { provides: providesValue } : {}),
+      ...(requiresValue.length > 0 ? { requires: requiresValue } : {})
     },
     labels: input.labels
   });
@@ -303,6 +339,33 @@ export function targetObjectIdsOf(
 ): string[] {
   const targets = properties?.targets;
   return Array.isArray(targets) ? targets.filter((t): t is string => typeof t === "string") : [];
+}
+
+/** Coupled-pipeline keys a change PROVIDES at its targets (M12 P4B), off `properties.provides`.
+ *  Absent/malformed ⇒ `[]` (provides nothing). */
+export function providesOf(properties: Record<string, unknown> | null | undefined): string[] {
+  const provides = properties?.provides;
+  return Array.isArray(provides) ? provides.filter((k): k is string => typeof k === "string") : [];
+}
+
+/** Cross-change prerequisites a change REQUIRES (M12 P4B), off `properties.requires` — each a
+ *  `{ key, at }` with `at` already an object id (resolved at propose time). Absent/malformed
+ *  entries are dropped, so an empty result means "no wait". */
+export function requiresOf(
+  properties: Record<string, unknown> | null | undefined
+): { key: string; at: string }[] {
+  const requires = properties?.requires;
+  if (!Array.isArray(requires)) return [];
+  const out: { key: string; at: string }[] = [];
+  for (const r of requires) {
+    if (r && typeof r === "object") {
+      const { key, at } = r as { key?: unknown; at?: unknown };
+      if (typeof key === "string" && key.length > 0 && typeof at === "string" && at.length > 0) {
+        out.push({ key, at });
+      }
+    }
+  }
+  return out;
 }
 
 /**
