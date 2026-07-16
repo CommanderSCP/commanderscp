@@ -35,6 +35,7 @@ const CHANGE_STATES: ChangeState[] = [
   "proposed",
   "evaluated",
   "coordinated",
+  "waiting",
   "executing",
   "validating",
   "promoted",
@@ -51,6 +52,11 @@ export function stateBadgeVariant(state: ChangeState): BadgeProps["variant"] {
     case "evaluated":
     case "coordinated":
       return "outline";
+    case "waiting":
+      // M12 P4B: parked on a cross-change prerequisite — a deliberate hold, neither in-flight
+      // (`info`) nor failed (`destructive`). `secondary` reads as a neutral pause; Phase 4's richer
+      // "Waiting on" UI can introduce a dedicated amber variant if the badge palette grows one.
+      return "secondary";
     case "executing":
     case "validating":
       return "info";

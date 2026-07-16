@@ -11,11 +11,13 @@ import {
   listChangeRowsInStates,
   markChangeReconcileBlocked,
   targetObjectIdsOf,
+  requiresOf,
   type ChangeRow
 } from "./changes-repo.js";
 import { transitionChange } from "./transition.js";
 import { triggerRollback } from "./rollback.js";
 import { compileAndPersistPlan, getLatestPlanForChange } from "./plan-service.js";
+import { unsatisfiedRequirements, describeRequirements } from "./coupling.js";
 import {
   claimWaveTargetForTriggering,
   findLatestSucceededExecution,
@@ -228,12 +230,72 @@ async function advanceCoordinatedChanges(db: Db, orgId: string, gateDeps: GateDe
   const rows = await withTenantTx(db, orgId, (tx) =>
     listChangeRowsInStates(tx, orgId, ["coordinated"], BATCH_LIMIT)
   );
-  for (const { change } of rows) {
+  for (const { change, object } of rows) {
     const lock = await tryAcquireChangeCoordinationLock(db, change.objectId);
     if (!lock) continue;
     try {
-      await withTenantTx(db, orgId, (tx) =>
-        transitionChange(
+      // Coupled pipelines (M12 P4B): a change with unsatisfied cross-change prerequisites
+      // (`properties.requires`) parks in `waiting` instead of entering execution; one with none —
+      // OR one whose prerequisites are ALREADY satisfied — proceeds straight to `executing` exactly
+      // as before, so the common no-coupling case is unchanged. The satisfaction check and the
+      // transition share ONE transaction so the routing decision can't tear against a prerequisite
+      // landing mid-tick. The `waiting` Decision (written by transitionChange, once) names the
+      // outstanding prerequisites; while parked, `advanceWaitingChanges` re-checks WITHOUT writing a
+      // Decision per tick — see its note on the flood.
+      const requires = requiresOf(object.properties as Record<string, unknown>);
+      await withTenantTx(db, orgId, async (tx) => {
+        const unmet =
+          requires.length === 0
+            ? []
+            : await unsatisfiedRequirements(tx, orgId, change.objectId, requires);
+        const toState = unmet.length > 0 ? "waiting" : "executing";
+        const reason =
+          unmet.length > 0
+            ? `waiting on ${unmet.length} unsatisfied prerequisite(s): ${describeRequirements(unmet)}`
+            : "auto: beginning wave execution";
+        await transitionChange(
+          tx,
+          {
+            orgId,
+            changeObjectId: change.objectId,
+            toState,
+            actorObjectId: SYSTEM_ACTOR_ID,
+            requestId: "reconcile",
+            reason
+          },
+          gateDeps
+        );
+      });
+    } catch (err) {
+      logChangeError(orgId, change, "coordinated->executing", err);
+    } finally {
+      await lock.release();
+    }
+  }
+}
+
+/**
+ * M12 P4B: a change parked in `waiting` re-checks its cross-change prerequisites every tick and, the
+ * moment ALL are satisfied, is released to `executing`. While a prerequisite is still outstanding
+ * this does NOTHING — no state write, no Decision, no `state_entered_at` bump. That silence is
+ * deliberate: a Decision-per-tick here would be the "blocked-gate flood" (~30k rows/day per waiter),
+ * and leaving `state_entered_at` frozen is what lets the watchdog's 24h `waiting` SLA measure the
+ * wait from when it actually began. The one Decision recording that the wait ended is written by the
+ * `waiting -> executing` transition itself.
+ */
+async function advanceWaitingChanges(db: Db, orgId: string, gateDeps: GateDeps): Promise<void> {
+  const rows = await withTenantTx(db, orgId, (tx) =>
+    listChangeRowsInStates(tx, orgId, ["waiting"], BATCH_LIMIT)
+  );
+  for (const { change, object } of rows) {
+    const lock = await tryAcquireChangeCoordinationLock(db, change.objectId);
+    if (!lock) continue;
+    try {
+      const requires = requiresOf(object.properties as Record<string, unknown>);
+      await withTenantTx(db, orgId, async (tx) => {
+        const unmet = await unsatisfiedRequirements(tx, orgId, change.objectId, requires);
+        if (unmet.length > 0) return; // still waiting — write nothing (see the flood note above)
+        await transitionChange(
           tx,
           {
             orgId,
@@ -241,13 +303,13 @@ async function advanceCoordinatedChanges(db: Db, orgId: string, gateDeps: GateDe
             toState: "executing",
             actorObjectId: SYSTEM_ACTOR_ID,
             requestId: "reconcile",
-            reason: "auto: beginning wave execution"
+            reason: "auto: all cross-change prerequisites satisfied — beginning wave execution"
           },
           gateDeps
-        )
-      );
+        );
+      });
     } catch (err) {
-      logChangeError(orgId, change, "coordinated->executing", err);
+      logChangeError(orgId, change, "waiting->executing", err);
     } finally {
       await lock.release();
     }
@@ -895,6 +957,7 @@ export async function reconcileOrgTick(
   await advanceProposedChanges(db, orgId, gateDeps);
   await advanceEvaluatedChanges(db, orgId, gateDeps);
   await advanceCoordinatedChanges(db, orgId, gateDeps);
+  await advanceWaitingChanges(db, orgId, gateDeps);
   await advanceExecutingChanges(db, orgId, host, sandbox, masterKey);
   await advanceValidatingChanges(db, orgId, host, sandbox);
   // M5 (DESIGN §9.5): campaigns fan out into real M3 Changes above already progress through the

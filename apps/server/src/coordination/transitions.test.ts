@@ -48,11 +48,18 @@ const EXPECTED_LEGAL_EDGES: ReadonlySet<string> = new Set([
   "executing->validating",
   "validating->promoted",
 
+  // M12 P4B: the optional `waiting` detour on the coordinated->executing step (a change with
+  // unsatisfied cross-change `requires` parks in `waiting`, then releases to `executing`).
+  "coordinated->waiting",
+  "waiting->executing",
+
   // cancel: "legal from every pre-promotion state" (transitions.ts's own edge-rationale comment,
-  // matching the diagram's left fan-in to `cancelled`) — every state before `promoted`.
+  // matching the diagram's left fan-in to `cancelled`) — every state before `promoted`, now
+  // including `waiting`.
   "proposed->cancelled",
   "evaluated->cancelled",
   "coordinated->cancelled",
+  "waiting->cancelled",
   "executing->cancelled",
   "validating->cancelled",
 
@@ -66,13 +73,13 @@ const EXPECTED_LEGAL_EDGES: ReadonlySet<string> = new Set([
 ]);
 
 describe("coordination/transitions — exhaustive legal/illegal transition table (hardcoded from DESIGN.md §9.1)", () => {
-  it("covers all 8 states x 8 states = 64 ordered pairs", () => {
-    expect(CHANGE_STATES.length).toBe(8);
-    expect(CHANGE_STATES.length * CHANGE_STATES.length).toBe(64);
+  it("covers all 9 states x 9 states = 81 ordered pairs", () => {
+    expect(CHANGE_STATES.length).toBe(9);
+    expect(CHANGE_STATES.length * CHANGE_STATES.length).toBe(81);
   });
 
-  it("the hardcoded expected set has exactly 13 edges (5 happy-path + 5 cancel + 3 rollback, per DESIGN §9.1's prose)", () => {
-    expect(EXPECTED_LEGAL_EDGES.size).toBe(13);
+  it("the hardcoded expected set has exactly 16 edges (5 happy-path + 2 P4B waiting + 6 cancel + 3 rollback)", () => {
+    expect(EXPECTED_LEGAL_EDGES.size).toBe(16);
   });
 
   for (const from of CHANGE_STATES) {
@@ -110,14 +117,21 @@ describe("coordination/transitions — exhaustive legal/illegal transition table
     expect(legalNextStates("promoted")).toEqual(["rolled_back"]);
   });
 
-  it("cancel is legal from every pre-promotion state", () => {
-    for (const state of ["proposed", "evaluated", "coordinated", "executing", "validating"] as const) {
+  it("cancel is legal from every pre-promotion state (including P4B's waiting)", () => {
+    for (const state of [
+      "proposed",
+      "evaluated",
+      "coordinated",
+      "waiting",
+      "executing",
+      "validating"
+    ] as const) {
       expect(isLegalTransition(state, "cancelled")).toBe(true);
     }
   });
 
-  it("rollback is legal only from executing/validating/promoted", () => {
-    for (const state of ["proposed", "evaluated", "coordinated"] as const) {
+  it("rollback is legal only from executing/validating/promoted (never from waiting — nothing executed yet)", () => {
+    for (const state of ["proposed", "evaluated", "coordinated", "waiting"] as const) {
       expect(isLegalTransition(state, "rolled_back")).toBe(false);
     }
     for (const state of ["executing", "validating", "promoted"] as const) {

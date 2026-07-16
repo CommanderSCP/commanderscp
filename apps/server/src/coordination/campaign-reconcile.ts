@@ -296,7 +296,7 @@ async function reconcileOneCampaign(
         anyFailed = true;
         await withTenantTx(db, orgId, (tx) => markCampaignWaveTargetTerminal(tx, orgId, target.id, "failed"));
       } else {
-        allTerminal = false; // proposed/evaluated/coordinated/executing/validating — still in flight
+        allTerminal = false; // proposed/evaluated/coordinated/waiting/executing/validating — still in flight
       }
     } catch (err) {
       allTerminal = false;

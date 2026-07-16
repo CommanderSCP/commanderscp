@@ -8501,7 +8501,7 @@ export type ListChangesData = {
     query?: {
         cursor?: string;
         limit?: number;
-        state?: 'proposed' | 'evaluated' | 'coordinated' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
+        state?: 'proposed' | 'evaluated' | 'coordinated' | 'waiting' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
     };
     url: '/changes';
 };
@@ -8543,7 +8543,7 @@ export type ListChangesResponses = {
             orgId: string;
             urn: string;
             name: string;
-            state: 'proposed' | 'evaluated' | 'coordinated' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
+            state: 'proposed' | 'evaluated' | 'coordinated' | 'waiting' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
             sourceKind: string | null;
             sourceRef: {
                 [key: string]: unknown;
@@ -8590,6 +8590,11 @@ export type ProposeChangeData = {
         emergency?: boolean;
         topology?: string;
         purpose?: 'infra' | 'software';
+        provides?: Array<string>;
+        requires?: Array<{
+            key: string;
+            at: string;
+        }>;
         targets: Array<string>;
     };
     path?: never;
@@ -8644,7 +8649,7 @@ export type ProposeChangeResponses = {
         orgId: string;
         urn: string;
         name: string;
-        state: 'proposed' | 'evaluated' | 'coordinated' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
+        state: 'proposed' | 'evaluated' | 'coordinated' | 'waiting' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
         sourceKind: string | null;
         sourceRef: {
             [key: string]: unknown;
@@ -8725,7 +8730,7 @@ export type GetChangeResponses = {
         orgId: string;
         urn: string;
         name: string;
-        state: 'proposed' | 'evaluated' | 'coordinated' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
+        state: 'proposed' | 'evaluated' | 'coordinated' | 'waiting' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
         sourceKind: string | null;
         sourceRef: {
             [key: string]: unknown;
@@ -8807,7 +8812,7 @@ export type ExplainChangeResponses = {
             orgId: string;
             urn: string;
             name: string;
-            state: 'proposed' | 'evaluated' | 'coordinated' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
+            state: 'proposed' | 'evaluated' | 'coordinated' | 'waiting' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
             sourceKind: string | null;
             sourceRef: {
                 [key: string]: unknown;
@@ -8965,7 +8970,7 @@ export type CancelChangeResponses = {
         orgId: string;
         urn: string;
         name: string;
-        state: 'proposed' | 'evaluated' | 'coordinated' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
+        state: 'proposed' | 'evaluated' | 'coordinated' | 'waiting' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
         sourceKind: string | null;
         sourceRef: {
             [key: string]: unknown;
@@ -9060,7 +9065,7 @@ export type PromoteChangeResponses = {
         orgId: string;
         urn: string;
         name: string;
-        state: 'proposed' | 'evaluated' | 'coordinated' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
+        state: 'proposed' | 'evaluated' | 'coordinated' | 'waiting' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
         sourceKind: string | null;
         sourceRef: {
             [key: string]: unknown;
@@ -9154,7 +9159,7 @@ export type RollbackChangeResponses = {
         orgId: string;
         urn: string;
         name: string;
-        state: 'proposed' | 'evaluated' | 'coordinated' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
+        state: 'proposed' | 'evaluated' | 'coordinated' | 'waiting' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
         sourceKind: string | null;
         sourceRef: {
             [key: string]: unknown;
@@ -11703,7 +11708,7 @@ export type RollbackCampaignResponses = {
                 orgId: string;
                 urn: string;
                 name: string;
-                state: 'proposed' | 'evaluated' | 'coordinated' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
+                state: 'proposed' | 'evaluated' | 'coordinated' | 'waiting' | 'executing' | 'validating' | 'promoted' | 'cancelled' | 'rolled_back';
                 sourceKind: string | null;
                 sourceRef: {
                     [key: string]: unknown;

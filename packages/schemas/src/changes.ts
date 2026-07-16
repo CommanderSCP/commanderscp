@@ -12,6 +12,11 @@ export const ChangeStateSchema = z.enum([
   "proposed",
   "evaluated",
   "coordinated",
+  // M12 P4B: a change with unsatisfied cross-change prerequisites (`properties.requires`) parks HERE
+  // instead of entering `executing`, and is released to `executing` the moment every prerequisite is
+  // satisfied. A change with no `requires` never enters this state (goes coordinated -> executing as
+  // before), so this is additive and behaviour-preserving.
+  "waiting",
   "executing",
   "validating",
   "promoted",
@@ -50,6 +55,15 @@ export type Change = z.infer<typeof ChangeSchema>;
  * (coordination/plan-compiler.ts) derives wave order from their `depends_on` edges plus the
  * optional `topology`'s explicit wave groups.
  */
+/** One coupled-pipeline prerequisite (M12 P4B): a `key` that must be provided by another change AT
+ *  a specific object `at` before this change may execute. See `CreateChangeRequestSchema.requires`. */
+export const ChangeRequirementSchema = z.object({
+  key: z.string().min(1),
+  /** id or URN of the object the key must be true at (resolved to an id at propose time). */
+  at: z.string().min(1)
+});
+export type ChangeRequirement = z.infer<typeof ChangeRequirementSchema>;
+
 export const CreateChangeRequestSchema = z.object({
   name: z.string().min(1).max(200),
   id: z.string().uuid().optional(),
@@ -69,6 +83,15 @@ export const CreateChangeRequestSchema = z.object({
    *  mapping to inherit from. Omitted means 'software' — the only pipeline reconcile could trigger
    *  before P4A, so an unchanged client keeps its exact prior behavior. */
   purpose: BindingPurposeSchema.optional(),
+  /** Coupled-pipeline keys this release MAKES TRUE at its own targets when it succeeds (M12 P4B).
+   *  Opaque strings; a waiting change is released when some OTHER change provides every key it
+   *  requires. Omitted/empty ⇒ this release is a prerequisite for nothing. */
+  provides: z.array(z.string().min(1)).optional(),
+  /** Cross-change prerequisites (M12 P4B): this release WAITS until, for each entry, some other
+   *  change with state validating|promoted `provides` that `key` at that `at` object. `at` is an id
+   *  or URN resolved at propose time (a bad ref is a 404, never a silent forever-wait). Omitted/empty
+   *  ⇒ no wait; the change goes coordinated→executing as before. */
+  requires: z.array(ChangeRequirementSchema).optional(),
   /** Object ids or URNs this change targets — plan compiler input. */
   targets: z.array(z.string().min(1)).min(1)
 });
