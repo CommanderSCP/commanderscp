@@ -5986,6 +5986,109 @@ export type SetComponentServiceResponses = {
 
 export type SetComponentServiceResponse = SetComponentServiceResponses[keyof SetComponentServiceResponses];
 
+export type MergeComponentsData = {
+    body: {
+        loser: string;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/components/{idOrUrn}/merge';
+};
+
+export type MergeComponentsErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type MergeComponentsError = MergeComponentsErrors[keyof MergeComponentsErrors];
+
+export type MergeComponentsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        survivor: {
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            typeId: string;
+            name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            provenance: 'manual' | null;
+            version: number;
+            createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+        };
+        movedBindingPurposes: Array<string>;
+    };
+};
+
+export type MergeComponentsResponse = MergeComponentsResponses[keyof MergeComponentsResponses];
+
 export type ListDomainOwnersData = {
     body?: never;
     path: {

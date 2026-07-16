@@ -183,6 +183,10 @@ export function RegistryDetailPage(): React.JSX.Element {
         <TargetBindingsCard targetId={object.id} detailKey={detailKey} />
       )}
 
+      {object.typeId === "component" && (
+        <MergeComponentCard survivorId={object.id} detailKey={detailKey} />
+      )}
+
       <p className="text-xs text-slate-400">
         &quot;Why?&quot; / Decision links aren&apos;t available yet — the Decision Engine lands in a
         later milestone (M4).
@@ -368,6 +372,90 @@ function TargetBindingsCard({
         {error && (
           <p className="text-sm text-red-600">
             {error instanceof Error ? error.message : "Failed"}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * Merge another component into this one (M12 P5d) — the driving-case fold of a freshly-imported,
+ * binding-only duplicate. Picks a LOSER component; on merge, its executor bindings move here and it
+ * is soft-deleted. The server rejects a binding-purpose collision (relabel one first) or an in-flight
+ * change, surfaced inline.
+ */
+function MergeComponentCard({
+  survivorId,
+  detailKey
+}: {
+  survivorId: string;
+  detailKey: unknown[];
+}): React.JSX.Element {
+  const queryClient = useQueryClient();
+  const [loser, setLoser] = useState("");
+
+  const componentsQuery = useQuery({
+    queryKey: registryListKey("components"),
+    queryFn: () => client.components.list({ limit: 100 })
+  });
+
+  const mergeMutation = useMutation({
+    mutationFn: (loserId: string) => client.components.merge(survivorId, loserId),
+    onSuccess: async () => {
+      setLoser("");
+      await queryClient.invalidateQueries({ queryKey: registryListKey("components") });
+      await queryClient.invalidateQueries({ queryKey: [...detailKey, "executor-bindings"] });
+    }
+  });
+
+  const candidates = (componentsQuery.data?.items ?? []).filter((c) => c.id !== survivorId);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Merge in a duplicate</CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        <p className="text-xs text-slate-500">
+          Fold a freshly-imported, binding-only component into this one — its executor bindings move
+          here and it is soft-deleted.
+        </p>
+        <div className="flex items-end gap-2">
+          <div className="flex flex-1 flex-col gap-1.5">
+            <label htmlFor="merge-loser" className="text-xs font-medium text-slate-600">
+              Component to merge in
+            </label>
+            <Select value={loser} onValueChange={setLoser}>
+              <SelectTrigger id="merge-loser" data-testid="merge-loser-select">
+                <SelectValue placeholder="Select a component…" />
+              </SelectTrigger>
+              <SelectContent>
+                {candidates.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>
+                    {c.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <Button
+            variant="outline"
+            disabled={!loser || mergeMutation.isPending}
+            onClick={() => loser && mergeMutation.mutate(loser)}
+            data-testid="merge-submit"
+          >
+            {mergeMutation.isPending ? "Merging…" : "Merge in"}
+          </Button>
+        </div>
+        {mergeMutation.isError && (
+          <p className="text-sm text-red-600">
+            {mergeMutation.error instanceof Error ? mergeMutation.error.message : "Failed"}
+          </p>
+        )}
+        {mergeMutation.isSuccess && (
+          <p className="text-sm text-green-700" data-testid="merge-success">
+            Merged — moved {mergeMutation.data.movedBindingPurposes.join(", ") || "no"} binding(s).
           </p>
         )}
       </CardContent>
