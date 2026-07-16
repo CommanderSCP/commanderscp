@@ -361,8 +361,24 @@ function printExplainResult(result: ChangeExplainResponse, output: OutputFormat)
     return;
   }
 
-  const { change, plan, decisions, controlRuns } = result;
+  const { change, plan, decisions, controlRuns, waitStatus } = result;
   console.log(`Change ${change.id} '${change.name}' — state: ${change.state}`);
+
+  // M12 P4B: coupled-pipeline wait status. Present only for a change that declared `requires`.
+  if (waitStatus) {
+    const outstanding = waitStatus.requirements.filter((r) => !r.satisfied).length;
+    const header = waitStatus.waiting
+      ? `\nWaiting on ${outstanding} of ${waitStatus.requirements.length} prerequisite(s):`
+      : `\nCoupled prerequisites (${waitStatus.requirements.length}, all satisfied):`;
+    console.log(header);
+    for (const req of waitStatus.requirements) {
+      const at = req.atName ? `${req.atName} (${req.at})` : req.at;
+      const mark = req.satisfied
+        ? `satisfied by change ${req.satisfiedByChangeId}`
+        : "OUTSTANDING";
+      console.log(`  - ${req.key} @ ${at}: ${mark}`);
+    }
+  }
 
   if (plan) {
     console.log(`\nPlan ${plan.id} (status: ${plan.status}):`);

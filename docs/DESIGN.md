@@ -420,9 +420,11 @@ CREATE TABLE changes (                    -- projection table; each row referenc
 );
 ```
 
-### 9.2 Change correlation
+### 9.2 Change correlation and coupled pipelines
 
-Multiple repos → one component; multiple components → one service. Executor events carry correlation hints — **repo + path patterns, commit SHA, artifact digest (grafted), labels, explicit correlation key** — matched against `source_mappings` rows (repo/path pattern → component). Matching changes are linked into a **CoordinatedChange** group object via `correlates` relationships, giving the charter's "app repo + infra repo + config repo → single coordinated change" differentiator.
+**Correlation (source → component).** Multiple repos → one component; multiple components → one service. An inbound executor/webhook event is matched against `source_mappings` rows (sourceKind + repo/path glob → component) by `coordination/correlation.ts`. The matcher uses `{sourceKind, repo, path}` only — commit SHA / artifact digest / labels are *not* correlation inputs today (the GitHub mapper extracts `commitSha` and drops it). A `CoordinatedChange` group object + `correlates` relationship type are seeded and a group is written on webhook/observe ingress, but **nothing reads them** — the group is not a coupling mechanism, and a design should not build on it (it has no time window, no state filter, and only one of the propose origins populates it).
+
+**Coupled pipelines (change → change, M12 P4B).** The "app repo + infra repo → coordinated release" property is delivered NOT by the correlation group but by explicit, operator-declared coupling on the change itself (`docs/proposals/coupled-pipelines.md`): a change carries `properties.provides: string[]` (keys it makes true at its targets) and `properties.requires: [{key, at}]` (prerequisites). A change with unsatisfied `requires` parks in the `waiting` lifecycle state and is released to `executing` when some other change reaches `validating`/`promoted` with a matching `provides` at `at`. The predicate lives in `coordination/coupling.ts`; the wait is visible via `GET /changes/{id}/explain`'s `waitStatus`. These couplings are declared per release (both pipelines emit their key) rather than inferred, because ingress cannot pair two repos.
 
 ### 9.3 Plans, topologies, waves, gates
 
