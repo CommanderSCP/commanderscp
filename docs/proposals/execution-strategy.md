@@ -13,7 +13,7 @@ four-arm ownership test, with verdicts attached to **(change-class, layer, domai
 relationships — never to tools. **Tier 1:** a deliberately small dedicated-plugin roster (GitHub
 Actions, ArgoCD, Terraform-pipeline Mode-1 today; GitLab next; others only on demonstrated demand).
 **Tier 2:** one **generic pipeline executor** — extracted from the terraform Mode-1 shape
-(URL-template trigger + status poll + inbound `scp change report`/webhook with a **required
+(URL-template trigger + status poll + inbound `scp change-source report`/webhook with a **required
 structured-evidence schema**) — covering the entire CI/CD/IaC long tail at zero marginal engineering
 per system, air-gap-friendly via the pull-side CLI path. **Tier 3:** exactly **two** owned,
 closed-catalog, ephemeral runners (`scp-runner-iac` approved; `scp-runner-ops` proposed) that exist

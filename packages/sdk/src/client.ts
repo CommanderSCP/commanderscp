@@ -128,6 +128,7 @@ import {
   getDecision as getDecisionRequest,
   // M3: webhook ingress + source_mappings correlation config (routes/change-sources.ts).
   ingestChangeSourceWebhook as ingestChangeSourceWebhookRequest,
+  reportChangeSource as reportChangeSourceRequest,
   createSourceMapping as createSourceMappingRequest,
   listSourceMappings as listSourceMappingsRequest,
   // M4 Governance Engine (BUILD_AND_TEST.md §8 M4, routes/typed-registries.ts +
@@ -233,6 +234,7 @@ import type {
   DecisionListResponse,
   DecisionListQuery,
   CreateSourceMappingRequest,
+  ChangeReportRequest,
   SourceMapping,
   SourceMappingListResponse,
   WebhookIngressResponse,
@@ -1166,20 +1168,12 @@ export class ScpClient {
      *  webhook ingress `webhook()` above uses; not a new engine path. */
     report: async (
       sourceKind: string,
-      req: {
-        repo?: string;
-        path?: string;
-        correlationKey?: string;
-        workspace?: string;
-        artifactDigest?: string;
-        status: string;
-        planJson?: unknown;
-      }
+      req: ChangeReportRequest
     ): Promise<WebhookIngressResponse> => {
-      const result = await ingestChangeSourceWebhookRequest({
+      const result = await reportChangeSourceRequest({
         client: this.client,
         path: { sourceKind },
-        body: req as Record<string, unknown>
+        body: req
       });
       return unwrap(result);
     }

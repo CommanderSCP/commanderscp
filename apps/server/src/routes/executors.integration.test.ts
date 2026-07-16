@@ -311,6 +311,97 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     expect(rows).toHaveLength(1);
   });
 
+  // ---------------------------------------------------------------------------------------
+  // Typed first-party report ingress (M12 P4B Phase 1) — the typed, PAT-authenticated counterpart
+  // to the raw `/webhook` route (routes/change-sources.ts). Same persist-then-process pipeline,
+  // real generated SDK contract, and — critically — NOT subject to the webhook's HMAC gate.
+  // ---------------------------------------------------------------------------------------
+  it("a typed report persists a change_source_event and correlates into a Change via its source mapping", async () => {
+    const org = await createTestOrg(server, "p4b-report-correlates");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const component = await admin.components.create({ name: `comp-${randomUUID().slice(0, 8)}` });
+    const repo = `report-org/${randomUUID().slice(0, 8)}`;
+    await admin.changeSources.createMapping("terraform", { repoPattern: repo, component: component.id });
+
+    const res = await admin.changeSources.report("terraform", {
+      status: "applied",
+      repo,
+      correlationKey: "refs/heads/main",
+      workspace: "prod",
+      artifactDigest: "sha256:deadbeef"
+    });
+    expect(res.accepted).toBe(true);
+    expect(res.eventId).toBeTruthy();
+
+    const { withTenantTx } = await import("../db/tenant-tx.js");
+    const { processChangeSourceEvents } = await import("../coordination/webhook-processor.js");
+    const { objects } = await import("../db/schema.js");
+    const { eq } = await import("drizzle-orm");
+    await withTenantTx(server.deps.db, org.orgId, (tx) => processChangeSourceEvents(tx, org.orgId));
+
+    // Exactly the persist-then-process outcome the raw webhook produces: a Change targeting the
+    // mapped component. Proves the typed body's top-level `repo` reached `genericHint` correlation.
+    const changes = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select({ id: objects.id, properties: objects.properties }).from(objects).where(eq(objects.typeId, "change"))
+    );
+    const mine = changes.filter((c) =>
+      Array.isArray((c.properties as { targets?: unknown }).targets) &&
+      ((c.properties as { targets: string[] }).targets).includes(component.id)
+    );
+    expect(mine).toHaveLength(1);
+  });
+
+  it("a report succeeds even when a webhook SECRET is configured for that sourceKind — the raw /webhook path would 401", async () => {
+    // The latent bug this route fixes: the old report piggy-backed on /webhook, which HMAC-verifies
+    // once a secret exists. A report carries no signature, so an org that set a `terraform` webhook
+    // secret could not report at all. The typed /report route is PAT-authenticated and skips HMAC.
+    const org = await createTestOrg(server, "p4b-report-with-secret");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    await admin.changeSources.putWebhookSecret("terraform", { secret: "a-configured-secret" });
+
+    // The typed route: accepted.
+    const res = await admin.changeSources.report("terraform", { status: "planned", repo: "x/y" });
+    expect(res.accepted).toBe(true);
+
+    // The SAME body on the raw /webhook path (no signature header): rejected 401, proving the
+    // report route genuinely bypasses the gate rather than the secret merely being inert.
+    const viaWebhook = await fetch(`${server.baseUrl}/change-sources/terraform/webhook`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${org.adminToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ status: "planned", repo: "x/y" })
+    });
+    expect(viaWebhook.status).toBe(401);
+  });
+
+  it("re-reporting the identical result is deduped to one event; a different result is a new event", async () => {
+    const org = await createTestOrg(server, "p4b-report-dedupe");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const body = { status: "applied" as const, repo: "dedupe/repo", artifactDigest: "sha256:aaaa" };
+
+    const first = await admin.changeSources.report("terraform", body);
+    const again = await admin.changeSources.report("terraform", body); // byte-identical
+    expect(again.eventId).toBe(first.eventId); // deduped to the SAME event
+
+    const different = await admin.changeSources.report("terraform", { ...body, status: "errored" });
+    expect(different.eventId).not.toBe(first.eventId); // a distinct result is a distinct event
+
+    const { withTenantTx } = await import("../db/tenant-tx.js");
+    const { changeSourceEvents } = await import("../db/schema.js");
+    const { eq } = await import("drizzle-orm");
+    const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select({ id: changeSourceEvents.id }).from(changeSourceEvents).where(eq(changeSourceEvents.orgId, org.orgId))
+    );
+    expect(rows).toHaveLength(2); // the identical pair collapsed to one; the errored one is the second
+  });
+
+  it("rejects a report with an invalid status — the typed contract the raw webhook lacks", async () => {
+    const org = await createTestOrg(server, "p4b-report-invalid");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    await expect(
+      admin.changeSources.report("terraform", { status: "bogus" as never, repo: "x/y" })
+    ).rejects.toBeInstanceOf(ScpApiError);
+  });
+
   it("unauthenticated calls to every new M7 route are rejected", async () => {
     const anon = new ScpClient({ baseUrl: server.baseUrl });
     await expect(anon.secrets.listKeys()).rejects.toBeInstanceOf(ScpApiError);

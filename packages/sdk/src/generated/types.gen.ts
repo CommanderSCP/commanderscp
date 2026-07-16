@@ -9361,6 +9361,62 @@ export type IngestChangeSourceWebhookResponses = {
 
 export type IngestChangeSourceWebhookResponse = IngestChangeSourceWebhookResponses[keyof IngestChangeSourceWebhookResponses];
 
+export type ReportChangeSourceData = {
+    body: {
+        repo?: string;
+        path?: string;
+        correlationKey?: string;
+        workspace?: string;
+        artifactDigest?: string;
+        status: 'planned' | 'applied' | 'errored' | 'discarded';
+        planJson?: unknown;
+    };
+    path: {
+        sourceKind: string;
+    };
+    query?: never;
+    url: '/change-sources/{sourceKind}/report';
+};
+
+export type ReportChangeSourceErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ReportChangeSourceError = ReportChangeSourceErrors[keyof ReportChangeSourceErrors];
+
+export type ReportChangeSourceResponses = {
+    /**
+     * Success
+     */
+    202: {
+        accepted: true;
+        eventId: string;
+    };
+};
+
+export type ReportChangeSourceResponse = ReportChangeSourceResponses[keyof ReportChangeSourceResponses];
+
 export type PutChangeSourceWebhookSecretData = {
     body: {
         secret: string;
