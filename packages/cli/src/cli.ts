@@ -2569,7 +2569,7 @@ export function buildProgram(): Command {
   changeSourceCmd
     .command("report <sourceKind>")
     .description(
-      "Report a plan/apply result (DESIGN §12 Mode 1: `scp change report --plan-json`) — thin wrapper over the same webhook ingress every source kind uses"
+      "Report a typed plan/apply result (DESIGN §12 Mode 1) — a one-line CI step; the typed, PAT-authenticated counterpart to raw webhook ingestion"
     )
     .requiredOption("--status <status>", "planned|applied|errored|discarded")
     .option("--repo <repo>", "correlation hint: repo (source_mappings matching)")
@@ -2594,11 +2594,15 @@ export function buildProgram(): Command {
         }
       ) => {
         const client = await clientFromStoredCredentials(opts);
+        const validStatuses = ["planned", "applied", "errored", "discarded"] as const;
+        if (!(validStatuses as readonly string[]).includes(opts.status)) {
+          throw new Error(`--status must be one of ${validStatuses.join("|")} (got '${opts.status}')`);
+        }
         const planJson = opts.planJson
           ? JSON.parse(await readFile(opts.planJson, "utf8"))
           : undefined;
         const result = await client.changeSources.report(sourceKind, {
-          status: opts.status,
+          status: opts.status as (typeof validStatuses)[number],
           repo: opts.repo,
           path: opts.path,
           correlationKey: opts.correlationKey,

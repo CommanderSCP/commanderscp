@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { v7 as uuidv7 } from "uuid";
 import {
+  ChangeReportRequestSchema,
   ChangeSourceEventParamSchema,
   ChangeSourceWebhookBodySchema,
   CreateSourceMappingRequestSchema,
@@ -15,7 +16,7 @@ import {
 } from "@scp/schemas";
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
-import { withTenantTx } from "../db/tenant-tx.js";
+import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { unauthorized } from "../errors.js";
 import { changeSourceEvents, changeSourceWebhookSecrets } from "../db/schema.js";
@@ -62,6 +63,60 @@ function computeDedupeKey(
   }
   const bytes = rawBody ?? Buffer.from(JSON.stringify(body ?? null), "utf8");
   return `payload-sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+/**
+ * Persist ONE source event (persist-then-process), shared by the raw `/webhook` ingress and the
+ * typed `/report` ingress so the dedupe + conflict-resolution lives in exactly one place. The unique
+ * index on (org_id, source_kind, dedupe_key) makes a redelivery of the same key a no-op that returns
+ * the FIRST event's id, so a replay never creates a second Change (MAJOR #5). Both callers do their
+ * own auth/authorization BEFORE this; this function only writes.
+ */
+async function persistSourceEvent(
+  tx: TenantTx,
+  args: {
+    orgId: string;
+    sourceKind: string;
+    signatureVerified: boolean;
+    dedupeKey: string;
+    headers: Record<string, unknown>;
+    payload: unknown;
+  }
+): Promise<string> {
+  const id = uuidv7();
+  const inserted = await tx
+    .insert(changeSourceEvents)
+    .values({
+      id,
+      orgId: args.orgId,
+      sourceKind: args.sourceKind,
+      signatureVerified: args.signatureVerified,
+      dedupeKey: args.dedupeKey,
+      headers: args.headers,
+      payload: args.payload
+    })
+    .onConflictDoNothing({
+      target: [
+        changeSourceEvents.orgId,
+        changeSourceEvents.sourceKind,
+        changeSourceEvents.dedupeKey
+      ]
+    })
+    .returning({ id: changeSourceEvents.id });
+  if (inserted[0]) return inserted[0].id;
+  // Conflict: this exact delivery was already ingested — return the original event's id.
+  const existing = await tx
+    .select({ id: changeSourceEvents.id })
+    .from(changeSourceEvents)
+    .where(
+      and(
+        eq(changeSourceEvents.orgId, args.orgId),
+        eq(changeSourceEvents.sourceKind, args.sourceKind),
+        eq(changeSourceEvents.dedupeKey, args.dedupeKey)
+      )
+    )
+    .limit(1);
+  return existing[0]?.id ?? id;
 }
 
 export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps): void {
@@ -128,40 +183,76 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
         // second delivery of the same key a no-op (returns the FIRST event's id), so a replayed —
         // even validly-signed — webhook never creates a second Change / fires a second real trigger.
         const dedupeKey = computeDedupeKey(request.headers, request.rawBody, request.body);
-        const id = uuidv7();
-        const inserted = await tx
-          .insert(changeSourceEvents)
-          .values({
-            id,
-            orgId: auth.orgId,
-            sourceKind: request.params.sourceKind,
-            signatureVerified,
-            dedupeKey,
-            headers: request.headers as Record<string, unknown>,
-            payload: request.body
-          })
-          .onConflictDoNothing({
-            target: [
-              changeSourceEvents.orgId,
-              changeSourceEvents.sourceKind,
-              changeSourceEvents.dedupeKey
-            ]
-          })
-          .returning({ id: changeSourceEvents.id });
-        if (inserted[0]) return inserted[0].id;
-        // Conflict: this exact delivery was already ingested — return the original event's id.
-        const existing = await tx
-          .select({ id: changeSourceEvents.id })
-          .from(changeSourceEvents)
-          .where(
-            and(
-              eq(changeSourceEvents.orgId, auth.orgId),
-              eq(changeSourceEvents.sourceKind, request.params.sourceKind),
-              eq(changeSourceEvents.dedupeKey, dedupeKey)
-            )
-          )
-          .limit(1);
-        return existing[0]?.id ?? id;
+        return persistSourceEvent(tx, {
+          orgId: auth.orgId,
+          sourceKind: request.params.sourceKind,
+          signatureVerified,
+          dedupeKey,
+          headers: request.headers as Record<string, unknown>,
+          payload: request.body
+        });
+      });
+      reply.status(202).send({ accepted: true, eventId });
+    }
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // Typed first-party report ingress (DESIGN §12 Mode 1). `scp change-source report <sourceKind>`
+  // — a one-line CI step that reports a plan/apply result — POSTs a TYPED body here instead of the
+  // raw `/webhook` shape. Two reasons this is its own route, not the webhook with a schema:
+  //   1. Contract (charter principle 3): the webhook body is `z.record` by necessity (it accepts
+  //      arbitrary provider payloads), so it cannot carry a typed SDK. A report is first-party and
+  //      CAN, so the SDK/CLI get a real generated contract instead of a hand-cast `Record`.
+  //   2. Auth model: the webhook does HMAC verification when the org+sourceKind has a secret
+  //      configured — which would REJECT a report (it carries no HMAC signature), so an org that set
+  //      a `terraform` webhook secret could not `scp change-source report terraform` at all. A report
+  //      is authenticated by its PAT (`requireAuth`), the same trusted-first-party stance
+  //      `observe.ts` takes, so it skips HMAC and sets `signatureVerified: true`.
+  // Same persist-then-process path otherwise: it writes a `change_source_events` row that the next
+  // reconcile tick correlates (repo/path/correlationKey are read from the top-level payload by
+  // `webhook-processor.ts`'s `genericHint`).
+  // -----------------------------------------------------------------------------------------
+  typed.route({
+    method: "POST",
+    url: "/api/v1/change-sources/:sourceKind/report",
+    schema: {
+      params: ChangeSourceEventParamSchema,
+      body: ChangeReportRequestSchema,
+      response: {
+        202: WebhookIngressResponseSchema,
+        401: ProblemSchema,
+        403: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "reportChangeSource",
+        summary:
+          "Report a typed plan/apply result (DESIGN §12 Mode 1) — a first-party, PAT-authenticated, persist-then-process ingress; the typed counterpart to the raw /webhook route",
+        tags: ["change-sources"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const eventId = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:write",
+          scopeObjectId: auth.orgId
+        });
+        // Dedupe by the report body hash (no delivery header exists for a first-party report):
+        // re-reporting the identical result is an idempotent no-op; a distinct result (a different
+        // status/digest/plan) is a distinct event. `signatureVerified: true` — the PAT is the auth.
+        const dedupeKey = computeDedupeKey({}, undefined, request.body);
+        return persistSourceEvent(tx, {
+          orgId: auth.orgId,
+          sourceKind: request.params.sourceKind,
+          signatureVerified: true,
+          dedupeKey,
+          headers: {},
+          payload: request.body
+        });
       });
       reply.status(202).send({ accepted: true, eventId });
     }

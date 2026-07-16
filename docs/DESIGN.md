@@ -596,7 +596,7 @@ The coordination boundary is enforced **structurally**, twice: (1) the ExecutorP
 
 **Mode 1 — pipeline-mediated (the org already has a pipeline).** The org's pipeline remains the executor:
 
-- **Observe:** plan/apply results reported by the org's pipeline — either a one-line CLI step (`scp change report --plan-json …`) or TFC/TFE/Atlantis webhooks.
+- **Observe:** plan/apply results reported by the org's pipeline — either a one-line CLI step (`scp change-source report --plan-json …`) or TFC/TFE/Atlantis webhooks.
 - **Gate:** the pipeline's apply step asks SCP for a gate verdict (poll or callback) before applying; SCP evaluates policies/controls and answers with a Decision.
 - **Trigger:** kick the org's pipeline (TFC run API, Atlantis, or a GitHub workflow wrapping tofu).
 - **Correlate:** workspace/backend refs + artifact digests link infra changes to app changes.
