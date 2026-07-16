@@ -579,14 +579,22 @@ interface BaseCliOpts {
 function registerTypedResourceCrud(
   program: Command,
   name: string,
-  resourceOf: (client: ScpClient) => TypedResourceOps
+  resourceOf: (client: ScpClient) => TypedResourceOps,
+  opts?: { serviceOption?: boolean }
 ): Command {
   const cmd = program.command(name).description(`Manage ${name} objects`);
 
-  cmd
+  // `component` create is strict: it MUST name an owning service (M12 P5a). Only that resource sets
+  // `serviceOption`, mirroring the server's bespoke `POST /components` (a component always belongs to
+  // a service — the CLI carries `--service` through to `CreateComponentRequest.service`).
+  const registerCmd = cmd
     .command("register")
     .description(`Create a ${name}`)
-    .requiredOption("--name <name>", `${name} name`)
+    .requiredOption("--name <name>", `${name} name`);
+  if (opts?.serviceOption) {
+    registerCmd.requiredOption("--service <idOrUrn>", `owning service id or URN (a ${name} belongs to a service)`);
+  }
+  registerCmd
     .option("--id <uuid>", "client-suppliable UUIDv7 id")
     .option("--urn <urn>", "explicit URN (defaults to a derived one)")
     .option("--domain-id <id>", "containing object id (defaults to the org root)")
@@ -596,8 +604,9 @@ function registerTypedResourceCrud(
     .option("--output <format>", "json|table", "table")
     .action(
       async (
-        opts: BaseCliOpts & {
+        cmdOpts: BaseCliOpts & {
           name: string;
+          service?: string;
           id?: string;
           urn?: string;
           domainId?: string;
@@ -605,19 +614,23 @@ function registerTypedResourceCrud(
           labels?: string;
         }
       ) => {
-        const client = await clientFromStoredCredentials(opts);
+        const client = await clientFromStoredCredentials(cmdOpts);
+        // `service` is only present when `serviceOption` is set (component); it rides through the
+        // request body to `CreateComponentRequest.service` (SDK sends the whole body). The cast is
+        // needed because the shared `TypedResourceOps.create` is typed to the base request.
         const created = await resourceOf(client).create(
           {
-            name: opts.name,
-            id: opts.id,
-            urn: opts.urn,
-            domainId: opts.domainId,
-            properties: parseJsonOption(opts.properties, "--properties"),
-            labels: parseJsonOption(opts.labels, "--labels")
-          },
+            name: cmdOpts.name,
+            id: cmdOpts.id,
+            urn: cmdOpts.urn,
+            domainId: cmdOpts.domainId,
+            properties: parseJsonOption(cmdOpts.properties, "--properties"),
+            labels: parseJsonOption(cmdOpts.labels, "--labels"),
+            ...(opts?.serviceOption ? { service: cmdOpts.service } : {})
+          } as CreateObjectRequest,
           { idempotencyKey: randomUUID() }
         );
-        printResult(created, opts.output, (item) => objectRow(item as GraphObject));
+        printResult(created, cmdOpts.output, (item) => objectRow(item as GraphObject));
       }
     );
 
@@ -685,10 +698,17 @@ function registerTypedResourceCrud(
       printResult(deleted, opts.output, (item) => objectRow(item as GraphObject));
     });
 
-  cmd
+  const upsertCmd = cmd
     .command("upsert <urn>")
     .description("Idempotent upsert-by-URN")
-    .requiredOption("--name <name>")
+    .requiredOption("--name <name>");
+  if (opts?.serviceOption) {
+    // Optional here (not required): the server needs `--service` only on the CREATE branch (a URN
+    // that doesn't exist yet); updating an existing component ignores it (re-assignment is P5b's
+    // move verb). Omitting it while creating gets a clear 400 from the server.
+    upsertCmd.option("--service <idOrUrn>", "owning service id or URN (required when this URN is new)");
+  }
+  upsertCmd
     .option("--properties <json>", "JSON object")
     .option("--labels <json>", "JSON object")
     .option("--base-url <url>", "API base URL override")
@@ -696,15 +716,16 @@ function registerTypedResourceCrud(
     .action(
       async (
         urn: string,
-        opts: BaseCliOpts & { name: string; properties?: string; labels?: string }
+        cmdOpts: BaseCliOpts & { name: string; service?: string; properties?: string; labels?: string }
       ) => {
-        const client = await clientFromStoredCredentials(opts);
+        const client = await clientFromStoredCredentials(cmdOpts);
         const result = await resourceOf(client).upsertByUrn(urn, {
-          name: opts.name,
-          properties: parseJsonOption(opts.properties, "--properties"),
-          labels: parseJsonOption(opts.labels, "--labels")
-        });
-        printResult(result, opts.output, (item) => objectRow(item as GraphObject));
+          name: cmdOpts.name,
+          properties: parseJsonOption(cmdOpts.properties, "--properties"),
+          labels: parseJsonOption(cmdOpts.labels, "--labels"),
+          ...(opts?.serviceOption ? { service: cmdOpts.service } : {})
+        } as UpsertObjectRequest);
+        printResult(result, cmdOpts.output, (item) => objectRow(item as GraphObject));
       }
     );
 
@@ -1247,7 +1268,9 @@ export function buildProgram(): Command {
   registerEdgeCommands(serviceCmd, "consumes", (c) => c.services);
   registerEdgeCommands(serviceCmd, "depends-on", (c) => c.services);
 
-  const componentCmd = registerTypedResourceCrud(program, "component", (c) => c.components);
+  const componentCmd = registerTypedResourceCrud(program, "component", (c) => c.components, {
+    serviceOption: true
+  });
   registerOwnerCommands(componentCmd, (c) => c.components);
   registerEdgeCommands(componentCmd, "consumes", (c) => c.components);
   registerEdgeCommands(componentCmd, "depends-on", (c) => c.components);

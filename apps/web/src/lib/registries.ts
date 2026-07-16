@@ -38,6 +38,10 @@ export interface RegistryConfig {
   ownable: boolean;
   /** Has `.addConsumes()/.addDependsOn()` etc — services/components only. */
   edges: boolean;
+  /** Create is strict: the object must belong to a service (the create form requires a service, and
+   *  passes it to `create({ ..., service })`). Only `component` today (M12 P5a) — mirrors the server's
+   *  `SERVICE_MEMBER_OBJECT_TYPE_IDS` in routes/objects-generic.ts. */
+  serviceMember?: boolean;
 }
 
 export const REGISTRIES: RegistryConfig[] = [
@@ -63,7 +67,8 @@ export const REGISTRIES: RegistryConfig[] = [
     clientKey: "components",
     typeId: "component",
     ownable: true,
-    edges: true
+    edges: true,
+    serviceMember: true
   },
   {
     basePath: "deployment-targets",
