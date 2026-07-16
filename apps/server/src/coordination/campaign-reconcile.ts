@@ -48,10 +48,13 @@ import {
  *    ordinary (unmodified) change reconciliation loop to drive to `promoted`.
  *
  * One campaign wave is "active" at a time (mirrors `reconcile.ts`'s `advanceExecutingChanges`):
- * the first wave not yet `succeeded`/`skipped`/`failed`. A `blocked` wave is retried every tick —
- * exactly like a change's own blocked wave gate — so an operator satisfying the blocking policy/
- * control (an approval, a freeze override, a control re-run) unblocks it on the very next tick with
- * no separate "unblock" action needed.
+ * the first wave not yet `succeeded`/`skipped`. A `blocked` wave is retried every tick — exactly
+ * like a change's own blocked wave gate — so an operator satisfying the blocking policy/control (an
+ * approval, a freeze override, a control re-run) unblocks it on the very next tick with no separate
+ * "unblock" action needed. A `failed` wave is deliberately INCLUDED by that finder (it is not
+ * terminal-and-done, it is terminal-and-stuck): it becomes the active wave and PARKS, which is what
+ * stops a later wave from ever being proposed past it — see the `activeWave.status === "failed"`
+ * branch below, the campaign-scoped mirror of `reconcile.ts`'s own failed-wave branch.
  */
 const BATCH_LIMIT = 25;
 
@@ -163,11 +166,34 @@ async function reconcileOneCampaign(
     return;
   }
 
-  const activeWave = plan.waves.find((w) => w.status !== "succeeded" && w.status !== "skipped" && w.status !== "failed");
+  // Deliberately does NOT exclude 'failed' — byte-for-byte the same predicate as the change-side
+  // finder in `reconcile.ts` (`advanceExecutingChanges`), for the same reason: a failed wave must
+  // still MATCH, so it becomes the active wave and parks in the branch below instead of the search
+  // sliding past it to a later wave.
+  const activeWave = plan.waves.find((w) => w.status !== "succeeded" && w.status !== "skipped");
   if (!activeWave) {
-    // Every wave is succeeded/skipped (a 'failed' wave would have matched above and parked here
-    // instead — a campaign, like a change, never silently completes past a failed wave).
+    // Every wave is succeeded/skipped — the ONLY shape that completes a campaign. A 'failed' wave
+    // matches the finder above and parks below, so this is unreachable past a failed wave: a
+    // campaign, like a change, never silently completes past a failed wave.
     await withTenantTx(db, orgId, (tx) => markCampaignPlanCompleted(tx, orgId, plan!.id));
+    return;
+  }
+
+  if (activeWave.status === "failed") {
+    // PARK — the campaign-scoped equivalent of the change side's `markChangeReconcileBlocked`
+    // (`reconcile.ts`'s `activeWave.status === "failed"` branch). A campaign has no
+    // transition-guarded state machine and no stored status column of its own to move (schema.ts's
+    // M5 section doc / campaign-status.ts's module doc), and `campaign_plans.status` supports only
+    // active|completed|aborted (drizzle/0011_campaigns.sql) — 'completed' would be an outright lie,
+    // and 'aborted' is read (above) but never written by any code path, so there is no abort
+    // semantics to borrow. The park is therefore: leave the plan `active` and simply stop
+    // advancing. That is sufficient AND is the whole safety property — the later waves' member
+    // Changes are only ever proposed from the loop below, which this return never reaches, so
+    // nothing ships past the failure. What an operator sees is unaffected: `getCampaignStatus`
+    // already derives `failed` from this wave's own status (campaign-status.ts), and campaign
+    // rollback stays available regardless of forward state (campaign-rollback.ts). Leaving the plan
+    // `active` (rather than closing it out) is also what keeps a later human-driven rollback of the
+    // already-promoted earlier waves reconciling normally.
     return;
   }
 
