@@ -2686,6 +2686,28 @@ export function buildProgram(): Command {
       printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
     });
 
+  // M12 P5 follow-up: automated backfill of source_mappings onto ALREADY-imported components (the 50
+  // argocd orphans imported before discovery emitted mappings). Feed a fresh `discovery run` proposal;
+  // creates NO objects — matches its sourceMappings to existing components by name. Idempotent.
+  discoveryCmd
+    .command("backfill-mappings")
+    .description("Backfill source_mappings onto already-imported components from a discovery proposal")
+    .requiredOption(
+      "--proposal <path-or-json>",
+      "a file path to (or literal JSON of) a proposal from `discovery run` (its sourceMappings are used)"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { proposal: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const raw = opts.proposal.trim().startsWith("{")
+        ? opts.proposal
+        : await readFile(opts.proposal, "utf8");
+      const proposal = JSON.parse(raw) as never;
+      const result = await client.discovery.backfillSourceMappings(proposal);
+      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+    });
+
   const changeSourceCmd = program
     .command("change-source")
     .description("Change-source webhook config (DESIGN §8/§9.2/§12)");

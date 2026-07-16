@@ -4,6 +4,8 @@ import { z } from "zod";
 import {
   AcceptDiscoveryRequestSchema,
   AcceptDiscoveryResponseSchema,
+  BackfillSourceMappingsRequestSchema,
+  BackfillSourceMappingsResponseSchema,
   CreateExecutorBindingRequestSchema,
   CreateNotificationBindingRequestSchema,
   DiscoveryProposalSchema,
@@ -70,7 +72,7 @@ import {
   listSecretKeys,
   resolveSecretRefs
 } from "../secrets/secrets-repo.js";
-import { createSourceMapping } from "../coordination/source-mappings-repo.js";
+import { createSourceMapping, backfillSourceMappings } from "../coordination/source-mappings-repo.js";
 
 /** Only `github-discovery` is a real `DiscoveryPlugin` module today — same allowlist discipline
  *  as `executor-bindings-repo.ts`'s `KNOWN_EXECUTOR_MODULES` (a free-form request field must never
@@ -883,6 +885,42 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
         return { createdObjectIds, createdRelationshipIds, createdBindingIds, createdSourceMappingIds };
       });
       reply.status(201).send(result);
+    }
+  });
+
+  // POST /discovery/backfill-source-mappings — the AUTOMATED backfill (M12 P5 follow-up): create
+  // source_mappings onto ALREADY-imported components (the 50 argocd orphans imported before discovery
+  // emitted mappings). Feed a fresh `discovery run` proposal; matches its sourceMappings to existing
+  // components BY NAME and creates them, creating NO objects. Idempotent — reports every skip.
+  typed.route({
+    method: "POST",
+    url: "/api/v1/discovery/backfill-source-mappings",
+    schema: {
+      body: BackfillSourceMappingsRequestSchema,
+      response: { 200: BackfillSourceMappingsResponseSchema, 401: ProblemSchema, 403: ProblemSchema }
+    },
+    config: {
+      openapi: {
+        operationId: "backfillSourceMappings",
+        summary: "Backfill source_mappings onto already-imported components (matches a discovery proposal's mappings to existing components by name)",
+        tags: ["discovery"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:write",
+          scopeObjectId: auth.orgId
+        });
+        return backfillSourceMappings(tx, {
+          orgId: auth.orgId,
+          mappings: request.body.proposal.sourceMappings ?? []
+        });
+      });
+      reply.status(200).send(result);
     }
   });
 }

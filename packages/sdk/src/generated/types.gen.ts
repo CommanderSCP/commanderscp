@@ -14166,3 +14166,79 @@ export type AcceptDiscoveryProposalResponses = {
 };
 
 export type AcceptDiscoveryProposalResponse = AcceptDiscoveryProposalResponses[keyof AcceptDiscoveryProposalResponses];
+
+export type BackfillSourceMappingsData = {
+    body: {
+        proposal: {
+            objects: Array<{
+                typeId: string;
+                name: string;
+                properties?: {
+                    [key: string]: unknown;
+                };
+            }>;
+            relationships: Array<{
+                typeId: string;
+                fromUrn: string;
+                toUrn: string;
+            }>;
+            bindings?: Array<{
+                objectName: string;
+                executionSystemId: string;
+                externalRef?: string;
+            }>;
+            sourceMappings?: Array<{
+                objectName: string;
+                sourceKind: string;
+                repoPattern?: string;
+                pathPattern?: string;
+                purpose?: 'infra' | 'software';
+            }>;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/discovery/backfill-source-mappings';
+};
+
+export type BackfillSourceMappingsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type BackfillSourceMappingsError = BackfillSourceMappingsErrors[keyof BackfillSourceMappingsErrors];
+
+export type BackfillSourceMappingsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        createdSourceMappingIds: Array<string>;
+        skipped: Array<{
+            objectName: string;
+            reason: string;
+        }>;
+    };
+};
+
+export type BackfillSourceMappingsResponse = BackfillSourceMappingsResponses[keyof BackfillSourceMappingsResponses];
