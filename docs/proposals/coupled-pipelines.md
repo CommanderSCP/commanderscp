@@ -351,20 +351,34 @@ Bind the orphaned `ChangeReportRequestSchema` to a new typed `POST /change-sourc
 
 ---
 
-## 8. Open questions for the owner
+## 8. Open questions — RESOLVED (owner, 2026-07-15)
 
-Two. Everything else is either answered by the code (§1) or decided above with a stated rationale — including "is the ArgoCD-app change infra or software?", which **§2 makes moot** by refusing to read `purpose` in the predicate at all.
+Both questions this proposal raised are now answered. Recorded here with their mechanical consequences.
 
-**Q1. Does a software release wait for the infra to have *run successfully*, or for a *human to have signed off* on it?**
+**Q1 — RESOLVED: wait for the infra to have RUN SUCCESSFULLY, not for a human sign-off.**
 
-We chose **run successfully** (`state ∈ {validating, promoted}`) and §3.3 defends it: `validating` is the state the engine writes with reason *"auto: every wave succeeded"* — the executor ran, the bucket exists — and `promoted` is unreachable without a human (`reconcile.ts:789`), so a `promoted` predicate would insert a mandatory manual click into your fully-automated flow and hang both examples on the happy path. Your own words — *"until the infra gets deployed out"*, *"we'll need the image deployed and available first"* — point the same way.
+> Owner: *"It's to run successfully. Not a human gate. The goal is no touch, E2E."*
 
-We ask anyway because this is the one place a wrong read costs a **silent permanent deadlock** rather than a bug, and because an org that genuinely wants *"no software ships until a human signed off on the infra"* is not unreasonable. If you want that, say so and we make it a per-requirement flag (`{key, at, requirePromoted?: true}`) rather than the default — but we would rather not add the knob, because your software change's own `validating → promoted` gate is already where humans sign off, and coupling one release to another release's ceremony is governance by side effect.
+The predicate is `state ∈ {validating, promoted}` exactly as §3.3 specifies — no `requirePromoted` knob. `validating` is the state the engine writes with reason *"auto: every wave succeeded"* (`reconcile.ts:775-786`): the executor ran, the bucket exists. A `promoted` predicate would have deadlocked every webhook-born coupled release on the happy path, because a forward change never auto-promotes (`reconcile.ts:789`) and nobody is watching to click promote in a no-touch flow. This ruling is why the design does not add a human-gate flag.
 
-**Q2. When a promoted software release crosses into an outpost still carrying `requires`, should it wait again there?**
+**Q2 — RESOLVED: the commander evaluates the coupling and gives the go-ahead; a promoted change does NOT re-wait in the outpost. `requires` is stripped on promotion.**
 
-Our design says **yes, for free**: `properties` cross verbatim (`federation.ts:226` → `promotion-repo.ts:190`), so the waiter re-evaluates against that outpost's **own local** changes. That is correct if regions are outposts and each outpost's infra lands locally — *"the infra landed in us-east-1's outpost, so release the software in us-east-1's outpost"*.
+> Owner: *"While we can transfer both artifacts to the outpost for release, it should be the commander that gives the go ahead to actually release. Though the outposts should be able to handle the rollback themselves if there's issues."*
 
-It is a trap if the outpost's infra is driven from the commander: **the coupling crosses, the satisfier does not**, and the release waits forever (§6 #11). The alternative — "it was satisfied upstream; don't re-wait" — is equally defensible and needs `requires` stripped on promotion (~2 lines in `promotion-repo.ts`).
+The coupling is a **commander-side** predicate. The software change waits at the commander until its `requires` are satisfied (an infra change reaching `validating` **at the commander**); the commander's promotion of the bundle into the outpost **is** the go-ahead. The outpost must therefore not re-evaluate `requires` locally — doing so would either be redundant (the commander already enforced it) or deadlock (an outpost whose infra is commander-driven has no local infra change to satisfy the key).
 
-The code takes no position because the concept of a region does not exist in it (`grep -rni region` over the whole source returns exactly one hit — a comment at `packages/schemas/src/federation.ts:18`). Only you know whether your regions are outposts or deployment-targets inside one domain, and this is the one place that distinction changes the mechanism rather than just the naming.
+**Mechanically:** `instantiateFromPromotionBundle` strips `requires` from the change's properties on import, so the promoted change enters the outpost's engine already released to `executing` (~2 lines in `promotion-repo.ts`, plus a Decision recording *"requires satisfied upstream at commander"* for the audit trail). `provides` is preserved — a promoted infra change should still be able to satisfy a *locally-authored* outpost waiter. Rollback authority stays with the outpost: `triggerRollback` / `autoRollbackOnFailure` are org-local and need nothing from the commander (verify during Phase 3 build).
+
+**One consequence to design around, not an open question:** stripping `requires` means the commander is the *single* coordination point for a coupling. A coupling whose two halves genuinely originate in *different* outposts (not via the commander) is out of scope — it is not a shape the owner's examples describe, and the federation model (outpost-initiated pairing, commander as source of truth) makes the commander the natural join point. Stated here so a future "cross-outpost coupling" ask is a known non-goal rather than a silent gap.
+
+---
+
+## 9. Not in scope: the environment/stage model (a distinct follow-up)
+
+This proposal's `requires: {key, at}` points `at` at the object the prerequisite must be true at — a component, or the object a region resolves to. Owner rulings during review (2026-07-15) clarified the surrounding model and surfaced a **separate** modeling question that P4B does not need to answer but the next milestone should:
+
+- **An outpost = (trust-domain × geography)** — `commercial-amer`, `commercial-apac`, `federal`, `airgap-1` — realized as a single (cluster-based, HA) SCP deployment that serves the **whole company** for its targets in that geography. It is multi-tenant: it hosts every org, each with its own `federation_self` row (per-org `domainId` + `role`), each pairing independently, all hard-isolated by RLS. The trust boundary lives at this layer (which outpost + which federation identity), **not** as a graph object.
+- **Region** = a `deployment-target` (owner ruling) — `us-east-1`, `us-west-2`.
+- **Stage** (beta/gamma/prod) has **no home in the object model yet.** The `domain` object type — the one middle scope the containment walk already honors (`domain_id` is route 1) — is currently an **unpopulated slot**: nothing outside tests creates a `domain` object (`objects-repo.ts:129` defaults every object's `domain_id` to the org root). That makes it the natural home for stage: a `prod` domain object, with `prod --contains--> prod-us-east-1` deployment-targets under it, would make *"freeze all of prod"* work today with zero new scope-walk code. The alternative — stage as a deployment-target — gets **no** governance reach, because `deployment-target` is in no scope chain (`hosted_on` has exactly one consumer, `named-queries.ts:40`).
+
+**The real gap this exposes** (also P4B-adjacent): a webhook-born change targets the bare component with no stage and no region (`webhook-processor.ts:115-127`). *"Deploy agentkit-api to gamma/us-east-1"* is not expressible today. That is the actual next question after P4B, and it is where P4B's `at` resolution and this stage model meet.
