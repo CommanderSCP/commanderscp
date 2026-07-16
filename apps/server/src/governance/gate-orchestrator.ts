@@ -8,6 +8,7 @@ import { ensureControlRuns, readExistingControlOutcomes } from "./control-runner
 import { materializeApprovalRequest, quorumStatus } from "./approvals-repo.js";
 import { activeFreezesForScopes, type FreezeRow } from "./freezes-repo.js";
 import { hasPermission } from "../authz/resolve.js";
+import { containmentChain, containmentScopeIds, nearestAncestorOfKind } from "../graph/containment.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 
 /**
@@ -61,25 +62,6 @@ export interface GateOutcome {
   freezeOverrides?: FreezeOverride[] | undefined;
 }
 
-async function containmentScopeIdsForTargets(tx: TenantTx, orgId: string, targetObjectIds: string[]): Promise<string[]> {
-  // Reuses the exact same containment walk policy-resolve.ts uses internally, but we only need
-  // the flat id set here (freeze scoping doesn't care about depth/labels).
-  const ids = new Set<string>();
-  for (const targetId of targetObjectIds) {
-    let current: string | null = targetId;
-    let guard = 0;
-    while (current && guard < 11) {
-      ids.add(current);
-      const obj = await tx.query.objects.findFirst({
-        where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.orgId, orgId), eqOp(t.id, current as string))
-      });
-      current = obj?.domainId ?? null;
-      guard += 1;
-    }
-  }
-  return [...ids];
-}
-
 /**
  * CRITICAL #2 / MAJOR #6: the change proceeds only if EVERY active freeze over its scope is
  * INDIVIDUALLY overridden by an actor holding `freeze:override` at THAT freeze's own scope, with a
@@ -98,7 +80,11 @@ async function checkFreeze(
   | { blocked: null; overrides: FreezeOverride[] }
   | { blocked: { freeze: FreezeRow; reason: string }; overrides: null }
 > {
-  const scopeIds = await containmentScopeIdsForTargets(tx, ctx.orgId, ctx.targetObjectIds);
+  // `containmentScopeIds` walks BOTH containment routes (domain_id AND the `contains` edge), which
+  // is what makes a freeze declared at a SERVICE block a change targeting that service's component.
+  // A domain_id-only walk here failed OPEN: `activeFreezesForScopes` matches by exact set
+  // membership, so a service id absent from this set = a service-scoped freeze silently not found.
+  const scopeIds = await containmentScopeIds(tx, ctx.orgId, ctx.targetObjectIds);
   const active = await activeFreezesForScopes(tx, ctx.orgId, scopeIds, now);
   if (active.length === 0) return { blocked: null, overrides: [] };
 
@@ -173,6 +159,10 @@ const APPROVAL_SCOPE_KEYWORDS: Record<string, "organization" | "domain" | "servi
  * the scope can't be resolved (unknown keyword, a keyword with no ancestor of that kind on the
  * target's chain, or a literal ref that doesn't resolve) — the caller treats `null` as an
  * UNSATISFIABLE required approval (fail closed), never a raw `::uuid` cast crash and never a pass.
+ *
+ * `hasRoleAtScope` (authz/resolve.ts) expands the SAME two containment routes from whatever id this
+ * returns, so an Approver bound at the org root is eligible for a service-resolved scope too — the
+ * keyword picks the scope, it does not narrow who may vote to exactly-that-object bindings.
  */
 export async function resolveApprovalScope(
   tx: TenantTx,
@@ -183,21 +173,15 @@ export async function resolveApprovalScope(
   const keyword = APPROVAL_SCOPE_KEYWORDS[scope.trim().toLowerCase()];
   if (keyword) {
     if (keyword === "organization") return orgId; // org root object id === orgId (bootstrap invariant)
-    // Walk the primary target's containment chain, nearest first, for an object of the given kind.
     if (!primaryTargetId) return null;
-    let current: string | null = primaryTargetId;
-    let guard = 0;
-    while (current && guard < 11) {
-      const obj: { id: string; typeId: string; domainId: string | null } | undefined =
-        await tx.query.objects.findFirst({
-          where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.orgId, orgId), eqOp(t.id, current as string))
-        });
-      if (!obj) return null;
-      if (obj.typeId === keyword) return obj.id;
-      current = obj.domainId;
-      guard += 1;
-    }
-    return null;
+    // The target's containment chain, walked by BOTH routes (`graph/containment.ts`) — then the
+    // NEAREST ancestor carrying the requested kind. A domain_id-only walk here failed CLOSED for
+    // the `"scope":"service"` keyword DESIGN §10.1 itself gives as the example: services and
+    // components are siblings under a domain, so no ancestor of kind 'service' was ever found, the
+    // required approval became permanently unsatisfiable, and prewarm skipped materializing the
+    // request — so no human could vote it through either.
+    const chain = await containmentChain(tx, orgId, primaryTargetId);
+    return nearestAncestorOfKind(chain, keyword)?.id ?? null;
   }
   // Not a keyword — must be a literal object id or urn. Validate it resolves to a real object.
   try {

@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import { and, eq, isNull } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects } from "../db/schema.js";
+import { containmentChain, type ChainEntry } from "../graph/containment.js";
 import { isUuid } from "../graph/objects-repo.js";
 import type { MatchedPolicy, PolicyEffect, PolicyEnforcement } from "./policy-model.js";
 
@@ -12,96 +13,15 @@ import type { MatchedPolicy, PolicyEffect, PolicyEnforcement } from "./policy-mo
  * function must be written as a pure function."
  *
  * Resolution walks the target's containment chain (org → domain → service → component — DESIGN
- * §10.1) and, at every ancestor, checks every `policy`-typed graph object in the org for a scope
- * match (explicit `objectRef`, label `selector`, or `group` membership of the acting subject —
- * DESIGN §7's `member_of` expansion, reused). Org policy counts are expected to be small (dozens,
- * not thousands) — a full scan per gate check is the honest, simple MVP choice; a materialized
- * `governed_by`-indexed lookup is a natural later optimization behind this exact same function
- * signature if profiling ever shows it's needed (DESIGN §5's own "escape hatch" precedent for
- * named queries).
+ * §10.1; `graph/containment.ts`'s `containmentChain`, shared with the gate orchestrator so a policy
+ * and a freeze can never disagree about what contains what) and, at every ancestor, checks every
+ * `policy`-typed graph object in the org for a scope match (explicit `objectRef`, label `selector`,
+ * or `group` membership of the acting subject — DESIGN §7's `member_of` expansion, reused). Org
+ * policy counts are expected to be small (dozens, not thousands) — a full scan per gate check is the
+ * honest, simple MVP choice; a materialized `governed_by`-indexed lookup is a natural later
+ * optimization behind this exact same function signature if profiling ever shows it's needed
+ * (DESIGN §5's own "escape hatch" precedent for named queries).
  */
-
-interface ChainEntry {
-  id: string;
-  depth: number;
-  labels: Record<string, unknown>;
-}
-
-/**
- * Target -> ... -> org root, with depth 0 = org root, increasing toward the target. Mirrors
- * authz/resolve.ts's `scopeExpandCte` (same containment routes, same depth bound) — the two MUST agree
- * on what contains what, or a policy would govern an object its RBAC scope doesn't, and vice versa.
- *
- * Walks TWO routes up (see `scopeExpandCte` for the full rationale): `objects.domain_id`, and the
- * `contains` edge from a component to its SERVICE (migration 0021). Until 0021 this walked domain_id
- * only, so a service-scoped policy governed nothing — even though this file's own header, and
- * DESIGN §10, have always described the chain as `org -> domain -> service -> component`.
- *
- * DEPTH, and what it does and does NOT guarantee — read this before relying on it.
- *
- * With two routes the chain is a DAG rather than a line, so an ancestor can be reached at more than
- * one walk depth. We keep the MAXIMUM per id (`DISTINCT ON (id) ... ORDER BY id, depth DESC`) — the
- * longest path from the target, i.e. the least-specific reading — which the `maxDepth - depth`
- * inversion below turns into "higher = more specific".
- *
- * That reconciles the case where the SAME node is reachable by both routes (a component's own domain,
- * reachable directly AND via its service's domain): the domain settles at the deeper walk depth, so it
- * ranks BELOW the service. In the common shape — component and service sharing a domain — this does
- * yield org < domain < service < component.
- *
- * It does NOT, however, make a service strictly outrank a component's own domain in general. If a
- * component's `domain_id` differs from its service's (e.g. C in domain Dx, S in domain Dy, S contains
- * C — reachable via the organize-after-import flow), then Dx and S are each exactly ONE hop from C and
- * TIE. They are structurally equidistant; max-depth cannot separate them, and no ordering of these two
- * routes is obviously "correct" — a component genuinely sits in both.
- *
- * This is INERT today, which is why it is documented rather than fixed: `matchedAt.depth`'s only
- * consumer is policy-model.ts, which groups by policy NAME and merges order-independently (max
- * severity, union of effects), using depth solely to order a display-only `contributors` array. No
- * policy is dropped, reordered into a different outcome, or under-enforced by a tie. It WOULD become a
- * real precedence bug the moment any code compares `matchedAt.depth` across differently-named policies
- * to pick a single "most specific" winner — if you are about to write that, fix this first.
- */
-async function containmentChain(tx: TenantTx, orgId: string, objectId: string): Promise<ChainEntry[]> {
-  const result = await tx.execute<{ id: string; depth: number; labels: Record<string, unknown> }>(sql`
-    WITH RECURSIVE chain AS (
-      SELECT o.id, o.labels, 0 AS depth
-      FROM objects o
-      WHERE o.id = ${objectId}::uuid AND o.org_id = ${orgId}
-      UNION
-      -- One recursive term (PostgreSQL allows the self-reference exactly once); the two routes are a
-      -- LATERAL union of parents.
-      SELECT parent.id, parent.labels, c.depth + 1
-      FROM chain c
-      CROSS JOIN LATERAL (
-        -- 1. containing domain, via the child's domain_id
-        SELECT parent_o.id, parent_o.labels
-        FROM objects child_o
-        JOIN objects parent_o ON parent_o.id = child_o.domain_id
-        WHERE child_o.id = c.id AND child_o.org_id = ${orgId} AND parent_o.org_id = ${orgId}
-        UNION ALL
-        -- 2. containing service, via the contains edge walked BACKWARDS (to_id = c.id, from_id = svc)
-        SELECT svc.id, svc.labels
-        FROM relationships r
-        JOIN objects svc ON svc.id = r.from_id AND svc.org_id = ${orgId}
-        WHERE r.to_id = c.id
-          AND r.org_id = ${orgId}
-          AND r.type_id = 'contains'
-          AND r.deleted_at IS NULL
-      ) parent
-      WHERE c.depth < 10
-    )
-    -- Max walk depth per id (see the doc comment): preserves service-beats-domain precedence.
-    SELECT DISTINCT ON (id) id, depth, labels FROM chain ORDER BY id, depth DESC
-  `);
-  // Reverse so index 0 = org root (max depth in the recursive walk) — matches policy-model.ts's
-  // "0 = org root, increasing toward the target" depth convention.
-  const rows = result.rows;
-  const maxDepth = Math.max(0, ...rows.map((r) => r.depth));
-  return rows
-    .map((r) => ({ id: r.id, depth: maxDepth - r.depth, labels: r.labels ?? {} }))
-    .sort((a, b) => a.depth - b.depth);
-}
 
 interface PolicyCandidate {
   id: string;
