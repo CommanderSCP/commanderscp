@@ -269,8 +269,20 @@ export async function runNamedQuery(
       const counts: Record<string, number> = {};
       for (const o of objs) {
         counts[`type:${o.typeId}`] = (counts[`type:${o.typeId}`] ?? 0) + 1;
-        if (o.domainId) counts[`domain:${o.domainId}`] = (counts[`domain:${o.domainId}`] ?? 0) + 1;
       }
+      // Domain grouping MUST match `domains-impacted` (below) — both queries claim to "count by
+      // domain" and must agree on what that means. Reuse `groupByDomain`, which walks each object's
+      // `domain_id` ancestry to the NEAREST `domain`/`organization` ancestor and keys by its URN.
+      // The old inline version here was single-hop: it keyed by the object's IMMEDIATE `domain_id`
+      // (a raw uuid) and labeled it `domain:` unconditionally — so any object whose direct parent is
+      // NOT a domain (the org root, a service, or a future deployment-target/region under a
+      // stage-domain) was mis-keyed and mis-labeled, disagreeing with `domains-impacted`.
+      const byDomain = await groupByDomain(
+        tx,
+        orgId,
+        objs.map((o) => o.id)
+      );
+      for (const [urn, n] of Object.entries(byDomain)) counts[`domain:${urn}`] = n;
       return { query: name, objects: objs, counts };
     }
     case "domains-impacted": {
