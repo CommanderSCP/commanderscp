@@ -198,6 +198,8 @@ import type {
   AuditEventListResponse,
   AuthConfig,
   CreateObjectRequest,
+  CreateComponentRequest,
+  UpsertComponentRequest,
   CreateObjectTypeRequest,
   CreateRelationshipRequest,
   CreateRelationshipTypeRequest,
@@ -392,10 +394,10 @@ function idempotencyHeaders(idempotencyKey?: string): Record<string, string> | u
 // same for the `owns`/`consumes`/`depends_on` sub-resource ergonomics (routes/ownership.ts).
 // ---------------------------------------------------------------------------------------------
 
-interface TypedObjectFns {
+interface TypedObjectFns<C = CreateObjectRequest, U = UpsertObjectRequest> {
   create: (opts: {
     client: Client;
-    body: CreateObjectRequest;
+    body: C;
     headers?: Record<string, string>;
   }) => Promise<ApiResult<GraphObject>>;
   list: (opts: {
@@ -412,7 +414,7 @@ interface TypedObjectFns {
   upsert: (opts: {
     client: Client;
     path: { urn: string };
-    body: UpsertObjectRequest;
+    body: U;
   }) => Promise<ApiResult<GraphObject>>;
 }
 
@@ -706,10 +708,10 @@ export class ScpClient {
   // just resource-specific and without a `type` argument to pass at every call site.
   // -----------------------------------------------------------------------------------------
 
-  private typedResource(fns: TypedObjectFns) {
+  private typedResource<C = CreateObjectRequest, U = UpsertObjectRequest>(fns: TypedObjectFns<C, U>) {
     return {
       create: async (
-        req: CreateObjectRequest,
+        req: C,
         opts: { idempotencyKey?: string } = {}
       ): Promise<GraphObject> => {
         const result = await fns.create({
@@ -735,7 +737,7 @@ export class ScpClient {
         const result = await fns.del({ client: this.client, path: { idOrUrn } });
         return unwrap(result);
       },
-      upsertByUrn: async (urn: string, req: UpsertObjectRequest): Promise<GraphObject> => {
+      upsertByUrn: async (urn: string, req: U): Promise<GraphObject> => {
         const result = await fns.upsert({ client: this.client, path: { urn }, body: req });
         return unwrap(result);
       }
@@ -864,7 +866,7 @@ export class ScpClient {
       remove: removeComponentDependsOnRequest
     });
     return {
-      ...this.typedResource({
+      ...this.typedResource<CreateComponentRequest, UpsertComponentRequest>({
         create: createComponentRequest,
         list: listComponentsRequest,
         get: getComponentRequest,
