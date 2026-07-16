@@ -195,7 +195,8 @@ import {
   deleteSecret as deleteSecretRequest,
   listPluginManifests as listPluginManifestsRequest,
   runDiscovery as runDiscoveryRequest,
-  acceptDiscoveryProposal as acceptDiscoveryProposalRequest
+  acceptDiscoveryProposal as acceptDiscoveryProposalRequest,
+  backfillSourceMappings as backfillSourceMappingsRequest
 } from "./generated/sdk.gen.js";
 import type {
   ApplyPlanResponse,
@@ -300,7 +301,8 @@ import type {
   RunDiscoveryRequest,
   DiscoveryProposal,
   AcceptDiscoveryRequest,
-  AcceptDiscoveryResponse
+  AcceptDiscoveryResponse,
+  BackfillSourceMappingsResponse
 } from "@scp/schemas";
 import { ScpApiError } from "./errors.js";
 
@@ -1568,6 +1570,15 @@ export class ScpClient {
     /** The ONLY call that commits a discovery proposal's objects/relationships into the graph. */
     accept: async (req: AcceptDiscoveryRequest): Promise<AcceptDiscoveryResponse> => {
       const result = await acceptDiscoveryProposalRequest({ client: this.client, body: req });
+      return unwrap(result);
+    },
+    /** Backfill source_mappings onto ALREADY-imported components (M12 P5 follow-up) — matches a fresh
+     *  proposal's `sourceMappings` to existing components by name and creates them; creates no objects.
+     *  Idempotent; returns created ids + every skip with a reason. The automated path for the 50 orphans. */
+    backfillSourceMappings: async (
+      proposal: DiscoveryProposal
+    ): Promise<BackfillSourceMappingsResponse> => {
+      const result = await backfillSourceMappingsRequest({ client: this.client, body: { proposal } });
       return unwrap(result);
     }
   };

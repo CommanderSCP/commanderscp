@@ -111,4 +111,57 @@ describe("source_mappings on import (M12 P5, Q3)", () => {
     expect(result.createdObjectIds).toHaveLength(1);
     expect(result.createdSourceMappingIds).toHaveLength(0);
   });
+
+  // The AUTOMATED backfill (M12 P5 follow-up) — wires mappings onto components imported BEFORE
+  // discovery emitted them (the 50 argocd orphans). Matches a proposal's sourceMappings to existing
+  // components by name; creates no objects; idempotent; reports every skip.
+  describe("automated backfill", () => {
+    const proposalOf = (mappings: Array<{ objectName: string; repoPattern: string }>) =>
+      ({
+        objects: [],
+        relationships: [],
+        sourceMappings: mappings.map((m) => ({ ...m, sourceKind: "github" }))
+      }) as never;
+
+    it("matches existing components by name, creates mappings, is idempotent, and the component self-reports", async () => {
+      // An orphan imported BEFORE mappings existed (accept with no sourceMappings).
+      const name = `orphan-${randomUUID().slice(0, 8)}`;
+      const repo = `acme/${randomUUID().slice(0, 8)}`;
+      await admin.discovery.accept({
+        proposal: { objects: [{ typeId: "component", name, properties: {} }], relationships: [] }
+      });
+
+      // Backfill from a fresh proposal's sourceMappings → matched by name, mapping created.
+      const first = await admin.discovery.backfillSourceMappings(proposalOf([{ objectName: name, repoPattern: repo }]));
+      expect(first.createdSourceMappingIds).toHaveLength(1);
+      expect(first.skipped).toHaveLength(0);
+
+      // The backfilled component now self-reports — a github push to its repo correlates to a Change.
+      expect(await reportAndProcess("github", repo)).not.toBeNull();
+
+      // Re-running is a no-op: the identical mapping is skipped ("already mapped"), not duplicated.
+      const second = await admin.discovery.backfillSourceMappings(proposalOf([{ objectName: name, repoPattern: repo }]));
+      expect(second.createdSourceMappingIds).toHaveLength(0);
+      expect(second.skipped[0]).toMatchObject({ objectName: name, reason: expect.stringMatching(/already mapped/) });
+    });
+
+    it("skips (never silently drops) a mapping whose component doesn't exist", async () => {
+      const ghost = `ghost-${randomUUID().slice(0, 8)}`;
+      const r = await admin.discovery.backfillSourceMappings(proposalOf([{ objectName: ghost, repoPattern: "x/y" }]));
+      expect(r.createdSourceMappingIds).toHaveLength(0);
+      expect(r.skipped[0]).toMatchObject({ objectName: ghost, reason: expect.stringMatching(/no live component/) });
+    });
+
+    it("skips an ambiguous name (more than one live component)", async () => {
+      const dup = `dup-${randomUUID().slice(0, 8)}`;
+      const svc = await admin.services.create({ name: `svc-${randomUUID().slice(0, 8)}` });
+      // Two live components share a name via explicit distinct URNs (the strict route allows a urn).
+      await admin.components.create({ name: dup, service: svc.id, urn: `urn:scp:x:component:${dup}-a` });
+      await admin.components.create({ name: dup, service: svc.id, urn: `urn:scp:x:component:${dup}-b` });
+
+      const r = await admin.discovery.backfillSourceMappings(proposalOf([{ objectName: dup, repoPattern: "x/y" }]));
+      expect(r.createdSourceMappingIds).toHaveLength(0);
+      expect(r.skipped[0]).toMatchObject({ objectName: dup, reason: expect.stringMatching(/ambiguous/) });
+    });
+  });
 });

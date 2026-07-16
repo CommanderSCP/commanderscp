@@ -233,6 +233,25 @@ export const AcceptDiscoveryResponseSchema = z.object({
   createdBindingIds: z.array(z.string().uuid()),
   createdSourceMappingIds: z.array(z.string().uuid())
 });
+
+/**
+ * `POST /discovery/backfill-source-mappings` (M12 P5 follow-up) — the AUTOMATED backfill for
+ * already-imported components (e.g. the homelab's 50 argocd orphans imported before discovery emitted
+ * mappings). Feed it a fresh `discovery run` proposal; it uses only the proposal's `sourceMappings`,
+ * matching each to an EXISTING component by name and creating the mapping (creating NO objects).
+ * Idempotent — re-running skips duplicates and reports every skip.
+ */
+export const BackfillSourceMappingsRequestSchema = z.object({
+  proposal: DiscoveryProposalSchema
+});
+export type BackfillSourceMappingsRequest = z.infer<typeof BackfillSourceMappingsRequestSchema>;
+
+export const BackfillSourceMappingsResponseSchema = z.object({
+  createdSourceMappingIds: z.array(z.string().uuid()),
+  /** Every mapping NOT created, with why (no matching component / ambiguous name / already mapped). */
+  skipped: z.array(z.object({ objectName: z.string(), reason: z.string() }))
+});
+export type BackfillSourceMappingsResponse = z.infer<typeof BackfillSourceMappingsResponseSchema>;
 export type AcceptDiscoveryResponse = z.infer<typeof AcceptDiscoveryResponseSchema>;
 
 // -------------------------------------------------------------------------------------------

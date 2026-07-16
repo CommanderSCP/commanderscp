@@ -1,8 +1,8 @@
-import { and, asc, eq, gt } from "drizzle-orm";
+import { and, asc, eq, gt, isNull } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { SourceMapping } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { sourceMappings } from "../db/schema.js";
+import { objects, sourceMappings } from "../db/schema.js";
 import { decodeCursor, encodeCursor } from "../pagination.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 
@@ -60,6 +60,89 @@ export async function listSourceMappingsForSource(
     .where(and(eq(sourceMappings.orgId, orgId), eq(sourceMappings.sourceKind, sourceKind)))
     .orderBy(asc(sourceMappings.createdAt));
   return rows.map(toSourceMapping);
+}
+
+export interface BackfillSourceMappingInput {
+  objectName: string;
+  sourceKind: string;
+  repoPattern?: string;
+  pathPattern?: string;
+  purpose?: "infra" | "software";
+}
+
+export interface BackfillSourceMappingsResult {
+  createdSourceMappingIds: string[];
+  skipped: Array<{ objectName: string; reason: string }>;
+}
+
+/**
+ * Backfills source_mappings onto ALREADY-imported components (M12 P5 follow-up) — the automated path
+ * for the homelab's 50 argocd orphans that were imported BEFORE discovery emitted mappings. Feed it a
+ * fresh `discovery run` proposal's `sourceMappings` (which now carry each app's repoURL); for each it
+ * MATCHES an existing live component BY NAME (== `objectName`, which the argocd import used) and
+ * creates the mapping. Unlike `accept`, it creates NO objects — it only wires mappings onto components
+ * that already exist. Idempotent and safe to re-run: it SKIPS when there is no such component, the name
+ * is ambiguous (>1 live component), or an identical mapping already exists — reporting each skip with a
+ * reason so the operator can see exactly what was and wasn't backfilled (no silent drops).
+ */
+export async function backfillSourceMappings(
+  tx: TenantTx,
+  input: { orgId: string; mappings: BackfillSourceMappingInput[] }
+): Promise<BackfillSourceMappingsResult> {
+  const createdSourceMappingIds: string[] = [];
+  const skipped: Array<{ objectName: string; reason: string }> = [];
+
+  for (const m of input.mappings) {
+    const matches = await tx
+      .select({ id: objects.id })
+      .from(objects)
+      .where(
+        and(
+          eq(objects.orgId, input.orgId),
+          eq(objects.typeId, "component"),
+          eq(objects.name, m.objectName),
+          isNull(objects.deletedAt)
+        )
+      )
+      .limit(2);
+    if (matches.length === 0) {
+      skipped.push({ objectName: m.objectName, reason: `no live component named '${m.objectName}'` });
+      continue;
+    }
+    if (matches.length > 1) {
+      skipped.push({
+        objectName: m.objectName,
+        reason: `ambiguous — more than one live component named '${m.objectName}'`
+      });
+      continue;
+    }
+    const componentId = matches[0]!.id;
+
+    // Idempotent: skip an identical (component, sourceKind, repo, path) mapping — re-running is a no-op.
+    const existing = await listSourceMappingsForSource(tx, input.orgId, m.sourceKind);
+    const dup = existing.some(
+      (e) =>
+        e.componentObjectId === componentId &&
+        (e.repoPattern ?? null) === (m.repoPattern ?? null) &&
+        (e.pathPattern ?? null) === (m.pathPattern ?? null)
+    );
+    if (dup) {
+      skipped.push({ objectName: m.objectName, reason: "already mapped" });
+      continue;
+    }
+
+    const created = await createSourceMapping(tx, {
+      orgId: input.orgId,
+      sourceKind: m.sourceKind,
+      repoPattern: m.repoPattern,
+      pathPattern: m.pathPattern,
+      componentIdOrUrn: componentId,
+      purpose: m.purpose
+    });
+    createdSourceMappingIds.push(created.id);
+  }
+
+  return { createdSourceMappingIds, skipped };
 }
 
 export interface ListSourceMappingsQuery {

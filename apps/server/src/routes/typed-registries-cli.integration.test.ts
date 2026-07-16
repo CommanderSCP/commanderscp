@@ -205,4 +205,40 @@ describe("CLI: M2 typed registry + ownership commands", () => {
     }
   });
 
+  it("`scp discovery backfill-mappings` wires a source_mapping onto an existing component (M12 P5 follow-up)", async () => {
+    const org = await createTestOrg(server, "cli-backfill");
+    const cli: CliInvocation = await startCliSession(server.baseUrl);
+    try {
+      await cli.run(["login", "--username", org.adminUsername, "--password", org.adminPassword]);
+      const svc = await cli.runJson<{ id: string }>(["service", "register", "--name", "cli-bf-svc"]);
+      await cli.runJson<{ id: string }>([
+        "component",
+        "register",
+        "--name",
+        "cli-bf-comp",
+        "--service",
+        svc.id
+      ]);
+
+      const proposal = JSON.stringify({
+        objects: [],
+        relationships: [],
+        sourceMappings: [{ objectName: "cli-bf-comp", sourceKind: "github", repoPattern: "acme/bf" }]
+      });
+      const result = await cli.runJson<{ createdSourceMappingIds: string[]; skipped: unknown[] }>([
+        "discovery",
+        "backfill-mappings",
+        "--proposal",
+        proposal
+      ]);
+      expect(result.createdSourceMappingIds).toHaveLength(1);
+      expect(result.skipped).toHaveLength(0);
+
+      // --proposal is required.
+      await expect(cli.run(["discovery", "backfill-mappings"])).rejects.toThrow(/proposal/i);
+    } finally {
+      await cli.cleanup();
+    }
+  });
+
 });
