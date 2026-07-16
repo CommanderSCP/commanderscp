@@ -158,6 +158,17 @@ export const UpsertComponentRequestSchema = UpsertObjectRequestSchema.extend({
 });
 export type UpsertComponentRequest = z.infer<typeof UpsertComponentRequestSchema>;
 
+/**
+ * `PUT /components/{idOrUrn}/service` — idempotent atomic assign-or-move (M12 P5b). Sets the
+ * component's sole `contains` parent to `service` whether it currently has none (assign), a
+ * different one (atomic move), or the same one (no-op).
+ */
+export const SetComponentServiceRequestSchema = z.object({
+  /** id or URN of the service the component should belong to. */
+  service: z.string().min(1)
+});
+export type SetComponentServiceRequest = z.infer<typeof SetComponentServiceRequestSchema>;
+
 export const ObjectListResponseSchema = cursorPageResponseSchema(GraphObjectSchema);
 export type ObjectListResponse = z.infer<typeof ObjectListResponseSchema>;
 

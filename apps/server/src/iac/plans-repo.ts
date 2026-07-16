@@ -474,9 +474,18 @@ async function findLiveRelationshipId(
 
 /**
  * Executes an already-authorized diff, all inside the caller's transaction (transactional apply,
- * goal statement). Order matters: object creates/updates first (so relationship creates can
- * resolve freshly-created endpoints), then relationship creates, then relationship deletes, then
- * object deletes last (so a relationship delete never races an already-gone endpoint).
+ * goal statement). Order matters: object creates/updates first (so relationship creates can resolve
+ * freshly-created endpoints), then relationship DELETES, then relationship CREATES, then object
+ * deletes last (so a relationship delete never races an already-gone endpoint).
+ *
+ * Relationship deletes run BEFORE creates so a declarative re-parent converges in one apply (M12
+ * P5b): changing a component's `service` in a manifest yields a `contains` create (new service) plus
+ * a prune-delete (old service) — with creates first, the new edge would trip migration 0022's
+ * one-service-per-component index while the old edge is still live (a false 409). Deleting first
+ * frees the component. Delete-before-create is safe generally: both endpoints are objects, which are
+ * created earlier (creates loop) and deleted later (object-deletes loop), so an edge's endpoints
+ * always exist during both its delete and its create; and no relationship depends on another
+ * relationship existing.
  */
 export async function executePlanDiff(
   tx: TenantTx,
@@ -538,6 +547,18 @@ export async function executePlanDiff(
     throw new Error(`internal: could not resolve object id for URN '${urn}' during apply`);
   }
 
+  // Deletes BEFORE creates (see the doc comment) — a declarative re-parent must free the old edge
+  // before the new one is created, or a cardinality-constrained edge (e.g. `contains`) 409s.
+  for (const entry of diff.relationships) {
+    if (entry.action !== "delete") continue;
+    const id = await findLiveRelationshipId(tx, orgId, {
+      fromId: endpointId(entry.fromUrn),
+      toId: endpointId(entry.toUrn),
+      typeId: entry.typeId
+    });
+    await deleteRelationship(tx, { orgId, actorObjectId, requestId, id });
+  }
+
   for (const entry of diff.relationships) {
     if (entry.action !== "create") continue;
     await createRelationship(tx, {
@@ -549,16 +570,6 @@ export async function executePlanDiff(
       toId: endpointId(entry.toUrn),
       labels: managedLabels(stackName)
     });
-  }
-
-  for (const entry of diff.relationships) {
-    if (entry.action !== "delete") continue;
-    const id = await findLiveRelationshipId(tx, orgId, {
-      fromId: endpointId(entry.fromUrn),
-      toId: endpointId(entry.toUrn),
-      typeId: entry.typeId
-    });
-    await deleteRelationship(tx, { orgId, actorObjectId, requestId, id });
   }
 
   for (const entry of diff.objects) {

@@ -288,6 +288,39 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     ).rejects.toMatchObject({ status: 400 });
   });
 
+  it("declarative move: changing a component's service across two applies re-parents it in one apply (M12 P5b)", async () => {
+    const org = await createTestOrg(server, "plans-declarative-move");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const stackName = `stack-${randomUUID().slice(0, 8)}`;
+
+    // Both services in both manifests (so neither is pruned) — only the component's service changes.
+    function manifest(componentService: "a" | "b") {
+      const app = new App();
+      const stack = new Stack(app, stackName);
+      const svcA = new Service(stack, "svc-a", { name: "Service A" });
+      const svcB = new Service(stack, "svc-b", { name: "Service B" });
+      new Component(stack, "api", { name: "api", service: componentService === "a" ? svcA : svcB });
+      return stack.synth();
+    }
+
+    const first = await admin.plans.create(manifest("a"));
+    await admin.plans.apply(first.id);
+
+    // Re-parent: svc-b now contains the component; svc-a's edge is pruned. The plan is a
+    // contains CREATE (svc-b) + a contains DELETE (svc-a). Apply must NOT 409 on the 0022 index
+    // (deletes-before-creates) and must converge to exactly one live edge, from svc-b.
+    const move = await admin.plans.create(manifest("b"));
+    expect(move.diff.summary).toMatchObject({ creates: 1, deletes: 1 });
+    const { plan: applied } = await admin.plans.apply(move.id);
+    expect(applied.status).toBe("applied");
+
+    const comp = await admin.components.get(`urn:scp:${stackName}:component:api`);
+    const svcB = await admin.services.get(`urn:scp:${stackName}:service:svc-b`);
+    const edges = await admin.relationships.list({ typeId: "contains", toId: comp.id });
+    expect(edges.items).toHaveLength(1);
+    expect(edges.items[0]!.fromId).toBe(svcB.id);
+  });
+
   it("apply on a nonexistent plan id is a 404", async () => {
     const org = await createTestOrg(server, "plans-404");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });

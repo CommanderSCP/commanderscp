@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
 import {
   createOrphanComponent,
+  createTestComponent,
   createTestOrg,
   createTestUser,
   listenTestServer,
@@ -184,5 +185,113 @@ describe("components: strict create-in-service (M12 P5a)", () => {
       payload: { name: "no-auth", service: "whatever" }
     });
     expect(res.statusCode).toBe(401);
+  });
+});
+
+describe("components: assign / atomic move into a service (M12 P5b)", () => {
+  let server: ListeningTestServer;
+  let org: TestOrg;
+  let admin: ScpClient;
+
+  beforeAll(async () => {
+    server = await listenTestServer();
+    org = await createTestOrg(server, "components-assign");
+    admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+  });
+
+  afterAll(async () => {
+    await server?.close();
+  });
+
+  const containsEdges = (componentId: string) =>
+    admin.relationships.list({ typeId: "contains", toId: componentId, limit: 10 });
+
+  it("assign: an imported orphan gains a `contains` edge to the chosen service", async () => {
+    const svc = await admin.services.create({ name: `svc-${randomUUID().slice(0, 8)}` });
+    const orphan = await createOrphanComponent(admin, `orphan-${randomUUID().slice(0, 8)}`);
+    expect((await containsEdges(orphan.id)).items).toHaveLength(0);
+
+    const returned = await admin.components.setService(orphan.id, svc.id);
+    expect(returned.id).toBe(orphan.id);
+
+    const edges = (await containsEdges(orphan.id)).items;
+    expect(edges).toHaveLength(1);
+    expect(edges[0]!.fromId).toBe(svc.id);
+  });
+
+  it("move: re-parenting is ATOMIC — exactly one live edge, now pointing at the new service", async () => {
+    const svcA = await admin.services.create({ name: `svcA-${randomUUID().slice(0, 8)}` });
+    const svcB = await admin.services.create({ name: `svcB-${randomUUID().slice(0, 8)}` });
+    const comp = await createTestComponent(admin, { name: "movable", service: svcA.id });
+
+    await admin.components.setService(comp.id, svcB.id);
+
+    // The 0022 index guarantees at most one LIVE contains edge; it must now be svcB (the old svcA
+    // edge is soft-deleted, not lingering — a move that left both would show two here).
+    const edges = (await containsEdges(comp.id)).items;
+    expect(edges).toHaveLength(1);
+    expect(edges[0]!.fromId).toBe(svcB.id);
+  });
+
+  it("noop: setting the same service again is idempotent (still exactly one edge, no error)", async () => {
+    const svc = await admin.services.create({ name: `svc-${randomUUID().slice(0, 8)}` });
+    const comp = await createTestComponent(admin, { name: "steady", service: svc.id });
+
+    await admin.components.setService(comp.id, svc.id);
+    await admin.components.setService(comp.id, svc.id);
+
+    const edges = (await containsEdges(comp.id)).items;
+    expect(edges).toHaveLength(1);
+    expect(edges[0]!.fromId).toBe(svc.id);
+  });
+
+  it("rejects a non-service target (400) and a non-component subject (400)", async () => {
+    const svc = await admin.services.create({ name: `svc-${randomUUID().slice(0, 8)}` });
+    const comp = await createTestComponent(admin, { name: "typed", service: svc.id });
+    const notAService = await admin.teams.create({ name: `team-${randomUUID().slice(0, 8)}` });
+
+    // service ref is a team → 400
+    await expect(admin.components.setService(comp.id, notAService.id)).rejects.toMatchObject({
+      status: 400
+    });
+    // subject ref is a service, not a component → 400
+    await expect(admin.components.setService(svc.id, svc.id)).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("assign is authority-gated at BOTH endpoints — a subject that can write the component but not the service is refused", async () => {
+    const svc = await admin.services.create({ name: `svc-${randomUUID().slice(0, 8)}` });
+    const orphan = await createOrphanComponent(admin, `orphan-${randomUUID().slice(0, 8)}`);
+
+    // Operator on the component only — has relationship:write there, but NOT over `svc`.
+    const user = await createTestUser(server, org, [{ role: "Operator", scope: orphan.id }]);
+    const client = new ScpClient({ baseUrl: server.baseUrl, token: user.token });
+
+    await expect(client.components.setService(orphan.id, svc.id)).rejects.toMatchObject({
+      status: 403
+    });
+    expect((await containsEdges(orphan.id)).items).toHaveLength(0); // nothing written
+  });
+
+  it("MOVE additionally requires write over the OLD service — the 3rd scope create-strict never checks", async () => {
+    const svcA = await admin.services.create({ name: `svcA-${randomUUID().slice(0, 8)}` });
+    const svcB = await admin.services.create({ name: `svcB-${randomUUID().slice(0, 8)}` });
+    const comp = await createTestComponent(admin, { name: "guarded-move", service: svcA.id });
+
+    // Operator on the component AND the NEW service — but NOT the OLD service (svcA). A move must
+    // still fail, because svcA loses a child. This is the incomplete-census trap: cloning
+    // createComponentInService (service-only authz) would let this 403-worthy move through.
+    const user = await createTestUser(server, org, [
+      { role: "Operator", scope: comp.id },
+      { role: "Operator", scope: svcB.id }
+    ]);
+    const client = new ScpClient({ baseUrl: server.baseUrl, token: user.token });
+
+    await expect(client.components.setService(comp.id, svcB.id)).rejects.toMatchObject({
+      status: 403
+    });
+    // The move did not happen — still in svcA.
+    const edges = (await containsEdges(comp.id)).items;
+    expect(edges).toHaveLength(1);
+    expect(edges[0]!.fromId).toBe(svcA.id);
   });
 });
