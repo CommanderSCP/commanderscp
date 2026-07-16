@@ -888,6 +888,57 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
   });
 
   // -----------------------------------------------------------------------------------------
+  // The SAME keyword, on the shape migration 0021 actually created. The test above wires the
+  // component to the service with `domainId: service.id` — a component whose *containing domain* IS
+  // a service object. That is not the service/component model: 0021 links them with a `contains`
+  // edge and leaves `domain_id` pointing at the org root. On that real shape, gate-orchestrator's
+  // domain_id-only walk found no ancestor of kind 'service', `resolveApprovalScope` returned null,
+  // and the caller treats null as an UNSATISFIABLE required approval — fail CLOSED, with prewarm
+  // skipping materialization so no human could vote it through either. Wedged forever.
+  // -----------------------------------------------------------------------------------------
+
+  it("requireApprovals scope keyword 'service' resolves through the `contains` edge (not just domain_id) and is satisfiable by a service-level Approver", async () => {
+    const org = await createTestOrg(server, "scope-keyword-contains");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+    const service = await admin.services.create({ name: "skc-service" });
+    // The component's domain_id defaults to the ORG ROOT — deliberately NOT the service. The ONLY
+    // thing linking C to S is the `contains` edge, exactly as migration 0021 registers it
+    // (service --contains--> component, walked backwards). Do not "fix" this to `domainId:
+    // service.id`: that would re-create the sibling test above and stop covering this bug.
+    const component = await admin.components.create({ name: "skc-component" });
+    await admin.relationships.create({ typeId: "contains", fromId: service.id, toId: component.id });
+
+    await createPolicy(admin, org, {
+      name: "service-approval-contains",
+      urnSuffix: "scope-keyword-contains",
+      enforcement: "required",
+      scopeObjectId: component.id,
+      requireApprovals: { count: 1, fromRole: "Approver", scope: "service" }
+    });
+
+    const change = await admin.changes.propose({ name: "skc-change", targets: [component.id] });
+
+    // With the domain_id-only walk this never materializes at all (the scope resolves to null and
+    // both prewarm and the gate skip it) — the wait times out, which IS the bug.
+    const approvalRequest = await waitForApprovalRequest(admin, change.id);
+    expect(approvalRequest.scopeObjectId).toBe(service.id);
+
+    // ... and the resolved scope is genuinely satisfiable: an Approver bound at the SERVICE (not at
+    // the component, not at the org root) can vote it to quorum.
+    const serviceApprover = await createTestUser(server, org, [{ role: "Approver", scope: service.id }]);
+    const serviceApproverClient = new ScpClient({ baseUrl: server.baseUrl, token: serviceApprover.token });
+    await serviceApproverClient.approvals.vote(approvalRequest.id);
+    const satisfied = await admin.approvals.get(approvalRequest.id);
+    expect(satisfied.status).toBe("satisfied");
+
+    // The change reaches promoted — the required approval was satisfiable, not a permanent wedge.
+    await waitForValidating(admin, change.id);
+    const promoted = await admin.changes.promote(change.id);
+    expect(promoted.state).toBe("promoted");
+  });
+
+  // -----------------------------------------------------------------------------------------
   // Freezes: block, mandatory reason, and — MAJOR #6 — a REJECTED override (unauthorized / no
   // reason) is now routed through the Decision+audit path (409 carrying decision_id, an audited
   // rejected-transition Decision), NOT a rolled-back raw 403. Authorized override succeeds and
@@ -953,6 +1004,56 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     // back silently): at least one `change.transition.blocked` event exists for this change.
     const blockedEvents = auditPage.items.filter((e) => e.action === "change.transition.blocked");
     expect(blockedEvents.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // A freeze scoped at a SERVICE must block that service's components. DESIGN §10.3 lists
+  // `service` as a freeze scope level, but gate-orchestrator's freeze walk followed `domain_id`
+  // only — services and components are siblings under a domain, so the service id never entered
+  // the scope set. `activeFreezesForScopes` matches by EXACT SET MEMBERSHIP, so the freeze was
+  // simply not found: it failed OPEN, silently, with the freeze still listed as active.
+  // -----------------------------------------------------------------------------------------
+
+  it("a freeze scoped at a SERVICE blocks a change targeting a component that service CONTAINS (and does not block a component it doesn't)", async () => {
+    const org = await createTestOrg(server, "service-freeze");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+    const service = await admin.services.create({ name: "sf-service" });
+    // Same real shape as the keyword test: domain_id stays the org root; the `contains` edge is the
+    // only link. A domain_id-only walk cannot see the service from the component.
+    const contained = await admin.components.create({ name: "sf-contained" });
+    await admin.relationships.create({ typeId: "contains", fromId: service.id, toId: contained.id });
+    // Negative control (the orphan-import case): a component the service does NOT contain. Guards
+    // against a "fix" that over-blocks by scooping up unrelated objects.
+    const unrelated = await admin.components.create({ name: "sf-unrelated" });
+
+    const frozenChange = await admin.changes.propose({ name: "sf-frozen-change", targets: [contained.id] });
+    const freeChange = await admin.changes.propose({ name: "sf-free-change", targets: [unrelated.id] });
+    await waitForValidating(admin, frozenChange.id);
+    await waitForValidating(admin, freeChange.id);
+
+    const now = Date.now();
+    await admin.freezes.create({
+      scopeObjectId: service.id,
+      name: "sf-service-freeze",
+      startsAt: new Date(now - 60_000).toISOString(),
+      endsAt: new Date(now + 3_600_000).toISOString(),
+      reason: "service-wide freeze"
+    });
+
+    // THE BUG: without the `contains` route this promote SUCCEEDS — the freeze is active, covers the
+    // component's service, and blocks nothing.
+    const blocked = await expectApiError(() => admin.changes.promote(frozenChange.id));
+    expect(blocked.status).toBe(409);
+    expect(blocked.problem?.decision_id).toBeTruthy();
+    // Blocked BY THIS FREEZE specifically — not by some unrelated policy that happens to 409.
+    const decision = await admin.decisions.get(blocked.problem!.decision_id!);
+    expect(decision.verdict).toBe("block");
+    expect(JSON.stringify(decision.reasonTree)).toMatch(/sf-service-freeze/);
+
+    // The unrelated component is untouched: containment confers the freeze, proximity does not.
+    const promoted = await admin.changes.promote(freeChange.id);
+    expect(promoted.state).toBe("promoted");
   });
 
   // -----------------------------------------------------------------------------------------

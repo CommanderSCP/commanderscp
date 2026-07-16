@@ -214,6 +214,144 @@ describe("campaigns & initiatives (M5)", () => {
     expect(memberExplain.decisions.some((d) => d.kind === "rollback_trigger")).toBe(true);
   }, 60_000);
 
+  // -----------------------------------------------------------------------------------------
+  // SAFETY (the headline campaign-ordering invariant): a campaign must never advance PAST a failed
+  // wave. Both tests below get their OWN org on purpose — a reconcile pass batches campaigns
+  // per-org (campaign-reconcile.ts's BATCH_LIMIT) and the whole proof here is "the reconciler had
+  // every opportunity to advance this campaign and did not", which must not depend on where this
+  // suite's ~10 other campaigns land in the batch.
+  // -----------------------------------------------------------------------------------------
+
+  /** Positive liveness proof that the campaign reconciler completed a full pass over `client`'s org
+   *  AFTER the caller's setup: an independent campaign, created now, whose member Change the
+   *  reconciler must propose. A pass visits campaigns `updatedAt` ASC (campaign-repo.ts's
+   *  `listActiveCampaignObjectIds`), so the older campaign-under-test is always visited BEFORE this
+   *  canary in the very pass that proposes the canary's member change — if the engine were going to
+   *  advance the campaign under test, it already has by the time this resolves. Without this, the
+   *  "nothing shipped" assertions below could pass vacuously against a stalled reconciler. */
+  async function awaitReconcilerPass(client: ScpClient, label: string): Promise<void> {
+    const canaryTarget = await client.components.create({ name: `${label}-canary-target` });
+    const canary = await client.campaigns.propose({ name: `${label} liveness canary`, targets: [canaryTarget.id] });
+    await waitUntil(
+      async () => {
+        const e = await client.campaigns.explain(canary.id);
+        return e.plan?.waves[0]?.targets[0]?.memberChangeObjectId ?? undefined;
+      },
+      { describe: `${label}: liveness canary's member change is proposed (proves the reconciler is ticking this org)`, timeoutMs: 20_000 }
+    );
+  }
+
+  it("SAFETY: a FAILED wave 0 parks the campaign — wave 1's member change is NEVER proposed, and the plan never reports 'completed'", async () => {
+    const failOrg = await createTestOrg(server, "campaign-failed-wave");
+    const failAdmin = new ScpClient({ baseUrl: server.baseUrl, token: failOrg.adminToken });
+
+    const infra = await failAdmin.components.create({ name: "failwave-infra" });
+    const app = await failAdmin.components.create({ name: "failwave-app" });
+    await failAdmin.components.addDependsOn(app.id, infra.id); // app depends_on infra -> infra is wave 0
+
+    const campaign = await failAdmin.campaigns.propose({
+      name: "patch failwave-infra then failwave-app",
+      targets: [app.id, infra.id]
+    });
+
+    const explained = await waitUntil(
+      async () => {
+        const e = await failAdmin.campaigns.explain(campaign.id);
+        return e.plan && e.plan.waves.length === 2 ? e : undefined;
+      },
+      { describe: `campaign ${campaign.id} plan compiles to 2 waves`, timeoutMs: 20_000 }
+    );
+    expect(explained.plan!.waves[0]!.targets.map((t) => t.targetObjectId)).toEqual([infra.id]);
+    expect(explained.plan!.waves[1]!.targets.map((t) => t.targetObjectId)).toEqual([app.id]);
+
+    const wave0MemberChangeId = await waitUntil(
+      async () => {
+        const e = await failAdmin.campaigns.explain(campaign.id);
+        return e.plan!.waves[0]!.targets[0]!.memberChangeObjectId ?? undefined;
+      },
+      { describe: "wave 0's (infra) member Change is proposed", timeoutMs: 20_000 }
+    );
+
+    // Drive wave 0's member Change to a FAILED outcome. `cancelled` rather than `rolled_back` is
+    // deliberate: campaign-reconcile.ts maps BOTH to a failed wave target, but `rolled_back` would
+    // additionally make computeCampaignStatus report `rolled_back` (it checks rollback FIRST, ahead
+    // of every forward-progress signal), masking the `failed` reading this test is about. Cancel
+    // from `validating` — a settled state on the member's own lifecycle, so there is no race with
+    // the reconciler concurrently transitioning it.
+    await waitUntil(async () => (await failAdmin.changes.get(wave0MemberChangeId)).state === "validating" || undefined, {
+      describe: `wave 0 member change ${wave0MemberChangeId} reaches 'validating'`,
+      timeoutMs: 20_000
+    });
+    const cancelled = await failAdmin.changes.cancel(wave0MemberChangeId, "test: wave 0 fails");
+    expect(cancelled.state).toBe("cancelled");
+
+    await waitUntil(
+      async () => {
+        const e = await failAdmin.campaigns.explain(campaign.id);
+        return e.plan!.waves[0]!.status === "failed" || undefined;
+      },
+      { describe: "campaign wave 0 marked failed", timeoutMs: 20_000 }
+    );
+
+    // The engine now gets a full, proven pass in which it COULD advance this campaign.
+    await awaitReconcilerPass(failAdmin, "failed-wave-2wave");
+
+    const after = await failAdmin.campaigns.explain(campaign.id);
+    // (a) NOTHING SHIPPED. Wave 1's member Change was never proposed — the owner's requirement
+    // ("the software doesn't get deployed out until the infra gets deployed out") made concrete:
+    // infra's wave failed, so app's change must not exist at all. A non-null id here means a real
+    // Change for `app` was created and handed to the ordinary change loop to drive to `promoted`.
+    expect(after.plan!.waves[1]!.targets[0]!.memberChangeObjectId).toBeNull();
+    expect(after.plan!.waves[1]!.status).toBe("pending"); // never even gated, let alone running
+    // (b) The plan is NOT completed — it parks `active` (campaign_plans.status has no "parked"
+    // value, and 'aborted' is read by the reconciler but written by nothing).
+    expect(after.plan!.status).toBe("active");
+    // The failure is what the operator sees, derived from the wave (campaign-status.ts).
+    expect((await failAdmin.campaigns.get(campaign.id)).status).toBe("failed");
+    // No `coordinates` edge to any member change for wave 1's target either — the propose path
+    // writes the edge in the same transaction, so its absence double-checks nothing was created.
+    const edges = await failAdmin.relationships.list({ fromId: campaign.id, typeId: "coordinates", limit: 50 });
+    expect(edges.items).toHaveLength(1); // wave 0's member change, and only that one
+    expect(edges.items[0]!.toId).toBe(wave0MemberChangeId);
+  }, 60_000);
+
+  it("SAFETY: a campaign whose LAST remaining wave failed reports its plan as parked-'active', never 'completed'", async () => {
+    // The second consequence of the same finder: with no later wave to slide to, "skip the failed
+    // wave" instead means the search finds NOTHING and the plan is marked completed — a campaign
+    // reporting success for work that failed.
+    const failOrg = await createTestOrg(server, "campaign-failed-wave-last");
+    const failAdmin = new ScpClient({ baseUrl: server.baseUrl, token: failOrg.adminToken });
+
+    const target = await failAdmin.components.create({ name: "failwave-only-target" });
+    const campaign = await failAdmin.campaigns.propose({ name: "single-wave campaign that fails", targets: [target.id] });
+
+    const memberChangeId = await waitUntil(
+      async () => {
+        const e = await failAdmin.campaigns.explain(campaign.id);
+        return e.plan?.waves[0]?.targets[0]?.memberChangeObjectId ?? undefined;
+      },
+      { describe: "the only wave's member Change is proposed", timeoutMs: 20_000 }
+    );
+    await waitUntil(async () => (await failAdmin.changes.get(memberChangeId)).state === "validating" || undefined, {
+      describe: `member change ${memberChangeId} reaches 'validating'`,
+      timeoutMs: 20_000
+    });
+    await failAdmin.changes.cancel(memberChangeId, "test: the only wave fails");
+
+    await waitUntil(
+      async () => {
+        const e = await failAdmin.campaigns.explain(campaign.id);
+        return e.plan!.waves[0]!.status === "failed" || undefined;
+      },
+      { describe: "the only campaign wave is marked failed", timeoutMs: 20_000 }
+    );
+    await awaitReconcilerPass(failAdmin, "failed-wave-1wave");
+
+    const after = await failAdmin.campaigns.explain(campaign.id);
+    expect(after.plan!.status).toBe("active"); // parked, NOT "completed"
+    expect((await failAdmin.campaigns.get(campaign.id)).status).toBe("failed");
+  }, 60_000);
+
   it("initiative roll-up traversal aggregates MULTIPLE campaigns with MIXED statuses (real graph query), via both propose-with-campaigns and add-campaign, and is org-scoped", async () => {
     // Campaign 1 -> completed (its member change promoted).
     const t1 = await admin.components.create({ name: "camp-rollup-completed-target" });
