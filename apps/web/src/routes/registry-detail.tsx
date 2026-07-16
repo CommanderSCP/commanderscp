@@ -1,12 +1,20 @@
+import { useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { client } from "../lib/client";
 import { findRegistry, getEdgeClient, getOwnerClient, getRegistryClient } from "../lib/registries";
-import { registryDetailKey } from "../lib/query-client";
+import { registryDetailKey, registryListKey } from "../lib/query-client";
 import { useBasePathParam, useIdOrUrnParam } from "../lib/use-route-params";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from "../components/ui/select";
 
 /**
  * `/{basePath}/{idOrUrn}` (BUILD_AND_TEST.md §8 M2 item 2) — object properties/labels, owners
@@ -107,6 +115,8 @@ export function RegistryDetailPage(): React.JSX.Element {
         </CardContent>
       </Card>
 
+      {registry.serviceMember && <ComponentServiceCard componentId={object.id} detailKey={detailKey} />}
+
       {registry.ownable && (
         <Card>
           <CardHeader>
@@ -174,5 +184,102 @@ export function RegistryDetailPage(): React.JSX.Element {
         later milestone (M4).
       </p>
     </div>
+  );
+}
+
+/**
+ * The component's owning service (M12 P5b) — shows the current `contains` parent (or "unassigned"
+ * for an imported orphan) and a selector to assign or atomically move it. `setService` is
+ * idempotent, so re-selecting the same service is a no-op.
+ */
+function ComponentServiceCard({
+  componentId,
+  detailKey
+}: {
+  componentId: string;
+  detailKey: unknown[];
+}): React.JSX.Element {
+  const queryClient = useQueryClient();
+  const [selected, setSelected] = useState("");
+
+  const containsQuery = useQuery({
+    queryKey: [...detailKey, "service"],
+    queryFn: () => client.relationships.list({ typeId: "contains", toId: componentId, limit: 1 })
+  });
+  const servicesQuery = useQuery({
+    queryKey: registryListKey("services"),
+    queryFn: () => client.services.list({ limit: 100 })
+  });
+
+  const currentServiceId = containsQuery.data?.items[0]?.fromId;
+  const currentService = servicesQuery.data?.items.find((s) => s.id === currentServiceId);
+
+  const setServiceMutation = useMutation({
+    mutationFn: (serviceId: string) => client.components.setService(componentId, serviceId),
+    onSuccess: async () => {
+      setSelected("");
+      await queryClient.invalidateQueries({ queryKey: [...detailKey, "service"] });
+    }
+  });
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Service</CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        <div className="text-sm">
+          {containsQuery.isLoading ? (
+            <span className="text-slate-500">Loading…</span>
+          ) : currentServiceId ? (
+            <Link
+              to="/$basePath/$idOrUrn"
+              params={{ basePath: "services", idOrUrn: currentServiceId }}
+              className="font-medium text-slate-900 hover:underline"
+              data-testid="component-service"
+            >
+              {currentService?.name ?? currentServiceId}
+            </Link>
+          ) : (
+            <span className="text-amber-700" data-testid="component-unassigned">
+              Unassigned — not part of any service.
+            </span>
+          )}
+        </div>
+        <div className="flex items-end gap-2">
+          <div className="flex flex-1 flex-col gap-1.5">
+            <label htmlFor="assign-service" className="text-xs font-medium text-slate-600">
+              {currentServiceId ? "Move to service" : "Assign to service"}
+            </label>
+            <Select value={selected} onValueChange={setSelected}>
+              <SelectTrigger id="assign-service" data-testid="assign-service-select">
+                <SelectValue placeholder="Select a service…" />
+              </SelectTrigger>
+              <SelectContent>
+                {(servicesQuery.data?.items ?? [])
+                  .filter((s) => s.id !== currentServiceId)
+                  .map((svc) => (
+                    <SelectItem key={svc.id} value={svc.id}>
+                      {svc.name}
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <Button
+            disabled={!selected || setServiceMutation.isPending}
+            onClick={() => selected && setServiceMutation.mutate(selected)}
+            data-testid="assign-service-submit"
+          >
+            {setServiceMutation.isPending ? "Saving…" : currentServiceId ? "Move" : "Assign"}
+          </Button>
+        </div>
+        {setServiceMutation.isError && (
+          <p className="text-sm text-red-600">
+            {setServiceMutation.error instanceof Error ? setServiceMutation.error.message : "Failed"}
+          </p>
+        )}
+      </CardContent>
+    </Card>
   );
 }

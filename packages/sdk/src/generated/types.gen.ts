@@ -5886,6 +5886,106 @@ export type UpsertComponentByUrnResponses = {
 
 export type UpsertComponentByUrnResponse = UpsertComponentByUrnResponses[keyof UpsertComponentByUrnResponses];
 
+export type SetComponentServiceData = {
+    body: {
+        service: string;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/components/{idOrUrn}/service';
+};
+
+export type SetComponentServiceErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type SetComponentServiceError = SetComponentServiceErrors[keyof SetComponentServiceErrors];
+
+export type SetComponentServiceResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        provenance: 'manual' | null;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type SetComponentServiceResponse = SetComponentServiceResponses[keyof SetComponentServiceResponses];
+
 export type ListDomainOwnersData = {
     body?: never;
     path: {

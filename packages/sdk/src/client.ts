@@ -43,6 +43,7 @@ import {
   deleteService as deleteServiceRequest,
   upsertServiceByUrn as upsertServiceByUrnRequest,
   createComponent as createComponentRequest,
+  setComponentService as setComponentServiceRequest,
   listComponents as listComponentsRequest,
   getComponent as getComponentRequest,
   updateComponent as updateComponentRequest,
@@ -884,7 +885,20 @@ export class ScpClient {
       removeConsumes: consumes.remove,
       addDependsOn: dependsOn.add,
       listDependsOn: dependsOn.list,
-      removeDependsOn: dependsOn.remove
+      removeDependsOn: dependsOn.remove,
+      /**
+       * Assign or move a component into a service (M12 P5b) — idempotent: sets the component's sole
+       * `contains` parent whether it has none (assign), a different one (atomic move), or the same
+       * one (no-op). Closes the missing `contains` SDK helper.
+       */
+      setService: async (idOrUrn: string, serviceIdOrUrn: string): Promise<GraphObject> => {
+        const result = await setComponentServiceRequest({
+          client: this.client,
+          path: { idOrUrn },
+          body: { service: serviceIdOrUrn }
+        });
+        return unwrap(result);
+      }
     };
   })();
 

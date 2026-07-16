@@ -40,6 +40,19 @@ async function requireLiveObject(tx: TenantTx, orgId: string, id: string, label:
   return row;
 }
 
+/**
+ * The 409 for "the `to` side already has an incoming edge of this type" — shared by BOTH the
+ * app-level `assertCardinality` pre-check AND the DB-index race backstop in `createRelationship`'s
+ * catch block, so a component that already has a service surfaces the SAME message whichever guard
+ * fires (M12 P5b — the migration-0022 partial unique index caught a concurrent create with the
+ * misleading generic "relationship id already exists" before this).
+ */
+function cardinalityToSideConflict(cardinality: string, typeId: string, toId: string) {
+  return conflict(
+    `cardinality '${cardinality}' violated: '${toId}' already has an incoming '${typeId}' relationship`
+  );
+}
+
 async function assertCardinality(
   tx: TenantTx,
   orgId: string,
@@ -62,9 +75,7 @@ async function assertCardinality(
         )
     });
     if (toClash) {
-      throw conflict(
-        `cardinality '${cardinality}' violated: '${toId}' already has an incoming '${typeId}' relationship`
-      );
+      throw cardinalityToSideConflict(cardinality, typeId, toId);
     }
   }
   if (cardinality === "one_to_one") {
@@ -186,6 +197,13 @@ export async function createRelationship(
       throw conflict(
         `relationship '${input.typeId}' from '${input.fromId}' to '${input.toId}' already exists`
       );
+    }
+    if (isUniqueViolation(err, "relationships_contains_one_service_per_component")) {
+      // Migration-0022 partial unique index: two concurrent `contains` creates for the same
+      // component both passed `assertCardinality` under READ COMMITTED (no row lock), and this one
+      // lost at the index. Surface the SAME one-service-per-component 409 the pre-check would have,
+      // not the misleading generic "relationship id already exists" below (which blames the id).
+      throw cardinalityToSideConflict("one_to_many", input.typeId, input.toId);
     }
     if (isUniqueViolation(err)) throw conflict(`relationship id '${id}' already exists`);
     throw err;
