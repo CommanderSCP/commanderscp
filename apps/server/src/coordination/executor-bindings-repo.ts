@@ -4,7 +4,8 @@ import { and, eq, exists, isNull, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { executorBindings, objects } from "../db/schema.js";
-import { conflict } from "../errors.js";
+import { conflict, notFound } from "../errors.js";
+import { isUniqueViolation } from "../db/pg-errors.js";
 import { resolveSecretRefs } from "../secrets/secrets-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import type { PluginHostInstanceConfig, PluginModule } from "../plugin-host/contract.js";
@@ -301,6 +302,37 @@ export async function setExecutorBindingPurpose(
     .where(eq(executorBindings.id, existing.id))
     .returning();
   return toRow(row!);
+}
+
+/**
+ * Re-points a binding onto a DIFFERENT target object (M12 P5d merge) — moves the binding from its
+ * current target onto `newTargetObjectId`, keeping its purpose. The caller (`mergeComponents`)
+ * verifies the destination has no binding at this purpose first (owner Q1: reject-and-relabel, no
+ * auto-collision); this still catches a concurrent racer at `UNIQUE(org,target,purpose)` and surfaces
+ * the same one-per-purpose 409 rather than a raw unique-violation.
+ */
+export async function repointExecutorBindingTarget(
+  tx: TenantTx,
+  orgId: string,
+  bindingId: string,
+  newTargetObjectId: string
+): Promise<ExecutorBindingRow> {
+  try {
+    const [row] = await tx
+      .update(executorBindings)
+      .set({ targetObjectId: newTargetObjectId, updatedAt: new Date() })
+      .where(and(eq(executorBindings.orgId, orgId), eq(executorBindings.id, bindingId)))
+      .returning();
+    if (!row) throw notFound(`executor binding '${bindingId}' not found`);
+    return toRow(row);
+  } catch (err) {
+    if (isUniqueViolation(err, "executor_bindings_org_target_purpose_key")) {
+      throw conflict(
+        `target '${newTargetObjectId}' already has a binding for this purpose — relabel one first`
+      );
+    }
+    throw err;
+  }
 }
 
 /**

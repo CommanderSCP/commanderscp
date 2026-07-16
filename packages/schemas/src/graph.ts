@@ -169,6 +169,24 @@ export const SetComponentServiceRequestSchema = z.object({
 });
 export type SetComponentServiceRequest = z.infer<typeof SetComponentServiceRequestSchema>;
 
+/**
+ * `POST /components/{idOrUrn}/merge` — driving-case merge (M12 P5d). Folds `loser` into the path
+ * component (the survivor): the loser's executor bindings move onto the survivor and the loser is
+ * soft-deleted. Scoped to a freshly-imported, binding-only loser (the argocd double-import case).
+ */
+export const MergeComponentsRequestSchema = z.object({
+  /** id or URN of the component to merge INTO this one — it is soft-deleted after its bindings move. */
+  loser: z.string().min(1)
+});
+export type MergeComponentsRequest = z.infer<typeof MergeComponentsRequestSchema>;
+
+export const MergeComponentsResponseSchema = z.object({
+  survivor: GraphObjectSchema,
+  /** Purposes of the bindings moved from the loser onto the survivor. */
+  movedBindingPurposes: z.array(z.string())
+});
+export type MergeComponentsResponse = z.infer<typeof MergeComponentsResponseSchema>;
+
 export const ObjectListResponseSchema = cursorPageResponseSchema(GraphObjectSchema);
 export type ObjectListResponse = z.infer<typeof ObjectListResponseSchema>;
 

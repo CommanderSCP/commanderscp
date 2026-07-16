@@ -295,3 +295,105 @@ describe("components: assign / atomic move into a service (M12 P5b)", () => {
     expect(edges[0]!.fromId).toBe(svcA.id);
   });
 });
+
+describe("components: driving-case merge (M12 P5d)", () => {
+  let server: ListeningTestServer;
+  let org: TestOrg;
+  let admin: ScpClient;
+
+  beforeAll(async () => {
+    server = await listenTestServer();
+    org = await createTestOrg(server, "components-merge");
+    admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+  });
+
+  afterAll(async () => {
+    await server?.close();
+  });
+
+  const rand = () => randomUUID().slice(0, 8);
+  const putBinding = (targetId: string, purpose: "infra" | "software") =>
+    admin.executors.putBinding(targetId, {
+      pluginModule: "fake-executor",
+      pluginInstanceId: `inst-${rand()}`,
+      config: { statePath: "/tmp/x" },
+      allowedHosts: [],
+      purpose
+    });
+  const purposesOf = async (id: string) =>
+    (await admin.executors.listBindings(id)).map((b) => b.purpose).sort();
+
+  it("folds a binding-only loser into the survivor: bindings move here, loser soft-deleted", async () => {
+    const survivor = await createOrphanComponent(admin, `surv-${rand()}`);
+    const loser = await createOrphanComponent(admin, `lose-${rand()}`);
+    await putBinding(survivor.id, "infra");
+    await putBinding(loser.id, "software");
+
+    const result = await admin.components.merge(survivor.id, loser.id);
+    expect(result.survivor.id).toBe(survivor.id);
+    expect(result.movedBindingPurposes).toEqual(["software"]);
+
+    expect(await purposesOf(survivor.id)).toEqual(["infra", "software"]);
+    await expect(admin.components.get(loser.id)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("REJECTS a binding-purpose collision (Q1); relabel-then-merge is the driving-case flow", async () => {
+    const survivor = await createOrphanComponent(admin, `surv-${rand()}`);
+    const loser = await createOrphanComponent(admin, `lose-${rand()}`);
+    // Both default to 'software' (the guaranteed argocd double-import collision).
+    await putBinding(survivor.id, "software");
+    await putBinding(loser.id, "software");
+
+    await expect(admin.components.merge(survivor.id, loser.id)).rejects.toMatchObject({ status: 409 });
+    // Nothing moved — loser still alive with its binding.
+    await expect(admin.components.get(loser.id)).resolves.toBeTruthy();
+    expect(await purposesOf(survivor.id)).toEqual(["software"]);
+
+    // Relabel the loser's binding to infra (P5c), then the merge succeeds.
+    await admin.executors.repurposeBinding(loser.id, "infra");
+    const result = await admin.components.merge(survivor.id, loser.id);
+    expect(result.movedBindingPurposes).toEqual(["infra"]);
+    expect(await purposesOf(survivor.id)).toEqual(["infra", "software"]);
+    await expect(admin.components.get(loser.id)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("REJECTS a loser with live graph edges — general graph-rewrite is out of scope", async () => {
+    const survivor = await createOrphanComponent(admin, `surv-${rand()}`);
+    const svc = await admin.services.create({ name: `svc-${rand()}` });
+    // A loser assigned to a service has a `contains` edge — not a binding-only orphan.
+    const loser = await createTestComponent(admin, { name: `lose-${rand()}`, service: svc.id });
+    await putBinding(loser.id, "software");
+
+    await expect(admin.components.merge(survivor.id, loser.id)).rejects.toMatchObject({ status: 409 });
+    await expect(admin.components.get(loser.id)).resolves.toBeTruthy(); // untouched
+  });
+
+  it("REJECTS a merge while an in-flight change targets either component", async () => {
+    const survivor = await createOrphanComponent(admin, `surv-${rand()}`);
+    const loser = await createOrphanComponent(admin, `lose-${rand()}`);
+    await putBinding(loser.id, "software");
+    // A freshly-proposed change on the survivor is in-flight (non-terminal).
+    await admin.changes.propose({ name: "in-flight", targets: [survivor.id] });
+
+    await expect(admin.components.merge(survivor.id, loser.id)).rejects.toMatchObject({ status: 409 });
+    await expect(admin.components.get(loser.id)).resolves.toBeTruthy();
+  });
+
+  it("rejects self-merge (400) and a non-component loser (400)", async () => {
+    const comp = await createOrphanComponent(admin, `c-${rand()}`);
+    await expect(admin.components.merge(comp.id, comp.id)).rejects.toMatchObject({ status: 400 });
+    const svc = await admin.services.create({ name: `svc-${rand()}` });
+    await expect(admin.components.merge(comp.id, svc.id)).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("requires object:write on BOTH components (a subject scoped only to the survivor is refused)", async () => {
+    const survivor = await createOrphanComponent(admin, `surv-${rand()}`);
+    const loser = await createOrphanComponent(admin, `lose-${rand()}`);
+    await putBinding(loser.id, "software");
+
+    const user = await createTestUser(server, org, [{ role: "Operator", scope: survivor.id }]);
+    const client = new ScpClient({ baseUrl: server.baseUrl, token: user.token });
+    await expect(client.components.merge(survivor.id, loser.id)).rejects.toMatchObject({ status: 403 });
+    await expect(admin.components.get(loser.id)).resolves.toBeTruthy(); // nothing happened
+  });
+});
