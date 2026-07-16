@@ -5,6 +5,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { createSourceMapping } from "./source-mappings-repo.js";
 import { matchComponentForSource } from "./correlation.js";
 import {
+  createTestComponent,
   createTestOrg,
   listenTestServer,
   type ListeningTestServer,
@@ -39,7 +40,7 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
   });
 
   const component = async (name: string): Promise<string> =>
-    (await admin.object("component").create({ name: `${name}-${uuidv7()}` })).id;
+    (await createTestComponent(admin, { name: `${name}-${uuidv7()}` })).id;
 
   /**
    * One mapping per transaction, exactly as the create route does it — and load-bearing here:

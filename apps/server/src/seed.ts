@@ -84,18 +84,21 @@ export async function seedDemoData(
     { name: "payments-gateway", domainId: domain.id }
   );
 
-  log.info("seed: upserting demo components");
+  // M12 P5a: a directly-created component belongs to a service (each carries the `contains` parent).
+  log.info("seed: upserting demo components in their services");
   const checkoutApi = await client.components.upsertByUrn(demoUrn(org, "component", "checkout-api"), {
     name: "checkout-api",
-    domainId: domain.id
+    domainId: domain.id,
+    service: checkout.id
   });
   await client.components.upsertByUrn(demoUrn(org, "component", "checkout-worker"), {
     name: "checkout-worker",
-    domainId: domain.id
+    domainId: domain.id,
+    service: checkout.id
   });
   const paymentsGatewayApi = await client.components.upsertByUrn(
     demoUrn(org, "component", "payments-gateway-api"),
-    { name: "payments-gateway-api", domainId: domain.id }
+    { name: "payments-gateway-api", domainId: domain.id, service: paymentsGateway.id }
   );
 
   log.info("seed: upserting demo team 'platform-team' and its ownership of 'checkout'");

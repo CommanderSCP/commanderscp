@@ -3,6 +3,7 @@ import { ScpClient } from "@scp/sdk";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { getExecutorBinding, listExecutorBindingsForTarget } from "./executor-bindings-repo.js";
 import {
+  createTestComponent,
   createTestOrg,
   listenTestServer,
   type ListeningTestServer,
@@ -47,7 +48,7 @@ describe("executor bindings: 1:N per target, keyed by purpose", () => {
     });
 
   it("a component holds BOTH an infra and a software binding — adding one no longer destroys the other", async () => {
-    const comp = await admin.object("component").create({ name: "static-fleet" });
+    const comp = await createTestComponent(admin, { name: "static-fleet" });
 
     const software = await bind(comp.id, "software", "gh-deploy");
     const infra = await bind(comp.id, "infra", "gh-terraform");
@@ -67,7 +68,7 @@ describe("executor bindings: 1:N per target, keyed by purpose", () => {
   });
 
   it("re-binding the SAME purpose still updates in place (one pipeline per purpose)", async () => {
-    const comp = await admin.object("component").create({ name: "rebind-me" });
+    const comp = await createTestComponent(admin, { name: "rebind-me" });
     const first = await bind(comp.id, "software", "gh-deploy-v1");
     const second = await bind(comp.id, "software", "gh-deploy-v2");
 
@@ -80,7 +81,7 @@ describe("executor bindings: 1:N per target, keyed by purpose", () => {
   });
 
   it("omitting purpose defaults to 'software' — the behaviour-preserving default", async () => {
-    const comp = await admin.object("component").create({ name: "legacy-shaped" });
+    const comp = await createTestComponent(admin, { name: "legacy-shaped" });
     const created = await bind(comp.id, undefined, "gh-legacy");
     expect(created.purpose).toBe("software");
 
@@ -97,7 +98,7 @@ describe("executor bindings: 1:N per target, keyed by purpose", () => {
     // ever ask for 'software'; P4A now lets a wave target name its purpose, and
     // `wave-target-purpose.integration.test.ts` covers the routing end to end. This stays as the
     // narrow unit-level guarantee the resolver itself owes.)
-    const comp = await admin.object("component").create({ name: "both-pipelines" });
+    const comp = await createTestComponent(admin, { name: "both-pipelines" });
     await bind(comp.id, "software", "gh-deploy");
     await bind(comp.id, "infra", "gh-terraform");
 
@@ -113,7 +114,7 @@ describe("executor bindings: 1:N per target, keyed by purpose", () => {
   });
 
   it("rejects a purpose outside the closed set", async () => {
-    const comp = await admin.object("component").create({ name: "bad-purpose" });
+    const comp = await createTestComponent(admin, { name: "bad-purpose" });
     await expect(
       admin.executors.putBinding(comp.id, {
         pluginModule: "fake-executor",
@@ -129,7 +130,7 @@ describe("executor bindings: 1:N per target, keyed by purpose", () => {
     // The gap this closes: P3's first cut threaded `purpose` through every WRITE and none of the
     // reads, so PUT could create an infra binding that no API call could ever return — GET silently
     // answered with the software one. Write-complete, read-incomplete.
-    const comp = await admin.object("component").create({ name: "readback-comp" });
+    const comp = await createTestComponent(admin, { name: "readback-comp" });
     await bind(comp.id, "software", "sw");
     await bind(comp.id, "infra", "inf");
 
@@ -143,7 +144,7 @@ describe("executor bindings: 1:N per target, keyed by purpose", () => {
   });
 
   it("READ PATH: 404s for a purpose with no binding (rather than falling back to another)", async () => {
-    const comp = await admin.object("component").create({ name: "sw-only" });
+    const comp = await createTestComponent(admin, { name: "sw-only" });
     await bind(comp.id, "software", "sw");
     await expect(admin.executors.getBinding(comp.id, "infra")).rejects.toThrow();
   });
@@ -152,7 +153,7 @@ describe("executor bindings: 1:N per target, keyed by purpose", () => {
     // Concurrent binds of the SAME purpose: exactly one row must exist afterwards, whether the app
     // upsert or UNIQUE(org_id, target_object_id, purpose) settles it. (The P2 review found the
     // analogous check-then-insert race on `contains`; same discipline applied here.)
-    const comp = await admin.object("component").create({ name: "race-purpose" });
+    const comp = await createTestComponent(admin, { name: "race-purpose" });
     await Promise.allSettled([
       bind(comp.id, "infra", "race-a"),
       bind(comp.id, "infra", "race-b")

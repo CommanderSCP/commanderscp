@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpApiError, ScpClient } from "@scp/sdk";
 import type { DesiredStateManifest } from "@scp/schemas";
 import {
+  createTestComponent,
   createTestOrg,
   createTestUser,
   listenTestServer,
@@ -110,8 +111,8 @@ describe("campaigns & initiatives (M5)", () => {
   });
 
   it("compiles per-target member changes with correct wave ordering; wave 1 promotes while wave 2 is blocked by a failing required control; status aggregates; rollback reverts the promoted target", async () => {
-    const infra = await admin.components.create({ name: "camp-infra" });
-    const app = await admin.components.create({ name: "camp-app" });
+    const infra = await createTestComponent(admin, { name: "camp-infra" });
+    const app = await createTestComponent(admin, { name: "camp-app" });
     await admin.components.addDependsOn(app.id, infra.id); // app depends_on infra -> infra first
 
     const failingControl = await createFailingControl(admin, org, "camp-fail-1", webhook.url);
@@ -230,7 +231,7 @@ describe("campaigns & initiatives (M5)", () => {
    *  advance the campaign under test, it already has by the time this resolves. Without this, the
    *  "nothing shipped" assertions below could pass vacuously against a stalled reconciler. */
   async function awaitReconcilerPass(client: ScpClient, label: string): Promise<void> {
-    const canaryTarget = await client.components.create({ name: `${label}-canary-target` });
+    const canaryTarget = await createTestComponent(client, { name: `${label}-canary-target` });
     const canary = await client.campaigns.propose({ name: `${label} liveness canary`, targets: [canaryTarget.id] });
     await waitUntil(
       async () => {
@@ -245,8 +246,8 @@ describe("campaigns & initiatives (M5)", () => {
     const failOrg = await createTestOrg(server, "campaign-failed-wave");
     const failAdmin = new ScpClient({ baseUrl: server.baseUrl, token: failOrg.adminToken });
 
-    const infra = await failAdmin.components.create({ name: "failwave-infra" });
-    const app = await failAdmin.components.create({ name: "failwave-app" });
+    const infra = await createTestComponent(failAdmin, { name: "failwave-infra" });
+    const app = await createTestComponent(failAdmin, { name: "failwave-app" });
     await failAdmin.components.addDependsOn(app.id, infra.id); // app depends_on infra -> infra is wave 0
 
     const campaign = await failAdmin.campaigns.propose({
@@ -322,7 +323,7 @@ describe("campaigns & initiatives (M5)", () => {
     const failOrg = await createTestOrg(server, "campaign-failed-wave-last");
     const failAdmin = new ScpClient({ baseUrl: server.baseUrl, token: failOrg.adminToken });
 
-    const target = await failAdmin.components.create({ name: "failwave-only-target" });
+    const target = await createTestComponent(failAdmin, { name: "failwave-only-target" });
     const campaign = await failAdmin.campaigns.propose({ name: "single-wave campaign that fails", targets: [target.id] });
 
     const memberChangeId = await waitUntil(
@@ -354,7 +355,7 @@ describe("campaigns & initiatives (M5)", () => {
 
   it("initiative roll-up traversal aggregates MULTIPLE campaigns with MIXED statuses (real graph query), via both propose-with-campaigns and add-campaign, and is org-scoped", async () => {
     // Campaign 1 -> completed (its member change promoted).
-    const t1 = await admin.components.create({ name: "camp-rollup-completed-target" });
+    const t1 = await createTestComponent(admin, { name: "camp-rollup-completed-target" });
     const completedCampaign = await admin.campaigns.propose({ name: "rollup-completed campaign", targets: [t1.id] });
     const memberChangeId = await waitUntil(
       async () => {
@@ -374,7 +375,7 @@ describe("campaigns & initiatives (M5)", () => {
     );
 
     // Campaign 2 -> blocked (a required-but-failing control gates its only wave).
-    const t2 = await admin.components.create({ name: "camp-rollup-blocked-target" });
+    const t2 = await createTestComponent(admin, { name: "camp-rollup-blocked-target" });
     const failingControl = await createFailingControl(admin, org, "rollup-fail", webhook.url);
     await requireControlOn(admin, org, "rollup-fail-policy", t2.id, failingControl.id);
     const blockedCampaign = await admin.campaigns.propose({ name: "rollup-blocked campaign", targets: [t2.id] });
@@ -418,7 +419,7 @@ describe("campaigns & initiatives (M5)", () => {
   }, 50_000);
 
   it("SECURITY: a campaign cannot coordinate a target the actor lacks authority over (both closed write paths)", async () => {
-    const restrictedTarget = await admin.components.create({ name: "camp-restricted-target" });
+    const restrictedTarget = await createTestComponent(admin, { name: "camp-restricted-target" });
     // A Viewer has object:read but not object:write anywhere — cannot even name this target in a
     // campaign, regardless of the fact that member Changes are later proposed by the SYSTEM actor
     // (which would otherwise silently bypass this — see campaign-repo.ts's proposeCampaign doc).
@@ -436,7 +437,7 @@ describe("campaigns & initiatives (M5)", () => {
   });
 
   it("SECURITY: linking a campaign into an initiative requires relationship:write at BOTH endpoints", async () => {
-    const t = await admin.components.create({ name: "camp-initiative-authz-target" });
+    const t = await createTestComponent(admin, { name: "camp-initiative-authz-target" });
     const campaign = await admin.campaigns.propose({ name: "authz-probe campaign", targets: [t.id] });
 
     const viewer = await createTestUser(server, org, [{ role: "Viewer", scope: "self" }]);
@@ -458,7 +459,7 @@ describe("campaigns & initiatives (M5)", () => {
   // -----------------------------------------------------------------------------------------
 
   it("SECURITY: the generic /api/v1/objects/campaign endpoint refuses every write verb, even for the org-root admin", async () => {
-    const restrictedTarget = await admin.components.create({ name: "camp-generic-bypass-target" });
+    const restrictedTarget = await createTestComponent(admin, { name: "camp-generic-bypass-target" });
 
     // Exploit: an actor with object:write ONLY at a domain they own tries the generic endpoint to
     // plant a campaign targeting an object OUTSIDE their authority — proposeCampaign's per-target
@@ -492,9 +493,9 @@ describe("campaigns & initiatives (M5)", () => {
   });
 
   it("SECURITY: IaC plan/apply binds a campaign manifest's declared targets to the actor's own authority", async () => {
-    const restrictedTarget = await admin.components.create({ name: "camp-iac-bypass-target" });
+    const restrictedTarget = await createTestComponent(admin, { name: "camp-iac-bypass-target" });
     const ownDomain = await admin.domains.create({ name: "camp-iac-bypass-own-domain" });
-    const ownTarget = await admin.components.create({ name: "camp-iac-bypass-own-target", domainId: ownDomain.id });
+    const ownTarget = await createTestComponent(admin, { name: "camp-iac-bypass-own-target", domainId: ownDomain.id });
 
     const narrowActor = await createTestUser(server, org, [
       { role: "Viewer", scope: org.orgId }, // POST /plans needs object:read at org root
@@ -545,8 +546,8 @@ describe("campaigns & initiatives (M5)", () => {
     // depends_on-based auto-sequencing now works exactly like an API-created campaign's does,
     // instead of silently no-oping on URN-shaped target strings (loadDependsOnEdges queries
     // `relationships` by real object id — URN strings would never match).
-    const infra = await admin.components.create({ name: "camp-iac-urn-infra" });
-    const app = await admin.components.create({ name: "camp-iac-urn-app" });
+    const infra = await createTestComponent(admin, { name: "camp-iac-urn-infra" });
+    const app = await createTestComponent(admin, { name: "camp-iac-urn-app" });
     await admin.components.addDependsOn(app.id, infra.id); // app depends_on infra -> infra first
 
     const stackName = `camp-iac-urn-${randomUUID().slice(0, 8)}`;
@@ -593,7 +594,7 @@ describe("campaigns & initiatives (M5)", () => {
   // -----------------------------------------------------------------------------------------
 
   it("SECURITY: the generic POST /relationships endpoint refuses a `coordinates` edge (system-managed, 403)", async () => {
-    const target = await admin.components.create({ name: "camp-coord-block-target" });
+    const target = await createTestComponent(admin, { name: "camp-coord-block-target" });
     const campaign = await admin.campaigns.propose({ name: "coord-block campaign", targets: [target.id] });
     const someChange = await admin.changes.propose({ name: "coord-block unrelated change", targets: [target.id] });
 
@@ -606,7 +607,7 @@ describe("campaigns & initiatives (M5)", () => {
   });
 
   it("SECURITY: an IaC manifest declaring a raw `coordinates` relationship is refused at apply (403)", async () => {
-    const target = await admin.components.create({ name: "camp-iac-coord-target" });
+    const target = await createTestComponent(admin, { name: "camp-iac-coord-target" });
     const campaign = await admin.campaigns.propose({ name: "iac-coord campaign", targets: [target.id] });
 
     const stackName = `camp-iac-coord-${randomUUID().slice(0, 8)}`;
@@ -628,7 +629,7 @@ describe("campaigns & initiatives (M5)", () => {
   it("SECURITY: campaign rollback IGNORES a stray/injected `coordinates` edge — only true plan-compiled members are reverted", async () => {
     // The TRUE member: a campaign targeting its own object, promoted (a real, plan-compiled,
     // rollback-eligible member).
-    const trueTarget = await admin.components.create({ name: "camp-stray-true-target" });
+    const trueTarget = await createTestComponent(admin, { name: "camp-stray-true-target" });
     const campaign = await admin.campaigns.propose({ name: "stray-edge campaign", targets: [trueTarget.id] });
     const trueMemberChangeId = await waitUntil(
       async () => {
@@ -649,7 +650,7 @@ describe("campaigns & initiatives (M5)", () => {
     // legacy/migrated/future-bug edge that the type-level HTTP+IaC blocks can't retroactively
     // prevent. If campaign rollback trusted raw `coordinates` edges (the pre-fix behavior), this
     // change WOULD be swept into the rollback.
-    const injectedTarget = await admin.components.create({ name: "camp-stray-injected-target" });
+    const injectedTarget = await createTestComponent(admin, { name: "camp-stray-injected-target" });
     const injectedChange = await admin.changes.propose({ name: "injected-not-a-member", targets: [injectedTarget.id] });
     await waitUntil(async () => (await admin.changes.get(injectedChange.id)).state === "validating" || undefined, {
       describe: `injected change ${injectedChange.id} reaches 'validating'`,

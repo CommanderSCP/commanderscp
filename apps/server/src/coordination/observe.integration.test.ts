@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
 import type { ExecutorEvent } from "@scp/plugin-api";
 import {
+  createTestComponent,
   createTestOrg,
   listenTestServer,
   type ListeningTestServer,
@@ -49,7 +50,7 @@ describe("observe()-driver: pull-based change detection (no inbound webhook)", (
   });
 
   it("observe() -> change_source_events -> Change, with cursor advance and dedup", async () => {
-    const component = await admin.components.create({ name: "observe-target" });
+    const component = await createTestComponent(admin, { name: "observe-target" });
 
     const event: ExecutorEvent = {
       kind: "push",

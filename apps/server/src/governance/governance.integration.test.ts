@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpApiError, ScpClient } from "@scp/sdk";
 import type { DesiredStateManifest } from "@scp/schemas";
 import {
+  createTestComponent,
   createTestOrg,
   createTestUser,
   listenTestServer,
@@ -237,7 +238,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const domain = await admin.domains.create({ name: "sw-domain" });
     const siblingDomain = await admin.domains.create({ name: "sw-sibling-domain" });
     const service = await admin.services.create({ name: "sw-service", domainId: domain.id });
-    const component = await admin.components.create({ name: "sw-component", domainId: service.id });
+    const component = await createTestComponent(admin, { name: "sw-component", domainId: service.id });
 
     await createPolicy(admin, org, {
       name: "prod-security",
@@ -317,7 +318,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
     const domain = await admin.domains.create({ name: "cb-domain" });
-    const component = await admin.components.create({ name: "cb-component", domainId: domain.id });
+    const component = await createTestComponent(admin, { name: "cb-component", domainId: domain.id });
     const realControl = await createWebhookControl(admin, org, {
       urnSuffix: "cb-real-scan",
       webhookUrl: webhook.url,
@@ -379,7 +380,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
     const domain = await admin.domains.create({ name: "sa-domain" });
-    const component = await admin.components.create({ name: "sa-component", domainId: domain.id });
+    const component = await createTestComponent(admin, { name: "sa-component", domainId: domain.id });
 
     // Administrator holds 'policy:write' (M4 migration) — bind it at the COMPONENT only, so this
     // author's policy authority is exactly that component and below.
@@ -449,7 +450,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
     const domain = await admin.domains.create({ name: "gpb-domain" });
-    const component = await admin.components.create({ name: "gpb-component", domainId: domain.id });
+    const component = await createTestComponent(admin, { name: "gpb-component", domainId: domain.id });
 
     // Exploit (a): a component-scoped Administrator — holds 'policy:write' ONLY at `component` —
     // tries the generic endpoint instead of the typed route CRITICAL #1b already blocks.
@@ -515,7 +516,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
     const domain = await admin.domains.create({ name: "iac-pb-domain" });
-    const component = await admin.components.create({ name: "iac-pb-component", domainId: domain.id });
+    const component = await createTestComponent(admin, { name: "iac-pb-component", domainId: domain.id });
 
     const stackName = `stack-${randomUUID().slice(0, 8)}`;
     const policyUrn = `urn:scp:${stackName}:policy:evil`;
@@ -613,7 +614,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       const approver = await createTestUser(server, org, [{ role: "Approver", scope: org.orgId }]);
       const approverClient = new ScpClient({ baseUrl: server.baseUrl, token: approver.token });
 
-      const target = await admin.components.create({ name: "hybrid-fail-target" });
+      const target = await createTestComponent(admin, { name: "hybrid-fail-target" });
       const control = await createWebhookControl(admin, org, {
         urnSuffix: "hybrid-fail-scan",
         webhookUrl: webhook.url,
@@ -665,7 +666,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       const approver = await createTestUser(server, org, [{ role: "Approver", scope: org.orgId }]);
       const approverClient = new ScpClient({ baseUrl: server.baseUrl, token: approver.token });
 
-      const target = await admin.components.create({ name: "hybrid-pass-target" });
+      const target = await createTestComponent(admin, { name: "hybrid-pass-target" });
       const control = await createWebhookControl(admin, org, {
         urnSuffix: "hybrid-pass-scan",
         webhookUrl: webhook.url,
@@ -735,7 +736,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const org = await createTestOrg(server, "quorum");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
-    const target = await admin.components.create({ name: "quorum-target" });
+    const target = await createTestComponent(admin, { name: "quorum-target" });
     await createPolicy(admin, org, {
       name: "quorum-gate",
       urnSuffix: "quorum",
@@ -811,8 +812,8 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const org = await createTestOrg(server, "approves-guard");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
-    const a = await admin.components.create({ name: "ag-from" });
-    const b = await admin.components.create({ name: "ag-to" });
+    const a = await createTestComponent(admin, { name: "ag-from" });
+    const b = await createTestComponent(admin, { name: "ag-to" });
 
     // Even the bootstrap admin (org-root Owner) cannot fabricate one — it's engine-owned, not a
     // permission question.
@@ -824,7 +825,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
 
     // A legitimate `approves` edge (from a real vote) also cannot be hand-deleted via the generic
     // endpoint. Produce one via the real vote path, then attempt to delete it.
-    const target = await admin.components.create({ name: "ag-target" });
+    const target = await createTestComponent(admin, { name: "ag-target" });
     await createPolicy(admin, org, {
       name: "approves-guard-policy",
       urnSuffix: "approves-guard",
@@ -856,7 +857,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
     const service = await admin.services.create({ name: "sk-service" });
-    const component = await admin.components.create({ name: "sk-component", domainId: service.id });
+    const component = await createTestComponent(admin, { name: "sk-component", domainId: service.id });
 
     await createPolicy(admin, org, {
       name: "service-approval",
@@ -906,8 +907,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     // thing linking C to S is the `contains` edge, exactly as migration 0021 registers it
     // (service --contains--> component, walked backwards). Do not "fix" this to `domainId:
     // service.id`: that would re-create the sibling test above and stop covering this bug.
-    const component = await admin.components.create({ name: "skc-component" });
-    await admin.relationships.create({ typeId: "contains", fromId: service.id, toId: component.id });
+    const component = await createTestComponent(admin, { name: "skc-component", service: service.id });
 
     await createPolicy(admin, org, {
       name: "service-approval-contains",
@@ -949,7 +949,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const org = await createTestOrg(server, "freeze");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
-    const target = await admin.components.create({ name: "freeze-target" });
+    const target = await createTestComponent(admin, { name: "freeze-target" });
     const change = await admin.changes.propose({ name: "freeze-change", targets: [target.id] });
     await waitForValidating(admin, change.id);
 
@@ -1021,11 +1021,10 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const service = await admin.services.create({ name: "sf-service" });
     // Same real shape as the keyword test: domain_id stays the org root; the `contains` edge is the
     // only link. A domain_id-only walk cannot see the service from the component.
-    const contained = await admin.components.create({ name: "sf-contained" });
-    await admin.relationships.create({ typeId: "contains", fromId: service.id, toId: contained.id });
+    const contained = await createTestComponent(admin, { name: "sf-contained", service: service.id });
     // Negative control (the orphan-import case): a component the service does NOT contain. Guards
     // against a "fix" that over-blocks by scooping up unrelated objects.
-    const unrelated = await admin.components.create({ name: "sf-unrelated" });
+    const unrelated = await createTestComponent(admin, { name: "sf-unrelated" });
 
     const frozenChange = await admin.changes.propose({ name: "sf-frozen-change", targets: [contained.id] });
     const freeChange = await admin.changes.propose({ name: "sf-free-change", targets: [unrelated.id] });
@@ -1067,7 +1066,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
     const service = await admin.services.create({ name: "mf-service" });
-    const component = await admin.components.create({ name: "mf-component", domainId: service.id });
+    const component = await createTestComponent(admin, { name: "mf-component", domainId: service.id });
     const change = await admin.changes.propose({ name: "mf-change", targets: [component.id] });
     await waitForValidating(admin, change.id);
 
@@ -1115,7 +1114,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const org = await createTestOrg(server, "group-scope");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
-    const target = await admin.components.create({ name: "group-scope-target" });
+    const target = await createTestComponent(admin, { name: "group-scope-target" });
     const group = await admin.groups.create({ name: "release-managers" });
 
     const member = await createTestUser(server, org, [{ role: "Operator", scope: org.orgId }]);
@@ -1157,7 +1156,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       const org = await createTestOrg(server, "emergency");
       const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
-      const target = await admin.components.create({ name: "emergency-target" });
+      const target = await createTestComponent(admin, { name: "emergency-target" });
 
       // Deliberately unsatisfiable in this test (nobody ever votes) — any change that gets past
       // this one did so via the emergency bypass, not by chance.
@@ -1213,7 +1212,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     it("a non-permitted actor cannot flag a change emergency (403) — the SAME actor can still propose an ordinary change", async () => {
       const org = await createTestOrg(server, "emergency-authz");
       const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-      const target = await admin.components.create({ name: "emergency-authz-target" });
+      const target = await createTestComponent(admin, { name: "emergency-authz-target" });
 
       // Administrator: object:write (can propose ordinary changes) but deliberately NOT
       // change:emergency (Owner-only per the M4 migration — the two highest-blast-radius bypass
@@ -1260,7 +1259,7 @@ describe("governance integration: automatic rollback on wave failure", () => {
     const org = await createTestOrg(server, "auto-rollback");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
-    const target = await admin.components.create({ id: autoRollbackTargetId, name: "auto-rollback-target" });
+    const target = await createTestComponent(admin, { id: autoRollbackTargetId, name: "auto-rollback-target" });
     await createPolicy(admin, org, {
       name: "auto-rollback-policy",
       urnSuffix: "auto-rollback",
@@ -1312,7 +1311,7 @@ describe("governance integration: automatic rollback on wave failure", () => {
     const org = await createTestOrg(server, "manual-park");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
-    const target = await admin.components.create({ id: parkedTargetId, name: "parked-target" });
+    const target = await createTestComponent(admin, { id: parkedTargetId, name: "parked-target" });
     const change = await admin.changes.propose({ name: "will-park", targets: [target.id] });
 
     await waitUntil(

@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
 import {
+  createTestComponent,
   createTestOrg,
   createTestUser,
   listenTestServer,
@@ -105,8 +106,8 @@ describe("ownership ergonomics: owns/consumes/depends_on sub-resources", () => {
   });
 
   it("consumes/depends_on round-trip on components too", async () => {
-    const compA = await admin.components.create({ name: "edge-comp-a" });
-    const compB = await admin.components.create({ name: "edge-comp-b" });
+    const compA = await createTestComponent(admin, { name: "edge-comp-a" });
+    const compB = await createTestComponent(admin, { name: "edge-comp-b" });
 
     const consumes = await admin.components.addConsumes(compA.id, compB.id);
     expect(consumes.fromId).toBe(compA.id);
