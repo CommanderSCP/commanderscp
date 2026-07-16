@@ -13965,6 +13965,13 @@ export type RunDiscoveryResponses = {
             executionSystemId: string;
             externalRef?: string;
         }>;
+        sourceMappings?: Array<{
+            objectName: string;
+            sourceKind: string;
+            repoPattern?: string;
+            pathPattern?: string;
+            purpose?: 'infra' | 'software';
+        }>;
     };
 };
 
@@ -13990,6 +13997,13 @@ export type AcceptDiscoveryProposalData = {
                 objectName: string;
                 executionSystemId: string;
                 externalRef?: string;
+            }>;
+            sourceMappings?: Array<{
+                objectName: string;
+                sourceKind: string;
+                repoPattern?: string;
+                pathPattern?: string;
+                purpose?: 'infra' | 'software';
             }>;
         };
     };
@@ -14044,6 +14058,7 @@ export type AcceptDiscoveryProposalResponses = {
         createdObjectIds: Array<string>;
         createdRelationshipIds: Array<string>;
         createdBindingIds: Array<string>;
+        createdSourceMappingIds: Array<string>;
     };
 };
 

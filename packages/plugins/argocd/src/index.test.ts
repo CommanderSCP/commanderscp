@@ -663,6 +663,45 @@ describe("discover() (M12 P3 — import an existing Argo CD)", () => {
     expect(web?.externalRef).toBe("web-prod");
   });
 
+  it("captures each app's git source and proposes a github source_mapping from it (M12 P5, Q3)", async () => {
+    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+    nock(SERVER_URL)
+      .get("/api/v1/applications")
+      .reply(200, {
+        items: [
+          // single-source
+          { metadata: { name: "web-prod" }, spec: { source: { repoURL: "https://github.com/acme/web", path: "deploy" } } },
+          // multi-source — the first source declaring a repoURL wins
+          { metadata: { name: "api-prod" }, spec: { sources: [{ path: "chart" }, { repoURL: "https://github.com/acme/api" }] } },
+          // no git source (e.g. a Helm-repo-only app) — no mapping, no sourceRepo property
+          { metadata: { name: "cache" }, spec: { destination: { namespace: "cache" } } }
+        ]
+      });
+
+    const proposal = await createArgoCdDiscoveryPlugin().discover(ctx);
+
+    // The git repo is recorded on the component AND drives a github mapping.
+    const web = proposal.objects.find((o) => o.name === "web-prod");
+    expect(web?.properties?.sourceRepo).toBe("https://github.com/acme/web");
+    expect(web?.properties?.sourcePath).toBe("deploy");
+
+    expect(proposal.sourceMappings).toHaveLength(2); // web + api; cache has no source
+    const webMap = proposal.sourceMappings?.find((m) => m.objectName === "web-prod");
+    expect(webMap).toMatchObject({
+      sourceKind: "github",
+      repoPattern: "https://github.com/acme/web",
+      pathPattern: "deploy",
+      purpose: "software"
+    });
+    // Multi-source: the source that actually has a repoURL is used.
+    expect(proposal.sourceMappings?.find((m) => m.objectName === "api-prod")?.repoPattern).toBe(
+      "https://github.com/acme/api"
+    );
+    // The source-less app proposes no mapping.
+    expect(proposal.sourceMappings?.some((m) => m.objectName === "cache")).toBe(false);
+    expect(proposal.objects.find((o) => o.name === "cache")?.properties?.sourceRepo).toBeUndefined();
+  });
+
   it("returns an empty proposal (never throws) when Argo CD has no Applications", async () => {
     const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
     nock(SERVER_URL).get("/api/v1/applications").reply(200, { items: [] });

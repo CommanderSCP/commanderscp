@@ -161,4 +161,48 @@ describe("CLI: M2 typed registry + ownership commands", () => {
       await cli.cleanup();
     }
   });
+  it("`scp change-source create-mapping` + `list-mappings` round-trip (M12 P5, Q3)", async () => {
+    const org = await createTestOrg(server, "cli-source-mappings");
+    const cli: CliInvocation = await startCliSession(server.baseUrl);
+    try {
+      await cli.run(["login", "--username", org.adminUsername, "--password", org.adminPassword]);
+      const svc = await cli.runJson<{ id: string }>(["service", "register", "--name", "cli-svc"]);
+      const comp = await cli.runJson<{ id: string }>([
+        "component",
+        "register",
+        "--name",
+        "cli-mapped",
+        "--service",
+        svc.id
+      ]);
+
+      const mapping = await cli.runJson<{ componentObjectId: string; repoPattern: string; sourceKind: string }>([
+        "change-source",
+        "create-mapping",
+        "github",
+        "--component",
+        comp.id,
+        "--repo",
+        "acme/cli-app"
+      ]);
+      expect(mapping.sourceKind).toBe("github");
+      expect(mapping.componentObjectId).toBe(comp.id);
+      expect(mapping.repoPattern).toBe("acme/cli-app");
+
+      const listed = await cli.runJson<Array<{ componentObjectId: string }>>([
+        "change-source",
+        "list-mappings",
+        "github"
+      ]);
+      expect(listed.some((m) => m.componentObjectId === comp.id)).toBe(true);
+
+      // --component is required.
+      await expect(
+        cli.run(["change-source", "create-mapping", "github", "--repo", "x/y"])
+      ).rejects.toThrow(/component/i);
+    } finally {
+      await cli.cleanup();
+    }
+  });
+
 });
