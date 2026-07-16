@@ -3,7 +3,7 @@ import { v7 as uuidv7 } from "uuid";
 import type { DesiredStateManifest, Plan, PlanDiff, PlanStatus } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects, plans, relationships } from "../db/schema.js";
-import { conflict, forbidden, notFound } from "../errors.js";
+import { badRequest, conflict, forbidden, notFound } from "../errors.js";
 import type { Permission } from "../authz/resolve.js";
 import {
   createObject,
@@ -21,11 +21,30 @@ import { assertCampaignTargetsWithinAuthority } from "../coordination/campaign-s
 import {
   computePlanDiff,
   managedLabels,
+  uncontainedComponentCreates,
   type ExistingObjectSnapshot,
   type ExistingRelationshipTriple,
   type ResolvedManifest,
   type ResolvedManifestObject
 } from "./plan-diff.js";
+
+/**
+ * Rejects (400) a diff that CREATES any component with no owning service (M12 P5a, owner ruling
+ * 2026-07-16 "make IaC strict"). Called at BOTH plan-compute (so `POST /plans` fails fast, and the
+ * reviewed plan is guaranteed valid) AND apply (defense-in-depth: `prepareApplyChecks` re-derives
+ * every invariant from the STORED diff rather than trusting plan-compute ran — the same fail-closed
+ * discipline the policy-scope / campaign-target / system-managed-type checks in this module use).
+ * The message points at both the IaC ergonomics fix and the raw-manifest fix.
+ */
+function assertComponentsContained(diff: PlanDiff): void {
+  const uncontained = uncontainedComponentCreates(diff);
+  if (uncontained.length === 0) return;
+  throw badRequest(
+    `plan creates component(s) with no owning service (no incoming 'contains' edge): ` +
+      `${uncontained.join(", ")}. A component must belong to a service — create it with ` +
+      `\`new Component(stack, id, { service })\` or add a 'contains' relationship from a service.`
+  );
+}
 
 /**
  * The thin DB-I/O wrapper around `iac/plan-diff.ts`'s pure diff engine, plus the `plans` table's
@@ -192,11 +211,15 @@ export async function computeDiffForManifest(
     }))
   };
 
-  return computePlanDiff(resolvedManifest, {
+  const diff = computePlanDiff(resolvedManifest, {
     existingObjects,
     managedRelationships,
     existingRelationships
   });
+  // Strict create-in-service, IaC path (M12 P5a): reject at plan-compute so the invalid manifest
+  // never becomes a stored plan and the human reviews only a valid diff.
+  assertComponentsContained(diff);
+  return diff;
 }
 
 // -------------------------------------------------------------------------------------------
@@ -344,6 +367,11 @@ export async function prepareApplyChecks(
 ): Promise<{ checks: ScopeCheck[]; objectResolutions: Map<string, ObjectResolution> }> {
   const objectResolutions = new Map<string, ObjectResolution>();
   const checks: ScopeCheck[] = [];
+
+  // Strict create-in-service, IaC path (M12 P5a) — re-checked here against the STORED diff, not
+  // trusting plan-compute ran (e.g. a plan created by a pre-P5a build). Fail-closed: an uncaught
+  // throw aborts before `executePlanDiff`, inside the route's transaction, so nothing applies.
+  assertComponentsContained(diff);
 
   for (const entry of diff.objects) {
     if (entry.action === "create") {

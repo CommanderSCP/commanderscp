@@ -80,6 +80,40 @@ describe("@scp/iac: example stack synth", () => {
     ]);
   });
 
+  it("a Component emits a `contains` edge from its service (strict create-in-service, M12 P5a)", () => {
+    const app = new App();
+    const stack = new Stack(app, "checkout-stack");
+    const checkout = new Service(stack, "checkout", { name: "Checkout" });
+    const api = new Component(stack, "api", { name: "checkout-api", service: checkout });
+
+    const manifest = stack.synth();
+    // The component object AND its containment edge both synth — so `POST /plans` sees an owning
+    // service and the strict apply check (`uncontainedComponentCreates`) passes.
+    expect(manifest.objects.map((o) => ({ typeId: o.typeId, urn: o.urn }))).toEqual([
+      { typeId: "component", urn: api.urn },
+      { typeId: "service", urn: checkout.urn }
+    ]);
+    expect(manifest.relationships).toEqual([
+      { typeId: "contains", fromUrn: checkout.urn, toUrn: api.urn }
+    ]);
+    expect(DesiredStateManifestSchema.safeParse(manifest).success).toBe(true);
+  });
+
+  it("a Component may belong to an EXTERNAL service by URN string (not just a construct)", () => {
+    const app = new App();
+    const stack = new Stack(app, "worker-stack");
+    const worker = new Component(stack, "worker", {
+      name: "checkout-worker",
+      service: "urn:scp:platform-stack:service:checkout"
+    });
+
+    // `from` is the external service URN verbatim — the component is attached to a service this
+    // stack doesn't own (the server resolves + type/cardinality-checks the edge at apply).
+    expect(stack.synth().relationships).toEqual([
+      { typeId: "contains", fromUrn: "urn:scp:platform-stack:service:checkout", toUrn: worker.urn }
+    ]);
+  });
+
   it("an explicit urn prop overrides the derived one", () => {
     const app = new App();
     const stack = new Stack(app, "explicit-urn-stack");
@@ -162,7 +196,9 @@ describe("@scp/iac: campaign/initiative/release-topology synth", () => {
 
     const api = new Service(stack, "api", { name: "API" });
     const worker = new Service(stack, "worker", { name: "Worker" });
-    const cache = new Component(stack, "cache", { name: "Cache" });
+    // A component always belongs to a service (M12 P5a) — it emits a `contains` edge, which this
+    // test doesn't assert on (it checks only the topology's wave targets below).
+    const cache = new Component(stack, "cache", { name: "Cache", service: api });
 
     const topology = new ReleaseTopology(stack, "rollout-topology", {
       name: "Rollout Topology",
