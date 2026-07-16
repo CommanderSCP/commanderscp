@@ -114,6 +114,19 @@ export const CreateObjectRequestSchema = z.object({
 });
 export type CreateObjectRequest = z.infer<typeof CreateObjectRequestSchema>;
 
+/**
+ * Strict component create (M12 P5a): a component created DIRECTLY must name the service it belongs
+ * to — the object and its `service --contains--> component` edge are written in one transaction.
+ * The generic object fields plus a REQUIRED `service` (id or URN). Imports (discovery/federation/
+ * overlay) do NOT use this path and stay permissive; see docs/proposals/organize-after.md.
+ */
+export const CreateComponentRequestSchema = CreateObjectRequestSchema.extend({
+  /** id or URN of the service this component belongs to (the `contains` parent). Required. */
+  service: z.string().min(1)
+});
+export type CreateComponentRequest = z.infer<typeof CreateComponentRequestSchema>;
+
+
 export const UpdateObjectRequestSchema = z.object({
   name: z.string().min(1).max(500).optional(),
   domainId: z.string().uuid().nullable().optional(),
@@ -132,6 +145,18 @@ export const UpsertObjectRequestSchema = z.object({
   labels: JsonRecordSchema.optional()
 });
 export type UpsertObjectRequest = z.infer<typeof UpsertObjectRequestSchema>;
+
+/**
+ * Strict upsert-by-URN for a component (M12 P5a). `service` is REQUIRED when the URN is new (the
+ * create branch honours the same "a component must belong to a service" invariant as POST) and
+ * OPTIONAL when it already exists (an update is field-only; re-assignment is the P5b move verb). The
+ * route enforces the create-branch requirement — the schema leaves it optional so a plain rename of
+ * an existing (possibly still-unassigned, imported) component needs no service.
+ */
+export const UpsertComponentRequestSchema = UpsertObjectRequestSchema.extend({
+  service: z.string().min(1).optional()
+});
+export type UpsertComponentRequest = z.infer<typeof UpsertComponentRequestSchema>;
 
 export const ObjectListResponseSchema = cursorPageResponseSchema(GraphObjectSchema);
 export type ObjectListResponse = z.infer<typeof ObjectListResponseSchema>;

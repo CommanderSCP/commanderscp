@@ -64,7 +64,6 @@ export interface TypedRegistryConfig {
 export const TYPED_REGISTRY_RESOURCES: TypedRegistryConfig[] = [
   { typeId: "domain", basePath: "domains", resourceName: "Domain" },
   { typeId: "service", basePath: "services", resourceName: "Service" },
-  { typeId: "component", basePath: "components", resourceName: "Component" },
   { typeId: "deployment-target", basePath: "deployment-targets", resourceName: "DeploymentTarget" },
   { typeId: "team", basePath: "teams", resourceName: "Team" },
   { typeId: "group", basePath: "groups", resourceName: "Group" },

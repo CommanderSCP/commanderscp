@@ -451,72 +451,6 @@ export const upsertServiceByUrn = <ThrowOnError extends boolean = false>(options
 });
 
 /**
- * List components objects
- */
-export const listComponents = <ThrowOnError extends boolean = false>(options?: Options<ListComponentsData, ThrowOnError>): RequestResult<ListComponentsResponses, ListComponentsErrors, ThrowOnError> => (options?.client ?? client).get<ListComponentsResponses, ListComponentsErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
-    url: '/components',
-    ...options
-});
-
-/**
- * Create a components object
- */
-export const createComponent = <ThrowOnError extends boolean = false>(options: Options<CreateComponentData, ThrowOnError>): RequestResult<CreateComponentResponses, CreateComponentErrors, ThrowOnError> => (options.client ?? client).post<CreateComponentResponses, CreateComponentErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
-    url: '/components',
-    ...options,
-    headers: {
-        'Content-Type': 'application/json',
-        ...options.headers
-    }
-});
-
-/**
- * Soft-delete a components object
- */
-export const deleteComponent = <ThrowOnError extends boolean = false>(options: Options<DeleteComponentData, ThrowOnError>): RequestResult<DeleteComponentResponses, DeleteComponentErrors, ThrowOnError> => (options.client ?? client).delete<DeleteComponentResponses, DeleteComponentErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
-    url: '/components/{idOrUrn}',
-    ...options
-});
-
-/**
- * Get a components object by id or URN
- */
-export const getComponent = <ThrowOnError extends boolean = false>(options: Options<GetComponentData, ThrowOnError>): RequestResult<GetComponentResponses, GetComponentErrors, ThrowOnError> => (options.client ?? client).get<GetComponentResponses, GetComponentErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
-    url: '/components/{idOrUrn}',
-    ...options
-});
-
-/**
- * Partially update a components object
- */
-export const updateComponent = <ThrowOnError extends boolean = false>(options: Options<UpdateComponentData, ThrowOnError>): RequestResult<UpdateComponentResponses, UpdateComponentErrors, ThrowOnError> => (options.client ?? client).patch<UpdateComponentResponses, UpdateComponentErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
-    url: '/components/{idOrUrn}',
-    ...options,
-    headers: {
-        'Content-Type': 'application/json',
-        ...options.headers
-    }
-});
-
-/**
- * Idempotent upsert-by-URN for a components object
- */
-export const upsertComponentByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertComponentByUrnData, ThrowOnError>): RequestResult<UpsertComponentByUrnResponses, UpsertComponentByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertComponentByUrnResponses, UpsertComponentByUrnErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
-    url: '/components/{urn}',
-    ...options,
-    headers: {
-        'Content-Type': 'application/json',
-        ...options.headers
-    }
-});
-
-/**
  * List deployment targets objects
  */
 export const listDeploymentTargets = <ThrowOnError extends boolean = false>(options?: Options<ListDeploymentTargetsData, ThrowOnError>): RequestResult<ListDeploymentTargetsResponses, ListDeploymentTargetsErrors, ThrowOnError> => (options?.client ?? client).get<ListDeploymentTargetsResponses, ListDeploymentTargetsErrors, ThrowOnError>({
@@ -839,6 +773,72 @@ export const updateServiceAccount = <ThrowOnError extends boolean = false>(optio
 export const upsertServiceAccountByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertServiceAccountByUrnData, ThrowOnError>): RequestResult<UpsertServiceAccountByUrnResponses, UpsertServiceAccountByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertServiceAccountByUrnResponses, UpsertServiceAccountByUrnErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/service-accounts/{urn}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * List component objects
+ */
+export const listComponents = <ThrowOnError extends boolean = false>(options?: Options<ListComponentsData, ThrowOnError>): RequestResult<ListComponentsResponses, ListComponentsErrors, ThrowOnError> => (options?.client ?? client).get<ListComponentsResponses, ListComponentsErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/components',
+    ...options
+});
+
+/**
+ * Create a component in a service (strict — the component and its containment edge are written atomically)
+ */
+export const createComponent = <ThrowOnError extends boolean = false>(options: Options<CreateComponentData, ThrowOnError>): RequestResult<CreateComponentResponses, CreateComponentErrors, ThrowOnError> => (options.client ?? client).post<CreateComponentResponses, CreateComponentErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/components',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Soft-delete a component
+ */
+export const deleteComponent = <ThrowOnError extends boolean = false>(options: Options<DeleteComponentData, ThrowOnError>): RequestResult<DeleteComponentResponses, DeleteComponentErrors, ThrowOnError> => (options.client ?? client).delete<DeleteComponentResponses, DeleteComponentErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/components/{idOrUrn}',
+    ...options
+});
+
+/**
+ * Get a component by id or URN
+ */
+export const getComponent = <ThrowOnError extends boolean = false>(options: Options<GetComponentData, ThrowOnError>): RequestResult<GetComponentResponses, GetComponentErrors, ThrowOnError> => (options.client ?? client).get<GetComponentResponses, GetComponentErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/components/{idOrUrn}',
+    ...options
+});
+
+/**
+ * Partially update a component
+ */
+export const updateComponent = <ThrowOnError extends boolean = false>(options: Options<UpdateComponentData, ThrowOnError>): RequestResult<UpdateComponentResponses, UpdateComponentErrors, ThrowOnError> => (options.client ?? client).patch<UpdateComponentResponses, UpdateComponentErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/components/{idOrUrn}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Idempotent upsert-by-URN for a component (create branch requires a service)
+ */
+export const upsertComponentByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertComponentByUrnData, ThrowOnError>): RequestResult<UpsertComponentByUrnResponses, UpsertComponentByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertComponentByUrnResponses, UpsertComponentByUrnErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/components/{urn}',
     ...options,
     headers: {
         'Content-Type': 'application/json',

@@ -81,6 +81,31 @@ function assertNotCoordinationTargetScopedObjectType(type: string): void {
 }
 
 /**
+ * M12 P5a (docs/proposals/organize-after.md): `component` binds its MEMBERSHIP — a directly-created
+ * component must belong to a service. That invariant can only be enforced by a create path that
+ * takes the service inline and writes the `contains` edge atomically, so `component` is refused on
+ * the generic route (all write verbs), forcing creates through the strict `POST /components`
+ * (`graph/components-repo.ts`'s `createComponentInService`).
+ *
+ * A SEPARATE set from `COORDINATION_TARGET_SCOPED_OBJECT_TYPE_IDS` ON PURPOSE — that set's meaning is
+ * target-AUTHORITY binding; a component's reason is service-MEMBERSHIP. Conflating them would be
+ * exactly the kind of comment-that-lies this codebase already has too many of. Note the IMPORT paths
+ * (discovery/accept, federation, overlay) call `createObject` directly and never touch this route,
+ * so they stay permissive by construction — which is the owner ruling.
+ */
+const SERVICE_MEMBER_OBJECT_TYPE_IDS: ReadonlySet<string> = new Set(["component"]);
+
+function assertNotServiceMemberObjectType(type: string): void {
+  if (SERVICE_MEMBER_OBJECT_TYPE_IDS.has(type)) {
+    throw forbidden(
+      `object type '${type}' must belong to a service and cannot be created, updated, or deleted via ` +
+        `the generic /api/v1/objects/${type} endpoint — use the strict typed route (/api/v1/${type}s), ` +
+        `which requires a service and writes the containment edge atomically`
+    );
+  }
+}
+
+/**
  * Generic `/objects/{type}` endpoints over the full graph model (DESIGN.md §4.1, §6) — works for
  * ANY registered object type, built-in or org-defined via the type registry, with no special
  * casing (BUILD_AND_TEST.md §8 M1 DoD (b)) EXCEPT the governance-owned `policy`/`control` types,
@@ -118,6 +143,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       const { type } = request.params;
       assertNotGovernanceManagedObjectType(type);
       assertNotCoordinationTargetScopedObjectType(type);
+      assertNotServiceMemberObjectType(type);
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const scopeObjectId = await resolveDomainId(
           tx,
@@ -254,6 +280,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       const { type, idOrUrn } = request.params;
       assertNotGovernanceManagedObjectType(type);
       assertNotCoordinationTargetScopedObjectType(type);
+      assertNotServiceMemberObjectType(type);
       const object = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const found = await getObjectByIdOrUrn(tx, auth.orgId, type, idOrUrn);
         await authorize(tx, {
@@ -303,6 +330,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       const { type, idOrUrn } = request.params;
       assertNotGovernanceManagedObjectType(type);
       assertNotCoordinationTargetScopedObjectType(type);
+      assertNotServiceMemberObjectType(type);
       const object = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const found = await getObjectByIdOrUrn(tx, auth.orgId, type, idOrUrn);
         await authorize(tx, {
@@ -350,6 +378,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       const { type, urn } = request.params;
       assertNotGovernanceManagedObjectType(type);
       assertNotCoordinationTargetScopedObjectType(type);
+      assertNotServiceMemberObjectType(type);
       const { object, created } = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const existing = await tx.query.objects.findFirst({
           where: (t, { eq, and }) => and(eq(t.orgId, auth.orgId), eq(t.urn, urn))
