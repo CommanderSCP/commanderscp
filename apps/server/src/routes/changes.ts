@@ -19,6 +19,7 @@ import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
+import { assertCoordinationTargetsWithinAuthority } from "../coordination/campaign-scope-authz.js";
 import { getChange, listChanges, proposeChange } from "../coordination/changes-repo.js";
 import { transitionChange } from "../coordination/transition.js";
 import type { GateDeps } from "../coordination/gates.js";
@@ -91,6 +92,19 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
             scopeObjectId: body.domainId ?? auth.orgId
           });
         }
+        // P4B Phase 2: bind the change's DECLARED targets to the actor's own authority. The
+        // `object:write`-at-domain check above is NOT enough — a proposer could otherwise target an
+        // object in another domain they don't control and inject a release (or, post-P4B, a
+        // `requires`/`provides` coupling) against it. Mirrors campaigns exactly
+        // (`campaign-scope-authz.ts`). Deliberately HERE at the route, not inside `proposeChange`:
+        // the engine's own callers (webhook correlation, rollback, campaign fan-out, federation
+        // import) run as trusted system/federation actors that must not face a human-authority
+        // check — the route is the only untrusted propose path.
+        await assertCoordinationTargetsWithinAuthority(tx, {
+          orgId: auth.orgId,
+          actorObjectId: auth.subjectObjectId,
+          targets: body.targets
+        });
         return proposeChange(tx, {
           orgId: auth.orgId,
           actorObjectId: auth.subjectObjectId,

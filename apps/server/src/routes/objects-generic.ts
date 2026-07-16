@@ -74,8 +74,8 @@ function assertNotCoordinationTargetScopedObjectType(type: string): void {
   if (isCoordinationTargetScopedObjectType(type)) {
     throw forbidden(
       `object type '${type}' is coordination-managed and cannot be created, updated, or deleted via ` +
-        `the generic /api/v1/objects/${type} endpoint — use /api/v1/campaigns, which binds every ` +
-        `declared target to the actor's own authority`
+        `the generic /api/v1/objects/${type} endpoint — use its typed route (/api/v1/${type}s), which ` +
+        `binds every declared target to the actor's own authority`
     );
   }
 }
