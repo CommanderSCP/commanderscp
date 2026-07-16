@@ -117,18 +117,20 @@ Every phase carries the full API → SDK → CLI → IaC → UI parity checklist
 
 ---
 
-## 6. Open questions for the owner
+## 6. Open questions — RESOLVED (owner, 2026-07-16)
 
-The code already answers several (assign needs no engine verb; one-service-per-component is doubly enforced; merge needn't touch jsonb/role_bindings for the driving case; the shared-instance observe shape is safe). These genuinely need your call:
+The code already answered several (assign needs no engine verb; one-service-per-component is doubly enforced; merge needn't touch jsonb/role_bindings for the driving case; the shared-instance observe shape is safe). The remaining six are now decided:
 
-**Q1 — Merge's binding-collision resolution when both bindings are truly `software`.** The UNIQUE constraint forbids two `software` bindings on the survivor. Options: **(a)** reject the merge and require the operator to relabel one first (safest MVP); **(b)** auto-relabel the second to `infra` (right for the argocd infra+software case, wrong if both are genuinely app pipelines); **(c)** make the purpose mapping an explicit merge *parameter*. Leaning (c); (a) is the safe MVP.
+**Q1 — Merge binding-collision → REJECT; require relabel first (safe MVP).** When a merge would collide two `software` bindings on the survivor, it refuses; the operator relabels one to `infra` via the P5c primitive, then merges. No guessing. A purpose-mapping *parameter* can be added later if a case demands it.
 
-**Q2 — Should IaC-applied (and generic-import) components also be forced to have a service?** Your ruling named only "the import process" (discovery) as the bypass. IaC `executePlanDiff` is arguably a *deliberate declarative* create, not an import — a component in HCL can declare its `contains` edge as a sibling resource. Options: **(a)** leave IaC permissive (simpler, matches "declarative"); **(b)** extend strictness to IaC.
+**Q2 — IaC creates must be STRICT too.** The service-required rule extends beyond the HTTP route into the IaC apply path (`executePlanDiff`). Since an IaC-authored component and its `contains` edge are *separate resources in one plan diff*, enforcement is a post-diff check: **a plan that creates a `component` must also create (or leave already-existing) an incoming `contains` edge to it — otherwise the apply is rejected.** This keeps the permissive set to genuine *imports* only: `discovery/accept`, federation, overlay, and `seed`.
 
-**Q3 — Should assign/organize also create `source_mappings`?** The 50 imports have none, so their observed events correlate against nothing and drop (§1.5) — they can be triggered but never self-report. Options: **(a)** keep organize purely about services/bindings; **(b)** make discovery/accept (or a new organize step) also propose `source_mappings` so imports actually wire observe. This is arguably a bigger homelab lever than merge; worth deciding whether P5 owns it.
+**Q3 — Organize ALSO creates `source_mappings` (folded into P5).** Imports must actually wire `observe()`, not just be triggerable. `discovery/accept` will propose a `source_mapping` per imported component (from the Argo CD app's own source, e.g. `spec.source.repoURL`/`path`), and there will be a backfill path for the 50 already-imported orphans (they carry none today). This closes the "observed events correlate against nothing and drop" gap — arguably the biggest homelab lever in P5. Lands in P5b alongside assign.
 
-**Q4 — Is SPLIT in scope?** No driving case exists. **(a)** defer (recommended); **(b)** design merge's inverse now for symmetry.
+**Q4 — SPLIT deferred** (no driving case). Built only if one appears.
 
-**Q5 — CLI-first vs UI-first for organize.** The 50-orphan cleanup is bulk and scriptable → CLI/API is the natural first surface, UI tracked one phase behind (parity stays a hard requirement, just sequenced). Confirm the homelab cleanup is done via CLI so the UI can lag.
+**Q5 — FULL PARITY every phase (API → SDK → CLI → IaC → UI).** Each phase ships all surfaces, including UI, before the next. Slower per phase, nothing lags. (CI's oasdiff/drift gate catches a missed SDK regen but NOT a missed CLI/UI, so every phase carries an explicit CLI+UI checklist item.)
 
-**Q6 — Move: atomic verb, or accept the two-request dance?** Delete-then-create works today (momentary orphan window). **(a)** ship non-atomic + document; **(b)** build `moveComponentToService` as one tx (cheap, cleaner — recommended in P5b).
+**Q6 — `moveComponentToService` is an ATOMIC verb** (delete+create in one tx), not the two-request dance — no transient-orphan window. Lands in P5b.
+
+**Scope impact of the rulings:** Q2 and Q3 each expand P5 beyond the survey's minimal recommendation — P5a now also enforces in the IaC apply path, and P5b now also creates/backfills `source_mappings`. Q5 means every phase includes the UI. These are reflected in the phasing above and drive the build order.
