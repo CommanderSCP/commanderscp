@@ -42,7 +42,7 @@ import { DesiredStateManifestSchema } from "@scp/schemas";
 // default entry, which `apps/web` also imports (browser build) — see audit-chain.ts's module doc.
 import { verifyAuditChain } from "@scp/schemas/audit-chain";
 import { saveCredentials } from "./config-store.js";
-import { clientFromStoredCredentials, DEFAULT_BASE_URL } from "./client-factory.js";
+import { clientFromStoredCredentials, resolveLoginBaseUrl } from "./client-factory.js";
 import { promptLine } from "./prompt.js";
 import { printResult, type OutputFormat } from "./output.js";
 
@@ -835,15 +835,25 @@ export function buildProgram(): Command {
       "--device",
       "use the device authorization flow instead of username+password (for headless hosts — DESIGN.md §7)"
     )
-    .option("--base-url <url>", "API base URL", DEFAULT_BASE_URL)
+    .option(
+      "--base-url <url>",
+      "API base URL (defaults to $SCP_API_URL, then your saved login, then localhost)"
+    )
     .action(
-      async (opts: { username?: string; password?: string; device?: boolean; baseUrl: string }) => {
-        const client = new ScpClient({ baseUrl: opts.baseUrl });
+      async (opts: {
+        username?: string;
+        password?: string;
+        device?: boolean;
+        baseUrl?: string;
+      }) => {
+        // Precedence: --base-url flag > $SCP_API_URL > saved credentials.json baseUrl > localhost.
+        const baseUrl = await resolveLoginBaseUrl(opts.baseUrl);
+        const client = new ScpClient({ baseUrl });
 
         if (opts.device) {
           const result = await deviceLogin(client);
           await saveCredentials({
-            baseUrl: opts.baseUrl,
+            baseUrl,
             token: result.token,
             org: result.org,
             expiresAt: result.expiresAt
@@ -856,7 +866,7 @@ export function buildProgram(): Command {
         const password = opts.password ?? (await promptLine("Password: "));
         const result = await client.login(username, password);
         await saveCredentials({
-          baseUrl: opts.baseUrl,
+          baseUrl,
           token: result.token,
           org: result.org,
           expiresAt: result.expiresAt
