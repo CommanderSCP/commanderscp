@@ -67,6 +67,9 @@ export function AppShell({ children }: { children: ReactNode }): React.JSX.Eleme
           <Link to="/plugins" className={navLinkClass} activeProps={{ className: navLinkActiveClass }}>
             Plugins
           </Link>
+          <Link to="/graph" className={navLinkClass} activeProps={{ className: navLinkActiveClass }}>
+            Graph
+          </Link>
           <div className="mt-4 mb-1 px-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
             Registries
           </div>

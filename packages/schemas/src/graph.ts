@@ -314,3 +314,24 @@ export const TraverseResultSchema = z.object({
   edges: z.array(TraverseEdgeSchema)
 });
 export type TraverseResult = z.infer<typeof TraverseResultSchema>;
+
+/**
+ * Induced-subgraph edges over an explicit object-id set (DESIGN.md §5, additive within /v1). The
+ * named graph queries (`impact-of`/`blast-radius`/…) return only the reachable object SET, never
+ * the edges among it — so the UI graph explorer had to synthesize a hub-and-spoke star to render
+ * anything connected. This returns the REAL relationships whose BOTH endpoints are in `ids`
+ * (exactly the induced-subgraph edge set `traverse` already computes over its own walk), letting a
+ * caller render the true DAG for any set it already obtained. `objectId` is the root the caller is
+ * exploring — it scopes the `graph:query` authorization the same way the named query that produced
+ * the set did.
+ */
+export const SubgraphRequestSchema = z.object({
+  objectId: z.string().uuid(),
+  ids: z.array(z.string().uuid()).min(1).max(2000)
+});
+export type SubgraphRequest = z.infer<typeof SubgraphRequestSchema>;
+
+export const SubgraphResultSchema = z.object({
+  edges: z.array(TraverseEdgeSchema)
+});
+export type SubgraphResult = z.infer<typeof SubgraphResultSchema>;

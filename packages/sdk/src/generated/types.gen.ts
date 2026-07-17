@@ -8251,6 +8251,81 @@ export type GraphTraverseResponses = {
 
 export type GraphTraverseResponse = GraphTraverseResponses[keyof GraphTraverseResponses];
 
+export type GraphSubgraphData = {
+    body: {
+        objectId: string;
+        ids: Array<string>;
+    };
+    path?: never;
+    query?: never;
+    url: '/graph/subgraph';
+};
+
+export type GraphSubgraphErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    408: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GraphSubgraphError = GraphSubgraphErrors[keyof GraphSubgraphErrors];
+
+export type GraphSubgraphResponses = {
+    /**
+     * Success
+     */
+    200: {
+        edges: Array<{
+            id: string;
+            typeId: string;
+            fromId: string;
+            toId: string;
+        }>;
+    };
+};
+
+export type GraphSubgraphResponse = GraphSubgraphResponses[keyof GraphSubgraphResponses];
+
 export type ListAuditEventsData = {
     body?: never;
     path?: never;
