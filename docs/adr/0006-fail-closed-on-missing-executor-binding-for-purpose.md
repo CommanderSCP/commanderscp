@@ -26,7 +26,7 @@ Disambiguate (a) from (b) **inside `triggerWaveTarget`, before any executor is s
    - Terminalize the wave target on a **new dedicated status `no_executor`** — deliberately **not** `failed`, so `scp change explain`/the UI can name the actual cause. This mirrors `campaign_waves`' purpose-built `blocked` status.
    - Mark the wave `failed` and **park the change** via the existing reconcile-blocked mechanism (`markChangeReconcileBlocked` / `reconcile_blocked_at`). The change stays `executing`, parked, awaiting manual remediation: bind the missing purpose, then cancel/rollback/re-propose. No new change-lifecycle state is introduced.
 
-`listExecutorBindingsForTarget` shares the same live-target (soft-delete) filter `getExecutorBinding`'s siblings use, so a soft-deleted target's stale binding can never wrongly force a (b) block.
+Only `listExecutorBindingsForTarget` applies the live-target (soft-delete) filter — `getExecutorBinding` itself does not. That asymmetry, plus the check order, is what makes the boundary safe: a live target with a matching-purpose binding is caught by the permissive `getExecutorBinding` first (normal path), while a soft-deleted target yields **zero** rows from `listExecutorBindingsForTarget` and therefore falls to case (a) fake — so a stale binding on a deleted target can never wrongly force a (b) block.
 
 **Idempotent.** `markWaveTargetNoExecutor` is guarded on `status IN ('pending','triggering')` with `RETURNING`; the Decision + audit event are emitted only when it flips the row. A later reconcile tick that finds the target already `no_executor` appends nothing to the audit chain. (Parking also excludes the change from subsequent sweeps, so in practice the block runs once; the status guard is the durable backstop.)
 
