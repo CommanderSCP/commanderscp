@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, isNull, or } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { GraphObject } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -311,18 +311,25 @@ export async function listObjects(
   if (!query.includeDeleted) conditions.push(isNull(objects.deletedAt));
   if (query.domainId) conditions.push(eq(objects.domainId, query.domainId));
   if (cursor) {
-    const cursorCondition = or(
-      gt(objects.createdAt, cursor.createdAt),
-      and(eq(objects.createdAt, cursor.createdAt), gt(objects.id, cursor.id))
+    // Keyset comparison at MILLISECOND precision. `created_at` is stored at Postgres microsecond
+    // precision, but the cursor round-trips through a JS `Date` (millisecond) — comparing the raw
+    // column re-includes the boundary row (its sub-millisecond tail is strictly greater than the
+    // truncated cursor), so a result set larger than one page whose rows share a `created_at`
+    // millisecond (a bulk discovery import of components — all created in one transaction with an
+    // identical `now()`) never advances `nextCursor` and the SDK/CLI iterator loops forever.
+    // Truncating the column to milliseconds makes the sort key exactly what the cursor can carry,
+    // so `(created_at_ms, id)` is a stable, terminating keyset. The ORDER BY below MUST truncate
+    // identically or the comparison and the ordering disagree.
+    conditions.push(
+      sql`(date_trunc('milliseconds', ${objects.createdAt}), ${objects.id}) > (${cursor.createdAt.toISOString()}::timestamptz, ${cursor.id}::uuid)`
     );
-    if (cursorCondition) conditions.push(cursorCondition);
   }
 
   const rows = await tx
     .select()
     .from(objects)
     .where(and(...conditions))
-    .orderBy(asc(objects.createdAt), asc(objects.id))
+    .orderBy(sql`date_trunc('milliseconds', ${objects.createdAt})`, asc(objects.id))
     .limit(query.limit + 1);
 
   const hasMore = rows.length > query.limit;
