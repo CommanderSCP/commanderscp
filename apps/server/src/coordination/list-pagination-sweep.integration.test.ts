@@ -119,8 +119,11 @@ describe("list pagination sweep: cursor precision across repos", () => {
       ).toBeLessThanOrEqual(PAGE_CAP);
     } while (cursor);
 
-    // The decisive assertion for the added tiebreak: pre-fix the single-column `gt(created_at)`
-    // keyset terminated but DROPPED the same-millisecond rows past page one (would see 20, not 25).
+    // The decisive assertion for the added tiebreak: pre-fix, the single-column `gt(created_at)`
+    // keyset (no id tiebreak) mishandles same-millisecond rows past page one — it LOOPS when the
+    // stored sub-millisecond tail is nonzero (the boundary row re-qualifies; caught by the PAGE_CAP
+    // assertion above) or DROPS rows when the tail is zero (caught here). The (created_at_ms, id)
+    // tiebreak fixes both; this assertion proves no rows were lost.
     expect(new Set(seen).size).toBe(SEED); // every decision seen — none dropped
     expect(seen.length).toBe(SEED); // and each exactly once — no boundary-row duplicates
   });
