@@ -12,11 +12,54 @@ import { cursorPageResponseSchema } from "./common.js";
 // ExecutorPlugin instance).
 // -------------------------------------------------------------------------------------------
 
-/** WHICH pipeline a binding drives (M12 P3). Closed set; `data` was considered and withdrawn (SCP's
- *  own migrations are a Helm hook inside the deploy, not a separate pipeline). Adding a value later is
- *  additive. See docs/proposals/service-component-model.md. */
-export const BindingPurposeSchema = z.enum(["infra", "software"]);
-export type BindingPurpose = z.infer<typeof BindingPurposeSchema>;
+/**
+ * The executor **Type** — the fine, artifact/action-specific routing key that resolves exactly one
+ * executor binding (ADR-0007, docs/proposals/executor-type-taxonomy.md). Closed enum, extensible
+ * only by deliberate owner decision (D4). Replaces the flat `purpose ∈ {infra, software}`: the two
+ * old buckets fanned out — `software → {configuration, a build Type}`, `infra → {infrastructure,
+ * configuration}` — so this is a split-and-rename, not a straight alias.
+ *
+ *   build family → image | rpm | deb | npm  (turn source into an artifact)
+ *   infrastructure           (stand up / change the IaC substrate)
+ *   configuration            (apply declarative desired state to a running system — GitOps sync)
+ */
+export const ExecutorTypeSchema = z.enum([
+  "image",
+  "rpm",
+  "deb",
+  "npm",
+  "infrastructure",
+  "configuration"
+]);
+export type ExecutorType = z.infer<typeof ExecutorTypeSchema>;
+
+/**
+ * The executor **Category** — the coarse, closed, gate-groupable class of change (ADR-0007). It is
+ * DERIVED from Type via the static `CATEGORY_OF_TYPE` map below, never stored as a column and never
+ * accepted as input: routing and the `UNIQUE(org, target, type)` identity stay on Type; a gate that
+ * wants coarse grouping ("gate any build") resolves Category through the map. Exposed as a
+ * read-only, derived field on binding / source-mapping / wave-target RESPONSE schemas only.
+ */
+export const ExecutorCategorySchema = z.enum(["build", "infrastructure", "configuration"]);
+export type ExecutorCategory = z.infer<typeof ExecutorCategorySchema>;
+
+/** Static Type → Category map (ADR-0007). Every Type belongs to exactly one Category, so Category
+ *  needs no column — it is a projection of Type. The single source of truth for the derivation. */
+export const CATEGORY_OF_TYPE: Record<ExecutorType, ExecutorCategory> = {
+  image: "build",
+  rpm: "build",
+  deb: "build",
+  npm: "build",
+  infrastructure: "infrastructure",
+  configuration: "configuration"
+};
+
+/** Derive a Type's Category (ADR-0007). Total over the closed Type enum; a value outside it (only
+ *  reachable from legacy/version-skewed jsonb, never from a Zod-validated input) maps to the
+ *  `configuration` default so a derived read-only field can never crash a list/read path. */
+export function categoryOfType(type: ExecutorType | string): ExecutorCategory {
+  return CATEGORY_OF_TYPE[type as ExecutorType] ?? "configuration";
+}
 
 export const CreateExecutorBindingRequestSchema = z
   .object({
@@ -37,10 +80,10 @@ export const CreateExecutorBindingRequestSchema = z
     /** Reference (id or URN) to a registered `execution-system` graph object (Mode A). When set, the
      *  plugin module, serverUrl, and token are resolved FROM that object — omit pluginModule/config. */
     executionSystemId: z.string().min(1).optional(),
-    /** WHICH pipeline this binding drives. A target may hold one binding per purpose (infra AND
-     *  software), so this is what distinguishes "add the infra pipeline" from "replace the software
-     *  one". Omitted ⇒ 'software' — the pre-P3 behaviour every existing binding was migrated to. */
-    purpose: BindingPurposeSchema.optional()
+    /** WHICH pipeline this binding drives — the routing Type (ADR-0007). A target may hold one
+     *  binding per Type (e.g. a `configuration` sync AND an `image` build AND an `infrastructure`
+     *  apply), so this is what distinguishes them. Omitted ⇒ 'configuration' (the server default). */
+    type: ExecutorTypeSchema.optional()
   })
   .refine((b) => (b.executionSystemId ? !b.pluginModule : Boolean(b.pluginModule && b.pluginInstanceId)), {
     message:
@@ -51,7 +94,10 @@ export type CreateExecutorBindingRequest = z.infer<typeof CreateExecutorBindingR
 export const ExecutorBindingSchema = z.object({
   id: z.string().uuid(),
   targetObjectId: z.string().uuid(),
-  purpose: BindingPurposeSchema,
+  type: ExecutorTypeSchema,
+  /** DERIVED, read-only (ADR-0007): the Category of `type`, computed via `categoryOfType`. Not an
+   *  input, not stored — a projection returned so a gate/UI can group by Category without the map. */
+  category: ExecutorCategorySchema,
   pluginModule: z.string(),
   pluginInstanceId: z.string(),
   config: z.unknown(),
@@ -62,16 +108,16 @@ export const ExecutorBindingSchema = z.object({
 });
 export type ExecutorBinding = z.infer<typeof ExecutorBindingSchema>;
 
-/** All of a target's bindings (M12 P5c) — a target holds at most one per purpose, so no pagination. */
+/** All of a target's bindings (M12 P5c) — a target holds at most one per Type, so no pagination. */
 export const ExecutorBindingListResponseSchema = z.object({
   items: z.array(ExecutorBindingSchema)
 });
 export type ExecutorBindingListResponse = z.infer<typeof ExecutorBindingListResponseSchema>;
 
 /** Body for `PATCH /executors/{idOrUrn}/binding` (M12 P5c) — relabel the binding named by the
- *  `?purpose=` query (its CURRENT purpose) to this NEW `purpose`. */
+ *  `?type=` query (its CURRENT Type) to this NEW `type`. */
 export const RepurposeExecutorBindingRequestSchema = z.object({
-  purpose: BindingPurposeSchema
+  type: ExecutorTypeSchema
 });
 export type RepurposeExecutorBindingRequest = z.infer<typeof RepurposeExecutorBindingRequestSchema>;
 
@@ -196,7 +242,7 @@ export const DiscoveryProposalSourceMappingSchema = z.object({
   sourceKind: z.string().min(1),
   repoPattern: z.string().min(1).optional(),
   pathPattern: z.string().min(1).optional(),
-  purpose: BindingPurposeSchema.optional()
+  type: ExecutorTypeSchema.optional()
 });
 export const DiscoveryProposalSchema = z.object({
   objects: z.array(DiscoveryProposalObjectSchema),

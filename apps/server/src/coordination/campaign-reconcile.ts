@@ -8,7 +8,7 @@ import { getObjectByIdOrUrnAnyType, updateObject } from "../graph/objects-repo.j
 import type { GateDeps } from "./gates.js";
 import { evaluateWaveGate } from "./gates.js";
 import { insertDecision } from "./decisions-repo.js";
-import { proposeChange, purposeOf } from "./changes-repo.js";
+import { proposeChange, typeOf } from "./changes-repo.js";
 import { createRelationship } from "../graph/relationships-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import {
@@ -260,10 +260,10 @@ async function reconcileOneCampaign(
             sourceKind: "campaign",
             sourceRef: { campaignObjectId, waveIndex: activeWave.waveIndex },
             targets: [target.targetObjectId],
-            // Every change a campaign fans out rolls the CAMPAIGN's pipeline (M12 P4A) — one intent,
-            // many targets. Without this an infra campaign would trigger each target's software
-            // binding: the wrong pipeline, and on a target holding both, an actively wrong release.
-            purpose: purposeOf(campaignObject.properties as Record<string, unknown> | undefined)
+            // Every change a campaign fans out rolls the CAMPAIGN's pipeline (M12 P4A / ADR-0007) —
+            // one intent, many targets. Without this an `infrastructure` campaign would trigger each
+            // target's `configuration` binding: the wrong pipeline, an actively wrong release.
+            type: typeOf(campaignObject.properties as Record<string, unknown> | undefined)
           });
           await createRelationship(tx, {
             orgId,

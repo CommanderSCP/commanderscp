@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
-import type { Campaign, CampaignStatus } from "@scp/schemas";
+import type { Campaign, CampaignStatus, ExecutorType } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { campaignPlans, campaignWaves, campaignWaveTargets, changes, objects } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
@@ -56,8 +56,9 @@ export interface ProposeCampaignInput {
   description?: string;
   labels?: Record<string, unknown>;
   topologyIdOrUrn?: string;
-  /** WHICH pipeline every fanned-out change rolls (M12 P4A). Omitted => 'software'. */
-  purpose?: "infra" | "software";
+  /** WHICH pipeline every fanned-out change rolls (M12 P4A) — the routing Type (ADR-0007).
+   *  Omitted => 'configuration' (the server default). */
+  type?: ExecutorType;
   /** Object ids or URNs this campaign fans out to — one member Change per target, per wave. */
   targets: string[];
 }
@@ -118,10 +119,10 @@ export async function proposeCampaign(
     domainId: input.domainId,
     properties: {
       targets: targetObjectIds,
-      // Read back by `campaign-reconcile.ts` via `purposeOf` and stamped onto every change this
-      // campaign fans out (M12 P4A). Always written — a campaign object that omitted it would read
-      // as 'software' anyway, and persisting it explicitly keeps the campaign self-describing.
-      purpose: input.purpose ?? "software",
+      // Read back by `campaign-reconcile.ts` via `typeOf` and stamped onto every change this campaign
+      // fans out (M12 P4A / ADR-0007). Always written — a campaign object that omitted it would read
+      // as 'configuration' anyway, and persisting it explicitly keeps the campaign self-describing.
+      type: input.type ?? "configuration",
       ...(input.description !== undefined ? { description: input.description } : {}),
       ...(topologyObjectId !== undefined ? { topologyObjectId, topologyVersion } : {})
     },

@@ -512,7 +512,8 @@ async function discover(ctx: PluginContext): Promise<DiscoveryProposal> {
         objectName: name,
         sourceKind: "github",
         repoPattern: repoSlug,
-        purpose: "software"
+        // ArgoCD Applications SYNC declarative desired state — routing Type `configuration` (ADR-0007).
+        type: "configuration"
       });
     }
   }

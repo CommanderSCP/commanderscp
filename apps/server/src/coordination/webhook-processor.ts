@@ -138,10 +138,10 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
       sourceRef: (row.payload as Record<string, unknown>) ?? {},
       correlationKey: hint.correlationKey,
       targets: [match.componentObjectId],
-      // WHICH pipeline this release drives, straight from the mapping that matched it (M12 P4A).
-      // One release = one source = one pipeline, so the purpose belongs to the CHANGE rather than to
-      // each target — a release needing both would be two releases, from two sources.
-      purpose: match.purpose
+      // WHICH pipeline this release drives — the routing Type (ADR-0007), straight from the mapping
+      // that matched it (M12 P4A). One release = one source = one pipeline, so the Type belongs to the
+      // CHANGE rather than to each target — a release needing both would be two releases.
+      type: match.type
     });
 
     if (hint.correlationKey) {

@@ -1839,7 +1839,7 @@ export const listSecretKeys = <ThrowOnError extends boolean = false>(options?: O
 });
 
 /**
- * Delete a target's executor binding for one purpose (default: software)
+ * Delete a target's executor binding for one type (default: configuration)
  */
 export const deleteExecutorBinding = <ThrowOnError extends boolean = false>(options: Options<DeleteExecutorBindingData, ThrowOnError>): RequestResult<DeleteExecutorBindingResponses, DeleteExecutorBindingErrors, ThrowOnError> => (options.client ?? client).delete<DeleteExecutorBindingResponses, DeleteExecutorBindingErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -1848,7 +1848,7 @@ export const deleteExecutorBinding = <ThrowOnError extends boolean = false>(opti
 });
 
 /**
- * Get a target's configured executor binding for one purpose (default: software)
+ * Get a target's configured executor binding for one type (default: configuration)
  */
 export const getExecutorBinding = <ThrowOnError extends boolean = false>(options: Options<GetExecutorBindingData, ThrowOnError>): RequestResult<GetExecutorBindingResponses, GetExecutorBindingErrors, ThrowOnError> => (options.client ?? client).get<GetExecutorBindingResponses, GetExecutorBindingErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -1857,7 +1857,7 @@ export const getExecutorBinding = <ThrowOnError extends boolean = false>(options
 });
 
 /**
- * Relabel which pipeline (infra|software) a target's executor binding drives
+ * Relabel which pipeline (routing type) a target's executor binding drives
  */
 export const repurposeExecutorBinding = <ThrowOnError extends boolean = false>(options: Options<RepurposeExecutorBindingData, ThrowOnError>): RequestResult<RepurposeExecutorBindingResponses, RepurposeExecutorBindingErrors, ThrowOnError> => (options.client ?? client).patch<RepurposeExecutorBindingResponses, RepurposeExecutorBindingErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -1883,7 +1883,7 @@ export const putExecutorBinding = <ThrowOnError extends boolean = false>(options
 });
 
 /**
- * List every executor binding (all purposes) configured for a target
+ * List every executor binding (all types) configured for a target
  */
 export const listExecutorBindings = <ThrowOnError extends boolean = false>(options: Options<ListExecutorBindingsData, ThrowOnError>): RequestResult<ListExecutorBindingsResponses, ListExecutorBindingsErrors, ThrowOnError> => (options.client ?? client).get<ListExecutorBindingsResponses, ListExecutorBindingsErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],

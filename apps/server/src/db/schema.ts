@@ -492,12 +492,12 @@ export const sourceMappings = pgTable(
     repoPattern: text("repo_pattern"), // glob, matched against source_ref.repo
     pathPattern: text("path_pattern"), // glob, matched against source_ref.path (optional)
     componentObjectId: uuid("component_object_id").notNull(),
-    // WHICH pipeline of that component this source drives (M12 P4A, migration 0024): 'infra' |
-    // 'software'. A change IS a release and comes from ONE source per pipeline (the infra repo vs the
-    // app repo), so the mapping is where the release declares its pipeline — deliberately NOT inferred
-    // from source_kind, because `github` can run Terraform OR deploy an app. Defaults to 'software',
-    // so every pre-P4A mapping resolves exactly the binding reconcile triggers today.
-    purpose: text("purpose").notNull().default("software"),
+    // WHICH pipeline of that component this source drives — the routing Type (ADR-0007, migration
+    // 0026; was `purpose` in 0024). A change IS a release and comes from ONE source per pipeline, so
+    // the mapping is where the release declares its Type — deliberately NOT inferred from source_kind,
+    // because `github` can run Terraform OR deploy an app. Defaults to 'configuration'. Plain text
+    // (no pg enum / CHECK): the closed value set is enforced in packages/schemas (Zod).
+    type: text("type").notNull().default("configuration"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [index("source_mappings_org_source").on(table.orgId, table.sourceKind)]
@@ -606,18 +606,18 @@ export const changeWaveTargets = pgTable(
     orgId: uuid("org_id").notNull(),
     waveId: uuid("wave_id").notNull(),
     targetObjectId: uuid("target_object_id").notNull(),
-    // WHICH pipeline of the target this wave rolls (M12 P4A, migration 0024) — what reconcile resolves
-    // the executor binding by, now that a target can hold both an infra and a software one (P3).
-    // Flows in from the source mapping that matched the release. Defaults to 'software': every
-    // pre-P4A wave target rolls exactly what it rolled before.
-    purpose: text("purpose").notNull().default("software"),
+    // WHICH pipeline of the target this wave rolls — the routing Type (ADR-0007, migration 0026; was
+    // `purpose` in 0024) — what reconcile resolves the executor binding by, now that a target can hold
+    // one binding per Type (P3). Flows in from the source mapping that matched the release. Defaults
+    // to 'configuration'. Plain text (no pg enum / CHECK); the closed value set is enforced in Zod.
+    type: text("type").notNull().default("configuration"),
     executorPluginId: text("executor_plugin_id"),
     executorRef: jsonb("executor_ref"), // ExternalRunRef once triggered
     /** Captured before trigger — what a rollback of this wave target would restore (DESIGN §9.4). */
     priorStateRef: jsonb("prior_state_ref"),
     // pending|triggering|triggered|observing|succeeded|failed|aborted|no_executor
     // `no_executor` (docs/adr/0006): fail-closed terminal — the target has real executor bindings
-    // but NONE for the purpose this wave rolls, so reconcile refused to fake-succeed the gap. Plain
+    // but NONE for the Type this wave rolls, so reconcile refused to fake-succeed the gap. Plain
     // text column (no Postgres ENUM / CHECK), so the value is additive with no migration; the read
     // schema (ChangeWaveTargetSchema.status) is already `z.string()`, so the API is additive too.
     status: text("status").notNull().default("pending"),
@@ -1185,19 +1185,19 @@ export const executorBindings = pgTable(
     // serverUrl + token are resolved FROM that object (not this binding's inline config), and the
     // plugin instance is keyed on the system id so all bindings on one system share one observe poll.
     executionSystemId: uuid("execution_system_id"),
-    // WHICH pipeline this binding drives for the target (M12 P3, migration 0023): 'infra' | 'software'.
-    // A component may own BOTH (owner model: "all services involve infra and software"), so bindings
-    // are 1:N per target, keyed by purpose. Defaults to 'software': every pre-P3 binding is the one
-    // reconcile triggers today, and reconcile asks for 'software' — so 1:N changed no behaviour.
-    purpose: text("purpose").notNull().default("software"),
+    // WHICH pipeline this binding drives for the target — the routing Type (ADR-0007, migration 0026;
+    // was `purpose` in 0023). A component may own several Types at once (a `configuration` sync, an
+    // `image` build, an `infrastructure` apply), so bindings are 1:N per target, keyed by type.
+    // Defaults to 'configuration'. Plain text (no pg enum / CHECK); the closed value set is Zod-enforced.
+    type: text("type").notNull().default("configuration"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [
-    unique("executor_bindings_org_target_purpose_key").on(
+    unique("executor_bindings_org_target_type_key").on(
       table.orgId,
       table.targetObjectId,
-      table.purpose
+      table.type
     ),
     index("executor_bindings_org").on(table.orgId)
   ]

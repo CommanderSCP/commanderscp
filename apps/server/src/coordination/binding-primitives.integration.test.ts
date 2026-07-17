@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
+import type { ExecutorType } from "@scp/schemas";
 import {
   createTestComponent,
   createTestOrg,
@@ -16,6 +17,7 @@ import { listExecutorBindings } from "./executor-bindings-repo.js";
  * M12 P5c — executor-binding primitives (list-for-target / delete / repurpose) and the target-liveness
  * bug fix. Before P5c a binding could be created and read but never DELETED or RELABELLED, and a
  * soft-deleted target's binding was polled by observe() forever (no `executor_bindings.deleted_at`).
+ * The routing key is the Type (ADR-0007).
  */
 describe("executor-binding primitives (M12 P5c)", () => {
   let server: ListeningTestServer;
@@ -32,71 +34,71 @@ describe("executor-binding primitives (M12 P5c)", () => {
     await server?.close();
   });
 
-  const putBinding = (targetId: string, purpose: "infra" | "software") =>
+  const putBinding = (targetId: string, type: ExecutorType) =>
     admin.executors.putBinding(targetId, {
       pluginModule: "fake-executor",
       pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`,
       config: { statePath: "/tmp/x" },
       allowedHosts: [],
-      purpose
+      type
     });
 
-  it("lists every pipeline bound to a target (both purposes)", async () => {
+  it("lists every pipeline bound to a target (all Types)", async () => {
     const comp = await createTestComponent(admin, { name: `c-${randomUUID().slice(0, 8)}` });
-    await putBinding(comp.id, "software");
-    await putBinding(comp.id, "infra");
+    await putBinding(comp.id, "configuration");
+    await putBinding(comp.id, "infrastructure");
 
     const items = await admin.executors.listBindings(comp.id);
-    expect(items.map((b) => b.purpose).sort()).toEqual(["infra", "software"]);
+    expect(items.map((b) => b.type).sort()).toEqual(["configuration", "infrastructure"]);
   });
 
-  it("deletes a binding for one purpose (the detach primitive), leaving the other purpose intact", async () => {
+  it("deletes a binding for one Type (the detach primitive), leaving the other Type intact", async () => {
     const comp = await createTestComponent(admin, { name: `c-${randomUUID().slice(0, 8)}` });
-    await putBinding(comp.id, "software");
-    await putBinding(comp.id, "infra");
+    await putBinding(comp.id, "configuration");
+    await putBinding(comp.id, "infrastructure");
 
-    const removed = await admin.executors.deleteBinding(comp.id, "software");
-    expect(removed.purpose).toBe("software");
+    const removed = await admin.executors.deleteBinding(comp.id, "configuration");
+    expect(removed.type).toBe("configuration");
 
     const items = await admin.executors.listBindings(comp.id);
-    expect(items.map((b) => b.purpose)).toEqual(["infra"]);
-    await expect(admin.executors.getBinding(comp.id, "software")).rejects.toMatchObject({ status: 404 });
+    expect(items.map((b) => b.type)).toEqual(["infrastructure"]);
+    await expect(admin.executors.getBinding(comp.id, "configuration")).rejects.toMatchObject({ status: 404 });
   });
 
   it("deleting a nonexistent binding is a 404", async () => {
     const comp = await createTestComponent(admin, { name: `c-${randomUUID().slice(0, 8)}` });
-    await expect(admin.executors.deleteBinding(comp.id, "infra")).rejects.toMatchObject({ status: 404 });
+    await expect(admin.executors.deleteBinding(comp.id, "infrastructure")).rejects.toMatchObject({ status: 404 });
   });
 
-  it("repurposes a binding (software → infra) — the relabel primitive", async () => {
+  it("repurposes a binding (configuration → infrastructure) — the relabel primitive", async () => {
     const comp = await createTestComponent(admin, { name: `c-${randomUUID().slice(0, 8)}` });
-    await putBinding(comp.id, "software");
+    await putBinding(comp.id, "configuration");
 
-    const relabelled = await admin.executors.repurposeBinding(comp.id, "infra"); // from defaults to software
-    expect(relabelled.purpose).toBe("infra");
-    expect((await admin.executors.getBinding(comp.id, "infra")).purpose).toBe("infra");
-    await expect(admin.executors.getBinding(comp.id, "software")).rejects.toMatchObject({ status: 404 });
+    const relabelled = await admin.executors.repurposeBinding(comp.id, "infrastructure"); // from defaults to configuration
+    expect(relabelled.type).toBe("infrastructure");
+    expect((await admin.executors.getBinding(comp.id, "infrastructure")).type).toBe("infrastructure");
+    await expect(admin.executors.getBinding(comp.id, "configuration")).rejects.toMatchObject({ status: 404 });
   });
 
-  it("refuses a repurpose that would collide with an existing binding at the target purpose (409)", async () => {
+  it("refuses a repurpose that would collide with an existing binding at the target Type (409)", async () => {
     const comp = await createTestComponent(admin, { name: `c-${randomUUID().slice(0, 8)}` });
-    await putBinding(comp.id, "software");
-    await putBinding(comp.id, "infra");
+    await putBinding(comp.id, "configuration");
+    await putBinding(comp.id, "infrastructure");
 
-    // software → infra would create a 2nd infra binding — UNIQUE(org,target,purpose) forbids it.
-    await expect(admin.executors.repurposeBinding(comp.id, "infra", "software")).rejects.toMatchObject({
+    // configuration → infrastructure would create a 2nd infrastructure binding — UNIQUE(org,target,type) forbids it.
+    await expect(admin.executors.repurposeBinding(comp.id, "infrastructure", "configuration")).rejects.toMatchObject({
       status: 409
     });
-    // Nothing changed — both purposes still present.
-    expect((await admin.executors.listBindings(comp.id)).map((b) => b.purpose).sort()).toEqual([
-      "infra",
-      "software"
+    // Nothing changed — both Types still present.
+    expect((await admin.executors.listBindings(comp.id)).map((b) => b.type).sort()).toEqual([
+      "configuration",
+      "infrastructure"
     ]);
   });
 
   it("LIVENESS FIX: observe's org-wide binding list drops a soft-deleted target's binding (was polled forever)", async () => {
     const comp = await createTestComponent(admin, { name: `c-${randomUUID().slice(0, 8)}` });
-    await putBinding(comp.id, "software");
+    await putBinding(comp.id, "configuration");
     expect(await admin.executors.listBindings(comp.id)).toHaveLength(1);
 
     // The binding ROW outlives a soft-deleted target (there is no executor_bindings.deleted_at).
@@ -122,15 +124,15 @@ describe("executor-binding primitives (M12 P5c)", () => {
 
   it("delete + repurpose require object:write on the target (a read-only subject is refused)", async () => {
     const comp = await createTestComponent(admin, { name: `c-${randomUUID().slice(0, 8)}` });
-    await putBinding(comp.id, "software");
+    await putBinding(comp.id, "configuration");
 
     // Viewer has object:read but not object:write anywhere.
     const viewer = await createTestUser(server, org, [{ role: "Viewer", scope: org.orgId }]);
     const client = new ScpClient({ baseUrl: server.baseUrl, token: viewer.token });
 
-    await expect(client.executors.deleteBinding(comp.id, "software")).rejects.toMatchObject({ status: 403 });
-    await expect(client.executors.repurposeBinding(comp.id, "infra")).rejects.toMatchObject({ status: 403 });
+    await expect(client.executors.deleteBinding(comp.id, "configuration")).rejects.toMatchObject({ status: 403 });
+    await expect(client.executors.repurposeBinding(comp.id, "infrastructure")).rejects.toMatchObject({ status: 403 });
     // The binding survived both refused writes.
-    expect((await admin.executors.listBindings(comp.id)).map((b) => b.purpose)).toEqual(["software"]);
+    expect((await admin.executors.listBindings(comp.id)).map((b) => b.type)).toEqual(["configuration"]);
   });
 });

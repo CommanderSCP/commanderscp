@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { CursorPageQuerySchema, cursorPageResponseSchema } from "./common.js";
 import { ControlRunSchema } from "./governance.js";
-import { BindingPurposeSchema } from "./executors.js";
+import { ExecutorTypeSchema, ExecutorCategorySchema } from "./executors.js";
 
 /**
  * M3 Change Coordination Engine wire contract (DESIGN.md §9, §10.4, BUILD_AND_TEST.md §8 M3).
@@ -77,12 +77,11 @@ export const CreateChangeRequestSchema = z.object({
   emergency: z.boolean().optional(),
   /** Release-topology object id or URN to compile against (optional — falls back to pure toposort). */
   topology: z.string().optional(),
-  /** WHICH pipeline this change rolls (M12 P4A), selecting each target's `infra` vs `software`
-   *  executor binding. Webhook-born changes inherit this from the matched `source_mappings` row and
-   *  never set it here; this field is for a change proposed DIRECTLY against the API, which has no
-   *  mapping to inherit from. Omitted means 'software' — the only pipeline reconcile could trigger
-   *  before P4A, so an unchanged client keeps its exact prior behavior. */
-  purpose: BindingPurposeSchema.optional(),
+  /** WHICH pipeline this change rolls (M12 P4A) — the routing Type (ADR-0007), selecting each
+   *  target's executor binding. Webhook-born changes inherit this from the matched `source_mappings`
+   *  row and never set it here; this field is for a change proposed DIRECTLY against the API, which
+   *  has no mapping to inherit from. Omitted means 'configuration' (the server default). */
+  type: ExecutorTypeSchema.optional(),
   /** Coupled-pipeline keys this release MAKES TRUE at its own targets when it succeeds (M12 P4B).
    *  Opaque strings; a waiting change is released when some OTHER change provides every key it
    *  requires. Omitted/empty ⇒ this release is a prerequisite for nothing. */
@@ -158,10 +157,12 @@ export const ChangeWaveTargetSchema = z.object({
   targetObjectId: z.string().uuid(),
   targetUrn: z.string().optional(),
   targetName: z.string().optional(),
-  /** WHICH pipeline this target rolls (M12 P4A) — snapshotted from the change at plan time, so it
-   *  selects the target's `infra` vs `software` executor binding at trigger AND status-poll time.
-   *  Plans predating P4A read back as 'software', the only pipeline reconcile could ever trigger. */
-  purpose: BindingPurposeSchema,
+  /** WHICH pipeline this target rolls (M12 P4A) — the routing Type (ADR-0007), snapshotted from the
+   *  change at plan time, so it selects the target's executor binding at trigger AND status-poll
+   *  time. Plans predating the Type cutover read back as 'configuration' (the server default). */
+  type: ExecutorTypeSchema,
+  /** DERIVED, read-only (ADR-0007): the Category of `type`, via `categoryOfType`. Not stored. */
+  category: ExecutorCategorySchema,
   executorPluginId: z.string().nullable(),
   executorRef: z.record(z.string(), z.unknown()).nullable(),
   status: z.string(),
@@ -245,10 +246,13 @@ export const SourceMappingSchema = z.object({
   repoPattern: z.string().nullable(),
   pathPattern: z.string().nullable(),
   componentObjectId: z.string().uuid(),
-  /** WHICH pipeline releases from this source roll (M12 P4A). NOT inferable from `sourceKind` — a
-   *  GitHub Actions run can apply Terraform or ship an app — so the operator declares it per mapping.
-   *  Mappings predating P4A read back as 'software'. */
-  purpose: BindingPurposeSchema,
+  /** WHICH pipeline releases from this source roll (M12 P4A) — the routing Type (ADR-0007). NOT
+   *  inferable from `sourceKind` — a GitHub Actions run can apply Terraform or ship an app — so the
+   *  operator declares it per mapping. Mappings predating the Type cutover read back as
+   *  'configuration' (the server default). */
+  type: ExecutorTypeSchema,
+  /** DERIVED, read-only (ADR-0007): the Category of `type`, via `categoryOfType`. Not stored. */
+  category: ExecutorCategorySchema,
   createdAt: z.string().datetime()
 });
 export type SourceMapping = z.infer<typeof SourceMappingSchema>;
@@ -258,11 +262,10 @@ export const CreateSourceMappingRequestSchema = z.object({
   repoPattern: z.string().optional(),
   pathPattern: z.string().optional(),
   component: z.string().min(1), // idOrUrn
-  /** Omitted means 'software' (defaulted server-side in `source-mappings-repo.ts`) — the only
-   *  pipeline that existed before P4A, so an unchanged client keeps its exact prior behavior.
-   *  `.optional()` not `.default()`: a default renders the property REQUIRED in the generated SDK
-   *  request type, which is a breaking change to /v1 the oasdiff gate would rightly reject. */
-  purpose: BindingPurposeSchema.optional()
+  /** The routing Type (ADR-0007). Omitted means 'configuration' (defaulted server-side in
+   *  `source-mappings-repo.ts`). `.optional()` not `.default()`: a default renders the property
+   *  REQUIRED in the generated SDK request type, an unnecessary extra request-shape break. */
+  type: ExecutorTypeSchema.optional()
 });
 export type CreateSourceMappingRequest = z.infer<typeof CreateSourceMappingRequestSchema>;
 

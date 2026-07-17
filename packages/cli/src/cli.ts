@@ -15,6 +15,7 @@ import type {
   CreateObjectRequest,
   Decision,
   DesiredStateManifest,
+  ExecutorType,
   Freeze,
   GraphObject,
   Initiative,
@@ -1301,7 +1302,7 @@ export function buildProgram(): Command {
 
   // `scp component merge <survivor> --loser <loser>` — driving-case merge (M12 P5d): fold a freshly-
   // imported, binding-only component into <survivor> (moves its bindings, soft-deletes it). 409 on a
-  // binding-purpose collision (relabel one first via `scp executor repurpose`).
+  // binding-type collision (relabel one first via `scp executor repurpose`).
   componentCmd
     .command("merge <survivorIdOrUrn>")
     .description("Merge another component into this one (moves its executor bindings, soft-deletes it)")
@@ -1313,7 +1314,7 @@ export function buildProgram(): Command {
       const result = await client.components.merge(survivorIdOrUrn, opts.loser);
       printResult(result, opts.output, (r) => ({
         survivor: (r as { survivor: GraphObject }).survivor.id,
-        movedBindings: (r as { movedBindingPurposes: string[] }).movedBindingPurposes.join(", ") || "none"
+        movedBindings: (r as { movedBindingTypes: string[] }).movedBindingTypes.join(", ") || "none"
       }));
     });
 
@@ -1468,9 +1469,9 @@ export function buildProgram(): Command {
     .option("--correlation-key <key>", "correlation key for grouping related changes")
     .option("--emergency", "mark this change as an emergency (DESIGN.md §9)")
     .option(
-      "--purpose <purpose>",
-      "infra|software — WHICH pipeline this change rolls, selecting each target's executor binding. " +
-        "Defaults to software (the only pipeline that existed before M12 P4A)"
+      "--type <type>",
+      "routing Type (ADR-0007): image|rpm|deb|npm (Category build) | infrastructure | configuration — " +
+        "WHICH pipeline this change rolls, selecting each target's executor binding. Defaults to configuration"
     )
     .option(
       "--provides <keys>",
@@ -1490,7 +1491,7 @@ export function buildProgram(): Command {
         opts: BaseCliOpts & {
           name: string;
           targets: string;
-          purpose?: "infra" | "software";
+          type?: ExecutorType;
           provides?: string;
           requires?: string;
           topology?: string;
@@ -1522,7 +1523,7 @@ export function buildProgram(): Command {
             sourceKind: opts.sourceKind,
             correlationKey: opts.correlationKey,
             emergency: opts.emergency,
-            purpose: opts.purpose,
+            type: opts.type,
             provides: parseList(opts.provides),
             requires,
             properties: parseJsonOption(opts.properties, "--properties"),
@@ -1851,9 +1852,10 @@ export function buildProgram(): Command {
     .option("--topology <idOrUrn>", "release-topology object id or URN to compile the plan against")
     .option("--description <text>", "campaign description")
     .option(
-      "--purpose <purpose>",
-      "infra|software — WHICH pipeline every change this campaign fans out rolls " +
-        "(e.g. infra for 'patch the base AMI everywhere'). Defaults to software"
+      "--type <type>",
+      "routing Type (ADR-0007): image|rpm|deb|npm | infrastructure | configuration — WHICH pipeline " +
+        "every change this campaign fans out rolls (e.g. infrastructure for 'patch the base AMI " +
+        "everywhere'). Defaults to configuration"
     )
     .option("--labels <json>", "JSON object")
     .option("--base-url <url>", "API base URL override")
@@ -1865,7 +1867,7 @@ export function buildProgram(): Command {
           targets: string;
           topology?: string;
           description?: string;
-          purpose?: "infra" | "software";
+          type?: ExecutorType;
           labels?: string;
         }
       ) => {
@@ -1876,7 +1878,7 @@ export function buildProgram(): Command {
             targets: parseList(opts.targets) ?? [],
             topology: opts.topology,
             description: opts.description,
-            purpose: opts.purpose,
+            type: opts.type,
             labels: parseJsonOption(opts.labels, "--labels")
           },
           { idempotencyKey: randomUUID() }
@@ -2447,10 +2449,10 @@ export function buildProgram(): Command {
       "executor-specific target id (e.g. an Argo CD Application name); defaults to the object id"
     )
     .option(
-      "--purpose <purpose>",
-      "which pipeline this binding drives: infra|software (default: software). A target may hold ONE " +
-        "binding per purpose, so this is what adds an infra pipeline alongside a software one rather " +
-        "than replacing it"
+      "--type <type>",
+      "routing Type (ADR-0007) this binding drives: image|rpm|deb|npm (Category build) | " +
+        "infrastructure | configuration (default: configuration). A target may hold ONE binding per " +
+        "Type, so this ADDS a pipeline of that Type alongside the others rather than replacing one"
     )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
@@ -2465,7 +2467,7 @@ export function buildProgram(): Command {
           secretRefs?: string;
           allowedHosts?: string;
           targetRef?: string;
-          purpose?: "infra" | "software";
+          type?: ExecutorType;
         }
       ) => {
         const client = await clientFromStoredCredentials(opts);
@@ -2475,7 +2477,7 @@ export function buildProgram(): Command {
             ? {
                 executionSystemId: opts.executionSystem,
                 externalRef: opts.targetRef,
-                purpose: opts.purpose
+                type: opts.type
               }
             : {
                 pluginModule: opts.module,
@@ -2488,7 +2490,7 @@ export function buildProgram(): Command {
                   | undefined,
                 allowedHosts: parseList(opts.allowedHosts),
                 externalRef: opts.targetRef,
-                purpose: opts.purpose
+                type: opts.type
               }
         );
         printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
@@ -2497,20 +2499,20 @@ export function buildProgram(): Command {
 
   executorCmd
     .command("get <idOrUrn>")
-    .description("Get a target's configured executor binding (one purpose; default: software)")
-    .option("--purpose <purpose>", "which pipeline to read: infra|software (default: software)")
+    .description("Get a target's configured executor binding (one type; default: configuration)")
+    .option("--type <type>", "which routing Type to read (default: configuration)")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
-    .action(async (idOrUrn: string, opts: BaseCliOpts & { purpose?: "infra" | "software" }) => {
+    .action(async (idOrUrn: string, opts: BaseCliOpts & { type?: ExecutorType }) => {
       const client = await clientFromStoredCredentials(opts);
-      const result = await client.executors.getBinding(idOrUrn, opts.purpose);
+      const result = await client.executors.getBinding(idOrUrn, opts.type);
       printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
     });
 
-  // M12 P5c binding primitives: list all / detach / relabel-purpose.
+  // M12 P5c binding primitives: list all / detach / relabel-type.
   executorCmd
     .command("bindings <idOrUrn>")
-    .description("List every executor binding (all purposes) configured for a target")
+    .description("List every executor binding (all types) configured for a target")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(async (idOrUrn: string, opts: BaseCliOpts) => {
@@ -2521,27 +2523,27 @@ export function buildProgram(): Command {
 
   executorCmd
     .command("unbind <idOrUrn>")
-    .description("Delete a target's executor binding for one purpose (default: software)")
-    .option("--purpose <purpose>", "which pipeline to detach: infra|software (default: software)")
+    .description("Delete a target's executor binding for one type (default: configuration)")
+    .option("--type <type>", "which routing Type to detach (default: configuration)")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
-    .action(async (idOrUrn: string, opts: BaseCliOpts & { purpose?: "infra" | "software" }) => {
+    .action(async (idOrUrn: string, opts: BaseCliOpts & { type?: ExecutorType }) => {
       const client = await clientFromStoredCredentials(opts);
-      const result = await client.executors.deleteBinding(idOrUrn, opts.purpose);
+      const result = await client.executors.deleteBinding(idOrUrn, opts.type);
       printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
     });
 
   executorCmd
     .command("repurpose <idOrUrn>")
-    .description("Relabel which pipeline (infra|software) a target's binding drives")
-    .requiredOption("--to <purpose>", "the new purpose: infra|software")
-    .option("--from <purpose>", "the binding's current purpose (default: software)")
+    .description("Relabel which pipeline (routing Type, ADR-0007) a target's binding drives")
+    .requiredOption("--to <type>", "the new routing Type: image|rpm|deb|npm|infrastructure|configuration")
+    .option("--from <type>", "the binding's current routing Type (default: configuration)")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(
       async (
         idOrUrn: string,
-        opts: BaseCliOpts & { to: "infra" | "software"; from?: "infra" | "software" }
+        opts: BaseCliOpts & { to: ExecutorType; from?: ExecutorType }
       ) => {
         const client = await clientFromStoredCredentials(opts);
         const result = await client.executors.repurposeBinding(idOrUrn, opts.to, opts.from);
@@ -2730,7 +2732,7 @@ export function buildProgram(): Command {
     .requiredOption("--component <idOrUrn>", "the component this source's events belong to")
     .option("--repo <pattern>", "repo glob (e.g. a GitHub repo URL/slug) — matched against the event's repo")
     .option("--path <pattern>", "path glob within the repo")
-    .option("--purpose <purpose>", "which pipeline: infra|software (default: software)")
+    .option("--type <type>", "routing Type (ADR-0007): image|rpm|deb|npm|infrastructure|configuration (default: configuration)")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(
@@ -2740,7 +2742,7 @@ export function buildProgram(): Command {
           component: string;
           repo?: string;
           path?: string;
-          purpose?: "infra" | "software";
+          type?: ExecutorType;
         }
       ) => {
         const client = await clientFromStoredCredentials(opts);
@@ -2748,7 +2750,7 @@ export function buildProgram(): Command {
           component: opts.component,
           repoPattern: opts.repo,
           pathPattern: opts.path,
-          purpose: opts.purpose
+          type: opts.type
         });
         printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
       }

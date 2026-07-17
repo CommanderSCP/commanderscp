@@ -170,15 +170,15 @@ export async function observeOrgTick(
   for (const [pluginInstanceId, binding] of oneBindingPerInstance) {
     try {
       const resolved = await withTenantTx(db, orgId, (tx) =>
-        // MUST resolve by the deduped binding's OWN purpose (M12 P4A). Without it this defaults to
-        // 'software', so for a target holding both pipelines the 'infra' entry resolves the SOFTWARE
-        // binding's instance: that instance gets polled twice in a tick and the infra instance is
-        // never observed at all — silently, since resolve succeeds and returns a valid instance.
+        // MUST resolve by the deduped binding's OWN routing Type (M12 P4A / ADR-0007). Without it
+        // this defaults to 'configuration', so for a target holding several pipelines a non-default
+        // entry resolves the configuration binding's instance: that instance gets polled twice in a
+        // tick and the other instance is never observed — silently, since resolve returns a valid one.
         resolveExecutorPluginInstance(tx, {
           orgId,
           targetObjectId: binding.targetObjectId,
           masterKey,
-          purpose: binding.purpose
+          type: binding.type
         })
       );
       if (!resolved) continue;

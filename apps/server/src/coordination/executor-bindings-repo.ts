@@ -2,6 +2,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, eq, exists, isNull, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
+import { categoryOfType, type ExecutorType, type ExecutorCategory } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { executorBindings, objects } from "../db/schema.js";
 import { conflict, notFound } from "../errors.js";
@@ -49,18 +50,20 @@ export function assertNotReservedInstanceId(pluginInstanceId: string): void {
  * `control_bindings` (1:1 binding per graph object, same upsert-by-lookup shape).
  */
 
-/** WHICH pipeline a binding drives (M12 P3). Closed set — see migration 0023 for why not 'data'. */
-export type BindingPurpose = "infra" | "software";
+/** WHICH pipeline a binding drives — the routing Type (ADR-0007). Closed set, re-exported from the
+ *  schemas contract so the repo and the wire share one definition. */
+export type BindingType = ExecutorType;
 
-/** The purpose reconcile triggers, and the value every pre-P3 binding was migrated to. Making this
- *  explicit (rather than an inline literal at each call site) is what keeps "1:N did not change
- *  today's behaviour" checkable in one place. */
-export const DEFAULT_BINDING_PURPOSE: BindingPurpose = "software";
+/** The Type reconcile resolves by default when a caller names none. Making this explicit (rather than
+ *  an inline literal at each call site) keeps the default checkable in one place (ADR-0007). */
+export const DEFAULT_BINDING_TYPE: BindingType = "configuration";
 
 export interface ExecutorBindingRow {
   id: string;
   targetObjectId: string;
-  purpose: BindingPurpose;
+  type: BindingType;
+  /** DERIVED, read-only (ADR-0007): the Category of `type`, via `categoryOfType`. Not stored. */
+  category: ExecutorCategory;
   pluginModule: string;
   pluginInstanceId: string;
   config: unknown;
@@ -73,7 +76,7 @@ export interface ExecutorBindingRow {
 function toRow(row: {
   id: string;
   targetObjectId: string;
-  purpose?: string | null;
+  type?: string | null;
   pluginModule: string;
   pluginInstanceId: string;
   config: unknown;
@@ -82,10 +85,12 @@ function toRow(row: {
   externalRef?: string | null;
   executionSystemId?: string | null;
 }): ExecutorBindingRow {
+  const type = (row.type as BindingType | null) ?? DEFAULT_BINDING_TYPE;
   return {
     id: row.id,
     targetObjectId: row.targetObjectId,
-    purpose: (row.purpose as BindingPurpose | null) ?? DEFAULT_BINDING_PURPOSE,
+    type,
+    category: categoryOfType(type),
     pluginModule: row.pluginModule,
     pluginInstanceId: row.pluginInstanceId,
     config: row.config,
@@ -97,17 +102,17 @@ function toRow(row: {
 }
 
 /**
- * The binding driving ONE pipeline of a target. `purpose` is required-by-default rather than
- * optional-and-arbitrary: before P3 this did `.limit(1)` with no ORDER BY, which was fine under
- * UNIQUE(org,target) but would return an ARBITRARY row once a target can hold both an infra and a
- * software binding. Every caller must say which pipeline it means; defaulting to 'software' keeps
- * pre-P3 behaviour identical, since that is what every migrated binding is.
+ * The binding driving ONE pipeline of a target, resolved by its routing Type (ADR-0007). `type` is
+ * required-by-default rather than optional-and-arbitrary: before P3 this did `.limit(1)` with no
+ * ORDER BY, which was fine under UNIQUE(org,target) but would return an ARBITRARY row once a target
+ * can hold several Types. Every caller must say which pipeline it means; the default resolves the
+ * 'configuration' binding.
  */
 export async function getExecutorBinding(
   tx: TenantTx,
   orgId: string,
   targetObjectId: string,
-  purpose: BindingPurpose = DEFAULT_BINDING_PURPOSE
+  type: BindingType = DEFAULT_BINDING_TYPE
 ): Promise<ExecutorBindingRow | undefined> {
   const rows = await tx
     .select()
@@ -116,7 +121,7 @@ export async function getExecutorBinding(
       and(
         eq(executorBindings.orgId, orgId),
         eq(executorBindings.targetObjectId, targetObjectId),
-        eq(executorBindings.purpose, purpose)
+        eq(executorBindings.type, type)
       )
     )
     .limit(1);
@@ -140,7 +145,7 @@ function targetObjectIsLive(tx: TenantTx) {
   );
 }
 
-/** Every pipeline bound to one LIVE target (infra AND software) — the GET-list route and organize-after. */
+/** Every pipeline bound to one LIVE target (all Types) — the GET-list route and organize-after. */
 export async function listExecutorBindingsForTarget(
   tx: TenantTx,
   orgId: string,
@@ -180,8 +185,8 @@ export async function listExecutorBindings(
 export interface UpsertExecutorBindingInput {
   orgId: string;
   targetObjectId: string;
-  /** Omitted ⇒ 'software' (DEFAULT_BINDING_PURPOSE) — the behaviour-preserving default. */
-  purpose?: BindingPurpose;
+  /** Omitted ⇒ 'configuration' (DEFAULT_BINDING_TYPE) — the server-side default Type. */
+  type?: BindingType;
   pluginModule: string;
   pluginInstanceId: string;
   config?: unknown;
@@ -202,11 +207,11 @@ export async function upsertExecutorBinding(
   if (!input.executionSystemId) {
     assertNotReservedInstanceId(input.pluginInstanceId);
   }
-  // Key the "is this an update or an insert" lookup on (target, PURPOSE). Without the purpose the
-  // lookup found "the" binding and UPDATED it — which is exactly how binding a component's infra
-  // pipeline after its software pipeline silently destroyed the first one before P3.
-  const purpose = input.purpose ?? DEFAULT_BINDING_PURPOSE;
-  const existing = await getExecutorBinding(tx, input.orgId, input.targetObjectId, purpose);
+  // Key the "is this an update or an insert" lookup on (target, TYPE). Without the Type the lookup
+  // found "the" binding and UPDATED it — which is exactly how binding a component's second pipeline
+  // silently destroyed the first one before P3.
+  const type = input.type ?? DEFAULT_BINDING_TYPE;
+  const existing = await getExecutorBinding(tx, input.orgId, input.targetObjectId, type);
   if (existing) {
     const [row] = await tx
       .update(executorBindings)
@@ -230,7 +235,7 @@ export async function upsertExecutorBinding(
       id: uuidv7(),
       orgId: input.orgId,
       targetObjectId: input.targetObjectId,
-      purpose,
+      type,
       pluginModule: input.pluginModule,
       pluginInstanceId: input.pluginInstanceId,
       config: input.config ?? {},
@@ -244,7 +249,7 @@ export async function upsertExecutorBinding(
 }
 
 /**
- * Deletes a target's binding for one purpose (M12 P5c) — a HARD delete (executor_bindings has no
+ * Deletes a target's binding for one Type (M12 P5c) — a HARD delete (executor_bindings has no
  * soft-delete column; a binding is config, not an audited graph object). Detaching a binding is the
  * primitive that was missing: before P5c a binding could be created and repointed but never removed,
  * so a stale/mis-imported binding polled forever. Returns the deleted row (for the route to report),
@@ -254,7 +259,7 @@ export async function deleteExecutorBinding(
   tx: TenantTx,
   orgId: string,
   targetObjectId: string,
-  purpose: BindingPurpose = DEFAULT_BINDING_PURPOSE
+  type: BindingType = DEFAULT_BINDING_TYPE
 ): Promise<ExecutorBindingRow | undefined> {
   const [row] = await tx
     .delete(executorBindings)
@@ -262,7 +267,7 @@ export async function deleteExecutorBinding(
       and(
         eq(executorBindings.orgId, orgId),
         eq(executorBindings.targetObjectId, targetObjectId),
-        eq(executorBindings.purpose, purpose)
+        eq(executorBindings.type, type)
       )
     )
     .returning();
@@ -270,35 +275,35 @@ export async function deleteExecutorBinding(
 }
 
 /**
- * Relabels which pipeline a target's binding drives (M12 P5c): moves the (target, fromPurpose)
- * binding to (target, toPurpose). The motivating case is a discovery-imported binding defaulted to
- * 'software' that is actually the infra pipeline — and it is exactly the merge-collision resolution
- * owner ruling Q1 mandates ("relabel one to infra first, don't guess"). Rejects (409) if the target
- * already holds a binding at toPurpose: UNIQUE(org,target,purpose) forbids two, and the caller must
- * delete/repurpose that one first — surfaced as a clear conflict, not a raw unique-violation. A
- * same-purpose relabel is an idempotent no-op. Returns undefined if no (target, fromPurpose) binding
- * exists (route 404s).
+ * Relabels which pipeline a target's binding drives (M12 P5c): moves the (target, fromType) binding
+ * to (target, toType). The motivating case is a discovery-imported binding defaulted to
+ * 'configuration' that is actually an `infrastructure` pipeline — and it is exactly the
+ * merge-collision resolution owner ruling Q1 mandates ("relabel one first, don't guess"). Rejects
+ * (409) if the target already holds a binding at toType: UNIQUE(org,target,type) forbids two, and the
+ * caller must delete/repurpose that one first — surfaced as a clear conflict, not a raw
+ * unique-violation. A same-type relabel is an idempotent no-op. Returns undefined if no (target,
+ * fromType) binding exists (route 404s).
  */
-export async function setExecutorBindingPurpose(
+export async function setExecutorBindingType(
   tx: TenantTx,
   orgId: string,
   targetObjectId: string,
-  fromPurpose: BindingPurpose,
-  toPurpose: BindingPurpose
+  fromType: BindingType,
+  toType: BindingType
 ): Promise<ExecutorBindingRow | undefined> {
-  const existing = await getExecutorBinding(tx, orgId, targetObjectId, fromPurpose);
+  const existing = await getExecutorBinding(tx, orgId, targetObjectId, fromType);
   if (!existing) return undefined;
-  if (fromPurpose === toPurpose) return existing; // idempotent no-op relabel
+  if (fromType === toType) return existing; // idempotent no-op relabel
 
-  const clash = await getExecutorBinding(tx, orgId, targetObjectId, toPurpose);
+  const clash = await getExecutorBinding(tx, orgId, targetObjectId, toType);
   if (clash) {
     throw conflict(
-      `target '${targetObjectId}' already has a '${toPurpose}' binding — delete or repurpose it before relabelling the '${fromPurpose}' one`
+      `target '${targetObjectId}' already has a '${toType}' binding — delete or repurpose it before relabelling the '${fromType}' one`
     );
   }
   const [row] = await tx
     .update(executorBindings)
-    .set({ purpose: toPurpose, updatedAt: new Date() })
+    .set({ type: toType, updatedAt: new Date() })
     .where(eq(executorBindings.id, existing.id))
     .returning();
   return toRow(row!);
@@ -306,10 +311,10 @@ export async function setExecutorBindingPurpose(
 
 /**
  * Re-points a binding onto a DIFFERENT target object (M12 P5d merge) — moves the binding from its
- * current target onto `newTargetObjectId`, keeping its purpose. The caller (`mergeComponents`)
- * verifies the destination has no binding at this purpose first (owner Q1: reject-and-relabel, no
- * auto-collision); this still catches a concurrent racer at `UNIQUE(org,target,purpose)` and surfaces
- * the same one-per-purpose 409 rather than a raw unique-violation.
+ * current target onto `newTargetObjectId`, keeping its Type. The caller (`mergeComponents`) verifies
+ * the destination has no binding at this Type first (owner Q1: reject-and-relabel, no
+ * auto-collision); this still catches a concurrent racer at `UNIQUE(org,target,type)` and surfaces
+ * the same one-per-Type 409 rather than a raw unique-violation.
  */
 export async function repointExecutorBindingTarget(
   tx: TenantTx,
@@ -326,9 +331,9 @@ export async function repointExecutorBindingTarget(
     if (!row) throw notFound(`executor binding '${bindingId}' not found`);
     return toRow(row);
   } catch (err) {
-    if (isUniqueViolation(err, "executor_bindings_org_target_purpose_key")) {
+    if (isUniqueViolation(err, "executor_bindings_org_target_type_key")) {
       throw conflict(
-        `target '${newTargetObjectId}' already has a binding for this purpose — relabel one first`
+        `target '${newTargetObjectId}' already has a binding for this type — relabel one first`
       );
     }
     throw err;
@@ -476,16 +481,17 @@ export async function resolveExecutorPluginInstance(
     targetObjectId: string;
     masterKey: Buffer;
     domainId?: string;
-    /** Which pipeline to resolve. Defaults to 'software' — pre-P3 behaviour. P4A supplies this from
-     *  the wave target, so reconcile starts the instance for the pipeline it is about to trigger. */
-    purpose?: BindingPurpose;
+    /** Which pipeline to resolve — the routing Type (ADR-0007). Defaults to 'configuration'. P4A
+     *  supplies this from the wave target, so reconcile starts the instance for the pipeline it is
+     *  about to trigger. */
+    type?: BindingType;
   }
 ): Promise<ResolvedExecutorInstance | undefined> {
   const binding = await getExecutorBinding(
     tx,
     input.orgId,
     input.targetObjectId,
-    input.purpose ?? DEFAULT_BINDING_PURPOSE
+    input.type ?? DEFAULT_BINDING_TYPE
   );
   if (!binding) return undefined;
 

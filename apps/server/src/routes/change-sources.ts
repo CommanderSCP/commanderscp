@@ -366,7 +366,7 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
           repoPattern: request.body.repoPattern,
           pathPattern: request.body.pathPattern,
           componentIdOrUrn: request.body.component,
-          purpose: request.body.purpose
+          type: request.body.type
         });
       });
       reply.status(201).send(mapping);

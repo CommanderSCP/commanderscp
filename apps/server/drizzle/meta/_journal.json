@@ -183,6 +183,13 @@
       "when": 1785000000000,
       "tag": "0025_executor_binding_delete_grant",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1785100000000,
+      "tag": "0026_executor_binding_type",
+      "breakpoints": true
     }
   ]
 }

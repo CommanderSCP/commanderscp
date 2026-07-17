@@ -692,7 +692,7 @@ describe("discover() (M12 P3 — import an existing Argo CD)", () => {
     expect(webMap).toMatchObject({
       sourceKind: "github",
       repoPattern: "acme/web", // slug, not the full URL
-      purpose: "software"
+      type: "configuration"
     });
     expect(webMap?.pathPattern).toBeUndefined();
     // Multi-source: the source that actually has a repoURL is used, normalized to a slug.

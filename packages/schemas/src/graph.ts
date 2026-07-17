@@ -182,8 +182,8 @@ export type MergeComponentsRequest = z.infer<typeof MergeComponentsRequestSchema
 
 export const MergeComponentsResponseSchema = z.object({
   survivor: GraphObjectSchema,
-  /** Purposes of the bindings moved from the loser onto the survivor. */
-  movedBindingPurposes: z.array(z.string())
+  /** Types of the bindings moved from the loser onto the survivor (ADR-0007). */
+  movedBindingTypes: z.array(z.string())
 });
 export type MergeComponentsResponse = z.infer<typeof MergeComponentsResponseSchema>;
 

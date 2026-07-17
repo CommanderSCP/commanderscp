@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ExecutorTypeSchema, type ExecutorType } from "@scp/schemas";
 import { client } from "../lib/client";
 import { findRegistry, getEdgeClient, getOwnerClient, getRegistryClient } from "../lib/registries";
 import { registryDetailKey, registryListKey } from "../lib/query-client";
@@ -313,12 +314,14 @@ function TargetBindingsCard({
   const invalidate = () => queryClient.invalidateQueries({ queryKey: bindingsKey });
 
   const deleteMutation = useMutation({
-    mutationFn: (purpose: "infra" | "software") => client.executors.deleteBinding(targetId, purpose),
+    mutationFn: (type: ExecutorType) => client.executors.deleteBinding(targetId, type),
     onSuccess: invalidate
   });
   const repurposeMutation = useMutation({
-    mutationFn: (from: "infra" | "software") =>
-      client.executors.repurposeBinding(targetId, from === "software" ? "infra" : "software", from),
+    // Relabel a binding to a different routing Type (ADR-0007). The `from` Type names the current
+    // binding; the caller picks the new Type from the closed enum.
+    mutationFn: ({ from, to }: { from: ExecutorType; to: ExecutorType }) =>
+      client.executors.repurposeBinding(targetId, to, from),
     onSuccess: invalidate
   });
   const pending = deleteMutation.isPending || repurposeMutation.isPending;
@@ -343,24 +346,36 @@ function TargetBindingsCard({
               >
                 <div className="flex flex-col">
                   <span className="text-sm font-medium text-slate-900">
-                    <Badge variant="secondary">{b.purpose}</Badge> {b.pluginModule}
+                    <Badge variant="secondary">{b.type}</Badge>{" "}
+                    <Badge variant="outline">{b.category}</Badge> {b.pluginModule}
                   </span>
                   <span className="font-mono text-xs text-slate-500">{b.pluginInstanceId}</span>
                 </div>
                 <div className="flex gap-2">
-                  <Button
-                    variant="outline"
+                  {/* Relabel this binding to any other routing Type (ADR-0007). */}
+                  <Select
+                    value={b.type}
                     disabled={pending}
-                    onClick={() => repurposeMutation.mutate(b.purpose)}
-                    data-testid={`repurpose-${b.purpose}`}
+                    onValueChange={(to) =>
+                      repurposeMutation.mutate({ from: b.type, to: to as ExecutorType })
+                    }
                   >
-                    Make {b.purpose === "software" ? "infra" : "software"}
-                  </Button>
+                    <SelectTrigger className="w-40" data-testid={`repurpose-${b.type}`}>
+                      <SelectValue placeholder="Change type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {ExecutorTypeSchema.options.map((t) => (
+                        <SelectItem key={t} value={t}>
+                          {t}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                   <Button
                     variant="outline"
                     disabled={pending}
-                    onClick={() => deleteMutation.mutate(b.purpose)}
-                    data-testid={`unbind-${b.purpose}`}
+                    onClick={() => deleteMutation.mutate(b.type)}
+                    data-testid={`unbind-${b.type}`}
                   >
                     Detach
                   </Button>
@@ -382,7 +397,7 @@ function TargetBindingsCard({
 /**
  * Merge another component into this one (M12 P5d) — the driving-case fold of a freshly-imported,
  * binding-only duplicate. Picks a LOSER component; on merge, its executor bindings move here and it
- * is soft-deleted. The server rejects a binding-purpose collision (relabel one first) or an in-flight
+ * is soft-deleted. The server rejects a binding-type collision (relabel one first) or an in-flight
  * change, surfaced inline.
  */
 function MergeComponentCard({
@@ -455,7 +470,7 @@ function MergeComponentCard({
         )}
         {mergeMutation.isSuccess && (
           <p className="text-sm text-green-700" data-testid="merge-success">
-            Merged — moved {mergeMutation.data.movedBindingPurposes.join(", ") || "no"} binding(s).
+            Merged — moved {mergeMutation.data.movedBindingTypes.join(", ") || "no"} binding(s).
           </p>
         )}
       </CardContent>

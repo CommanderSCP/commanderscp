@@ -23,8 +23,8 @@ import {
   SecretConfiguredResponseSchema,
   SecretKeyListResponseSchema,
   SecretKeyParamSchema,
-  BindingPurposeSchema,
-  type BindingPurpose
+  ExecutorTypeSchema,
+  type ExecutorType
 } from "@scp/schemas";
 import {
   manifest as githubExecutorManifest,
@@ -53,11 +53,11 @@ import {
   getExecutorBinding,
   listExecutorBindingsForTarget,
   deleteExecutorBinding,
-  setExecutorBindingPurpose,
+  setExecutorBindingType,
   isKnownExecutorModule,
   executionSystemInstanceId,
   resolveInternalEgress,
-  DEFAULT_BINDING_PURPOSE,
+  DEFAULT_BINDING_TYPE,
   EXECUTION_SYSTEM_INSTANCE_PREFIX
 } from "../coordination/executor-bindings-repo.js";
 import {
@@ -117,7 +117,7 @@ async function bindTargetToExecutionSystem(
   targetObjectId: string,
   executionSystemId: string,
   externalRef?: string,
-  purpose?: BindingPurpose
+  type?: ExecutorType
 ) {
   const sys = await getObjectByIdOrUrnAnyType(tx, orgId, executionSystemId);
   // Authorize FIRST — before the typeId check below — so an unauthorized caller can't use the
@@ -154,7 +154,7 @@ async function bindTargetToExecutionSystem(
   return upsertExecutorBinding(tx, {
     orgId,
     targetObjectId,
-    purpose,
+    type,
     pluginModule: module,
     pluginInstanceId: executionSystemInstanceId(sys.id),
     executionSystemId: sys.id,
@@ -362,7 +362,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
             target.id,
             body.executionSystemId,
             body.externalRef,
-            body.purpose
+            body.type
           );
         }
 
@@ -370,7 +370,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           orgId: auth.orgId,
           targetObjectId: target.id,
           pluginModule: body.pluginModule!,
-          purpose: body.purpose,
+          type: body.type,
           pluginInstanceId: body.pluginInstanceId!,
           config: body.config,
           secretRefs: body.secretRefs,
@@ -387,11 +387,10 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     url: "/api/v1/executors/:idOrUrn/binding",
     schema: {
       params: RegistryIdOrUrnParamSchema,
-      // A target may hold one binding PER PURPOSE (M12 P3), so "the" binding no longer exists.
-      // Optional + defaulting to 'software' keeps every existing caller's behaviour identical, while
-      // making an `infra` binding readable at all — without it, PUT could create a binding that no
-      // API call could ever return.
-      querystring: z.object({ purpose: BindingPurposeSchema.optional() }),
+      // A target may hold one binding PER TYPE (M12 P3 / ADR-0007), so "the" binding no longer
+      // exists. Optional + defaulting to 'configuration' keeps a bare read pointed at the common
+      // case, while making any Type readable by naming it.
+      querystring: z.object({ type: ExecutorTypeSchema.optional() }),
       response: {
         200: ExecutorBindingSchema,
         401: ProblemSchema,
@@ -402,7 +401,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     config: {
       openapi: {
         operationId: "getExecutorBinding",
-        summary: "Get a target's configured executor binding for one purpose (default: software)",
+        summary: "Get a target's configured executor binding for one type (default: configuration)",
         tags: ["executors"]
       }
     },
@@ -416,11 +415,11 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           permission: "object:read",
           scopeObjectId: target.id
         });
-        const purpose = request.query.purpose ?? DEFAULT_BINDING_PURPOSE;
-        const row = await getExecutorBinding(tx, auth.orgId, target.id, purpose);
+        const type = request.query.type ?? DEFAULT_BINDING_TYPE;
+        const row = await getExecutorBinding(tx, auth.orgId, target.id, type);
         if (!row) {
           throw notFound(
-            `no '${purpose}' executor binding configured for '${request.params.idOrUrn}'`
+            `no '${type}' executor binding configured for '${request.params.idOrUrn}'`
           );
         }
         return row;
@@ -429,8 +428,8 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     }
   });
 
-  // GET all of a target's bindings (both purposes) — M12 P5c. The single-binding GET above needs a
-  // purpose; this lists every pipeline bound to the target (and excludes a soft-deleted target's).
+  // GET all of a target's bindings (all Types) — M12 P5c. The single-binding GET above needs a Type;
+  // this lists every pipeline bound to the target (and excludes a soft-deleted target's).
   typed.route({
     method: "GET",
     url: "/api/v1/executors/:idOrUrn/bindings",
@@ -441,7 +440,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     config: {
       openapi: {
         operationId: "listExecutorBindings",
-        summary: "List every executor binding (all purposes) configured for a target",
+        summary: "List every executor binding (all types) configured for a target",
         tags: ["executors"]
       }
     },
@@ -456,20 +455,20 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     }
   });
 
-  // DELETE a target's binding for one purpose — M12 P5c (the missing detach primitive). object:write
+  // DELETE a target's binding for one Type — M12 P5c (the missing detach primitive). object:write
   // on the target, mirroring PUT. Hard delete (no soft-delete column); returns the removed binding.
   typed.route({
     method: "DELETE",
     url: "/api/v1/executors/:idOrUrn/binding",
     schema: {
       params: RegistryIdOrUrnParamSchema,
-      querystring: z.object({ purpose: BindingPurposeSchema.optional() }),
+      querystring: z.object({ type: ExecutorTypeSchema.optional() }),
       response: { 200: ExecutorBindingSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
     },
     config: {
       openapi: {
         operationId: "deleteExecutorBinding",
-        summary: "Delete a target's executor binding for one purpose (default: software)",
+        summary: "Delete a target's executor binding for one type (default: configuration)",
         tags: ["executors"]
       }
     },
@@ -478,10 +477,10 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
       const binding = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const target = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.idOrUrn);
         await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "object:write", scopeObjectId: target.id });
-        const purpose = request.query.purpose ?? DEFAULT_BINDING_PURPOSE;
-        const row = await deleteExecutorBinding(tx, auth.orgId, target.id, purpose);
+        const type = request.query.type ?? DEFAULT_BINDING_TYPE;
+        const row = await deleteExecutorBinding(tx, auth.orgId, target.id, type);
         if (!row) {
-          throw notFound(`no '${purpose}' executor binding configured for '${request.params.idOrUrn}'`);
+          throw notFound(`no '${type}' executor binding configured for '${request.params.idOrUrn}'`);
         }
         return row;
       });
@@ -489,22 +488,22 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     }
   });
 
-  // PATCH: relabel which pipeline a target's binding drives — M12 P5c. `?purpose=` names the CURRENT
-  // purpose (default software); the body carries the NEW one. This is the merge-collision resolution
-  // (owner Q1: relabel one binding to infra before merging), and fixing a mis-imported purpose.
+  // PATCH: relabel which pipeline a target's binding drives — M12 P5c. `?type=` names the CURRENT
+  // Type (default configuration); the body carries the NEW one. This is the merge-collision
+  // resolution (owner Q1: relabel one binding before merging), and fixing a mis-imported Type.
   typed.route({
     method: "PATCH",
     url: "/api/v1/executors/:idOrUrn/binding",
     schema: {
       params: RegistryIdOrUrnParamSchema,
-      querystring: z.object({ purpose: BindingPurposeSchema.optional() }),
+      querystring: z.object({ type: ExecutorTypeSchema.optional() }),
       body: RepurposeExecutorBindingRequestSchema,
       response: { 200: ExecutorBindingSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema, 409: ProblemSchema }
     },
     config: {
       openapi: {
         operationId: "repurposeExecutorBinding",
-        summary: "Relabel which pipeline (infra|software) a target's executor binding drives",
+        summary: "Relabel which pipeline (routing type) a target's executor binding drives",
         tags: ["executors"]
       }
     },
@@ -513,10 +512,10 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
       const binding = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const target = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.idOrUrn);
         await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "object:write", scopeObjectId: target.id });
-        const fromPurpose = request.query.purpose ?? DEFAULT_BINDING_PURPOSE;
-        const row = await setExecutorBindingPurpose(tx, auth.orgId, target.id, fromPurpose, request.body.purpose);
+        const fromType = request.query.type ?? DEFAULT_BINDING_TYPE;
+        const row = await setExecutorBindingType(tx, auth.orgId, target.id, fromType, request.body.type);
         if (!row) {
-          throw notFound(`no '${fromPurpose}' executor binding configured for '${request.params.idOrUrn}'`);
+          throw notFound(`no '${fromType}' executor binding configured for '${request.params.idOrUrn}'`);
         }
         return row;
       });
@@ -877,7 +876,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
             repoPattern: proposedMapping.repoPattern,
             pathPattern: proposedMapping.pathPattern,
             componentIdOrUrn: componentId,
-            purpose: proposedMapping.purpose
+            type: proposedMapping.type
           });
           createdSourceMappingIds.push(created.id);
         }
