@@ -2,7 +2,14 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { v7 as uuidv7 } from "uuid";
 import { ScpClient } from "@scp/sdk";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { changeSourceEvents, changeWaveTargets, objects } from "../db/schema.js";
+import {
+  auditEvents,
+  changeSourceEvents,
+  changeWaveTargets,
+  changes,
+  decisions,
+  objects
+} from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { createSourceMapping } from "./source-mappings-repo.js";
 import { processChangeSourceEvents } from "./webhook-processor.js";
@@ -393,5 +400,138 @@ describe("wave target purpose: an infra release triggers the infra pipeline", ()
     // Re-read-from-the-change would give 'sw-pipeline' here; the snapshot gives 'inf-pipeline'.
     expect(targets[0]!.purpose).toBe("infra");
     expect(targets[0]!.executorPluginId).toBe("inf-pipeline");
+  });
+
+  // -----------------------------------------------------------------------------------------------
+  // FAIL-CLOSED on a masking executor-binding gap (docs/adr/0006). A target with >=1 real binding but
+  // NONE for the purpose being triggered must NOT fake-succeed — it hides a misconfiguration. It must
+  // block loudly (Decision + hash-chained audit + `no_executor` terminal) and PARK the change. A
+  // target with ZERO bindings keeps fake-succeeding (fake IS its configured rehearsal executor).
+  // -----------------------------------------------------------------------------------------------
+
+  /** Query helpers for the fail-closed assertions. */
+  const decisionsForChange = (changeId: string) =>
+    withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(decisions).where(eq(decisions.subjectId, changeId))
+    );
+  const noExecutorAuditFor = (changeId: string) =>
+    withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(auditEvents).where(eq(auditEvents.subjectId, changeId))
+    );
+  const changeRow = async (changeId: string) => {
+    const [row] = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(changes).where(eq(changes.objectId, changeId))
+    );
+    return row!;
+  };
+
+  it("MASKING GAP (b): an INFRA release against a SOFTWARE-only target blocks, does not fake-succeed", async () => {
+    // Pre-fix, `getExecutorBinding(infra)` returned undefined and reconcile fell back to the shared
+    // fake executor, driving this target to `triggered`/`succeeded` under 'fake-executor' with NO
+    // Decision, NO audit event, and NO park — a green no-op masking a real misconfiguration. Every
+    // assertion below is therefore also the proof this test FAILS on pre-fix code.
+    const componentId = await createTestComponent(admin, {
+      name: `masking-gap-${uuidv7().slice(0, 8)}`
+    }).then((c) => c.id);
+    await bind(componentId, "software", "sw-pipeline"); // a REAL binding — but only for software.
+
+    const change = await admin.changes.propose({
+      name: "infra release against a software-only target",
+      targets: [componentId],
+      purpose: "infra"
+    });
+
+    await tick();
+
+    // 1. The wave target reached the dedicated `no_executor` terminal — NOT `failed`, NOT a fake green.
+    const targets = await waveTargetsFor(componentId);
+    expect(targets).toHaveLength(1);
+    expect(targets[0]!.status).toBe("no_executor");
+    // It was never handed to the shared fake executor.
+    expect(targets[0]!.executorPluginId).not.toBe("fake-executor");
+    expect(targets[0]!.executorRef).toBeNull();
+
+    // 2. A `block` Decision with a decision_id names the gap.
+    const changeDecisions = await decisionsForChange(change.id);
+    const blockDecision = changeDecisions.find(
+      (d) => d.kind === "wave_target" && d.verdict === "block"
+    );
+    expect(blockDecision).toBeDefined();
+    expect(blockDecision!.id).toEqual(expect.any(String));
+    expect(blockDecision!.inputContext).toMatchObject({
+      requestedPurpose: "infra",
+      boundPurposes: ["software"]
+    });
+
+    // 3. A hash-chained audit event was written, carrying that decision_id.
+    const audit = await noExecutorAuditFor(change.id);
+    const noExecEvent = audit.find((e) => e.action === "change.wave_target.no_executor");
+    expect(noExecEvent).toBeDefined();
+    expect(noExecEvent!.decisionId).toBe(blockDecision!.id);
+    expect(noExecEvent!.rowHash).toEqual(expect.any(String)); // linked into the org's hash chain.
+
+    // 4. The change is PARKED: still `executing` (never succeeded/promoted), reconcile_blocked_at set.
+    const row = await changeRow(change.id);
+    expect(row.state).toBe("executing");
+    expect(row.reconcileBlockedAt).not.toBeNull();
+  });
+
+  it("INTENDED-FAKE (a) boundary-pin: a ZERO-binding target still fake-succeeds unchanged", async () => {
+    // The other side of the split — a target with NO bindings at all is a rehearsal/demo/test target
+    // whose configured executor IS the shared fake. This must NOT collapse into the (b) block; pinned
+    // so a future refactor can't quietly turn every unbound target into a `no_executor` failure.
+    const componentId = await createTestComponent(admin, {
+      name: `intended-fake-${uuidv7().slice(0, 8)}`
+    }).then((c) => c.id);
+    // Deliberately NO bind() call.
+
+    const change = await admin.changes.propose({
+      name: "release against a zero-binding rehearsal target",
+      targets: [componentId]
+    });
+
+    await tick();
+
+    const targets = await waveTargetsFor(componentId);
+    expect(targets).toHaveLength(1);
+    expect(targets[0]!.status).not.toBe("no_executor");
+    expect(["triggered", "observing", "succeeded"]).toContain(targets[0]!.status);
+    expect(targets[0]!.executorPluginId).toBe("fake-executor"); // the shared default fallback.
+
+    // No block Decision, no no_executor audit, and NOT parked.
+    const changeDecisions = await decisionsForChange(change.id);
+    expect(changeDecisions.some((d) => d.kind === "wave_target" && d.verdict === "block")).toBe(
+      false
+    );
+    const audit = await noExecutorAuditFor(change.id);
+    expect(audit.some((e) => e.action === "change.wave_target.no_executor")).toBe(false);
+    expect((await changeRow(change.id)).reconcileBlockedAt).toBeNull();
+  });
+
+  it("IDEMPOTENT: re-ticking after a (b) block appends no second Decision or audit event", async () => {
+    const componentId = await createTestComponent(admin, {
+      name: `idempotent-block-${uuidv7().slice(0, 8)}`
+    }).then((c) => c.id);
+    await bind(componentId, "software", "sw-pipeline");
+
+    const change = await admin.changes.propose({
+      name: "infra release to block twice",
+      targets: [componentId],
+      purpose: "infra"
+    });
+
+    await tick(); // first block
+    await tick(); // parked change is excluded from the sweep — must not re-emit anything
+    await tick();
+
+    const blockDecisions = (await decisionsForChange(change.id)).filter(
+      (d) => d.kind === "wave_target" && d.verdict === "block"
+    );
+    expect(blockDecisions).toHaveLength(1);
+
+    const noExecEvents = (await noExecutorAuditFor(change.id)).filter(
+      (e) => e.action === "change.wave_target.no_executor"
+    );
+    expect(noExecEvents).toHaveLength(1);
   });
 });
