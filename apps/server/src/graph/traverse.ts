@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import type { TraverseRequest, TraverseResult } from "@scp/schemas";
+import type { SubgraphRequest, SubgraphResult, TraverseRequest, TraverseResult } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { mapRawObjectRow, type RawObjectRow } from "./raw-row-mappers.js";
 import { sqlIn, sqlInOrAlways } from "./sql-helpers.js";
@@ -70,6 +70,34 @@ export async function traverse(
 
   return {
     objects: objRows.rows.map(mapRawObjectRow),
+    edges: edgeRows.rows.map((e) => ({
+      id: e.id,
+      typeId: e.type_id,
+      fromId: e.from_id,
+      toId: e.to_id
+    }))
+  };
+}
+
+/**
+ * Induced-subgraph edges over an explicit object-id set (DESIGN.md §5). The named graph queries
+ * (`impact-of`/`blast-radius`/…) return only the reachable object SET, never the edges among it;
+ * this returns exactly the live relationships whose BOTH endpoints are in `ids` — the same
+ * induced-subgraph edge set {@link traverse}'s step (2) computes over its own visited set, but for
+ * a caller-supplied node set. One round-trip, org-scoped, soft-delete-aware. The result carries no
+ * `objects` (the caller already holds them from the query that produced `ids`) — only the edges.
+ */
+export async function subgraph(
+  tx: TenantTx,
+  orgId: string,
+  req: SubgraphRequest
+): Promise<SubgraphResult> {
+  const edgeRows = await tx.execute<EdgeRow>(sql`
+    SELECT id, type_id, from_id, to_id FROM relationships
+    WHERE org_id = ${orgId}::uuid AND deleted_at IS NULL
+      AND ${sqlIn("from_id", req.ids)} AND ${sqlIn("to_id", req.ids)}
+  `);
+  return {
     edges: edgeRows.rows.map((e) => ({
       id: e.id,
       typeId: e.type_id,

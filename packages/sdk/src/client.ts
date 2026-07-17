@@ -27,6 +27,7 @@ import {
   deleteRelationship as deleteRelationshipRequest,
   graphQuery as graphQueryRequest,
   graphTraverse as graphTraverseRequest,
+  graphSubgraph as graphSubgraphRequest,
   listAuditEvents as listAuditEventsRequest,
   // M2 typed registries (routes/typed-registries.ts) — 8 resources × create/list/get/update/
   // delete/upsertByUrn, generated from BUILD_AND_TEST.md §8 M2 item 1's operationIds.
@@ -230,6 +231,7 @@ import type {
   RelationshipTypeListResponse,
   ServiceObject,
   ServiceObjectListResponse,
+  SubgraphResult,
   TraverseResult,
   UpdateObjectRequest,
   UpsertObjectRequest,
@@ -387,6 +389,11 @@ export interface TraverseParams {
   direction?: "out" | "in" | "both";
   relTypes?: string[];
   maxDepth?: number;
+}
+
+export interface SubgraphParams {
+  objectId: string;
+  ids: string[];
 }
 
 function idempotencyHeaders(idempotencyKey?: string): Record<string, string> | undefined {
@@ -993,6 +1000,15 @@ export class ScpClient {
     },
     traverse: async (params: TraverseParams): Promise<TraverseResult> => {
       const result = await graphTraverseRequest({ client: this.client, query: params });
+      return unwrap(result);
+    },
+    /**
+     * Induced-subgraph edges over an explicit object-id set — the REAL relationships whose both
+     * endpoints are in `params.ids`. Lets a caller that already holds a named query's result SET
+     * (`impact-of`/`blast-radius`/…) render the true edge structure among it in one round-trip.
+     */
+    subgraph: async (params: SubgraphParams): Promise<SubgraphResult> => {
+      const result = await graphSubgraphRequest({ client: this.client, body: params });
       return unwrap(result);
     }
   };

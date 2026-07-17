@@ -8,6 +8,7 @@ import { PatsPage } from "./routes/pats";
 import { RegistryListPage } from "./routes/registry-list";
 import { RegistryDetailPage } from "./routes/registry-detail";
 import { GraphExplorerPage } from "./routes/graph-explorer";
+import { GraphLandingPage } from "./routes/graph-landing";
 import { ChangeListPage } from "./routes/change-list";
 import { ChangeDetailPage } from "./routes/change-detail";
 import { CampaignListPage } from "./routes/campaign-list";
@@ -61,6 +62,12 @@ const patsRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/pats",
   component: PatsPage
+});
+
+const graphLandingRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/graph",
+  component: GraphLandingPage
 });
 
 const graphExplorerRoute = createRoute({
@@ -139,6 +146,7 @@ const routeTree = rootRoute.addChildren([
     dashboardRoute,
     deviceRoute,
     patsRoute,
+    graphLandingRoute,
     graphExplorerRoute,
     changeListRoute,
     changeDetailRoute,

@@ -237,6 +237,26 @@ describe("named graph queries: fixture graph", () => {
     expect(ids).toContain(pathB.id);
     expect(ids).toContain(pathC.id);
   });
+
+  it("graph/subgraph: returns the real edges among a supplied id set, excluding edges that leave it", async () => {
+    // chain[0] -depends_on-> chain[1] -depends_on-> chain[2] -depends_on-> chain[3]. Ask for the
+    // induced subgraph over {chain0, chain1, chain2}: the two internal edges must come back, and
+    // the chain2 -> chain3 edge (chain3 outside the set) must NOT — this is exactly what lets the
+    // UI render the true DAG for a named query's result set instead of a synthesized star.
+    const [c0, c1, c2, c3] = chain;
+    if (!c0 || !c1 || !c2 || !c3) throw new Error("chain fixture too short");
+    const result = await client.graph.subgraph({ objectId: c0.id, ids: [c0.id, c1.id, c2.id] });
+    const pairs = result.edges.map((e) => `${e.fromId}->${e.toId}`);
+    expect(pairs).toContain(`${c0.id}->${c1.id}`);
+    expect(pairs).toContain(`${c1.id}->${c2.id}`);
+    expect(pairs).not.toContain(`${c2.id}->${c3.id}`);
+    expect(result.edges.every((e) => e.typeId === "depends_on")).toBe(true);
+  });
+
+  it("graph/subgraph: an isolated node yields no edges", async () => {
+    const result = await client.graph.subgraph({ objectId: isolated.id, ids: [isolated.id] });
+    expect(result.edges).toHaveLength(0);
+  });
 });
 
 /** The five reachability named queries — all backed by named-queries.ts's shared
