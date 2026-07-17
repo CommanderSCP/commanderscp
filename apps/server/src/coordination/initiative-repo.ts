@@ -3,7 +3,7 @@ import type { CampaignStatus, Initiative, InitiativeMemberCampaign } from "@scp/
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects, relationships } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
-import { decodeCursor, encodeCursor } from "../pagination.js";
+import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { createRelationship } from "../graph/relationships-repo.js";
 import { authorize } from "../authz/resolve.js";
@@ -228,16 +228,14 @@ export async function listInitiatives(
   const cursor = query.cursor ? decodeCursor(query.cursor) : null;
   const conditions = [eq(objects.orgId, orgId), eq(objects.typeId, "initiative"), sql`${objects.deletedAt} IS NULL`];
   if (cursor) {
-    conditions.push(
-      sql`(${objects.createdAt}, ${objects.id}) > (${cursor.createdAt.toISOString()}::timestamptz, ${cursor.id}::uuid)`
-    );
+    conditions.push(keysetAfter(objects.createdAt, objects.id, cursor));
   }
 
   const rows = await tx
     .select()
     .from(objects)
     .where(and(...conditions))
-    .orderBy(asc(objects.createdAt), asc(objects.id))
+    .orderBy(...keysetOrderBy(objects.createdAt, objects.id))
     .limit(query.limit + 1);
 
   const hasMore = rows.length > query.limit;

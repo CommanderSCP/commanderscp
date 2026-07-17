@@ -1,11 +1,11 @@
-import { and, asc, eq, gt, isNull, or } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { Relationship } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { relationships } from "../db/schema.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { isUniqueViolation } from "../db/pg-errors.js";
-import { decodeCursor, encodeCursor } from "../pagination.js";
+import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
 import { computeRelationshipContentHash } from "./content-hash.js";
 import { requireRelationshipType } from "./type-registry-repo.js";
 import { validateProperties } from "./property-validation.js";
@@ -280,18 +280,14 @@ export async function listRelationships(
   if (query.toId) conditions.push(eq(relationships.toId, query.toId));
   if (query.typeId) conditions.push(eq(relationships.typeId, query.typeId));
   if (cursor) {
-    const cursorCondition = or(
-      gt(relationships.createdAt, cursor.createdAt),
-      and(eq(relationships.createdAt, cursor.createdAt), gt(relationships.id, cursor.id))
-    );
-    if (cursorCondition) conditions.push(cursorCondition);
+    conditions.push(keysetAfter(relationships.createdAt, relationships.id, cursor));
   }
 
   const rows = await tx
     .select()
     .from(relationships)
     .where(and(...conditions))
-    .orderBy(asc(relationships.createdAt), asc(relationships.id))
+    .orderBy(...keysetOrderBy(relationships.createdAt, relationships.id))
     .limit(query.limit + 1);
 
   const hasMore = rows.length > query.limit;

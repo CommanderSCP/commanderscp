@@ -1,9 +1,9 @@
-import { and, asc, eq, gt, isNull } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { SourceMapping } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects, sourceMappings } from "../db/schema.js";
-import { decodeCursor, encodeCursor } from "../pagination.js";
+import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 
 function toSourceMapping(row: typeof sourceMappings.$inferSelect): SourceMapping {
@@ -157,13 +157,13 @@ export async function listSourceMappings(
 ): Promise<{ items: SourceMapping[]; nextCursor: string | null }> {
   const cursor = query.cursor ? decodeCursor(query.cursor) : null;
   const conditions = [eq(sourceMappings.orgId, orgId)];
-  if (cursor) conditions.push(gt(sourceMappings.createdAt, cursor.createdAt));
+  if (cursor) conditions.push(keysetAfter(sourceMappings.createdAt, sourceMappings.id, cursor));
 
   const rows = await tx
     .select()
     .from(sourceMappings)
     .where(and(...conditions))
-    .orderBy(asc(sourceMappings.createdAt), asc(sourceMappings.id))
+    .orderBy(...keysetOrderBy(sourceMappings.createdAt, sourceMappings.id))
     .limit(query.limit + 1);
 
   const hasMore = rows.length > query.limit;

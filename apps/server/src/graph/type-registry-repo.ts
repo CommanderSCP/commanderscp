@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, isNull, or } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import type {
   CreateObjectTypeRequest,
   CreateRelationshipTypeRequest,
@@ -9,7 +9,7 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { objectTypes, relationshipTypes } from "../db/schema.js";
 import { conflict, notFound } from "../errors.js";
 import { isUniqueViolation } from "../db/pg-errors.js";
-import { decodeCursor, encodeCursor } from "../pagination.js";
+import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
 
 function toObjectType(row: typeof objectTypes.$inferSelect): ObjectType {
   return {
@@ -70,18 +70,13 @@ export async function listObjectTypes(
   const cursor = query.cursor ? decodeCursor(query.cursor) : null;
   const conditions = [or(eq(objectTypes.orgId, orgId), isNull(objectTypes.orgId))];
   if (cursor) {
-    conditions.push(
-      or(
-        gt(objectTypes.createdAt, cursor.createdAt),
-        and(eq(objectTypes.createdAt, cursor.createdAt), gt(objectTypes.id, cursor.id))
-      )
-    );
+    conditions.push(keysetAfter(objectTypes.createdAt, objectTypes.id, cursor));
   }
   const rows = await tx
     .select()
     .from(objectTypes)
     .where(and(...conditions))
-    .orderBy(asc(objectTypes.createdAt), asc(objectTypes.id))
+    .orderBy(...keysetOrderBy(objectTypes.createdAt, objectTypes.id))
     .limit(query.limit + 1);
 
   const hasMore = rows.length > query.limit;
@@ -147,18 +142,13 @@ export async function listRelationshipTypes(
   const cursor = query.cursor ? decodeCursor(query.cursor) : null;
   const conditions = [or(eq(relationshipTypes.orgId, orgId), isNull(relationshipTypes.orgId))];
   if (cursor) {
-    conditions.push(
-      or(
-        gt(relationshipTypes.createdAt, cursor.createdAt),
-        and(eq(relationshipTypes.createdAt, cursor.createdAt), gt(relationshipTypes.id, cursor.id))
-      )
-    );
+    conditions.push(keysetAfter(relationshipTypes.createdAt, relationshipTypes.id, cursor));
   }
   const rows = await tx
     .select()
     .from(relationshipTypes)
     .where(and(...conditions))
-    .orderBy(asc(relationshipTypes.createdAt), asc(relationshipTypes.id))
+    .orderBy(...keysetOrderBy(relationshipTypes.createdAt, relationshipTypes.id))
     .limit(query.limit + 1);
 
   const hasMore = rows.length > query.limit;
