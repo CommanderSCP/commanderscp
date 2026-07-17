@@ -64,7 +64,7 @@ describe("source_mappings on import (M12 P5, Q3)", () => {
         objects: [{ typeId: "component", name, properties: {} }],
         relationships: [],
         sourceMappings: [
-          { objectName: name, sourceKind: "github", repoPattern: repo, purpose: "software" }
+          { objectName: name, sourceKind: "github", repoPattern: repo, type: "configuration" }
         ]
       }
     });

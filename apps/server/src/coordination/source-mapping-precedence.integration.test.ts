@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { v7 as uuidv7 } from "uuid";
 import { ScpClient } from "@scp/sdk";
+import type { ExecutorType } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { createSourceMapping } from "./source-mappings-repo.js";
 import { matchComponentForSource } from "./correlation.js";
@@ -18,8 +19,8 @@ import {
  * Both `repo_pattern` and `path_pattern` are nullable and a null pattern is skipped by the matcher,
  * so a catch-all mapping matches EVERY event of its sourceKind and overlaps with every specific
  * mapping next to it. The match had no ORDER BY, so which of the two won was whatever Postgres
- * happened to return. Since P4A the winning row also carries `purpose`, so that coin flip picks
- * WHICH PIPELINE the release drives, not just which component.
+ * happened to return. Since P4A the winning row also carries the routing `type` (ADR-0007), so that
+ * coin flip picks WHICH PIPELINE the release drives, not just which component.
  *
  * Each case uses its own sourceKind: the match is scoped to (orgId, sourceKind), so a private
  * sourceKind is what makes "these two mappings and no others matched" true.
@@ -51,7 +52,7 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
   const mapping = (input: {
     sourceKind: string;
     componentIdOrUrn: string;
-    purpose: "infra" | "software";
+    type: ExecutorType;
     repoPattern?: string;
   }) =>
     withTenantTx(server.deps.db, org.orgId, (tx) =>
@@ -73,18 +74,18 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     const fallbackComponent = await component("fallback");
     const infraComponent = await component("infra");
 
-    await mapping({ sourceKind, componentIdOrUrn: fallbackComponent, purpose: "software" });
+    await mapping({ sourceKind, componentIdOrUrn: fallbackComponent, type: "configuration" });
     await mapping({
       sourceKind,
       componentIdOrUrn: infraComponent,
-      purpose: "infra",
+      type: "infrastructure",
       repoPattern: repo
     });
 
     const result = await match(sourceKind, repo);
     // Asserted on the resolved VALUES, not on a truthy match: routing this event to the fallback
-    // component's SOFTWARE pipeline is precisely the wrong outcome, and it must be named.
-    expect(result).toEqual({ componentObjectId: infraComponent, purpose: "infra" });
+    // component's configuration pipeline is precisely the wrong outcome, and it must be named.
+    expect(result).toEqual({ componentObjectId: infraComponent, type: "infrastructure" });
   });
 
   it("the SAME specific mapping wins when the catch-all is inserted AFTER it", async () => {
@@ -98,13 +99,13 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     await mapping({
       sourceKind,
       componentIdOrUrn: infraComponent,
-      purpose: "infra",
+      type: "infrastructure",
       repoPattern: repo
     });
-    await mapping({ sourceKind, componentIdOrUrn: fallbackComponent, purpose: "software" });
+    await mapping({ sourceKind, componentIdOrUrn: fallbackComponent, type: "configuration" });
 
     const result = await match(sourceKind, repo);
-    expect(result).toEqual({ componentObjectId: infraComponent, purpose: "infra" });
+    expect(result).toEqual({ componentObjectId: infraComponent, type: "infrastructure" });
   });
 
   it("the winner is STABLE across repeated matches of the same event", async () => {
@@ -112,11 +113,11 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     const repo = `acme/terraform-${uuidv7()}`;
     const fallbackComponent = await component("fallback");
     const infraComponent = await component("infra");
-    await mapping({ sourceKind, componentIdOrUrn: fallbackComponent, purpose: "software" });
+    await mapping({ sourceKind, componentIdOrUrn: fallbackComponent, type: "configuration" });
     await mapping({
       sourceKind,
       componentIdOrUrn: infraComponent,
-      purpose: "infra",
+      type: "infrastructure",
       repoPattern: repo
     });
 
@@ -126,7 +127,7 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     // make the assertion below pass vacuously.
     expect(results).toHaveLength(5);
     expect(
-      results.every((r) => r?.componentObjectId === infraComponent && r.purpose === "infra")
+      results.every((r) => r?.componentObjectId === infraComponent && r.type === "infrastructure")
     ).toBe(true);
   });
 
@@ -135,16 +136,16 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     const sourceKind = `precedence-fallback-${uuidv7()}`;
     const fallbackComponent = await component("fallback");
     const infraComponent = await component("infra");
-    await mapping({ sourceKind, componentIdOrUrn: fallbackComponent, purpose: "software" });
+    await mapping({ sourceKind, componentIdOrUrn: fallbackComponent, type: "configuration" });
     await mapping({
       sourceKind,
       componentIdOrUrn: infraComponent,
-      purpose: "infra",
+      type: "infrastructure",
       repoPattern: `acme/terraform-${uuidv7()}`
     });
 
     const result = await match(sourceKind, "acme/something-else-entirely");
-    expect(result).toEqual({ componentObjectId: fallbackComponent, purpose: "software" });
+    expect(result).toEqual({ componentObjectId: fallbackComponent, type: "configuration" });
   });
 
   it("two EQUALLY constrained overlapping mappings resolve to the OLDER one", async () => {
@@ -160,17 +161,17 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     await mapping({
       sourceKind,
       componentIdOrUrn: wildcardComponent,
-      purpose: "software",
+      type: "configuration",
       repoPattern: `acme-${suffix}/*`
     });
     await mapping({
       sourceKind,
       componentIdOrUrn: exactComponent,
-      purpose: "infra",
+      type: "infrastructure",
       repoPattern: `acme-${suffix}/app`
     });
 
     const result = await match(sourceKind, `acme-${suffix}/app`);
-    expect(result).toEqual({ componentObjectId: wildcardComponent, purpose: "software" });
+    expect(result).toEqual({ componentObjectId: wildcardComponent, type: "configuration" });
   });
 });

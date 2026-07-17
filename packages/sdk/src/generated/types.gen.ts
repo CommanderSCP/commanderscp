@@ -6083,7 +6083,7 @@ export type MergeComponentsResponses = {
             updatedAt: string;
             deletedAt: string | null;
         };
-        movedBindingPurposes: Array<string>;
+        movedBindingTypes: Array<string>;
     };
 };
 
@@ -8816,7 +8816,7 @@ export type ProposeChangeData = {
         correlationKey?: string;
         emergency?: boolean;
         topology?: string;
-        purpose?: 'infra' | 'software';
+        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
         provides?: Array<string>;
         requires?: Array<{
             key: string;
@@ -9083,7 +9083,8 @@ export type ExplainChangeResponses = {
                     targetObjectId: string;
                     targetUrn?: string;
                     targetName?: string;
-                    purpose: 'infra' | 'software';
+                    type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                    category: 'build' | 'infrastructure' | 'configuration';
                     executorPluginId: string | null;
                     executorRef: {
                         [key: string]: unknown;
@@ -9757,7 +9758,8 @@ export type ListSourceMappingsResponses = {
             repoPattern: string | null;
             pathPattern: string | null;
             componentObjectId: string;
-            purpose: 'infra' | 'software';
+            type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+            category: 'build' | 'infrastructure' | 'configuration';
             createdAt: string;
         }>;
         nextCursor: string | null;
@@ -9772,7 +9774,7 @@ export type CreateSourceMappingData = {
         repoPattern?: string;
         pathPattern?: string;
         component: string;
-        purpose?: 'infra' | 'software';
+        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
     };
     path: {
         sourceKind: string;
@@ -9841,7 +9843,8 @@ export type CreateSourceMappingResponses = {
         repoPattern: string | null;
         pathPattern: string | null;
         componentObjectId: string;
-        purpose: 'infra' | 'software';
+        type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        category: 'build' | 'infrastructure' | 'configuration';
         createdAt: string;
     };
 };
@@ -11624,7 +11627,7 @@ export type ProposeCampaignData = {
             [key: string]: unknown;
         };
         topology?: string;
-        purpose?: 'infra' | 'software';
+        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
         targets: Array<string>;
     };
     path?: never;
@@ -13452,7 +13455,7 @@ export type DeleteExecutorBindingData = {
         idOrUrn: string;
     };
     query?: {
-        purpose?: 'infra' | 'software';
+        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
     };
     url: '/executors/{idOrUrn}/binding';
 };
@@ -13502,7 +13505,8 @@ export type DeleteExecutorBindingResponses = {
     200: {
         id: string;
         targetObjectId: string;
-        purpose: 'infra' | 'software';
+        type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        category: 'build' | 'infrastructure' | 'configuration';
         pluginModule: string;
         pluginInstanceId: string;
         config: unknown;
@@ -13523,7 +13527,7 @@ export type GetExecutorBindingData = {
         idOrUrn: string;
     };
     query?: {
-        purpose?: 'infra' | 'software';
+        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
     };
     url: '/executors/{idOrUrn}/binding';
 };
@@ -13573,7 +13577,8 @@ export type GetExecutorBindingResponses = {
     200: {
         id: string;
         targetObjectId: string;
-        purpose: 'infra' | 'software';
+        type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        category: 'build' | 'infrastructure' | 'configuration';
         pluginModule: string;
         pluginInstanceId: string;
         config: unknown;
@@ -13590,13 +13595,13 @@ export type GetExecutorBindingResponse = GetExecutorBindingResponses[keyof GetEx
 
 export type RepurposeExecutorBindingData = {
     body: {
-        purpose: 'infra' | 'software';
+        type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
     };
     path: {
         idOrUrn: string;
     };
     query?: {
-        purpose?: 'infra' | 'software';
+        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
     };
     url: '/executors/{idOrUrn}/binding';
 };
@@ -13657,7 +13662,8 @@ export type RepurposeExecutorBindingResponses = {
     200: {
         id: string;
         targetObjectId: string;
-        purpose: 'infra' | 'software';
+        type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        category: 'build' | 'infrastructure' | 'configuration';
         pluginModule: string;
         pluginInstanceId: string;
         config: unknown;
@@ -13685,7 +13691,7 @@ export type PutExecutorBindingData = {
         allowedHosts?: Array<string>;
         externalRef?: string;
         executionSystemId?: string;
-        purpose?: 'infra' | 'software';
+        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
     };
     path: {
         idOrUrn: string;
@@ -13739,7 +13745,8 @@ export type PutExecutorBindingResponses = {
     200: {
         id: string;
         targetObjectId: string;
-        purpose: 'infra' | 'software';
+        type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        category: 'build' | 'infrastructure' | 'configuration';
         pluginModule: string;
         pluginInstanceId: string;
         config: unknown;
@@ -13809,7 +13816,8 @@ export type ListExecutorBindingsResponses = {
         items: Array<{
             id: string;
             targetObjectId: string;
-            purpose: 'infra' | 'software';
+            type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+            category: 'build' | 'infrastructure' | 'configuration';
             pluginModule: string;
             pluginInstanceId: string;
             config: unknown;
@@ -14073,7 +14081,7 @@ export type RunDiscoveryResponses = {
             sourceKind: string;
             repoPattern?: string;
             pathPattern?: string;
-            purpose?: 'infra' | 'software';
+            type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
         }>;
     };
 };
@@ -14106,7 +14114,7 @@ export type AcceptDiscoveryProposalData = {
                 sourceKind: string;
                 repoPattern?: string;
                 pathPattern?: string;
-                purpose?: 'infra' | 'software';
+                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
             }>;
         };
     };
@@ -14192,7 +14200,7 @@ export type BackfillSourceMappingsData = {
                 sourceKind: string;
                 repoPattern?: string;
                 pathPattern?: string;
-                purpose?: 'infra' | 'software';
+                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
             }>;
         };
     };

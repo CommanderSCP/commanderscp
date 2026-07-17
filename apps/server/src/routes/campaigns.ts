@@ -69,7 +69,7 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
           description: body.description,
           labels: body.labels,
           topologyIdOrUrn: body.topology,
-          purpose: body.purpose,
+          type: body.type,
           targets: body.targets
         });
       });

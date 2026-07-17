@@ -291,6 +291,7 @@ import type {
   WebhookSecretConfiguredResponse,
   CreateExecutorBindingRequest,
   ExecutorBinding,
+  ExecutorType,
   CreateNotificationBindingRequest,
   NotificationBinding,
   NotificationBindingListResponse,
@@ -908,7 +909,7 @@ export class ScpClient {
       },
       /**
        * Merge `loserIdOrUrn` into `survivorIdOrUrn` (M12 P5d) — moves the loser's executor bindings
-       * onto the survivor and soft-deletes the loser. Rejects (409) on a binding-purpose collision
+       * onto the survivor and soft-deletes the loser. Rejects (409) on a binding-type collision
        * (relabel one first) or if either component has an in-flight change / live graph edges.
        */
       merge: async (
@@ -1463,48 +1464,48 @@ export class ScpClient {
       });
       return unwrap(result);
     },
-    /** `purpose` omitted ⇒ 'software' (server-side default) — a target may hold one binding per
-     *  purpose (M12 P3), so reading an `infra` pipeline requires naming it. */
+    /** `type` omitted ⇒ 'configuration' (server-side default) — a target may hold one binding per
+     *  Type (M12 P3 / ADR-0007), so reading a non-default pipeline requires naming its Type. */
     getBinding: async (
       idOrUrn: string,
-      purpose?: "infra" | "software"
+      type?: ExecutorType
     ): Promise<ExecutorBinding> => {
       const result = await getExecutorBindingRequest({
         client: this.client,
         path: { idOrUrn },
-        ...(purpose ? { query: { purpose } } : {})
+        ...(type ? { query: { type } } : {})
       });
       return unwrap(result);
     },
-    /** Every pipeline bound to a target (both purposes) — M12 P5c. Excludes a soft-deleted target's. */
+    /** Every pipeline bound to a target (all Types) — M12 P5c. Excludes a soft-deleted target's. */
     listBindings: async (idOrUrn: string): Promise<ExecutorBinding[]> => {
       const result = await listExecutorBindingsRequest({ client: this.client, path: { idOrUrn } });
       return unwrap(result).items;
     },
-    /** Delete a target's binding for one purpose (default 'software') — M12 P5c. Returns the removed binding. */
+    /** Delete a target's binding for one Type (default 'configuration') — M12 P5c. Returns the removed binding. */
     deleteBinding: async (
       idOrUrn: string,
-      purpose?: "infra" | "software"
+      type?: ExecutorType
     ): Promise<ExecutorBinding> => {
       const result = await deleteExecutorBindingRequest({
         client: this.client,
         path: { idOrUrn },
-        ...(purpose ? { query: { purpose } } : {})
+        ...(type ? { query: { type } } : {})
       });
       return unwrap(result);
     },
-    /** Relabel which pipeline a target's binding drives — M12 P5c. `fromPurpose` (default 'software')
-     *  names the current binding; `toPurpose` is the new label. */
+    /** Relabel which pipeline a target's binding drives — M12 P5c. `fromType` (default 'configuration')
+     *  names the current binding; `toType` is the new routing Type. */
     repurposeBinding: async (
       idOrUrn: string,
-      toPurpose: "infra" | "software",
-      fromPurpose?: "infra" | "software"
+      toType: ExecutorType,
+      fromType?: ExecutorType
     ): Promise<ExecutorBinding> => {
       const result = await repurposeExecutorBindingRequest({
         client: this.client,
         path: { idOrUrn },
-        body: { purpose: toPurpose },
-        ...(fromPurpose ? { query: { purpose: fromPurpose } } : {})
+        body: { type: toType },
+        ...(fromType ? { query: { type: fromType } } : {})
       });
       return unwrap(result);
     }

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { CursorPageQuerySchema, cursorPageResponseSchema } from "./common.js";
 import { ChangeSchema, DecisionSchema } from "./changes.js";
-import { BindingPurposeSchema } from "./executors.js";
+import { ExecutorTypeSchema } from "./executors.js";
 
 /**
  * M5 Campaigns & Initiatives wire contract (DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5). Campaigns
@@ -51,11 +51,12 @@ export const CreateCampaignRequestSchema = z.object({
   /** Release-topology object id or URN to compile the campaign's waves against (optional — falls
    *  back to pure `depends_on` toposort, same as a Change). */
   topology: z.string().optional(),
-  /** WHICH pipeline every change this campaign fans out rolls (M12 P4A) — "patch the base AMI across
-   *  every cluster" is an `infra` campaign, "roll the log4j bump across every service" a `software`
-   *  one. Declared once on the campaign rather than per fanned-out change, which is what a campaign
-   *  IS: one intent, many targets. Omitted means 'software', so existing campaigns are unchanged. */
-  purpose: BindingPurposeSchema.optional(),
+  /** WHICH pipeline every change this campaign fans out rolls (M12 P4A) — the routing Type
+   *  (ADR-0007). "Patch the base AMI across every cluster" is an `infrastructure` campaign, "roll
+   *  the log4j bump across every service" a `configuration` one. Declared once on the campaign
+   *  rather than per fanned-out change, which is what a campaign IS: one intent, many targets.
+   *  Omitted means 'configuration' (the server default). */
+  type: ExecutorTypeSchema.optional(),
   targets: z.array(z.string().min(1)).min(1)
 });
 export type CreateCampaignRequest = z.infer<typeof CreateCampaignRequestSchema>;

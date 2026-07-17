@@ -1,7 +1,7 @@
 import type { Change } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { badRequest } from "../errors.js";
-import { getChangeRow, proposeChange, purposeOf, targetObjectIdsOf } from "./changes-repo.js";
+import { getChangeRow, proposeChange, typeOf, targetObjectIdsOf } from "./changes-repo.js";
 import { insertDecision } from "./decisions-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 
@@ -63,11 +63,11 @@ export async function triggerRollback(
     sourceRef: { rollbackOf: input.originalChangeObjectId },
     targets: targetObjectIds,
     topologyIdOrUrn: original.topologyObjectId ?? undefined,
-    // A rollback rolls the SAME pipeline as the change it undoes (M12 P4A) — inherited from the
-    // original exactly as `targets` and the topology above already are. Defaulting to 'software'
-    // here instead would point an infra change's rollback at the software pipeline: the wrong
-    // executor, driven with the wrong ref, to undo an infra release.
-    purpose: purposeOf(originalObject.properties),
+    // A rollback rolls the SAME pipeline as the change it undoes (M12 P4A / ADR-0007) — inherited
+    // from the original exactly as `targets` and the topology above already are. Defaulting to the
+    // server default here instead would point an `infrastructure` change's rollback at a
+    // `configuration` pipeline: the wrong executor, driven with the wrong ref, to undo the release.
+    type: typeOf(originalObject.properties),
     rollbackOfObjectId: input.originalChangeObjectId
   });
 

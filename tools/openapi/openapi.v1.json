@@ -22890,7 +22890,7 @@
                       ],
                       "additionalProperties": false
                     },
-                    "movedBindingPurposes": {
+                    "movedBindingTypes": {
                       "type": "array",
                       "items": {
                         "type": "string"
@@ -22899,7 +22899,7 @@
                   },
                   "required": [
                     "survivor",
-                    "movedBindingPurposes"
+                    "movedBindingTypes"
                   ],
                   "additionalProperties": false
                 }
@@ -33084,11 +33084,15 @@
                   "topology": {
                     "type": "string"
                   },
-                  "purpose": {
+                  "type": {
                     "type": "string",
                     "enum": [
-                      "infra",
-                      "software"
+                      "image",
+                      "rpm",
+                      "deb",
+                      "npm",
+                      "infrastructure",
+                      "configuration"
                     ]
                   },
                   "provides": {
@@ -34550,11 +34554,23 @@
                                         "targetName": {
                                           "type": "string"
                                         },
-                                        "purpose": {
+                                        "type": {
                                           "type": "string",
                                           "enum": [
-                                            "infra",
-                                            "software"
+                                            "image",
+                                            "rpm",
+                                            "deb",
+                                            "npm",
+                                            "infrastructure",
+                                            "configuration"
+                                          ]
+                                        },
+                                        "category": {
+                                          "type": "string",
+                                          "enum": [
+                                            "build",
+                                            "infrastructure",
+                                            "configuration"
                                           ]
                                         },
                                         "executorPluginId": {
@@ -34616,7 +34632,8 @@
                                         "id",
                                         "waveId",
                                         "targetObjectId",
-                                        "purpose",
+                                        "type",
+                                        "category",
                                         "executorPluginId",
                                         "executorRef",
                                         "status",
@@ -37241,11 +37258,15 @@
                     "type": "string",
                     "minLength": 1
                   },
-                  "purpose": {
+                  "type": {
                     "type": "string",
                     "enum": [
-                      "infra",
-                      "software"
+                      "image",
+                      "rpm",
+                      "deb",
+                      "npm",
+                      "infrastructure",
+                      "configuration"
                     ]
                   }
                 },
@@ -37305,11 +37326,23 @@
                       "format": "uuid",
                       "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                     },
-                    "purpose": {
+                    "type": {
                       "type": "string",
                       "enum": [
-                        "infra",
-                        "software"
+                        "image",
+                        "rpm",
+                        "deb",
+                        "npm",
+                        "infrastructure",
+                        "configuration"
+                      ]
+                    },
+                    "category": {
+                      "type": "string",
+                      "enum": [
+                        "build",
+                        "infrastructure",
+                        "configuration"
                       ]
                     },
                     "createdAt": {
@@ -37325,7 +37358,8 @@
                     "repoPattern",
                     "pathPattern",
                     "componentObjectId",
-                    "purpose",
+                    "type",
+                    "category",
                     "createdAt"
                   ],
                   "additionalProperties": false
@@ -37578,11 +37612,23 @@
                             "format": "uuid",
                             "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                           },
-                          "purpose": {
+                          "type": {
                             "type": "string",
                             "enum": [
-                              "infra",
-                              "software"
+                              "image",
+                              "rpm",
+                              "deb",
+                              "npm",
+                              "infrastructure",
+                              "configuration"
+                            ]
+                          },
+                          "category": {
+                            "type": "string",
+                            "enum": [
+                              "build",
+                              "infrastructure",
+                              "configuration"
                             ]
                           },
                           "createdAt": {
@@ -37598,7 +37644,8 @@
                           "repoPattern",
                           "pathPattern",
                           "componentObjectId",
-                          "purpose",
+                          "type",
+                          "category",
                           "createdAt"
                         ],
                         "additionalProperties": false
@@ -44194,11 +44241,15 @@
                   "topology": {
                     "type": "string"
                   },
-                  "purpose": {
+                  "type": {
                     "type": "string",
                     "enum": [
-                      "infra",
-                      "software"
+                      "image",
+                      "rpm",
+                      "deb",
+                      "npm",
+                      "infrastructure",
+                      "configuration"
                     ]
                   },
                   "targets": {
@@ -51694,11 +51745,15 @@
                     "type": "string",
                     "minLength": 1
                   },
-                  "purpose": {
+                  "type": {
                     "type": "string",
                     "enum": [
-                      "infra",
-                      "software"
+                      "image",
+                      "rpm",
+                      "deb",
+                      "npm",
+                      "infrastructure",
+                      "configuration"
                     ]
                   }
                 },
@@ -51726,11 +51781,23 @@
                       "format": "uuid",
                       "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                     },
-                    "purpose": {
+                    "type": {
                       "type": "string",
                       "enum": [
-                        "infra",
-                        "software"
+                        "image",
+                        "rpm",
+                        "deb",
+                        "npm",
+                        "infrastructure",
+                        "configuration"
+                      ]
+                    },
+                    "category": {
+                      "type": "string",
+                      "enum": [
+                        "build",
+                        "infrastructure",
+                        "configuration"
                       ]
                     },
                     "pluginModule": {
@@ -51779,7 +51846,8 @@
                   "required": [
                     "id",
                     "targetObjectId",
-                    "purpose",
+                    "type",
+                    "category",
                     "pluginModule",
                     "pluginInstanceId",
                     "config",
@@ -51928,7 +51996,7 @@
       },
       "get": {
         "operationId": "getExecutorBinding",
-        "summary": "Get a target's configured executor binding for one purpose (default: software)",
+        "summary": "Get a target's configured executor binding for one type (default: configuration)",
         "tags": [
           "executors"
         ],
@@ -51944,15 +52012,19 @@
             }
           },
           {
-            "name": "purpose",
+            "name": "type",
             "in": "query",
             "required": false,
             "schema": {
               "$schema": "https://json-schema.org/draft/2020-12/schema",
               "type": "string",
               "enum": [
-                "infra",
-                "software"
+                "image",
+                "rpm",
+                "deb",
+                "npm",
+                "infrastructure",
+                "configuration"
               ]
             }
           }
@@ -51976,11 +52048,23 @@
                       "format": "uuid",
                       "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                     },
-                    "purpose": {
+                    "type": {
                       "type": "string",
                       "enum": [
-                        "infra",
-                        "software"
+                        "image",
+                        "rpm",
+                        "deb",
+                        "npm",
+                        "infrastructure",
+                        "configuration"
+                      ]
+                    },
+                    "category": {
+                      "type": "string",
+                      "enum": [
+                        "build",
+                        "infrastructure",
+                        "configuration"
                       ]
                     },
                     "pluginModule": {
@@ -52029,7 +52113,8 @@
                   "required": [
                     "id",
                     "targetObjectId",
-                    "purpose",
+                    "type",
+                    "category",
                     "pluginModule",
                     "pluginInstanceId",
                     "config",
@@ -52178,7 +52263,7 @@
       },
       "delete": {
         "operationId": "deleteExecutorBinding",
-        "summary": "Delete a target's executor binding for one purpose (default: software)",
+        "summary": "Delete a target's executor binding for one type (default: configuration)",
         "tags": [
           "executors"
         ],
@@ -52194,15 +52279,19 @@
             }
           },
           {
-            "name": "purpose",
+            "name": "type",
             "in": "query",
             "required": false,
             "schema": {
               "$schema": "https://json-schema.org/draft/2020-12/schema",
               "type": "string",
               "enum": [
-                "infra",
-                "software"
+                "image",
+                "rpm",
+                "deb",
+                "npm",
+                "infrastructure",
+                "configuration"
               ]
             }
           }
@@ -52226,11 +52315,23 @@
                       "format": "uuid",
                       "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                     },
-                    "purpose": {
+                    "type": {
                       "type": "string",
                       "enum": [
-                        "infra",
-                        "software"
+                        "image",
+                        "rpm",
+                        "deb",
+                        "npm",
+                        "infrastructure",
+                        "configuration"
+                      ]
+                    },
+                    "category": {
+                      "type": "string",
+                      "enum": [
+                        "build",
+                        "infrastructure",
+                        "configuration"
                       ]
                     },
                     "pluginModule": {
@@ -52279,7 +52380,8 @@
                   "required": [
                     "id",
                     "targetObjectId",
-                    "purpose",
+                    "type",
+                    "category",
                     "pluginModule",
                     "pluginInstanceId",
                     "config",
@@ -52428,7 +52530,7 @@
       },
       "patch": {
         "operationId": "repurposeExecutorBinding",
-        "summary": "Relabel which pipeline (infra|software) a target's executor binding drives",
+        "summary": "Relabel which pipeline (routing type) a target's executor binding drives",
         "tags": [
           "executors"
         ],
@@ -52444,15 +52546,19 @@
             }
           },
           {
-            "name": "purpose",
+            "name": "type",
             "in": "query",
             "required": false,
             "schema": {
               "$schema": "https://json-schema.org/draft/2020-12/schema",
               "type": "string",
               "enum": [
-                "infra",
-                "software"
+                "image",
+                "rpm",
+                "deb",
+                "npm",
+                "infrastructure",
+                "configuration"
               ]
             }
           }
@@ -52465,16 +52571,20 @@
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
                 "properties": {
-                  "purpose": {
+                  "type": {
                     "type": "string",
                     "enum": [
-                      "infra",
-                      "software"
+                      "image",
+                      "rpm",
+                      "deb",
+                      "npm",
+                      "infrastructure",
+                      "configuration"
                     ]
                   }
                 },
                 "required": [
-                  "purpose"
+                  "type"
                 ],
                 "additionalProperties": false
               }
@@ -52500,11 +52610,23 @@
                       "format": "uuid",
                       "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                     },
-                    "purpose": {
+                    "type": {
                       "type": "string",
                       "enum": [
-                        "infra",
-                        "software"
+                        "image",
+                        "rpm",
+                        "deb",
+                        "npm",
+                        "infrastructure",
+                        "configuration"
+                      ]
+                    },
+                    "category": {
+                      "type": "string",
+                      "enum": [
+                        "build",
+                        "infrastructure",
+                        "configuration"
                       ]
                     },
                     "pluginModule": {
@@ -52553,7 +52675,8 @@
                   "required": [
                     "id",
                     "targetObjectId",
-                    "purpose",
+                    "type",
+                    "category",
                     "pluginModule",
                     "pluginInstanceId",
                     "config",
@@ -52746,7 +52869,7 @@
     "/executors/{idOrUrn}/bindings": {
       "get": {
         "operationId": "listExecutorBindings",
-        "summary": "List every executor binding (all purposes) configured for a target",
+        "summary": "List every executor binding (all types) configured for a target",
         "tags": [
           "executors"
         ],
@@ -52786,11 +52909,23 @@
                             "format": "uuid",
                             "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                           },
-                          "purpose": {
+                          "type": {
                             "type": "string",
                             "enum": [
-                              "infra",
-                              "software"
+                              "image",
+                              "rpm",
+                              "deb",
+                              "npm",
+                              "infrastructure",
+                              "configuration"
+                            ]
+                          },
+                          "category": {
+                            "type": "string",
+                            "enum": [
+                              "build",
+                              "infrastructure",
+                              "configuration"
                             ]
                           },
                           "pluginModule": {
@@ -52839,7 +52974,8 @@
                         "required": [
                           "id",
                           "targetObjectId",
-                          "purpose",
+                          "type",
+                          "category",
                           "pluginModule",
                           "pluginInstanceId",
                           "config",
@@ -53668,11 +53804,15 @@
                             "type": "string",
                             "minLength": 1
                           },
-                          "purpose": {
+                          "type": {
                             "type": "string",
                             "enum": [
-                              "infra",
-                              "software"
+                              "image",
+                              "rpm",
+                              "deb",
+                              "npm",
+                              "infrastructure",
+                              "configuration"
                             ]
                           }
                         },
@@ -53945,11 +54085,15 @@
                               "type": "string",
                               "minLength": 1
                             },
-                            "purpose": {
+                            "type": {
                               "type": "string",
                               "enum": [
-                                "infra",
-                                "software"
+                                "image",
+                                "rpm",
+                                "deb",
+                                "npm",
+                                "infrastructure",
+                                "configuration"
                               ]
                             }
                           },
@@ -54276,11 +54420,15 @@
                               "type": "string",
                               "minLength": 1
                             },
-                            "purpose": {
+                            "type": {
                               "type": "string",
                               "enum": [
-                                "infra",
-                                "software"
+                                "image",
+                                "rpm",
+                                "deb",
+                                "npm",
+                                "infrastructure",
+                                "configuration"
                               ]
                             }
                           },

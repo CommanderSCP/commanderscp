@@ -272,7 +272,7 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
   // POST /components/:idOrUrn/merge — driving-case merge (M12 P5d): fold `loser` into this component
   // (the survivor). Moves the loser's executor bindings here and soft-deletes it. `mergeComponents`
   // does the both-endpoint authz, the edge-free / no-in-flight-change guards, and the Q1 binding-
-  // purpose-collision REJECT.
+  // type-collision REJECT.
   typed.route({
     method: "POST",
     url: `${base}/:idOrUrn/merge`,

@@ -10,22 +10,22 @@ import { insertDecision } from "./decisions-repo.js";
 import {
   listExecutorBindingsForTarget,
   repointExecutorBindingTarget,
-  type BindingPurpose
+  type BindingType
 } from "./executor-bindings-repo.js";
 
 /**
  * Driving-case component merge (M12 P5d, docs/proposals/organize-after.md §2.4). Folds a LOSER
  * component into a SURVIVOR: the loser's executor bindings are re-pointed onto the survivor and the
  * loser is soft-deleted. This is the concrete homelab case — `scp connect argocd` imports one real
- * component as TWO (an infra Argo CD app + a software Argo CD app), each a separate orphan with its
- * own `purpose='software'` binding, that must become one component with two purpose-keyed bindings.
+ * component as TWO Argo CD apps, each a separate orphan with its own `type='configuration'` binding,
+ * that must become one component with distinct Type-keyed bindings (ADR-0007).
  *
  * Deliberately SCOPED to that case (proposal §2.4 / §4): the general graph-rewrite (re-pointing
  * relationship edges, jsonb references, role_bindings, freezes, source_mappings) is OUT until a
  * non-fresh case demands it. So the loser must be a freshly-imported orphan — bindings only, no live
- * relationship edges (guarded below). Owner ruling Q1: on a binding-purpose COLLISION the merge
- * REJECTS and tells the operator to relabel one binding first (`scp executor repurpose`); it never
- * guesses a new purpose.
+ * relationship edges (guarded below). Owner ruling Q1: on a binding-Type COLLISION the merge REJECTS
+ * and tells the operator to relabel one binding first (`scp executor repurpose`); it never guesses a
+ * new Type.
  */
 
 /** Non-terminal change states — a binding must not be re-pointed while a change actively resolves it
@@ -84,8 +84,8 @@ export interface MergeComponentsInput {
 
 export interface MergeComponentsResult {
   survivor: GraphObject;
-  /** The purposes of the bindings moved from the loser onto the survivor. */
-  movedBindingPurposes: BindingPurpose[];
+  /** The Types of the bindings moved from the loser onto the survivor (ADR-0007). */
+  movedBindingTypes: BindingType[];
 }
 
 export async function mergeComponents(
@@ -127,18 +127,18 @@ export async function mergeComponents(
     );
   }
 
-  // Owner Q1 (reject-and-require-relabel): a purpose the survivor ALREADY binds cannot receive the
-  // loser's same-purpose binding (UNIQUE(org,target,purpose)). Reject with a clear next step; never
-  // auto-relabel. The common homelab case (two software imports) trips exactly this.
+  // Owner Q1 (reject-and-require-relabel): a Type the survivor ALREADY binds cannot receive the
+  // loser's same-Type binding (UNIQUE(org,target,type)). Reject with a clear next step; never
+  // auto-relabel. The common homelab case (two configuration imports) trips exactly this.
   const loserBindings = await listExecutorBindingsForTarget(tx, input.orgId, loser.id);
-  const survivorPurposes = new Set(
-    (await listExecutorBindingsForTarget(tx, input.orgId, survivor.id)).map((b) => b.purpose)
+  const survivorTypes = new Set(
+    (await listExecutorBindingsForTarget(tx, input.orgId, survivor.id)).map((b) => b.type)
   );
   for (const lb of loserBindings) {
-    if (survivorPurposes.has(lb.purpose)) {
+    if (survivorTypes.has(lb.type)) {
       throw conflict(
-        `both components have a '${lb.purpose}' binding — relabel one first ` +
-          `(\`scp executor repurpose\`) before merging, so the survivor holds one binding per purpose`
+        `both components have a '${lb.type}' binding — relabel one first ` +
+          `(\`scp executor repurpose\`) before merging, so the survivor holds one binding per type`
       );
     }
   }
@@ -157,7 +157,7 @@ export async function mergeComponents(
     idOrUrn: loser.id
   });
 
-  const movedBindingPurposes = loserBindings.map((b) => b.purpose);
+  const movedBindingTypes = loserBindings.map((b) => b.type);
   await insertDecision(tx, {
     orgId: input.orgId,
     kind: "transition",
@@ -167,14 +167,14 @@ export async function mergeComponents(
       trigger: "merge",
       actorId: input.actorObjectId,
       loserId: loser.id,
-      movedBindingPurposes
+      movedBindingTypes
     },
     reasonTree: {
       summary:
-        `merged component ${loser.id} into ${survivor.id} — moved ${movedBindingPurposes.length} ` +
-        `binding(s) [${movedBindingPurposes.join(", ")}] and soft-deleted the loser`
+        `merged component ${loser.id} into ${survivor.id} — moved ${movedBindingTypes.length} ` +
+        `binding(s) [${movedBindingTypes.join(", ")}] and soft-deleted the loser`
     }
   });
 
-  return { survivor, movedBindingPurposes };
+  return { survivor, movedBindingTypes };
 }

@@ -1,5 +1,6 @@
 import type PgBoss from "pg-boss";
 import type { TriggerIntent } from "@scp/plugin-api";
+import type { ExecutorType } from "@scp/schemas";
 import type { Db } from "../db/client.js";
 import { orgs } from "../db/schema.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
@@ -40,7 +41,7 @@ import {
   getExecutorBinding,
   listExecutorBindingsForTarget,
   resolveExecutorPluginInstance,
-  DEFAULT_BINDING_PURPOSE
+  DEFAULT_BINDING_TYPE
 } from "./executor-bindings-repo.js";
 import { processChangeSourceEvents } from "./webhook-processor.js";
 import { matchPoliciesForTargets } from "../governance/policy-resolve.js";
@@ -552,10 +553,10 @@ async function reconcileExecutingChange(
           activeWave.id,
           target.id,
           target.targetObjectId,
-          // WHICH pipeline this target rolls (M12 P4A) — snapshotted onto the wave target at plan
-          // time from the change's source mapping. This is what finally makes an `infra` binding
-          // triggerable; before P4A reconcile hardcoded 'software'.
-          (target.purpose as "infra" | "software" | null) ?? DEFAULT_BINDING_PURPOSE,
+          // WHICH pipeline this target rolls (M12 P4A / ADR-0007) — the routing Type, snapshotted
+          // onto the wave target at plan time from the change's source mapping. This is what makes a
+          // non-default binding triggerable.
+          (target.type as ExecutorType | null) ?? DEFAULT_BINDING_TYPE,
           isRollback,
           host,
           masterKey
@@ -583,8 +584,8 @@ async function reconcileExecutingChange(
         host,
         target.targetObjectId,
         // The status poll must address the SAME instance the trigger used, so it resolves the same
-        // purpose — otherwise it would poll the software pipeline for an infra run's ref.
-        (target.purpose as "infra" | "software" | null) ?? DEFAULT_BINDING_PURPOSE,
+        // Type — otherwise it would poll the wrong pipeline for this run's ref.
+        (target.type as ExecutorType | null) ?? DEFAULT_BINDING_TYPE,
         target.executorPluginId ?? null,
         masterKey
       );
@@ -679,7 +680,7 @@ async function triggerWaveTarget(
   waveId: string,
   waveTargetId: string,
   targetObjectId: string,
-  purpose: "infra" | "software",
+  type: ExecutorType,
   isRollback: boolean,
   host: PluginHost,
   masterKey: Buffer
@@ -689,23 +690,24 @@ async function triggerWaveTarget(
 
   try {
     // FAIL-CLOSED on a masking executor-binding gap (M12 — docs/adr/0006). Keyed on the RESOLVED
-    // `purpose` reconcile actually triggers (unrecognised values were already normalised to
-    // 'software' upstream), and TARGET-LOCAL only — no component->service/deployment-target walk-up
-    // (that is future M12 work). Two populations, disambiguated by whether the target has ANY binding:
+    // routing `type` reconcile actually triggers (ADR-0007), and TARGET-LOCAL only — no
+    // component->service/deployment-target walk-up (that is future M12 work). Two populations,
+    // disambiguated by whether the target has ANY binding:
     //
     //   (a) INTENDED-FAKE — the target has ZERO executor bindings: the shared fake executor IS its
     //       configured executor for rehearsal/demo/test. KEEP fake-succeeding (fall through, below).
-    //   (b) MASKING-GAP — the target has >=1 real binding but NONE for `purpose`: fake-succeeding
-    //       would GREEN a misconfiguration. Block loudly — emit a `block` Decision (with decision_id)
-    //       naming the gap, write the hash-chained audit event, terminalize the target on the
-    //       dedicated `no_executor` status, fail the wave, and PARK the change (reconcile-blocked)
-    //       for manual remediation (bind the purpose, then cancel/rollback/re-propose). The Decision
-    //       NAMES the gap only — it never auto-offers the managed-iac executor (charter: managed
-    //       execution is never a default). All emitted ONCE: `markWaveTargetNoExecutor`'s status
-    //       guard makes a later tick that finds it already `no_executor` a no-op.
+    //   (b) MASKING-GAP — the target has >=1 real binding but NONE for `type`: fake-succeeding
+    //       would GREEN a misconfiguration (e.g. it has a `configuration` binding but receives an
+    //       `image` release). Block loudly — emit a `block` Decision (with decision_id) naming the
+    //       gap, write the hash-chained audit event, terminalize the target on the dedicated
+    //       `no_executor` status, fail the wave, and PARK the change (reconcile-blocked) for manual
+    //       remediation (bind the Type, then cancel/rollback/re-propose). The Decision NAMES the gap
+    //       only — it never auto-offers the managed-iac executor (charter: managed execution is never
+    //       a default). All emitted ONCE: `markWaveTargetNoExecutor`'s status guard makes a later
+    //       tick that finds it already `no_executor` a no-op.
     const blocked = await withTenantTx(db, orgId, async (tx) => {
-      const forPurpose = await getExecutorBinding(tx, orgId, targetObjectId, purpose);
-      if (forPurpose) return false; // a real binding for this purpose — normal coordinate path.
+      const forType = await getExecutorBinding(tx, orgId, targetObjectId, type);
+      if (forType) return false; // a real binding for this type — normal coordinate path.
       const all = await listExecutorBindingsForTarget(tx, orgId, targetObjectId);
       if (all.length === 0) return false; // case (a): intended-fake, behaviour unchanged.
 
@@ -713,7 +715,7 @@ async function triggerWaveTarget(
       const terminalized = await markWaveTargetNoExecutor(tx, orgId, waveTargetId);
       if (!terminalized) return true; // a prior tick already blocked+audited this — append nothing.
 
-      const boundPurposes = all.map((b) => b.purpose).sort();
+      const boundTypes = all.map((b) => b.type).sort();
       const decision = await insertDecision(tx, {
         orgId,
         kind: "wave_target",
@@ -722,14 +724,14 @@ async function triggerWaveTarget(
         inputContext: {
           waveId,
           targetObjectId,
-          requestedPurpose: purpose,
-          boundPurposes
+          requestedType: type,
+          boundTypes
         },
         reasonTree: {
           summary:
-            `wave target ${targetObjectId} has no '${purpose}' executor binding ` +
-            `(bound: ${boundPurposes.join(", ")}) — refusing to fake-succeed a masking gap`,
-          remediation: `bind the '${purpose}' pipeline for this target, then cancel/rollback/re-propose the change`
+            `wave target ${targetObjectId} has no '${type}' executor binding ` +
+            `(bound: ${boundTypes.join(", ")}) — refusing to fake-succeed a masking gap`,
+          remediation: `bind the '${type}' pipeline for this target, then cancel/rollback/re-propose the change`
         }
       });
       await appendAuditEvent(tx, {
@@ -737,7 +739,7 @@ async function triggerWaveTarget(
         actorId: SYSTEM_ACTOR_ID,
         action: "change.wave_target.no_executor",
         subjectId: change.objectId,
-        reason: `no '${purpose}' executor binding for target ${targetObjectId} (bound: ${boundPurposes.join(", ")})`,
+        reason: `no '${type}' executor binding for target ${targetObjectId} (bound: ${boundTypes.join(", ")})`,
         decisionId: decision.id,
         requestId: "reconcile"
       });
@@ -758,7 +760,7 @@ async function triggerWaveTarget(
       orgId,
       host,
       targetObjectId,
-      purpose,
+      type,
       null,
       masterKey
     );
@@ -775,14 +777,12 @@ async function triggerWaveTarget(
       // Falls back to the object id for legacy bindings — so a binding whose object id already IS
       // the external name (pre-M12) is unaffected. This is what lets Mode A / imported objects
       // trigger the right external resource when their SCP id differs from their external name.
-      // P3: a target may hold BOTH an infra and a software binding, so "the" binding no longer
-      // exists — reconcile must NAME the pipeline it drives. P4A supplies that name: `purpose` rides
+      // P3: a target may hold several Types of binding, so "the" binding no longer exists — reconcile
+      // must NAME the pipeline it drives. P4A supplies that name: the routing `type` (ADR-0007) rides
       // in on the wave target, snapshotted at plan time from the change (and thence from the source
-      // mapping that matched the release), which is what finally makes an infra binding TRIGGERABLE
-      // rather than merely registerable and readable. Anything unrecognised resolves to 'software' —
-      // the value P3 migrated every existing binding to, and the only one reconcile ever asked for
-      // before P4A — so pre-P4A wave targets trigger exactly what they always did.
-      const binding = await getExecutorBinding(tx, orgId, targetObjectId, purpose);
+      // mapping that matched the release), which is what makes a non-default binding TRIGGERABLE
+      // rather than merely registerable and readable.
+      const binding = await getExecutorBinding(tx, orgId, targetObjectId, type);
       const externalRef = binding?.externalRef ?? null;
 
       if (isRollback && change.rollbackOfObjectId) {
@@ -865,15 +865,15 @@ async function ensureExecutorInstanceStarted(
   orgId: string,
   host: PluginHost,
   targetObjectId: string,
-  purpose: "infra" | "software",
+  type: ExecutorType,
   persistedExecutorPluginId: string | null,
   masterKey: Buffer
 ): Promise<string> {
-  // MUST resolve the SAME purpose the trigger will use (M12 P4A). Resolving without it would start
-  // the target's SOFTWARE plugin instance and then trigger against the INFRA binding — a mismatch
-  // that would silently drive the wrong pipeline.
+  // MUST resolve the SAME routing Type the trigger will use (M12 P4A / ADR-0007). Resolving without
+  // it would start one Type's plugin instance and then trigger against a different Type's binding — a
+  // mismatch that would silently drive the wrong pipeline.
   const resolved = await withTenantTx(db, orgId, (tx) =>
-    resolveExecutorPluginInstance(tx, { orgId, targetObjectId, masterKey, purpose })
+    resolveExecutorPluginInstance(tx, { orgId, targetObjectId, masterKey, type })
   );
 
   if (

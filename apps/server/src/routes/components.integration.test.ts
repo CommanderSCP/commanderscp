@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
+import type { ExecutorType } from "@scp/schemas";
 import {
   createOrphanComponent,
   createTestComponent,
@@ -312,48 +313,48 @@ describe("components: driving-case merge (M12 P5d)", () => {
   });
 
   const rand = () => randomUUID().slice(0, 8);
-  const putBinding = (targetId: string, purpose: "infra" | "software") =>
+  const putBinding = (targetId: string, type: ExecutorType) =>
     admin.executors.putBinding(targetId, {
       pluginModule: "fake-executor",
       pluginInstanceId: `inst-${rand()}`,
       config: { statePath: "/tmp/x" },
       allowedHosts: [],
-      purpose
+      type
     });
-  const purposesOf = async (id: string) =>
-    (await admin.executors.listBindings(id)).map((b) => b.purpose).sort();
+  const typesOf = async (id: string) =>
+    (await admin.executors.listBindings(id)).map((b) => b.type).sort();
 
   it("folds a binding-only loser into the survivor: bindings move here, loser soft-deleted", async () => {
     const survivor = await createOrphanComponent(admin, `surv-${rand()}`);
     const loser = await createOrphanComponent(admin, `lose-${rand()}`);
-    await putBinding(survivor.id, "infra");
-    await putBinding(loser.id, "software");
+    await putBinding(survivor.id, "infrastructure");
+    await putBinding(loser.id, "configuration");
 
     const result = await admin.components.merge(survivor.id, loser.id);
     expect(result.survivor.id).toBe(survivor.id);
-    expect(result.movedBindingPurposes).toEqual(["software"]);
+    expect(result.movedBindingTypes).toEqual(["configuration"]);
 
-    expect(await purposesOf(survivor.id)).toEqual(["infra", "software"]);
+    expect(await typesOf(survivor.id)).toEqual(["configuration", "infrastructure"]);
     await expect(admin.components.get(loser.id)).rejects.toMatchObject({ status: 404 });
   });
 
-  it("REJECTS a binding-purpose collision (Q1); relabel-then-merge is the driving-case flow", async () => {
+  it("REJECTS a binding-type collision (Q1); relabel-then-merge is the driving-case flow", async () => {
     const survivor = await createOrphanComponent(admin, `surv-${rand()}`);
     const loser = await createOrphanComponent(admin, `lose-${rand()}`);
-    // Both default to 'software' (the guaranteed argocd double-import collision).
-    await putBinding(survivor.id, "software");
-    await putBinding(loser.id, "software");
+    // Both default to 'configuration' (the guaranteed argocd double-import collision).
+    await putBinding(survivor.id, "configuration");
+    await putBinding(loser.id, "configuration");
 
     await expect(admin.components.merge(survivor.id, loser.id)).rejects.toMatchObject({ status: 409 });
     // Nothing moved — loser still alive with its binding.
     await expect(admin.components.get(loser.id)).resolves.toBeTruthy();
-    expect(await purposesOf(survivor.id)).toEqual(["software"]);
+    expect(await typesOf(survivor.id)).toEqual(["configuration"]);
 
-    // Relabel the loser's binding to infra (P5c), then the merge succeeds.
-    await admin.executors.repurposeBinding(loser.id, "infra");
+    // Relabel the loser's binding to infrastructure (P5c), then the merge succeeds.
+    await admin.executors.repurposeBinding(loser.id, "infrastructure");
     const result = await admin.components.merge(survivor.id, loser.id);
-    expect(result.movedBindingPurposes).toEqual(["infra"]);
-    expect(await purposesOf(survivor.id)).toEqual(["infra", "software"]);
+    expect(result.movedBindingTypes).toEqual(["infrastructure"]);
+    expect(await typesOf(survivor.id)).toEqual(["configuration", "infrastructure"]);
     await expect(admin.components.get(loser.id)).rejects.toMatchObject({ status: 404 });
   });
 
@@ -362,7 +363,7 @@ describe("components: driving-case merge (M12 P5d)", () => {
     const svc = await admin.services.create({ name: `svc-${rand()}` });
     // A loser assigned to a service has a `contains` edge — not a binding-only orphan.
     const loser = await createTestComponent(admin, { name: `lose-${rand()}`, service: svc.id });
-    await putBinding(loser.id, "software");
+    await putBinding(loser.id, "configuration");
 
     await expect(admin.components.merge(survivor.id, loser.id)).rejects.toMatchObject({ status: 409 });
     await expect(admin.components.get(loser.id)).resolves.toBeTruthy(); // untouched
@@ -371,7 +372,7 @@ describe("components: driving-case merge (M12 P5d)", () => {
   it("REJECTS a merge while an in-flight change targets either component", async () => {
     const survivor = await createOrphanComponent(admin, `surv-${rand()}`);
     const loser = await createOrphanComponent(admin, `lose-${rand()}`);
-    await putBinding(loser.id, "software");
+    await putBinding(loser.id, "configuration");
     // A freshly-proposed change on the survivor is in-flight (non-terminal).
     await admin.changes.propose({ name: "in-flight", targets: [survivor.id] });
 
@@ -389,7 +390,7 @@ describe("components: driving-case merge (M12 P5d)", () => {
   it("requires object:write on BOTH components (a subject scoped only to the survivor is refused)", async () => {
     const survivor = await createOrphanComponent(admin, `surv-${rand()}`);
     const loser = await createOrphanComponent(admin, `lose-${rand()}`);
-    await putBinding(loser.id, "software");
+    await putBinding(loser.id, "configuration");
 
     const user = await createTestUser(server, org, [{ role: "Operator", scope: survivor.id }]);
     const client = new ScpClient({ baseUrl: server.baseUrl, token: user.token });

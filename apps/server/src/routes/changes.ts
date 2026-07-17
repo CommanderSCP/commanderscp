@@ -158,7 +158,7 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
           emergency: body.emergency,
           topologyIdOrUrn: body.topology,
           targets: body.targets,
-          purpose: body.purpose,
+          type: body.type,
           provides: body.provides,
           requires: body.requires
         });

@@ -288,7 +288,10 @@ export interface DiscoveryProposal {
     sourceKind: string;
     repoPattern?: string;
     pathPattern?: string;
-    purpose?: "infra" | "software";
+    /** The routing Type (ADR-0007). Closed set: image|rpm|deb|npm|infrastructure|configuration.
+     *  Omitted ⇒ the server default ('configuration'). Kept as a self-contained string-union here so
+     *  `@scp/plugin-api` stays free of a `@scp/schemas` dependency. */
+    type?: "image" | "rpm" | "deb" | "npm" | "infrastructure" | "configuration";
   }>;
 }
 

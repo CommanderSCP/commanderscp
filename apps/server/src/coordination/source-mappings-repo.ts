@@ -1,12 +1,13 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
-import type { SourceMapping } from "@scp/schemas";
+import { categoryOfType, type SourceMapping, type ExecutorType } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects, sourceMappings } from "../db/schema.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 
 function toSourceMapping(row: typeof sourceMappings.$inferSelect): SourceMapping {
+  const type = (row.type as ExecutorType | null) ?? "configuration";
   return {
     id: row.id,
     orgId: row.orgId,
@@ -14,7 +15,8 @@ function toSourceMapping(row: typeof sourceMappings.$inferSelect): SourceMapping
     repoPattern: row.repoPattern,
     pathPattern: row.pathPattern,
     componentObjectId: row.componentObjectId,
-    purpose: (row.purpose as "infra" | "software" | null) ?? "software",
+    type,
+    category: categoryOfType(type),
     createdAt: row.createdAt.toISOString()
   };
 }
@@ -25,7 +27,7 @@ export interface CreateSourceMappingInput {
   repoPattern?: string;
   pathPattern?: string;
   componentIdOrUrn: string;
-  purpose?: "infra" | "software";
+  type?: ExecutorType;
 }
 
 export async function createSourceMapping(
@@ -42,7 +44,7 @@ export async function createSourceMapping(
       repoPattern: input.repoPattern ?? null,
       pathPattern: input.pathPattern ?? null,
       componentObjectId: component.id,
-      purpose: input.purpose ?? "software"
+      type: input.type ?? "configuration"
     })
     .returning();
   if (!row) throw new Error("failed to insert source mapping");
@@ -67,7 +69,7 @@ export interface BackfillSourceMappingInput {
   sourceKind: string;
   repoPattern?: string;
   pathPattern?: string;
-  purpose?: "infra" | "software";
+  type?: ExecutorType;
 }
 
 export interface BackfillSourceMappingsResult {
@@ -137,7 +139,7 @@ export async function backfillSourceMappings(
       repoPattern: m.repoPattern,
       pathPattern: m.pathPattern,
       componentIdOrUrn: componentId,
-      purpose: m.purpose
+      type: m.type
     });
     createdSourceMappingIds.push(created.id);
   }

@@ -81,10 +81,10 @@ describe("change target-authority (M12 P4B Phase 2)", () => {
     ).rejects.toMatchObject({ status: 403 });
 
     // PATCH/DELETE a legitimately-proposed change → 403: nobody can flip a coordinated change's
-    // `purpose` (P4A) or `requires`/`provides` (P4B) mid-flight, or delete it out from under the engine.
+    // routing `type` (P4A) or `requires`/`provides` (P4B) mid-flight, or delete it out from under the engine.
     const legit = await admin.changes.propose({ name: "legit-change-for-generic-block", targets: [target.id] });
     await expect(
-      admin.object("change").update(legit.id, { properties: { purpose: "infra" } })
+      admin.object("change").update(legit.id, { properties: { type: "infrastructure" } })
     ).rejects.toMatchObject({ status: 403 });
     await expect(admin.object("change").delete(legit.id)).rejects.toMatchObject({ status: 403 });
   });

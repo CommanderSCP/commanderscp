@@ -1,4 +1,5 @@
 import { and, asc, eq, sql } from "drizzle-orm";
+import type { ExecutorType } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { sourceMappings } from "../db/schema.js";
 import { globMatch } from "./glob-match.js";
@@ -19,11 +20,10 @@ export interface CorrelationHint {
 /** What a source event resolves to: the component, and WHICH of its pipelines the source drives. */
 export interface SourceMatch {
   componentObjectId: string;
-  /** From the matched mapping (M12 P4A). The infra repo maps to 'infra', the app repo to 'software' —
-   *  the release itself says which pipeline it is, rather than being inferred from sourceKind (a
-   *  GitHub Actions workflow can run Terraform OR deploy an app). Pre-P4A mappings default to
-   *  'software', so every existing mapping resolves exactly what it resolved before. */
-  purpose: "infra" | "software";
+  /** From the matched mapping (M12 P4A) — the routing Type (ADR-0007). The release itself says which
+   *  pipeline it is, rather than being inferred from sourceKind (a GitHub Actions workflow can run
+   *  Terraform OR deploy an app). Mappings default to 'configuration' (the server default). */
+  type: ExecutorType;
 }
 
 /**
@@ -57,8 +57,8 @@ export interface SourceMatch {
  * already have is enough (CLAUDE.md priority 1, Simplicity).
  *
  * Before M12 P4A an ambiguous match only picked WHICH COMPONENT; since P4A the winning row also
- * carries `purpose`, so it picks WHICH PIPELINE — an unordered match could route an infra release
- * into the app's deploy pipeline depending on the query plan.
+ * carries the routing `type` (ADR-0007), so it picks WHICH PIPELINE — an unordered match could route
+ * a release into the wrong pipeline depending on the query plan.
  */
 export async function matchComponentForSource(
   tx: TenantTx,
@@ -81,7 +81,7 @@ export async function matchComponentForSource(
     if (row.pathPattern && (!hint.path || !globMatch(row.pathPattern, hint.path))) continue;
     return {
       componentObjectId: row.componentObjectId,
-      purpose: (row.purpose as "infra" | "software" | null) ?? "software"
+      type: (row.type as ExecutorType | null) ?? "configuration"
     };
   }
   return null;

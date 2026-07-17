@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
-import type { Change, ChangeState } from "@scp/schemas";
+import { ExecutorTypeSchema, type Change, type ChangeState, type ExecutorType } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changes, objects } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
@@ -68,15 +68,15 @@ export interface ProposeChangeInput {
   /** Object ids or URNs this change targets — resolved to ids and stashed in properties for the plan compiler. */
   targets: string[];
   /**
-   * WHICH pipeline of its targets this change rolls (M12 P4A): 'infra' | 'software'. Omitted ⇒
-   * 'software', so every existing caller and every pre-P4A change is unchanged.
+   * WHICH pipeline of its targets this change rolls (M12 P4A) — the routing Type (ADR-0007). Omitted
+   * ⇒ 'configuration' (the server default).
    *
    * Deliberately per-CHANGE, not per-target: a change IS a release, and a release comes from ONE
-   * source per pipeline (the infra repo vs the app repo), so one change drives one pipeline. A release
-   * needing both is two releases. This also keeps `properties.targets` a plain string[] — it is
-   * PERSISTED on every existing change object, and restructuring it would break them all.
+   * source per pipeline, so one change drives one pipeline. A release needing both is two releases.
+   * This also keeps `properties.targets` a plain string[] — it is PERSISTED on every existing change
+   * object, and restructuring it would break them all.
    */
-  purpose?: "infra" | "software";
+  type?: ExecutorType;
   /** Coupled-pipeline keys this release provides at its targets (M12 P4B). Stored verbatim in
    *  `properties.provides`. */
   provides?: string[];
@@ -160,20 +160,20 @@ export async function proposeChange(
     urn: input.urn,
     name: input.name,
     domainId: input.domainId,
-    // Purpose precedence (M12 P4A): the typed field wins; failing that, whatever the caller's own
-    // properties already say; failing that, 'software'.
+    // Type precedence (M12 P4A / ADR-0007): the typed field wins; failing that, whatever the caller's
+    // own properties already say; failing that, 'configuration'.
     //
-    // The `?? purposeOf(input.properties)` middle rung is load-bearing, not defensive padding. This
-    // spread writes `purpose` AFTER `...input.properties`, so a bare `input.purpose ?? "software"`
-    // silently CLOBBERS a purpose the caller passed inside properties. Federation promotion
+    // The `?? typeOf(input.properties)` middle rung is load-bearing, not defensive padding. This
+    // spread writes `type` AFTER `...input.properties`, so a bare `input.type ?? "configuration"`
+    // silently CLOBBERS a type the caller passed inside properties. Federation promotion
     // (`federation/promotion-repo.ts`) does exactly that — it replays a bundle's change properties
-    // verbatim — so an infra release promoted across domains would arrive as 'software' and trigger
-    // the receiving domain's software binding. Inheriting here fixes it for every such caller at
-    // once, rather than one call site at a time.
+    // verbatim — so an `infrastructure` release promoted across domains would arrive as
+    // 'configuration' and trigger the receiving domain's configuration binding. Inheriting here fixes
+    // it for every such caller at once, rather than one call site at a time.
     properties: {
       ...restProperties,
       targets: targetObjectIds,
-      purpose: input.purpose ?? purposeOf(input.properties),
+      type: input.type ?? typeOf(input.properties),
       // Only written when non-empty, so a change that couples nothing stays byte-identical to a
       // pre-P4B change (and the no-wait fast path in reconcile is a pure absence check).
       ...(providesValue.length > 0 ? { provides: providesValue } : {}),
@@ -369,35 +369,37 @@ export function requiresOf(
 }
 
 /**
- * WHICH pipeline a change rolls, read back off its persisted properties (M12 P4A) — the counterpart
- * to `targetObjectIdsOf`, and the ONLY place that knows how purpose is stored on a change.
+ * WHICH pipeline a change rolls, read back off its persisted properties (M12 P4A / ADR-0007) — the
+ * routing Type, the counterpart to `targetObjectIdsOf`, and the ONLY place that knows how the Type is
+ * stored on a change.
  *
- * ABSENT reads as 'software'. That covers every pre-P4A change, and 'software' is what reconcile
- * triggered unconditionally before P4A, so those changes roll exactly what they always rolled.
+ * ABSENT reads as 'configuration' (the server default). That covers every change written without an
+ * explicit Type.
  *
- * PRESENT BUT UNRECOGNISED throws, deliberately, rather than also degrading to 'software'. The two
- * inputs look similar and are not: absent means "nobody said", which has a right answer; a value
- * this version doesn't know means somebody DID say, and said something we cannot honour. Coercing
- * that to 'software' would trigger the software pipeline for a release that explicitly declared it
- * was not software — the exact wrong-pipeline failure P4A exists to prevent, and unrecoverable in a
- * way that refusing is not. It is a REACHABLE case, not a theoretical one: purposes are additive by
- * design (0023), federation is hub-and-spoke with air-gap bundles, and `federation/promotion-repo.ts`
- * replays a peer's change properties verbatim — so a commander a version ahead of an outpost can
- * hand this function a purpose it has never heard of. Version skew is the steady state, not a bug.
+ * PRESENT BUT UNRECOGNISED throws, deliberately, rather than degrading to a default. The two inputs
+ * look similar and are not: absent means "nobody said", which has a right answer; a value this
+ * version doesn't know means somebody DID say, and said something we cannot honour. Coercing it to a
+ * default would trigger the wrong pipeline for a release that explicitly declared otherwise — the
+ * exact wrong-pipeline failure P4A exists to prevent, and unrecoverable in a way that refusing is
+ * not. This is ALSO the version-skew safety net for the hard cutover (ADR-0007 D3): the retired
+ * 'infra'/'software' values now hit this throw, so a change carrying a pre-cutover Type is refused
+ * rather than silently mis-routed. It is a REACHABLE case: Types are additive by design, federation
+ * is hub-and-spoke with air-gap bundles, and `federation/promotion-repo.ts` replays a peer's change
+ * properties verbatim — so a version-skewed peer can hand this function a Type it has never heard of.
  *
  * Narrowed against the enum rather than cast: `properties` is free-form jsonb, so a blind `as` would
  * let junk reach `getExecutorBinding`, which matches no binding and silently falls back to the
  * default fake-executor — a "nothing happened, no error" failure.
  */
-export function purposeOf(
+export function typeOf(
   properties: Record<string, unknown> | null | undefined
-): "infra" | "software" {
-  const raw = properties?.purpose;
-  if (raw === undefined || raw === null) return "software";
-  if (raw === "infra" || raw === "software") return raw;
+): ExecutorType {
+  const raw = properties?.type;
+  if (raw === undefined || raw === null) return "configuration";
+  if (ExecutorTypeSchema.options.includes(raw as ExecutorType)) return raw as ExecutorType;
   throw badRequest(
-    `change carries purpose '${String(raw)}', which this version does not recognise — refusing to guess which pipeline to drive. ` +
-      `If this change was promoted from another domain, that domain is likely running a newer CommanderSCP.`
+    `change carries type '${String(raw)}', which this version does not recognise — refusing to guess which pipeline to drive. ` +
+      `The retired 'infra'/'software' values were replaced by the Type taxonomy (ADR-0007); if this change was promoted from another domain, that domain is likely running a different CommanderSCP.`
   );
 }
 
