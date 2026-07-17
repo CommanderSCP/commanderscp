@@ -41,14 +41,16 @@ const CANCELLABLE_STATES: ChangeState[] = [
 const PROMOTABLE_STATES: ChangeState[] = ["validating"];
 const ROLLBACKABLE_STATES: ChangeState[] = ["executing", "validating", "promoted"];
 
-function formatDate(iso: string | null | undefined): string {
+export function formatDate(iso: string | null | undefined): string {
   return iso ? new Date(iso).toLocaleString() : "—";
 }
 
 /** Wave/wave-target `status` -> Badge variant. Values are free-form strings server-side
  *  (ChangeWaveSchema/ChangeWaveTargetSchema), but the reconciliation loop only ever writes
- *  pending/running/succeeded/failed (DESIGN.md §9.3) — anything else falls back to `secondary`. */
-function waveStatusVariant(status: string): BadgeProps["variant"] {
+ *  pending/running/succeeded/failed (DESIGN.md §9.3) — anything else falls back to `secondary`.
+ *  Exported so the component-pipeline view (routes/change-pipeline.tsx) colors stage status the
+ *  same way as the wave-progression strip here — single source of truth for the mapping. */
+export function waveStatusVariant(status: string): BadgeProps["variant"] {
   switch (status) {
     case "running":
       return "info";
@@ -382,7 +384,15 @@ export function ChangeDetailPage(): React.JSX.Element {
             </p>
           )}
         </div>
-        <div className="flex shrink-0 gap-2">
+        <div className="flex shrink-0 items-center gap-2">
+          <Link
+            to="/changes/$id/pipeline"
+            params={{ id }}
+            className="text-sm font-medium text-slate-600 underline hover:text-slate-900"
+            data-testid="view-pipeline-link"
+          >
+            Pipeline view →
+          </Link>
           {canPromote && (
             <Button
               onClick={() => promoteMutation.mutate()}
