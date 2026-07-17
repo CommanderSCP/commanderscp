@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import type { Change, ChangeState } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changes, objects } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
-import { decodeCursor, encodeCursor } from "../pagination.js";
+import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { insertDecision } from "./decisions-repo.js";
 import { appendJournalEntry } from "../federation/journal-repo.js";
@@ -416,9 +416,7 @@ export async function listChanges(
   const conditions = [eq(changes.orgId, orgId)];
   if (query.state) conditions.push(eq(changes.state, query.state));
   if (cursor) {
-    conditions.push(
-      sql`(${changes.createdAt}, ${changes.objectId}) > (${cursor.createdAt.toISOString()}::timestamptz, ${cursor.id}::uuid)`
-    );
+    conditions.push(keysetAfter(changes.createdAt, changes.objectId, cursor));
   }
 
   const rows = await tx
@@ -426,7 +424,7 @@ export async function listChanges(
     .from(changes)
     .innerJoin(objects, eq(changes.objectId, objects.id))
     .where(and(...conditions))
-    .orderBy(asc(changes.createdAt), asc(changes.objectId))
+    .orderBy(...keysetOrderBy(changes.createdAt, changes.objectId))
     .limit(query.limit + 1);
 
   const hasMore = rows.length > query.limit;

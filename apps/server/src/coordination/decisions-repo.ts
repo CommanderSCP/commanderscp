@@ -1,10 +1,10 @@
-import { and, asc, eq, gt } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { Decision } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { decisions } from "../db/schema.js";
 import { notFound } from "../errors.js";
-import { decodeCursor, encodeCursor } from "../pagination.js";
+import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
 
 /**
  * Decision records (DESIGN.md §10.4) — the explainability funnel every engine verdict writes
@@ -75,13 +75,13 @@ export async function listDecisions(
   const cursor = query.cursor ? decodeCursor(query.cursor) : null;
   const conditions = [eq(decisions.orgId, orgId)];
   if (query.subjectId) conditions.push(eq(decisions.subjectId, query.subjectId));
-  if (cursor) conditions.push(gt(decisions.createdAt, cursor.createdAt));
+  if (cursor) conditions.push(keysetAfter(decisions.createdAt, decisions.id, cursor));
 
   const rows = await tx
     .select()
     .from(decisions)
     .where(and(...conditions))
-    .orderBy(asc(decisions.createdAt), asc(decisions.id))
+    .orderBy(...keysetOrderBy(decisions.createdAt, decisions.id))
     .limit(query.limit + 1);
 
   const hasMore = rows.length > query.limit;
