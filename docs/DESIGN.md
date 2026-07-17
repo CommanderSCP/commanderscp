@@ -617,6 +617,8 @@ Where a domain lacks a mature executor, SCP can **bundle** one — canonically A
 
 A real service spans layers, each modeled as its own graph object with its own **1:1 executor binding**; one change strings heterogeneous executors across waves (per-wave-target binding resolution — `apps/server/src/coordination/reconcile.ts`). Managed-execute is **never** a layer default; the six-gate test is the only router into it.
 
+**Binding Type — the routing key.** Each 1:1 binding carries a **Type**, the concrete class of change it executes; `reconcile` resolves the executor by it (`getExecutorBinding(target, Type)`). Types group into three **Categories** — **build** (`image`/`rpm`/`deb`/`npm`/…: source→artifact), **infrastructure** (IaC that stands up substrate), and **configuration** (apply declarative desired state to a running system: Argo CD/Flux sync). This supersedes the earlier two-value `purpose` (`software`|`infra`), which conflated build with configuration and mislabelled GitOps-config authorities as infra — the layers below realize these Categories (App build/test → **build**; Cloud IaC → **infrastructure**; k8s GitOps CD, Host config → **configuration**). Category is derived from Type (a static map), never stored; Type stays orthogonal to Scope (which graph object the binding hangs on) and Module (the executor tool). Detail + hard-cutover migration: [executor-type-taxonomy.md](proposals/executor-type-taxonomy.md), [ADR-0007](adr/0007-executor-binding-type-taxonomy.md).
+
 | Layer | Default strategy · out-of-the-box option |
 |---|---|
 | App build/test (CI) | Coordinate-BYO; CI is primarily gate **evidence** · bundled Argo Workflows |
