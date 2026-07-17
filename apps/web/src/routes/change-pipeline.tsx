@@ -1,10 +1,13 @@
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import type { Change, ChangeWave, ChangeWaveTarget, Decision, ExecutorBinding } from "@scp/sdk";
-// M4 governance types live in @scp/schemas (not re-exported from @scp/sdk) — importing them here is
-// within the apps/web import boundary (eslint.config.mjs allows @scp/sdk + @scp/schemas), matching
-// routes/change-detail.tsx.
-import type { ApprovalRequest } from "@scp/schemas";
+import type {
+  ApprovalRequest,
+  Change,
+  ChangeWave,
+  ChangeWaveTarget,
+  Decision,
+  ExecutorBinding
+} from "@scp/sdk";
 import { client } from "../lib/client";
 import {
   changeApprovalsKey,
@@ -33,6 +36,7 @@ interface PromotionVerdict {
  */
 function wavePromotion(upstream: ChangeWave, downstream: ChangeWave): PromotionVerdict {
   if (upstream.status === "failed") return { state: "blocked", label: "upstream wave failed" };
+  if (downstream.status === "failed") return { state: "blocked", label: "wave failed" };
   if (downstream.status === "running" || downstream.status === "succeeded")
     return { state: "open", label: "promoted" };
   if (downstream.status === "skipped") return { state: "pending", label: "skipped" };
