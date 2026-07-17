@@ -452,6 +452,19 @@ function primarySource(spec: ArgoAppForDiscovery["spec"]): ArgoAppSource | undef
   return spec?.sources?.find((s) => s.repoURL);
 }
 
+/**
+ * Extracts an `owner/repo` slug from a GitHub repo URL — https OR ssh (`git@`/`ssh://`), with or
+ * without a trailing `.git`. This is the form the github executor's events carry
+ * (`${config.owner}/${config.repo}`) and correlation glob-matches against; an Argo CD
+ * `spec.source.repoURL` gives the FULL URL, which would never match (M12 P5 fix — the auto-created
+ * source_mappings were unreachable). Returns undefined for a non-GitHub host, so no github mapping is
+ * proposed for it (correlation is github-shaped; the operator maps a non-GitHub source by hand).
+ */
+export function githubRepoSlug(repoURL: string): string | undefined {
+  const m = repoURL.match(/github\.com[/:]([^/]+)\/(.+?)(?:\.git)?\/?$/i);
+  return m ? `${m[1]}/${m[2]}` : undefined;
+}
+
 async function discover(ctx: PluginContext): Promise<DiscoveryProposal> {
   const config = asConfig(ctx.config);
   const { status, body } = await apiRequest(ctx, config, "GET", "/api/v1/applications");
@@ -488,15 +501,17 @@ async function discover(ctx: PluginContext): Promise<DiscoveryProposal> {
       bindings.push({ objectName: name, executionSystemId: config.executionSystemId, externalRef: name });
     }
     // M12 P5 (owner Q3, github-webhook path): a source_mapping from the app's git repo, so pushes to
-    // it correlate to this component. `source_kind:'github'` (argocd's own events carry no repo, so
-    // the correlation key is the underlying repo's webhook, matched by repo/path globs). Only when
-    // the app actually declares a git repoURL.
-    if (source?.repoURL) {
+    // it correlate to this component. `source_kind:'github'`, `repoPattern` = the `owner/repo` SLUG
+    // (github events carry that, not the full URL). No `pathPattern`: a github push event carries no
+    // per-app path, so a path-set mapping would never match — a repo-only mapping correlates. (Trade:
+    // a monorepo push matches every component sharing that repo; per-path precision is a follow-up
+    // that needs the github plugin to emit changed paths.) Skipped for a non-GitHub repoURL.
+    const repoSlug = source?.repoURL ? githubRepoSlug(source.repoURL) : undefined;
+    if (repoSlug) {
       sourceMappings.push({
         objectName: name,
         sourceKind: "github",
-        repoPattern: source.repoURL,
-        ...(source.path ? { pathPattern: source.path } : {}),
+        repoPattern: repoSlug,
         purpose: "software"
       });
     }

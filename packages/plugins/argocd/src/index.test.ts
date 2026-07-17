@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import nock from "nock";
 import type { PluginContext, SecretsAccessor, TriggerIntent } from "@scp/plugin-api";
-import { createArgoCdExecutorPlugin, createArgoCdDiscoveryPlugin } from "./index.js";
+import { createArgoCdExecutorPlugin, createArgoCdDiscoveryPlugin, githubRepoSlug } from "./index.js";
 import { createNodeHttpTestClient } from "./test-node-http-client.js";
 
 const SERVER_URL = "http://argocd.test";
@@ -680,7 +680,9 @@ describe("discover() (M12 P3 — import an existing Argo CD)", () => {
 
     const proposal = await createArgoCdDiscoveryPlugin().discover(ctx);
 
-    // The git repo is recorded on the component AND drives a github mapping.
+    // The git repo is recorded on the component (raw URL, metadata) AND drives a github mapping —
+    // but the mapping's repoPattern is the `owner/repo` SLUG, the form github events carry, and it
+    // carries NO pathPattern (a github push has no per-app path, so a path-set mapping never matches).
     const web = proposal.objects.find((o) => o.name === "web-prod");
     expect(web?.properties?.sourceRepo).toBe("https://github.com/acme/web");
     expect(web?.properties?.sourcePath).toBe("deploy");
@@ -689,17 +691,25 @@ describe("discover() (M12 P3 — import an existing Argo CD)", () => {
     const webMap = proposal.sourceMappings?.find((m) => m.objectName === "web-prod");
     expect(webMap).toMatchObject({
       sourceKind: "github",
-      repoPattern: "https://github.com/acme/web",
-      pathPattern: "deploy",
+      repoPattern: "acme/web", // slug, not the full URL
       purpose: "software"
     });
-    // Multi-source: the source that actually has a repoURL is used.
+    expect(webMap?.pathPattern).toBeUndefined();
+    // Multi-source: the source that actually has a repoURL is used, normalized to a slug.
     expect(proposal.sourceMappings?.find((m) => m.objectName === "api-prod")?.repoPattern).toBe(
-      "https://github.com/acme/api"
+      "acme/api"
     );
     // The source-less app proposes no mapping.
     expect(proposal.sourceMappings?.some((m) => m.objectName === "cache")).toBe(false);
     expect(proposal.objects.find((o) => o.name === "cache")?.properties?.sourceRepo).toBeUndefined();
+  });
+
+  it("githubRepoSlug normalizes https/ssh/.git URLs and skips non-GitHub hosts (M12 P5)", () => {
+    expect(githubRepoSlug("https://github.com/AgentKitProject/agentkit.git")).toBe("AgentKitProject/agentkit");
+    expect(githubRepoSlug("git@github.com:AgentKitProject/agentkit-hosting.git")).toBe("AgentKitProject/agentkit-hosting");
+    expect(githubRepoSlug("https://github.com/owner/repo")).toBe("owner/repo");
+    expect(githubRepoSlug("ssh://git@github.com/owner/repo.git")).toBe("owner/repo");
+    expect(githubRepoSlug("https://gitlab.com/owner/repo.git")).toBeUndefined();
   });
 
   it("returns an empty proposal (never throws) when Argo CD has no Applications", async () => {
