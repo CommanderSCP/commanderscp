@@ -29,6 +29,7 @@ import {
 } from "../graph/objects-repo.js";
 import { isGovernanceManagedObjectType } from "../governance/governance-managed-types.js";
 import { isCoordinationTargetScopedObjectType } from "../coordination/campaign-scope-authz.js";
+import { isServiceMemberObjectType } from "../graph/service-member-types.js";
 
 function idempotencyKey(request: FastifyRequest): string | undefined {
   const header = request.headers["idempotency-key"];
@@ -89,14 +90,15 @@ function assertNotCoordinationTargetScopedObjectType(type: string): void {
  *
  * A SEPARATE set from `COORDINATION_TARGET_SCOPED_OBJECT_TYPE_IDS` ON PURPOSE — that set's meaning is
  * target-AUTHORITY binding; a component's reason is service-MEMBERSHIP. Conflating them would be
- * exactly the kind of comment-that-lies this codebase already has too many of. Note the IMPORT paths
- * (discovery/accept, federation, overlay) call `createObject` directly and never touch this route,
- * so they stay permissive by construction — which is the owner ruling.
+ * exactly the kind of comment-that-lies this codebase already has too many of. The true IMPORT paths
+ * (discovery/accept, federation-journal replay) call `createObject` directly and never touch a create
+ * ROUTE, so they stay permissive by construction — the owner ruling. The `SERVICE_MEMBER_OBJECT_TYPE_IDS`
+ * set now lives in `graph/service-member-types.ts` so this guard and the federation OVERLAY route
+ * (`federation/overlay-repo.ts`) — a user-facing create surface, NOT an import path — agree (owner
+ * ruling 2026-07-16: overlay refuses component too).
  */
-const SERVICE_MEMBER_OBJECT_TYPE_IDS: ReadonlySet<string> = new Set(["component"]);
-
 function assertNotServiceMemberObjectType(type: string): void {
-  if (SERVICE_MEMBER_OBJECT_TYPE_IDS.has(type)) {
+  if (isServiceMemberObjectType(type)) {
     throw forbidden(
       `object type '${type}' must belong to a service and cannot be created, updated, or deleted via ` +
         `the generic /api/v1/objects/${type} endpoint — use the strict typed route (/api/v1/${type}s), ` +

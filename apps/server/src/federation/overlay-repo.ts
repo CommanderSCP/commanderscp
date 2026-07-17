@@ -1,8 +1,9 @@
 import type { GraphObject, Relationship } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { badRequest } from "../errors.js";
+import { badRequest, forbidden } from "../errors.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { createRelationship, listRelationships } from "../graph/relationships-repo.js";
+import { isServiceMemberObjectType } from "../graph/service-member-types.js";
 
 /**
  * Shared-authority overlays (DESIGN.md §13 "review decision — resolved"): "two domains never
@@ -70,6 +71,19 @@ export async function createOverlay(
   input: CreateOverlayInput
 ): Promise<OverlayResult> {
   const base = await getObjectByIdOrUrnAnyType(tx, input.orgId, input.baseIdOrUrn);
+
+  // M12 P5 follow-up (owner ruling 2026-07-16): overlay is a user-facing CREATE surface (free-form
+  // `overlayTypeId`), NOT an import path — so it must not become a side door for minting an orphan
+  // `component` that bypasses create-strict. Refuse service-member types here, exactly as the generic
+  // `/objects/component` route does (shared `graph/service-member-types.ts`). A component is created
+  // only via the strict `POST /components`; overlay it afterward if genuinely needed.
+  if (isServiceMemberObjectType(input.overlayTypeId)) {
+    throw forbidden(
+      `object type '${input.overlayTypeId}' must belong to a service and cannot be created via an ` +
+        `overlay — use the strict typed route (/api/v1/${input.overlayTypeId}s), which requires a ` +
+        `service and writes the containment edge atomically`
+    );
+  }
 
   if (base.typeId === "policy" && input.overlayTypeId === "policy") {
     assertPolicyOverlayOnlyAddsStrictness(base.properties, input.overlayProperties ?? {});

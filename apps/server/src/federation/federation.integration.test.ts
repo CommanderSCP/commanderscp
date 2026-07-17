@@ -698,6 +698,33 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
     expect(baseStillOriginal.version).toBe(basePolicy.version);
   });
 
+  it("SECURITY: overlay REFUSES a service-member type (component) — no create-strict side door (M12 P5)", async () => {
+    // A base object to annotate (any type). The overlay attempt names `component` as its own type,
+    // which would mint an orphan component bypassing POST /components — refused before any write.
+    const base = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      createObject(tx, {
+        orgId: domainA.orgId,
+        domainId: null,
+        typeId: "service",
+        actorObjectId: domainA.orgId,
+        requestId: "t-overlay-base",
+        name: "overlay-base-svc"
+      })
+    );
+    await expect(
+      withTenantTx(domainA.db, domainA.orgId, (tx) =>
+        createOverlay(tx, {
+          orgId: domainA.orgId,
+          actorObjectId: domainA.orgId,
+          requestId: "t-overlay-comp",
+          baseIdOrUrn: base.id,
+          overlayTypeId: "component",
+          overlayName: "sneaky-component"
+        })
+      )
+    ).rejects.toMatchObject({ status: 403, detail: expect.stringMatching(/must belong to a service/i) });
+  });
+
   it("SECURITY: a policy overlay may only ADD strictness, never weaken the base's enforcement", async () => {
     const basePolicy = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
       createObject(tx, {
