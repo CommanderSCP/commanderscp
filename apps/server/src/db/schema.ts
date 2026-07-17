@@ -615,7 +615,12 @@ export const changeWaveTargets = pgTable(
     executorRef: jsonb("executor_ref"), // ExternalRunRef once triggered
     /** Captured before trigger — what a rollback of this wave target would restore (DESIGN §9.4). */
     priorStateRef: jsonb("prior_state_ref"),
-    status: text("status").notNull().default("pending"), // pending|triggering|triggered|observing|succeeded|failed|aborted
+    // pending|triggering|triggered|observing|succeeded|failed|aborted|no_executor
+    // `no_executor` (docs/adr/0006): fail-closed terminal — the target has real executor bindings
+    // but NONE for the purpose this wave rolls, so reconcile refused to fake-succeed the gap. Plain
+    // text column (no Postgres ENUM / CHECK), so the value is additive with no migration; the read
+    // schema (ChangeWaveTargetSchema.status) is already `z.string()`, so the API is additive too.
+    status: text("status").notNull().default("pending"),
     attempt: bigint("attempt", { mode: "number" }).notNull().default(0),
     lastObservedAt: timestamp("last_observed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

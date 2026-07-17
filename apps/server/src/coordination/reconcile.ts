@@ -24,10 +24,12 @@ import {
   findOriginalWaveTarget,
   getWaveStatus,
   markWaveRunning,
+  markWaveTargetNoExecutor,
   markWaveTargetTriggered,
   markWaveTerminal,
   updateWaveTargetObserved
 } from "./wave-targets-repo.js";
+import { appendAuditEvent } from "../audit/audit-repo.js";
 import { tryAcquireTriggerClaimLock } from "./trigger-claim-lock.js";
 import { tryAcquireChangeCoordinationLock } from "./change-coordination-lock.js";
 import { evaluateWaveGate } from "./gates.js";
@@ -36,6 +38,7 @@ import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import { DEFAULT_EXECUTOR_INSTANCE_ID, DEFAULT_EXECUTOR_MODULE } from "./executor-config.js";
 import {
   getExecutorBinding,
+  listExecutorBindingsForTarget,
   resolveExecutorPluginInstance,
   DEFAULT_BINDING_PURPOSE
 } from "./executor-bindings-repo.js";
@@ -531,6 +534,13 @@ async function reconcileExecutingChange(
       anyFailed = true;
       continue;
     }
+    if (target.status === "no_executor") {
+      // Terminal + a wave failure — a masking executor-binding gap was already blocked, audited, and
+      // the change parked when this target was terminalized (docs/adr/0006). Counts toward `anyFailed`
+      // but is NEVER re-triggered (that would duplicate the block Decision + audit event).
+      anyFailed = true;
+      continue;
+    }
 
     if (target.status === "pending" || target.status === "triggering") {
       allTerminal = false;
@@ -539,6 +549,7 @@ async function reconcileExecutingChange(
           db,
           orgId,
           change,
+          activeWave.id,
           target.id,
           target.targetObjectId,
           // WHICH pipeline this target rolls (M12 P4A) — snapshotted onto the wave target at plan
@@ -665,6 +676,7 @@ async function triggerWaveTarget(
   db: Db,
   orgId: string,
   change: ChangeRow,
+  waveId: string,
   waveTargetId: string,
   targetObjectId: string,
   purpose: "infra" | "software",
@@ -676,6 +688,68 @@ async function triggerWaveTarget(
   if (!lock) return; // another attempt (this or another worker replica) is genuinely in flight.
 
   try {
+    // FAIL-CLOSED on a masking executor-binding gap (M12 — docs/adr/0006). Keyed on the RESOLVED
+    // `purpose` reconcile actually triggers (unrecognised values were already normalised to
+    // 'software' upstream), and TARGET-LOCAL only — no component->service/deployment-target walk-up
+    // (that is future M12 work). Two populations, disambiguated by whether the target has ANY binding:
+    //
+    //   (a) INTENDED-FAKE — the target has ZERO executor bindings: the shared fake executor IS its
+    //       configured executor for rehearsal/demo/test. KEEP fake-succeeding (fall through, below).
+    //   (b) MASKING-GAP — the target has >=1 real binding but NONE for `purpose`: fake-succeeding
+    //       would GREEN a misconfiguration. Block loudly — emit a `block` Decision (with decision_id)
+    //       naming the gap, write the hash-chained audit event, terminalize the target on the
+    //       dedicated `no_executor` status, fail the wave, and PARK the change (reconcile-blocked)
+    //       for manual remediation (bind the purpose, then cancel/rollback/re-propose). The Decision
+    //       NAMES the gap only — it never auto-offers the managed-iac executor (charter: managed
+    //       execution is never a default). All emitted ONCE: `markWaveTargetNoExecutor`'s status
+    //       guard makes a later tick that finds it already `no_executor` a no-op.
+    const blocked = await withTenantTx(db, orgId, async (tx) => {
+      const forPurpose = await getExecutorBinding(tx, orgId, targetObjectId, purpose);
+      if (forPurpose) return false; // a real binding for this purpose — normal coordinate path.
+      const all = await listExecutorBindingsForTarget(tx, orgId, targetObjectId);
+      if (all.length === 0) return false; // case (a): intended-fake, behaviour unchanged.
+
+      // case (b): masking gap.
+      const terminalized = await markWaveTargetNoExecutor(tx, orgId, waveTargetId);
+      if (!terminalized) return true; // a prior tick already blocked+audited this — append nothing.
+
+      const boundPurposes = all.map((b) => b.purpose).sort();
+      const decision = await insertDecision(tx, {
+        orgId,
+        kind: "wave_target",
+        subjectId: change.objectId,
+        verdict: "block",
+        inputContext: {
+          waveId,
+          targetObjectId,
+          requestedPurpose: purpose,
+          boundPurposes
+        },
+        reasonTree: {
+          summary:
+            `wave target ${targetObjectId} has no '${purpose}' executor binding ` +
+            `(bound: ${boundPurposes.join(", ")}) — refusing to fake-succeed a masking gap`,
+          remediation: `bind the '${purpose}' pipeline for this target, then cancel/rollback/re-propose the change`
+        }
+      });
+      await appendAuditEvent(tx, {
+        orgId,
+        actorId: SYSTEM_ACTOR_ID,
+        action: "change.wave_target.no_executor",
+        subjectId: change.objectId,
+        reason: `no '${purpose}' executor binding for target ${targetObjectId} (bound: ${boundPurposes.join(", ")})`,
+        decisionId: decision.id,
+        requestId: "reconcile"
+      });
+      // Fail the wave and park the change — the same terminal+park the failed-wave path produces, but
+      // reached directly so no auto-rollback of an un-runnable pipeline is attempted (it would only
+      // hit the same gap). Awaits an operator.
+      await markWaveTerminal(tx, orgId, waveId, "failed");
+      await markChangeReconcileBlocked(tx, orgId, change.objectId);
+      return true;
+    });
+    if (blocked) return;
+
     // M7: resolve targetObjectId's configured executor binding (executor-bindings-repo.ts) — a
     // Component/DeploymentTarget with no binding configured falls back to the shared default
     // fake-executor instance, exactly as every M0-M6 test/demo relies on (executor-config.ts).

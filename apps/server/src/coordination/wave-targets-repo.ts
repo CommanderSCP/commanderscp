@@ -165,6 +165,38 @@ export async function updateWaveTargetObserved(
 }
 
 /**
+ * Terminalize a wave target on the dedicated `no_executor` status (M12 — fail-closed on a masking
+ * executor-binding gap; docs/adr/0006): the target holds at least one real executor binding but NONE
+ * for the purpose this wave rolls, so fake-succeeding it would hide a misconfiguration. A DISTINCT
+ * terminal value (not `failed`) so `scp change explain`/the UI can name the actual cause, mirroring
+ * `campaign_waves`' purpose-built `blocked`.
+ *
+ * Guarded on `status IN ('pending','triggering')` and RETURNING so the caller emits the block
+ * Decision + hash-chained audit event EXACTLY ONCE: a later reconcile tick that finds the target
+ * already `no_executor` gets `false` back and appends nothing to the audit chain (idempotency). The
+ * trigger-claim advisory lock (`triggerWaveTarget`) already serializes callers; this guard is the
+ * durable backstop that keeps the once-only property true regardless.
+ */
+export async function markWaveTargetNoExecutor(
+  tx: TenantTx,
+  orgId: string,
+  targetId: string
+): Promise<boolean> {
+  const result = await tx
+    .update(changeWaveTargets)
+    .set({ status: "no_executor", lastObservedAt: new Date(), updatedAt: new Date() })
+    .where(
+      and(
+        eq(changeWaveTargets.orgId, orgId),
+        eq(changeWaveTargets.id, targetId),
+        inArray(changeWaveTargets.status, ["pending", "triggering"])
+      )
+    )
+    .returning({ id: changeWaveTargets.id });
+  return result.length > 0;
+}
+
+/**
  * The "prior known-good state" lookup (DESIGN §9.4): the most recently SUCCEEDED wave-target
  * execution of `targetObjectId`, across ANY change (not just the one currently being planned) —
  * its `executorRef` is what a fresh forward trigger captures a `priorStateRef` snapshot from
