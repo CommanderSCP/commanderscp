@@ -719,7 +719,8 @@ async function triggerWaveTarget(
           tx,
           orgId,
           change.rollbackOfObjectId,
-          targetObjectId
+          targetObjectId,
+          instanceId
         );
         priorStateRef = originalTarget?.priorStateRef ?? null;
       } else {
@@ -730,7 +731,11 @@ async function triggerWaveTarget(
         // Recomputed fresh on every retry (including a post-crash resume) rather than persisted:
         // since this target is still `triggering`/`pending` (not `succeeded`), it can never be its
         // OWN "latest succeeded execution", so recomputation is stable/idempotent across retries.
-        const latestSucceeded = await findLatestSucceededExecution(tx, orgId, targetObjectId);
+        // Scoped to `instanceId` — the executor plugin instance THIS trigger resolved — so we only
+        // ever snapshot from a prior run of the SAME executor. A prior succeeded run under a
+        // DIFFERENT executor carries an executorRef this `client` can't interpret; calling its
+        // status() with a foreign ref throws (e.g. argocd 403) and wedges the wave forever.
+        const latestSucceeded = await findLatestSucceededExecution(tx, orgId, targetObjectId, instanceId);
         if (latestSucceeded?.executorRef) {
           const priorStatus = await client.status(latestSucceeded.executorRef as ExecutorRef);
           priorStateRef = priorStatus.stateRef ?? null;
