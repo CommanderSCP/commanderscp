@@ -1,7 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
 import type { ExecutionStatus, ExternalRunRef } from "@scp/plugin-api";
@@ -18,7 +18,7 @@ import {
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { v7 as uuidv7 } from "uuid";
-import { changes, changeSourceEvents, changeWaveTargets, decisions } from "../db/schema.js";
+import { changes, changeSourceEvents, changeWaveTargets, decisions, objects } from "../db/schema.js";
 import { processChangeSourceEvents } from "./webhook-processor.js";
 import { createSourceMapping } from "./source-mappings-repo.js";
 import { createObject } from "../graph/objects-repo.js";
@@ -1522,6 +1522,110 @@ describe("coordination engine: wave-gate evaluation is single-flight (M8 hardeni
     );
     expect(gateDecisions).toHaveLength(1);
   }, 30_000);
+});
+
+/**
+ * Regression (live bug): `processChangeSourceEvents` set every Change's NAME to
+ * `${sourceKind}: ${repo}` — identical for every event from one repo — and `createObject` derives
+ * the URN from the name. `objects` has a UNIQUE `(org_id, urn)` constraint, so the SECOND same-repo
+ * event in a batch collided → `proposeChange` threw `Conflict` → the whole reconcile-tick
+ * transaction rolled back → NO events processed → the queue wedged forever (observed live: 124
+ * unprocessed github events, 0 changes, continuous Conflict churn). A monorepo backlog (many
+ * commits, no per-path precision) guarantees several same-repo events per tick.
+ *
+ * The model: each `change_source_events` row is a DISTINCT real-world event (redeliveries are
+ * collapsed at ingest by the `(org_id, source_kind, dedupe_key)` unique index), so each becomes its
+ * OWN Change with a per-event-unique URN. `correlationKey` GROUPS related changes via a
+ * coordinated-change object; it does not dedupe them (for a GitHub push it is the branch ref,
+ * shared by every commit on the branch).
+ */
+describe("coordination engine: same-repo change_source_events do not collide on URN (queue-wedge regression)", () => {
+  let server: TestServer;
+  let org: TestOrg;
+
+  beforeAll(async () => {
+    server = await buildTestServer();
+    org = await createTestOrg(server, "webhook-samerepo");
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  it("a batch of MANY unprocessed events from ONE repo processes without a Conflict — one Change per event, all marked processed", async () => {
+    const componentObjectId = await createComponentViaInject(
+      server,
+      org,
+      `samerepo-comp-${randomSuffix()}`
+    );
+    const repo = `samerepo-org/${randomSuffix()}`;
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      createSourceMapping(tx, {
+        orgId: org.orgId,
+        sourceKind: "generic",
+        repoPattern: repo,
+        componentIdOrUrn: componentObjectId
+      })
+    );
+
+    // Seed several DISTINCT events for the SAME repo in one batch — exactly the monorepo-backlog
+    // shape that wedged the live queue. Each is a separate delivery (distinct id + dedupe_key); the
+    // shared `correlationKey` (a branch ref) is what a real push stream looks like.
+    const EVENT_COUNT = 5;
+    const eventIds = Array.from({ length: EVENT_COUNT }, () => uuidv7());
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.insert(changeSourceEvents).values(
+        eventIds.map((id) => ({
+          id,
+          orgId: org.orgId,
+          sourceKind: "generic",
+          signatureVerified: true,
+          dedupeKey: `samerepo:${id}`,
+          headers: {},
+          payload: { repo, correlationKey: "refs/heads/main" }
+        }))
+      )
+    );
+
+    // Pre-fix this threw `Conflict` on the 2nd same-repo event and rolled the whole tx back.
+    await withTenantTx(server.deps.db, org.orgId, (tx) => processChangeSourceEvents(tx, org.orgId));
+
+    // (a)/(b) EVERY event is now processed with a resulting change linked — nothing left stuck.
+    const eventRows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(changeSourceEvents)
+        .where(and(eq(changeSourceEvents.orgId, org.orgId), inArray(changeSourceEvents.id, eventIds)))
+    );
+    expect(eventRows).toHaveLength(EVENT_COUNT);
+    for (const row of eventRows) {
+      expect(row.processedAt).not.toBeNull();
+      expect(row.resultingChangeObjectId).not.toBeNull();
+    }
+
+    // (c) Distinct releases → distinct Changes: one per event, each a unique object with a unique URN.
+    const resultingIds = new Set(eventRows.map((r) => r.resultingChangeObjectId));
+    expect(resultingIds.size).toBe(EVENT_COUNT);
+
+    const changeObjects = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select({ id: objects.id, urn: objects.urn })
+        .from(objects)
+        .where(and(eq(objects.orgId, org.orgId), inArray(objects.id, [...resultingIds] as string[])))
+    );
+    expect(changeObjects).toHaveLength(EVENT_COUNT);
+    expect(new Set(changeObjects.map((o) => o.urn)).size).toBe(EVENT_COUNT);
+
+    // All same-repo events share ONE coordinated-change group (correlationKey grouping), proving the
+    // group — not the change — is what dedupes.
+    const groups = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select({ id: objects.id })
+        .from(objects)
+        .where(and(eq(objects.orgId, org.orgId), eq(objects.typeId, "coordinated-change")))
+    );
+    expect(groups).toHaveLength(1);
+  });
 });
 
 function randomSuffix(): string {
