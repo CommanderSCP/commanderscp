@@ -100,7 +100,7 @@ TOKEN="$(node -e "console.log(JSON.parse(require('fs').readFileSync(process.env.
 echo "==> register: scp service register --name m7-svc + scp component register --name m7-comp"
 SERVICE_JSON="$("${CLI_BIN[@]}" service register --name m7-svc --output json)"
 SERVICE_ID="$(echo "$SERVICE_JSON" | json_field id)"
-COMPONENT_JSON="$("${CLI_BIN[@]}" component register --name m7-comp --output json)"
+COMPONENT_JSON="$("${CLI_BIN[@]}" component register --name m7-comp --service "$SERVICE_ID" --output json)"
 COMPONENT_ID="$(echo "$COMPONENT_JSON" | json_field id)"
 echo "service id: $SERVICE_ID / component id: $COMPONENT_ID"
 
