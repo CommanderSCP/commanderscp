@@ -4,6 +4,7 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { changeSourceEvents } from "../db/schema.js";
 import { linkToCoordinatedChange, matchComponentForSource } from "./correlation.js";
 import { proposeChange } from "./changes-repo.js";
+import { deriveUrn } from "../graph/urn.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 
 const BATCH_LIMIT = 20;
@@ -112,11 +113,27 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
       continue;
     }
 
+    // Each unprocessed `change_source_events` row is one distinct real-world event — redeliveries
+    // of the SAME provider delivery are already collapsed to one row at ingest by the
+    // `(org_id, source_kind, dedupe_key)` unique index (schema.ts), so every row that reaches here
+    // is a genuinely separate release. Each therefore becomes its OWN Change (`correlationKey` then
+    // GROUPS related changes via `linkToCoordinatedChange` — it does NOT dedupe them: for a GitHub
+    // push it is the branch ref, identical for every commit on that branch).
+    //
+    // The human-readable NAME stays repo-scoped and thus SHARED across a repo's events, but the URN
+    // must be unique per event or `createObject`'s `(org_id, urn)` unique constraint rejects the
+    // second same-repo event of a batch as a `Conflict` — which rolls back the whole tick and wedges
+    // the queue forever (a monorepo backlog guarantees several same-repo events per tick). Suffixing
+    // the derived URN with the row id (a per-event UUIDv7) makes it collision-free while keeping the
+    // name informative. Concurrent double-processing of the SAME row is separately prevented by the
+    // `FOR UPDATE SKIP LOCKED` claim above, so two ticks never both mint a change for one row.
+    const name = `${row.sourceKind}${hint.repo ? `: ${hint.repo}` : ""}`;
     const { change } = await proposeChange(tx, {
       orgId,
       actorObjectId: SYSTEM_ACTOR_ID,
       requestId: `webhook-${row.id}`,
-      name: `${row.sourceKind}${hint.repo ? `: ${hint.repo}` : ""}`,
+      name,
+      urn: deriveUrn(orgId, "change", name, row.id),
       sourceKind: row.sourceKind,
       sourceRef: (row.payload as Record<string, unknown>) ?? {},
       correlationKey: hint.correlationKey,
