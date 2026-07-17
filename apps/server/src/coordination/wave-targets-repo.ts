@@ -166,15 +166,26 @@ export async function updateWaveTargetObserved(
 
 /**
  * The "prior known-good state" lookup (DESIGN §9.4): the most recently SUCCEEDED wave-target
- * execution of `targetObjectId`, across ANY change (not just the one currently being planned) —
- * its `executorRef` is what a fresh forward trigger captures a `priorStateRef` snapshot from
- * (via `status()`, by the caller), and its OWN `priorStateRef` is what a rollback of THIS
- * specific change's trigger would restore.
+ * execution of `targetObjectId` **that ran on the CURRENT executor plugin instance**
+ * (`executorPluginId`), across ANY change (not just the one currently being planned) — its
+ * `executorRef` is what a fresh forward trigger captures a `priorStateRef` snapshot from (via
+ * `status()`, by the caller), and its OWN `priorStateRef` is what a rollback of THIS specific
+ * change's trigger would restore.
+ *
+ * The executor-instance filter is load-bearing: a target's most recent succeeded execution may
+ * have run on a DIFFERENT executor (e.g. an infra push that fell back to the fake-executor vs. a
+ * software promotion via argocd). That row's `executorRef` is only meaningful to the executor
+ * that produced it — handing a foreign ref to this instance's `status()` makes it query a
+ * resource that doesn't exist under it (e.g. argocd `GET /applications/<uuid>` → 403), which
+ * throws inside the trigger tx and wedges the wave forever. So we only ever consider a prior
+ * succeeded execution recorded under the SAME instance; when there is none, the caller leaves
+ * `priorStateRef` null and the trigger proceeds normally.
  */
 export async function findLatestSucceededExecution(
   tx: TenantTx,
   orgId: string,
-  targetObjectId: string
+  targetObjectId: string,
+  executorPluginId: string
 ): Promise<WaveTargetRow | undefined> {
   const rows = await tx
     .select({ target: changeWaveTargets })
@@ -185,6 +196,7 @@ export async function findLatestSucceededExecution(
       and(
         eq(changeWaveTargets.orgId, orgId),
         eq(changeWaveTargets.targetObjectId, targetObjectId),
+        eq(changeWaveTargets.executorPluginId, executorPluginId),
         eq(changeWaveTargets.status, "succeeded")
       )
     )
@@ -195,12 +207,18 @@ export async function findLatestSucceededExecution(
 
 /** The corresponding wave target for `targetObjectId` on the change that `rollbackOfObjectId`
  *  refers to's MOST RECENT plan — used by a rollback change to find what `priorStateRef` its
- *  own trigger should carry (the original's captured "before this change touched it" snapshot). */
+ *  own trigger should carry (the original's captured "before this change touched it" snapshot).
+ *  Filtered to the CURRENT executor plugin instance (`executorPluginId`) for the same reason as
+ *  `findLatestSucceededExecution`: the original target's `priorStateRef` is an executor-specific
+ *  state handle, and passing one produced by a DIFFERENT executor into this instance's rollback
+ *  `trigger()` is meaningless (and dangerous). When the original ran on another executor, no row
+ *  matches and the rollback carries a null `priorStateRef`. */
 export async function findOriginalWaveTarget(
   tx: TenantTx,
   orgId: string,
   originalChangeObjectId: string,
-  targetObjectId: string
+  targetObjectId: string,
+  executorPluginId: string
 ): Promise<WaveTargetRow | undefined> {
   const rows = await tx
     .select({ target: changeWaveTargets })
@@ -211,7 +229,8 @@ export async function findOriginalWaveTarget(
       and(
         eq(changeWaveTargets.orgId, orgId),
         eq(changePlans.changeObjectId, originalChangeObjectId),
-        eq(changeWaveTargets.targetObjectId, targetObjectId)
+        eq(changeWaveTargets.targetObjectId, targetObjectId),
+        eq(changeWaveTargets.executorPluginId, executorPluginId)
       )
     )
     .orderBy(desc(changePlans.createdAt))
