@@ -11,6 +11,7 @@ import { GraphExplorerPage } from "./routes/graph-explorer";
 import { GraphLandingPage } from "./routes/graph-landing";
 import { ChangeListPage } from "./routes/change-list";
 import { ChangeDetailPage } from "./routes/change-detail";
+import { ChangePipelinePage } from "./routes/change-pipeline";
 import { CampaignListPage } from "./routes/campaign-list";
 import { CampaignDetailPage } from "./routes/campaign-detail";
 import { InitiativeListPage } from "./routes/initiative-list";
@@ -88,6 +89,14 @@ const changeDetailRoute = createRoute({
   component: ChangeDetailPage
 });
 
+// The component-pipeline view of a change (coordination-ui-views.md phase 1). A static `pipeline`
+// leaf under `/changes/$id` — out-ranks nothing ambiguous, and `$id` still resolves change detail.
+const changePipelineRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/changes/$id/pipeline",
+  component: ChangePipelinePage
+});
+
 const campaignListRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/campaigns",
@@ -150,6 +159,7 @@ const routeTree = rootRoute.addChildren([
     graphExplorerRoute,
     changeListRoute,
     changeDetailRoute,
+    changePipelineRoute,
     campaignListRoute,
     campaignDetailRoute,
     initiativeListRoute,

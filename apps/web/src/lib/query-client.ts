@@ -44,6 +44,19 @@ export function changeApprovalsKey(changeId: string): unknown[] {
   return ["change", "approvals", changeId];
 }
 
+/** Query key for the component-pipeline view's per-target executor-binding + execution-system
+ *  lookups (coordination-ui-views.md phase 1 — the stage source/executor links). Keyed by change
+ *  id: the set of targets is fixed by that change's compiled plan. */
+export function changePipelineLinksKey(changeId: string): unknown[] {
+  return ["change", "pipeline-links", changeId];
+}
+
+/** Query key for the component-pipeline view's live final-gate check (`client.policyEvaluate`), a
+ *  side-effect-free promotion verdict used only to color the change-level promotion arrow. */
+export function changePipelineGateKey(changeId: string): unknown[] {
+  return ["change", "pipeline-gate", changeId];
+}
+
 /** Query key for the Campaigns list view (M5, BUILD_AND_TEST.md §8 M5 UI requirement). */
 export function campaignListKey(): unknown[] {
   return ["campaign", "list"];
