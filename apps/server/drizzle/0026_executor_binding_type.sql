@@ -44,13 +44,24 @@ ALTER TABLE "executor_bindings"
 --
 --   executor_bindings — classify by MODULE (a binding's `plugin_module` says what kind of executor
 --   it is, which is the honest signal; the old 'software'/'infra' value mislabelled argocd bindings):
---     terraform / managed-iac -> infrastructure (true IaC substrate);
---     everything else (argocd, github, fake-executor, …) -> configuration (the safe default — argocd
---     bindings SYNC desired state; github/CI bindings that should be a build Type are reclassified in
---     the separate org-data step).
+--     terraform / managed-iac        -> infrastructure (true IaC substrate);
+--     github + old 'software'         -> image         (CI/build bindings observe an image pipeline);
+--     github + old 'infra'            -> configuration (github infra bindings observe a GitOps/config authority);
+--     everything else (argocd, fake…)-> configuration (the safe default — argocd bindings SYNC desired state).
+--
+--   The github split is deterministic on `plugin_module` + the retired value (still present in the
+--   renamed column at this point) — NOT on any repo name. It is also REQUIRED for correctness: a target
+--   may legitimately hold two same-module bindings under distinct old purposes (a deployment-target
+--   observing both a build repo AND a config authority via github). Collapsing both to one Type would
+--   violate the UNIQUE(org, target, type) key renamed in step (b) and abort the migration. Splitting
+--   github by the old value keeps them distinct ({image, configuration}). Precise per-repo Type
+--   refinement (e.g. rpm/deb vs image, or an infra github binding that wraps Terraform) remains the
+--   separate org-data step.
 UPDATE "executor_bindings"
   SET "type" = CASE
     WHEN "plugin_module" IN ('terraform', 'managed-iac') THEN 'infrastructure'
+    WHEN "plugin_module" = 'github' AND "type" = 'software' THEN 'image'
+    WHEN "plugin_module" = 'github' AND "type" = 'infra' THEN 'configuration'
     ELSE 'configuration'
   END;
 
