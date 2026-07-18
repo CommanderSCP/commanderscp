@@ -153,8 +153,15 @@ function toChangeWaveTargetShape(row: typeof changeWaveTargets.$inferSelect): Ch
     category: categoryOfType(waveTargetType),
     executorPluginId: row.executorPluginId,
     executorRef: (row.executorRef as Record<string, unknown> | null) ?? null,
-    // The observed revision reconcile persisted (P4B increment 2) — the per-stage version.
-    observed: (row.observedState as { revision?: string } | null) ?? null,
+    // The snapshot reconcile persisted — the per-stage version (revision + deployed images) plus the
+    // OBSERVE-ONLY rollout snapshot (P4D). The raw jsonb already carries all three once merged (P4B
+    // revision + P4C images + P4D rollout); no query change.
+    observed:
+      (row.observedState as {
+        revision?: string;
+        images?: string[];
+        rollout?: { phase?: string; step?: number; weight?: number; message?: string };
+      } | null) ?? null,
     status: row.status,
     attempt: row.attempt,
     lastObservedAt: row.lastObservedAt?.toISOString() ?? null,

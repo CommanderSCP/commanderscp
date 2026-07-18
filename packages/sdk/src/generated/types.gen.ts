@@ -9271,6 +9271,13 @@ export type ExplainChangeResponses = {
                     } | null;
                     observed?: {
                         revision?: string;
+                        images?: Array<string>;
+                        rollout?: {
+                            phase?: string;
+                            step?: number;
+                            weight?: number;
+                            message?: string;
+                        };
                     } | null;
                     status: string;
                     attempt: number;
@@ -14433,3 +14440,199 @@ export type BackfillSourceMappingsResponses = {
 };
 
 export type BackfillSourceMappingsResponse = BackfillSourceMappingsResponses[keyof BackfillSourceMappingsResponses];
+
+export type GetObjectHealthData = {
+    body?: never;
+    path: {
+        type: string;
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/objects/{type}/{idOrUrn}/health';
+};
+
+export type GetObjectHealthErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetObjectHealthError = GetObjectHealthErrors[keyof GetObjectHealthErrors];
+
+export type GetObjectHealthResponses = {
+    /**
+     * Success
+     */
+    200: {
+        objectId: string;
+        status: 'healthy' | 'degraded' | 'down' | 'unknown';
+        detail: string | null;
+        observedAt: string;
+        source: string | null;
+    };
+};
+
+export type GetObjectHealthResponse = GetObjectHealthResponses[keyof GetObjectHealthResponses];
+
+export type PushObjectHealthData = {
+    body: {
+        status: 'healthy' | 'degraded' | 'down' | 'unknown';
+        detail?: string;
+        observedAt?: string;
+        source?: string;
+    };
+    path: {
+        type: string;
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/objects/{type}/{idOrUrn}/health';
+};
+
+export type PushObjectHealthErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PushObjectHealthError = PushObjectHealthErrors[keyof PushObjectHealthErrors];
+
+export type PushObjectHealthResponses = {
+    /**
+     * Success
+     */
+    200: {
+        objectId: string;
+        status: 'healthy' | 'degraded' | 'down' | 'unknown';
+        detail: string | null;
+        observedAt: string;
+        source: string | null;
+    };
+};
+
+export type PushObjectHealthResponse = PushObjectHealthResponses[keyof PushObjectHealthResponses];
+
+export type GraphHealthData = {
+    body: {
+        objectId: string;
+        ids: Array<string>;
+    };
+    path?: never;
+    query?: never;
+    url: '/graph/health';
+};
+
+export type GraphHealthErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GraphHealthError = GraphHealthErrors[keyof GraphHealthErrors];
+
+export type GraphHealthResponses = {
+    /**
+     * Success
+     */
+    200: {
+        records: Array<{
+            objectId: string;
+            status: 'healthy' | 'degraded' | 'down' | 'unknown';
+            detail: string | null;
+            observedAt: string;
+            source: string | null;
+        }>;
+    };
+};
+
+export type GraphHealthResponse = GraphHealthResponses[keyof GraphHealthResponses];

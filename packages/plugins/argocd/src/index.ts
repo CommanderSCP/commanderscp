@@ -131,6 +131,21 @@ const ROLLBACK_UNAVAILABLE_PREFIX = `argocd-rollback-unavailable${REF_DELIMITER}
 // ArgoCD REST shapes (subset — only the fields this plugin reads/sends)
 // -----------------------------------------------------------------------------------------
 
+// A single managed-resource entry in the Application's `status.resources[]`. For an app-managed
+// Argo Rollout there is one entry with kind=Rollout, group=argoproj.io, whose `health.status` is
+// Argo CD's built-in Lua assessment (Healthy|Progressing|Degraded|Suspended|Missing|Unknown) and
+// `health.message` often carries human rollout detail ("Rollout is paused ..."). This gives a
+// phase-ish + message signal near-free — no extra API call (it rides the SAME Application body).
+interface ArgoResourceStatus {
+  group?: string;
+  version?: string;
+  kind?: string;
+  namespace?: string;
+  name?: string;
+  status?: string; // sync status
+  health?: { status?: string; message?: string };
+}
+
 interface ArgoApplication {
   metadata: { name: string; resourceVersion?: string };
   status?: {
@@ -143,8 +158,27 @@ interface ArgoApplication {
       startedAt?: string;
       syncResult?: { revision?: string };
     };
+    // ArgoCD populates this on the Application body it already returns from GET /applications and
+    // GET /applications/{name}: the deployed image refs (`ghcr.io/x/y:tag` or `...@sha256:...`).
+    // Reading it into ExecutionStatus.observed.images is near-free — no extra API call (ADR-0008
+    // signal 1, image half).
+    summary?: { images?: string[] };
+    // The app's managed resources (near-free — same Application body). Scanned for a Rollout node to
+    // surface OBSERVE-ONLY rollout phase/message (ADR-0008 signal / P4D increment 4).
+    resources?: ArgoResourceStatus[];
     reconciledAt?: string;
   };
+}
+
+// The LIVE Argo Rollout manifest's `.status`, as returned (JSON-stringified) by
+// GET /api/v1/applications/{name}/resource. Only the OBSERVE-ONLY progressive-delivery fields this
+// plugin surfaces — all optional and version-dependent (`canary.weights` is absent on Argo Rollouts
+// older than ~v1.1; `currentStepIndex` is absent for non-canary/blue-green). Never fabricated.
+interface LiveRolloutStatus {
+  phase?: string; // RolloutPhase: Progressing|Paused|Healthy|Degraded
+  message?: string;
+  currentStepIndex?: number;
+  canary?: { weights?: { canary?: { weight?: number } } };
 }
 
 async function apiRequest(
@@ -189,6 +223,85 @@ function phaseAfterFinishedSync(health: string | undefined): ExecutionPhase {
   }
 }
 
+type ObservedRollout = { phase?: string; step?: number; weight?: number; message?: string };
+
+// Find the app-managed Argo Rollout node in the Application's `status.resources[]` (near-free — it
+// rides the Application body status() already fetches). Argo's group for Rollouts is `argoproj.io`.
+function findRolloutResource(app: ArgoApplication | undefined): ArgoResourceStatus | undefined {
+  return app?.status?.resources?.find((r) => r.kind === "Rollout" && r.group === "argoproj.io");
+}
+
+// Near-free OBSERVE-ONLY rollout snapshot from the Rollout node's Argo health assessment: its
+// `health.status` (Healthy|Progressing|Degraded|Suspended|Missing|Unknown) is a real phase-ish
+// signal and `health.message` a human detail. No extra API call. Omits absent fields; returns
+// undefined when neither is present (never fabricates a phase).
+function rolloutFromResource(res: ArgoResourceStatus | undefined): ObservedRollout | undefined {
+  if (!res) return undefined;
+  const rollout: ObservedRollout = {};
+  const phase = res.health?.status;
+  if (typeof phase === "string" && phase.length > 0) rollout.phase = phase;
+  const message = res.health?.message;
+  if (typeof message === "string" && message.length > 0) rollout.message = message;
+  return rollout.phase !== undefined || rollout.message !== undefined ? rollout : undefined;
+}
+
+// Parse the OBSERVE-ONLY structured rollout fields off a LIVE Argo Rollout manifest (the JSON STRING
+// GET /api/v1/applications/{name}/resource returns). Surfaces only fields Argo actually provides:
+// `phase` (RolloutPhase), `message`, `currentStepIndex` → step, and canary weight (Rollouts ≳ v1.1).
+// Any field the manifest omits is omitted here — never invented. Returns undefined on parse failure
+// or an empty result.
+function rolloutFromManifest(manifestJson: string): ObservedRollout | undefined {
+  let parsed: { status?: LiveRolloutStatus };
+  try {
+    parsed = JSON.parse(manifestJson) as { status?: LiveRolloutStatus };
+  } catch {
+    return undefined;
+  }
+  const s = parsed.status;
+  if (!s) return undefined;
+  const rollout: ObservedRollout = {};
+  if (typeof s.phase === "string" && s.phase.length > 0) rollout.phase = s.phase;
+  if (typeof s.message === "string" && s.message.length > 0) rollout.message = s.message;
+  if (typeof s.currentStepIndex === "number") rollout.step = s.currentStepIndex;
+  const weight = s.canary?.weights?.canary?.weight;
+  if (typeof weight === "number") rollout.weight = weight;
+  return Object.keys(rollout).length > 0 ? rollout : undefined;
+}
+
+// Best-effort fetch of the LIVE Rollout manifest for structured step/weight/phase (option B — a
+// per-resource call). OBSERVE-ONLY: a GET that reads the executor's own state; it never drives the
+// rollout. Failures (non-2xx, missing/garbage manifest, network) return undefined so the near-free
+// phase/message still stands and status() never fails over enrichment.
+async function fetchLiveRollout(
+  ctx: PluginContext,
+  config: ArgoCdConfig,
+  appName: string,
+  res: ArgoResourceStatus
+): Promise<ObservedRollout | undefined> {
+  if (!res.name) return undefined;
+  const params = new URLSearchParams({
+    resourceName: res.name,
+    ...(res.namespace ? { namespace: res.namespace } : {}),
+    group: res.group ?? "argoproj.io",
+    version: res.version ?? "v1alpha1",
+    kind: "Rollout"
+  });
+  try {
+    const { status, body } = await apiRequest(
+      ctx,
+      config,
+      "GET",
+      `/api/v1/applications/${encodeURIComponent(appName)}/resource?${params.toString()}`
+    );
+    if (status < 200 || status >= 300) return undefined;
+    const manifest = (body as { manifest?: unknown })?.manifest;
+    if (typeof manifest !== "string") return undefined;
+    return rolloutFromManifest(manifest);
+  } catch {
+    return undefined;
+  }
+}
+
 function mapArgoPhase(app: ArgoApplication | undefined): ExecutionStatus {
   const opPhase = app?.status?.operationState?.phase;
   const healthStatus = app?.status?.health?.status;
@@ -215,10 +328,23 @@ function mapArgoPhase(app: ArgoApplication | undefined): ExecutionStatus {
   }
 
   const settled: boolean = phase !== "pending" && phase !== "running";
+  // Deployed image refs straight off the Application body ArgoCD already returned — the REAL
+  // images, never fabricated. Omitted (undefined) when Argo reports none, so reconcile never nulls
+  // a previously-captured value. Filtered to non-empty strings to keep the observed snapshot clean.
+  const images = app?.status?.summary?.images?.filter(
+    (img): img is string => typeof img === "string" && img.length > 0
+  );
+  // Near-free OBSERVE-ONLY rollout snapshot (phase/message) off the Rollout node in resources[] — no
+  // extra API call. status() may enrich this with structured step/weight from the live manifest.
+  const rollout = rolloutFromResource(findRolloutResource(app));
+  const observed: { images?: string[]; rollout?: ObservedRollout } = {};
+  if (images && images.length > 0) observed.images = images;
+  if (rollout) observed.rollout = rollout;
   return {
     phase,
     detail: `sync=${syncStatus ?? "unknown"} health=${healthStatus ?? "unknown"} op=${opPhase ?? "none"}`,
     stateRef: app?.status?.sync?.revision,
+    ...(observed.images || observed.rollout ? { observed } : {}),
     progress: settled ? 1 : 0.5
   };
 }
@@ -336,7 +462,23 @@ async function status(ctx: PluginContext, ref: ExternalRunRef): Promise<Executio
   if (httpStatus < 200 || httpStatus >= 300) {
     throw new Error(`argocd status: server returned HTTP ${httpStatus}`);
   }
-  return mapArgoPhase(body as ArgoApplication);
+  const app = body as ArgoApplication;
+  const result = mapArgoPhase(app);
+  // OBSERVE-ONLY progressive-delivery enrichment (ADR-0008: rollout state is OBSERVED, NOT DRIVEN).
+  // When the app manages an Argo Rollout, fetch the LIVE Rollout manifest for structured
+  // step/weight/phase and merge it over the near-free phase/message (manifest wins on overlap). This
+  // adds NO trigger verb — it is a read; SCP never promotes/pauses/aborts/re-weights the rollout.
+  const rolloutRes = findRolloutResource(app);
+  if (rolloutRes) {
+    const enriched = await fetchLiveRollout(ctx, config, appName, rolloutRes);
+    if (enriched) {
+      result.observed = {
+        ...(result.observed ?? {}),
+        rollout: { ...(result.observed?.rollout ?? {}), ...enriched }
+      };
+    }
+  }
+  return result;
 }
 
 async function abort(ctx: PluginContext, ref: ExternalRunRef): Promise<AbortResult> {

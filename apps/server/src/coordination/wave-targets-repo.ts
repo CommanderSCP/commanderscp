@@ -1,4 +1,5 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
+import type { ExecutionStatus } from "@scp/plugin-api";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changePlans, changeWaveTargets, changeWaves } from "../db/schema.js";
 
@@ -153,12 +154,18 @@ export async function markWaveTargetTriggered(
 }
 
 /**
- * The observed-state payload persisted on `observed_state` (ADR-0008 decision 1): the revision the
- * status() poll reported (`ExecutionStatus.stateRef`, opaque `unknown` — a string revision today,
- * a typed digest/rollout object in a later increment). Surfaced as the per-stage version.
+ * The observed-state payload persisted on `observed_state` (ADR-0008 decisions 1-2): the last-observed
+ * snapshot a status() poll reported. `revision` is the synced revision (`ExecutionStatus.stateRef`, a
+ * string revision today); `images` is the deployed image refs (`ExecutionStatus.observed.images`, e.g.
+ * `ghcr.io/x/y:1.2.3` or `...@sha256:...`). Surfaced as the per-stage version. `rollout` (P4D
+ * increment 4) is the OBSERVE-ONLY progressive-delivery snapshot (`ExecutionStatus.observed.rollout`
+ * — an Argo Rollout's phase/step/weight/message as the executor reports it); it is display-only and
+ * carries NO drive verb (ADR-0008: rollout state is OBSERVED, NOT DRIVEN).
  */
 export interface WaveTargetObservedState {
   revision?: string;
+  images?: string[];
+  rollout?: { phase?: string; step?: number; weight?: number; message?: string };
 }
 
 export async function updateWaveTargetObserved(
@@ -183,18 +190,40 @@ export async function updateWaveTargetObserved(
 }
 
 /**
- * Normalize an `ExecutionStatus.stateRef` (opaque `unknown`) into the observed-state payload
- * (P4B increment 2). A string revision is stored under `revision`; a nullish stateRef yields
- * `undefined` so `updateWaveTargetObserved` leaves any previously-captured revision intact.
+ * Normalize an `ExecutionStatus` into the observed-state payload. Reads BOTH the synced revision
+ * (`stateRef`, opaque `unknown` — P4B increment 2) and the deployed image refs (`observed.images` —
+ * P4C increment 3). A string stateRef is stored under `revision`; non-empty images under `images`.
+ * Returns `undefined` when the status carries NEITHER, so `updateWaveTargetObserved` leaves a
+ * previously-captured value intact rather than nulling it (a never-synced app must not erase what an
+ * earlier poll observed).
  */
-export function observedStateFromStateRef(
-  stateRef: unknown
+export function observedStateFrom(
+  status: Pick<ExecutionStatus, "stateRef" | "observed">
 ): WaveTargetObservedState | undefined {
-  if (stateRef === undefined || stateRef === null) return undefined;
-  if (typeof stateRef === "string") return { revision: stateRef };
-  // Non-string stateRef (later increments emit a typed digest/rollout object). Stringify defensively
-  // so today's opaque value is still captured rather than dropped.
-  return { revision: String(stateRef) };
+  const result: WaveTargetObservedState = {};
+
+  const stateRef = status.stateRef;
+  if (typeof stateRef === "string") {
+    result.revision = stateRef;
+  } else if (stateRef !== undefined && stateRef !== null) {
+    // Non-string stateRef (later increments emit a typed digest/rollout object). Stringify defensively
+    // so today's opaque value is still captured rather than dropped.
+    result.revision = String(stateRef);
+  }
+
+  const images = status.observed?.images?.filter(
+    (img): img is string => typeof img === "string" && img.length > 0
+  );
+  if (images && images.length > 0) result.images = images;
+
+  // OBSERVE-ONLY rollout snapshot (P4D increment 4) — carried through as the executor reported it,
+  // only when present so a status() without it never nulls a previously-captured rollout.
+  const rollout = status.observed?.rollout;
+  if (rollout && Object.keys(rollout).length > 0) result.rollout = rollout;
+
+  return result.revision !== undefined || result.images !== undefined || result.rollout !== undefined
+    ? result
+    : undefined;
 }
 
 /**
