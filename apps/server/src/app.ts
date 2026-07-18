@@ -42,6 +42,7 @@ import { registerCampaignRoutes } from "./routes/campaigns.js";
 import { registerInitiativeRoutes } from "./routes/initiatives.js";
 import { registerFederationRoutes } from "./routes/federation.js";
 import { registerExecutorRoutes } from "./routes/executors.js";
+import { registerHealthRoutes } from "./routes/health.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -229,6 +230,11 @@ export async function buildApp(
   // M7: Real Executor Integrations (BUILD_AND_TEST.md §8 M7, DESIGN.md §11/§12) — executor/
   // notification bindings, encrypted secrets, plugin manifests, DiscoveryPlugin run/accept.
   registerExecutorRoutes(app, deps);
+  // Observe-enrichment signal 4 (ADR-0008 decision 4): owner PUSH-IN of latest object health +
+  // read paths (single object read, and the batch graph node-payload join). SCP stores pushed
+  // health; it never probes/polls/computes it (charter principle 1). Stored graph-natively as an
+  // object-referencing projection row (DESIGN §4.1), not a new top-level table (principle 2).
+  registerHealthRoutes(app, deps);
 
   app.get("/healthz", async () => ({ status: "ok" }));
 

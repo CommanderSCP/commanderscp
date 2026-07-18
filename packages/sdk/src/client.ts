@@ -28,6 +28,9 @@ import {
   graphQuery as graphQueryRequest,
   graphTraverse as graphTraverseRequest,
   graphSubgraph as graphSubgraphRequest,
+  pushObjectHealth as pushObjectHealthRequest,
+  getObjectHealth as getObjectHealthRequest,
+  graphHealth as graphHealthRequest,
   listAuditEvents as listAuditEventsRequest,
   // M2 typed registries (routes/typed-registries.ts) — 8 resources × create/list/get/update/
   // delete/upsertByUrn, generated from BUILD_AND_TEST.md §8 M2 item 1's operationIds.
@@ -233,6 +236,9 @@ import type {
   ServiceObject,
   ServiceObjectListResponse,
   SubgraphResult,
+  HealthRecord,
+  HealthBatchResult,
+  PushHealthRequest,
   TraverseResult,
   UpdateObjectRequest,
   UpsertObjectRequest,
@@ -394,6 +400,12 @@ export interface TraverseParams {
 }
 
 export interface SubgraphParams {
+  objectId: string;
+  ids: string[];
+}
+
+export interface HealthBatchParams {
+  /** Exploration root — scopes `graph:query` authorization, identical to `SubgraphParams`. */
   objectId: string;
   ids: string[];
 }
@@ -1020,6 +1032,48 @@ export class ScpClient {
      */
     subgraph: async (params: SubgraphParams): Promise<SubgraphResult> => {
       const result = await graphSubgraphRequest({ client: this.client, body: params });
+      return unwrap(result);
+    }
+  };
+
+  // -----------------------------------------------------------------------------------------
+  // Object health (observe-enrichment signal 4; ADR-0008 decision 4). SCP STORES pushed health;
+  // it never probes/polls/computes it (charter principle 1). Stored graph-natively as an
+  // object-referencing projection row keyed by objects(id) (DESIGN §4.1).
+  // -----------------------------------------------------------------------------------------
+
+  readonly health = {
+    /**
+     * PUSH-IN the latest health of an object (idempotent upsert). `source` is binding-ready — an
+     * owner writes `owner` today; a future opt-in health-source binding writes the SAME row.
+     */
+    push: async (
+      type: string,
+      idOrUrn: string,
+      body: PushHealthRequest
+    ): Promise<HealthRecord> => {
+      const result = await pushObjectHealthRequest({
+        client: this.client,
+        path: { type, idOrUrn },
+        body
+      });
+      return unwrap(result);
+    },
+    /** The latest pushed health of one object (status `unknown` when none has been pushed). */
+    get: async (type: string, idOrUrn: string): Promise<HealthRecord> => {
+      const result = await getObjectHealthRequest({
+        client: this.client,
+        path: { type, idOrUrn }
+      });
+      return unwrap(result);
+    },
+    /**
+     * Batch latest-health over an object-id set — the graph node-payload JOIN. `subgraph` returns
+     * EDGES ONLY, so the UI fetches health in a parallel follow-up call over the node id set and
+     * joins by id. Objects with no pushed health are absent (rendered grey/unknown, not fabricated).
+     */
+    batchGet: async (params: HealthBatchParams): Promise<HealthBatchResult> => {
+      const result = await graphHealthRequest({ client: this.client, body: params });
       return unwrap(result);
     }
   };
