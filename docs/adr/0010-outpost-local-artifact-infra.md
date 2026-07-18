@@ -2,7 +2,11 @@
 
 **Status:** Proposed (2026-07-18)
 **Context doc:** [docs/proposals/outpost-local-artifact-infra.md](../proposals/outpost-local-artifact-infra.md)
-**Relates to:** [ADR-0002](0002-execution-strategy.md) (execution strategy / bundled backends); [ADR-0004](0004-service-naming-commander-outpost-retrans.md) (commander/outpost/retrans); DESIGN.md §12/§13/§16
+**Relates to:** [ADR-0002](0002-execution-strategy.md) (execution strategy / bundled backends); [ADR-0004](0004-service-naming-commander-outpost-retrans.md) (commander/outpost/retrans); [ADR-0012](0012-registry-consolidation.md), [ADR-0013](0013-supply-chain-scan-sbom-manifest.md); DESIGN.md §12/§13/§16
+
+## Amendment 2026-07-18 — outpost = Gitea only
+
+Superseded by [ADR-0012](0012-registry-consolidation.md)/[ADR-0013](0013-supply-chain-scan-sbom-manifest.md): the outpost's local infra is **Gitea only** (git + unified registry for all artifact types) — **no local Harbor**. Outposts do not scan (scanning is a source-side boundary-authorization gate, ADR-0013), so they need no scanning registry; they verify the signed attestation/manifest and stay light. Harbor is the *optional* enterprise-registry alternative (ADR-0012). Read "local Harbor" below as "local Gitea registry."
 
 ## Context
 

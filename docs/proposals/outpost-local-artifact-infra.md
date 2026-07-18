@@ -4,6 +4,17 @@
 **Relates to:** DESIGN.md §12 (execution), §13 (federation), §16 (bundling); [ADR-0002](../adr/0002-execution-strategy.md) (execution strategy / bundled backends); [ADR-0004](../adr/0004-service-naming-commander-outpost-retrans.md) (commander/outpost/retrans); [ADR-0010](../adr/0010-outpost-local-artifact-infra.md) (this decision); proposals `bundled-executor-backends.md`, `import-existing-executors.md`
 **Milestone:** M15 (provisional — post-M11 federation track; follows M14 poke-mode)
 
+## Update 2026-07-18 — outpost = Gitea only (supersedes the "local Harbor" references below)
+
+Owner decisions since this proposal was written (see [ADR-0012](../adr/0012-registry-consolidation.md), [ADR-0013](../adr/0013-supply-chain-scan-sbom-manifest.md), and the master `promotion-and-execution-model.md`) simplify the outpost's local infra:
+
+- **The outpost runs Gitea only — no local Harbor.** Gitea's package registry serves **git + OCI images + rpm/npm/Maven/Helm/…**, so one light service covers every artifact type. Where this doc says the outpost runs a "local Harbor," read **local Gitea registry**.
+- **Outposts do not scan.** Scanning is a **boundary-crossing authorization gate** done **once at the source** (a coordinated Trivy step on the commander, ADR-0013) — so the receiving outpost verifies the signed attestation/manifest but never re-scans, and therefore needs no scanning registry. This is *why* the outpost can drop Harbor and stay light.
+- **Ownership model:** build artifacts and **shared** config/infra repos are **commander-owned**; **domain-specific** config/infra repos (for outposts in a different domain) are **outpost-owned** on the outpost's local Gitea. Domain-specific artifacts are outpost-autonomous — the commander does not track, scan, or sign them, and they skip the boundary entirely.
+- **The outpost's own local UI:** because it is one binary, an outpost already serves the full UI; scoped to its local domain it gives service/component/graph views for the domain-specific pipelines the commander doesn't track (distinct from the commander-side Outposts UI in M16).
+
+The Create/Import mechanics, the git-service-agnostic executor, and the boundary/trust model below still apply — just with Gitea as the single registry and Harbor as an *optional* enterprise alternative (ADR-0012).
+
 ## Problem
 
 Today Harbor sits with the commander (M11.4) and GitOps config repos live in GitHub via the `github` executor. Neither is reachable from inside a **FedRAMP High / IL5 / air-gapped** domain at deploy time. A high outpost therefore needs its **own local registry** (holding promoted, scanned, signed images) and its **own local git** (holding the desired-state manifests its Argo CD reconciles).
