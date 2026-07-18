@@ -152,16 +152,49 @@ export async function markWaveTargetTriggered(
   return result.length > 0;
 }
 
+/**
+ * The observed-state payload persisted on `observed_state` (ADR-0008 decision 1): the revision the
+ * status() poll reported (`ExecutionStatus.stateRef`, opaque `unknown` — a string revision today,
+ * a typed digest/rollout object in a later increment). Surfaced as the per-stage version.
+ */
+export interface WaveTargetObservedState {
+  revision?: string;
+}
+
 export async function updateWaveTargetObserved(
   tx: TenantTx,
   orgId: string,
   targetId: string,
-  status: "observing" | "succeeded" | "failed" | "aborted"
+  status: "observing" | "succeeded" | "failed" | "aborted",
+  // Additive (P4B increment 2): the last status() stateRef reconcile observed. Written ONLY when
+  // defined — a status() with no stateRef (e.g. an Argo CD app that never synced) must not null out
+  // a previously-captured revision. `null` is a caller-explicit clear; `undefined` leaves it as-is.
+  observedState?: WaveTargetObservedState | null
 ): Promise<void> {
   await tx
     .update(changeWaveTargets)
-    .set({ status, lastObservedAt: new Date(), updatedAt: new Date() })
+    .set({
+      status,
+      lastObservedAt: new Date(),
+      updatedAt: new Date(),
+      ...(observedState !== undefined ? { observedState } : {})
+    })
     .where(and(eq(changeWaveTargets.orgId, orgId), eq(changeWaveTargets.id, targetId)));
+}
+
+/**
+ * Normalize an `ExecutionStatus.stateRef` (opaque `unknown`) into the observed-state payload
+ * (P4B increment 2). A string revision is stored under `revision`; a nullish stateRef yields
+ * `undefined` so `updateWaveTargetObserved` leaves any previously-captured revision intact.
+ */
+export function observedStateFromStateRef(
+  stateRef: unknown
+): WaveTargetObservedState | undefined {
+  if (stateRef === undefined || stateRef === null) return undefined;
+  if (typeof stateRef === "string") return { revision: stateRef };
+  // Non-string stateRef (later increments emit a typed digest/rollout object). Stringify defensively
+  // so today's opaque value is still captured rather than dropped.
+  return { revision: String(stateRef) };
 }
 
 /**

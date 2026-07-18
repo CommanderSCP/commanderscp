@@ -115,10 +115,21 @@ export function StageCard({
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-500">
                 <span>{target.category} · {target.type}</span>
-                {/* Layer B — not modeled today; explicit placeholder, never a fabricated version. */}
-                <span title="per-stage version/digest is not captured yet (Layer B)">
-                  version <span className="text-slate-400">—</span>
-                </span>
+                {/* Per-stage version: the REAL synced revision reconcile observed from status()
+                    (ADR-0008 decision 1), abbreviated SHA-style. Never fabricated — when the target
+                    has not been observed with a revision yet, keep the explicit placeholder. */}
+                {target.observed?.revision ? (
+                  <span title={`observed revision ${target.observed.revision}`}>
+                    version{" "}
+                    <span className="font-mono text-slate-700" data-testid="stage-observed-revision">
+                      {target.observed.revision.slice(0, 7)}
+                    </span>
+                  </span>
+                ) : (
+                  <span title="per-stage version/digest not observed yet">
+                    version <span className="text-slate-400">—</span>
+                  </span>
+                )}
                 {links.executorRef && (
                   <span data-testid="stage-executor-link">
                     executor:{" "}

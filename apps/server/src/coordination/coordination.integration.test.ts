@@ -148,6 +148,52 @@ describe("coordination engine: full fake-executor loop", () => {
     ).toBe(true);
   });
 
+  it("persists the REAL synced revision reconcile observes from status().stateRef, surfaced as the wave target's observed revision (P4B increment 2, ADR-0008 decision 1)", async () => {
+    // A fresh target's first change drives the fake-executor to internal version v0, so its
+    // status() reports stateRef "v0" (fake-executor index.ts). Increment 2's whole point: reconcile
+    // already computed that stateRef and DISCARDED it — we now assert the engine PERSISTED it onto
+    // the wave target and surfaces it on the plan read model (`scp change explain`), and that the
+    // value is the REAL executor-reported revision, not a hardcoded placeholder.
+    const comp = await createTestComponent(admin, { name: `observed-rev-${uuidv7().slice(0, 8)}` });
+
+    const change = await admin.changes.propose({
+      name: "observe the synced revision",
+      targets: [comp.id]
+    });
+    expect(change.state).toBe("proposed");
+
+    // Drive to the succeeded wave target through the same plan read model the UI/CLI consume.
+    const explained = await waitUntil(
+      async () => {
+        const e = await admin.changes.explain(change.id);
+        const t = e.plan?.waves[0]?.targets.find((x) => x.targetObjectId === comp.id);
+        return t && t.status === "succeeded" ? e : undefined;
+      },
+      { describe: `wave target for ${comp.id} reaches 'succeeded'`, timeoutMs: 20_000 }
+    );
+    const target = explained.plan!.waves[0]!.targets.find((x) => x.targetObjectId === comp.id)!;
+
+    // The persisted, surfaced revision — the stateRef reconcile previously threw away.
+    expect(target.observed).not.toBeNull();
+    expect(target.observed!.revision).toBe("v0");
+
+    // Prove it is the ACTUAL executor-reported revision, not a hardcoded constant: ask the fake
+    // executor directly, using the target's own persisted executorRef, what stateRef it reports —
+    // the persisted `observed.revision` must equal it byte-for-byte.
+    const ref = target.executorRef as unknown as ExternalRunRef;
+    const liveStatus: ExecutionStatus = await server
+      .pluginHost!.executor(DEFAULT_EXECUTOR_INSTANCE_ID)
+      .status(ref);
+    expect(liveStatus.stateRef).toBe(target.observed!.revision);
+
+    // And durably persisted on the row itself (observed_state jsonb), not just synthesized by the
+    // read-model mapper.
+    const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.id, target.id))
+    );
+    expect((rows[0]!.observedState as { revision?: string } | null)?.revision).toBe("v0");
+  });
+
   it("reconcile passes the binding's externalRef (e.g. an Argo CD Application name) as trigger().targetRef — NOT the graph object id (M12 P1)", async () => {
     // This is the Mode A / import fix: a graph object whose SCP id differs from its external name
     // must trigger the EXTERNAL resource, not a resource named after its UUID. The fake-executor

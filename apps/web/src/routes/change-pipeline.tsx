@@ -204,9 +204,11 @@ function WhyLink({ changeId, decisionId }: { changeId: string; decisionId: strin
 /**
  * `/changes/{id}/pipeline` — the component pipeline view (coordination-ui-views.md view 2, phase 1,
  * Layer A). Renders the change's compiled plan as top-to-bottom stages (one per wave) with wide
- * promotion arrows between them colored by real gate/approval state. Strictly Layer A: no invented
- * canary %, scan verdicts, per-stage versions, or health — those are Layer B and shown as explicit
- * placeholders. Reuses the same `explain()` cache key as change-detail so the two views stay in sync.
+ * promotion arrows between them colored by real gate/approval state. Layer A plus the first Layer B
+ * signal: the per-stage version now renders the REAL synced revision reconcile observed from status()
+ * (ADR-0008 decision 1), or an explicit placeholder until observed — never a fabricated version. Other
+ * Layer B signals (canary %, scan verdicts, health) remain explicit placeholders. Reuses the same
+ * `explain()` cache key as change-detail so the two views stay in sync.
  */
 export function ChangePipelinePage(): React.JSX.Element {
   const id = useIdParam();
