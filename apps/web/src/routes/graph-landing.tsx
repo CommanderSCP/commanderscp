@@ -5,6 +5,7 @@ import { client } from "../lib/client";
 import { REGISTRIES, getRegistryClient, type RegistryConfig } from "../lib/registries";
 import { registryListKey } from "../lib/query-client";
 import { GraphCanvas, type GraphCanvasData } from "../components/graph/GraphCanvas";
+import { GraphLegend } from "../components/graph/GraphLegend";
 import {
   Select,
   SelectContent,
@@ -145,18 +146,28 @@ export function GraphLandingPage(): React.JSX.Element {
       </div>
 
       <div className="flex flex-col gap-2">
-        <h2 className="text-sm font-semibold text-slate-700">Service map</h2>
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h2 className="text-sm font-semibold text-slate-700">Service graph</h2>
+            <p className="text-xs text-slate-500">
+              Services and their <code className="text-slate-600">depends_on</code>/
+              <code className="text-slate-600">consumes</code> edges. Click a service to open its
+              component graph.
+            </p>
+          </div>
+          <GraphLegend nodes={[{ label: "Service", color: "#2563eb" }]} />
+        </div>
         <div className="relative h-[28rem] rounded-lg border border-slate-200 bg-white">
           {overviewQuery.isLoading && (
             <div className="absolute inset-0 flex items-center justify-center text-sm text-slate-500">
-              Loading service map…
+              Loading service graph…
             </div>
           )}
           {overviewQuery.isError && (
             <div className="absolute inset-0 flex items-center justify-center text-sm text-red-600">
               {overviewQuery.error instanceof Error
                 ? overviewQuery.error.message
-                : "Failed to load service map"}
+                : "Failed to load service graph"}
             </div>
           )}
           {overviewQuery.data && overviewQuery.data.objects.length === 0 && (
@@ -164,10 +175,16 @@ export function GraphLandingPage(): React.JSX.Element {
               className="absolute inset-0 flex items-center justify-center text-sm text-slate-500"
               data-testid="graph-overview-empty"
             >
-              No services yet — create one to see the map.
+              No services yet — create one to see the graph.
             </div>
           )}
-          <GraphCanvas data={overviewQuery.data ?? { objects: [], edges: [] }} />
+          <GraphCanvas
+            data={overviewQuery.data ?? { objects: [], edges: [] }}
+            layout="concentric"
+            onNodeTap={(node) =>
+              void navigate({ to: "/graph/service/$serviceId", params: { serviceId: node.id } })
+            }
+          />
         </div>
       </div>
     </div>

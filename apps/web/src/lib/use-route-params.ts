@@ -19,6 +19,11 @@ export function useIdParam(): string | undefined {
   return (useParams({ strict: false }) as { id?: string }).id;
 }
 
+/** `/graph/service/$serviceId` (coordination-ui-views.md § two-layer graph) — the component layer. */
+export function useServiceIdParam(): string | undefined {
+  return (useParams({ strict: false }) as { serviceId?: string }).serviceId;
+}
+
 export function useUserCodeSearch(): string | undefined {
   return (useSearch({ strict: false }) as { user_code?: string }).user_code;
 }

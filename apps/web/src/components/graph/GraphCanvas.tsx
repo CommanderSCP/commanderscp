@@ -7,12 +7,22 @@ export interface GraphCanvasNode {
   id: string;
   name: string;
   typeId: string;
+  /** Marks a node that lives OUTSIDE the current scope — e.g. a component owned by a different
+   *  service in the component-layer view. Rendered with a dashed outline. Backward-compatible:
+   *  undefined = the normal solid treatment. */
+  external?: boolean;
 }
 
 export interface GraphCanvasEdge {
   id: string;
   fromId: string;
   toId: string;
+  /** Relationship type (`consumes` / `depends_on` / `contains` / …). Forwarded to Cytoscape so
+   *  edges can be styled by type; optional for backward-compat. */
+  typeId?: string;
+  /** Marks an edge that leaves the current scope (a component→component link across services).
+   *  Rendered dashed. Backward-compatible: undefined = a normal solid edge. */
+  crossService?: boolean;
 }
 
 export interface GraphCanvasData {
@@ -25,6 +35,11 @@ interface GraphCanvasProps {
   /** Optional root node to emphasize (the object being explored). Added to the node set if it
    *  isn't already present among `data.objects`. */
   rootId?: string;
+  /** Cytoscape layout name — defaults to `cose`. The two-layer views pass a deliberate layout. */
+  layout?: string;
+  /** Overrides the default click-to-registry-detail navigation. When provided, a node tap calls
+   *  this instead — the service-layer view uses it to drill into a service's component graph. */
+  onNodeTap?: (node: { id: string; typeId?: string; external?: boolean }) => void;
 }
 
 /**
@@ -41,12 +56,16 @@ interface GraphCanvasProps {
  * is false. Nothing in real production traffic sets `__SCP_E2E__`, so this never activates outside
  * a Playwright-controlled page.
  */
-export function GraphCanvas({ data, rootId }: GraphCanvasProps): React.JSX.Element {
+export function GraphCanvas({ data, rootId, layout, onNodeTap }: GraphCanvasProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
   const navigate = useNavigate();
   const navigateRef = useRef(navigate);
   navigateRef.current = navigate;
+  const onNodeTapRef = useRef(onNodeTap);
+  onNodeTapRef.current = onNodeTap;
+  const layoutRef = useRef(layout ?? "cose");
+  layoutRef.current = layout ?? "cose";
 
   // Mount Cytoscape exactly once; element data is applied in the effect below so data changes
   // don't tear down/recreate the renderer.
@@ -59,6 +78,7 @@ export function GraphCanvas({ data, rootId }: GraphCanvasProps): React.JSX.Eleme
           selector: "node",
           style: {
             "background-color": "#0f172a",
+            "border-width": 0,
             label: "data(label)",
             color: "#334155",
             "font-size": 10,
@@ -68,9 +88,31 @@ export function GraphCanvas({ data, rootId }: GraphCanvasProps): React.JSX.Eleme
             height: 24
           }
         },
+        // Typed node coloring (Phase 3, coordination-ui-views.md § two-layer graph). Attribute
+        // selectors out-rank the bare `node` rule; `typeId` is already on every node's data.
+        {
+          selector: 'node[typeId="service"]',
+          style: { "background-color": "#2563eb" }
+        },
+        {
+          selector: 'node[typeId="component"]',
+          style: { "background-color": "#7c3aed" }
+        },
+        // External node — a component owned by a DIFFERENT service in the component-layer view.
+        // Keeps its type color but gets a dashed outline + reduced fill so it reads as off-scope.
+        {
+          selector: "node[?external]",
+          style: {
+            "border-width": 2,
+            "border-color": "#94a3b8",
+            "border-style": "dashed",
+            "background-opacity": 0.4
+          }
+        },
+        // Root emphasis stays last so it wins over the typed colors for the explored object.
         {
           selector: "node[?root]",
-          style: { "background-color": "#2563eb", width: 32, height: 32 }
+          style: { "background-color": "#2563eb", width: 32, height: 32, "border-width": 0 }
         },
         {
           selector: "edge",
@@ -81,13 +123,29 @@ export function GraphCanvas({ data, rootId }: GraphCanvasProps): React.JSX.Eleme
             "target-arrow-shape": "triangle",
             "curve-style": "bezier"
           }
+        },
+        // Cross-service edge — a component link whose endpoints are in different services.
+        {
+          selector: "edge[?crossService]",
+          style: {
+            "line-style": "dashed",
+            "line-color": "#cbd5e1",
+            "target-arrow-color": "#cbd5e1"
+          }
         }
       ],
-      layout: { name: "cose" }
+      layout: { name: layoutRef.current }
     });
     cy.on("tap", "node", (event) => {
       const typeId = event.target.data("typeId") as string | undefined;
+      const external = event.target.data("external") as boolean | undefined;
       const id = event.target.id();
+      // A caller-supplied handler (the service layer's drill-into-components) takes precedence over
+      // the default click-to-registry-detail navigation.
+      if (onNodeTapRef.current) {
+        onNodeTapRef.current({ id, typeId, external });
+        return;
+      }
       const registry = REGISTRIES.find((r) => r.typeId === typeId);
       if (registry) {
         void navigateRef.current({
@@ -123,20 +181,28 @@ export function GraphCanvas({ data, rootId }: GraphCanvasProps): React.JSX.Eleme
             id,
             label: obj?.name ?? id.slice(0, 8),
             typeId: obj?.typeId,
+            external: obj?.external ? true : undefined,
             root: rootId && id === rootId ? true : undefined
           }
         };
       }),
       // Only render edges whose endpoints are both in the node set — a stray edge to an
-      // un-rendered node would make Cytoscape throw.
+      // un-rendered node would make Cytoscape throw. (Cross-service views must therefore
+      // materialize the external target node before the edge will render.)
       ...data.edges
         .filter((edge) => nodeIds.has(edge.fromId) && nodeIds.has(edge.toId))
         .map((edge) => ({
-          data: { id: edge.id, source: edge.fromId, target: edge.toId }
+          data: {
+            id: edge.id,
+            source: edge.fromId,
+            target: edge.toId,
+            typeId: edge.typeId,
+            crossService: edge.crossService ? true : undefined
+          }
         }))
     ];
     cy.add(elements);
-    cy.layout({ name: "cose" }).run();
+    cy.layout({ name: layoutRef.current }).run();
   }, [data, rootId]);
 
   return <div ref={containerRef} className="h-full w-full" data-testid="cytoscape-container" />;
