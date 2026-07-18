@@ -84,22 +84,24 @@ function failingControlObjectIds(reasonTree: Record<string, unknown> | undefined
   return ids;
 }
 
-/** Assemble the one-line block "why" from real gate + control-run data. Returns undefined when
- *  there is nothing real to show (e.g. the gate dry-run hasn't loaded yet) so the arrow stays a
- *  bare colored bar rather than carrying an invented reason. */
+/** Assemble the one-line block "why" from real gate + control-run data. Takes reasonTree/inputContext
+ *  directly so the caller can pass the PERSISTED block Decision's (accurate — real control outcomes)
+ *  in preference to the side-effect-free dry-run's (whose empty controlOutcomes can over-name a
+ *  control). Returns undefined when there is nothing real to show, so the arrow stays a bare colored
+ *  bar rather than carrying an invented reason. */
 function blockDetail(
-  gate: PolicyEvaluateResponse | undefined,
+  reasonTree: Record<string, unknown> | undefined,
+  inputContext: Record<string, unknown> | undefined,
   controlRuns: ControlRun[]
 ): string | undefined {
-  if (!gate) return undefined;
   const parts: string[] = [];
-  const summary = stringField(gate.reasonTree, "summary");
+  const summary = stringField(reasonTree, "summary");
   if (summary) parts.push(summary);
 
-  const endsAt = freezeEndsAt(gate.inputContext);
+  const endsAt = freezeEndsAt(inputContext);
   if (endsAt) parts.push(`window closed until ${formatDate(endsAt)}`);
 
-  for (const controlId of failingControlObjectIds(gate.reasonTree)) {
+  for (const controlId of failingControlObjectIds(reasonTree)) {
     const run = controlRuns.find((r) => r.controlObjectId === controlId);
     if (run && run.status !== "pass") {
       parts.push(`control ${run.status}${run.detail ? `: ${run.detail}` : ""}`);
@@ -158,10 +160,17 @@ function finalGate(
       };
     if (gate?.verdict === "block") {
       const block = [...decisions].reverse().find((d) => d.verdict === "block");
+      // Prefer the persisted block Decision's reasonTree/inputContext (accurate — real control
+      // outcomes) over the live dry-run gate's (empty controlOutcomes can over-name a control);
+      // fall back to the dry-run for a would-block preview when no promotion was attempted yet.
       return {
         state: "blocked",
         label: "gate denies promotion",
-        detail: blockDetail(gate, controlRuns),
+        detail: blockDetail(
+          block?.reasonTree ?? gate?.reasonTree,
+          block?.inputContext ?? gate?.inputContext,
+          controlRuns
+        ),
         decisionId: block?.id
       };
     }
