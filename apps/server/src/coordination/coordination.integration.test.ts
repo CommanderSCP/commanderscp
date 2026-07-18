@@ -1743,6 +1743,77 @@ describe("coordination engine: observed deployed-image threading (P4C)", () => {
   });
 });
 
+// -----------------------------------------------------------------------------------------
+// ADR-0008 P4D (rollout, OBSERVE-ONLY): reconcile threads status().observed.rollout through into
+// observed_state AND the plan read model, ALONGSIDE the revision (#76) and images (#77) — nothing is
+// dropped by the merge. Uses the same boot-time `fakeExecutorConfig` seam (`rolloutByTarget`, a
+// mirror of `imagesByTarget`) so the fake-executor reports a REAL, test-known rollout snapshot for a
+// pre-created target id — no live Argo Rollouts needed. The threading is OBSERVE-ONLY: SCP never
+// drives the rollout; this asserts persistence of an observed read, not any promote/pause verb.
+// -----------------------------------------------------------------------------------------
+describe("coordination engine: observed rollout threading (P4D)", () => {
+  let server: ListeningTestServer;
+  const rolloutTargetId = uuidv7();
+  const observedRollout = { phase: "Paused", step: 2, weight: 40, message: "Rollout is paused" };
+
+  beforeAll(async () => {
+    server = await listenTestServer({
+      withEventRelay: true,
+      withReconcileLoop: true,
+      pluginHostOptions: { callTimeoutMs: 8_000, restartBackoffBaseMs: 50, maxRestartBackoffMs: 300 },
+      fakeExecutorConfig: { rolloutByTarget: { [rolloutTargetId]: observedRollout } }
+    });
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  it("persists status().observed.rollout onto observed_state and surfaces it on the plan read model, without dropping the revision", async () => {
+    const org = await createTestOrg(server, "observed-rollout");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+    // Explicit id so the boot-time `rolloutByTarget` config (above) names THIS target.
+    const target = await createTestComponent(admin, { id: rolloutTargetId, name: "observed-rollout-target" });
+    expect(target.id).toBe(rolloutTargetId);
+
+    const change = await admin.changes.propose({
+      name: "observe the rollout",
+      targets: [rolloutTargetId]
+    });
+
+    // Drive to succeeded via the same plan read model the UI/CLI consume.
+    const explained = await waitUntil(
+      async () => {
+        const e = await admin.changes.explain(change.id);
+        const t = e.plan?.waves[0]?.targets.find((x) => x.targetObjectId === rolloutTargetId);
+        return t && t.status === "succeeded" ? e : undefined;
+      },
+      { describe: `wave target for ${rolloutTargetId} reaches 'succeeded'`, timeoutMs: 20_000 }
+    );
+    const wireTarget = explained.plan!.waves[0]!.targets.find(
+      (x) => x.targetObjectId === rolloutTargetId
+    )!;
+
+    // The REAL rollout the fake-executor reported for this run (its configured output), surfaced on
+    // the read model — AND the synced revision (#76) is still present, not dropped by the merge.
+    expect(wireTarget.observed).not.toBeNull();
+    expect(wireTarget.observed!.rollout).toEqual(observedRollout);
+    expect(wireTarget.observed!.revision).toBe("v0");
+
+    // Durably persisted on the row's observed_state jsonb, not just synthesized by the read mapper.
+    const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.id, wireTarget.id))
+    );
+    const persisted = rows[0]!.observedState as {
+      revision?: string;
+      rollout?: { phase?: string; step?: number; weight?: number; message?: string };
+    } | null;
+    expect(persisted?.rollout).toEqual(observedRollout);
+    expect(persisted?.revision).toBe("v0");
+  });
+});
+
 function randomSuffix(): string {
   return Math.random().toString(36).slice(2, 10);
 }

@@ -157,12 +157,15 @@ export async function markWaveTargetTriggered(
  * The observed-state payload persisted on `observed_state` (ADR-0008 decisions 1-2): the last-observed
  * snapshot a status() poll reported. `revision` is the synced revision (`ExecutionStatus.stateRef`, a
  * string revision today); `images` is the deployed image refs (`ExecutionStatus.observed.images`, e.g.
- * `ghcr.io/x/y:1.2.3` or `...@sha256:...`). Surfaced as the per-stage version. Grows a typed rollout
- * sub-state in a later increment.
+ * `ghcr.io/x/y:1.2.3` or `...@sha256:...`). Surfaced as the per-stage version. `rollout` (P4D
+ * increment 4) is the OBSERVE-ONLY progressive-delivery snapshot (`ExecutionStatus.observed.rollout`
+ * — an Argo Rollout's phase/step/weight/message as the executor reports it); it is display-only and
+ * carries NO drive verb (ADR-0008: rollout state is OBSERVED, NOT DRIVEN).
  */
 export interface WaveTargetObservedState {
   revision?: string;
   images?: string[];
+  rollout?: { phase?: string; step?: number; weight?: number; message?: string };
 }
 
 export async function updateWaveTargetObserved(
@@ -213,7 +216,14 @@ export function observedStateFrom(
   );
   if (images && images.length > 0) result.images = images;
 
-  return result.revision !== undefined || result.images !== undefined ? result : undefined;
+  // OBSERVE-ONLY rollout snapshot (P4D increment 4) — carried through as the executor reported it,
+  // only when present so a status() without it never nulls a previously-captured rollout.
+  const rollout = status.observed?.rollout;
+  if (rollout && Object.keys(rollout).length > 0) result.rollout = rollout;
+
+  return result.revision !== undefined || result.images !== undefined || result.rollout !== undefined
+    ? result
+    : undefined;
 }
 
 /**

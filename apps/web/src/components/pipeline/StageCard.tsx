@@ -198,6 +198,29 @@ export function StageCard({
                     </span>
                   );
                 })()}
+                {/* OBSERVE-ONLY progressive-delivery indicator (ADR-0008: rollout state is OBSERVED,
+                    NOT DRIVEN). Display-only — phase · step N · weight% as the executor reported it,
+                    with NO promote/abort/resume controls (SCP coordinates, never drives). Only the
+                    fields the executor actually provided are shown; omitted when no rollout is
+                    observed (the version placeholder above already covers "nothing observed"). */}
+                {(() => {
+                  const rollout = target.observed?.rollout;
+                  if (!rollout) return null;
+                  const parts: string[] = [];
+                  if (rollout.phase) parts.push(rollout.phase);
+                  if (typeof rollout.step === "number") parts.push(`step ${rollout.step}`);
+                  if (typeof rollout.weight === "number") parts.push(`weight ${rollout.weight}%`);
+                  if (parts.length === 0) return null;
+                  return (
+                    <span
+                      className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-600"
+                      data-testid="stage-observed-rollout"
+                      title={rollout.message ? `rollout: ${rollout.message}` : "observed rollout state (read-only)"}
+                    >
+                      rollout {parts.join(" · ")}
+                    </span>
+                  );
+                })()}
                 {links.executorRef && (
                   <span data-testid="stage-executor-link">
                     executor:{" "}
