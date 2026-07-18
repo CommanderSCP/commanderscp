@@ -35341,6 +35341,22 @@
                                             }
                                           ]
                                         },
+                                        "observed": {
+                                          "anyOf": [
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "revision": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "additionalProperties": false
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
                                         "status": {
                                           "type": "string"
                                         },

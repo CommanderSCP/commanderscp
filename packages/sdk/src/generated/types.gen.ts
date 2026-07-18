@@ -9269,6 +9269,9 @@ export type ExplainChangeResponses = {
                     executorRef: {
                         [key: string]: unknown;
                     } | null;
+                    observed?: {
+                        revision?: string;
+                    } | null;
                     status: string;
                     attempt: number;
                     lastObservedAt: string | null;

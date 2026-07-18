@@ -153,6 +153,8 @@ function toChangeWaveTargetShape(row: typeof changeWaveTargets.$inferSelect): Ch
     category: categoryOfType(waveTargetType),
     executorPluginId: row.executorPluginId,
     executorRef: (row.executorRef as Record<string, unknown> | null) ?? null,
+    // The observed revision reconcile persisted (P4B increment 2) — the per-stage version.
+    observed: (row.observedState as { revision?: string } | null) ?? null,
     status: row.status,
     attempt: row.attempt,
     lastObservedAt: row.lastObservedAt?.toISOString() ?? null,

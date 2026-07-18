@@ -165,6 +165,11 @@ export const ChangeWaveTargetSchema = z.object({
   category: ExecutorCategorySchema,
   executorPluginId: z.string().nullable(),
   executorRef: z.record(z.string(), z.unknown()).nullable(),
+  /** The synced revision reconcile observed from status() (P4B increment 2; ADR-0008 decision 1) —
+   *  the per-stage version. Additive-optional: plans predating the `observed_state` column read back
+   *  without it; `null` once observed with no revision. `revision` is the opaque stateRef as-is (a
+   *  git SHA / Argo revision today; a typed digest/rollout object is a later increment). */
+  observed: z.object({ revision: z.string().optional() }).nullable().optional(),
   status: z.string(),
   attempt: z.number().int(),
   lastObservedAt: z.string().datetime().nullable(),

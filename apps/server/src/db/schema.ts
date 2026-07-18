@@ -615,6 +615,12 @@ export const changeWaveTargets = pgTable(
     executorRef: jsonb("executor_ref"), // ExternalRunRef once triggered
     /** Captured before trigger — what a rollback of this wave target would restore (DESIGN §9.4). */
     priorStateRef: jsonb("prior_state_ref"),
+    // Last status() stateRef reconcile observed — the synced revision it previously computed and
+    // discarded (ADR-0008 decision 1; docs/proposals/observe-enrichment.md signal 1). Additive/
+    // nullable, null until the first successful observe; a status() with no stateRef never nulls a
+    // previously-captured value (updateWaveTargetObserved writes it only when defined). Stores the
+    // opaque revision as-is (jsonb); the strongly-typed digest/rollout object is a later increment.
+    observedState: jsonb("observed_state"),
     // pending|triggering|triggered|observing|succeeded|failed|aborted|no_executor
     // `no_executor` (docs/adr/0006): fail-closed terminal — the target has real executor bindings
     // but NONE for the Type this wave rolls, so reconcile refused to fake-succeed the gap. Plain
