@@ -1,22 +1,24 @@
 import { createHmac, createSign, randomUUID, timingSafeEqual } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
 import type {
   AbortResult,
-  Cursor,
   DiscoveryPlugin,
   DiscoveryProposal,
   ExecutionPhase,
   ExecutionStatus,
   ExecutorCapabilities,
   ExecutorEvent,
-  ExecutorEventCorrelation,
   ExecutorPlugin,
   ExternalRunRef,
   PluginContext,
   PluginManifest,
   TriggerIntent
 } from "@scp/plugin-api";
+import {
+  createExecutorPluginFromAdapter,
+  normalizeCorrelation,
+  type GitProviderAdapter,
+  type GitProviderEventHint
+} from "@scp/git-provider-core";
 
 /**
  * `@scp/plugin-github` — the GitHub App `ExecutorPlugin` + `DiscoveryPlugin` (DESIGN.md §12,
@@ -24,6 +26,16 @@ import type {
  * installable, fine-grained permissions. Observe (push): webhooks. Observe (pull): polling
  * fallback. Trigger: workflow_dispatch/repository_dispatch of the org's OWN workflows. Status:
  * check runs + workflow conclusions. Discovery: repo/topology scan."
+ *
+ * ARCHITECTURE (M15.1a, ADR-0014): this package is a **thin GitHub ADAPTER** over the provider-
+ * neutral `@scp/git-provider-core`. Everything provider-neutral (the idempotency/dedup cache, the
+ * observe cursor protocol, correlation-hint normalization, the dispatch-then-persist trigger dance,
+ * the `ExecutorPlugin` assembly) lives in the core; everything GitHub-specific (App-JWT→installation
+ * -token auth, the base URL + REST wrapper, workflow_dispatch/repository_dispatch, X-Hub-Signature-
+ * 256 webhook verification, GitHub event→hint mapping, the status/conclusion→phase map, the
+ * `"github"` source_kind) lives here as a `GitProviderAdapter`. This package's EXTERNAL contract is
+ * unchanged by the extraction: same `github`/`github-discovery` modules, same config schema, same
+ * verbs, same observable behavior — proven by this package's unchanged `nock` suite.
  *
  * HONEST COVERAGE NOTE: every request/response shape below is exercised deterministically against
  * `nock` fixtures built from GitHub's published REST API docs — this package never talks to a
@@ -154,6 +166,21 @@ async function getInstallationToken(ctx: PluginContext, config: GithubConfig): P
   return body.token;
 }
 
+/** Adapter `authorize` hook: the request headers every authenticated GitHub REST call carries —
+ *  the resolved installation-token bearer plus GitHub's `accept`/`content-type`. This is exactly
+ *  what `api()` sends, so `GitProviderAdapter.authorize` faithfully describes the wire auth. */
+async function githubApiHeaders(
+  ctx: PluginContext,
+  config: GithubConfig
+): Promise<Record<string, string>> {
+  const token = await getInstallationToken(ctx, config);
+  return {
+    authorization: `Bearer ${token}`,
+    accept: "application/vnd.github+json",
+    "content-type": "application/json"
+  };
+}
+
 async function api(
   ctx: PluginContext,
   config: GithubConfig,
@@ -161,15 +188,11 @@ async function api(
   path: string,
   body?: unknown
 ): Promise<{ status: number; body: unknown }> {
-  const token = await getInstallationToken(ctx, config);
+  const headers = await githubApiHeaders(ctx, config);
   const response = await ctx.http.request({
     method,
     url: `${config.apiBaseUrl}${path}`,
-    headers: {
-      authorization: `Bearer ${token}`,
-      accept: "application/vnd.github+json",
-      "content-type": "application/json"
-    },
+    headers,
     body
   });
   return { status: response.status, body: response.body };
@@ -208,12 +231,9 @@ export function verifyGithubWebhookSignature(
   }
 }
 
-export interface GithubEventHint {
-  repo?: string;
-  path?: string;
-  commitSha?: string;
-  correlationKey?: string;
-}
+/** GitHub's populated shape of the provider-neutral `GitProviderEventHint` (same fields; kept as a
+ *  named export for back-compat with existing importers). */
+export type GithubEventHint = GitProviderEventHint;
 
 /** Shared by the webhook route AND `observe()`'s polling fallback (see module doc). Only the four
  *  event kinds DESIGN §12 names for GitHub (`push`, `pull_request`, `workflow_run`, `deployment`,
@@ -265,54 +285,9 @@ export function mapGithubWebhookEventToHint(
   }
 }
 
-function hintToCorrelation(hint: GithubEventHint): ExecutorEventCorrelation {
-  return {
-    repo: hint.repo,
-    path: hint.path,
-    commitSha: hint.commitSha,
-    correlationKey: hint.correlationKey
-  };
-}
-
 // -------------------------------------------------------------------------------------------
-// Idempotency / run-correlation cache — see module doc.
-// -------------------------------------------------------------------------------------------
-
-interface DedupState {
-  keys: Record<string, { externalId: string; url?: string }>;
-}
-
-let inMemoryState: DedupState = { keys: {} };
-
-async function loadState(statePath: string | undefined): Promise<DedupState> {
-  if (!statePath) return inMemoryState;
-  try {
-    return JSON.parse(await readFile(statePath, "utf8")) as DedupState;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { keys: {} };
-    throw err;
-  }
-}
-
-async function saveState(statePath: string | undefined, state: DedupState): Promise<void> {
-  if (!statePath) {
-    inMemoryState = state;
-    return;
-  }
-  await mkdir(dirname(statePath), { recursive: true });
-  const tmpPath = `${statePath}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(tmpPath, JSON.stringify(state), "utf8");
-  await rename(tmpPath, statePath);
-}
-
-function dedupCacheKey(intent: TriggerIntent): string {
-  // Falls back to a fresh random key when the caller omitted one, so two un-keyed calls never
-  // collide — matches `@scp/plugin-fake-executor`'s "no key => always a fresh run" semantics.
-  return intent.idempotencyKey ?? randomUUID();
-}
-
-// -------------------------------------------------------------------------------------------
-// ExecutorPlugin
+// ExecutorPlugin — GitHub-specific hooks; the dedup cache, cursor protocol, correlation
+// normalization, and verb assembly are provided by `@scp/git-provider-core` (see module doc).
 // -------------------------------------------------------------------------------------------
 
 interface WorkflowRun {
@@ -325,12 +300,12 @@ interface WorkflowRun {
   workflow_id?: number;
 }
 
-async function observe(ctx: PluginContext, since?: Cursor): Promise<ExecutorEvent[]> {
+/** Adapter `pollCommits` hook: recent commits (approximates `push` webhook activity for the
+ *  polling fallback). Silently skips (rather than throws for) a non-2xx resource — the documented,
+ *  more-lenient observe posture. */
+async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<ExecutorEvent[]> {
   const config = asConfig(ctx.config);
-  const sinceIso = since?.token;
   const events: ExecutorEvent[] = [];
-
-  // Recent commits (approximates `push` webhook activity for the polling fallback).
   const commitsPath = `/repos/${config.owner}/${config.repo}/commits${sinceIso ? `?since=${encodeURIComponent(sinceIso)}` : ""}`;
   const { status: commitsStatus, body: commitsBody } = await api(ctx, config, "GET", commitsPath);
   if (commitsStatus >= 200 && commitsStatus < 300) {
@@ -340,7 +315,7 @@ async function observe(ctx: PluginContext, since?: Cursor): Promise<ExecutorEven
       events.push({
         kind: "push",
         occurredAt,
-        correlation: hintToCorrelation({
+        correlation: normalizeCorrelation({
           repo: `${config.owner}/${config.repo}`,
           commitSha: commit.sha,
           correlationKey: "refs/heads/*"
@@ -349,8 +324,13 @@ async function observe(ctx: PluginContext, since?: Cursor): Promise<ExecutorEven
       });
     }
   }
+  return events;
+}
 
-  // Recent workflow runs (approximates `workflow_run` webhook activity).
+/** Adapter `pollRuns` hook: recent workflow runs (approximates `workflow_run` webhook activity). */
+async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<ExecutorEvent[]> {
+  const config = asConfig(ctx.config);
+  const events: ExecutorEvent[] = [];
   const runsPath = `/repos/${config.owner}/${config.repo}/actions/runs`;
   const { status: runsStatus, body: runsBody } = await api(ctx, config, "GET", runsPath);
   if (runsStatus >= 200 && runsStatus < 300) {
@@ -365,7 +345,7 @@ async function observe(ctx: PluginContext, since?: Cursor): Promise<ExecutorEven
       events.push({
         kind: "workflow_run",
         occurredAt: run.created_at ?? new Date().toISOString(),
-        correlation: hintToCorrelation({
+        correlation: normalizeCorrelation({
           repo: `${config.owner}/${config.repo}`,
           commitSha: run.head_sha,
           correlationKey: `run-${run.id}`
@@ -374,7 +354,6 @@ async function observe(ctx: PluginContext, since?: Cursor): Promise<ExecutorEven
       });
     }
   }
-
   return events;
 }
 
@@ -413,14 +392,16 @@ async function correlateDispatchedRun(
   return undefined;
 }
 
-async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<ExternalRunRef> {
+/** Adapter `triggerCI` hook — fires GitHub's own automation and returns a run ref, INCLUDING the
+ *  GitHub-specific correlation step (dispatch returns 204 with no run id, so poll the runs list for
+ *  the newest matching run). The idempotency dedup + persistence that wraps this call lives in
+ *  `@scp/git-provider-core`; this hook is only ever called for a genuinely new key, so it never
+ *  reads/writes the dedup cache itself. `markerKey` is the opaque suffix for an uncorrelated ref
+ *  (repository_dispatch, or a workflow_dispatch whose run hasn't materialized yet) — derived from
+ *  the same `idempotencyKey` the core dedups on when one is present. */
+async function triggerCI(ctx: PluginContext, intent: TriggerIntent): Promise<ExternalRunRef> {
   const config = asConfig(ctx.config);
-  const cacheKey = dedupCacheKey(intent);
-  const state = await loadState(config.statePath);
-  const existing = state.keys[cacheKey];
-  if (existing) {
-    return { externalId: existing.externalId, url: existing.url };
-  }
+  const markerKey = intent.idempotencyKey ?? randomUUID();
 
   const workflowId =
     (intent.parameters?.workflowId as string | undefined) ?? config.defaultWorkflowId;
@@ -442,10 +423,7 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
     if (httpStatus < 200 || httpStatus >= 300) {
       throw new Error(`github trigger: repository_dispatch returned HTTP ${httpStatus}`);
     }
-    const externalId = `repository_dispatch::${cacheKey}`;
-    state.keys[cacheKey] = { externalId };
-    await saveState(config.statePath, state);
-    return { externalId };
+    return { externalId: `repository_dispatch::${markerKey}` };
   }
 
   if (!workflowId) {
@@ -467,10 +445,8 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
   }
 
   const run = await correlateDispatchedRun(ctx, config, workflowId, dispatchedAtMs);
-  const externalId = run ? `workflow_run::${run.id}` : `workflow_dispatch::${cacheKey}`;
+  const externalId = run ? `workflow_run::${run.id}` : `workflow_dispatch::${markerKey}`;
   const url = run?.html_url;
-  state.keys[cacheKey] = { externalId, url };
-  await saveState(config.statePath, state);
   ctx.logger.info("github: workflow_dispatch triggered", {
     workflowId,
     ref,
@@ -491,7 +467,8 @@ function mapConclusionToPhase(status: string, conclusion: string | null): Execut
   }
 }
 
-async function statusFn(ctx: PluginContext, ref: ExternalRunRef): Promise<ExecutionStatus> {
+/** Adapter `getStatus` hook. */
+async function getStatus(ctx: PluginContext, ref: ExternalRunRef): Promise<ExecutionStatus> {
   const config = asConfig(ctx.config);
   if (!ref.externalId.startsWith("workflow_run::")) {
     // Uncorrelated dispatch (correlation hasn't resolved yet, or a repository_dispatch that never
@@ -518,7 +495,8 @@ async function statusFn(ctx: PluginContext, ref: ExternalRunRef): Promise<Execut
   };
 }
 
-async function abort(ctx: PluginContext, ref: ExternalRunRef): Promise<AbortResult> {
+/** Adapter `abortRun` hook. */
+async function abortRun(ctx: PluginContext, ref: ExternalRunRef): Promise<AbortResult> {
   const config = asConfig(ctx.config);
   if (!ref.externalId.startsWith("workflow_run::")) {
     return { aborted: false, detail: "github: no correlated run to cancel" };
@@ -535,7 +513,7 @@ async function abort(ctx: PluginContext, ref: ExternalRunRef): Promise<AbortResu
     : { aborted: false, detail: `github abort: server returned HTTP ${httpStatus}` };
 }
 
-function describeCapabilities(): ExecutorCapabilities {
+function githubCapabilities(): ExecutorCapabilities {
   return {
     supportsObserve: true,
     supportsTrigger: true,
@@ -544,13 +522,30 @@ function describeCapabilities(): ExecutorCapabilities {
   };
 }
 
-export const githubExecutorPlugin: ExecutorPlugin = {
-  observe,
-  trigger,
-  status: statusFn,
-  abort,
-  describeCapabilities
+/**
+ * The GitHub `GitProviderAdapter` — every GitHub-wire-specific hook the provider-neutral
+ * `@scp/git-provider-core` needs. The executor factory consumes `resolveStatePath`/`triggerCI`/
+ * `pollCommits`/`pollRuns`/`getStatus`/`abortRun`/`capabilities`; `authorize`/`baseUrl` back this
+ * adapter's own REST calls (`api()`), `verifyWebhook`/`mapEvent` back the server webhook path, and
+ * `mapStatusToPhase` backs `getStatus`.
+ */
+export const githubAdapter: GitProviderAdapter = {
+  sourceKind: "github",
+  authorize: (ctx) => githubApiHeaders(ctx, asConfig(ctx.config)),
+  baseUrl: (ctx) => asConfig(ctx.config).apiBaseUrl ?? "https://api.github.com",
+  resolveStatePath: (ctx) => asConfig(ctx.config).statePath,
+  triggerCI,
+  pollCommits,
+  pollRuns,
+  getStatus,
+  abortRun,
+  capabilities: githubCapabilities,
+  verifyWebhook: verifyGithubWebhookSignature,
+  mapEvent: mapGithubWebhookEventToHint,
+  mapStatusToPhase: mapConclusionToPhase
 };
+
+export const githubExecutorPlugin: ExecutorPlugin = createExecutorPluginFromAdapter(githubAdapter);
 
 export function createGithubExecutorPlugin(): ExecutorPlugin {
   return githubExecutorPlugin;

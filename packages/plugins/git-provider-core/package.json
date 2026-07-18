@@ -1,5 +1,5 @@
 {
-  "name": "@scp/plugin-github",
+  "name": "@scp/git-provider-core",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,13 +12,10 @@
     "test": "vitest run --passWithNoTests"
   },
   "devDependencies": {
-    "@scp/plugin-testkit": "workspace:*",
-    "nock": "^13.5.0",
     "typescript": "~5.8.0",
     "vitest": "^3.0.0"
   },
   "dependencies": {
-    "@scp/git-provider-core": "workspace:*",
     "@scp/plugin-api": "workspace:*"
   }
 }
