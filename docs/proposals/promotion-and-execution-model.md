@@ -17,7 +17,7 @@ CommanderSCP **coordinates** execution systems; it does not build, test, scan, s
 |---|---|---|
 | **build + test** (any artifact: image, rpm, npm, deb, …) | **Argo Workflows** (bundled, M11.3) | Generic containerized-step engine — tool-agnostic. Images use Kaniko/Buildkit; packages just run their toolchain. BYO CI (GitHub Actions / GitLab) coordinated instead where present. SCP never runs CI. |
 | **scan + SBOM** | **coordinated Trivy step** (in Argo Workflows) | One pass emits both the vulnerability scan and the SBOM. Results made available to the commander as **gate evidence** — not a registry feature (see §4, ADR-0013). |
-| **store** (git + images + rpm/npm/Maven/Helm/…) | **Gitea unified registry** (default); **Harbor optional** | One service for git *and* every artifact type. Harbor available (bundle/import) for enterprise-registry needs (ADR-0012). |
+| **store** — **images** (OCI), **code** (git), **packages** (rpm/npm/Maven/Helm/…) | **Gitea unified registry** (default) — the image repo, code repo, **and** package repo in one service | Harbor is **not bundled**; an org that wants Harbor coordinates its **existing** one via the import path (ADR-0012, M15.3). |
 | **sign** | **cosign** | Signs the artifact, the SBOM, and the promotion manifest (M4/M6/M8). |
 | **deploy → Kubernetes** (image workloads **and** non-image k8s config: Helm, CRDs, operators, ConfigMaps, NetworkPolicy) | **Argo CD** (bundled, M11.2) | GitOps. |
 | **deploy → hosts/VMs** (rpm/npm install, config files, systemd) | **Ansible** via **`scp-runner-ops`** (behind the scenes) / BYO Ansible-Tower/Salt | Argo CD is k8s-only and cannot reach a host. Most sensitive execution class in the system. |
@@ -74,8 +74,8 @@ Because CommanderSCP is **one binary** (commander/outpost/retrans are runtime ro
 | Capability | Milestone |
 |---|---|
 | Argo Workflows / Argo CD bundled (build/test, k8s deploy) | M11.2 / M11.3 (existing) |
-| Gitea unified registry (default) added to the Standard Stack | **M11 (updated)** / M15 (outpost-local) |
-| Harbor → optional | **M11.4 (updated)** |
+| Gitea unified registry (default; image + code + package) added to the Standard Stack | **M11 (updated)** / M15 (outpost-local) |
+| Harbor removed from the default stack (existing Harbor via import) | **M11.4 (updated)**, **M15.3** (import) |
 | Coordinated Trivy scan + build-time SBOM + signed promotion manifest + cross-hop validation | **M17 (new)** |
 | git-service-agnostic executor; outpost = Gitea-only | M15 |
 | Poke-mode + retrans relay | M14 |
