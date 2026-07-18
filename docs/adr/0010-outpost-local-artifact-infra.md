@@ -21,7 +21,7 @@ Self-contained-offline is therefore, today, an **operator-assembled** property, 
 
 Make per-outpost **local Harbor + local Gitea** a **first-class, optional capability**, offered two ways behind the existing `execution-system` model:
 
-- **Create** = bundle **Gitea** (new Standard-Stack backend + a **new Gitea git-executor module**) and make **Harbor** a real observe target (auto-wire token hook + a **registry executor**).
+- **Create** = bundle **Gitea** (new Standard-Stack backend, coordinated through a new **git-service-agnostic** git executor) and make **Harbor** a real observe target (auto-wire token hook + a **registry executor**).
 - **Import** = bind an existing **Harbor / Artifactory / GitLab / Gitea** as `execution-system` graph objects via discovery (owner decision: any approved registry + git, not only the bundled pair).
 
 **Boundary artifact model — trust scan-at-source (owner decision, 2026-07-18):** images are scanned + signed commander-side; the digest + signature + scan attestation ride the metadata bundle; the outpost's local Harbor **verifies against the signed attestation before deploy — no local re-scan**. The Trivy gate stays at the source (M11.4).
@@ -43,5 +43,7 @@ The capability is **opt-in and role-scoped** — a `federation.role` gate + poli
 - **The artifact-bytes transport gap is real** and explicitly *not* closed by the metadata bundle; P1–P4 rely on operator-loaded bytes + SCP verification, with a byte-relay deferred to P5.
 - Adds a `federation.role` chart gate + governance for bundled backends.
 
-**Open (see the proposal)**
-- Gitea DB (SQLite+PVC vs. bundled Postgres); artifact-bytes transport (operator-loaded+verify vs. retrans relay); git-executor shape (Gitea-specific vs. generalized self-hosted-git).
+**Resolved (owner, 2026-07-18)**
+- **Gitea DB** = shared bundled Postgres if an existing bundled instance is available, else SQLite+PVC — never a dedicated new Postgres just for Gitea.
+- **Artifact-bytes transport** = operator-loaded + SCP-verify against the signed attestation, first; the retrans/CDS byte-relay is deferred (M15.5).
+- **Git executor** = **git-service-agnostic** (provider adapters behind one interface: GitHub/GitLab/Gitea/generic git), not a Gitea-specific module.

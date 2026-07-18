@@ -29,7 +29,7 @@ Net: a self-contained offline outpost is currently a property the **operator mus
 Two paths behind one execution-system model (owner decisions, 2026-07-18):
 
 ### Create (bundle)
-- **Gitea** as a new Standard-Stack backend (MIT-licensed, air-gap-vendorable) following the established recipe. Requires a **new Gitea git-executor module** — Gitea's auth (PAT/OAuth), webhook signature, and CI model don't map onto the GitHub plugin, so this is net-new code, not a base-URL toggle. Observe feeds via a Gitea → `change-source` webhook into the existing webhook processor (which requires a `source_mapping`, per the observe-correlation note).
+- **Gitea** as a new Standard-Stack backend (MIT-licensed, air-gap-vendorable) following the established recipe. Coordinated through the new **git-service-agnostic** git executor (decision 3) via a Gitea adapter — because Gitea's auth (PAT/OAuth), webhook signature, and CI model don't map onto the GitHub plugin, the executor abstracts auth/webhook/CI behind one interface rather than being GitHub-shaped. Observe feeds via a Gitea → `change-source` webhook into the existing webhook processor (which requires a `source_mapping`, per the observe-correlation note). DB per decision 1 (shared bundled Postgres if available, else SQLite).
 - **Harbor** made a *real* observe target: the missing auto-wire token hook + a **registry executor** that reads image/scan state through a scoped read token (closes the "observe-only is aspirational" gap).
 
 ### Import (bind existing — any approved registry + git)
@@ -56,11 +56,11 @@ Two paths behind one execution-system model (owner decisions, 2026-07-18):
 - **P4 — Role-scoped governance**: a `federation.role` gate + policy so local-infra is an *explicit, governed* per-outpost option — turning "mechanically possible" into "supported and intended."
 - **P5 (optional/later)** — artifact-bytes transport across the boundary (retrans/CDS relay) if operator-loaded bytes prove insufficient.
 
-## Open decisions (for review)
+## Decisions (owner, 2026-07-18)
 
-1. **Gitea DB:** bundled SQLite + PVC (simplest, self-contained) vs. bundled Postgres (heavier, matches Harbor's pattern). Every current bundle except Harbor avoids external state.
-2. **Artifact-bytes transport:** operator-loaded + SCP-verify (recommended first) vs. build the retrans/CDS relay (later track).
-3. **Git executor shape:** a Gitea-specific module vs. one generalized self-hosted-git module covering Gitea + GitLab.
+1. **Gitea DB → shared bundled Postgres if available, else SQLite.** Prefer a bundled Postgres *shared with an existing bundled instance* (Gitea's own database + credentials on the same server); fall back to bundled **SQLite + PVC** rather than stand up a **dedicated new** Postgres just for Gitea. Priority: reuse an existing instance > SQLite > a new dedicated Postgres.
+2. **Artifact-bytes transport → operator-loaded + SCP-verify, first.** No real fork: bytes arrive via the existing air-gap install-bundle path and SCP verifies each promoted digest against the signed source attestation; the retrans/CDS byte-relay is a later, separate track (M15.5).
+3. **Git executor → git-service-agnostic.** Build a **provider-agnostic** git executor — auth, webhook-signature, and CI-model adapters behind one interface (GitHub / GitLab / Gitea / generic git) — not a Gitea-specific module. Closes the single-vendor (GitHub-only) portability gap the charter's self-hosting/air-gap goals push against.
 
 ## Non-goals
 
