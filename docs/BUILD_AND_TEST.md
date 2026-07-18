@@ -411,6 +411,16 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
   - **Air-gap:** the argocd + valkey images ride the signed `scp-bundle` (`build-bundle.ts` image list) and `install.sh` retargets them to the customer registry via values (never hardcoded — avoids the eval-postgres trap); the tamper-rejection suite (`@scp/airgap`) stays green.
   - **E2E (kind/homelab drill):** enabling the profile deploys Argo CD; the auto-wire hook mints a scoped token + stores it; binding an object to the `argocd` executor drives a real Application sync — the token round-trip validated against a LIVE Argo CD (the piece helm-verify can't cover).
 
+### M16 — Federation / Outposts UI + Universal Boundary Pipeline Stages
+*(Provisional number — federation UI track. Design: [ADR-0011](adr/0011-universal-outpost-validation.md), `docs/proposals/federation-outposts-ui.md`.)*
+- **Goal:** a place in the UI to see + manage the outposts the commander syncs with, and to make the trust boundary legible in the pipeline. Two parts.
+- **Contents:**
+  - **M16.1 Universal boundary stages** (can land sooner; observe-enrichment on the federation boundary) — an ALWAYS-SHOWN `transferred → validated` segment in the component pipeline: transfer status from bundle transfer tracking (export→submitted→confirmed, DESIGN §13), signature + scan-attestation validation at the receiving outpost ([ADR-0011](adr/0011-universal-outpost-validation.md) — a universal pre-deploy gate, commercial included). Renders real observations + an explicit "not-yet-verified" state; NO fabrication; drives nothing (coordinate-not-execute).
+  - **M16.2 Outposts UI, all-at-once** (owner: build overview + settings + config together; lands after M14 poke + M15 local-infra) — Overview (role, trust tier, connectivity, last-sync / "as of ⟨bundle⟩", sync health, pending transfers, health rollup) + per-outpost Settings (identity / mTLS / transport) + per-outpost Configuration (poke-mode M14, local Harbor/Gitea M15, freezes, bundled backends). Commander-origin, syncs down, air-gap pending-vs-applied.
+- **Done / verified by:**
+  - **Boundary stages:** integration proves the pipeline surfaces a REAL transfer + a real/absent validation outcome per change; never a fabricated pass.
+  - **Outposts UI:** the outpost list + per-outpost config round-trip only through the generated SDK (no bypass); editing an outpost's config writes commander-origin data the federation journal/bundle carries down; air-gap outposts show "as of ⟨bundle⟩" + pending-vs-applied.
+
 ---
 
 ## 9. Verification Mapping
