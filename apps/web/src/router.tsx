@@ -9,6 +9,7 @@ import { RegistryListPage } from "./routes/registry-list";
 import { RegistryDetailPage } from "./routes/registry-detail";
 import { GraphExplorerPage } from "./routes/graph-explorer";
 import { GraphLandingPage } from "./routes/graph-landing";
+import { ComponentGraphPage } from "./routes/component-graph";
 import { ChangeListPage } from "./routes/change-list";
 import { ChangeDetailPage } from "./routes/change-detail";
 import { ChangePipelinePage } from "./routes/change-pipeline";
@@ -76,6 +77,15 @@ const graphExplorerRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/graph/$idOrUrn",
   component: GraphExplorerPage
+});
+
+// Component layer of the two-layer graph (coordination-ui-views.md Phase 3). A 3-segment static
+// `service` prefix — deeper than the 2-segment `/graph/$idOrUrn` object explorer, so the two never
+// collide (mirrors how `/services/$id/board` sits under the dynamic registry routes).
+const componentGraphRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/graph/service/$serviceId",
+  component: ComponentGraphPage
 });
 
 const changeListRoute = createRoute({
@@ -167,6 +177,7 @@ const routeTree = rootRoute.addChildren([
     patsRoute,
     graphLandingRoute,
     graphExplorerRoute,
+    componentGraphRoute,
     changeListRoute,
     changeDetailRoute,
     changePipelineRoute,
