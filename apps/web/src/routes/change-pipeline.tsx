@@ -5,8 +5,10 @@ import type {
   Change,
   ChangeWave,
   ChangeWaveTarget,
+  ControlRun,
   Decision,
-  ExecutorBinding
+  ExecutorBinding,
+  PolicyEvaluateResponse
 } from "@scp/sdk";
 import { client } from "../lib/client";
 import {
@@ -19,13 +21,92 @@ import { useIdParam } from "../lib/use-route-params";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { stateBadgeVariant } from "./change-list";
+import { formatDate } from "./change-detail";
 import { PromotionArrow, type PromotionState } from "../components/pipeline/PromotionArrow";
 import { StageCard, type StageTargetLinks } from "../components/pipeline/StageCard";
 
 interface PromotionVerdict {
   state: PromotionState;
   label?: string;
+  /** A one-line human "why", assembled ONLY from real data already on the wire (gate reasonTree
+   *  summary, freeze window, joined failing control-run evidence). Omitted when there is nothing
+   *  real to say — never a fabricated reason (observe-enrichment.md signal 3, ADR-0008). */
+  detail?: string;
   decisionId?: string;
+}
+
+// -------------------------------------------------------------------------------------------
+// Reason assembly (signal 3): the block reason is REUSED from data the view already fetches — the
+// side-effect-free `policyEvaluate` reasonTree/inputContext (identical in shape to a real block
+// Decision, governance.ts:143) plus the `explain.controlRuns[]` evidence. The Decision's opaque
+// reasonTree/inputContext are read defensively (they are typed `z.record` on the wire) — any
+// missing/oddly-shaped field just drops that fragment, it never invents one.
+// -------------------------------------------------------------------------------------------
+
+function stringField(record: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = record?.[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+/** The freeze end time lives ONLY on `inputContext.freeze.endsAt` (the gate short-circuits a freeze
+ *  to a block before policy evaluation; reasonTree.freeze carries the reason but not the time). */
+function freezeEndsAt(inputContext: Record<string, unknown> | undefined): string | undefined {
+  const freeze = inputContext?.freeze;
+  if (freeze && typeof freeze === "object") {
+    const endsAt = (freeze as Record<string, unknown>).endsAt;
+    if (typeof endsAt === "string") return endsAt;
+  }
+  return undefined;
+}
+
+/** Control object ids that a required policy needs but that did NOT pass, dug out of
+ *  reasonTree.policies[].effects[] (kind "requireControls", satisfied false). Joined against
+ *  explain.controlRuns[] by controlObjectId to pull the actual outcome + free-text detail. */
+function failingControlObjectIds(reasonTree: Record<string, unknown> | undefined): string[] {
+  const ids: string[] = [];
+  const policies = reasonTree?.policies;
+  if (!Array.isArray(policies)) return ids;
+  for (const policy of policies) {
+    if (!policy || typeof policy !== "object") continue;
+    const effects = (policy as Record<string, unknown>).effects;
+    if (!Array.isArray(effects)) continue;
+    for (const effect of effects) {
+      if (!effect || typeof effect !== "object") continue;
+      const eff = effect as Record<string, unknown>;
+      if (eff.kind !== "requireControls" || eff.satisfied !== false) continue;
+      const detail = eff.detail;
+      if (detail && typeof detail === "object") {
+        const cid = (detail as Record<string, unknown>).controlObjectId;
+        if (typeof cid === "string" && !ids.includes(cid)) ids.push(cid);
+      }
+    }
+  }
+  return ids;
+}
+
+/** Assemble the one-line block "why" from real gate + control-run data. Returns undefined when
+ *  there is nothing real to show (e.g. the gate dry-run hasn't loaded yet) so the arrow stays a
+ *  bare colored bar rather than carrying an invented reason. */
+function blockDetail(
+  gate: PolicyEvaluateResponse | undefined,
+  controlRuns: ControlRun[]
+): string | undefined {
+  if (!gate) return undefined;
+  const parts: string[] = [];
+  const summary = stringField(gate.reasonTree, "summary");
+  if (summary) parts.push(summary);
+
+  const endsAt = freezeEndsAt(gate.inputContext);
+  if (endsAt) parts.push(`window closed until ${formatDate(endsAt)}`);
+
+  for (const controlId of failingControlObjectIds(gate.reasonTree)) {
+    const run = controlRuns.find((r) => r.controlObjectId === controlId);
+    if (run && run.status !== "pass") {
+      parts.push(`control ${run.status}${run.detail ? `: ${run.detail}` : ""}`);
+    }
+  }
+
+  return parts.length > 0 ? parts.join(" — ") : undefined;
 }
 
 /**
@@ -45,17 +126,26 @@ function wavePromotion(upstream: ChangeWave, downstream: ChangeWave): PromotionV
   return { state: "pending" };
 }
 
+/** The awaiting-approval quorum, in the spec's "N/M · <role>" shape (observe-enrichment.md signal
+ *  3), from the ApprovalRequest the view already loads — voteCount/requiredCount/fromRole. */
+function approvalQuorum(approval: ApprovalRequest): string {
+  return `${approval.voteCount}/${approval.requiredCount} · ${approval.fromRole}`;
+}
+
 /**
  * The change-level (final) promotion gate — validating → promoted. Colored from REAL state the
  * change-detail page already loads: a pending ApprovalRequest (amber), a block Decision or a live
  * side-effect-free policyEvaluate `block` verdict (red, with the Decision's `decision_id` when one
- * exists — charter principle 6), else open/pending by change state.
+ * exists — charter principle 6), else open/pending by change state. The `detail` "why" is assembled
+ * ONLY from real data already on the wire (gate reasonTree summary, freeze window from inputContext,
+ * joined failing control-run evidence, approval quorum) — never fabricated (ADR-0008, signal 3).
  */
 function finalGate(
   change: Change,
   approvals: ApprovalRequest[],
   decisions: Decision[],
-  gateVerdict: "allow" | "block" | undefined
+  gate: PolicyEvaluateResponse | undefined,
+  controlRuns: ControlRun[]
 ): PromotionVerdict {
   const pendingApproval = approvals.find((a) => a.status !== "satisfied");
   if (change.state === "promoted") return { state: "open", label: "promoted" };
@@ -63,18 +153,25 @@ function finalGate(
     if (pendingApproval)
       return {
         state: "approval",
-        label: `awaiting approval (${pendingApproval.voteCount}/${pendingApproval.requiredCount} from ${pendingApproval.fromRole})`
+        label: "awaiting approval",
+        detail: approvalQuorum(pendingApproval)
       };
-    if (gateVerdict === "block") {
+    if (gate?.verdict === "block") {
       const block = [...decisions].reverse().find((d) => d.verdict === "block");
-      return { state: "blocked", label: "gate denies promotion", decisionId: block?.id };
+      return {
+        state: "blocked",
+        label: "gate denies promotion",
+        detail: blockDetail(gate, controlRuns),
+        decisionId: block?.id
+      };
     }
-    return { state: "open", label: gateVerdict === "allow" ? "gate open" : "ready to promote" };
+    return { state: "open", label: gate?.verdict === "allow" ? "gate open" : "ready to promote" };
   }
   if (pendingApproval)
     return {
       state: "approval",
-      label: `awaiting approval (${pendingApproval.voteCount}/${pendingApproval.requiredCount})`
+      label: "awaiting approval",
+      detail: approvalQuorum(pendingApproval)
     };
   return { state: "pending", label: "not yet at final gate" };
 }
@@ -196,7 +293,7 @@ export function ChangePipelinePage(): React.JSX.Element {
     );
   }
 
-  const { decisions, waitStatus } = explainQuery.data;
+  const { decisions, controlRuns, waitStatus } = explainQuery.data;
   const approvals = approvalsQuery.data?.items ?? [];
 
   function linksFor(target: ChangeWaveTarget): StageTargetLinks {
@@ -216,7 +313,7 @@ export function ChangePipelinePage(): React.JSX.Element {
     };
   }
 
-  const gate = finalGate(change, approvals, decisions, gateQuery.data?.verdict);
+  const gate = finalGate(change, approvals, decisions, gateQuery.data, controlRuns);
   const waves = plan?.waves ?? [];
 
   return (
@@ -315,6 +412,7 @@ export function ChangePipelinePage(): React.JSX.Element {
                   <PromotionArrow
                     state={gate.state}
                     label={gate.label}
+                    detail={gate.detail}
                     why={
                       gate.decisionId ? <WhyLink changeId={id} decisionId={gate.decisionId} /> : undefined
                     }
