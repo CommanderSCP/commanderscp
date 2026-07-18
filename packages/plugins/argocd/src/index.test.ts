@@ -420,6 +420,58 @@ describe("status()", () => {
       createArgoCdExecutorPlugin().status(ctx, { externalId: "status-server-error::run-1" })
     ).rejects.toThrow(/HTTP 500/);
   });
+
+  // ADR-0008 signal 1 (image half): the deployed image refs come near-free off `status.summary.images`
+  // — the SAME Application body status() already fetches, no extra API call. status() surfaces them on
+  // ExecutionStatus.observed.images (REAL — parsed from the mocked ArgoCD response, not hardcoded),
+  // alongside the still-correct stateRef (revision), with no regression.
+  it("populates observed.images from status.summary.images (near-free — same Application body), keeping stateRef intact", async () => {
+    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+    const scope = nock(SERVER_URL)
+      .get("/api/v1/applications/status-with-images")
+      .reply(200, {
+        metadata: { name: "status-with-images" },
+        status: {
+          operationState: { phase: "Succeeded" },
+          sync: { status: "Synced", revision: "abc123" },
+          health: { status: "Healthy" },
+          summary: { images: ["ghcr.io/x/y:1.2.3", "ghcr.io/x/z@sha256:deadbeef"] }
+        }
+      });
+
+    const result = await createArgoCdExecutorPlugin().status(ctx, {
+      externalId: "status-with-images::run-1"
+    });
+
+    expect(scope.isDone()).toBe(true);
+    expect(result.phase).toBe("succeeded");
+    // The REAL images from the mocked Application body, in order.
+    expect(result.observed?.images).toEqual(["ghcr.io/x/y:1.2.3", "ghcr.io/x/z@sha256:deadbeef"]);
+    // No regression: the synced revision (stateRef, ADR-0008 decision 1) is still reported.
+    expect(result.stateRef).toBe("abc123");
+  });
+
+  it("omits observed (undefined) when the Application body carries no summary.images — never fabricates", async () => {
+    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+    nock(SERVER_URL)
+      .get("/api/v1/applications/status-no-images")
+      .reply(200, {
+        metadata: { name: "status-no-images" },
+        status: {
+          operationState: { phase: "Succeeded" },
+          sync: { status: "Synced", revision: "abc123" },
+          health: { status: "Healthy" }
+        }
+      });
+
+    const result = await createArgoCdExecutorPlugin().status(ctx, {
+      externalId: "status-no-images::run-1"
+    });
+
+    expect(result.observed).toBeUndefined();
+    // stateRef still captured even with no images.
+    expect(result.stateRef).toBe("abc123");
+  });
 });
 
 describe("abort()", () => {

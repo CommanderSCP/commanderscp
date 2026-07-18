@@ -143,6 +143,11 @@ interface ArgoApplication {
       startedAt?: string;
       syncResult?: { revision?: string };
     };
+    // ArgoCD populates this on the Application body it already returns from GET /applications and
+    // GET /applications/{name}: the deployed image refs (`ghcr.io/x/y:tag` or `...@sha256:...`).
+    // Reading it into ExecutionStatus.observed.images is near-free — no extra API call (ADR-0008
+    // signal 1, image half).
+    summary?: { images?: string[] };
     reconciledAt?: string;
   };
 }
@@ -215,10 +220,17 @@ function mapArgoPhase(app: ArgoApplication | undefined): ExecutionStatus {
   }
 
   const settled: boolean = phase !== "pending" && phase !== "running";
+  // Deployed image refs straight off the Application body ArgoCD already returned — the REAL
+  // images, never fabricated. Omitted (undefined) when Argo reports none, so reconcile never nulls
+  // a previously-captured value. Filtered to non-empty strings to keep the observed snapshot clean.
+  const images = app?.status?.summary?.images?.filter(
+    (img): img is string => typeof img === "string" && img.length > 0
+  );
   return {
     phase,
     detail: `sync=${syncStatus ?? "unknown"} health=${healthStatus ?? "unknown"} op=${opPhase ?? "none"}`,
     stateRef: app?.status?.sync?.revision,
+    ...(images && images.length > 0 ? { observed: { images } } : {}),
     progress: settled ? 1 : 0.5
   };
 }

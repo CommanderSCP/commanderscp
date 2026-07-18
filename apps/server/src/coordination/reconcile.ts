@@ -28,7 +28,7 @@ import {
   markWaveTargetNoExecutor,
   markWaveTargetTriggered,
   markWaveTerminal,
-  observedStateFromStateRef,
+  observedStateFrom,
   updateWaveTargetObserved
 } from "./wave-targets-repo.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
@@ -592,10 +592,11 @@ async function reconcileExecutingChange(
       );
       const client = host.executor(instanceId);
       const status = await client.status(target.executorRef as ExecutorRef);
-      // Persist the synced revision this poll observed (ADR-0008 decision 1) — the stateRef reconcile
-      // previously discarded. `undefined` when status() reports none, so a never-synced app never
-      // nulls a previously-captured revision.
-      const observedState = observedStateFromStateRef(status.stateRef);
+      // Persist BOTH the synced revision (ADR-0008 decision 1 — the stateRef reconcile previously
+      // discarded) AND the deployed image refs (decision 2 — status().observed.images) this poll
+      // observed. `undefined` when status() reports neither, so a never-synced app never nulls a
+      // previously-captured value.
+      const observedState = observedStateFrom(status);
       if (status.phase === "succeeded") {
         await withTenantTx(db, orgId, (tx) =>
           updateWaveTargetObserved(tx, orgId, target.id, "succeeded", observedState)
