@@ -40,8 +40,9 @@ Poke-mode **inverts the connection-initiation direction**: the commander must be
 Consequences:
 
 - **Poke-mode requires bidirectional reachability** — commander→outpost for the poke *and* outpost→commander for the pull. Pure-pull needs only the latter. Poke-mode is therefore strictly more demanding on network topology.
-- **In the canonical GovCloud/IL case, poke-mode is not merely unapproved — it is topologically impossible** (commercial cannot reach into GovCloud). Those outposts stay pure-pull. This is a *stronger* justification for default-off/per-outpost than policy alone.
-- **Air-gapped (bundle) outposts have no network path at all** → poke is N/A; they continue exchanging signed bundle files exactly as today.
+- **A *direct* commander→outpost poke into a GovCloud/IL domain is topologically impossible** (commercial cannot reach into GovCloud). This is a *stronger* justification for default-off/per-outpost than policy alone.
+- **But the poke still reaches an air-gapped domain via the retrans chain (owner clarification, 2026-07-18):** commander → reachable **low-side retrans** → (pull/validate/tarball) → **CDS** → **high-side retrans inside the air gap** → **pokes the outpost locally** (intra-domain, required). Each hop is locally reachable; no end-to-end commander→outpost path is needed. See [ADR-0009](../adr/0009-optional-poke-mode-federation.md) and the master model `promotion-and-execution-model.md` §5.
+- **Only pure sneakernet** (no CDS data path at all) has no poke — a signed bundle file walked across, exactly as today.
 - Poke-mode fits **co-located / same-partition / commercial outposts** — exactly where the outpost *is* reachable from the commander and where the constant polling is wasted.
 
 Enabling poke-mode for an outpost thus requires two independent conditions: (a) the network permits commander→outpost dialing, and (b) the outpost's accreditation permits a (contentless, authenticated) inbound listener. FedRAMP / IL4-5 / CDS deployments keep it **off** — which is the whole point of making it optional.
