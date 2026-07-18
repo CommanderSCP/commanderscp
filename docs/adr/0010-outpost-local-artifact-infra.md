@@ -1,0 +1,47 @@
+# ADR-0010: Per-outpost local artifact & source infrastructure (Harbor + Gitea)
+
+**Status:** Proposed (2026-07-18)
+**Context doc:** [docs/proposals/outpost-local-artifact-infra.md](../proposals/outpost-local-artifact-infra.md)
+**Relates to:** [ADR-0002](0002-execution-strategy.md) (execution strategy / bundled backends); [ADR-0004](0004-service-naming-commander-outpost-retrans.md) (commander/outpost/retrans); DESIGN.md §12/§13/§16
+
+## Context
+
+A FedRAMP-High / IL5 / air-gapped outpost cannot reach the commander's Harbor or GitHub at deploy time, so it needs a **local registry** (promoted, scanned, signed images) and a **local git** (desired-state manifests). Grounding the code shows this is a foundational gap, not a toggle:
+
+- Federation/promotion bundles are **metadata-only** — digests, change objects, control outcomes, audit; never image/manifest **bytes** (`packages/schemas/src/federation.ts:169-175,232`).
+- SCP never models or moves the GitOps desired-state repo; **no git/manifest replication** exists across a boundary.
+- **`retrans`** (the CDS relay role) is **declared but unbuilt** (`ADR-0004:43-45`).
+- The git executor is **GitHub-only**; no Gitea/GitLab plugin exists. Harbor's **"observe-only" is aspirational** — no registry executor, no auto-wire token hook.
+- Bundled backends are per-**installation** toggles (role-agnostic), so an outpost can *mechanically* stand one up already — but this is **ungoverned** (no `federation.role` gate).
+- `execution-system` is a **graph object** with a discovery-based import path — a clean, graph-native seam for "import an existing system."
+
+Self-contained-offline is therefore, today, an **operator-assembled** property, undocumented as an SCP responsibility.
+
+## Decision
+
+Make per-outpost **local Harbor + local Gitea** a **first-class, optional capability**, offered two ways behind the existing `execution-system` model:
+
+- **Create** = bundle **Gitea** (new Standard-Stack backend + a **new Gitea git-executor module**) and make **Harbor** a real observe target (auto-wire token hook + a **registry executor**).
+- **Import** = bind an existing **Harbor / Artifactory / GitLab / Gitea** as `execution-system` graph objects via discovery (owner decision: any approved registry + git, not only the bundled pair).
+
+**Boundary artifact model — trust scan-at-source (owner decision, 2026-07-18):** images are scanned + signed commander-side; the digest + signature + scan attestation ride the metadata bundle; the outpost's local Harbor **verifies against the signed attestation before deploy — no local re-scan**. The Trivy gate stays at the source (M11.4).
+
+**Artifact bytes** are, in the first phases, **operator-loaded** via the existing air-gap install-bundle path and **SCP-verified** against the signed digest; building the `retrans`/CDS byte-relay is deferred to a later, separate phase.
+
+The capability is **opt-in and role-scoped** — a `federation.role` gate + policy turns today's "mechanically possible on any install" into "supported and governed on a designated outpost." Not for commercial/connected outposts.
+
+## Consequences
+
+**Positive**
+- A high/air-gap outpost becomes genuinely self-contained for artifacts + source, offline — the air-gap principle made concrete.
+- Reuses proven seams: the bundled-backend recipe, the graph-native `execution-system`/discovery import, cosign signing (M4/M6/M8).
+- Credential-asymmetry holds **unamended** (SCP holds scoped tokens; backends keep their own creds), same as bundled Argo CD/Harbor.
+
+**Costs / constraints**
+- **Net-new git executor.** Gitea/GitLab is a new plugin (auth, webhook signature, CI model) — the largest single lift; observe also needs a `source_mapping`.
+- **Harbor observe must actually be built** (auto-wire hook + registry executor) — it is aspirational today.
+- **The artifact-bytes transport gap is real** and explicitly *not* closed by the metadata bundle; P1–P4 rely on operator-loaded bytes + SCP verification, with a byte-relay deferred to P5.
+- Adds a `federation.role` chart gate + governance for bundled backends.
+
+**Open (see the proposal)**
+- Gitea DB (SQLite+PVC vs. bundled Postgres); artifact-bytes transport (operator-loaded+verify vs. retrans relay); git-executor shape (Gitea-specific vs. generalized self-hosted-git).

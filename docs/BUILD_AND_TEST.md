@@ -411,6 +411,20 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
   - **Air-gap:** the argocd + valkey images ride the signed `scp-bundle` (`build-bundle.ts` image list) and `install.sh` retargets them to the customer registry via values (never hardcoded — avoids the eval-postgres trap); the tamper-rejection suite (`@scp/airgap`) stays green.
   - **E2E (kind/homelab drill):** enabling the profile deploys Argo CD; the auto-wire hook mints a scoped token + stores it; binding an object to the `argocd` executor drives a real Application sync — the token round-trip validated against a LIVE Argo CD (the piece helm-verify can't cover).
 
+### M15 — Per-Outpost Local Artifact & Source Infrastructure (Harbor + Gitea)
+*(Provisional number — post-M11 federation track, sibling to M14 poke-mode. Design: [ADR-0010](adr/0010-outpost-local-artifact-infra.md), `docs/proposals/outpost-local-artifact-infra.md`.)*
+- **Goal:** let a FedRAMP-High / IL5 / air-gap **outpost** be self-contained for artifacts + source with its OWN local **Harbor** (registry) and **Gitea** (git), **create or import**, off by default. Fills a real gap: federation bundles are metadata-only (no artifact bytes), the git executor is GitHub-only, Harbor observe is unbuilt, and outpost-scoped bundling exists but is ungoverned. Boundary model = **trust scan-at-source** (images scanned+signed commander-side; the local Harbor verifies the signed attestation, no re-scan). Invariants hold unamended: coordinate-not-execute (SCP holds scoped tokens; backends keep their own creds), graph-native (`execution-system` objects), air-gap first-class.
+- **Contents (phased):**
+  - **M15.1 Gitea bundle + Gitea git-executor** — vendored sha-pinned Gitea + SCP-generated secrets + scoped-token auto-wire hook + `allow-gitea` NetworkPolicy + bundle image carry/retarget + `scp-bundled.sh` verb + helm-verify gates; a NEW `gitea` executor (trigger/observe/status/abort) with webhook→`change-source` + `source_mapping` wiring (net-new — the git executor is GitHub-only today).
+  - **M15.2 Harbor as a real observe target** — the missing auto-wire token hook + a registry executor reading image/scan state through a scoped read token; scan-attestation verification as gate evidence (trust scan-at-source).
+  - **M15.3 Import path** — bind an existing Harbor/Artifactory/GitLab/Gitea as `execution-system` graph objects via discovery (`/discovery/run`→`/accept`); generalize git+registry executors beyond the bundled pair.
+  - **M15.4 Role-scoped governance** — a `federation.role` chart gate + policy so local-infra is an *explicit, governed* per-outpost option (today it is merely mechanically possible on any install).
+  - **M15.5 (optional/later)** — artifact-bytes transport across the boundary (retrans/CDS relay) if operator-loaded bytes prove insufficient.
+- **Done / verified by:**
+  - **helm-verify:** Gitea profile-OFF ⇒ zero `scp-gitea` resources; profile-ON ⇒ isolated in `scp-gitea`, every image retargeted (air-gap contract), SCP-generated secrets present, `allow-gitea` egress only.
+  - **Integration (real Postgres):** the `gitea` executor triggers/observes/statuses a real (nocked/containerized) Gitea; a promoted image digest is verified against a signed source attestation before it is coordinated; import via discovery binds an existing registry/git execution-system.
+  - **Air-gap:** the Gitea + Harbor images ride the signed bundle and retarget to the customer registry; tamper-rejection suite green.
+
 ---
 
 ## 9. Verification Mapping
