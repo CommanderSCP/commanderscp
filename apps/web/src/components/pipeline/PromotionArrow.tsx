@@ -24,17 +24,21 @@ const STATE_STYLES: Record<PromotionState, { bar: string; triangle: string; text
 
 /**
  * A wide, top-to-bottom promotion arrow drawn between two vertically-stacked stage cards. Purely
- * presentational: the parent computes `state`/`label`/`why` from real change data (wave status,
- * gate Decisions, approval requests) — this component only paints it. `why` is an optional node
+ * presentational: the parent computes `state`/`label`/`detail`/`why` from real change data (wave
+ * status, gate reasonTree, control-run evidence, freeze window, approval quorum) — this component
+ * only paints it. `detail` is an optional one-line "why" the parent assembles from that real data
+ * (never fabricated — omitted when the model has no reason to show); `why` is an optional node
  * (typically a link to the blocking Decision) the parent supplies so this stays routing-agnostic.
  */
 export function PromotionArrow({
   state,
   label,
+  detail,
   why
 }: {
   state: PromotionState;
   label?: string;
+  detail?: string;
   why?: ReactNode;
 }): React.JSX.Element {
   const style = STATE_STYLES[state];
@@ -43,7 +47,7 @@ export function PromotionArrow({
       className="flex flex-col items-center py-1"
       data-testid="promotion-arrow"
       data-state={state}
-      aria-label={`promotion ${state}${label ? `: ${label}` : ""}`}
+      aria-label={`promotion ${state}${label ? `: ${label}` : ""}${detail ? ` — ${detail}` : ""}`}
     >
       <div className={`h-7 w-11 rounded-t-sm ${style.bar}`} />
       <div
@@ -55,6 +59,15 @@ export function PromotionArrow({
           {label && <span>{label}</span>}
           {why}
         </div>
+      )}
+      {detail && (
+        <p
+          className="mt-0.5 max-w-[20rem] text-center text-[11px] font-normal leading-snug text-slate-500"
+          title={detail}
+          data-testid="promotion-detail"
+        >
+          {detail}
+        </p>
       )}
     </div>
   );
