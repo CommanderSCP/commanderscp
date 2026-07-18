@@ -134,6 +134,14 @@ export interface ExecutionStatus {
   detail?: string;
   /** Opaque snapshot of executor-side state at this point in time — what a later rollback restores. */
   stateRef?: unknown;
+  /**
+   * Structured, machine-readable snapshot of what the executor currently has deployed (ADR-0008
+   * decision 2) — distinct from the free-form `detail` string and the rollback-reserved `stateRef`.
+   * Optional and additive: executors that expose no such signal simply omit it. Today it carries the
+   * deployed image refs (tag/digest, e.g. `ghcr.io/x/y:1.2.3` or `...@sha256:...`); it may grow a
+   * typed rollout sub-state in a later increment.
+   */
+  observed?: { images?: string[] };
   /** Best-effort 0..1; heartbeat input for the stuck-change watchdog (DESIGN §9.4). */
   progress?: number;
 }

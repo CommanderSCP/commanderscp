@@ -80,6 +80,11 @@ interface FakeExecutorConfig {
    *  the events this instance emits, filtered by the `since` watermark on `occurredAt` so a poll
    *  with an advanced cursor returns only newer events — exactly a real pull executor's behavior. */
   observeEvents?: ExecutorEvent[];
+  /** Per-target deterministic deployed-image refs, surfaced on `status().observed.images` (ADR-0008
+   *  signal 1). Mirrors `forcePhase`: an explicit test hook set in instance config up front, so a
+   *  coordination integration test can prove reconcile threads `status().observed.images` through to
+   *  the wave target's `observed_state` without needing a live ArgoCD. */
+  imagesByTarget?: Record<string, string[]>;
 }
 
 function readConfig(config: unknown): FakeExecutorConfig {
@@ -206,15 +211,18 @@ export class FakeExecutorPlugin implements ExecutorPlugin {
       return { phase: "pending", detail: "fake-executor: unknown run (fresh state or superseded ref)" };
     }
 
-    const forced = readConfig(ctx.config).forcePhase?.[targetRef];
-    const autoSucceedAfterMs = readConfig(ctx.config).autoSucceedAfterMs ?? DEFAULT_AUTO_SUCCEED_MS;
+    const cfg = readConfig(ctx.config);
+    const forced = cfg.forcePhase?.[targetRef];
+    const autoSucceedAfterMs = cfg.autoSucceedAfterMs ?? DEFAULT_AUTO_SUCCEED_MS;
     const phase = forced ?? computePhase(target, autoSucceedAfterMs);
     const settled = phase === "succeeded" || phase === "failed" || phase === "aborted";
 
+    const images = cfg.imagesByTarget?.[targetRef];
     return {
       phase,
       stateRef: `v${target.version}`,
       detail: `fake-executor target=${targetRef} version=v${target.version}`,
+      ...(images && images.length > 0 ? { observed: { images } } : {}),
       progress: settled ? 1 : 0.5
     };
   }

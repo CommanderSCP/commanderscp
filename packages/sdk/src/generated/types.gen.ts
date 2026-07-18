@@ -9271,6 +9271,7 @@ export type ExplainChangeResponses = {
                     } | null;
                     observed?: {
                         revision?: string;
+                        images?: Array<string>;
                     } | null;
                     status: string;
                     attempt: number;

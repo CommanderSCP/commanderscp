@@ -54,10 +54,45 @@ function hostOf(url: string): string {
 }
 
 /**
+ * A short, human-facing label for a deployed image ref (ADR-0008 signal 1) — the per-stage version.
+ * Prefers the tag (`ghcr.io/x/y:1.2.3` → `1.2.3`); falls back to a git-style short digest
+ * (`...@sha256:abcdef0…` → `sha256:abcdef0`); then to the image name. NEVER fabricates — the input
+ * is the REAL ref reconcile observed from the executor. The `:`-that-is-a-tag is the last colon
+ * AFTER the last `/` (so a `registry:5000/x/y` port is not mistaken for a tag).
+ */
+export function imageVersionLabel(image: string): string {
+  const atIdx = image.indexOf("@");
+  const digest = atIdx >= 0 ? image.slice(atIdx + 1) : undefined;
+  const repoAndTag = atIdx >= 0 ? image.slice(0, atIdx) : image;
+
+  const lastSlash = repoAndTag.lastIndexOf("/");
+  const lastColon = repoAndTag.lastIndexOf(":");
+  if (lastColon > lastSlash) {
+    const tag = repoAndTag.slice(lastColon + 1);
+    if (tag.length > 0) return tag;
+  }
+
+  if (digest) {
+    const colon = digest.indexOf(":");
+    if (colon > 0) {
+      const algo = digest.slice(0, colon);
+      const hex = digest.slice(colon + 1);
+      return hex.length > 0 ? `${algo}:${hex.slice(0, 7)}` : digest;
+    }
+    return digest.slice(0, 12);
+  }
+
+  const name = repoAndTag.slice(lastSlash + 1);
+  return name.length > 0 ? name : image;
+}
+
+/**
  * One pipeline stage = one compiled wave, rendered top-to-bottom (coordination-ui-views.md view 2,
  * Layer A). Shows the stage's status, its Category/Type pipeline-kind badges, and per-target rows
- * with their status and source/executor links. Layer-B fields the model does not carry yet
- * (per-stage image version / digest) are rendered as an explicit "—" placeholder, never invented.
+ * with their status, per-stage version (the observed deployed image tag/digest, revision as
+ * secondary detail — ADR-0008 signal 1), and source/executor links. The version is the REAL snapshot
+ * reconcile observed from status(); when nothing is observed yet it renders an explicit "—"
+ * placeholder, never invented.
  */
 export function StageCard({
   wave,
@@ -115,21 +150,54 @@ export function StageCard({
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-500">
                 <span>{target.category} · {target.type}</span>
-                {/* Per-stage version: the REAL synced revision reconcile observed from status()
-                    (ADR-0008 decision 1), abbreviated SHA-style. Never fabricated — when the target
-                    has not been observed with a revision yet, keep the explicit placeholder. */}
-                {target.observed?.revision ? (
-                  <span title={`observed revision ${target.observed.revision}`}>
-                    version{" "}
-                    <span className="font-mono text-slate-700" data-testid="stage-observed-revision">
-                      {target.observed.revision.slice(0, 7)}
+                {/* Per-stage version: the REAL snapshot reconcile observed from status(), never
+                    fabricated. Prefer the deployed image tag/digest (ADR-0008 signal 1) — a better
+                    human version than the git SHA — and demote the synced git revision (decision 1)
+                    to a secondary detail. When neither is observed yet, keep the explicit
+                    placeholder. */}
+                {(() => {
+                  const image = target.observed?.images?.[0];
+                  const revision = target.observed?.revision;
+                  if (image) {
+                    return (
+                      <span title={revision ? `${image}\nrevision ${revision}` : image}>
+                        version{" "}
+                        <span
+                          className="font-mono text-slate-700"
+                          data-testid="stage-observed-image"
+                        >
+                          {imageVersionLabel(image)}
+                        </span>
+                        {revision && (
+                          <span
+                            className="ml-1 text-slate-400"
+                            data-testid="stage-observed-revision"
+                          >
+                            (rev {revision.slice(0, 7)})
+                          </span>
+                        )}
+                      </span>
+                    );
+                  }
+                  if (revision) {
+                    return (
+                      <span title={`observed revision ${revision}`}>
+                        version{" "}
+                        <span
+                          className="font-mono text-slate-700"
+                          data-testid="stage-observed-revision"
+                        >
+                          {revision.slice(0, 7)}
+                        </span>
+                      </span>
+                    );
+                  }
+                  return (
+                    <span title="per-stage version/digest not observed yet">
+                      version <span className="text-slate-400">—</span>
                     </span>
-                  </span>
-                ) : (
-                  <span title="per-stage version/digest not observed yet">
-                    version <span className="text-slate-400">—</span>
-                  </span>
-                )}
+                  );
+                })()}
                 {links.executorRef && (
                   <span data-testid="stage-executor-link">
                     executor:{" "}

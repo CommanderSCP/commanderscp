@@ -35348,6 +35348,12 @@
                                               "properties": {
                                                 "revision": {
                                                   "type": "string"
+                                                },
+                                                "images": {
+                                                  "type": "array",
+                                                  "items": {
+                                                    "type": "string"
+                                                  }
                                                 }
                                               },
                                               "additionalProperties": false
