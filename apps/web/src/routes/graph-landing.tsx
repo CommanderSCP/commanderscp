@@ -29,6 +29,10 @@ export function GraphLandingPage(): React.JSX.Element {
   const navigate = useNavigate();
   const [registryPath, setRegistryPath] = useState<string>("services");
   const [filter, setFilter] = useState("");
+  // OPTIONAL health overlay (observe-enrichment signal 4). Off by default — the extra
+  // `graph.health` batch fetch happens only when toggled on. SCP surfaces PUSHED health; nodes
+  // with no pushed record render grey/unknown (never fabricated).
+  const [showHealth, setShowHealth] = useState(false);
 
   const registry = REGISTRIES.find((r) => r.basePath === registryPath) as RegistryConfig;
 
@@ -51,17 +55,30 @@ export function GraphLandingPage(): React.JSX.Element {
   // services can read the graph around them). Rendered with no `rootId` — it's an org map, not a
   // single-object walk.
   const overviewQuery = useQuery<GraphCanvasData>({
-    queryKey: ["graph-overview", "services"],
+    queryKey: ["graph-overview", "services", showHealth],
     queryFn: async () => {
       const services = await client.services.list({ limit: 100 });
-      const objects = services.items.map((s) => ({ id: s.id, name: s.name, typeId: s.typeId }));
+      const objects: GraphCanvasData["objects"] = services.items.map((s) => ({
+        id: s.id,
+        name: s.name,
+        typeId: s.typeId
+      }));
       const ids = objects.map((o) => o.id);
       const scope = ids[0];
-      if (ids.length < 2 || !scope) return { objects, edges: [] };
-      const sub = await client.graph.subgraph({ objectId: scope, ids });
+      if (!scope) return { objects, edges: [] };
+      // `subgraph` returns EDGES ONLY; when the overlay is on, health is joined at the node source
+      // via a PARALLEL follow-up `graph.health` batch call (same pattern as the subgraph fetch).
+      const [sub, health] = await Promise.all([
+        ids.length >= 2 ? client.graph.subgraph({ objectId: scope, ids }) : Promise.resolve(null),
+        showHealth ? client.health.batchGet({ objectId: scope, ids }) : Promise.resolve(null)
+      ]);
+      if (health) {
+        const byId = new Map(health.records.map((r) => [r.objectId, r.status]));
+        for (const o of objects) o.health = byId.get(o.id) ?? "unknown";
+      }
       return {
         objects,
-        edges: sub.edges.map((e) => ({ id: e.id, fromId: e.fromId, toId: e.toId }))
+        edges: sub ? sub.edges.map((e) => ({ id: e.id, fromId: e.fromId, toId: e.toId })) : []
       };
     }
   });
@@ -155,7 +172,30 @@ export function GraphLandingPage(): React.JSX.Element {
               component graph.
             </p>
           </div>
-          <GraphLegend nodes={[{ label: "Service", color: "#2563eb" }]} />
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-1.5 text-xs font-medium text-slate-600">
+              <input
+                type="checkbox"
+                checked={showHealth}
+                onChange={(e) => setShowHealth(e.target.checked)}
+                data-testid="graph-health-toggle"
+              />
+              Health
+            </label>
+            <GraphLegend
+              nodes={
+                showHealth
+                  ? [
+                      { label: "Service", color: "#2563eb" },
+                      { label: "Healthy", color: "#16a34a", dashed: true },
+                      { label: "Degraded", color: "#d97706", dashed: true },
+                      { label: "Down", color: "#dc2626", dashed: true },
+                      { label: "Unknown", color: "#94a3b8", dashed: true }
+                    ]
+                  : [{ label: "Service", color: "#2563eb" }]
+              }
+            />
+          </div>
         </div>
         <div className="relative h-[28rem] rounded-lg border border-slate-200 bg-white">
           {overviewQuery.isLoading && (

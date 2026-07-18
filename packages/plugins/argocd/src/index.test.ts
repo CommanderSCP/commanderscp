@@ -472,6 +472,172 @@ describe("status()", () => {
     // stateRef still captured even with no images.
     expect(result.stateRef).toBe("abc123");
   });
+
+  // ADR-0008 P4D (rollout, OBSERVE-ONLY): when the app manages an Argo Rollout, status() surfaces the
+  // rollout's phase/step/weight/message on ExecutionStatus.observed.rollout. Near-free phase/message
+  // come off the Rollout node in `status.resources[]` (SAME Application body); structured
+  // step/weight (+ authoritative phase/message) come from the LIVE Rollout manifest fetched via
+  // GET .../resource. EVERY field here is parsed from the mocked ArgoCD responses — never hardcoded.
+  it("populates observed.rollout (phase/step/weight/message) from the Rollout node + live manifest — REAL, not fabricated", async () => {
+    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+    const appScope = nock(SERVER_URL)
+      .get("/api/v1/applications/status-with-rollout")
+      .reply(200, {
+        metadata: { name: "status-with-rollout" },
+        status: {
+          operationState: { phase: "Succeeded" },
+          sync: { status: "Synced", revision: "abc123" },
+          health: { status: "Progressing" },
+          resources: [
+            {
+              group: "argoproj.io",
+              version: "v1alpha1",
+              kind: "Rollout",
+              namespace: "prod",
+              name: "web-rollout",
+              health: { status: "Progressing", message: "more replicas need to be updated" }
+            }
+          ]
+        }
+      });
+    // The live Rollout manifest — GET .../resource returns a JSON STRING under `manifest`.
+    const resourceScope = nock(SERVER_URL)
+      .get("/api/v1/applications/status-with-rollout/resource")
+      .query({
+        resourceName: "web-rollout",
+        namespace: "prod",
+        group: "argoproj.io",
+        version: "v1alpha1",
+        kind: "Rollout"
+      })
+      .reply(200, {
+        manifest: JSON.stringify({
+          status: {
+            phase: "Paused",
+            message: "Rollout is paused",
+            currentStepIndex: 2,
+            canary: { weights: { canary: { weight: 40 } } }
+          }
+        })
+      });
+
+    const result = await createArgoCdExecutorPlugin().status(ctx, {
+      externalId: "status-with-rollout::run-1"
+    });
+
+    expect(appScope.isDone()).toBe(true);
+    expect(resourceScope.isDone()).toBe(true);
+    // The manifest's authoritative fields win over the near-free health assessment.
+    expect(result.observed?.rollout).toEqual({
+      phase: "Paused",
+      message: "Rollout is paused",
+      step: 2,
+      weight: 40
+    });
+    // No regression: revision still reported.
+    expect(result.stateRef).toBe("abc123");
+  });
+
+  it("carries near-free rollout phase/message from resources[] even when the live manifest lacks step/weight — omits what Argo does not report", async () => {
+    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+    const appScope = nock(SERVER_URL)
+      .get("/api/v1/applications/status-rollout-nearfree")
+      .reply(200, {
+        metadata: { name: "status-rollout-nearfree" },
+        status: {
+          sync: { status: "Synced", revision: "def456" },
+          health: { status: "Progressing" },
+          resources: [
+            {
+              group: "argoproj.io",
+              version: "v1alpha1",
+              kind: "Rollout",
+              name: "api-rollout",
+              health: { status: "Healthy", message: "available" }
+            }
+          ]
+        }
+      });
+    // Older Argo Rollouts (< v1.1) expose no canary.weights and, for a settled rollout, no
+    // currentStepIndex — the manifest .status carries only a phase. step/weight must be OMITTED.
+    const resourceScope = nock(SERVER_URL)
+      .get("/api/v1/applications/status-rollout-nearfree/resource")
+      .query(true)
+      .reply(200, { manifest: JSON.stringify({ status: { phase: "Healthy" } }) });
+
+    const result = await createArgoCdExecutorPlugin().status(ctx, {
+      externalId: "status-rollout-nearfree::run-1"
+    });
+
+    expect(appScope.isDone()).toBe(true);
+    expect(resourceScope.isDone()).toBe(true);
+    // phase from the manifest; message survives from the near-free health assessment; NO step/weight.
+    expect(result.observed?.rollout).toEqual({ phase: "Healthy", message: "available" });
+    expect(result.observed?.rollout?.step).toBeUndefined();
+    expect(result.observed?.rollout?.weight).toBeUndefined();
+  });
+
+  it("omits observed.rollout entirely when the app manages no Rollout — never fabricates a rollout, makes no /resource call", async () => {
+    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+    // resources[] carries only non-Rollout kinds → no Rollout node, so NO /resource call is made
+    // (nock.disableNetConnect would surface an unexpected call). Rollout must be absent.
+    const appScope = nock(SERVER_URL)
+      .get("/api/v1/applications/status-no-rollout")
+      .reply(200, {
+        metadata: { name: "status-no-rollout" },
+        status: {
+          operationState: { phase: "Succeeded" },
+          sync: { status: "Synced", revision: "abc123" },
+          health: { status: "Healthy" },
+          summary: { images: ["ghcr.io/x/y:1.2.3"] },
+          resources: [{ group: "apps", version: "v1", kind: "Deployment", name: "web" }]
+        }
+      });
+
+    const result = await createArgoCdExecutorPlugin().status(ctx, {
+      externalId: "status-no-rollout::run-1"
+    });
+
+    expect(appScope.isDone()).toBe(true);
+    expect(result.observed?.rollout).toBeUndefined();
+    // The image half of observed is unaffected.
+    expect(result.observed?.images).toEqual(["ghcr.io/x/y:1.2.3"]);
+  });
+
+  it("keeps near-free rollout phase/message when the live manifest fetch fails (non-2xx) — status() never fails over enrichment", async () => {
+    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+    const appScope = nock(SERVER_URL)
+      .get("/api/v1/applications/status-rollout-resource-500")
+      .reply(200, {
+        metadata: { name: "status-rollout-resource-500" },
+        status: {
+          sync: { status: "Synced", revision: "abc123" },
+          health: { status: "Progressing" },
+          resources: [
+            {
+              group: "argoproj.io",
+              version: "v1alpha1",
+              kind: "Rollout",
+              name: "web-rollout",
+              health: { status: "Progressing", message: "rolling" }
+            }
+          ]
+        }
+      });
+    const resourceScope = nock(SERVER_URL)
+      .get("/api/v1/applications/status-rollout-resource-500/resource")
+      .query(true)
+      .reply(500, "boom");
+
+    const result = await createArgoCdExecutorPlugin().status(ctx, {
+      externalId: "status-rollout-resource-500::run-1"
+    });
+
+    expect(appScope.isDone()).toBe(true);
+    expect(resourceScope.isDone()).toBe(true);
+    // Enrichment failed → fall back to the near-free health assessment; still no fabricated step/weight.
+    expect(result.observed?.rollout).toEqual({ phase: "Progressing", message: "rolling" });
+  });
 });
 
 describe("abort()", () => {

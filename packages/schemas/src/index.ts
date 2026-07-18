@@ -15,3 +15,4 @@ export * from "./services.js";
 export * from "./campaigns.js";
 export * from "./federation.js";
 export * from "./executors.js";
+export * from "./health.js";
