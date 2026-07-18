@@ -6,7 +6,7 @@
 
 ## Amendment 2026-07-18 — outpost = Gitea only
 
-Superseded by [ADR-0012](0012-registry-consolidation.md)/[ADR-0013](0013-supply-chain-scan-sbom-manifest.md): the outpost's local infra is **Gitea only** (git + unified registry for all artifact types) — **no local Harbor**. Outposts do not scan (scanning is a source-side boundary-authorization gate, ADR-0013), so they need no scanning registry; they verify the signed attestation/manifest and stay light. Harbor is the *optional* enterprise-registry alternative (ADR-0012). Read "local Harbor" below as "local Gitea registry."
+Superseded by [ADR-0012](0012-registry-consolidation.md)/[ADR-0013](0013-supply-chain-scan-sbom-manifest.md): the outpost's local infra is **Gitea only** — one service serving **images** (OCI container registry), **code** (git), and **packages** (rpm/npm/…) — **no local Harbor**. Outposts do not scan (scanning is a source-side boundary-authorization gate, ADR-0013), so they need no scanning registry; they verify the signed attestation/manifest and stay light. Harbor is **not bundled**; an org that runs Harbor coordinates its existing one via the import path (ADR-0012, M15.3). Read "local Harbor" below as "local Gitea registry."
 
 ## Context
 
