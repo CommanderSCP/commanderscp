@@ -560,6 +560,34 @@ export const executorObserveCursors = pgTable(
 );
 
 /**
+ * Latest object health (observe-enrichment signal 4; ADR-0008 decision 4) — an object-referencing
+ * PROJECTION table keyed by `objects(id)` (DESIGN §4.1's "thin projection tables that reference
+ * their graph object" pattern, same class as `changes.objectId`, `freezes.scopeObjectId` and
+ * `executorObserveCursors`), NOT a new top-level concept table (charter principle 2). It projects
+ * the hot latest-health state of an EXISTING graph object; it does not introduce a new first-class
+ * concept, registry, or relationship.
+ *
+ * INVARIANT (coordinate-not-execute, principle 1): SCP never probes/polls/computes health. This row
+ * is written ONLY by a PUSH-IN (owner PUT today; a future opt-in health-source binding writes the
+ * SAME row via `source`). One latest row per (org, object), UPSERT-IN-PLACE (no delete route),
+ * mirroring `executorObserveCursors`. Per-observation history is a deferred non-goal (ADR-0008).
+ */
+export const objectHealth = pgTable(
+  "object_health",
+  {
+    orgId: uuid("org_id").notNull(),
+    objectId: uuid("object_id").notNull(), // references objects(id) — FK added in migration
+    status: text("status").notNull(), // healthy|degraded|down|unknown
+    detail: text("detail"),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+    /** Provenance of the push (`owner` today; a binding descriptor like `prometheus:<query>` later). */
+    source: text("source"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [primaryKey({ columns: [table.orgId, table.objectId] })]
+);
+
+/**
  * Plan -> waves -> wave_targets ROWS (DESIGN §9.3) — the compiled execution shape of a Change.
  * Named `change_*` to avoid colliding with M2's unrelated `plans` table (`@scp/iac` desired-state
  * plan/apply). `topology_document` is a snapshot of the release topology at compile time (not a

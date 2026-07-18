@@ -11,6 +11,11 @@ export interface GraphCanvasNode {
    *  service in the component-layer view. Rendered with a dashed outline. Backward-compatible:
    *  undefined = the normal solid treatment. */
   external?: boolean;
+  /** OPTIONAL pushed health (observe-enrichment signal 4) — rendered as a colored border ring when
+   *  the health overlay is toggled on. Undefined = no health fetched/toggled; the node renders
+   *  exactly as before (backward-compatible). `unknown` (or no pushed record) renders grey — SCP
+   *  never fabricates a health it wasn't given. */
+  health?: "healthy" | "degraded" | "down" | "unknown";
 }
 
 export interface GraphCanvasEdge {
@@ -56,7 +61,12 @@ interface GraphCanvasProps {
  * is false. Nothing in real production traffic sets `__SCP_E2E__`, so this never activates outside
  * a Playwright-controlled page.
  */
-export function GraphCanvas({ data, rootId, layout, onNodeTap }: GraphCanvasProps): React.JSX.Element {
+export function GraphCanvas({
+  data,
+  rootId,
+  layout,
+  onNodeTap
+}: GraphCanvasProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
   const navigate = useNavigate();
@@ -108,6 +118,27 @@ export function GraphCanvas({ data, rootId, layout, onNodeTap }: GraphCanvasProp
             "border-style": "dashed",
             "background-opacity": 0.4
           }
+        },
+        // Health overlay (observe-enrichment signal 4) — a colored border ring keyed on the
+        // OPTIONAL `health` node-data field, using the same attribute-selector technique as
+        // `node[?external]`/`node[?root]`. A `node[health=...]` selector out-ranks the base `node`
+        // rule and is undefined-safe: nodes without health (overlay off, or nothing pushed) match
+        // none of these and render exactly as before. Grey = unknown/no push (never fabricated).
+        {
+          selector: 'node[health="healthy"]',
+          style: { "border-width": 4, "border-color": "#16a34a", "border-opacity": 1 }
+        },
+        {
+          selector: 'node[health="degraded"]',
+          style: { "border-width": 4, "border-color": "#d97706", "border-opacity": 1 }
+        },
+        {
+          selector: 'node[health="down"]',
+          style: { "border-width": 4, "border-color": "#dc2626", "border-opacity": 1 }
+        },
+        {
+          selector: 'node[health="unknown"]',
+          style: { "border-width": 4, "border-color": "#94a3b8", "border-opacity": 1 }
         },
         // Root emphasis stays last so it wins over the typed colors for the explored object.
         {
@@ -182,6 +213,7 @@ export function GraphCanvas({ data, rootId, layout, onNodeTap }: GraphCanvasProp
             label: obj?.name ?? id.slice(0, 8),
             typeId: obj?.typeId,
             external: obj?.external ? true : undefined,
+            health: obj?.health,
             root: rootId && id === rootId ? true : undefined
           }
         };
