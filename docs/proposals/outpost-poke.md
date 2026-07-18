@@ -29,7 +29,7 @@ Poke-mode is **off by default** and configured **per outpost**. An instance can 
 
 3. **Poke-mode disables the chatty interval poll.** This is the explicit goal: eliminate the constant reach-outs. In poke-mode the outpost does not run its frequent poll loop; it pulls on poke.
 
-4. **A dropped poke must self-heal — reliability backstop (recommended).** If the poke were the *only* trigger, a single lost poke (commander restart mid-send, outpost briefly down, transient network fault) would strand a pending transfer until the next unrelated poke. Recommended design: poke-mode disables the *frequent* poll but retains a **sparse safety-net reconcile** (a rare pull sweep on a long interval) **plus pull-on-(re)connect/startup**, so a missed poke self-heals within a bounded window. This keeps the poke a *latency optimization over a slow, reliable backstop* — never a single-point-of-failure trigger — while still removing the chatty polling. (Alternative, see Open decisions: make poke delivery *reliable* via commander-side retry-until-pull-confirmed; more machinery.)
+4. **A dropped poke must self-heal — reliability backstop (decided, owner 2026-07-18).** If the poke were the *only* trigger, a single lost poke (commander restart mid-send, outpost briefly down, transient network fault) would strand a pending transfer until the next unrelated poke. **Decision:** poke-mode disables the *frequent* poll but retains a **sparse safety-net reconcile** (a rare pull sweep on a long interval) **plus pull-on-(re)connect/startup**, so a missed poke self-heals within a bounded window. This keeps the poke a *latency optimization over a slow, reliable backstop* — never a single-point-of-failure trigger — while still removing the chatty polling. (Considered and rejected: pure poke-only with commander-side retry-until-pull-confirmed — more machinery, and still needs a floor for a fully-offline outpost.)
 
 5. **Authenticated, idempotent, contentless → tiny attack surface.** The poke endpoint on the outpost authenticates the *caller* as the enrolled commander via the same mTLS peer identity the outpost already trusts for the commander (ADR-0001 in-app mTLS applies unchanged), and is rate-limited. Because the poke carries no data and is idempotent, the worst a spoofed or replayed poke can do is cause the outpost to perform a pull it is already authorized to perform — no data injection, no amplification beyond one pull.
 
@@ -58,11 +58,14 @@ A retrans instance at a CDS boundary gets the identical model: the commander pok
 - **Outpost scheduler mode:** in poke-mode, disable the frequent interval poll; retain the sparse safety-net reconcile + pull-on-(re)connect/startup.
 - **Tests (real Postgres via Testcontainers where applicable):** poke triggers an immediate pull; poke-mode disables the frequent poll; a non-commander caller is rejected; a replayed/contentless poke is idempotent; **a dropped poke self-heals via the safety-net backstop**; poll-mode outposts are unchanged; air-gap/bundle path unaffected.
 
-## Open decisions (for review)
+## Decisions
 
-1. **Reliability model:** *poke + sparse safety-net backstop* (recommended — simplest, pull stays the source of truth, self-heals) **vs.** *pure poke-only with reliable delivery* (commander retries a poke until the outpost's status cursor proves it pulled; more machinery, and still needs a floor for a fully-offline outpost).
-2. **Safety-net interval default** (if backstop is chosen): e.g. hourly? daily? Configurable per outpost; large enough to be non-chatty, small enough to bound worst-case staleness.
-3. **Poke transport:** reuse the existing `federation-https` mTLS transport routes (a new contentless verb) vs. a dedicated minimal listener. Reuse is preferred (one identity/verification path — ADR-0001).
+**Resolved (owner, 2026-07-18):**
+1. **Reliability model → poke + sparse safety-net backstop.** Poke-mode disables the *frequent* poll but retains a sparse safety-net reconcile + pull-on-(re)connect, so a dropped poke self-heals; the poke is a latency optimization over a reliable floor, never a single point of failure. *Not* pure poke-only.
+3. **Poke transport → reuse the `federation-https` mTLS routes** with one new contentless verb. A single identity/verification path (ADR-0001) — no dedicated listener.
+
+**Still open (tuning, resolved during the M14 build):**
+2. **Safety-net interval default** — configurable per outpost; large enough to be non-chatty, small enough to bound worst-case staleness (e.g. hourly/daily), with a sensible default chosen at implementation time.
 
 ## Non-goals
 

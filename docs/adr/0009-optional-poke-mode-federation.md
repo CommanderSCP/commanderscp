@@ -38,6 +38,9 @@ Poke-mode is **off by default**, set **per outpost** (some outposts poll-mode, o
 - If poke-mode disabled polling entirely with no backstop, a single lost poke would strand a pending transfer. The retained sparse safety-net (or, alternatively, reliable poke delivery) is a required part of the design, not optional polish.
 - Adds one config surface (`federation.pokeMode` per outpost) and one contentless transport verb, carried through the API→SDK→CLI→UI parity chain.
 
-**Deferred to the milestone (M14) / open**
-- Reliability model (sparse safety-net vs. reliable delivery) and the safety-net interval default — see the proposal's Open decisions.
-- Whether to reuse the `federation-https` transport routes for the poke verb (preferred — single identity path) vs. a dedicated listener.
+**Resolved (owner, 2026-07-18)**
+- **Reliability model → sparse safety-net backstop** (not pure poke-only): poke-mode disables the frequent poll but keeps a sparse reconcile + pull-on-(re)connect so a dropped poke self-heals.
+- **Poke transport → reuse the `federation-https` mTLS routes** with one new contentless verb — a single identity/verification path (ADR-0001), no dedicated listener.
+
+**Deferred to the milestone (M14)**
+- The safety-net interval default (a tuning value; per-outpost, sensible default at implementation time).
