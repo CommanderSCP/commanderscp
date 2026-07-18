@@ -43,6 +43,7 @@ import {
   updateService as updateServiceRequest,
   deleteService as deleteServiceRequest,
   upsertServiceByUrn as upsertServiceByUrnRequest,
+  getServiceBoard as getServiceBoardRequest,
   createComponent as createComponentRequest,
   setComponentService as setComponentServiceRequest,
   mergeComponents as mergeComponentsRequest,
@@ -305,7 +306,8 @@ import type {
   DiscoveryProposal,
   AcceptDiscoveryRequest,
   AcceptDiscoveryResponse,
-  BackfillSourceMappingsResponse
+  BackfillSourceMappingsResponse,
+  ServiceBoardResponse
 } from "@scp/schemas";
 import { ScpApiError } from "./errors.js";
 
@@ -866,7 +868,16 @@ export class ScpClient {
       removeConsumes: consumes.remove,
       addDependsOn: dependsOn.add,
       listDependsOn: dependsOn.list,
-      removeDependsOn: dependsOn.remove
+      removeDependsOn: dependsOn.remove,
+      /**
+       * The service release board (coordination-ui-views.md Phase 2, Layer A) — the service's
+       * components, each's latest change per-stage wave status + attention, and a releasing/blocked/
+       * stable summary, projected server-side in one call. Read-only.
+       */
+      board: async (idOrUrn: string): Promise<ServiceBoardResponse> => {
+        const result = await getServiceBoardRequest({ client: this.client, path: { idOrUrn } });
+        return unwrap(result);
+      }
     };
   })();
 
