@@ -72,5 +72,5 @@ A retrans instance at a CDS boundary gets the identical model: the commander pok
 
 - **Not a data channel.** The poke never carries config, status, or any payload.
 - **Not required.** Federation continues to work in pure-pull everywhere; poke-mode is an opt-in optimization for reachable outposts only.
-- **Not for air-gap.** Bundle-exchange domains are untouched.
+- **Not for pure sneakernet** (no CDS data path — a signed bundle walked across). Air-gapped domains *behind a CDS* are still reached via the retrans relay chain (see the network-topology crux); only fully-disconnected bundle-only domains stay manual.
 - **No change to the integrity model.** Ed25519 signatures over the journal/bundle remain authoritative; mTLS remains a transport-identity layer on top.
