@@ -85,6 +85,14 @@ interface FakeExecutorConfig {
    *  coordination integration test can prove reconcile threads `status().observed.images` through to
    *  the wave target's `observed_state` without needing a live ArgoCD. */
   imagesByTarget?: Record<string, string[]>;
+  /** Per-target deterministic OBSERVE-ONLY rollout snapshot, surfaced on `status().observed.rollout`
+   *  (ADR-0008 P4D — rollout state is OBSERVED, NOT DRIVEN). Mirrors `imagesByTarget`: an explicit
+   *  test hook so a coordination integration test can prove reconcile threads
+   *  `status().observed.rollout` through to `observed_state` without a live Argo Rollouts. */
+  rolloutByTarget?: Record<
+    string,
+    { phase?: string; step?: number; weight?: number; message?: string }
+  >;
 }
 
 function readConfig(config: unknown): FakeExecutorConfig {
@@ -218,11 +226,15 @@ export class FakeExecutorPlugin implements ExecutorPlugin {
     const settled = phase === "succeeded" || phase === "failed" || phase === "aborted";
 
     const images = cfg.imagesByTarget?.[targetRef];
+    const rollout = cfg.rolloutByTarget?.[targetRef];
+    const observed: { images?: string[]; rollout?: typeof rollout } = {};
+    if (images && images.length > 0) observed.images = images;
+    if (rollout && Object.keys(rollout).length > 0) observed.rollout = rollout;
     return {
       phase,
       stateRef: `v${target.version}`,
       detail: `fake-executor target=${targetRef} version=v${target.version}`,
-      ...(images && images.length > 0 ? { observed: { images } } : {}),
+      ...(observed.images || observed.rollout ? { observed } : {}),
       progress: settled ? 1 : 0.5
     };
   }

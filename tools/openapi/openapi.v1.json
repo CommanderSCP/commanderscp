@@ -35354,6 +35354,24 @@
                                                   "items": {
                                                     "type": "string"
                                                   }
+                                                },
+                                                "rollout": {
+                                                  "type": "object",
+                                                  "properties": {
+                                                    "phase": {
+                                                      "type": "string"
+                                                    },
+                                                    "step": {
+                                                      "type": "number"
+                                                    },
+                                                    "weight": {
+                                                      "type": "number"
+                                                    },
+                                                    "message": {
+                                                      "type": "string"
+                                                    }
+                                                  },
+                                                  "additionalProperties": false
                                                 }
                                               },
                                               "additionalProperties": false
