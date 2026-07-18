@@ -2,7 +2,12 @@
 
 **Status:** Proposed (2026-07-18)
 **Context doc:** [docs/proposals/federation-outposts-ui.md](../proposals/federation-outposts-ui.md)
-**Relates to:** [ADR-0010](0010-outpost-local-artifact-infra.md) (trust scan-at-source); [ADR-0004](0004-service-naming-commander-outpost-retrans.md); DESIGN.md §13
+**Relates to:** [ADR-0010](0010-outpost-local-artifact-infra.md) (trust scan-at-source); [ADR-0004](0004-service-naming-commander-outpost-retrans.md); [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (what is validated); DESIGN.md §13
+
+## Refinement 2026-07-18 (two clarifications from the owner)
+
+1. **"Universal" means universal for *cross-boundary* artifacts.** Domain-locally-originated artifacts (outpost-owned domain-specific config/infra — [ADR-0010](0010-outpost-local-artifact-infra.md), ownership model) **never cross a boundary**, so they have **no transfer stage and nothing to validate** — a shorter pipeline. The "always-shown boundary stages" (M16.1) and this gate apply to changes that cross *into* a domain, not to ones already home.
+2. **Full validation at *every* hop.** A **retrans** performs the **same full validation** (signature + SBOM/manifest, ADR-0013) **before** letting anything cross the CDS — nothing invalid enters the air-gapped domain in the first place — and the **outpost re-validates inside the domain before deploy**. Not a lighter bundle-integrity check at the retrans; the same level at each hop (defense in depth).
 
 ## Context
 
