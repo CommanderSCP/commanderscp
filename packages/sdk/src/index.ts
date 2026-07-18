@@ -60,6 +60,18 @@ export type {
   WebhookIngressResponse
 } from "@scp/schemas";
 
+// Phase 2 coordination UI: the service release board projection (coordination-ui-views.md
+// § "Service release board") — one HTTP call backing `client.services.board(idOrUrn)`.
+export type {
+  ServiceBoardResponse,
+  ServiceBoardRow,
+  ServiceBoardStage,
+  ServiceBoardKind,
+  ServiceBoardAttention,
+  ServiceBoardFreeze,
+  ServiceBoardSummary
+} from "@scp/schemas";
+
 // M4: Governance Engine — control runs/bindings, approvals (N-of-M quorum), freezes, and `scp
 // policy evaluate`'s dry-run response (BUILD_AND_TEST.md §8 M4). Policy/Control documents
 // themselves are plain typed-registry `GraphObject`s (already covered by the M2 exports above) —

@@ -12,6 +12,7 @@ import { GraphLandingPage } from "./routes/graph-landing";
 import { ChangeListPage } from "./routes/change-list";
 import { ChangeDetailPage } from "./routes/change-detail";
 import { ChangePipelinePage } from "./routes/change-pipeline";
+import { ServiceBoardPage } from "./routes/service-board";
 import { CampaignListPage } from "./routes/campaign-list";
 import { CampaignDetailPage } from "./routes/campaign-detail";
 import { InitiativeListPage } from "./routes/initiative-list";
@@ -97,6 +98,15 @@ const changePipelineRoute = createRoute({
   component: ChangePipelinePage
 });
 
+// The service release board (coordination-ui-views.md Phase 2). A static `/services/$id/board` leaf —
+// services otherwise render only through the generic `/$basePath/$idOrUrn` registry-detail route, so
+// this dedicated static `/services/...` segment out-ranks the dynamic one (same precedence note below).
+const serviceBoardRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/services/$id/board",
+  component: ServiceBoardPage
+});
+
 const campaignListRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/campaigns",
@@ -160,6 +170,7 @@ const routeTree = rootRoute.addChildren([
     changeListRoute,
     changeDetailRoute,
     changePipelineRoute,
+    serviceBoardRoute,
     campaignListRoute,
     campaignDetailRoute,
     initiativeListRoute,

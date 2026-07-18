@@ -36,6 +36,7 @@ import { registerEventStreamRoute } from "./routes/events.js";
 import { registerPlanRoutes } from "./routes/plans.js";
 import { registerChangeRoutes } from "./routes/changes.js";
 import { registerComponentRoutes } from "./routes/components.js";
+import { registerServiceRoutes } from "./routes/services.js";
 import { registerChangeSourceRoutes } from "./routes/change-sources.js";
 import { registerCampaignRoutes } from "./routes/campaigns.js";
 import { registerInitiativeRoutes } from "./routes/initiatives.js";
@@ -196,6 +197,9 @@ export async function buildApp(
   // M12 P5a: `component` is NOT a template resource (it needs a strict, service-requiring create
   // that writes the `contains` edge atomically) — its routes are bespoke (routes/components.ts).
   registerComponentRoutes(app, deps);
+  // Phase 2 coordination UI: service-scoped read projections (release board). Registered after the
+  // typed-registry `/services` CRUD; the `/board` path segment keeps it clear of the `/:idOrUrn` route.
+  registerServiceRoutes(app, deps);
   // M2: owns/consumes/depends_on sub-resource ergonomics over the typed resources above
   // (routes/ownership.ts module doc).
   registerOwnershipRoutes(app, deps);

@@ -77,9 +77,18 @@ export function RegistryDetailPage(): React.JSX.Element {
           </h1>
           <p className="font-mono text-xs text-slate-500">{object.urn}</p>
         </div>
-        <Link to="/graph/$idOrUrn" params={{ idOrUrn: object.id }}>
-          <Button variant="outline">Open in graph explorer</Button>
-        </Link>
+        <div className="flex items-center gap-2">
+          {/* Service release board (coordination-ui-views.md Phase 2) — the scannable per-component
+              status table for this service. Only meaningful for `service` objects. */}
+          {object.typeId === "service" && (
+            <Link to="/services/$id/board" params={{ id: object.id }}>
+              <Button data-testid="open-release-board">Release board</Button>
+            </Link>
+          )}
+          <Link to="/graph/$idOrUrn" params={{ idOrUrn: object.id }}>
+            <Button variant="outline">Open in graph explorer</Button>
+          </Link>
+        </div>
       </div>
 
       <Card>

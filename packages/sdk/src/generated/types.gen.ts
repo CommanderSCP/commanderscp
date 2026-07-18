@@ -6089,6 +6089,111 @@ export type MergeComponentsResponses = {
 
 export type MergeComponentsResponse = MergeComponentsResponses[keyof MergeComponentsResponses];
 
+export type GetServiceBoardData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/services/{idOrUrn}/board';
+};
+
+export type GetServiceBoardErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetServiceBoardError = GetServiceBoardErrors[keyof GetServiceBoardErrors];
+
+export type GetServiceBoardResponses = {
+    /**
+     * Success
+     */
+    200: {
+        service: {
+            id: string;
+            urn: string;
+            name: string;
+        };
+        rows: Array<{
+            component: {
+                id: string;
+                urn: string;
+                name: string;
+            };
+            latestChangeId: string | null;
+            changeState: string | null;
+            changeName: string | null;
+            currentStage: string | null;
+            stages: Array<{
+                waveIndex: number;
+                name: string | null;
+                status: string;
+                kinds: Array<{
+                    category: 'build' | 'infrastructure' | 'configuration';
+                    type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                }>;
+                targetCount: number;
+                failedTargets: number;
+            }>;
+            attention: {
+                blocked: boolean;
+                decisionId: string | null;
+                awaitingApproval: boolean;
+                emergency: boolean;
+            };
+            activeFreeze: {
+                id: string;
+                reason: string;
+                endsAt: string;
+            } | null;
+        }>;
+        summary: {
+            releasing: number;
+            blocked: number;
+            stable: number;
+        };
+        serviceFreeze: {
+            id: string;
+            reason: string;
+            endsAt: string;
+        } | null;
+    };
+};
+
+export type GetServiceBoardResponse = GetServiceBoardResponses[keyof GetServiceBoardResponses];
+
 export type ListDomainOwnersData = {
     body?: never;
     path: {

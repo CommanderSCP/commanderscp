@@ -57,6 +57,12 @@ export function changePipelineGateKey(changeId: string): unknown[] {
   return ["change", "pipeline-gate", changeId];
 }
 
+/** Query key for the Service release board (coordination-ui-views.md Phase 2) — a service's
+ *  components + each's latest change per-stage status, projected by `GET /services/{id}/board`. */
+export function serviceBoardKey(id: string): unknown[] {
+  return ["service", "board", id];
+}
+
 /** Query key for the Campaigns list view (M5, BUILD_AND_TEST.md §8 M5 UI requirement). */
 export function campaignListKey(): unknown[] {
   return ["campaign", "list"];
