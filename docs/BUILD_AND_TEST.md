@@ -440,6 +440,17 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
   - **Air-gap:** the Gitea images ride the signed bundle and retarget to the customer registry (Harbor images only when the optional-Harbor path is enabled); tamper-rejection suite green.
 
 
+### M16 — Federation / Outposts UI + Universal Boundary Pipeline Stages
+*(Provisional number — federation UI track. Design: [ADR-0011](adr/0011-universal-outpost-validation.md), `docs/proposals/federation-outposts-ui.md`.)*
+- **Goal:** a place in the UI to see + manage the outposts the commander syncs with, and to make the trust boundary legible in the pipeline. Two parts.
+- **Contents:**
+  - **M16.1 Universal boundary stages** (can land sooner; observe-enrichment on the federation boundary) — an ALWAYS-SHOWN `transferred → validated` segment in the component pipeline: transfer status from bundle transfer tracking (export→submitted→confirmed, DESIGN §13), signature + scan-attestation validation at the receiving outpost ([ADR-0011](adr/0011-universal-outpost-validation.md) — a universal pre-deploy gate, commercial included). Renders real observations + an explicit "not-yet-verified" state; NO fabrication; drives nothing (coordinate-not-execute).
+  - **M16.2 Outposts UI, all-at-once** (owner: build overview + settings + config together; lands after M14 poke + M15 local-infra) — Overview (role, trust tier, connectivity, last-sync / "as of ⟨bundle⟩", sync health, pending transfers, health rollup) + per-outpost Settings (identity / mTLS / transport) + per-outpost Configuration (poke-mode M14, local Gitea registry M15, freezes, bundled backends). Commander-origin, syncs down, air-gap pending-vs-applied.
+  - **M16.3 Outpost's own local UI** — the same one-binary UI served by an outpost, scoped to its local domain: service/component/graph views for the domain-specific pipelines the commander doesn't track ([ADR-0010](adr/0010-outpost-local-artifact-infra.md)). Distinct from M16.2 (commander→outposts); largely free once the views exist.
+- **Done / verified by:**
+  - **Boundary stages:** integration proves the pipeline surfaces a REAL transfer + a real/absent validation outcome per change; never a fabricated pass.
+  - **Outposts UI:** the outpost list + per-outpost config round-trip only through the generated SDK (no bypass); editing an outpost's config writes commander-origin data the federation journal/bundle carries down; air-gap outposts show "as of ⟨bundle⟩" + pending-vs-applied.
+
 ### M17 — Supply-Chain Gate (scan + SBOM + signed promotion manifest)
 *(Design: [ADR-0013](adr/0013-supply-chain-scan-sbom-manifest.md), [ADR-0012](adr/0012-registry-consolidation.md); master: `docs/proposals/promotion-and-execution-model.md`.)*
 - **Goal:** make cross-boundary promotion verifiable. Scanning is a **boundary-crossing authorization gate** (not a general quality gate) — a coordinated **Trivy step** (in Argo Workflows) scans any artifact type and emits the **SBOM** in the same pass; the commander signs the artifact(s), SBOM, and a **promotion manifest** (cosign) enumerating exactly the authorized artifact set. The receiver verifies signature + manifest match at **every hop** ("nothing slipped in"). Applies to **commander-tracked** artifacts only; domain-local outpost-originated artifacts are exempt (they don't cross a boundary — keeps outposts light). SCP is the promotion authority (no registry pull-blocking needed).
