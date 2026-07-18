@@ -2,7 +2,7 @@
 
 **Status:** Proposed (2026-07-18)
 **Context doc:** [docs/proposals/federation-outposts-ui.md](../proposals/federation-outposts-ui.md)
-**Relates to:** [ADR-0010](0010-outpost-local-artifact-infra.md) (trust scan-at-source); [ADR-0004](0004-service-naming-commander-outpost-retrans.md); [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (what is validated); DESIGN.md §13
+**Relates to:** [ADR-0010](0010-outpost-local-artifact-infra.md) (trust scan-at-source); [ADR-0004](0004-service-naming-commander-outpost-retrans.md); [ADR-0012](0012-registry-consolidation.md) (outpost = Gitea-only); [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (what is validated); DESIGN.md §13
 
 ## Refinement 2026-07-18 (two clarifications from the owner)
 
@@ -15,7 +15,7 @@ Designing the component-pipeline "transferred to outpost" + "signatures validate
 
 The owner corrected this (2026-07-18): **a change cannot reach an outpost without being validated.** Deployment always terminates *at an outpost* (the per-environment/trust/geo instance that fronts the deploy target), and the receiving outpost always validates the signed artifact/config before it deploys. This holds in **commercial** too: there, the commander owns the git and image repos, but the artifact/config still must move to the outpost for the actual deployment, and the outpost still validates signatures first.
 
-What differs by trust tier is **who owns the git/image repos** — commander-owned in commercial; **outpost-local** (bundled/imported Harbor + Gitea) in FedRAMP-High / IL5 / air-gap (M15) — **not whether validation occurs**.
+What differs by trust tier is **who owns the git/image repos** — commander-owned in commercial; **outpost-local** (the outpost's own Gitea registry — Harbor optional, [ADR-0012](0012-registry-consolidation.md)) in FedRAMP-High / IL5 / air-gap (M15) — **not whether validation occurs**.
 
 ## Decision
 
@@ -28,7 +28,7 @@ Consequences for the UI: the component pipeline's *transferred → validated* bo
 **Positive**
 - A single, consistent deployment model: source (commander-owned or outpost-local) → transfer to the deploying outpost → **validate** → deploy. No special-casing high/air-gap in the pipeline view.
 - Makes the trust boundary and its verification legible in every pipeline, reinforcing the air-gap-first and explainability principles.
-- Cleanly frames M15 (local Harbor/Gitea) as a change of *repo ownership/location*, not a change of *whether validation happens*.
+- Cleanly frames M15 (the outpost's local Gitea registry) as a change of *repo ownership/location*, not a change of *whether validation happens*.
 
 **Costs / honesty**
 - **Per-artifact cosign + scan-attestation verification before deploy is only partly built** — bundle-level signature/hash-chain validation exists (fail-closed import); the per-artifact pre-deploy verification is M15.2 (partly aspirational). The UI must render an explicit "not-yet-verified" state rather than a fabricated pass until M15.2 lands.

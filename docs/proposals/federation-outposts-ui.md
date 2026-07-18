@@ -8,7 +8,7 @@
 
 Two related gaps in the UI's federation story:
 
-1. There is **no place to see or manage the outposts** the commander syncs with — their status, settings, or per-outpost configuration. As we add per-outpost config (poke-mode M14; local Harbor/Gitea M15; freeze windows; enabled bundled backends), there is nowhere it converges.
+1. There is **no place to see or manage the outposts** the commander syncs with — their status, settings, or per-outpost configuration. As we add per-outpost config (poke-mode M14; local Gitea registry M15; freeze windows; enabled bundled backends), there is nowhere it converges.
 2. The component-pipeline view stops at the executor stages; it doesn't show the **boundary crossing** — when a change is transferred to the outpost that will deploy it, and when that outpost validates the signed artifact/config before deploying.
 
 ## Part A — Outposts management UI
@@ -17,7 +17,7 @@ A top-level **Outposts** nav section (covering both `outpost` and `retrans` role
 
 - **Overview** — a dashboard of every enrolled outpost/retrans: role, **trust tier** (commercial / FedRAMP High / IL5 / air-gap), **connectivity** (connected vs air-gap), **last-sync** — honoring DESIGN §13's rule that air-gap outposts are labeled *"as of ⟨bundle/date⟩"*, never shown as live — plus sync health, pending-transfer count, and the health rollup from observe-enrichment increment 5.
 - **Per-outpost → Settings** — enrollment/identity/transport: peer identity, mTLS cert, trust tier, transport mode (connected mTLS vs air-gap bundle).
-- **Per-outpost → Configuration** — the commander-origin operational policy that **syncs down**: poke-mode toggle (M14), local Harbor/Gitea create/import (M15), freeze windows, enabled bundled backends.
+- **Per-outpost → Configuration** — the commander-origin operational policy that **syncs down**: poke-mode toggle (M14), local Gitea registry create/import (M15; Harbor optional per [ADR-0012](../adr/0012-registry-consolidation.md)), freeze windows, enabled bundled backends.
 - **Commander-origin, read-only-downstream.** Because outposts hold commander config read-only, all editing happens here at the commander and propagates via the federation journal/bundle; air-gap edits ride the next bundle, so the UI shows **pending-vs-applied**, never pretending an air-gap change is instant.
 
 ## Part B — Universal boundary pipeline stages
