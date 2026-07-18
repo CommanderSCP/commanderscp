@@ -9272,6 +9272,12 @@ export type ExplainChangeResponses = {
                     observed?: {
                         revision?: string;
                         images?: Array<string>;
+                        rollout?: {
+                            phase?: string;
+                            step?: number;
+                            weight?: number;
+                            message?: string;
+                        };
                     } | null;
                     status: string;
                     attempt: number;

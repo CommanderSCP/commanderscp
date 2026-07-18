@@ -169,9 +169,24 @@ export const ChangeWaveTargetSchema = z.object({
    *  Additive-optional: plans predating the `observed_state` column read back without it; `null` once
    *  observed with nothing. `revision` is the opaque stateRef as-is (a git SHA / Argo revision).
    *  `images` (P4C increment 3) is the deployed image refs (tag/digest, e.g. `ghcr.io/x/y:1.2.3` or
-   *  `...@sha256:...`) — the human-facing per-stage version, preferred over the git SHA in the UI. */
+   *  `...@sha256:...`) — the human-facing per-stage version, preferred over the git SHA in the UI.
+   *  `rollout` (P4D increment 4) is the OBSERVE-ONLY progressive-delivery snapshot (an Argo Rollout's
+   *  phase/step/weight/message as the executor reports it) — display-only; SCP never drives it
+   *  (ADR-0008: rollout state is OBSERVED, NOT DRIVEN). Every field is optional (only phase/message
+   *  are reliably available; step/weight need the live manifest and are version-dependent). */
   observed: z
-    .object({ revision: z.string().optional(), images: z.array(z.string()).optional() })
+    .object({
+      revision: z.string().optional(),
+      images: z.array(z.string()).optional(),
+      rollout: z
+        .object({
+          phase: z.string().optional(),
+          step: z.number().optional(),
+          weight: z.number().optional(),
+          message: z.string().optional()
+        })
+        .optional()
+    })
     .nullable()
     .optional(),
   status: z.string(),
