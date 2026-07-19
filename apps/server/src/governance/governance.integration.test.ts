@@ -1280,13 +1280,14 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     }
 
     /** A real `control` graph object bound to the real `scan-result-control` plugin, pointed at the
-     *  Trivy fixture with a fixed scanned `digest` + `severities`, and the digest the change is
-     *  promoting pinned via `expectedDigest` (the operator-pinned binding path — the gate context does
-     *  not yet thread a per-change artifact digest, so the plugin binds against config). */
+     *  Trivy fixture with a fixed scanned `digest` + `severities`. `expectedDigest` is OPTIONAL: pass
+     *  it to exercise the operator-pinned fallback path (a change with no tracked artifact digest);
+     *  OMIT it to prove the gate threads the CHANGE's own tracked `sourceRef.artifact_digest` into
+     *  `context.artifactDigest`, which the plugin binds against (context wins over config, ADR-0013). */
     async function createScanControl(
       admin: ScpClient,
       org: TestOrg,
-      opts: { urnSuffix: string; digest: string; severities?: string[]; expectedDigest: string; threshold?: Record<string, number> }
+      opts: { urnSuffix: string; digest: string; severities?: string[]; expectedDigest?: string; threshold?: Record<string, number> }
     ) {
       const control = await admin.controls.create({
         name: `scan-control-${opts.urnSuffix}`,
@@ -1299,7 +1300,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
         pluginInstanceId: `scan-${control.id}`,
         config: {
           url: `${scanSource.url}?${params.toString()}`,
-          expectedDigest: opts.expectedDigest,
+          ...(opts.expectedDigest ? { expectedDigest: opts.expectedDigest } : {}),
           ...(opts.threshold ? { threshold: opts.threshold } : {})
         }
       });
@@ -1421,6 +1422,100 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
 
       // Clean but mismatched -> still blocked: the wave stays parked.
       await assertStaysExecuting(admin, change.id);
+    });
+
+    // -------------------------------------------------------------------------------------------
+    // The binding is to the CHANGE's REAL tracked artifact — NOT to an operator-typed config value.
+    // These two tests set NO `config.expectedDigest`; the ONLY digest the verdict can bind against is
+    // the change's own `sourceRef.artifact_digest`, which the gate now threads into
+    // `context.artifactDigest`. This is what makes ADR-0013's "nothing slipped in" non-tautological:
+    // the same `policy:write` author can no longer type the expected digest next to the scan source.
+    // -------------------------------------------------------------------------------------------
+
+    it("binds to the change's REAL tracked artifact digest: a CLEAN scan of a DIFFERENT digest than the change's sourceRef.artifact_digest BLOCKS — with NO config.expectedDigest to pin (context wins, not a config tautology)", async () => {
+      const org = await createTestOrg(server, "scan-real-mismatch");
+      const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+      const target = await createTestComponent(admin, { name: "scan-real-mismatch-target" });
+      // ZERO vulnerabilities and NO operator-pinned expectedDigest — the scan is of OTHER_DIGEST.
+      const control = await createScanControl(admin, org, {
+        urnSuffix: "scan-real-mismatch",
+        digest: OTHER_DIGEST,
+        severities: []
+        // expectedDigest deliberately OMITTED — the only digest to bind against is the change's own.
+      });
+      await createPolicy(admin, org, {
+        name: "scan-gate",
+        urnSuffix: "scan-real-mismatch-policy",
+        enforcement: "required",
+        scopeObjectId: target.id,
+        requireControlIds: [control.id]
+      });
+
+      // The change PROMOTES MATCH_DIGEST — carried in its own tracked sourceRef.artifact_digest.
+      const change = await admin.changes.propose({
+        name: "scan-real-mismatch-change",
+        targets: [target.id],
+        sourceRef: { artifact_digest: MATCH_DIGEST }
+      });
+
+      const run = await waitForControlRun(admin, change.id, control.id, "fail");
+      // The verdict was bound to the CHANGE's tracked digest (context), NOT to any config value.
+      expect(run.evidence).toMatchObject({
+        digestMatch: false,
+        artifactDigest: OTHER_DIGEST,
+        expectedDigest: MATCH_DIGEST
+      });
+      expect(run.detail).toMatch(/digest mismatch/i);
+
+      // Clean but bound to a DIFFERENT artifact than the change is promoting -> blocked, audited.
+      await assertStaysExecuting(admin, change.id);
+      const explained = await admin.changes.explain(change.id);
+      const gateBlock = explained.decisions.find((d) => d.kind === "gate" && d.verdict === "block");
+      expect(gateBlock).toBeDefined();
+      expect(gateBlock!.id).toBeTruthy(); // a resolvable decision_id (charter principle 6)
+    });
+
+    it("binds to the change's REAL tracked artifact digest: a CLEAN scan whose scanned digest MATCHES the change's sourceRef.artifact_digest PROMOTES — again with NO config.expectedDigest", async () => {
+      const org = await createTestOrg(server, "scan-real-match");
+      const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+      const target = await createTestComponent(admin, { name: "scan-real-match-target" });
+      const control = await createScanControl(admin, org, {
+        urnSuffix: "scan-real-match",
+        digest: MATCH_DIGEST,
+        severities: ["MEDIUM", "LOW"] // under the default (Critical=0, High=0) threshold
+        // expectedDigest deliberately OMITTED — binding is against the change's own tracked digest.
+      });
+      await createPolicy(admin, org, {
+        name: "scan-gate",
+        urnSuffix: "scan-real-match-policy",
+        enforcement: "required",
+        scopeObjectId: target.id,
+        requireControlIds: [control.id]
+      });
+
+      const change = await admin.changes.propose({
+        name: "scan-real-match-change",
+        targets: [target.id],
+        sourceRef: { artifact_digest: MATCH_DIGEST }
+      });
+
+      await waitForControlRun(admin, change.id, control.id, "pass");
+      await waitForValidating(admin, change.id);
+      const promoted = await admin.changes.promote(change.id);
+      expect(promoted.state).toBe("promoted");
+
+      const explained = await admin.changes.explain(change.id);
+      const controlRun = explained.controlRuns.find((r) => r.controlObjectId === control.id);
+      expect(controlRun!.status).toBe("pass");
+      // Bound to the change's tracked digest (threaded via context.artifactDigest), no config pin.
+      expect(controlRun!.evidence).toMatchObject({
+        scanner: "trivy",
+        digestMatch: true,
+        artifactDigest: MATCH_DIGEST,
+        expectedDigest: MATCH_DIGEST
+      });
     });
   });
 });
