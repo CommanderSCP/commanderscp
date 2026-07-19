@@ -46,6 +46,11 @@ export interface GitProviderEventHint {
   repo?: string;
   path?: string;
   commitSha?: string;
+  /** OCI/package artifact digest (e.g. `sha256:…`) for a package/image-push event — the correlation
+   *  key the registry story matches a promoted artifact on (ADR-0013). Optional and additive: the
+   *  github adapter never populates it (github's observe surfaces commits + workflow runs only); the
+   *  gitea adapter's package-push observe path is the first to set it (M15.1b). */
+  artifactDigest?: string;
   correlationKey?: string;
 }
 
@@ -54,6 +59,7 @@ export function normalizeCorrelation(hint: GitProviderEventHint): ExecutorEventC
     repo: hint.repo,
     path: hint.path,
     commitSha: hint.commitSha,
+    artifactDigest: hint.artifactDigest,
     correlationKey: hint.correlationKey
   };
 }

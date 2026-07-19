@@ -113,6 +113,27 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     expect(b2.pluginInstanceId).toBe(b1.pluginInstanceId);
   });
 
+  it("a gitea execution-system binding is accepted end to end — the M15.1b module census (KNOWN_EXECUTOR_MODULES + the route's kind allowlist) recognizes 'gitea'", async () => {
+    const org = await createTestOrg(server, "m15-gitea-binding");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    await admin.secrets.put("gitea-pat", { value: "a-scoped-gitea-pat" });
+    const sys = await admin.object("execution-system").create({
+      name: `gitea-prod-${randomUUID().slice(0, 8)}`,
+      properties: {
+        kind: "gitea", // must pass isKnownExecutorModule — the census point a miss would 400
+        serverUrl: "https://gitea.example.com",
+        tokenSecretKey: "gitea-pat"
+      }
+    });
+    const comp = await createTestComponent(admin, { name: `svc-${randomUUID().slice(0, 8)}` });
+    const binding = await admin.executors.putBinding(comp.id, {
+      executionSystemId: sys.id,
+      externalRef: "widgets"
+    });
+    expect(binding.pluginModule).toBe("gitea");
+    expect(binding.executionSystemId).toBe(sys.id);
+  });
+
   it("execution-system binding is REJECTED when the reference is not an execution-system object", async () => {
     const org = await createTestOrg(server, "m12-execution-system-invalid");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
@@ -183,6 +204,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
       expect.arrayContaining([
         "github",
         "github-discovery",
+        "gitea",
         "argocd",
         "argocd-discovery",
         "terraform",

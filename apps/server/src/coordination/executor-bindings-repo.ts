@@ -353,6 +353,7 @@ export async function repointExecutorBindingTarget(
 export const KNOWN_EXECUTOR_MODULES: PluginModule[] = [
   "fake-executor",
   "github",
+  "gitea",
   "argocd",
   "terraform",
   "managed-iac"
