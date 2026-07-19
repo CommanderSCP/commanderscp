@@ -1229,6 +1229,200 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       expect(ordinary.emergency).toBe(false);
     });
   });
+
+  // -----------------------------------------------------------------------------------------
+  // M17.1 (ADR-0013): the `scan-result-control` ControlPlugin — a coordinated Trivy scan VERDICT
+  // turned into gate evidence, proven through the REAL gate seam (not a plugin-unit tautology):
+  // a required policy naming the scan control genuinely blocks promotion when the verdict fails
+  // (over-threshold OR digest-mismatch) and lets it through when the verdict passes. SCP consumes
+  // the verdict; it never runs Trivy (charter coordinate-not-execute).
+  // -----------------------------------------------------------------------------------------
+
+  describe("scan-result-control (Trivy verdict as a boundary-authorization gate)", () => {
+    const MATCH_DIGEST = "sha256:aaaa000000000000000000000000000000000000000000000000000000000000";
+    const OTHER_DIGEST = "sha256:bbbb111111111111111111111111111111111111111111111111111111111111";
+    let scanSource: TestWebhookServer;
+
+    /** A real loopback HTTP server (never the internet — same rationale as `startTestWebhookServer`)
+     *  serving a REAL-Trivy-shaped result JSON. The desired verdict is encoded in the request URL's
+     *  query (`?digest=<sha256:…>&sev=CRITICAL,HIGH`), so ONE fixture backs many differently-configured
+     *  scan-control bindings — mirroring how the webhook fixture uses the `x-test-outcome` header. */
+    async function startTrivySource(): Promise<TestWebhookServer> {
+      const httpServer = createServer((req, res) => {
+        const url = new URL(req.url ?? "/", "http://127.0.0.1");
+        const digest = url.searchParams.get("digest") ?? MATCH_DIGEST;
+        const sev = (url.searchParams.get("sev") ?? "").split(",").filter(Boolean);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            SchemaVersion: 2,
+            ArtifactName: "registry.test/app:1.0",
+            ArtifactType: "container_image",
+            Metadata: { RepoDigests: [`registry.test/app@${digest}`], ImageID: digest },
+            Results: [
+              {
+                Target: "registry.test/app:1.0 (alpine 3.19)",
+                Vulnerabilities: sev.map((s, i) => ({ VulnerabilityID: `CVE-2026-${9000 + i}`, Severity: s }))
+              }
+            ]
+          })
+        );
+      });
+      await new Promise<void>((resolve) => httpServer.listen(0, "127.0.0.1", resolve));
+      const { port } = httpServer.address() as AddressInfo;
+      return {
+        url: `http://127.0.0.1:${port}/scan`,
+        close: () =>
+          new Promise<void>((resolve, reject) => {
+            httpServer.close((err) => (err ? reject(err) : resolve()));
+          })
+      };
+    }
+
+    /** A real `control` graph object bound to the real `scan-result-control` plugin, pointed at the
+     *  Trivy fixture with a fixed scanned `digest` + `severities`, and the digest the change is
+     *  promoting pinned via `expectedDigest` (the operator-pinned binding path — the gate context does
+     *  not yet thread a per-change artifact digest, so the plugin binds against config). */
+    async function createScanControl(
+      admin: ScpClient,
+      org: TestOrg,
+      opts: { urnSuffix: string; digest: string; severities?: string[]; expectedDigest: string; threshold?: Record<string, number> }
+    ) {
+      const control = await admin.controls.create({
+        name: `scan-control-${opts.urnSuffix}`,
+        urn: `urn:scp:${org.orgId}:control:${opts.urnSuffix}`,
+        properties: { category: "security" }
+      });
+      const params = new URLSearchParams({ digest: opts.digest, sev: (opts.severities ?? []).join(",") });
+      await admin.controls.putBinding(control.id, {
+        pluginModule: "scan-result-control",
+        pluginInstanceId: `scan-${control.id}`,
+        config: {
+          url: `${scanSource.url}?${params.toString()}`,
+          expectedDigest: opts.expectedDigest,
+          ...(opts.threshold ? { threshold: opts.threshold } : {})
+        }
+      });
+      return control;
+    }
+
+    beforeAll(async () => {
+      scanSource = await startTrivySource();
+    });
+    afterAll(async () => {
+      await scanSource.close();
+    });
+
+    it("a required policy naming the scan control BLOCKS promotion when the Trivy verdict is over threshold (a Critical) — the wave never leaves 'executing' and the block is an audited Decision citing the failed control", async () => {
+      const org = await createTestOrg(server, "scan-fail");
+      const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+      const target = await createTestComponent(admin, { name: "scan-fail-target" });
+      const control = await createScanControl(admin, org, {
+        urnSuffix: "scan-fail",
+        digest: MATCH_DIGEST, // digest matches the change's artifact — it's the VULN that blocks, not the binding
+        severities: ["CRITICAL", "HIGH"],
+        expectedDigest: MATCH_DIGEST
+      });
+      await createPolicy(admin, org, {
+        name: "scan-gate",
+        urnSuffix: "scan-fail-policy",
+        enforcement: "required",
+        scopeObjectId: target.id,
+        requireControlIds: [control.id]
+      });
+
+      const change = await admin.changes.propose({ name: "scan-fail-change", targets: [target.id] });
+
+      // The control genuinely runs (real subprocess, real Trivy-JSON fetch) and reports 'fail'.
+      const run = await waitForControlRun(admin, change.id, control.id, "fail");
+      // Evidence is the TYPED scan verdict — digest bound (match), counts, threshold applied.
+      expect(run.evidence).toMatchObject({ scanner: "trivy", digestMatch: true });
+      expect((run.evidence as { severityCounts: { critical: number } }).severityCounts.critical).toBe(1);
+
+      // Failed required control -> the wave can never start -> the change stays 'executing'.
+      await assertStaysExecuting(admin, change.id);
+
+      const explained = await admin.changes.explain(change.id);
+      const gateBlock = explained.decisions.find((d) => d.kind === "gate" && d.verdict === "block");
+      expect(gateBlock).toBeDefined();
+      const policyEntry = (
+        (gateBlock!.reasonTree as { policies?: Array<Record<string, unknown>> }).policies ?? []
+      ).find((p) => p.name === "scan-gate");
+      const controlEffect = (
+        policyEntry!.effects as Array<{ kind: string; satisfied: boolean; detail: Record<string, unknown> }>
+      ).find((e) => e.kind === "requireControls");
+      expect(controlEffect?.satisfied).toBe(false);
+      expect(controlEffect?.detail.outcome).toBe("fail");
+    });
+
+    it("a CLEAN Trivy verdict whose scanned digest MATCHES the change's artifact PROMOTES — and the pass evidence is explainable", async () => {
+      const org = await createTestOrg(server, "scan-pass");
+      const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+      const target = await createTestComponent(admin, { name: "scan-pass-target" });
+      const control = await createScanControl(admin, org, {
+        urnSuffix: "scan-pass",
+        digest: MATCH_DIGEST,
+        severities: ["MEDIUM", "LOW"], // under the default (Critical=0, High=0) threshold
+        expectedDigest: MATCH_DIGEST
+      });
+      await createPolicy(admin, org, {
+        name: "scan-gate",
+        urnSuffix: "scan-pass-policy",
+        enforcement: "required",
+        scopeObjectId: target.id,
+        requireControlIds: [control.id]
+      });
+
+      const change = await admin.changes.propose({ name: "scan-pass-change", targets: [target.id] });
+
+      await waitForControlRun(admin, change.id, control.id, "pass");
+      await waitForValidating(admin, change.id);
+      const promoted = await admin.changes.promote(change.id);
+      expect(promoted.state).toBe("promoted");
+
+      const explained = await admin.changes.explain(change.id);
+      const controlRun = explained.controlRuns.find((r) => r.controlObjectId === control.id);
+      expect(controlRun!.status).toBe("pass");
+      expect(controlRun!.evidence).toMatchObject({
+        scanner: "trivy",
+        digestMatch: true,
+        artifactDigest: MATCH_DIGEST,
+        expectedDigest: MATCH_DIGEST
+      });
+    });
+
+    it("a DIGEST MISMATCH blocks even a perfectly CLEAN scan — a verdict for a DIFFERENT artifact must not authorize the change (ADR-0013 'nothing slipped in')", async () => {
+      const org = await createTestOrg(server, "scan-mismatch");
+      const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+      const target = await createTestComponent(admin, { name: "scan-mismatch-target" });
+      // ZERO vulnerabilities, but the scan is of OTHER_DIGEST while the change promotes MATCH_DIGEST.
+      const control = await createScanControl(admin, org, {
+        urnSuffix: "scan-mismatch",
+        digest: OTHER_DIGEST,
+        severities: [],
+        expectedDigest: MATCH_DIGEST
+      });
+      await createPolicy(admin, org, {
+        name: "scan-gate",
+        urnSuffix: "scan-mismatch-policy",
+        enforcement: "required",
+        scopeObjectId: target.id,
+        requireControlIds: [control.id]
+      });
+
+      const change = await admin.changes.propose({ name: "scan-mismatch-change", targets: [target.id] });
+
+      const run = await waitForControlRun(admin, change.id, control.id, "fail");
+      expect(run.evidence).toMatchObject({ digestMatch: false, artifactDigest: OTHER_DIGEST, expectedDigest: MATCH_DIGEST });
+      expect(run.detail).toMatch(/digest mismatch/i);
+
+      // Clean but mismatched -> still blocked: the wave stays parked.
+      await assertStaysExecuting(admin, change.id);
+    });
+  });
 });
 
 // -----------------------------------------------------------------------------------------

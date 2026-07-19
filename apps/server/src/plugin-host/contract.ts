@@ -81,10 +81,13 @@ export interface FederationTransportPluginClient {
  * `federation-https`, a `FederationTransportPlugin`. M15.1b adds `gitea`, a second git-provider
  * `ExecutorPlugin` built (like `github`) on `@scp/git-provider-core`; M15.3a adds `gitea-discovery`,
  * gitea's separate `DiscoveryPlugin` export (same package, distinct module — like github/github-discovery).
+ * M17.1 adds `scan-result-control`, a second `ControlPlugin` (sibling of `webhook-control`) that
+ * turns a coordinated Trivy scan verdict into gate evidence (ADR-0013).
  */
 export type PluginModule =
   | "fake-executor"
   | "webhook-control"
+  | "scan-result-control"
   | "github"
   | "github-discovery"
   | "gitea"
