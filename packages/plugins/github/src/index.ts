@@ -16,6 +16,7 @@ import type {
 import {
   createExecutorPluginFromAdapter,
   normalizeCorrelation,
+  resolveProviderBaseUrl,
   type GitProviderAdapter,
   type GitProviderEventHint
 } from "@scp/git-provider-core";
@@ -76,7 +77,12 @@ export interface GithubConfig {
   /** Default workflow file name (e.g. `deploy.yml`) used when a `TriggerIntent` doesn't specify
    *  `parameters.workflowId`. */
   defaultWorkflowId?: string;
-  apiBaseUrl?: string; // override for tests; default https://api.github.com
+  apiBaseUrl?: string; // explicit override; default https://api.github.com
+  /** Injected by the server when this binding is backed by an execution-system (Mode A — import an
+   *  EXISTING GitHub, incl. GitHub Enterprise). Used as the base-URL FALLBACK when `apiBaseUrl` is
+   *  not set, so a `kind=github` execution-system's `serverUrl` actually reaches the provider
+   *  (M15.3b). Precedence: `apiBaseUrl` → `serverUrl` → `https://api.github.com`. */
+  serverUrl?: string;
   statePath?: string;
 }
 
@@ -95,7 +101,16 @@ function asConfig(config: unknown): GithubConfig {
     privateKeySecretKey: c.privateKeySecretKey,
     privateKeyPem: c.privateKeyPem,
     defaultWorkflowId: c.defaultWorkflowId,
-    apiBaseUrl: (c.apiBaseUrl ?? "https://api.github.com").replace(/\/$/, ""),
+    // Base URL by precedence: explicit apiBaseUrl → injected execution-system serverUrl → the
+    // github.com default (M15.3b). `resolveProviderBaseUrl` always returns a value here because a
+    // fallback is supplied, so the `?? default` keeps the type non-optional without ever firing.
+    apiBaseUrl:
+      resolveProviderBaseUrl({
+        explicit: c.apiBaseUrl,
+        serverUrl: c.serverUrl,
+        fallback: "https://api.github.com"
+      }) ?? "https://api.github.com",
+    serverUrl: c.serverUrl,
     statePath: c.statePath
   };
 }
@@ -686,7 +701,11 @@ const githubConfigSchema = {
     owner: { type: "string" },
     repo: { type: "string" },
     privateKeySecretKey: { type: "string" },
-    defaultWorkflowId: { type: "string" }
+    defaultWorkflowId: { type: "string" },
+    // Additive (M15.3b): injected by the server for an execution-system-backed (Mode A) binding as
+    // the base-URL fallback; declared so a generated config form / inline-binding validation accepts
+    // it rather than treating it as unknown.
+    serverUrl: { type: "string" }
   }
 };
 

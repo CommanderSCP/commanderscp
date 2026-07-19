@@ -149,17 +149,20 @@ export function buildGithubConfig(overrides: Partial<GithubConfig> = {}): Github
     repo: overrides.repo ?? "widgets",
     privateKeyPem: overrides.privateKeyPem ?? getTestKeyPair().privateKeyPem,
     defaultWorkflowId: "defaultWorkflowId" in overrides ? overrides.defaultWorkflowId : "ci.yml",
-    apiBaseUrl: overrides.apiBaseUrl ?? "https://api.github.com",
+    // Property-presence (not `??`) for BOTH URL fields (M15.3b): a serverUrl-fallback test wants to
+    // pass `{ apiBaseUrl: undefined, serverUrl: "..." }` and have that stick — a `??` default would
+    // silently re-fill apiBaseUrl and defeat the very precedence the test asserts.
+    apiBaseUrl: "apiBaseUrl" in overrides ? overrides.apiBaseUrl : "https://api.github.com",
+    serverUrl: "serverUrl" in overrides ? overrides.serverUrl : undefined,
     statePath: overrides.statePath
   };
 }
 
-/** `config.apiBaseUrl` is optional on the `GithubConfig` interface (defaulted inside index.ts's
- *  own `asConfig`), but `buildGithubConfig` above always sets a concrete value — this just gives
- *  test call sites a non-optional `string` to hand `nock(...)` without repeating the `?? "..."`
- *  fallback everywhere. */
+/** Resolves the base URL a test's `nock(...)` should intercept, mirroring index.ts's `asConfig`
+ *  precedence: explicit `apiBaseUrl` → injected `serverUrl` (Mode A) → the github.com default
+ *  (M15.3b). Gives call sites a non-optional `string` without repeating the `?? "..."` fallback. */
 export function apiBase(config: GithubConfig): string {
-  return config.apiBaseUrl ?? "https://api.github.com";
+  return config.apiBaseUrl ?? config.serverUrl ?? "https://api.github.com";
 }
 
 export function buildTestCtx(
