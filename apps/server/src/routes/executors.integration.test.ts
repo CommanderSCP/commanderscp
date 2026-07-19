@@ -205,6 +205,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
         "github",
         "github-discovery",
         "gitea",
+        "gitea-discovery",
         "argocd",
         "argocd-discovery",
         "terraform",
@@ -445,6 +446,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
       "bogus-module-that-does-not-exist",
       "webhook-control", // a real module, but a ControlPlugin, not an ExecutorPlugin
       "github-discovery", // a real module, but a DiscoveryPlugin
+      "gitea-discovery", // a real module, but a DiscoveryPlugin (M15.3a — must be excluded too)
       "webhook-notify", // a real module, but a NotificationPlugin
       "smtp-notify"
     ]) {

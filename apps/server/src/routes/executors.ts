@@ -30,7 +30,10 @@ import {
   manifest as githubExecutorManifest,
   discoveryManifest as githubDiscoveryManifest
 } from "@scp/plugin-github";
-import { manifest as giteaManifest } from "@scp/plugin-gitea";
+import {
+  manifest as giteaManifest,
+  discoveryManifest as giteaDiscoveryManifest
+} from "@scp/plugin-gitea";
 import {
   manifest as argocdManifest,
   discoveryManifest as argocdDiscoveryManifest
@@ -75,10 +78,14 @@ import {
 } from "../secrets/secrets-repo.js";
 import { createSourceMapping, backfillSourceMappings } from "../coordination/source-mappings-repo.js";
 
-/** Only `github-discovery` is a real `DiscoveryPlugin` module today — same allowlist discipline
- *  as `executor-bindings-repo.ts`'s `KNOWN_EXECUTOR_MODULES` (a free-form request field must never
- *  reach `host.start()` unchecked). */
-const KNOWN_DISCOVERY_MODULES: PluginModule[] = ["github-discovery", "argocd-discovery"];
+/** The `DiscoveryPlugin` modules (`github-discovery`, `gitea-discovery`, `argocd-discovery`) — same
+ *  allowlist discipline as `executor-bindings-repo.ts`'s `KNOWN_EXECUTOR_MODULES` (a free-form
+ *  request field must never reach `host.start()` unchecked). */
+const KNOWN_DISCOVERY_MODULES: PluginModule[] = [
+  "github-discovery",
+  "gitea-discovery",
+  "argocd-discovery"
+];
 
 /** Every bundled plugin's manifest, keyed by the module name a binding references. Used to
  *  validate a binding's tenant-supplied `config` against the plugin's declared `configSchema`
@@ -89,6 +96,7 @@ const MANIFEST_BY_MODULE: Record<string, { configSchema: unknown }> = {
   github: githubExecutorManifest,
   "github-discovery": githubDiscoveryManifest,
   gitea: giteaManifest,
+  "gitea-discovery": giteaDiscoveryManifest,
   argocd: argocdManifest,
   "argocd-discovery": argocdDiscoveryManifest,
   terraform: terraformManifest,
@@ -196,6 +204,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           githubExecutorManifest,
           githubDiscoveryManifest,
           giteaManifest,
+          giteaDiscoveryManifest,
           argocdManifest,
           argocdDiscoveryManifest,
           terraformManifest,

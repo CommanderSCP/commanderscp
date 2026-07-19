@@ -1,6 +1,8 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type {
   AbortResult,
+  DiscoveryPlugin,
+  DiscoveryProposal,
   ExecutionPhase,
   ExecutionStatus,
   ExecutorCapabilities,
@@ -547,6 +549,102 @@ export function createGiteaExecutorPlugin(): ExecutorPlugin {
 }
 
 // -------------------------------------------------------------------------------------------
+// DiscoveryPlugin (M15.3a — port of github's discover(); DESIGN §11/§12 — "repo/topology scan
+// proposing Service/Component objects and source_mappings"; NEVER auto-commits, only proposes).
+// Reuses this package's own `GiteaConfig`/`api()` — Gitea's contents API is GitHub-COMPATIBLE at
+// `<baseUrl>/api/v1/repos/{owner}/{repo}/contents/{path}` (same response entry shape), so the
+// marker-file topology walk is identical to github's; only the `sourceKind` differs. The discovered
+// `sourceMapping.sourceKind` is `'gitea'` — matching the gitea EXECUTOR's `source_kind` (the
+// `giteaAdapter.sourceKind` above) so an accepted component's `source_mappings` row actually
+// correlates observed gitea events (push/run/package). This closes the observe-correlation gap for
+// gitea: without a gitea-kinded source_mapping, pulled gitea events correlate against nothing.
+//
+// NOTE (follow-up): github's discover omits `sourceMapping.type`, so it defaults to `'configuration'`
+// server-side; this increment keeps that same default for gitea rather than inferring `'image'` for
+// container-registry-backed components. Inferring type from the marker set (e.g. a Dockerfile → an
+// image source) is a deliberate LATER increment. Generalizing this walk into `@scp/git-provider-core`
+// (a `discover` hook on `GitProviderAdapter`) is also deferred until a second git provider needs it —
+// two impls (github + gitea) now exist, so that extraction is the natural next step, but it is NOT
+// this PR's scope.
+// -------------------------------------------------------------------------------------------
+
+/** A Gitea contents-API entry — GitHub-compatible shape (`name`/`path`/`type`). */
+interface RepoContentEntry {
+  name: string;
+  path: string;
+  type: "file" | "dir";
+}
+
+/** Heuristic component detection (identical to github's): a top-level directory containing one of
+ *  these marker files is proposed as a Component; the repo root itself is always proposed as one
+ *  Service. Deliberately simple (v1) — real topology detection is exactly what a human reviews
+ *  before accepting a proposal. */
+const COMPONENT_MARKER_FILES = ["package.json", "Dockerfile", "pom.xml", "go.mod", "Cargo.toml"];
+
+async function discover(ctx: PluginContext): Promise<DiscoveryProposal> {
+  const config = asConfig(ctx.config);
+  const serviceUrn = `urn:scp:service:gitea:${config.owner}/${config.repo}`;
+  const objects: DiscoveryProposal["objects"] = [
+    {
+      typeId: "service",
+      name: config.repo,
+      properties: { discoveredFrom: `gitea:${config.owner}/${config.repo}` }
+    }
+  ];
+  const relationships: DiscoveryProposal["relationships"] = [];
+
+  const { status, body } = await api(
+    ctx,
+    config,
+    "GET",
+    `/repos/${config.owner}/${config.repo}/contents/`
+  );
+  if (status >= 200 && status < 300) {
+    const entries = body as RepoContentEntry[];
+    for (const entry of entries) {
+      if (entry.type !== "dir") continue;
+      const { status: dirStatus, body: dirBody } = await api(
+        ctx,
+        config,
+        "GET",
+        `/repos/${config.owner}/${config.repo}/contents/${encodeURIComponent(entry.path)}`
+      );
+      if (dirStatus < 200 || dirStatus >= 300) continue;
+      const dirEntries = dirBody as RepoContentEntry[];
+      const hasMarker = dirEntries.some(
+        (e) => e.type === "file" && COMPONENT_MARKER_FILES.includes(e.name)
+      );
+      if (!hasMarker) continue;
+
+      const componentUrn = `urn:scp:component:gitea:${config.owner}/${config.repo}/${entry.path}`;
+      objects.push({
+        typeId: "component",
+        name: entry.name,
+        properties: {
+          discoveredFrom: `gitea:${config.owner}/${config.repo}`,
+          sourceMapping: {
+            // MUST be 'gitea' (matches giteaAdapter.sourceKind) so imported components correlate
+            // observed gitea events — the whole point of this discovery half (see section doc).
+            sourceKind: "gitea",
+            repoPattern: `${config.owner}/${config.repo}`,
+            pathPattern: `${entry.path}/**`
+          }
+        }
+      });
+      relationships.push({ typeId: "part_of", fromUrn: componentUrn, toUrn: serviceUrn });
+    }
+  }
+
+  return { objects, relationships };
+}
+
+export const giteaDiscoveryPlugin: DiscoveryPlugin = { discover };
+
+export function createGiteaDiscoveryPlugin(): DiscoveryPlugin {
+  return giteaDiscoveryPlugin;
+}
+
+// -------------------------------------------------------------------------------------------
 // Manifest
 // -------------------------------------------------------------------------------------------
 
@@ -569,7 +667,18 @@ export const executorManifest: PluginManifest = {
   configSchema: giteaConfigSchema
 };
 
-/** Back-compat single `manifest` export (matches every other plugin's shape). */
+/** The DiscoveryPlugin half — one npm package here provides two distinct plugin-host modules
+ *  (`gitea`, `gitea-discovery`), mirroring github's `github`/`github-discovery` split (contract.ts's
+ *  `PluginModule` doc explains why: one subprocess-hosted instance loads exactly one plugin kind). */
+export const discoveryManifest: PluginManifest = {
+  id: "gitea-discovery",
+  kind: "discovery",
+  version: "0.1.0",
+  configSchema: giteaConfigSchema
+};
+
+/** Back-compat single `manifest` export (matches every other plugin's shape) — describes the
+ *  executor half; `discoveryManifest` covers the discovery half. */
 export const manifest = executorManifest;
 
 export default giteaExecutorPlugin;
