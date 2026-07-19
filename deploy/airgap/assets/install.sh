@@ -334,7 +334,7 @@ if [[ "$MODE" == "helm" ]]; then
   # carries and each one's retargeted, digest-pinned image --set args (values-driven, never a
   # hardcoded template ref — avoiding the eval-postgres air-gap trap noted below).
   BUNDLED_APPLY=()
-  BUNDLED_SET_ARGOCD=(); BUNDLED_SET_WORKFLOWS=(); BUNDLED_SET_EVENTS=(); BUNDLED_SET_HARBOR=()
+  BUNDLED_SET_ARGOCD=(); BUNDLED_SET_WORKFLOWS=(); BUNDLED_SET_EVENTS=()
   if [[ -n "${ARGOCD_DIGEST:-}" ]]; then
     BUNDLED_SET_ARGOCD=(--set "bundledExecutor.argocd.image=${ARGOCD_RETARGETED_REF:-${REGISTRY}/argocd:${BUNDLE_VERSION}@${ARGOCD_DIGEST}}"
       --set "bundledExecutor.argocd.valkeyImage=${VALKEY_RETARGETED_REF:-${REGISTRY}/valkey:${BUNDLE_VERSION}@${VALKEY_DIGEST}}")
@@ -349,19 +349,8 @@ if [[ "$MODE" == "helm" ]]; then
     BUNDLED_SET_EVENTS=(--set "bundledExecutor.argoEvents.image=${ARGO_EVENTS_RETARGETED_REF:-${REGISTRY}/argo-events:${BUNDLE_VERSION}@${ARGO_EVENTS_DIGEST}}")
     BUNDLED_APPLY+=(argo-events)
   fi
-  if [[ -n "${HARBOR_CORE_DIGEST:-}" ]]; then
-    BUNDLED_SET_HARBOR=(
-      --set "bundledExecutor.harbor.coreImage=${HARBOR_CORE_RETARGETED_REF:-${REGISTRY}/harbor-core:${BUNDLE_VERSION}@${HARBOR_CORE_DIGEST}}"
-      --set "bundledExecutor.harbor.dbImage=${HARBOR_DB_RETARGETED_REF:-${REGISTRY}/harbor-db:${BUNDLE_VERSION}@${HARBOR_DB_DIGEST}}"
-      --set "bundledExecutor.harbor.jobserviceImage=${HARBOR_JOBSERVICE_RETARGETED_REF:-${REGISTRY}/harbor-jobservice:${BUNDLE_VERSION}@${HARBOR_JOBSERVICE_DIGEST}}"
-      --set "bundledExecutor.harbor.portalImage=${HARBOR_PORTAL_RETARGETED_REF:-${REGISTRY}/harbor-portal:${BUNDLE_VERSION}@${HARBOR_PORTAL_DIGEST}}"
-      --set "bundledExecutor.harbor.registryctlImage=${HARBOR_REGISTRYCTL_RETARGETED_REF:-${REGISTRY}/harbor-registryctl:${BUNDLE_VERSION}@${HARBOR_REGISTRYCTL_DIGEST}}"
-      --set "bundledExecutor.harbor.registryImage=${HARBOR_REGISTRY_RETARGETED_REF:-${REGISTRY}/harbor-registry:${BUNDLE_VERSION}@${HARBOR_REGISTRY_DIGEST}}"
-      --set "bundledExecutor.harbor.nginxImage=${HARBOR_NGINX_RETARGETED_REF:-${REGISTRY}/harbor-nginx:${BUNDLE_VERSION}@${HARBOR_NGINX_DIGEST}}"
-      --set "bundledExecutor.harbor.redisImage=${HARBOR_REDIS_RETARGETED_REF:-${REGISTRY}/harbor-redis:${BUNDLE_VERSION}@${HARBOR_REDIS_DIGEST}}"
-      --set "bundledExecutor.harbor.trivyImage=${HARBOR_TRIVY_RETARGETED_REF:-${REGISTRY}/harbor-trivy:${BUNDLE_VERSION}@${HARBOR_TRIVY_DIGEST}}")
-    BUNDLED_APPLY+=(harbor)
-  fi
+  # NOTE: Harbor is REMOVED from the bundled stack (Gitea is the default registry, ADR-0012); an
+  # existing Harbor is served via the import path (coordinated as an execution system), not bundled.
   if [[ -n "$NAMESPACE" ]]; then
     HELM_ARGS+=(--namespace "$NAMESPACE" --create-namespace)
   fi
@@ -390,7 +379,7 @@ if [[ "$MODE" == "helm" ]]; then
     helm "${HELM_ARGS[@]}"
     # Apply each bundled backend THIS bundle carries, via the one-command wrapper: deploy/helm-bundled
     # rendered + `kubectl apply --server-side` (the vendored manifests exceed Helm's 1 MB release-
-    # Secret limit, so they are NEVER part of the SCP release), and for argocd/harbor the wrapper also
+    # Secret limit, so they are NEVER part of the SCP release), and for argocd the wrapper also
     # flips the SCP release's auto-wire hook + NetworkPolicy. This deploys the Standard Stack the only
     # way that fits under Kubernetes' Secret limit.
     NS_ARGS=(); [[ -n "$NAMESPACE" ]] && NS_ARGS=(--scp-namespace "$NAMESPACE")
@@ -401,7 +390,6 @@ if [[ "$MODE" == "helm" ]]; then
         argocd)         BSET=(${BUNDLED_SET_ARGOCD[@]+"${BUNDLED_SET_ARGOCD[@]}"}) ;;
         argo-workflows) BSET=(${BUNDLED_SET_WORKFLOWS[@]+"${BUNDLED_SET_WORKFLOWS[@]}"}) ;;
         argo-events)    BSET=(${BUNDLED_SET_EVENTS[@]+"${BUNDLED_SET_EVENTS[@]}"}) ;;
-        harbor)         BSET=(${BUNDLED_SET_HARBOR[@]+"${BUNDLED_SET_HARBOR[@]}"}) ;;
       esac
       bash "${SCRIPT_DIR}/scp-bundled.sh" enable "$be" \
         --chart "${SCRIPT_DIR}/helm-bundled" --scp-chart "${SCRIPT_DIR}/helm" \

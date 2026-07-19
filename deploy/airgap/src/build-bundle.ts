@@ -58,24 +58,6 @@ interface Opts {
   argoWorkflowsControllerSource: "docker-daemon" | "docker";
   argoEventsRef: string;
   argoEventsSource: "docker-daemon" | "docker";
-  harborCoreRef: string;
-  harborCoreSource: "docker-daemon" | "docker";
-  harborDbRef: string;
-  harborDbSource: "docker-daemon" | "docker";
-  harborJobserviceRef: string;
-  harborJobserviceSource: "docker-daemon" | "docker";
-  harborPortalRef: string;
-  harborPortalSource: "docker-daemon" | "docker";
-  harborRegistryctlRef: string;
-  harborRegistryctlSource: "docker-daemon" | "docker";
-  harborRegistryRef: string;
-  harborRegistrySource: "docker-daemon" | "docker";
-  harborNginxRef: string;
-  harborNginxSource: "docker-daemon" | "docker";
-  harborRedisRef: string;
-  harborRedisSource: "docker-daemon" | "docker";
-  harborTrivyRef: string;
-  harborTrivySource: "docker-daemon" | "docker";
 }
 
 function sourceTypeOption(value: string): "docker-daemon" | "docker" {
@@ -108,24 +90,6 @@ async function main(): Promise<void> {
     .option("--argo-workflows-controller-source <type>", "docker-daemon|docker", "docker")
     .option("--argo-events-ref <ref>", "bundled Argo Events image", "quay.io/argoproj/argo-events:v1.9.10")
     .option("--argo-events-source <type>", "docker-daemon|docker", "docker")
-    .option("--harbor-core-ref <ref>", "bundled Harbor core image", "docker.io/goharbor/harbor-core:v2.15.1")
-    .option("--harbor-core-source <type>", "docker-daemon|docker", "docker")
-    .option("--harbor-db-ref <ref>", "bundled Harbor database image", "docker.io/goharbor/harbor-db:v2.15.1")
-    .option("--harbor-db-source <type>", "docker-daemon|docker", "docker")
-    .option("--harbor-jobservice-ref <ref>", "bundled Harbor jobservice image", "docker.io/goharbor/harbor-jobservice:v2.15.1")
-    .option("--harbor-jobservice-source <type>", "docker-daemon|docker", "docker")
-    .option("--harbor-portal-ref <ref>", "bundled Harbor portal image", "docker.io/goharbor/harbor-portal:v2.15.1")
-    .option("--harbor-portal-source <type>", "docker-daemon|docker", "docker")
-    .option("--harbor-registryctl-ref <ref>", "bundled Harbor registryctl image", "docker.io/goharbor/harbor-registryctl:v2.15.1")
-    .option("--harbor-registryctl-source <type>", "docker-daemon|docker", "docker")
-    .option("--harbor-registry-ref <ref>", "bundled Harbor registry (registry-photon) image", "docker.io/goharbor/registry-photon:v2.15.1")
-    .option("--harbor-registry-source <type>", "docker-daemon|docker", "docker")
-    .option("--harbor-nginx-ref <ref>", "bundled Harbor nginx (nginx-photon) image", "docker.io/goharbor/nginx-photon:v2.15.1")
-    .option("--harbor-nginx-source <type>", "docker-daemon|docker", "docker")
-    .option("--harbor-redis-ref <ref>", "bundled Harbor redis (redis-photon) image", "docker.io/goharbor/redis-photon:v2.15.1")
-    .option("--harbor-redis-source <type>", "docker-daemon|docker", "docker")
-    .option("--harbor-trivy-ref <ref>", "bundled Harbor Trivy adapter image", "docker.io/goharbor/trivy-adapter-photon:v2.15.1")
-    .option("--harbor-trivy-source <type>", "docker-daemon|docker", "docker")
     .parse(process.argv);
 
   const raw = program.opts<Record<string, string>>();
@@ -147,25 +111,7 @@ async function main(): Promise<void> {
     argoWorkflowsControllerRef: raw.argoWorkflowsControllerRef!,
     argoWorkflowsControllerSource: sourceTypeOption(raw.argoWorkflowsControllerSource!),
     argoEventsRef: raw.argoEventsRef!,
-    argoEventsSource: sourceTypeOption(raw.argoEventsSource!),
-    harborCoreRef: raw.harborCoreRef!,
-    harborCoreSource: sourceTypeOption(raw.harborCoreSource!),
-    harborDbRef: raw.harborDbRef!,
-    harborDbSource: sourceTypeOption(raw.harborDbSource!),
-    harborJobserviceRef: raw.harborJobserviceRef!,
-    harborJobserviceSource: sourceTypeOption(raw.harborJobserviceSource!),
-    harborPortalRef: raw.harborPortalRef!,
-    harborPortalSource: sourceTypeOption(raw.harborPortalSource!),
-    harborRegistryctlRef: raw.harborRegistryctlRef!,
-    harborRegistryctlSource: sourceTypeOption(raw.harborRegistryctlSource!),
-    harborRegistryRef: raw.harborRegistryRef!,
-    harborRegistrySource: sourceTypeOption(raw.harborRegistrySource!),
-    harborNginxRef: raw.harborNginxRef!,
-    harborNginxSource: sourceTypeOption(raw.harborNginxSource!),
-    harborRedisRef: raw.harborRedisRef!,
-    harborRedisSource: sourceTypeOption(raw.harborRedisSource!),
-    harborTrivyRef: raw.harborTrivyRef!,
-    harborTrivySource: sourceTypeOption(raw.harborTrivySource!)
+    argoEventsSource: sourceTypeOption(raw.argoEventsSource!)
   };
 
   if (!skopeo.skopeoAvailable()) {
@@ -190,18 +136,9 @@ async function main(): Promise<void> {
       ref: opts.argoWorkflowsControllerRef,
       sourceType: opts.argoWorkflowsControllerSource
     },
-    { name: "argo-events", ref: opts.argoEventsRef, sourceType: opts.argoEventsSource },
-    // Bundled Harbor (Mode B — registry + Trivy). Nine images retargeted onto bundledExecutor.harbor.*
-    // by install.sh (keyed off HARBOR_CORE_DIGEST). Names are harbor-prefixed in the customer registry.
-    { name: "harbor-core", ref: opts.harborCoreRef, sourceType: opts.harborCoreSource },
-    { name: "harbor-db", ref: opts.harborDbRef, sourceType: opts.harborDbSource },
-    { name: "harbor-jobservice", ref: opts.harborJobserviceRef, sourceType: opts.harborJobserviceSource },
-    { name: "harbor-portal", ref: opts.harborPortalRef, sourceType: opts.harborPortalSource },
-    { name: "harbor-registryctl", ref: opts.harborRegistryctlRef, sourceType: opts.harborRegistryctlSource },
-    { name: "harbor-registry", ref: opts.harborRegistryRef, sourceType: opts.harborRegistrySource },
-    { name: "harbor-nginx", ref: opts.harborNginxRef, sourceType: opts.harborNginxSource },
-    { name: "harbor-redis", ref: opts.harborRedisRef, sourceType: opts.harborRedisSource },
-    { name: "harbor-trivy", ref: opts.harborTrivyRef, sourceType: opts.harborTrivySource }
+    { name: "argo-events", ref: opts.argoEventsRef, sourceType: opts.argoEventsSource }
+    // NOTE: Harbor is REMOVED from the bundled stack (Gitea is the default registry, ADR-0012); an
+    // existing Harbor is served via the import path (coordinated as an execution system), not bundled.
   ];
 
   const bundleDirName = `scp-bundle-${opts.version}`;

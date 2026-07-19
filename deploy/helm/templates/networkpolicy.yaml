@@ -113,31 +113,6 @@ spec:
         - { protocol: TCP, port: 443 }
 ---
 {{- end }}
-{{- if .Values.bundledExecutor.harbor.enabled }}
-# Egress: bundled Harbor (Mode B) — api/worker reach the in-cluster Harbor core API (http on 80 when
-# expose.tls.enabled=false, https on 443 otherwise) to OBSERVE image/scan state. In-cluster
-# destination ⇒ a precise namespaceSelector, not the RFC1918 ipBlock. Observe-only: SCP never pushes.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: {{ include "commanderscp.fullname" . }}-allow-harbor
-  labels:
-    {{- include "commanderscp.labels" . | nindent 4 }}
-spec:
-  podSelector:
-    matchLabels:
-      {{- include "commanderscp.selectorLabels" . | nindent 6 }}
-  policyTypes: ["Egress"]
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.bundledExecutor.harbor.namespace }}
-      ports:
-        - { protocol: TCP, port: 80 }
-        - { protocol: TCP, port: 443 }
----
-{{- end }}
 {{- range .Values.networkPolicy.executorEgress }}
 # Egress: executor allowlist entry {{ .name | quote }} (Mode A / BYO-coordinate, DESIGN §12) — SCP
 # api/worker make outbound observe/trigger/status/abort calls to the execution systems they

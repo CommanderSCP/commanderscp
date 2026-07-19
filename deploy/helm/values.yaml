@@ -176,22 +176,21 @@ managedIac:
 # block renders nothing (the "never load-bearing / two-container floor" guarantee — helm-verify
 # asserts no Valkey/Argo CD is emitted with the profile off).
 # -------------------------------------------------------------------------------------------
-# Bundled executor backends (Mode B, ADR-0002) — the FULL definitions (vendored manifests, images,
-# Harbor secret-gen) live in the SEPARATE `deploy/helm-bundled` chart, applied out-of-release via
+# Bundled executor backends (Mode B, ADR-0002) — the FULL definitions (vendored manifests, images)
+# live in the SEPARATE `deploy/helm-bundled` chart, applied out-of-release via
 # scripts/scp-bundled.sh (the vendored manifests exceed Helm's 1 MB release-Secret limit; see
 # deploy/helm-bundled/Chart.yaml). This MAIN chart keeps only the SLIM knobs its own resources use:
 # the post-install auto-wire hook (templates/bundled-argocd-autowire-job.yaml) and the
-# allow-argocd / allow-harbor NetworkPolicy egress rules (templates/networkpolicy.yaml). Enabling a
+# allow-argocd NetworkPolicy egress rule (templates/networkpolicy.yaml). Enabling a
 # backend flips the matching `enabled` here (turns on the hook + egress) AND applies the bundled
 # chart — `scripts/scp-bundled.sh enable <backend>` does both in one command.
+# NOTE: Harbor is REMOVED from the bundled stack (Gitea is the default registry, ADR-0012); an
+# existing Harbor is served via the import path (coordinated as an execution system), not bundled.
 bundledExecutor:
   argocd:
     enabled: false
     namespace: scp-argocd
     scpAccount: scp-coordinator
-  harbor:
-    enabled: false
-    namespace: scp-harbor
 
 # -------------------------------------------------------------------------------------------
 # Federation mTLS transport identity (DESIGN §13, M8 hardening) — host-level, operator-owned

@@ -1,8 +1,12 @@
 # CommanderSCP Standard Stack — bundled executor backends
 
 The optional, opt-in **bundled executor backends** (Mode B, [ADR-0002](../../docs/adr/0002-execution-strategy.md)):
-Argo CD + Valkey, Argo Workflows, Argo Events, and Harbor. Each is vendored **unmodified** from
+Argo CD + Valkey, Argo Workflows, and Argo Events. Each is vendored **unmodified** from
 upstream and rendered here with only image-retarget + namespace substitutions.
+
+The bundled OCI registry is Gitea ([ADR-0012](../../docs/adr/0012-registry-consolidation.md)); Harbor
+is **removed** from the default stack — an existing Harbor is served via the **import** path
+(coordinated as an execution system), not bundled here.
 
 ## Why this is a separate chart (not part of `deploy/helm`)
 
@@ -22,14 +26,13 @@ stored in a Helm release. The main chart stays tiny (~40 KB) and installs normal
 ```bash
 # Connected: zero image flags needed (the chart defaults to the upstream refs)
 scripts/scp-bundled.sh enable argocd
-scripts/scp-bundled.sh enable harbor
 scripts/scp-bundled.sh enable argo-workflows
 scripts/scp-bundled.sh enable argo-events
 ```
 
 `scp-bundled.sh enable <backend>` renders this chart for that backend, applies it with
 `kubectl apply --server-side` (required — the large CRDs overflow client-side apply's annotation),
-waits for readiness, and — for Argo CD / Harbor — flips the matching flag on the SCP release so its
+waits for readiness, and — for Argo CD — flips the matching flag on the SCP release so its
 **auto-wire hook** (mints the scoped Argo CD token, zero token plumbing) and **NetworkPolicy egress**
 turn on. Pass `--scp-release <name> --scp-namespace <ns>` if your SCP release isn't `scp`/`default`.
 
@@ -44,11 +47,11 @@ and set `bundledExecutor.argocd.enabled: true` in the values your GitOps tool re
 ## Inspect without applying
 
 ```bash
-scripts/scp-bundled.sh render harbor        # print the manifest to stdout, apply nothing
+scripts/scp-bundled.sh render argocd        # print the manifest to stdout, apply nothing
 ```
 
 ## What stays in the main `commanderscp` chart
 
 Only the *slim* integration the SCP pods themselves need: the Argo CD auto-wire hook Job and the
-`allow-argocd` / `allow-harbor` NetworkPolicy egress rules, gated on
-`bundledExecutor.{argocd,harbor}.{enabled,namespace}`. The heavy vendored manifests live here.
+`allow-argocd` NetworkPolicy egress rule, gated on
+`bundledExecutor.argocd.{enabled,namespace}`. The heavy vendored manifests live here.
