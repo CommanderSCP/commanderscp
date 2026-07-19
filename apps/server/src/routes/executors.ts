@@ -35,6 +35,10 @@ import {
   discoveryManifest as giteaDiscoveryManifest
 } from "@scp/plugin-gitea";
 import {
+  manifest as gitlabManifest,
+  discoveryManifest as gitlabDiscoveryManifest
+} from "@scp/plugin-gitlab";
+import {
   manifest as argocdManifest,
   discoveryManifest as argocdDiscoveryManifest
 } from "@scp/plugin-argocd";
@@ -78,12 +82,13 @@ import {
 } from "../secrets/secrets-repo.js";
 import { createSourceMapping, backfillSourceMappings } from "../coordination/source-mappings-repo.js";
 
-/** The `DiscoveryPlugin` modules (`github-discovery`, `gitea-discovery`, `argocd-discovery`) — same
- *  allowlist discipline as `executor-bindings-repo.ts`'s `KNOWN_EXECUTOR_MODULES` (a free-form
- *  request field must never reach `host.start()` unchecked). */
+/** The `DiscoveryPlugin` modules (`github-discovery`, `gitea-discovery`, `gitlab-discovery`,
+ *  `argocd-discovery`) — same allowlist discipline as `executor-bindings-repo.ts`'s
+ *  `KNOWN_EXECUTOR_MODULES` (a free-form request field must never reach `host.start()` unchecked). */
 const KNOWN_DISCOVERY_MODULES: PluginModule[] = [
   "github-discovery",
   "gitea-discovery",
+  "gitlab-discovery",
   "argocd-discovery"
 ];
 
@@ -97,6 +102,8 @@ const MANIFEST_BY_MODULE: Record<string, { configSchema: unknown }> = {
   "github-discovery": githubDiscoveryManifest,
   gitea: giteaManifest,
   "gitea-discovery": giteaDiscoveryManifest,
+  gitlab: gitlabManifest,
+  "gitlab-discovery": gitlabDiscoveryManifest,
   argocd: argocdManifest,
   "argocd-discovery": argocdDiscoveryManifest,
   terraform: terraformManifest,
@@ -205,6 +212,8 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           githubDiscoveryManifest,
           giteaManifest,
           giteaDiscoveryManifest,
+          gitlabManifest,
+          gitlabDiscoveryManifest,
           argocdManifest,
           argocdDiscoveryManifest,
           terraformManifest,

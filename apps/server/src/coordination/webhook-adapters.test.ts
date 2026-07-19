@@ -36,6 +36,21 @@ describe("verifierForSourceKind — resolves the right provider verifier via the
     expect(verifierForSourceKind("github").verify(rawBody, bareHexSig, secret)).toBe(false);
   });
 
+  it("gitlab resolves the PLAINTEXT-TOKEN verifier on x-gitlab-token (NOT an HMAC — the header value IS the secret)", () => {
+    const v = verifierForSourceKind("gitlab");
+    expect(v.headerName).toBe("x-gitlab-token");
+    // GitLab does not sign the body: the raw body is irrelevant; only header===secret matters.
+    expect(v.verify(rawBody, secret, secret)).toBe(true);
+    expect(v.verify(Buffer.from("a totally different body"), secret, secret)).toBe(true);
+    expect(v.verify(rawBody, "wrong-token", secret)).toBe(false);
+  });
+
+  it("gitlab's plaintext-token verifier REJECTS both HMAC framings (github's sha256= and gitea's bare-hex) — a token is not a signature", () => {
+    const v = verifierForSourceKind("gitlab");
+    expect(v.verify(rawBody, githubSig, secret)).toBe(false);
+    expect(v.verify(rawBody, bareHexSig, secret)).toBe(false);
+  });
+
   it("a source kind with no provider adapter (terraform) falls back to the generic sha256=<hex> verifier on x-scp-signature-256", () => {
     const v = verifierForSourceKind("terraform");
     expect(v.headerName).toBe("x-scp-signature-256");
@@ -64,6 +79,20 @@ describe("webhookAdapterForSourceKind — event-hint mapping routes to the right
       package: { name: "widgets", version: digest, type: "container" }
     });
     expect(hint).toMatchObject({ repo: "acme/widgets", artifactDigest: digest });
+  });
+
+  it("gitlab maps a Pipeline Hook (object_attributes) and reads its event from x-gitlab-event", () => {
+    const adapter = webhookAdapterForSourceKind("gitlab");
+    expect(adapter?.eventHeaderName).toBe("x-gitlab-event");
+    const hint = adapter?.mapEvent("Pipeline Hook", {
+      object_attributes: { id: 99, sha: "9".repeat(40), ref: "main" },
+      project: { path_with_namespace: "acme/widgets" }
+    });
+    expect(hint).toMatchObject({
+      repo: "acme/widgets",
+      commitSha: "9".repeat(40),
+      correlationKey: "pipeline-99"
+    });
   });
 
   it("returns undefined for a source kind with no provider adapter", () => {

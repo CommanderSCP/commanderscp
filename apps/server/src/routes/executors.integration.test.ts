@@ -134,6 +134,27 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     expect(binding.executionSystemId).toBe(sys.id);
   });
 
+  it("a gitlab execution-system binding is accepted end to end — the M15.3b module census (KNOWN_EXECUTOR_MODULES + the route's kind allowlist) recognizes 'gitlab'", async () => {
+    const org = await createTestOrg(server, "m15-gitlab-binding");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    await admin.secrets.put("gitlab-pat", { value: "a-scoped-gitlab-pat" });
+    const sys = await admin.object("execution-system").create({
+      name: `gitlab-prod-${randomUUID().slice(0, 8)}`,
+      properties: {
+        kind: "gitlab", // must pass isKnownExecutorModule — the census point a miss would 400
+        serverUrl: "https://gitlab.example.com",
+        tokenSecretKey: "gitlab-pat"
+      }
+    });
+    const comp = await createTestComponent(admin, { name: `svc-${randomUUID().slice(0, 8)}` });
+    const binding = await admin.executors.putBinding(comp.id, {
+      executionSystemId: sys.id,
+      externalRef: "acme/widgets"
+    });
+    expect(binding.pluginModule).toBe("gitlab");
+    expect(binding.executionSystemId).toBe(sys.id);
+  });
+
   it("execution-system binding is REJECTED when the reference is not an execution-system object", async () => {
     const org = await createTestOrg(server, "m12-execution-system-invalid");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
@@ -206,6 +227,8 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
         "github-discovery",
         "gitea",
         "gitea-discovery",
+        "gitlab",
+        "gitlab-discovery",
         "argocd",
         "argocd-discovery",
         "terraform",

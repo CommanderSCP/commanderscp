@@ -94,6 +94,14 @@ async function loadPlugin(moduleName: string): Promise<LoadedPlugin> {
       const mod = await import("@scp/plugin-gitea");
       return { kind: "discovery", plugin: mod.createGiteaDiscoveryPlugin() };
     }
+    case "gitlab": {
+      const mod = await import("@scp/plugin-gitlab");
+      return { kind: "executor", plugin: mod.createGitlabExecutorPlugin() };
+    }
+    case "gitlab-discovery": {
+      const mod = await import("@scp/plugin-gitlab");
+      return { kind: "discovery", plugin: mod.createGitlabDiscoveryPlugin() };
+    }
     case "argocd": {
       const mod = await import("@scp/plugin-argocd");
       return { kind: "executor", plugin: mod.createArgoCdExecutorPlugin() };
