@@ -54,6 +54,35 @@ export interface GitProviderEventHint {
   correlationKey?: string;
 }
 
+// -------------------------------------------------------------------------------------------
+// Base-URL resolution — provider-neutral precedence for an adapter's REST base URL (M15.3b). A
+// git-provider adapter's base URL can come from three places, in order: (1) the adapter's OWN
+// explicit config field (github's `apiBaseUrl`, gitea's `baseUrl`) — a deliberate per-binding
+// override; (2) the execution-system's injected `config.serverUrl` — how a Mode-A "import an
+// EXISTING provider" binding tells the adapter where that provider lives (executor-bindings-repo
+// injects it; discovery/run injects it too); (3) a provider default (github's `api.github.com`;
+// gitea has none). This helper owns ONLY the precedence + trailing-slash trim; each adapter keeps
+// its own field names and its own "neither was set" error message (gitea throws, github defaults),
+// so the provider-neutral core gains no provider-specific knowledge.
+// -------------------------------------------------------------------------------------------
+
+export interface ResolveBaseUrlInput {
+  /** The adapter's own explicit base-URL config field, if the binding set it (highest precedence). */
+  explicit?: string;
+  /** The execution-system's injected base URL (`config.serverUrl`) — the Mode-A import path. */
+  serverUrl?: string;
+  /** Provider default used only when neither of the above is set (github: api.github.com; gitea: none). */
+  fallback?: string;
+}
+
+/** Resolves an adapter REST base URL by precedence (explicit → serverUrl → fallback) and trims a
+ *  trailing slash. Returns `undefined` when none of the three is set — the caller decides whether
+ *  that is an error (gitea: throw) or impossible (github: always passes a fallback). */
+export function resolveProviderBaseUrl(input: ResolveBaseUrlInput): string | undefined {
+  const resolved = input.explicit ?? input.serverUrl ?? input.fallback;
+  return resolved ? resolved.replace(/\/$/, "") : undefined;
+}
+
 export function normalizeCorrelation(hint: GitProviderEventHint): ExecutorEventCorrelation {
   return {
     repo: hint.repo,

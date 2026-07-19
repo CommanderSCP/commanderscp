@@ -557,6 +557,70 @@ describe("observe() polling — commits, runs, and package pushes", () => {
 });
 
 // -------------------------------------------------------------------------------------------
+// Base-URL resolution (M15.3b) — explicit `baseUrl` → injected `serverUrl` (Mode A: import an
+// EXISTING Gitea, the execution-system's serverUrl injected as config.serverUrl). Gitea has NO
+// provider default (unlike github's api.github.com), so neither being set is a hard, clear error.
+// -------------------------------------------------------------------------------------------
+
+describe("base URL resolution (baseUrl → serverUrl; required, no default)", () => {
+  it("with ONLY serverUrl set (no baseUrl) every request targets <serverUrl>/api/v1", async () => {
+    const serverUrl = "https://gitea.self-hosted.example";
+    // baseUrl explicitly undefined → the injected serverUrl is the sole base; apiBase() and
+    // index.ts's asConfig must both resolve to `${serverUrl}/api/v1`.
+    const { config, ctx, authHeader, base } = setup({ baseUrl: undefined, serverUrl });
+    expect(config.baseUrl).toBeUndefined();
+    expect(base).toBe(`${serverUrl}/api/v1`);
+    const commitSha = "e5".repeat(20);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .reply(200, [{ sha: commitSha, commit: { author: { date: "2026-07-01T00:00:00Z" } } }]);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .reply(200, { workflow_runs: [] });
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/packages/${config.owner}`)
+      .reply(200, []);
+
+    const events = await plugin.observe(ctx);
+    expect(events.find((e) => e.kind === "push")?.correlation.commitSha).toBe(commitSha);
+  });
+
+  it("an explicit baseUrl WINS over an injected serverUrl", async () => {
+    const explicit = "https://gitea-explicit.example";
+    const serverUrl = "https://gitea-injected.example";
+    const { config, ctx, authHeader, base } = setup({ baseUrl: explicit, serverUrl });
+    expect(base).toBe(`${explicit}/api/v1`);
+    // Fixtures live ONLY on the explicit host — a request to the injected host would reject (net
+    // connect disabled) and these would go unconsumed (afterEach fails).
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .reply(200, []);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .reply(200, { workflow_runs: [] });
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/packages/${config.owner}`)
+      .reply(200, []);
+
+    await expect(plugin.observe(ctx)).resolves.toEqual([]);
+  });
+
+  it("throws a clear error when NEITHER baseUrl NOR serverUrl is set — no HTTP call attempted", async () => {
+    const config = buildGiteaConfig({ baseUrl: undefined, serverUrl: undefined });
+    const ctx = buildTestCtx(config);
+    // asConfig throws before any api() call, so no interceptor is needed; net-connect is disabled,
+    // so a stray call would reject anyway.
+    await expect(plugin.observe(ctx)).rejects.toThrow(/no base URL configured/);
+  });
+});
+
+// -------------------------------------------------------------------------------------------
 // discover() (DiscoveryPlugin) — Gitea contents-API topology walk. The `sourceKind: 'gitea'` on
 // the proposed component's sourceMapping is the load-bearing assertion (matches the executor's
 // source_kind so imported components correlate observed gitea events). Gitea's contents API is

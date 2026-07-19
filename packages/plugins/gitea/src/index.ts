@@ -16,6 +16,7 @@ import type {
 import {
   createExecutorPluginFromAdapter,
   normalizeCorrelation,
+  resolveProviderBaseUrl,
   type GitProviderAdapter,
   type GitProviderEventHint
 } from "@scp/git-provider-core";
@@ -67,8 +68,14 @@ import {
 
 export interface GiteaConfig {
   /** The Gitea instance base URL, e.g. `https://gitea.example.com` (NO trailing slash, NO
-   *  `/api/v1` — that suffix is appended by `apiBase()`). */
-  baseUrl: string;
+   *  `/api/v1` — that suffix is appended by `apiBase()`). Explicit per-binding override; when it is
+   *  not set, `serverUrl` (injected by an execution-system-backed binding) is used instead. */
+  baseUrl?: string;
+  /** Injected by the server when this binding is backed by an execution-system (Mode A — import an
+   *  EXISTING Gitea): used as the base-URL FALLBACK when `baseUrl` is not set, so a `kind=gitea`
+   *  execution-system's `serverUrl` actually reaches the provider (M15.3b). At least ONE of
+   *  `baseUrl`/`serverUrl` must be present — `asConfig` throws otherwise. */
+  serverUrl?: string;
   owner: string;
   repo: string;
   /** `SecretsAccessor` key holding the Personal Access Token. */
@@ -84,11 +91,21 @@ export interface GiteaConfig {
 
 function asConfig(config: unknown): GiteaConfig {
   const c = config as Partial<GiteaConfig> | undefined;
-  if (!c?.baseUrl || !c.owner || !c.repo) {
-    throw new Error("gitea: config.baseUrl, config.owner, and config.repo are required");
+  if (!c?.owner || !c.repo) {
+    throw new Error("gitea: config.owner and config.repo are required");
+  }
+  // Base URL by precedence: explicit baseUrl → injected execution-system serverUrl. No default
+  // exists for a self-hosted Gitea (unlike github's api.github.com), so neither being set is a
+  // hard, clear error — this is what a Mode-A `kind=gitea` binding relies on (M15.3b).
+  const baseUrl = resolveProviderBaseUrl({ explicit: c.baseUrl, serverUrl: c.serverUrl });
+  if (!baseUrl) {
+    throw new Error(
+      "gitea: no base URL configured (set config.baseUrl, or back this binding with a kind=gitea execution-system whose serverUrl is injected as config.serverUrl)"
+    );
   }
   return {
-    baseUrl: c.baseUrl.replace(/\/$/, ""),
+    baseUrl,
+    serverUrl: c.serverUrl,
     owner: c.owner,
     repo: c.repo,
     tokenSecretKey: c.tokenSecretKey,
@@ -98,7 +115,8 @@ function asConfig(config: unknown): GiteaConfig {
   };
 }
 
-/** REST base for the adapter's own calls: `<instance>/api/v1` (documented, stable). */
+/** REST base for the adapter's own calls: `<instance>/api/v1` (documented, stable). `asConfig` has
+ *  already resolved + validated `baseUrl` (explicit or serverUrl fallback), so it is always set. */
 function apiBase(config: GiteaConfig): string {
   return `${config.baseUrl}/api/v1`;
 }
@@ -648,11 +666,18 @@ export function createGiteaDiscoveryPlugin(): DiscoveryPlugin {
 // Manifest
 // -------------------------------------------------------------------------------------------
 
+// `baseUrl` is intentionally NOT in `required` (M15.3b): a Mode-A `kind=gitea` execution-system
+// binding supplies the base URL as the injected `serverUrl` fallback instead. `owner`/`repo` stay
+// required; the "at least one of baseUrl/serverUrl" invariant is enforced at resolve time in
+// `asConfig` (JSON Schema's `anyOf`-of-required is more than a config form should have to render).
 const giteaConfigSchema = {
   type: "object",
-  required: ["baseUrl", "owner", "repo"],
+  required: ["owner", "repo"],
   properties: {
     baseUrl: { type: "string" },
+    // Additive (M15.3b): injected by the server for an execution-system-backed (Mode A) binding as
+    // the base-URL fallback; declared so a config form / inline-binding validation accepts it.
+    serverUrl: { type: "string" },
     owner: { type: "string" },
     repo: { type: "string" },
     tokenSecretKey: { type: "string" },

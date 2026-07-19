@@ -66,7 +66,11 @@ export const TEST_PAT = "gitea-test-pat-abc123";
 
 export function buildGiteaConfig(overrides: Partial<GiteaConfig> = {}): GiteaConfig {
   return {
-    baseUrl: overrides.baseUrl ?? "https://gitea.example.com",
+    // property-presence (not `??`) for BOTH URL fields (M15.3b): a serverUrl-fallback test passes
+    // `{ baseUrl: undefined, serverUrl: "..." }` and needs that to stick — a `??` default would
+    // silently restore baseUrl and defeat the precedence the test asserts.
+    baseUrl: "baseUrl" in overrides ? overrides.baseUrl : "https://gitea.example.com",
+    serverUrl: "serverUrl" in overrides ? overrides.serverUrl : undefined,
     owner: overrides.owner ?? "acme",
     repo: overrides.repo ?? "widgets",
     // property-presence (not `??`): a caller that explicitly passes `{ tokenPlaintext: undefined }`
@@ -79,9 +83,10 @@ export function buildGiteaConfig(overrides: Partial<GiteaConfig> = {}): GiteaCon
   };
 }
 
-/** `<baseUrl>/api/v1` — the concrete host+path prefix test call sites hand `nock(...)`. */
+/** `<baseUrl>/api/v1` — the concrete host+path prefix test call sites hand `nock(...)`. Mirrors
+ *  index.ts's base-URL precedence: explicit `baseUrl` → injected `serverUrl` (Mode A) — M15.3b. */
 export function apiBase(config: GiteaConfig): string {
-  return `${config.baseUrl}/api/v1`;
+  return `${config.baseUrl ?? config.serverUrl}/api/v1`;
 }
 
 /** The `Authorization` header value every authenticated Gitea call is expected to carry. */

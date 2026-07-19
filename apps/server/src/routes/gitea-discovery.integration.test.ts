@@ -153,14 +153,16 @@ describe("M15.3a: gitea-discovery import loop (BYO Gitea → proposal → accept
     });
 
     // 1) RUN — a real subprocess plugin-host scan. `executionSystemId` names the system whose
-    //    (server-governed) serverUrl/token/egress the run uses; baseUrl/owner/repo are the gitea
-    //    adapter's own config fields (it reads `baseUrl`, not the generic `serverUrl`).
+    //    (server-governed) serverUrl/token/egress the run uses. NOTE (M15.3b): the config carries NO
+    //    `baseUrl` — the gitea adapter now resolves its REST base from the injected `serverUrl` (the
+    //    execution-system's own serverUrl, injected server-side and pinned to the egress-allowed
+    //    host), which is exactly what makes importing an EXISTING (Mode A) Gitea reach it. Only
+    //    owner/repo are the adapter's own per-run config fields.
     const proposal = await admin.discovery.run({
       pluginModule: "gitea-discovery",
       pluginInstanceId: `gitea-disc-${randomUUID().slice(0, 8)}`,
       config: {
         executionSystemId: sys.id,
-        baseUrl: giteaBaseUrl,
         owner,
         repo
       }

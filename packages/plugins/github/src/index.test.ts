@@ -548,6 +548,74 @@ describe("trigger() idempotency — file-backed dedup cache (statePath set)", ()
 });
 
 // -------------------------------------------------------------------------------------------
+// Base-URL resolution (M15.3b) — apiBaseUrl → serverUrl (Mode A: import an EXISTING GitHub /
+// GitHub Enterprise, injected as config.serverUrl) → the github.com default. Every request in this
+// block is fixtured ONLY on the host the resolution SHOULD pick; net-connect is disabled, so a
+// request that landed on the wrong host would reject with "no match" rather than pass silently.
+// -------------------------------------------------------------------------------------------
+
+describe("base URL resolution (apiBaseUrl → serverUrl → github.com default)", () => {
+  it("with ONLY serverUrl set (a GitHub Enterprise host, no apiBaseUrl) every request goes to that host, not api.github.com", async () => {
+    const enterprise = "https://ghe.corp.example";
+    // apiBaseUrl explicitly undefined → the injected serverUrl is the sole base; apiBase() (and
+    // index.ts's asConfig) must both resolve to `enterprise`. setup() fixtures the token exchange
+    // at apiBase(config) = enterprise, so it also proves auth targets the enterprise host.
+    const { config, ctx, authHeader } = setup({ apiBaseUrl: undefined, serverUrl: enterprise });
+    expect(config.apiBaseUrl).toBeUndefined();
+    const commitSha = "1a".repeat(20);
+    nock(enterprise)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .reply(200, [{ sha: commitSha, commit: { author: { date: "2026-07-01T00:00:00Z" } } }]);
+    nock(enterprise)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .reply(200, { workflow_runs: [] });
+
+    const events = await plugin.observe(ctx);
+    expect(events.find((e) => e.kind === "push")?.correlation.commitSha).toBe(commitSha);
+  });
+
+  it("with NEITHER apiBaseUrl NOR serverUrl set, requests fall back to the api.github.com default", async () => {
+    const { config, ctx, authHeader } = setup({ apiBaseUrl: undefined, serverUrl: undefined });
+    expect(config.apiBaseUrl).toBeUndefined();
+    expect(config.serverUrl).toBeUndefined();
+    const commitSha = "2b".repeat(20);
+    nock("https://api.github.com")
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .reply(200, [{ sha: commitSha, commit: { author: { date: "2026-07-01T00:00:00Z" } } }]);
+    nock("https://api.github.com")
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .reply(200, { workflow_runs: [] });
+
+    const events = await plugin.observe(ctx);
+    expect(events.find((e) => e.kind === "push")?.correlation.commitSha).toBe(commitSha);
+  });
+
+  it("an explicit apiBaseUrl WINS over an injected serverUrl (explicit override beats the fallback)", async () => {
+    const explicit = "https://ghe-explicit.corp.example";
+    const serverUrl = "https://ghe-injected.corp.example";
+    const { config, ctx, authHeader } = setup({ apiBaseUrl: explicit, serverUrl });
+    const commitSha = "3c".repeat(20);
+    // Fixtures live ONLY on the explicit host; if resolution wrongly preferred serverUrl, these go
+    // unconsumed (afterEach fails) AND the call rejects against the unmocked injected host.
+    nock(explicit)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .reply(200, [{ sha: commitSha, commit: { author: { date: "2026-07-01T00:00:00Z" } } }]);
+    nock(explicit)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .reply(200, { workflow_runs: [] });
+
+    const events = await plugin.observe(ctx);
+    expect(events.find((e) => e.kind === "push")?.correlation.commitSha).toBe(commitSha);
+  });
+});
+
+// -------------------------------------------------------------------------------------------
 // status()
 // -------------------------------------------------------------------------------------------
 
