@@ -2642,7 +2642,10 @@ export function buildProgram(): Command {
     .description(
       "Run a DiscoveryPlugin scan — prints a PROPOSAL only, nothing is written to the graph"
     )
-    .requiredOption("--module <module>", "plugin module: github-discovery")
+    .requiredOption(
+      "--module <module>",
+      "plugin module: github-discovery | gitea-discovery | argocd-discovery"
+    )
     .requiredOption("--instance-id <id>", "stable id for this plugin instance")
     .option("--config <json>", "JSON object — the plugin's own config shape")
     .option("--secret-refs <json>", "JSON object mapping configFieldName -> secret key")

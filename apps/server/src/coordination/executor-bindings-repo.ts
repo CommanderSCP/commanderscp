@@ -347,8 +347,9 @@ export async function repointExecutorBindingTarget(
  * arbitrary subprocess module. Mirrors `governance/control-runner.ts`'s identical
  * `KNOWN_CONTROL_MODULES` allowlist pattern, scoped to the modules that are actually
  * `ExecutorPlugin`s (excludes `webhook-control` — a `ControlPlugin` — and `github-discovery`/
- * `webhook-notify`/`smtp-notify`, which are `DiscoveryPlugin`/`NotificationPlugin` and would only
- * ever produce a confusing "unknown method" RPC failure if a wave target were bound to one).
+ * `gitea-discovery`/`webhook-notify`/`smtp-notify`, which are `DiscoveryPlugin`/`NotificationPlugin`
+ * and would only ever produce a confusing "unknown method" RPC failure if a wave target were bound
+ * to one).
  */
 export const KNOWN_EXECUTOR_MODULES: PluginModule[] = [
   "fake-executor",

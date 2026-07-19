@@ -12,14 +12,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll } from "vitest";
 import type { PluginContext } from "@scp/plugin-api";
-import { runExecutorConformanceSuite } from "@scp/plugin-testkit";
+import { runDiscoveryConformanceSuite, runExecutorConformanceSuite } from "@scp/plugin-testkit";
 import nock from "nock";
-import { createGiteaExecutorPlugin } from "./index.js";
+import { createGiteaDiscoveryPlugin, createGiteaExecutorPlugin } from "./index.js";
 import { apiBase, authHeaderFor, buildGiteaConfig, buildTestCtx } from "./gitea-test-support.js";
 
 const config = buildGiteaConfig({ owner: "conformance-org", repo: "conformance-repo" });
 const base = apiBase(config);
 const authHeader = authHeaderFor(config);
+
+// Discovery conformance runs against its OWN repo config so its persisted contents fixtures never
+// collide with the executor suite's runs/commits fixtures above.
+const discoveryConfig = buildGiteaConfig({
+  owner: "conformance-org",
+  repo: "conformance-discovery-repo"
+});
+const discoveryBase = apiBase(discoveryConfig);
 
 beforeAll(() => {
   nock.disableNetConnect();
@@ -65,6 +73,18 @@ beforeAll(() => {
     .get(`/packages/${config.owner}`)
     .reply(200, [])
     .persist();
+
+  // -- Discovery suite fixtures (Gitea contents API, GitHub-compatible). --
+  nock(discoveryBase)
+    .matchHeader("authorization", authHeader)
+    .get(`/repos/${discoveryConfig.owner}/${discoveryConfig.repo}/contents/`)
+    .reply(200, [{ name: "service-a", path: "service-a", type: "dir" }])
+    .persist();
+  nock(discoveryBase)
+    .matchHeader("authorization", authHeader)
+    .get(`/repos/${discoveryConfig.owner}/${discoveryConfig.repo}/contents/service-a`)
+    .reply(200, [{ name: "package.json", path: "service-a/package.json", type: "file" }])
+    .persist();
 });
 
 afterAll(() => {
@@ -81,4 +101,10 @@ runExecutorConformanceSuite("gitea", async () => {
     ctx: buildTestCtx({ ...config, statePath })
   });
   return { ...build(), restart: async () => build() };
+});
+
+runDiscoveryConformanceSuite("gitea-discovery", async () => {
+  const plugin = createGiteaDiscoveryPlugin();
+  const ctx: PluginContext = buildTestCtx(discoveryConfig);
+  return { plugin, ctx };
 });

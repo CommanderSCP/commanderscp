@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import nock from "nock";
 import {
+  createGiteaDiscoveryPlugin,
   createGiteaExecutorPlugin,
   mapGiteaWebhookEventToHint,
   verifyGiteaWebhookSignature,
@@ -25,6 +26,7 @@ import {
 import { apiBase, authHeaderFor, buildGiteaConfig, buildTestCtx } from "./gitea-test-support.js";
 
 const plugin = createGiteaExecutorPlugin();
+const discoveryPlugin = createGiteaDiscoveryPlugin();
 
 function setup(overrides: Partial<GiteaConfig> = {}) {
   const config = buildGiteaConfig(overrides);
@@ -551,6 +553,81 @@ describe("observe() polling — commits, runs, and package pushes", () => {
     nock(base).matchHeader("authorization", authHeader).get(`/packages/${config.owner}`).reply(200, []);
 
     await expect(plugin.observe(ctx)).resolves.toEqual([]);
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// discover() (DiscoveryPlugin) — Gitea contents-API topology walk. The `sourceKind: 'gitea'` on
+// the proposed component's sourceMapping is the load-bearing assertion (matches the executor's
+// source_kind so imported components correlate observed gitea events). Gitea's contents API is
+// GitHub-compatible; the fixtures below are REAL Gitea contents-API entry shapes.
+// -------------------------------------------------------------------------------------------
+
+describe("discover() (DiscoveryPlugin)", () => {
+  it("proposes one Service (repo root) + one Component per marker-file-containing top-level dir; the component's sourceMapping.sourceKind is 'gitea'; non-marker dirs and non-dir entries are skipped", async () => {
+    const { config, ctx, authHeader, base } = setup({ owner: "acme", repo: "monorepo" });
+    // Gitea contents API (GitHub-compatible), rooted under this package's `/api/v1` base.
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/`)
+      .reply(200, [
+        { name: "service-a", path: "service-a", type: "dir" },
+        { name: "docs", path: "docs", type: "dir" }, // dir, but no marker file inside -> skipped
+        { name: "README.md", path: "README.md", type: "file" } // not a dir -> no contents/ call
+      ]);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/service-a`)
+      .reply(200, [
+        { name: "go.mod", path: "service-a/go.mod", type: "file" },
+        { name: "main.go", path: "service-a/main.go", type: "file" }
+      ]);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/docs`)
+      .reply(200, [{ name: "README.md", path: "docs/README.md", type: "file" }]);
+
+    const proposal = await discoveryPlugin.discover(ctx);
+
+    const services = proposal.objects.filter((o) => o.typeId === "service");
+    expect(services).toHaveLength(1);
+    expect(services[0]).toMatchObject({ name: config.repo });
+
+    const components = proposal.objects.filter((o) => o.typeId === "component");
+    expect(components).toHaveLength(1);
+    expect(components[0]?.name).toBe("service-a");
+    // The whole point of the discovery half: a gitea-kinded source_mapping so observed gitea
+    // events correlate against the imported component. type is omitted -> defaults to
+    // 'configuration' server-side (follow-up: infer 'image' from a Dockerfile marker).
+    expect(components[0]?.properties?.sourceMapping).toEqual({
+      sourceKind: "gitea",
+      repoPattern: `${config.owner}/${config.repo}`,
+      pathPattern: "service-a/**"
+    });
+
+    expect(proposal.relationships).toHaveLength(1);
+    expect(proposal.relationships[0]).toEqual({
+      typeId: "part_of",
+      fromUrn: `urn:scp:component:gitea:${config.owner}/${config.repo}/service-a`,
+      toUrn: `urn:scp:service:gitea:${config.owner}/${config.repo}`
+    });
+  });
+
+  it("proposes ONLY the Service object (no components) when no top-level dir contains a marker file", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/`)
+      .reply(200, [{ name: "docs", path: "docs", type: "dir" }]);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/docs`)
+      .reply(200, [{ name: "index.md", path: "docs/index.md", type: "file" }]);
+
+    const proposal = await discoveryPlugin.discover(ctx);
+    expect(proposal.objects).toHaveLength(1);
+    expect(proposal.objects[0]?.typeId).toBe("service");
+    expect(proposal.relationships).toHaveLength(0);
   });
 });
 
