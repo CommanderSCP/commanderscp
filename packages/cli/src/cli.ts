@@ -2429,7 +2429,10 @@ export function buildProgram(): Command {
   executorCmd
     .command("bind <idOrUrn>")
     .description("Bind a Component/DeploymentTarget to an ExecutorPlugin instance or execution-system")
-    .option("--module <module>", "plugin module: github|argocd|terraform|managed-iac (inline binding)")
+    .option(
+      "--module <module>",
+      "plugin module: github|gitea|gitlab|argocd|terraform|managed-iac (inline binding)"
+    )
     .option("--instance-id <id>", "stable id for this plugin instance (inline binding)")
     .option(
       "--execution-system <idOrUrn>",
@@ -2644,7 +2647,7 @@ export function buildProgram(): Command {
     )
     .requiredOption(
       "--module <module>",
-      "plugin module: github-discovery | gitea-discovery | argocd-discovery"
+      "plugin module: github-discovery | gitea-discovery | gitlab-discovery | argocd-discovery"
     )
     .requiredOption("--instance-id <id>", "stable id for this plugin instance")
     .option("--config <json>", "JSON object — the plugin's own config shape")

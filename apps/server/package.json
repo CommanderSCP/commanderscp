@@ -31,6 +31,7 @@
     "@scp/plugin-federation-https": "workspace:*",
     "@scp/plugin-gitea": "workspace:*",
     "@scp/plugin-github": "workspace:*",
+    "@scp/plugin-gitlab": "workspace:*",
     "@scp/plugin-managed-iac": "workspace:*",
     "@scp/plugin-scan-result-control": "workspace:*",
     "@scp/plugin-smtp-notify": "workspace:*",
