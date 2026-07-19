@@ -30,3 +30,19 @@ M11.4 bundles **Harbor** as the registry with built-in Trivy scanning. But **Git
 - Gitea's registry is **less battle-tested at large scale** and has fewer enterprise controls (replication, retention, quotas, robot accounts) than Harbor. That is covered not by keeping a Harbor bundle but by the **import path**: an org that needs Harbor coordinates its *own* Harbor as an execution-system (M15.3).
 - The existing M11.4 Harbor bundle is **retired from the default stack** (removed, not kept as an optional bundle) — a write-down of that vendored plumbing, offset by one fewer heavy backend to ship/maintain.
 - cosign signs fine against Gitea's OCI registry, so signing is unaffected.
+
+## Addendum (M15.4): allowed-bundled-backends-per-role matrix — a chart-render-time guardrail (lint), not runtime authority
+
+M15.4 governs *which* bundled backends a given federation role may run, but does so as a **`helm template`-time self-consistency LINT**, not runtime enforcement. The operator sets **both** the `federationRole` (commander|outpost|retrans) value on the bundled chart (`deploy/helm-bundled`) **and** the `bundledExecutor.*.enabled` flags at install time; the lint in `tools/helm-verify` pairs those two install-time values and fails the render-check (non-zero) when a role enables a backend it should not run. This is a **misconfiguration guardrail** — a self-consistency check on operator-set install values — **not SCP runtime governance**.
+
+**Why not runtime enforcement (deliberate, owner decision):** the runtime `self_domain.role` (`apps/server/src/federation/self-repo.ts`) is **advisory** metadata set post-install via the federation API; it has no bearing on a Helm install-time value, and there is **no graph object** representing bundled-backend enablement for an engine to police. Wiring runtime enforcement would fork the engine (a new graph concept + policy path) for a check the render already makes cheaply. If runtime governance is wanted later, it arrives as a first-class policy-graph object — out of M15.4 scope.
+
+**Allowed-bundled-backends-per-role matrix** (single source of truth: `ALLOWED_BUNDLED_BACKENDS_BY_ROLE` in `tools/helm-verify/src/verify.ts`; **conservative where docs are silent**, assumption documented here and in BUILD_AND_TEST.md §8 M15.4):
+
+| Role | Allowed bundled backends | Rationale |
+|---|---|---|
+| **commander** | `argocd`, `argoWorkflows`, `argoEvents`, `gitea` | The full Standard Stack (M11) — build/deploy/event engines + the unified registry. |
+| **outpost** | `argocd`, `gitea` | A self-contained deploy target (this ADR + ADR-0010): local Gitea for artifacts/source + Argo CD to deploy. The build/event backends (`argoWorkflows`/`argoEvents`) are commander-only — outposts trust scan-at-source (ADR-0013) and don't build. |
+| **retrans** | *(none)* | A validate-and-relay CDS-boundary node is **not** an execution site — it forwards/validates federation bundles, so it bundles **nothing**. |
+
+The role is stamped as a `commanderscp.io/federation-role` label on each bundled-backend Namespace (via `commanderscp.federationRole` in `templates/_helpers.tpl`, which fails render on an invalid role), so the guardrail reads the operator's declared role straight from the render and lints it against the backends that actually rendered. A positive combo (outpost + gitea/argocd) renders clean; a disallowed combo (retrans + gitea) fails — proven by a real negative-case assertion in the helm-verify suite.
