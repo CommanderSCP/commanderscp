@@ -290,15 +290,16 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
   // verifyBundledChart + the packaged-size guard in main). Regression guard: the MAIN chart must
   // render ZERO resources into any bundled-backend namespace, on EVERY value set — if a vendored
   // file or render template crept back into deploy/helm, this fails.
-  const bundledNamespaces = ["scp-argocd", "scp-argo-workflows", "scp-argo-events"];
-  // The ONLY main-chart resources allowed in a bundled namespace are the auto-wire hook's tiny
-  // cross-namespace RBAC (a Role + RoleBinding in scp-argocd, to read Argo CD's admin secret) —
-  // identified by the argocd-autowire component label. Anything else means a VENDORED backend
-  // (Deployment/CRD/ConfigMap/…) crept back into the release-stored main chart.
+  const bundledNamespaces = ["scp-argocd", "scp-argo-workflows", "scp-argo-events", "scp-gitea"];
+  // The ONLY main-chart resources allowed in a bundled namespace are the auto-wire hooks' tiny
+  // cross-namespace RBAC (a Role + RoleBinding in scp-argocd / scp-gitea, to read the backend's
+  // admin secret) — identified by the *-autowire component labels. Anything else means a VENDORED
+  // backend (Deployment/CRD/ConfigMap/…) crept back into the release-stored main chart.
+  const autowireComponents = new Set(["argocd-autowire", "gitea-autowire"]);
   const strayBundled = docs.filter(
     (d) =>
       bundledNamespaces.includes(d.metadata?.namespace ?? "") &&
-      d.metadata?.labels?.["app.kubernetes.io/component"] !== "argocd-autowire"
+      !autowireComponents.has(d.metadata?.labels?.["app.kubernetes.io/component"] ?? "")
   );
   assert(
     strayBundled.length === 0,
@@ -307,19 +308,19 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
       .join(", ")}) — bundled backends must live ONLY in deploy/helm-bundled, never the release-stored main chart`
   );
   if (label === "kitchen-sink") {
-    // What the main chart DOES keep for bundled backends: enabling argocd turns on the SCP-
-    // side integration — the post-install auto-wire hook Job (mints the scoped Argo CD token) and
-    // the allow-argocd NetworkPolicy egress. Assert both render here.
-    const autowireJob = docs.find(
-      (d) => d.kind === "Job" && String(d.metadata?.name).includes("argocd-autowire")
-    );
-    assert(autowireJob, `[${label}] bundledExecutor.argocd.enabled but no argocd-autowire hook Job in the main chart`);
-    const hookAnn = autowireJob?.metadata?.annotations?.["helm.sh/hook"] ?? "";
-    assert(
-      hookAnn.includes("post-install"),
-      `[${label}] argocd-autowire Job must be a post-install hook (got "${hookAnn}")`
-    );
-    for (const be of ["argocd"]) {
+    // What the main chart DOES keep for bundled backends: enabling argocd / gitea turns on the SCP-
+    // side integration — the post-install auto-wire hook Job (mints the scoped backend token) and
+    // the allow-<backend> NetworkPolicy egress. Assert both render for each.
+    for (const be of ["argocd", "gitea"]) {
+      const autowireJob = docs.find(
+        (d) => d.kind === "Job" && String(d.metadata?.name).includes(`${be}-autowire`)
+      );
+      assert(autowireJob, `[${label}] bundledExecutor.${be}.enabled but no ${be}-autowire hook Job in the main chart`);
+      const hookAnn = autowireJob?.metadata?.annotations?.["helm.sh/hook"] ?? "";
+      assert(
+        hookAnn.includes("post-install"),
+        `[${label}] ${be}-autowire Job must be a post-install hook (got "${hookAnn}")`
+      );
       assert(
         docs.some((d) => d.kind === "NetworkPolicy" && String(d.metadata?.name).includes(`allow-${be}`)),
         `[${label}] bundledExecutor.${be}.enabled but no allow-${be} NetworkPolicy egress in the main chart`
@@ -458,13 +459,24 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
  *  the import path, not bundled.) */
 function verifyBundledChart(docs: K8sDoc[]): void {
   const label = "bundled";
-  const bundledNamespaces = ["scp-argocd", "scp-argo-workflows", "scp-argo-events"];
+  const bundledNamespaces = ["scp-argocd", "scp-argo-workflows", "scp-argo-events", "scp-gitea"];
   const bundled = docs.filter((d) => bundledNamespaces.includes(d.metadata?.namespace ?? ""));
 
   // Every enabled backend renders at least one resource in its own namespace, and Argo CD's server.
   assert(
     bundled.some((d) => d.kind === "Deployment" && d.metadata?.name === "argocd-server"),
     `[${label}] bundled Argo CD enabled but no argocd-server Deployment in scp-argocd`
+  );
+  // Bundled Gitea (the default unified registry, ADR-0012): its Deployment must render into
+  // scp-gitea, and its SCP-generated admin secret (gitea-admin-secret) must be present (the vendored
+  // manifest strips every upstream Secret — gitea-secrets.yaml regenerates them per install).
+  assert(
+    bundled.some((d) => d.kind === "Deployment" && d.metadata?.name === "scp-gitea"),
+    `[${label}] bundled Gitea enabled but no scp-gitea Deployment in scp-gitea`
+  );
+  assert(
+    bundled.some((d) => d.kind === "Secret" && d.metadata?.name === "gitea-admin-secret"),
+    `[${label}] bundled Gitea enabled but no SCP-generated gitea-admin-secret in scp-gitea`
   );
   for (const ns of bundledNamespaces) {
     assert(
@@ -484,7 +496,10 @@ function verifyBundledChart(docs: K8sDoc[]): void {
   assert(bundledImages.length > 0, `[${label}] bundled backends rendered no container images`);
   for (const img of bundledImages) {
     assert(
-      !img.includes("quay.io/argoproj") && !img.includes("public.ecr.aws"),
+      !img.includes("quay.io/argoproj") &&
+        !img.includes("public.ecr.aws") &&
+        !img.includes("docker.gitea.com") &&
+        !/(^|\/)busybox:/.test(img),
       `[${label}] bundled backend image '${img}' is NOT retargeted — the air-gap install.sh must rewrite every image to the customer registry (an upstream ref breaks air-gapped installs)`
     );
   }
@@ -534,6 +549,7 @@ function main(): void {
       // auto-wire hook + allow-argocd NetworkPolicy). The vendored render lives in the
       // separate bundled chart, verified below.
       "--set", "bundledExecutor.argocd.enabled=true",
+      "--set", "bundledExecutor.gitea.enabled=true",
       // Executor egress allowlist (Mode A / BYO-coordinate) — one entry exercising BOTH `to` shapes
       // at once (an in-cluster namespaceSelector AND an external ipBlock) plus multiple ports.
       "--set-json", 'networkPolicy.executorEgress=[{"name":"argocd","namespaces":["argocd"],"cidrs":["203.0.113.0/24"],"ports":[{"protocol":"TCP","port":8080},{"protocol":"TCP","port":80}]}]',
@@ -569,7 +585,9 @@ function main(): void {
       "--set", "bundledExecutor.argoWorkflows.serverImage=registry.example.com/scp/argocli:v4.0.7",
       "--set", "bundledExecutor.argoWorkflows.controllerImage=registry.example.com/scp/workflow-controller:v4.0.7",
       "--set", "bundledExecutor.argoEvents.enabled=true",
-      "--set", "bundledExecutor.argoEvents.image=registry.example.com/scp/argo-events:v1.9.10"
+      "--set", "bundledExecutor.argoEvents.image=registry.example.com/scp/argo-events:v1.9.10",
+      "--set", "bundledExecutor.gitea.enabled=true",
+      "--set", "bundledExecutor.gitea.image=registry.example.com/scp/gitea:1.26.1-rootless"
     ])
   );
 

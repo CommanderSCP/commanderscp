@@ -58,6 +58,8 @@ interface Opts {
   argoWorkflowsControllerSource: "docker-daemon" | "docker";
   argoEventsRef: string;
   argoEventsSource: "docker-daemon" | "docker";
+  giteaRef: string;
+  giteaSource: "docker-daemon" | "docker";
 }
 
 function sourceTypeOption(value: string): "docker-daemon" | "docker" {
@@ -90,6 +92,8 @@ async function main(): Promise<void> {
     .option("--argo-workflows-controller-source <type>", "docker-daemon|docker", "docker")
     .option("--argo-events-ref <ref>", "bundled Argo Events image", "quay.io/argoproj/argo-events:v1.9.10")
     .option("--argo-events-source <type>", "docker-daemon|docker", "docker")
+    .option("--gitea-ref <ref>", "bundled Gitea image (Mode B — the default unified registry)", "docker.gitea.com/gitea:1.26.1-rootless")
+    .option("--gitea-source <type>", "docker-daemon|docker", "docker")
     .parse(process.argv);
 
   const raw = program.opts<Record<string, string>>();
@@ -111,7 +115,9 @@ async function main(): Promise<void> {
     argoWorkflowsControllerRef: raw.argoWorkflowsControllerRef!,
     argoWorkflowsControllerSource: sourceTypeOption(raw.argoWorkflowsControllerSource!),
     argoEventsRef: raw.argoEventsRef!,
-    argoEventsSource: sourceTypeOption(raw.argoEventsSource!)
+    argoEventsSource: sourceTypeOption(raw.argoEventsSource!),
+    giteaRef: raw.giteaRef!,
+    giteaSource: sourceTypeOption(raw.giteaSource!)
   };
 
   if (!skopeo.skopeoAvailable()) {
@@ -136,9 +142,13 @@ async function main(): Promise<void> {
       ref: opts.argoWorkflowsControllerRef,
       sourceType: opts.argoWorkflowsControllerSource
     },
-    { name: "argo-events", ref: opts.argoEventsRef, sourceType: opts.argoEventsSource }
-    // NOTE: Harbor is REMOVED from the bundled stack (Gitea is the default registry, ADR-0012); an
-    // existing Harbor is served via the import path (coordinated as an execution system), not bundled.
+    { name: "argo-events", ref: opts.argoEventsRef, sourceType: opts.argoEventsSource },
+    // Bundled Gitea (Mode B — the DEFAULT unified registry, ADR-0012). Single image: Gitea runs
+    // self-contained on SQLite (chart v12.6.0 minimal profile — the only upstream busybox ref was
+    // the helm-test Pod, which is stripped from the vendored manifest). install.sh retargets it onto
+    // bundledExecutor.gitea.image. Harbor is REMOVED from the bundled stack; an existing Harbor is
+    // served via the import path (coordinated as an execution system), not bundled.
+    { name: "gitea", ref: opts.giteaRef, sourceType: opts.giteaSource }
   ];
 
   const bundleDirName = `scp-bundle-${opts.version}`;
