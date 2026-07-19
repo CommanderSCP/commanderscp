@@ -52,5 +52,25 @@ bundledExecutor:
     enabled: false
     namespace: scp-argo-events
     image: quay.io/argoproj/argo-events:v1.9.10 # argo-events controller — retargeted by install.sh
-  # NOTE: the bundled OCI registry is Gitea (ADR-0012). Harbor is REMOVED from the default stack —
-  # an existing Harbor is served via the IMPORT path (coordinated as an execution system), not bundled.
+  # Gitea (Mode B — the DEFAULT bundled unified registry: image + code + package, ADR-0012).
+  # Vendored, unmodified upstream chart v12.6.0 (app 1.26.1) in the SQLite / single-replica /
+  # no-external-DB / no-valkey minimal profile — Gitea runs self-contained on SQLite + one PVC.
+  # Off by default; one retargetable image (fail-closed when empty). Its Secrets (admin creds +
+  # SECRET_KEY/INTERNAL_TOKEN + config/init machinery) are SCP-generated in gitea-secrets.yaml,
+  # never baked into the vendored manifest. Harbor is REMOVED from the default stack — an existing
+  # Harbor is served via the IMPORT path (coordinated as an execution system), not bundled.
+  gitea:
+    enabled: false
+    namespace: scp-gitea
+    # VENDORED, RETARGETABLE image. Default is the upstream ref so a CONNECTED enable works out of
+    # the box (`scp-bundled.sh enable gitea`, zero flags); the air-gap install.sh rewrites it to the
+    # customer registry at a pinned digest. In chart v12.6.0 the running workload is a SINGLE image
+    # (the only upstream busybox ref was the helm-test Pod, which is stripped).
+    image: docker.gitea.com/gitea:1.26.1-rootless # Gitea (MIT)
+    # Operator override for the bundled admin password; empty ⇒ SCP generates a random one per
+    # install (persisted across upgrade via lookup). SCP only ever holds the SCOPED token derived
+    # from this account at runtime, never the password.
+    adminPassword: ""
+    # The Gitea admin account SCP creates + coordinates through. The auto-wire hook basic-auths as
+    # this account and mints a SCOPED (least-privilege, non-admin) API token, stored as an SCP secret.
+    scpAccount: scp-gitea-admin

@@ -334,7 +334,7 @@ if [[ "$MODE" == "helm" ]]; then
   # carries and each one's retargeted, digest-pinned image --set args (values-driven, never a
   # hardcoded template ref — avoiding the eval-postgres air-gap trap noted below).
   BUNDLED_APPLY=()
-  BUNDLED_SET_ARGOCD=(); BUNDLED_SET_WORKFLOWS=(); BUNDLED_SET_EVENTS=()
+  BUNDLED_SET_ARGOCD=(); BUNDLED_SET_WORKFLOWS=(); BUNDLED_SET_EVENTS=(); BUNDLED_SET_GITEA=()
   if [[ -n "${ARGOCD_DIGEST:-}" ]]; then
     BUNDLED_SET_ARGOCD=(--set "bundledExecutor.argocd.image=${ARGOCD_RETARGETED_REF:-${REGISTRY}/argocd:${BUNDLE_VERSION}@${ARGOCD_DIGEST}}"
       --set "bundledExecutor.argocd.valkeyImage=${VALKEY_RETARGETED_REF:-${REGISTRY}/valkey:${BUNDLE_VERSION}@${VALKEY_DIGEST}}")
@@ -348,6 +348,12 @@ if [[ "$MODE" == "helm" ]]; then
   if [[ -n "${ARGO_EVENTS_DIGEST:-}" ]]; then
     BUNDLED_SET_EVENTS=(--set "bundledExecutor.argoEvents.image=${ARGO_EVENTS_RETARGETED_REF:-${REGISTRY}/argo-events:${BUNDLE_VERSION}@${ARGO_EVENTS_DIGEST}}")
     BUNDLED_APPLY+=(argo-events)
+  fi
+  if [[ -n "${GITEA_DIGEST:-}" ]]; then
+    # Single image — Gitea runs self-contained on SQLite (see build-bundle.ts). Digest-pinned like
+    # every other bundled image.
+    BUNDLED_SET_GITEA=(--set "bundledExecutor.gitea.image=${GITEA_RETARGETED_REF:-${REGISTRY}/gitea:${BUNDLE_VERSION}@${GITEA_DIGEST}}")
+    BUNDLED_APPLY+=(gitea)
   fi
   # NOTE: Harbor is REMOVED from the bundled stack (Gitea is the default registry, ADR-0012); an
   # existing Harbor is served via the import path (coordinated as an execution system), not bundled.
@@ -390,6 +396,7 @@ if [[ "$MODE" == "helm" ]]; then
         argocd)         BSET=(${BUNDLED_SET_ARGOCD[@]+"${BUNDLED_SET_ARGOCD[@]}"}) ;;
         argo-workflows) BSET=(${BUNDLED_SET_WORKFLOWS[@]+"${BUNDLED_SET_WORKFLOWS[@]}"}) ;;
         argo-events)    BSET=(${BUNDLED_SET_EVENTS[@]+"${BUNDLED_SET_EVENTS[@]}"}) ;;
+        gitea)          BSET=(${BUNDLED_SET_GITEA[@]+"${BUNDLED_SET_GITEA[@]}"}) ;;
       esac
       bash "${SCRIPT_DIR}/scp-bundled.sh" enable "$be" \
         --chart "${SCRIPT_DIR}/helm-bundled" --scp-chart "${SCRIPT_DIR}/helm" \

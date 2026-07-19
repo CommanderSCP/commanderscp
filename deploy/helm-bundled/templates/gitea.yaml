@@ -1,0 +1,32 @@
+{{- if .Values.bundledExecutor.gitea.enabled -}}
+{{- $g := .Values.bundledExecutor.gitea -}}
+{{- if not $g.image }}{{ fail "bundledExecutor.gitea.enabled=true but .image is empty — the vendored, retargeted Gitea image is required (set by the air-gap install.sh). Fail-closed, like the other bundled backends." }}{{- end -}}
+# =============================================================================================
+# Bundled Gitea (Mode B — the DEFAULT unified registry: image + code + package, ADR-0012).
+# Vendored, UNMODIFIED upstream Gitea Helm chart gitea-charts/gitea v12.6.0 (app 1.26.1),
+# rendered in the SQLite / single-replica / no-external-DB / no-valkey minimal profile
+# (deploy/helm-bundled/vendor/gitea/install-no-secrets.yaml — Deployment + PVC + 2 Services only)
+# into {{ $g.namespace }} via commanderscp.renderVendoredBackend, with only the single gitea image
+# retargeted. Gitea runs SELF-CONTAINED on SQLite + one PVC — ZERO postgres/valkey/redis. Its
+# Secrets (config-env / init-script / inline-config machinery AND the admin secret) are NOT
+# vendored — they are SCP-generated per install in gitea-secrets.yaml (random-per-install,
+# persisted across `helm upgrade` via `lookup`), mirroring the removed Harbor 'install-no-secrets'
+# pattern. SCP DEPLOYS Gitea here; coordinating it (push/observe) is the git-provider / registry
+# executor's job — SCP holds only the SCOPED, non-admin API token the auto-wire hook seeds, never
+# Gitea's admin credentials (credential-asymmetry invariant, unamended).
+#
+# NOTE (single image): in chart v12.6.0 the only busybox reference upstream was the helm-test
+# connection Pod, which is stripped (a Helm test hook, not part of the deployment) — so the
+# running workload is a SINGLE image. If a future chart bump reintroduces a busybox (or any other)
+# init/side image, add its retarget pair here and the matching air-gap/verify plumbing.
+# =============================================================================================
+{{- include "commanderscp.renderVendoredBackend" (dict
+    "ctx" .
+    "namespace" $g.namespace
+    "component" "bundled-gitea"
+    "manifest" (.Files.Get "vendor/gitea/install-no-secrets.yaml")
+    "replaces" (list
+      (list "docker.gitea.com/gitea:1.26.1-rootless" $g.image)
+    )
+  ) }}
+{{- end }}

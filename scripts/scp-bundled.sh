@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # scp-bundled — enable a CommanderSCP Standard Stack backend in ONE command.
 #
-# The bundled executor backends (Argo CD + Valkey, Argo Workflows, Argo Events) live in the
+# The bundled executor backends (Argo CD + Valkey, Argo Workflows, Argo Events, Gitea) live in the
 # `deploy/helm-bundled` chart, NOT the main `commanderscp` chart: their vendored upstream manifests
 # (Argo Workflows alone is 11 MB) far exceed Helm's 1 MB release-Secret limit, so they cannot ride a
 # `helm install`. This wrapper renders the chart and delivers it the way upstream intends — with
 # `kubectl apply --server-side` (no stored release ⇒ no 1 MB ceiling; server-side ⇒ the large CRDs
-# don't overflow the client-side last-applied annotation) — then, for Argo CD, flips the
+# don't overflow the client-side last-applied annotation) — then, for Argo CD / Gitea, flips the
 # matching flag on the main SCP release so its auto-wire hook + NetworkPolicy egress turn on. All of
 # that is hidden behind a single verb:
 #
 #     scripts/scp-bundled.sh enable argocd
-#     scripts/scp-bundled.sh enable argocd --scp-release scp --scp-namespace scp
+#     scripts/scp-bundled.sh enable gitea --scp-release scp --scp-namespace scp
 #     scripts/scp-bundled.sh enable argo-workflows --set bundledExecutor.argoWorkflows.serverImage=myreg/argocli:v4.0.7 ...
-#     scripts/scp-bundled.sh render argo-workflows   # print the manifest, apply nothing
+#     scripts/scp-bundled.sh render gitea   # print the manifest, apply nothing
 #
 # NOTE: Harbor is REMOVED from the bundled stack (Gitea is the default registry, ADR-0012); an
 # existing Harbor is served via the import path (coordinated as an execution system), not bundled.
@@ -38,9 +38,9 @@ declare -a HELM_EXTRA=()
 
 usage() {
   cat >&2 <<EOF
-Usage: scp-bundled.sh <enable|render> <argocd|argo-workflows|argo-events> [options]
+Usage: scp-bundled.sh <enable|render> <argocd|argo-workflows|argo-events|gitea> [options]
 
-  enable   render the backend, kubectl apply --server-side, wait for readiness, and (argocd)
+  enable   render the backend, kubectl apply --server-side, wait for readiness, and (argocd/gitea)
            turn on the SCP release's auto-wire hook + NetworkPolicy
   render   print the rendered manifest to stdout and exit (apply nothing)
 
@@ -73,6 +73,7 @@ case "$BACKEND" in
   argocd)         KEY="argocd";        NS="scp-argocd";         SCP_FLAG="bundledExecutor.argocd.enabled" ;;
   argo-workflows) KEY="argoWorkflows"; NS="scp-argo-workflows"; SCP_FLAG="" ;;
   argo-events)    KEY="argoEvents";    NS="scp-argo-events";    SCP_FLAG="" ;;
+  gitea)          KEY="gitea";         NS="scp-gitea";          SCP_FLAG="bundledExecutor.gitea.enabled" ;;
   *) echo "scp-bundled: unknown backend '$BACKEND'" >&2; usage 2 ;;
 esac
 

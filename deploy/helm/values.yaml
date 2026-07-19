@@ -191,6 +191,13 @@ bundledExecutor:
     enabled: false
     namespace: scp-argocd
     scpAccount: scp-coordinator
+  # Bundled Gitea (Mode B — the DEFAULT unified registry, ADR-0012). SLIM block: the vendored render
+  # lives in deploy/helm-bundled; here we only carry the enabled flag + namespace + scoped account
+  # so the MAIN chart can turn on the SCP-side integration (auto-wire hook + allow-gitea egress).
+  gitea:
+    enabled: false
+    namespace: scp-gitea
+    scpAccount: scp-gitea-admin
 
 # -------------------------------------------------------------------------------------------
 # Federation mTLS transport identity (DESIGN §13, M8 hardening) — host-level, operator-owned
