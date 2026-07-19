@@ -1356,7 +1356,7 @@ Opting into a bundled backend ends managed-execution eligibility for the classes
 
 The bundled backend allowlist is the SCP Standard Stack.
 
-The Standard Stack is ArgoCD, Argo Workflows, Argo Events, and Harbor.
+The Standard Stack is ArgoCD, Argo Workflows, and Argo Events. Gitea is the default bundled registry; Harbor is not bundled — an existing Harbor is coordinated via the import path (ADR-0012).
 
 ArgoCD is bundled with Valkey as its cache, an owned and tested supported deviation from upstream composition.
 

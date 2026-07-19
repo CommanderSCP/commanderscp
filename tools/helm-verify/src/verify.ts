@@ -290,7 +290,7 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
   // verifyBundledChart + the packaged-size guard in main). Regression guard: the MAIN chart must
   // render ZERO resources into any bundled-backend namespace, on EVERY value set — if a vendored
   // file or render template crept back into deploy/helm, this fails.
-  const bundledNamespaces = ["scp-argocd", "scp-argo-workflows", "scp-argo-events", "scp-harbor"];
+  const bundledNamespaces = ["scp-argocd", "scp-argo-workflows", "scp-argo-events"];
   // The ONLY main-chart resources allowed in a bundled namespace are the auto-wire hook's tiny
   // cross-namespace RBAC (a Role + RoleBinding in scp-argocd, to read Argo CD's admin secret) —
   // identified by the argocd-autowire component label. Anything else means a VENDORED backend
@@ -307,9 +307,9 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
       .join(", ")}) — bundled backends must live ONLY in deploy/helm-bundled, never the release-stored main chart`
   );
   if (label === "kitchen-sink") {
-    // What the main chart DOES keep for bundled backends: enabling argocd/harbor turns on the SCP-
+    // What the main chart DOES keep for bundled backends: enabling argocd turns on the SCP-
     // side integration — the post-install auto-wire hook Job (mints the scoped Argo CD token) and
-    // the allow-argocd / allow-harbor NetworkPolicy egress. Assert both render here.
+    // the allow-argocd NetworkPolicy egress. Assert both render here.
     const autowireJob = docs.find(
       (d) => d.kind === "Job" && String(d.metadata?.name).includes("argocd-autowire")
     );
@@ -319,7 +319,7 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
       hookAnn.includes("post-install"),
       `[${label}] argocd-autowire Job must be a post-install hook (got "${hookAnn}")`
     );
-    for (const be of ["argocd", "harbor"]) {
+    for (const be of ["argocd"]) {
       assert(
         docs.some((d) => d.kind === "NetworkPolicy" && String(d.metadata?.name).includes(`allow-${be}`)),
         `[${label}] bundledExecutor.${be}.enabled but no allow-${be} NetworkPolicy egress in the main chart`
@@ -452,11 +452,13 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
 }
 
 /** Assertions for the SEPARATE bundled-backends chart (deploy/helm-bundled), rendered with every
- *  backend enabled + images retargeted. This is where the bundled-backend isolation / air-gap /
- *  Harbor-secret-cross-reference checks live now that the backends no longer ride the main chart. */
+ *  backend enabled + images retargeted. This is where the bundled-backend isolation / air-gap
+ *  checks live now that the backends no longer ride the main chart. (Harbor is REMOVED from the
+ *  bundled stack — Gitea is the default registry, ADR-0012; an existing Harbor is coordinated via
+ *  the import path, not bundled.) */
 function verifyBundledChart(docs: K8sDoc[]): void {
   const label = "bundled";
-  const bundledNamespaces = ["scp-argocd", "scp-argo-workflows", "scp-argo-events", "scp-harbor"];
+  const bundledNamespaces = ["scp-argocd", "scp-argo-workflows", "scp-argo-events"];
   const bundled = docs.filter((d) => bundledNamespaces.includes(d.metadata?.namespace ?? ""));
 
   // Every enabled backend renders at least one resource in its own namespace, and Argo CD's server.
@@ -482,44 +484,10 @@ function verifyBundledChart(docs: K8sDoc[]): void {
   assert(bundledImages.length > 0, `[${label}] bundled backends rendered no container images`);
   for (const img of bundledImages) {
     assert(
-      !img.includes("quay.io/argoproj") &&
-        !img.includes("public.ecr.aws") &&
-        !img.includes("docker.io/goharbor"),
+      !img.includes("quay.io/argoproj") && !img.includes("public.ecr.aws"),
       `[${label}] bundled backend image '${img}' is NOT retargeted — the air-gap install.sh must rewrite every image to the customer registry (an upstream ref breaks air-gapped installs)`
     );
   }
-
-  // Harbor is bundled with its Secrets STRIPPED and SCP-GENERATED instead. The approach hinges on
-  // cross-referenced values staying consistent across separate Secret resources — a mismatch renders
-  // green but leaves Harbor unable to boot (core can't reach its DB, or the registry rejects pushes).
-  const harborSec = (name: string): Record<string, string> | undefined => {
-    const d = bundled.find(
-      (x) => x.kind === "Secret" && x.metadata?.namespace === "scp-harbor" && x.metadata?.name === name
-    ) as { stringData?: Record<string, string> } | undefined;
-    return d?.stringData;
-  };
-  const hCore = harborSec("harbor-core");
-  const hDb = harborSec("harbor-database");
-  const hJob = harborSec("harbor-jobservice");
-  const hHt = harborSec("harbor-registry-htpasswd");
-  assert(hCore && hDb && hJob && hHt, `[${label}] bundled Harbor enabled but its SCP-generated Secrets did not all render (core/database/jobservice/registry-htpasswd)`);
-  assert(
-    Boolean(hCore!["POSTGRESQL_PASSWORD"]) && hCore!["POSTGRESQL_PASSWORD"] === hDb!["POSTGRES_PASSWORD"],
-    `[${label}] Harbor Postgres password mismatch: harbor-core POSTGRESQL_PASSWORD must equal harbor-database POSTGRES_PASSWORD (core would fail to connect)`
-  );
-  assert(
-    Boolean(hCore!["REGISTRY_CREDENTIAL_PASSWORD"]) &&
-      hCore!["REGISTRY_CREDENTIAL_PASSWORD"] === hJob!["REGISTRY_CREDENTIAL_PASSWORD"],
-    `[${label}] Harbor registry-credential mismatch: harbor-core must equal harbor-jobservice REGISTRY_CREDENTIAL_PASSWORD`
-  );
-  assert(
-    (hHt!["REGISTRY_HTPASSWD"] ?? "").startsWith("harbor_registry_user:$2"),
-    `[${label}] Harbor registry htpasswd is not a bcrypt entry for harbor_registry_user (registry auth would fail)`
-  );
-  assert(
-    (hCore!["tls.crt"] ?? "").includes("BEGIN CERTIFICATE") && (hCore!["tls.key"] ?? "").includes("PRIVATE KEY"),
-    `[${label}] Harbor token-signing cert/key missing from harbor-core (registry token verification would fail)`
-  );
 }
 
 function main(): void {
@@ -563,10 +531,9 @@ function main(): void {
       "--set", "oidc.clientId=scp",
       "--set", "oidc.redirectUri=https://scp.example.com/callback",
       // Main-chart bundled integration: only the SLIM enabled flags exist here now (they turn on the
-      // auto-wire hook + allow-argocd/allow-harbor NetworkPolicy). The vendored render lives in the
+      // auto-wire hook + allow-argocd NetworkPolicy). The vendored render lives in the
       // separate bundled chart, verified below.
       "--set", "bundledExecutor.argocd.enabled=true",
-      "--set", "bundledExecutor.harbor.enabled=true",
       // Executor egress allowlist (Mode A / BYO-coordinate) — one entry exercising BOTH `to` shapes
       // at once (an in-cluster namespaceSelector AND an external ipBlock) plus multiple ports.
       "--set-json", 'networkPolicy.executorEgress=[{"name":"argocd","namespaces":["argocd"],"cidrs":["203.0.113.0/24"],"ports":[{"protocol":"TCP","port":8080},{"protocol":"TCP","port":80}]}]',
@@ -590,7 +557,8 @@ function main(): void {
   console.log(`  main chart ~${Math.round(mainPkg / 1024)} KB base64 (limit 1024 KB) — OK`);
 
   // Bundled-backends chart (deploy/helm-bundled): render with every backend enabled + images
-  // retargeted, and assert isolation, image retargeting, and the Harbor secret cross-references.
+  // retargeted, and assert isolation and image retargeting. (Harbor is REMOVED from the bundled
+  // stack — Gitea is the default registry, ADR-0012; an existing Harbor is coordinated via import.)
   console.log("helm-verify: rendering the bundled-backends chart (deploy/helm-bundled)...");
   verifyBundledChart(
     renderBundledChart([
@@ -601,17 +569,7 @@ function main(): void {
       "--set", "bundledExecutor.argoWorkflows.serverImage=registry.example.com/scp/argocli:v4.0.7",
       "--set", "bundledExecutor.argoWorkflows.controllerImage=registry.example.com/scp/workflow-controller:v4.0.7",
       "--set", "bundledExecutor.argoEvents.enabled=true",
-      "--set", "bundledExecutor.argoEvents.image=registry.example.com/scp/argo-events:v1.9.10",
-      "--set", "bundledExecutor.harbor.enabled=true",
-      "--set", "bundledExecutor.harbor.coreImage=registry.example.com/goharbor/harbor-core:v2.15.1@sha256:aaaa",
-      "--set", "bundledExecutor.harbor.dbImage=registry.example.com/goharbor/harbor-db:v2.15.1@sha256:bbbb",
-      "--set", "bundledExecutor.harbor.jobserviceImage=registry.example.com/goharbor/harbor-jobservice:v2.15.1@sha256:cccc",
-      "--set", "bundledExecutor.harbor.portalImage=registry.example.com/goharbor/harbor-portal:v2.15.1@sha256:dddd",
-      "--set", "bundledExecutor.harbor.registryctlImage=registry.example.com/goharbor/harbor-registryctl:v2.15.1@sha256:eeee",
-      "--set", "bundledExecutor.harbor.registryImage=registry.example.com/goharbor/registry-photon:v2.15.1@sha256:ffff",
-      "--set", "bundledExecutor.harbor.nginxImage=registry.example.com/goharbor/nginx-photon:v2.15.1@sha256:0000",
-      "--set", "bundledExecutor.harbor.redisImage=registry.example.com/goharbor/redis-photon:v2.15.1@sha256:1111",
-      "--set", "bundledExecutor.harbor.trivyImage=registry.example.com/goharbor/trivy-adapter-photon:v2.15.1@sha256:2222"
+      "--set", "bundledExecutor.argoEvents.image=registry.example.com/scp/argo-events:v1.9.10"
     ])
   );
 

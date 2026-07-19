@@ -52,26 +52,5 @@ bundledExecutor:
     enabled: false
     namespace: scp-argo-events
     image: quay.io/argoproj/argo-events:v1.9.10 # argo-events controller — retargeted by install.sh
-  # Harbor (Mode B — bundled OCI registry + Trivy scanner). OBSERVE-ONLY from SCP's side: SCP reads
-  # image/scan state, never pushes (the credential-asymmetry invariant — SCP holds a scoped read
-  # token, never Harbor's admin/infra creds). Vendored, unmodified upstream v2.15.1 MINUS its
-  # Secrets; those are SCP-GENERATED per install (templates/harbor-secrets.yaml) rather than frozen
-  # to static values — random, cross-referenced, persisted across upgrade via `lookup`. Off by default.
-  harbor:
-    enabled: false
-    namespace: scp-harbor
-    # Nine goharbor images, each retargeted INDIVIDUALLY so the air-gap install.sh can pin each by
-    # @digest. Defaults are the upstream v2.15.1 refs so a CONNECTED apply works out of the box; the
-    # air-gap install.sh rewrites all nine to `<registry>/<name>:<version>@<digest>`.
-    coreImage: docker.io/goharbor/harbor-core:v2.15.1
-    dbImage: docker.io/goharbor/harbor-db:v2.15.1
-    jobserviceImage: docker.io/goharbor/harbor-jobservice:v2.15.1
-    portalImage: docker.io/goharbor/harbor-portal:v2.15.1
-    registryctlImage: docker.io/goharbor/harbor-registryctl:v2.15.1
-    registryImage: docker.io/goharbor/registry-photon:v2.15.1
-    nginxImage: docker.io/goharbor/nginx-photon:v2.15.1
-    redisImage: docker.io/goharbor/redis-photon:v2.15.1
-    trivyImage: docker.io/goharbor/trivy-adapter-photon:v2.15.1
-    # Optional operator-set initial admin password; empty ⇒ SCP generates a random one (retrievable
-    # from the harbor-core Secret's HARBOR_ADMIN_PASSWORD key). Never a static vendored default.
-    adminPassword: ""
+  # NOTE: the bundled OCI registry is Gitea (ADR-0012). Harbor is REMOVED from the default stack —
+  # an existing Harbor is served via the IMPORT path (coordinated as an execution system), not bundled.
