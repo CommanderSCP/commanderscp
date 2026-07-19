@@ -1,6 +1,7 @@
 import type { GitProviderEventHint } from "@scp/git-provider-core";
 import { githubAdapter } from "@scp/plugin-github";
 import { giteaAdapter } from "@scp/plugin-gitea";
+import { gitlabAdapter } from "@scp/plugin-gitlab";
 
 /**
  * Per-`sourceKind` webhook ADAPTER REGISTRY (M15.1b — the M15.1a follow-up). Before this, the
@@ -22,11 +23,13 @@ import { giteaAdapter } from "@scp/plugin-gitea";
  */
 export interface WebhookAdapter {
   sourceKind: string;
-  /** HTTP header the provider carries its HMAC signature in. */
+  /** HTTP header the provider carries its request authenticator in — an HMAC signature for
+   *  github/gitea, or a PLAINTEXT shared-secret token for gitlab (`X-Gitlab-Token`). */
   signatureHeaderName: string;
   /** HTTP header the provider carries its event name in (drives `mapEvent`). */
   eventHeaderName: string;
-  /** Fail-closed signature verification against the RAW request body. */
+  /** Fail-closed authentication of the delivery against the RAW request body (HMAC providers) or
+   *  by plaintext-token equality (gitlab, which does not sign the body). */
   verify(rawBody: Buffer, headerValue: string | undefined, secret: string): boolean;
   /** Provider event name + payload → correlation hint (null = ignore). */
   mapEvent(eventName: string, payload: unknown): GitProviderEventHint | null;
@@ -48,6 +51,17 @@ const ADAPTERS: Record<string, WebhookAdapter> = {
     eventHeaderName: "x-gitea-event",
     verify: giteaAdapter.verifyWebhook,
     mapEvent: giteaAdapter.mapEvent
+  },
+  gitlab: {
+    sourceKind: "gitlab",
+    // GitLab authenticates deliveries with a PLAINTEXT shared-secret TOKEN in `X-Gitlab-Token` — NOT
+    // an HMAC over the body. Its verifier does a timing-safe plaintext equality compare, so github's
+    // `sha256=<hex>` and gitea's bare-hex verifiers both reject a GitLab token (and vice-versa): the
+    // registry is what keeps each provider on its OWN scheme (a miss here is a silent event drop).
+    signatureHeaderName: "x-gitlab-token",
+    eventHeaderName: "x-gitlab-event",
+    verify: gitlabAdapter.verifyWebhook,
+    mapEvent: gitlabAdapter.mapEvent
   }
 };
 
