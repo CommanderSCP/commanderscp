@@ -38,7 +38,7 @@ The capability is **opt-in and role-scoped** — a `federation.role` gate + poli
 
 **Positive**
 - A high/air-gap outpost becomes genuinely self-contained for artifacts + source, offline — the air-gap principle made concrete.
-- Reuses proven seams: the bundled-backend recipe, the graph-native `execution-system`/discovery import, cosign signing (M4/M6/M8).
+- Reuses proven seams: the bundled-backend recipe, the graph-native `execution-system`/discovery import, and the keyful/offline **cosign** release-signing wrapper (`deploy/airgap`) — extended to cross-boundary artifacts + the promotion manifest in [ADR-0015](0015-cosign-cross-boundary-signing.md). *(Note: runtime signing built at M4/M6/M8 was **Ed25519**, not cosign; cross-boundary cosign is new — ADR-0015.)*
 - Credential-asymmetry holds **unamended** (SCP holds scoped tokens; backends keep their own creds), same as bundled Argo CD/Harbor.
 
 **Costs / constraints**

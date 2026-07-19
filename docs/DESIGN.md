@@ -90,7 +90,7 @@ Everything downstream derives from one source of truth: **Zod schemas** on Fasti
 | IaC | `@scp/iac` CDK-style constructs → deterministic manifest → server-side plan/apply | Charter mandates CDK-style TypeScript IaC; server-side diff keeps reconciliation logic in one place. |
 | Monorepo tooling | pnpm workspaces + Turborepo + Changesets | Boring, fast, offline-cacheable; atomic contract→server→SDK→CLI→IaC changes. |
 | Logging / metrics | pino structured logs; Prometheus metrics endpoint | Standard, self-host-friendly observability. |
-| Signing / integrity | SHA-256 hash chains; Ed25519 domain keys; cosign for release artifacts | Tamper evidence with zero extra infrastructure; works fully offline. |
+| Signing / integrity | **Two layers.** *Federation transport:* SHA-256 hash chains + Ed25519 domain keys (bundle envelope, journal hash-chain, mTLS, attestations) — unchanged. *Supply chain:* **cosign for release AND cross-boundary promotion artifacts** — all artifact types + the promotion manifest, keyful/offline (`--tlog-upload=false`, no Fulcio/Rekor), vendored binary ([ADR-0015](adr/0015-cosign-cross-boundary-signing.md)). | Tamper evidence with zero extra infrastructure; works fully offline. Ed25519 and cosign are complementary layers, not alternatives — cosign gives standard external verifiability of artifacts; Ed25519 secures federation transport. |
 | Testing | Vitest, Testcontainers (Postgres), fast-check, nock, Playwright | All layers runnable offline in CI. |
 
 ---
