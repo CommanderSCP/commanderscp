@@ -30,6 +30,7 @@ import {
   manifest as githubExecutorManifest,
   discoveryManifest as githubDiscoveryManifest
 } from "@scp/plugin-github";
+import { manifest as giteaManifest } from "@scp/plugin-gitea";
 import {
   manifest as argocdManifest,
   discoveryManifest as argocdDiscoveryManifest
@@ -87,6 +88,7 @@ const KNOWN_DISCOVERY_MODULES: PluginModule[] = ["github-discovery", "argocd-dis
 const MANIFEST_BY_MODULE: Record<string, { configSchema: unknown }> = {
   github: githubExecutorManifest,
   "github-discovery": githubDiscoveryManifest,
+  gitea: giteaManifest,
   argocd: argocdManifest,
   "argocd-discovery": argocdDiscoveryManifest,
   terraform: terraformManifest,
@@ -193,6 +195,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
         items: [
           githubExecutorManifest,
           githubDiscoveryManifest,
+          giteaManifest,
           argocdManifest,
           argocdDiscoveryManifest,
           terraformManifest,

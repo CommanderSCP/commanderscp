@@ -78,13 +78,15 @@ export interface FederationTransportPluginClient {
  * distinct module name because ONE subprocess-hosted instance loads exactly one plugin `kind` —
  * an org that wants both github's executor AND its discovery scan configures two instances, same
  * package, two module names), `webhook-notify`/`smtp-notify` are `NotificationPlugin`s. M8 adds
- * `federation-https`, a `FederationTransportPlugin`.
+ * `federation-https`, a `FederationTransportPlugin`. M15.1b adds `gitea`, a second git-provider
+ * `ExecutorPlugin` built (like `github`) on `@scp/git-provider-core`.
  */
 export type PluginModule =
   | "fake-executor"
   | "webhook-control"
   | "github"
   | "github-discovery"
+  | "gitea"
   | "argocd"
   | "argocd-discovery"
   | "terraform"

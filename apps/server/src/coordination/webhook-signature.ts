@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { verifyGithubWebhookSignature } from "@scp/plugin-github";
+import { webhookAdapterForSourceKind } from "./webhook-adapters.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { and, eq } from "drizzle-orm";
 import { changeSourceWebhookSecrets } from "../db/schema.js";
@@ -46,22 +46,29 @@ function verifyGenericHmacSha256(
   }
 }
 
-const VERIFIERS: Record<string, WebhookSignatureVerifier> = {
-  github: { headerName: "x-hub-signature-256", verify: verifyGithubWebhookSignature }
-  // TFC/Atlantis native signature schemes (X-TFE-Notification-Signature, Atlantis's own webhook
-  // secret header) are NOT specifically implemented here — HONEST LIMITATION, flagged in the PR
-  // body: an org relying on Mode 1's TFC/Atlantis webhooks configures the GENERIC sha256=<hex>
-  // scheme below instead (most webhook-relay setups, and `scp change report`'s own CLI-side
-  // signing, already speak it) until a source-specific verifier lands as follow-up work.
-};
-
 const DEFAULT_VERIFIER: WebhookSignatureVerifier = {
   headerName: "x-scp-signature-256",
   verify: verifyGenericHmacSha256
 };
 
+/**
+ * Resolves the signature verifier for a source kind through the per-`sourceKind` webhook ADAPTER
+ * REGISTRY (`webhook-adapters.ts`, M15.1b) — github (`sha256=<hex>` in `x-hub-signature-256`) and
+ * gitea (bare-hex in `x-gitea-signature`) each resolve their OWN provider verifier off their own
+ * `GitProviderAdapter`, so this file no longer imports any single provider's verifier directly.
+ *
+ * A source kind with no provider-specific adapter (e.g. `terraform`, or a generic first-party
+ * reporter) falls back to `DEFAULT_VERIFIER` — the generic `sha256=<hex>` scheme in
+ * `x-scp-signature-256`. TFC/Atlantis native signature schemes are still NOT specifically
+ * implemented (HONEST LIMITATION): an org relying on those configures the generic scheme instead
+ * until a source-specific adapter lands as follow-up.
+ */
 export function verifierForSourceKind(sourceKind: string): WebhookSignatureVerifier {
-  return VERIFIERS[sourceKind] ?? DEFAULT_VERIFIER;
+  const adapter = webhookAdapterForSourceKind(sourceKind);
+  if (adapter) {
+    return { headerName: adapter.signatureHeaderName, verify: adapter.verify };
+  }
+  return DEFAULT_VERIFIER;
 }
 
 /** Looks up which `secrets` key (if any) holds this org+sourceKind's webhook signing secret

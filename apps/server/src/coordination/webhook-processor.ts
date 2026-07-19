@@ -1,5 +1,5 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
-import { mapGithubWebhookEventToHint } from "@scp/plugin-github";
+import { webhookAdapterForSourceKind } from "./webhook-adapters.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changeSourceEvents } from "../db/schema.js";
 import { linkToCoordinatedChange, matchComponentForSource } from "./correlation.js";
@@ -19,21 +19,22 @@ const BATCH_LIMIT = 20;
  * is what makes ingress "replayable": a row that fails processing simply stays unprocessed and is
  * retried on the next tick, exactly like every other engine action in this milestone.
  *
- * Correlation hint extraction (M3 -> M7): the common shape `coordination/correlation.ts`'s
+ * Correlation hint extraction (M3 -> M7 -> M15.1b): the common shape `coordination/correlation.ts`'s
  * `CorrelationHint` models (`repo`, `path`, `correlationKey`) is still the baseline — a generic
  * source (a source-specific adapter, `scp change report`, or a direct test/curl caller) that sends
- * this flat shape directly keeps working unchanged. M7 ADDS real provider-specific parsing for
- * `sourceKind === "github"`: `@scp/plugin-github`'s `mapGithubWebhookEventToHint` (the SAME
- * function used by that plugin's own polling-fallback `observe()` — DESIGN §12's "poll-vs-push
- * equivalence") reads the real nested GitHub webhook JSON (`repository.full_name`, `head_commit.id`,
- * etc.) using the `X-GitHub-Event` header persisted alongside the payload
- * (`change_source_events.headers`). A github-specific hint field, when present, wins; any field it
- * doesn't set (or an unrecognized/missing event name) falls back to the flat generic shape, so a
- * hand-crafted test payload with a bare `{repo, correlationKey}` still correlates exactly as
- * before. ArgoCD/Terraform provider-specific parsing is not yet added (both source kinds' M7
- * plugins don't define an inbound webhook payload shape of their own — ArgoCD is poll-only,
- * Terraform Mode 1's inbound path is `scp change report`'s own flat shape already) — tracked as
- * natural follow-up if/when TFC/Atlantis-native webhook payloads need first-class parsing too.
+ * this flat shape directly keeps working unchanged. Provider-specific parsing is resolved through
+ * the per-`sourceKind` webhook ADAPTER REGISTRY (`webhook-adapters.ts`, M15.1b): each provider's
+ * `GitProviderAdapter.mapEvent` (the SAME function that plugin's own polling-fallback `observe()`
+ * uses — DESIGN §12's "poll-vs-push equivalence") reads the real nested provider webhook JSON using
+ * that provider's own event header persisted alongside the payload (`change_source_events.headers`)
+ * — `X-GitHub-Event` for github (`repository.full_name`/`head_commit.id`/…), `X-Gitea-Event` for
+ * gitea. A provider-specific hint field, when present, wins; any field it doesn't set (or an
+ * unrecognized/missing event name, or a source kind with no adapter) falls back to the flat generic
+ * shape, so a hand-crafted test payload with a bare `{repo, correlationKey}` still correlates
+ * exactly as before. ArgoCD/Terraform have no provider-specific webhook parser (ArgoCD is poll-only;
+ * Terraform Mode 1's inbound path is `scp change report`'s own flat shape) — they resolve no adapter
+ * and use the generic shape, tracked as follow-up if TFC/Atlantis-native payloads need first-class
+ * parsing.
  */
 interface ExtractedHint {
   repo?: string;
@@ -53,18 +54,24 @@ function genericHint(payload: unknown): ExtractedHint {
 
 function extractHint(sourceKind: string, headers: unknown, payload: unknown): ExtractedHint {
   const generic = genericHint(payload);
-  if (sourceKind !== "github") return generic;
+  // Provider-specific parsing is resolved through the per-sourceKind webhook ADAPTER REGISTRY
+  // (`webhook-adapters.ts`, M15.1b) — github reads its nested payload via `x-github-event`, gitea
+  // via `x-gitea-event`, each using its own `GitProviderAdapter.mapEvent` (the SAME mapper that
+  // plugin's `observe()` polling fallback uses — DESIGN §12 "poll-vs-push equivalence"). A source
+  // kind with no adapter (a generic/first-party reporter) keeps the flat generic shape unchanged.
+  const adapter = webhookAdapterForSourceKind(sourceKind);
+  if (!adapter) return generic;
 
   const headerMap = (headers ?? {}) as Record<string, unknown>;
-  const eventName = headerMap["x-github-event"];
+  const eventName = headerMap[adapter.eventHeaderName];
   if (typeof eventName !== "string") return generic;
 
-  const githubHint = mapGithubWebhookEventToHint(eventName, payload);
-  if (!githubHint) return generic;
+  const providerHint = adapter.mapEvent(eventName, payload);
+  if (!providerHint) return generic;
   return {
-    repo: githubHint.repo ?? generic.repo,
-    path: githubHint.path ?? generic.path,
-    correlationKey: githubHint.correlationKey ?? generic.correlationKey
+    repo: providerHint.repo ?? generic.repo,
+    path: providerHint.path ?? generic.path,
+    correlationKey: providerHint.correlationKey ?? generic.correlationKey
   };
 }
 
