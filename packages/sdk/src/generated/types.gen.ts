@@ -13134,6 +13134,20 @@ export type ExportPromotionBundleResponses = {
             location?: string;
             format?: string;
         }>;
+        promotionManifest?: {
+            manifestVersion: 'scp-promotion-manifest/v1';
+            createdAt: string;
+            sourceChangeObjectId: string;
+            exporterDomainId: string;
+            peerDomainId: string;
+            changeUrn: string;
+            artifacts: Array<{
+                type: 'oci' | 'blob';
+                digest: string;
+                signatureRef?: string;
+            }>;
+        };
+        manifestSignature?: string;
         checksum: string;
         bundleSignature: string;
     };
@@ -13219,6 +13233,20 @@ export type ImportBundleData = {
             location?: string;
             format?: string;
         }>;
+        promotionManifest?: {
+            manifestVersion: 'scp-promotion-manifest/v1';
+            createdAt: string;
+            sourceChangeObjectId: string;
+            exporterDomainId: string;
+            peerDomainId: string;
+            changeUrn: string;
+            artifacts: Array<{
+                type: 'oci' | 'blob';
+                digest: string;
+                signatureRef?: string;
+            }>;
+        };
+        manifestSignature?: string;
         checksum: string;
         bundleSignature: string;
     };

@@ -276,6 +276,44 @@ export const PromotionBundleHeaderSchema = z.object({
 });
 export type PromotionBundleHeader = z.infer<typeof PromotionBundleHeaderSchema>;
 
+/**
+ * M17.3 (E6) — the commander's SELF-BINDING promotion MANIFEST. A canonical JSON doc the commander
+ * cosign-signs (`manifestSignature`, detached) to attest "I, this exporter, authorized promoting
+ * THIS change with THIS artifact set toward THIS peer." It rides as a SIBLING of the Ed25519 bundle
+ * envelope and is DELIBERATELY EXCLUDED from the Ed25519 checksum (see `PromotionBundleSchema`), so
+ * a bundle with a manifest is byte-identical under the checksum to one without it (E3 invariant).
+ *
+ * MANIFEST-SWAP DEFENSE (load-bearing): the manifest enumerates `sourceChangeObjectId`,
+ * `exporterDomainId`, `peerDomainId`, `changeUrn`, AND the full `artifacts[]` digest set, so a
+ * cosign signature computed over one bundle's manifest cannot be lifted onto a DIFFERENT bundle —
+ * the self-bound identity would no longer match. SCP signs ONLY this manifest (its own attestation);
+ * it NEVER signs an origin artifact (those origin signatures ride untouched in `artifacts[].signatureRef`).
+ */
+export const PromotionManifestSchema = z.object({
+  /** Manifest schema/version marker — pins the canonical shape a verifier reconstructs bytes from. */
+  manifestVersion: z.literal("scp-promotion-manifest/v1"),
+  /** When the commander produced this manifest (informational; the binding is the identity fields). */
+  createdAt: z.string().datetime(),
+  /** The EXPORTER's change object id — binds the manifest to this bundle's `header.sourceChangeObjectId`. */
+  sourceChangeObjectId: z.string().uuid(),
+  /** The signing (exporting) domain — binds to `header.exporterDomainId`. */
+  exporterDomainId: z.string().uuid(),
+  /** The addressed peer domain — binds to `header.peerDomainId`. */
+  peerDomainId: z.string().uuid(),
+  /** The change URN — binds to `change.urn`. */
+  changeUrn: z.string(),
+  /** The full artifact digest set (oci + blob), each with its origin `signatureRef` where present.
+   *  Binds the manifest to EXACTLY this bundle's artifacts — a swapped artifact set breaks the bind. */
+  artifacts: z.array(
+    z.object({
+      type: z.enum(["oci", "blob"]),
+      digest: z.string(),
+      signatureRef: z.string().optional()
+    })
+  )
+});
+export type PromotionManifest = z.infer<typeof PromotionManifestSchema>;
+
 export const PromotionBundleSchema = z.object({
   header: PromotionBundleHeaderSchema,
   change: z.object({
@@ -294,6 +332,15 @@ export const PromotionBundleSchema = z.object({
    *  from the checksum (see `ArtifactRefSchema`); absent (`undefined`, never `[]`) when the change
    *  tracks no artifacts, so the canonical string is byte-identical to a v1 bundle. */
   artifacts: z.array(ArtifactRefSchema).optional(),
+  /** M17.3 (E6) — the commander's SELF-BINDING cosign-signed promotion manifest (canonical JSON doc).
+   *  Optional and DELIBERATELY EXCLUDED from the Ed25519 checksum (never added to
+   *  `promotionChecksumPayload`); absent (`undefined`, never `null`) on a v1 bundle, so the canonical
+   *  string stays byte-identical and an OLD outpost that ignores it still verifies the Ed25519 bundle. */
+  promotionManifest: PromotionManifestSchema.optional(),
+  /** M17.3 (E6) — the DETACHED cosign signature (base64) over `canonicalStringify(promotionManifest)`,
+   *  verifiable via `cosign verify-blob` with the exporter's distributed cosign PUBLIC key (E5). Also
+   *  EXCLUDED from the Ed25519 checksum. Authoritative cross-hop verification lands in M17.4. */
+  manifestSignature: z.string().optional(),
   checksum: z.string(),
   bundleSignature: z.string()
 });
