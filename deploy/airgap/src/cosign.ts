@@ -31,41 +31,67 @@
  * in the bundle (the format `verifyBlobDetached` and install.sh's `cosign verify-blob --signature`
  * both consume).
  *
- * `--use-signing-config=false` is **version-conditional** (see signBlobFlags() below), because
- * its handling differs sharply across cosign versions and this is an air-gap product where
- * operators may bring their OWN cosign:
- *   - NEWER cosign (advertises `--use-signing-config`, ~2.5+/3.x — e.g. the v3.1.1 dev build this
- *     was authored against): `--use-signing-config` DEFAULTS to `true`, and cosign then REJECTS
- *     `--tlog-upload=false` with "`--tlog-upload=false is not supported with --signing-config or
- *     --use-signing-config`". So on these builds we MUST also pass `--use-signing-config=false`.
- *   - OLDER cosign (does NOT have the flag — e.g. the v2.x that `sigstore/cosign-installer@v3`
- *     installs by default in CI): passing `--use-signing-config=false` fails with "`unknown flag:
- *     --use-signing-config`" (exactly the CI red this replaced), and it isn't needed anyway —
- *     `--tlog-upload=false` alone prevents the upload. So we OMIT it there.
- * We detect the flag from `cosign sign-blob --help` (it's listed on versions that have it) and add
- * `--use-signing-config=false` only when present. This keeps signing working across a range of
- * cosign versions — no fixed version pin required — while STILL uploading nothing.
+ * `--use-signing-config=false` is handled DIFFERENTLY on the two cosign paths this package now
+ * has (resolution lives in cosign-bin.ts, M17.3 E1):
+ *   - PINNED cosign (the digest-pinned binary vendored into the runtime image, or an explicit
+ *     `SCP_COSIGN_BIN`): the release is known — v3.1.2, a build that HAS the flag — so the flag
+ *     set is a static constant and `cosign()` fail-closed asserts the reported version matches
+ *     the pin before any call. No `--help` subprocess runs on the signing path.
+ *   - UNPINNED cosign (an operator's own build on PATH — air-gap operators legitimately bring
+ *     their own, BUILD_AND_TEST.md §1): the original version-ADAPTIVE probing is kept verbatim,
+ *     because the flag's handling differs sharply across versions:
+ *       - NEWER cosign (advertises `--use-signing-config`, ~2.5+/3.x): `--use-signing-config`
+ *         DEFAULTS to `true`, and cosign then REJECTS `--tlog-upload=false` with
+ *         "`--tlog-upload=false is not supported with --signing-config or --use-signing-config`".
+ *         So on these builds we MUST also pass `--use-signing-config=false`.
+ *       - OLDER cosign (does NOT have the flag — e.g. cosign 2.x): passing
+ *         `--use-signing-config=false` fails with "`unknown flag: --use-signing-config`" (exactly
+ *         the CI red this replaced), and it isn't needed anyway — `--tlog-upload=false` alone
+ *         prevents the upload. So we OMIT it there.
+ *     We detect the flag from `cosign sign-blob --help` (it's listed on versions that have it)
+ *     and add `--use-signing-config=false` only when present.
+ * Either way NOTHING is uploaded.
  *
  * `verifyBlobDetached` mirrors the sign side with `--insecure-ignore-tlog=true` (a stable flag
  * present across versions) — we deliberately never wrote a tlog entry, so asking cosign to check
  * for one would always — correctly, but uselessly — fail.
  *
- * Egress verified against a closed proxy on cosign v3.1.1: with the full flag set, `sign-blob`
- * succeeds behind `HTTPS_PROXY=http://127.0.0.1:1` and the sig verifies — zero outbound connection
- * attempts. If cosign's flags change again, re-run exactly that: set `HTTPS_PROXY=http://127.0.0.1:1`
- * (a closed local port) and confirm sign/verify still succeed; if either ever tries the network it
- * fails fast with `connection refused` instead of silently working. CI deliberately does NOT pin a
- * cosign release (see .github/workflows/ci.yml) — `sigstore/cosign-installer@v3`'s default install
- * is what reliably downloads, and this adaptive flag logic (not a brittle version pin) carries the
- * portability. Air-gap operators can bring any cosign in the supported range.
+ * Egress verified against a closed proxy on the PINNED v3.1.2 binary (and previously on v3.1.1):
+ * with the full flag set, `sign-blob` succeeds behind `HTTPS_PROXY=http://127.0.0.1:1` and the
+ * sig verifies — zero outbound connection attempts. If cosign's flags change again, re-run
+ * exactly that: set `HTTPS_PROXY=http://127.0.0.1:1` (a closed local port) and confirm
+ * sign/verify still succeed; if either ever tries the network it fails fast with `connection
+ * refused` instead of silently working. CI no longer installs cosign over the network at all —
+ * it extracts the SAME digest-pinned binary that ships in the image (scripts/install-pinned-cosign.sh,
+ * `.github/workflows/ci.yml`), so CI validates the binary production actually uses.
  */
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { run, which } from "./exec.js";
+import {
+  assertPinnedCosignVersion,
+  resolveCosign,
+  type ResolvedCosign
+} from "./cosign-bin.js";
+import { run } from "./exec.js";
 
+/**
+ * Is there a usable cosign at all — the vendored/pinned one first, an operator's PATH cosign
+ * otherwise? Resolution lives in cosign-bin.ts; this package never hardcodes the binary name.
+ */
 export function cosignAvailable(): boolean {
-  return which("cosign");
+  return resolveCosign().source !== "missing";
+}
+
+/**
+ * Resolve cosign and, on the pinned path, assert it really is the pinned release before any
+ * call. Every cosign invocation in this module goes through here, so a wrong binary fails
+ * closed at the first use rather than producing signatures from an unvetted build.
+ */
+function cosign(): ResolvedCosign {
+  const resolved = resolveCosign();
+  assertPinnedCosignVersion(resolved);
+  return resolved;
 }
 
 export interface SigningKey {
@@ -99,7 +125,7 @@ export async function resolveSigningKey(scratchDir: string): Promise<SigningKey>
     let pubKeyPath = process.env.COSIGN_PUBLIC_KEY;
     if (!pubKeyPath) {
       pubKeyPath = path.join(scratchDir, "derived-cosign.pub");
-      const { stdout } = run("cosign", ["public-key", "--key", envKey], { env: { COSIGN_PASSWORD: password } });
+      const { stdout } = run(cosign().bin, ["public-key", "--key", envKey], { env: { COSIGN_PASSWORD: password } });
       await writeFile(pubKeyPath, stdout, "utf8");
     }
     return { keyPath: envKey, pubKeyPath, password, isEphemeral: false };
@@ -116,7 +142,7 @@ export async function resolveSigningKey(scratchDir: string): Promise<SigningKey>
       "\n\n"
   );
   const prefix = path.join(scratchDir, "ephemeral-cosign");
-  run("cosign", ["generate-key-pair", "--output-key-prefix", prefix], { env: { COSIGN_PASSWORD: "" } });
+  run(cosign().bin, ["generate-key-pair", "--output-key-prefix", prefix], { env: { COSIGN_PASSWORD: "" } });
   return { keyPath: `${prefix}.key`, pubKeyPath: `${prefix}.pub`, password: "", isEphemeral: true };
 }
 
@@ -133,10 +159,10 @@ export function makeScratchDir(): Promise<string> {
  */
 let cachedUseSigningConfigSupported: boolean | undefined;
 
-function cosignSupportsUseSigningConfig(): boolean {
+function cosignSupportsUseSigningConfig(bin: string): boolean {
   if (cachedUseSigningConfigSupported === undefined) {
     try {
-      const { stdout, stderr } = run("cosign", ["sign-blob", "--help"], { log: false });
+      const { stdout, stderr } = run(bin, ["sign-blob", "--help"], { log: false });
       cachedUseSigningConfigSupported = (stdout + stderr).includes("use-signing-config");
     } catch {
       // If cosign can't even print help (e.g. not installed), treat the flag as unsupported —
@@ -155,9 +181,20 @@ function cosignSupportsUseSigningConfig(): boolean {
  * make `--tlog-upload=false` conflict with its default `true`; older builds reject the flag as
  * unknown and don't need it).
  */
-function signBlobFlags(): string[] {
+function signBlobFlags(resolved: ResolvedCosign): string[] {
   const flags = ["--tlog-upload=false", "--new-bundle-format=false"];
-  if (cosignSupportsUseSigningConfig()) flags.push("--use-signing-config=false");
+  if (resolved.pinned) {
+    // PINNED path: we know exactly which release this is (asserted fail-closed by cosign()
+    // above), so the flag set is a STATIC known-good constant — no `--help` subprocess on a
+    // signing hot path to learn something the pin already tells us. Verified against the pinned
+    // v3.1.2 binary behind a closed proxy (HTTPS_PROXY=http://127.0.0.1:1): sign-blob +
+    // verify-blob both succeed with zero egress.
+    flags.push("--use-signing-config=false");
+    return flags;
+  }
+  // UNPINNED path: an operator-supplied cosign of unknown vintage — keep probing, exactly as
+  // before. This is not dead weight; it is the only thing that makes BYO-cosign work.
+  if (cosignSupportsUseSigningConfig(resolved.bin)) flags.push("--use-signing-config=false");
   return flags;
 }
 
@@ -166,9 +203,19 @@ function signBlobFlags(): string[] {
  * comment above for why these exact flags and why they're required for air-gap correctness.
  */
 export function signBlobDetached(filePath: string, sigOutPath: string, key: SigningKey): void {
+  const resolved = cosign();
   run(
-    "cosign",
-    ["sign-blob", "--key", key.keyPath, ...signBlobFlags(), "--output-signature", sigOutPath, "--yes", filePath],
+    resolved.bin,
+    [
+      "sign-blob",
+      "--key",
+      key.keyPath,
+      ...signBlobFlags(resolved),
+      "--output-signature",
+      sigOutPath,
+      "--yes",
+      filePath
+    ],
     { env: { COSIGN_PASSWORD: key.password } }
   );
 }
@@ -181,7 +228,7 @@ export interface VerifyResult {
 /** `cosign verify-blob` against a detached signature file. Never throws — a verification failure is a normal, expected outcome for a tampered bundle, reported as `{ ok: false }`, not an exception. */
 export function verifyBlobDetached(filePath: string, sigPath: string, pubKeyPath: string): VerifyResult {
   try {
-    const { stdout, stderr } = run("cosign", [
+    const { stdout, stderr } = run(cosign().bin, [
       "verify-blob",
       "--key",
       pubKeyPath,

@@ -4,7 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { computeChecksums, formatChecksums } from "./checksums.js";
-import { cosignAvailable, signBlobDetached, type SigningKey } from "./cosign.js";
+import { assertPinnedCosignVersion, resolveCosign } from "./cosign-bin.js";
+import { signBlobDetached, type SigningKey } from "./cosign.js";
 import { CommandError, run, which } from "./exec.js";
 
 /**
@@ -13,9 +14,15 @@ import { CommandError, run, which } from "./exec.js";
  * `scripts/airgap-drill.sh`/`deploy-drills.yml` already do for the same reason) means this suite
  * exercises the REAL script wherever these documented prerequisites (BUILD_AND_TEST.md §1) are
  * installed, and skips cleanly — never a false failure — where they aren't.
+ *
+ * `which("cosign")` is checked DIRECTLY and deliberately, not via the pinned resolution in
+ * cosign-bin.ts: install.sh's whole trust model is that the operator supplies cosign
+ * EXTERNALLY, on PATH. A cosign that exists only at the vendored in-image path would not
+ * satisfy install.sh, so it must not un-skip this suite either. (CI does put the pinned binary
+ * on PATH — scripts/install-pinned-cosign.sh — so these assertions really run there.)
  */
 function installShToolingAvailable(): boolean {
-  return cosignAvailable() && which("skopeo") && which("helm");
+  return which("cosign") && which("skopeo") && which("helm");
 }
 
 /**
@@ -27,7 +34,9 @@ function installShToolingAvailable(): boolean {
  */
 function generateKeypair(scratchDir: string, label: string): SigningKey {
   const prefix = path.join(scratchDir, label);
-  run("cosign", ["generate-key-pair", "--output-key-prefix", prefix], {
+  const cosign = resolveCosign();
+  assertPinnedCosignVersion(cosign);
+  run(cosign.bin, ["generate-key-pair", "--output-key-prefix", prefix], {
     env: { COSIGN_PASSWORD: "" },
     log: false
   });
