@@ -6,6 +6,16 @@
 > exploration (this doc). Guardian corrections are applied inline. Where anything conflicts with the
 > charter, the charter governs.
 
+## Update 2026-07-18 — Gitea replaced Harbor (ADR-0012)
+
+**This document predates [ADR-0012](../adr/0012-registry-consolidation.md) and still shows Harbor as the bundled default registry. That is superseded.** The default out-of-the-box registry is the **Gitea unified registry** (image repo + code repo + package repo in one service); **Harbor is import-only and is not bundled** — an org that runs Harbor coordinates its *existing* one via the discovery/import path (ADR-0012, M15.3). Specifically superseded below:
+
+- the **Container registry** row of the capability table (Harbor / Bundle (B)) → **Gitea**, bundled;
+- the "**one coherent family**" paragraph, which lists Harbor as part of the bundled Argo-ecosystem family;
+- the **Mode-B bundle allowlist** — read `{Argo CD, Argo Workflows, Argo Events, **Gitea**}` (+ Valkey as Argo CD's cache); Harbor is **not** on the bundled allowlist.
+
+Everything else in this document (the three-tier model, the four-arm ownership test, Modes A/B/C, the owned runners) stands.
+
 ## One strategy, one test, three tiers
 
 **The strategy in one paragraph.** SCP's executor portfolio is a three-tier surface governed by one
@@ -78,14 +88,14 @@ gates, approvals, decisions, audit) is **always SCP's, never bundled or optional
 | Capability | Out-of-the-box default | License | Mode |
 |---|---|---|---|
 | CI / build / **test execution** | **Argo Workflows + Argo Events** | Apache-2.0 | Bundle (B) |
-| Container **registry** | **Harbor** | Apache-2.0 | Bundle (B) |
+| Container **registry** | ~~**Harbor**~~ → **Gitea** unified registry (superseded, ADR-0012) | MIT | Bundle (B) |
 | **k8s CD / deploy** | **Argo CD** + Valkey | Apache-2.0 / BSD | Bundle (B) |
 | **Cloud IaC** | **OpenTofu** (`scp-runner-iac`) | MPL-2.0 | Own (C) |
 | **Host / config / package** | **Ansible** + closed catalog (`scp-runner-ops`) | GPLv3 (process-isolated) | Own (C) |
 | **Code promote + release orchestration** | **SCP core** | — | Always ours |
 
 - **One coherent family.** The bundled supply side is deliberately the **Argo ecosystem** (Workflows +
-  Events + CD) + Harbor — all CNCF-graduated, permissive, air-gap-vendorable, one mental model. **Argo
+  Events + CD) + ~~Harbor~~ **Gitea** *(superseded — ADR-0012; Harbor is import-only, not bundled)* — permissive, air-gap-vendorable, one mental model. **Argo
   Events doubles as a driver for the `observe()`/change-detection path** (the known gap) — the bundled
   CI choice and the roadmap's #1 item reinforce each other.
 - **SCP never executes CI itself.** Bundled Argo Workflows *runs* the tests/builds; SCP consumes the
@@ -96,7 +106,7 @@ gates, approvals, decisions, audit) is **always SCP's, never bundled or optional
   deploy → promote end-to-end; a brownfield org leaves them off and points SCP at what it has. The UI
   presents a per-capability checklist: *"CD: ⟨use my ArgoCD⟩ or ⟨deploy one for me⟩."*
 - **Charter allowlist impact.** This extends the Mode-B bundle allowlist from `{ArgoCD}` to
-  `{Argo CD, Argo Workflows, Argo Events, Harbor}` (+ Valkey as Argo CD's cache), all **operator-installed**
+  `{Argo CD, Argo Workflows, Argo Events, ~~Harbor~~ **Gitea** — superseded, ADR-0012}` (+ Valkey as Argo CD's cache), all **operator-installed**
   (scpd never applies/upgrades their manifests). Owned runners (Mode C): `scp-runner-iac`, `scp-runner-ops`.
   *(Reflected in the charter's "Bundled Executor Backends" amendment and ADR-0002 — allowlist = this set.)*
 - **Honest cost (guardian).** This *is* the turnkey platform-in-a-box the guardian flagged. Legitimate

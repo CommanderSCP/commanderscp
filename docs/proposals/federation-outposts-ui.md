@@ -29,7 +29,7 @@ code → build → image repo → config → ⟨ transfer → validate signature
 ```
 
 - **Transferred to outpost** — the change/artifact reference crossing to the outpost that will deploy it (observable via the existing bundle transfer tracking: export → *submitted* → *confirmed*, DESIGN §13; promotion bundle).
-- **Signatures validated** — the receiving outpost verifying the **cosign signature + scan attestation** (trust-scan-at-source, M15.2) before deploy.
+- **Signatures validated** — the receiving outpost verifying the **cosign signature + scan attestation** (trust-scan-at-source, M15.2) before deploy *(the cosign-verify step itself lands at **M17.4** — [ADR-0015 §6](../adr/0015-cosign-cross-boundary-signing.md))*.
 
 **Always shown for cross-boundary changes (owner decision, 2026-07-18).** A change cannot reach an outpost without being validated. Deployment always terminates at an outpost, and the receiving outpost always validates the signed artifact/config before deploying — **including commercial**. The only thing that differs by trust tier is *who owns the git/image repos* (commander-owned in commercial; outpost-local in high/air-gap, M15), **not whether validation happens** (see [ADR-0011](../adr/0011-universal-outpost-validation.md)).
 
@@ -40,7 +40,7 @@ This is Layer-B observe-enrichment (ADR-0008) applied to the **federation bounda
 ### Built vs. aspirational (honest)
 
 - **Transfer:** bundle transfer tracking (export → submitted → confirmed) exists in the federation model; surfacing it per-change in the pipeline is new view + a per-change transfer status.
-- **Validation:** bundle-level signature/hash-chain validation is built (fail-closed import); **per-artifact cosign + scan-attestation verification before deploy is M15.2 (partly aspirational)** — the stage renders what's observed and an explicit "not yet verified" state otherwise, never a fabricated pass.
+- **Validation:** bundle-level signature/hash-chain validation is built (fail-closed import); **per-artifact cosign + scan-attestation verification before deploy is M15.2 (partly aspirational)** *(the cosign-verify step itself lands at **M17.4** — [ADR-0015 §6](../adr/0015-cosign-cross-boundary-signing.md))* — the stage renders what's observed and an explicit "not yet verified" state otherwise, never a fabricated pass.
 
 ## Part C — the outpost's own local UI
 

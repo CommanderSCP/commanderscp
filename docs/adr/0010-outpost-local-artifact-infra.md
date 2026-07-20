@@ -28,7 +28,7 @@ Make per-outpost **local Harbor + local Gitea** a **first-class, optional capabi
 - **Create** = bundle **Gitea** (new Standard-Stack backend, coordinated through a new **git-service-agnostic** git executor) and make **Harbor** a real observe target (auto-wire token hook + a **registry executor**).
 - **Import** = bind an existing **Harbor / Artifactory / GitLab / Gitea** as `execution-system` graph objects via discovery (owner decision: any approved registry + git, not only the bundled pair).
 
-**Boundary artifact model — trust scan-at-source (owner decision, 2026-07-18):** images are scanned + signed commander-side; the digest + signature + scan attestation ride the metadata bundle; the outpost's local Harbor **verifies against the signed attestation before deploy — no local re-scan**. The Trivy gate stays at the source (M11.4).
+**Boundary artifact model — trust scan-at-source (owner decision, 2026-07-18):** images are scanned + signed commander-side; the digest + signature + scan attestation ride the metadata bundle; the outpost's local Harbor **verifies against the signed attestation before deploy — no local re-scan**. The Trivy gate stays at the source (M11.4). *(Superseded/corrected 2026-07-20: (i) the **registry is Gitea**, not Harbor — [ADR-0012](0012-registry-consolidation.md); (ii) artifacts are **not** signed commander-side — the **executor** cosign-signs the artifact(s) and the build-time SBOM at build, and the commander cosign-signs only its own promotion manifest ([ADR-0015 §5](0015-cosign-cross-boundary-signing.md)); (iii) **M11.4 was the deleted Harbor bundle** — the scan gate is **M17** ([ADR-0013](0013-supply-chain-scan-sbom-manifest.md)), with scoped pass-criteria at M17.5 ([ADR-0016](0016-scoped-scan-requirement-policies.md)). "Scan-at-source, no re-scan at the outpost" still holds.)*
 
 **Artifact bytes** are, in the first phases, **operator-loaded** via the existing air-gap install-bundle path and **SCP-verified** against the signed digest; building the `retrans`/CDS byte-relay is deferred to a later, separate phase.
 
@@ -38,7 +38,7 @@ The capability is **opt-in and role-scoped** — a `federation.role` gate + poli
 
 **Positive**
 - A high/air-gap outpost becomes genuinely self-contained for artifacts + source, offline — the air-gap principle made concrete.
-- Reuses proven seams: the bundled-backend recipe, the graph-native `execution-system`/discovery import, cosign signing (M4/M6/M8).
+- Reuses proven seams: the bundled-backend recipe, the graph-native `execution-system`/discovery import, and the keyful/offline **cosign** release-signing wrapper (`deploy/airgap`) — extended to cross-boundary artifacts + the promotion manifest in [ADR-0015](0015-cosign-cross-boundary-signing.md). *(Note: runtime signing built at M4/M6/M8 was **Ed25519**, not cosign; cross-boundary cosign is new — ADR-0015. What is reused is the wrapper's **flag behaviour**: the cosign **binary is not vendored today** — it is an operator prerequisite on `PATH` — and a runtime sign/verify path must vendor a pinned one.)*
 - Credential-asymmetry holds **unamended** (SCP holds scoped tokens; backends keep their own creds), same as bundled Argo CD/Harbor.
 
 **Costs / constraints**
