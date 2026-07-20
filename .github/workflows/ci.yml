@@ -151,19 +151,21 @@ jobs:
         uses: azure/setup-helm@v4
         with:
           version: latest
-      - name: Install cosign (BUILD_AND_TEST.md §1)
-        # UNPINNED (no cosign-release): let sigstore/cosign-installer@v3 install its own default
-        # cosign build — which is exactly what installs SUCCESSFULLY on this runner. We do NOT pin
-        # a cosign-release: this action's @v3 line is built around cosign's v2.x asset layout, so
-        # asking it for a v3.x tag (e.g. v3.1.1) makes the download step itself fail with a curl
-        # error (exit 22) before any test runs. The air-gap signing code
-        # (deploy/airgap/src/cosign.ts) is version-ADAPTIVE — it probes `cosign sign-blob --help`
-        # and only passes `--use-signing-config=false` when the installed cosign actually has that
-        # flag — so whatever version the installer's default resolves to, signing works AND uploads
-        # nothing to Rekor (the egress-critical `--tlog-upload=false` is long-stable across cosign
-        # 2.x/3.x). Unpinned + adaptive is the robust combination here; the code carries the
-        # version-portability, not a brittle release-tag pin. See cosign.ts's module comment.
-        uses: sigstore/cosign-installer@v3
+      - name: Install the PINNED cosign (the same binary the scp image ships)
+        # PINNED, not `sigstore/cosign-installer@v3` (M17.3 E1). Two reasons the unpinned network
+        # installer had to go: (1) it installed whatever cosign it felt like, so CI validated a
+        # DIFFERENT binary than production runs — the tamper suite below is only meaningful if it
+        # exercises the shipped one; (2) charter principle 5 wants CI offline-capable, and a
+        # digest-pinned, content-addressed image pull can be served by a local mirror whereas an
+        # unpinned release download cannot. The script extracts /ko-app/cosign from the pinned
+        # image (tools/cosign/pin.env) and fails closed if `cosign version` != the pin.
+        run: scripts/install-pinned-cosign.sh
+      - name: Point @scp/airgap at the pinned cosign
+        # Makes the resolution in deploy/airgap/src/cosign-bin.ts take the PINNED branch here
+        # (static flag set + fail-closed version assertion), so CI exercises exactly the path the
+        # runtime image takes. install.sh's own requirement is unaffected: it still finds an
+        # EXTERNAL cosign on PATH, which is the trust model it must keep.
+        run: echo "SCP_COSIGN_BIN=/usr/local/bin/cosign" >> "$GITHUB_ENV"
       - name: Install skopeo (BUILD_AND_TEST.md §1) — no-op if the runner already has it
         run: |
           command -v skopeo >/dev/null 2>&1 && exit 0

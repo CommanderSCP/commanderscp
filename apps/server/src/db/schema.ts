@@ -375,7 +375,20 @@ export const changes = pgTable(
     orgId: uuid("org_id").notNull(),
     state: text("state").notNull().default("proposed"),
     sourceKind: text("source_kind"), // github|argocd|terraform|manual|federation|rollback
-    sourceRef: jsonb("source_ref"), // {repo, ref, commit, run_url, workspace, artifact_digest, ...}
+    // The raw delivery payload kept verbatim, plus CANONICAL keys lifted from it by
+    // `coordination/webhook-processor.ts`'s `canonicalizeSourceRef`:
+    //   {repo, ref, commit, run_url, workspace,
+    //    artifact_digest,                       // the artifact this release promotes (M15.3c/M17.1,
+    //                                           //   ADR-0013 — what the scan gate binds to)
+    //    sbom: {format, specVersion?, digest, location, mediaType?, signatureRef?, scanner?,
+    //           scannerVersion?, generatedAt?}, // M17.2, ADR-0015 §5 — a REFERENCE to the
+    //                                           //   EXECUTOR's build-time, cosign-signed-at-origin
+    //                                           //   SBOM. SCP never generates, signs, or stores the
+    //                                           //   document bytes; only this reference. Typed as
+    //                                           //   `SbomRefSchema` (@scp/schemas supply-chain.ts).
+    //    ...}
+    // jsonb ⇒ every one of these is zero-migration.
+    sourceRef: jsonb("source_ref"),
     correlationKey: text("correlation_key"),
     emergency: boolean("emergency").notNull().default(false),
     importedFromDomain: uuid("imported_from_domain"),
