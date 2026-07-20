@@ -91,6 +91,15 @@ describe("scan-result-control plugin", () => {
     const evidence = ScanEvidenceSchema.parse(outcome.evidence);
     expect(evidence.digestMatch).toBe(true); // digest is fine; it's the vuln count that blocks
     expect(evidence.severityCounts.critical).toBe(1);
+    // M17.5: NEITHER source constrained anything — the applied 0/0 is the historical fail-closed
+    // DEFAULT, not a config value. The summary label must say so rather than collapsing to
+    // `"config"` and misdescribing the Decision's own inputs (charter principle 6). The
+    // per-severity map already reported this honestly; the summary now agrees with it.
+    expect(evidence.thresholdSource).toBe("default");
+    expect(evidence.thresholdSources?.maxCritical).toBe("default");
+    expect(evidence.thresholdSources?.maxHigh).toBe("default");
+    // And the block text must NOT claim a most-restrictive-wins merge decided it.
+    expect(outcome.detail).not.toMatch(/most-restrictive-wins/);
   });
 
   it("honors a configurable threshold — HIGH under maxHigh passes, over maxHigh fails", async () => {

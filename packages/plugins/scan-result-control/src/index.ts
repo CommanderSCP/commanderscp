@@ -186,12 +186,14 @@ function resolveContextThreshold(req: ControlRequest): EffectiveScanThreshold | 
  * the ceiling that blocked this change" — with `config.maxHigh = 0` against `scoped.maxHigh = 50`
  * the applied 0 came from the CONFIG. Labelling that `"scoped"` would make the Decision misdescribe
  * its own inputs (charter principle 6), so every severity carries the source that actually supplied
- * its applied value, and the summary label is `"mixed"` when both sources decided something.
+ * its applied value, and the summary label is `"mixed"` when both sources decided something and
+ * `"default"` when NEITHER did (the applied 0/0 is the historical fail-closed default, not a config
+ * value — claiming `"config"` there would misdescribe the inputs just as badly).
  */
 function resolveThreshold(
   config: ScanResultControlConfig,
   scoped: EffectiveScanThreshold | undefined
-): { threshold: ScanThreshold; source: "config" | "scoped" | "mixed"; sources: ScanThresholdSourceMap } {
+): { threshold: ScanThreshold; source: "config" | "scoped" | "mixed" | "default"; sources: ScanThresholdSourceMap } {
   const fromConfig = config.threshold ?? {};
   const fromScoped = scoped?.threshold ?? {};
   /** The tighter of the two, plus WHICH one supplied it. A tie is attributed to `scoped`: the
@@ -219,8 +221,11 @@ function resolveThreshold(
     ...(low.value !== undefined ? { maxLow: low.source } : {})
   };
   const decided = new Set(Object.values(sources).filter((s) => s !== "default"));
-  const source: "config" | "scoped" | "mixed" =
-    decided.size > 1 ? "mixed" : decided.size === 1 ? ([...decided][0] as "config" | "scoped") : "config";
+  // NOTHING decided => the applied 0/0 came from the historical fail-closed DEFAULT, not from
+  // `config`. Saying `"config"` here would misdescribe the Decision's own inputs (charter principle
+  // 6) even though the per-severity `sources` map stays honest.
+  const source: "config" | "scoped" | "mixed" | "default" =
+    decided.size > 1 ? "mixed" : decided.size === 1 ? ([...decided][0] as "config" | "scoped") : "default";
 
   return {
     threshold: {
@@ -352,7 +357,7 @@ export function createScanResultControlPlugin(): ControlPlugin {
         const breachDetail = breached.map((k) => `${k}=${threshold[k]} (from ${thresholdSources[k]})`).join(", ");
         return {
           status: "fail",
-          detail: `scan-result-control: verdict exceeds ${thresholdSource === "config" ? "" : "the effective (most-restrictive-wins) "}threshold — breached ${breachDetail}; counts critical=${counts.critical}, high=${counts.high}, medium=${counts.medium}, low=${counts.low}${
+          detail: `scan-result-control: verdict exceeds ${thresholdSource === "scoped" || thresholdSource === "mixed" ? "the effective (most-restrictive-wins) " : ""}threshold — breached ${breachDetail}; counts critical=${counts.critical}, high=${counts.high}, medium=${counts.medium}, low=${counts.low}${
             scoped && scoped.contributors.length > 0
               ? ` [tiers: ${scoped.contributors.map((c) => `${c.tier}(${c.source})`).join(", ")}]`
               : ""

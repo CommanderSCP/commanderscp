@@ -59,9 +59,32 @@ import type { FiredPolicy } from "./evaluate.js";
  * drives both off the same `fired`). Anything else would let `when env == "prod", maxCritical: 0`
  * silently apply in dev — tightening-only, so never unsafe, but SILENTLY over-restrictive and a
  * block citing a policy whose condition was false (charter principle 6: every verdict must explain
- * itself). Fail-closed semantics are INHERITED, not reinvented: `resolveFiredPolicies` already
- * fires a group closed when a REQUIRED contributor's condition ERRORS and counts that contributor
- * in `contributingPolicyVersions`, so such a contributor still supplies its ceiling.
+ * itself).
+ *
+ * AN UNEVALUABLE CONDITION FAILS CLOSED — AT EVERY ENFORCEMENT LEVEL. "Condition FALSE" and
+ * "condition COULD NOT BE EVALUATED" are different things and are treated differently. A
+ * contributor whose CEL `condition` ERRORS (parse error, missing key, sandbox TIMEOUT) STILL
+ * SUPPLIES ITS CEILING, whether it was authored `advisory`, `recommended` or `required`. The
+ * admitted key set is therefore the UNION of, per name-group:
+ *   - `contributingPolicyVersions` of groups with `fired === true` (the fired set), and
+ *   - `conditionErrorPolicyVersions` of EVERY group (evaluate.ts) — the contributors that errored.
+ *
+ * WHY THIS DELIBERATELY DIFFERS FROM evaluate.ts's require*-EFFECT SEMANTICS. There,
+ * `resolveFiredPolicies` fires a group closed ONLY when a contributor that is at least `required`
+ * errors (`requiredConditionEvalError`); an advisory/recommended contributor whose condition errors
+ * is annotated (`conditionError`) and does not fire. That carve-out is sound for require*-effects
+ * because dropping an ADVISORY `requireControls` only loses a WARNING — an advisory effect can
+ * never block, so nothing that would have failed now passes. It does NOT transfer to ceilings: a
+ * `scanThreshold` is applied by `scan-result-control` REGARDLESS of the enforcement level of the
+ * policy that authored it, so dropping an advisory ceiling converts a FAIL into a PASS. And a
+ * ceiling-only policy has no require* effect, which makes `advisory` the most natural — and most
+ * common — enforcement to author one at. Restricting the carve-out to `required` here would
+ * therefore be FAIL-OPEN on the most typical authoring shape.
+ *
+ * PRECISE, NOT COARSE. Only the contributor that ACTUALLY ERRORED is re-admitted. A sibling
+ * contributor in the same name-group whose condition cleanly evaluated FALSE stays EXCLUDED —
+ * admitting a whole group because one of its members errored would reintroduce exactly the
+ * over-restriction (a false condition tightening a ceiling) this design removed.
  *
  * The instance-scoped floors (platform / trust domain) carry no condition and are unaffected.
  */
@@ -181,17 +204,20 @@ export interface ResolveScanThresholdInput {
 }
 
 /**
- * The `(policyObjectId, policyVersion)` keys of every contributor that actually FIRED — plus, by
- * construction, any REQUIRED contributor whose condition ERRORED, because `resolveFiredPolicies`
- * fires that group closed and counts the errored contributor in `contributingPolicyVersions`. This
- * is the same set that drives `requireControls`/`requireApprovals`, so a scan ceiling can never
- * apply under a condition that didn't hold.
+ * The `(policyObjectId, policyVersion)` keys admitted to set a ceiling: the UNION of every
+ * contributor that actually FIRED and every contributor whose condition could NOT be evaluated, at
+ * ANY enforcement level (see the module doc's fail-closed section). A contributor whose condition
+ * cleanly evaluated FALSE is in neither set and can never set a ceiling.
  */
-function firedContributorKeys(firedPolicies: FiredPolicy[]): Set<string> {
+function ceilingContributorKeys(firedPolicies: FiredPolicy[]): Set<string> {
   const keys = new Set<string>();
   for (const fp of firedPolicies) {
-    if (!fp.fired) continue;
-    for (const c of fp.contributingPolicyVersions) keys.add(`${c.policyObjectId}::${c.policyVersion}`);
+    if (fp.fired) {
+      for (const c of fp.contributingPolicyVersions) keys.add(`${c.policyObjectId}::${c.policyVersion}`);
+    }
+    // Fail closed on an unevaluable condition — regardless of `fired`, regardless of enforcement,
+    // and ONLY for the contributors that actually errored (never a cleanly-false sibling).
+    for (const c of fp.conditionErrorPolicyVersions) keys.add(`${c.policyObjectId}::${c.policyVersion}`);
   }
   return keys;
 }
@@ -227,12 +253,14 @@ export async function resolveEffectiveScanThreshold(
     }
   }
 
-  // Only the FIRED contributors may set a ceiling (see the module doc). A matched-but-not-fired
-  // policy is dropped here exactly as it is dropped from `requireControls` at the gate.
-  const firedKeys = firedContributorKeys(input.firedPolicies);
+  // Only FIRED contributors — plus contributors whose condition was UNEVALUABLE, which fail closed
+  // at every enforcement level — may set a ceiling (see the module doc). A matched contributor whose
+  // condition cleanly evaluated FALSE is dropped here exactly as it is dropped from
+  // `requireControls` at the gate.
+  const ceilingKeys = ceilingContributorKeys(input.firedPolicies);
 
   for (const match of matches) {
-    if (!firedKeys.has(`${match.policyObjectId}::${match.policyVersion}`)) continue;
+    if (!ceilingKeys.has(`${match.policyObjectId}::${match.policyVersion}`)) continue;
     for (const effect of match.effects as unknown[]) {
       const threshold = parseScanThresholdEffect(effect);
       if (!threshold) continue;

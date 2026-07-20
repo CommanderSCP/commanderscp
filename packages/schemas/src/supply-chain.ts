@@ -200,10 +200,12 @@ export const ScanEvidenceSchema = z.object({
    *  that severity and the historical fail-closed default (0) applies. */
   thresholdSources: ScanThresholdSourceMapSchema.optional(),
   /** Summary of `thresholdSources`: `"config"`/`"scoped"` when every constrained severity was
-   *  decided by that one source, `"mixed"` when both decided at least one severity each. Never
-   *  reports `"scoped"` merely because a scoped floor was present — see `thresholdSources`.
-   *  Optional so every pre-M17.5 evidence document still parses. */
-  thresholdSource: z.enum(["config", "scoped", "mixed"]).optional(),
+   *  decided by that one source, `"mixed"` when both decided at least one severity each, and
+   *  `"default"` when NEITHER source constrained anything and the applied ceilings are entirely the
+   *  historical fail-closed default (0/0). Never reports `"scoped"` merely because a scoped floor
+   *  was present, and never reports `"config"` merely because nothing was decided — see
+   *  `thresholdSources`. Optional so every pre-M17.5 evidence document still parses. */
+  thresholdSource: z.enum(["config", "scoped", "mixed", "default"]).optional(),
   /** M17.5 — every tier that contributed a ceiling to the merged threshold, so a blocked promotion's
    *  Decision can explain WHICH tier set the binding severity floor (charter principle 6). */
   thresholdContributors: z.array(ScanThresholdContributionSchema).optional()

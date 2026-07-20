@@ -82,6 +82,18 @@ export interface FiredPolicy {
   requireControls: string[];
   requireApprovals: EffectiveApprovalRequirement[];
   contributingPolicyVersions: Array<{ policyObjectId: string; policyVersion: number }>;
+  /** PROVENANCE ONLY — every contributor whose CEL condition could not be evaluated (parse error,
+   *  missing key, sandbox timeout), at EVERY enforcement level (advisory/recommended/required
+   *  alike). This does NOT affect `fired`, `enforcement`, `requireControls`, `requireApprovals` or
+   *  `contributingPolicyVersions`: the require*-effect semantics are unchanged (an advisory
+   *  contributor that can't be evaluated still only annotates, because an advisory effect can never
+   *  block anyway). It exists so consumers whose output is applied REGARDLESS of the authoring
+   *  policy's enforcement level — today, `scan-requirements.ts`'s scan-threshold CEILINGS, which
+   *  `scan-result-control` applies whatever enforcement authored them — can fail CLOSED on an
+   *  unevaluable condition instead of silently dropping the ceiling. Precise by construction: it
+   *  names ONLY the contributors that actually errored, never a sibling whose condition cleanly
+   *  evaluated FALSE. */
+  conditionErrorPolicyVersions: Array<{ policyObjectId: string; policyVersion: number }>;
   conditionResult: ConditionResultKind;
   conditionError?: string;
   /** Set when a REQUIRED contributor's condition failed to evaluate — the group fires and blocks. */
@@ -140,6 +152,8 @@ export async function resolveFiredPolicies(
     let requiredConditionEvalError: FiredPolicy["requiredConditionEvalError"];
     let firstError: string | undefined;
     let sawFalse = false;
+    // Provenance for ceiling consumers — EVERY enforcement level, errored contributors only.
+    const conditionErrorPolicyVersions: FiredPolicy["conditionErrorPolicyVersions"] = [];
 
     for (const contributor of policy.contributors) {
       if (!contributor.condition) {
@@ -149,6 +163,10 @@ export async function resolveFiredPolicies(
       const result = await sandbox.evaluate(contributor.condition, celContext);
       if (!result.ok) {
         firstError ??= result.error;
+        conditionErrorPolicyVersions.push({
+          policyObjectId: contributor.policyObjectId,
+          policyVersion: contributor.policyVersion
+        });
         // MAJOR #3: a REQUIRED contributor whose condition can't be evaluated (parse error OR
         // timeout) must FAIL CLOSED — the group fires and blocks. Advisory/recommended: annotate
         // (captured in `conditionError`) and simply don't fire, per DESIGN's "advisory annotates".
@@ -207,6 +225,7 @@ export async function resolveFiredPolicies(
       requireControls: merged.requireControls,
       requireApprovals: merged.requireApprovals,
       contributingPolicyVersions: counted.map((c) => ({ policyObjectId: c.policyObjectId, policyVersion: c.policyVersion })),
+      conditionErrorPolicyVersions,
       conditionResult,
       ...(firstError !== undefined ? { conditionError: firstError } : {}),
       ...(requiredConditionEvalError ? { requiredConditionEvalError } : {})

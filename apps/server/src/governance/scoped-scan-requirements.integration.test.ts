@@ -197,10 +197,14 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     name: string,
     scopeObjectId: string,
     threshold: Record<string, number>,
-    condition?: string
+    condition?: string,
+    /** Distinct URN — REQUIRED when two same-named policies coexist in one org (they would
+     *  otherwise derive the same name-slug URN and collide). Defaults to the server's name-slug. */
+    urn?: string
   ) {
     return admin.policies.create({
       name,
+      ...(urn ? { urn } : {}),
       properties: {
         scope: { objectRef: scopeObjectId },
         enforcement: "advisory",
@@ -396,6 +400,86 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     expect(evidenceTrue.threshold.maxHigh).toBe(0);
     expect((evidenceTrue.thresholdContributors ?? []).some((c) => c.source.includes("floor-conditional"))).toBe(true);
     expect(runTrue.detail).toMatch(/exceeds/i);
+
+    // ARM 3 — the SAME fixture, ADVISORY enforcement, but the condition cannot be EVALUATED (it
+    // references a label the component does not carry, so cel-js errors). "Condition FALSE" and
+    // "condition UNEVALUABLE" are different: a false condition drops the ceiling (ARM 1), but an
+    // UNEVALUABLE one must FAIL CLOSED and still supply its ceiling — at EVERY enforcement level,
+    // advisory included. A scan ceiling is applied by scan-result-control regardless of the
+    // authoring policy's enforcement, so silently dropping it would flip this FAIL to a PASS
+    // (the fail-open regression this arm pins). `scanFloorPolicy` authors `advisory` by default.
+    const orgErr = await createTestOrg(server, "cond-error");
+    const adminErr = new ScpClient({ baseUrl: server.baseUrl, token: orgErr.adminToken });
+    const chainErr = await buildChain(adminErr, "cond-error");
+    await scanFloorPolicy(adminErr, "floor-org", orgErr.orgId, { maxHigh: 5 });
+    await scanFloorPolicy(adminErr, "floor-conditional", chainErr.component.id, { maxHigh: 0 }, 'subject.labels.nope == "x"');
+    const controlErr = await scanControl(adminErr, orgErr, { suffix: "cond-error", severities: ["HIGH", "HIGH"] });
+    await requireScanControl(adminErr, "scan-gate", chainErr.component.id, controlErr.id);
+
+    const changeErr = await adminErr.changes.propose({ name: "cond-error-change", targets: [chainErr.component.id] });
+    const runErr = await waitForControlRun(adminErr, changeErr.id, controlErr.id, "fail");
+    const evidenceErr = runErr.evidence as unknown as ScanEvidenceShape;
+    expect(evidenceErr.threshold.maxHigh).toBe(0); // the unevaluable ceiling STILL tightened the org's 5 to 0
+    expect(runErr.detail).toMatch(/exceeds/i);
+    // ...and the erroring policy IS named as a contributor, so the block explains itself (charter
+    // principle 6) — it is NOT silently dropped the way an advisory require* effect would be.
+    expect((evidenceErr.thresholdContributors ?? []).some((c) => c.source.includes("floor-conditional"))).toBe(true);
+    // The block is a real, audited gate Decision — not merely a control-run status.
+    await assertStaysExecuting(adminErr, changeErr.id);
+    const explainedErr = await adminErr.changes.explain(changeErr.id);
+    expect(
+      explainedErr.decisions.some((d) => d.kind === "gate" && d.verdict === "block"),
+      "an unevaluable advisory ceiling must still produce an audited block Decision"
+    ).toBe(true);
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // (b3) PRECISION: an UNEVALUABLE condition re-admits ONLY the contributor that errored — a
+  //      SIBLING in the same name-group whose condition cleanly evaluated FALSE stays EXCLUDED.
+  //      This guards the fail-closed carve-out from over-correcting back into the over-restriction
+  //      the FIRED-set change removed (a cleanly-false ceiling must never tighten).
+  // -----------------------------------------------------------------------------------------
+
+  it("(b3) an unevaluable condition supplies ONLY the errored contributor's ceiling — a cleanly-FALSE sibling in the same name-group is still excluded", async () => {
+    const org = await createTestOrg(server, "cond-precision");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const chain = await buildChain(admin, "precision");
+    // Org floor: a loose maxHigh: 10 — two HIGHs pass under it alone.
+    await scanFloorPolicy(admin, "floor-org", org.orgId, { maxHigh: 10 });
+    // ONE name-group ("floor-multi") with TWO contributors on the component:
+    //   - the ERRORED one carries a LOOSER ceiling (maxHigh: 5) and an unevaluable condition,
+    //   - the cleanly-FALSE sibling carries a TIGHTER ceiling (maxHigh: 0) and condition `1 == 2`.
+    // If the fix over-admitted the whole group, the sibling's 0 would win the MIN and BLOCK. It
+    // must not: only the errored contributor's 5 may apply, so two HIGHs PASS at an effective 5.
+    await scanFloorPolicy(
+      admin,
+      "floor-multi",
+      chain.component.id,
+      { maxHigh: 5 },
+      'subject.labels.nope == "x"',
+      `urn:scp:${org.orgId}:policy:floor-multi-errored`
+    );
+    await scanFloorPolicy(
+      admin,
+      "floor-multi",
+      chain.component.id,
+      { maxHigh: 0 },
+      "1 == 2",
+      `urn:scp:${org.orgId}:policy:floor-multi-false`
+    );
+    const control = await scanControl(admin, org, { suffix: "precision", severities: ["HIGH", "HIGH"] });
+    await requireScanControl(admin, "scan-gate", chain.component.id, control.id);
+
+    const change = await admin.changes.propose({ name: "precision-change", targets: [chain.component.id] });
+    const run = await waitForControlRun(admin, change.id, control.id, "pass");
+    const evidence = run.evidence as unknown as ScanEvidenceShape;
+    // The errored contributor's LOOSER 5 applied; the cleanly-false sibling's 0 did NOT.
+    expect(evidence.threshold.maxHigh).toBe(5);
+    await waitUntil(async () => ((await admin.changes.get(change.id)).state === "validating" ? true : undefined), {
+      describe: `change ${change.id} reaches 'validating'`,
+      timeoutMs: 25_000
+    });
+    expect((await admin.changes.promote(change.id)).state).toBe("promoted");
   });
 
   // -----------------------------------------------------------------------------------------
