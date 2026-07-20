@@ -50440,6 +50440,38 @@
                         "type": "string"
                       }
                     },
+                    "artifacts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "oci",
+                              "blob"
+                            ]
+                          },
+                          "digest": {
+                            "type": "string"
+                          },
+                          "signatureRef": {
+                            "type": "string"
+                          },
+                          "location": {
+                            "type": "string"
+                          },
+                          "format": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "digest"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
                     "checksum": {
                       "type": "string"
                     },
@@ -51031,6 +51063,38 @@
                         "type": "array",
                         "items": {
                           "type": "string"
+                        }
+                      },
+                      "artifacts": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "oci",
+                                "blob"
+                              ]
+                            },
+                            "digest": {
+                              "type": "string"
+                            },
+                            "signatureRef": {
+                              "type": "string"
+                            },
+                            "location": {
+                              "type": "string"
+                            },
+                            "format": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "type",
+                            "digest"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "checksum": {

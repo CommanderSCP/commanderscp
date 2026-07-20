@@ -13121,6 +13121,13 @@ export type ExportPromotionBundleResponses = {
             publicKey: string;
         }>;
         artifactDigests: Array<string>;
+        artifacts?: Array<{
+            type: 'oci' | 'blob';
+            digest: string;
+            signatureRef?: string;
+            location?: string;
+            format?: string;
+        }>;
         checksum: string;
         bundleSignature: string;
     };
@@ -13199,6 +13206,13 @@ export type ImportBundleData = {
             publicKey: string;
         }>;
         artifactDigests: Array<string>;
+        artifacts?: Array<{
+            type: 'oci' | 'blob';
+            digest: string;
+            signatureRef?: string;
+            location?: string;
+            format?: string;
+        }>;
         checksum: string;
         bundleSignature: string;
     };
