@@ -31,7 +31,7 @@ Consequences for the UI: the component pipeline's *transferred → validated* bo
 - Cleanly frames M15 (the outpost's local Gitea registry) as a change of *repo ownership/location*, not a change of *whether validation happens*.
 
 **Costs / honesty**
-- **Per-artifact cosign + scan-attestation verification before deploy is only partly built** — bundle-level signature/hash-chain validation exists (fail-closed import); the per-artifact pre-deploy verification is M15.2 (partly aspirational). The UI must render an explicit "not-yet-verified" state rather than a fabricated pass until M15.2 lands.
+- **Per-artifact cosign + scan-attestation verification before deploy is only partly built** — bundle-level signature/hash-chain validation exists (fail-closed import); the per-artifact pre-deploy verification is M15.2 (partly aspirational) *(the cosign-verify step itself lands at **M17.4** — [ADR-0015 §6](0015-cosign-cross-boundary-signing.md))*. The UI must render an explicit "not-yet-verified" state rather than a fabricated pass until it lands.
 - Asserting "deployment always terminates at an outpost" is a **model statement**: a non-federated single-instance install is its own commander+outpost; the universal-gate framing must degrade gracefully there (the validating party is the local instance).
 
 ## Alternatives considered
