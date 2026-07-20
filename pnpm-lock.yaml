@@ -86,6 +86,9 @@ importers:
       '@scp/plugin-gitlab':
         specifier: workspace:*
         version: link:../../packages/plugins/gitlab
+      '@scp/plugin-harbor':
+        specifier: workspace:*
+        version: link:../../packages/plugins/harbor
       '@scp/plugin-managed-iac':
         specifier: workspace:*
         version: link:../../packages/plugins/managed-iac
@@ -456,6 +459,19 @@ importers:
       nock:
         specifier: ^13.5.0
         version: 13.5.6
+      typescript:
+        specifier: ~5.8.0
+        version: 5.8.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
+
+  packages/plugins/harbor:
+    dependencies:
+      '@scp/git-provider-core':
+        specifier: workspace:*
+        version: link:../git-provider-core
+    devDependencies:
       typescript:
         specifier: ~5.8.0
         version: 5.8.3

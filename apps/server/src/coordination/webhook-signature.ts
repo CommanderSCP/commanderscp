@@ -65,7 +65,13 @@ const DEFAULT_VERIFIER: WebhookSignatureVerifier = {
  */
 export function verifierForSourceKind(sourceKind: string): WebhookSignatureVerifier {
   const adapter = webhookAdapterForSourceKind(sourceKind);
-  if (adapter) {
+  // An adapter that ships its own signature scheme (github/gitea/gitlab) resolves it here. A
+  // webhook-source adapter that carries NO `verify`/`signatureHeaderName` (harbor — a registry
+  // authed by a `Bearer`-PAT `Authorization` header, with no separate signature header, M15.3c)
+  // falls back to `DEFAULT_VERIFIER`. This path is only ever reached when a secret IS configured
+  // for the source kind; harbor configures none, so it is never exercised for harbor — the fallback
+  // is defensive, keeping the type honest rather than asserting a `verify` that isn't there.
+  if (adapter?.verify && adapter.signatureHeaderName) {
     return { headerName: adapter.signatureHeaderName, verify: adapter.verify };
   }
   return DEFAULT_VERIFIER;

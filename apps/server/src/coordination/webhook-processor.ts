@@ -40,6 +40,13 @@ interface ExtractedHint {
   repo?: string;
   path?: string;
   correlationKey?: string;
+  /** OCI/image artifact digest (`sha256:…`) for a registry/package push (harbor's `PUSH_ARTIFACT`,
+   *  gitea's `package`) — threaded into the proposed Change's `sourceRef.artifact_digest`, the
+   *  connective tissue the M17.1 scan gate binds to (ADR-0013). Additive (M15.3c): forwarded here
+   *  for the first time; git-provider correlation is unchanged (git events that set no digest leave
+   *  this undefined, and the digest was — and still is — also folded into `correlationKey` for
+   *  grouping). */
+  artifactDigest?: string;
 }
 
 function genericHint(payload: unknown): ExtractedHint {
@@ -62,16 +69,33 @@ function extractHint(sourceKind: string, headers: unknown, payload: unknown): Ex
   const adapter = webhookAdapterForSourceKind(sourceKind);
   if (!adapter) return generic;
 
-  const headerMap = (headers ?? {}) as Record<string, unknown>;
-  const eventName = headerMap[adapter.eventHeaderName];
-  if (typeof eventName !== "string") return generic;
+  // Resolve the event NAME. HEADER-DRIVEN for adapters that name their event in an HTTP header
+  // (github/gitea/gitlab — behavior UNCHANGED: a non-string header still yields the generic shape).
+  // BODY-DERIVED for an adapter that declares no `eventHeaderName` (harbor, M15.3c — its event type
+  // is in `payload.type`, not a header); without this the header-only path would read `undefined`
+  // and silently drop every harbor event before ever calling `mapEvent`.
+  let eventName: string | undefined;
+  if (adapter.eventHeaderName) {
+    const headerMap = (headers ?? {}) as Record<string, unknown>;
+    const headerValue = headerMap[adapter.eventHeaderName];
+    if (typeof headerValue !== "string") return generic;
+    eventName = headerValue;
+  } else {
+    const p = (payload ?? {}) as Record<string, unknown>;
+    if (typeof p.type !== "string") return generic;
+    eventName = p.type;
+  }
 
   const providerHint = adapter.mapEvent(eventName, payload);
   if (!providerHint) return generic;
   return {
     repo: providerHint.repo ?? generic.repo,
     path: providerHint.path ?? generic.path,
-    correlationKey: providerHint.correlationKey ?? generic.correlationKey
+    correlationKey: providerHint.correlationKey ?? generic.correlationKey,
+    // Additive forwarding (M15.3c): git-provider hints that don't set a digest leave this undefined,
+    // so nothing about their behavior changes; harbor/gitea package pushes carry it through to
+    // `sourceRef.artifact_digest` below.
+    artifactDigest: providerHint.artifactDigest
   };
 }
 
@@ -135,6 +159,16 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
     // name informative. Concurrent double-processing of the SAME row is separately prevented by the
     // `FOR UPDATE SKIP LOCKED` claim above, so two ticks never both mint a change for one row.
     const name = `${row.sourceKind}${hint.repo ? `: ${hint.repo}` : ""}`;
+    // `sourceRef` is the raw delivery payload, kept verbatim (DESIGN §8). When the hint extracted an
+    // artifact digest (a registry/package push — harbor's `PUSH_ARTIFACT`, gitea's `package`), lift
+    // it to a canonical top-level `artifact_digest` key (schema.ts:378's documented `source_ref`
+    // shape) so a Harbor image push creates a Change carrying the image digest — the connective
+    // tissue the M17.1 scan gate binds to (`changes.sourceRef.artifact_digest`, ADR-0013). Additive:
+    // for a git push (no digest) the payload is passed through byte-identical, unchanged.
+    const rawSourceRef = (row.payload as Record<string, unknown>) ?? {};
+    const sourceRef = hint.artifactDigest
+      ? { ...rawSourceRef, artifact_digest: hint.artifactDigest }
+      : rawSourceRef;
     const { change } = await proposeChange(tx, {
       orgId,
       actorObjectId: SYSTEM_ACTOR_ID,
@@ -142,7 +176,7 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
       name,
       urn: deriveUrn(orgId, "change", name, row.id),
       sourceKind: row.sourceKind,
-      sourceRef: (row.payload as Record<string, unknown>) ?? {},
+      sourceRef,
       correlationKey: hint.correlationKey,
       targets: [match.componentObjectId],
       // WHICH pipeline this release drives — the routing Type (ADR-0007), straight from the mapping
