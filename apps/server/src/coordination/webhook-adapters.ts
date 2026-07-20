@@ -2,6 +2,7 @@ import type { GitProviderEventHint } from "@scp/git-provider-core";
 import { githubAdapter } from "@scp/plugin-github";
 import { giteaAdapter } from "@scp/plugin-gitea";
 import { gitlabAdapter } from "@scp/plugin-gitlab";
+import { harborWebhookSource } from "@scp/plugin-harbor";
 
 /**
  * Per-`sourceKind` webhook ADAPTER REGISTRY (M15.1b — the M15.1a follow-up). Before this, the
@@ -24,13 +25,20 @@ import { gitlabAdapter } from "@scp/plugin-gitlab";
 export interface WebhookAdapter {
   sourceKind: string;
   /** HTTP header the provider carries its request authenticator in — an HMAC signature for
-   *  github/gitea, or a PLAINTEXT shared-secret token for gitlab (`X-Gitlab-Token`). */
-  signatureHeaderName: string;
-  /** HTTP header the provider carries its event name in (drives `mapEvent`). */
-  eventHeaderName: string;
+   *  github/gitea, or a PLAINTEXT shared-secret token for gitlab (`X-Gitlab-Token`).
+   *  OPTIONAL: a webhook-source that authenticates by a `Bearer`-PAT `Authorization` header alone
+   *  (harbor — a registry cannot send a separate signature header, M15.3c) sets no secret and so
+   *  needs none; `verifierForSourceKind` falls back to the generic verifier (never exercised, as
+   *  such a source configures no secret). */
+  signatureHeaderName?: string;
+  /** HTTP header the provider carries its event name in (drives `mapEvent`). OPTIONAL: an adapter
+   *  that carries its event type in the BODY (harbor's `payload.type`, M15.3c) declares none, and
+   *  `extractHint` (webhook-processor.ts) derives the event name from the body instead. */
+  eventHeaderName?: string;
   /** Fail-closed authentication of the delivery against the RAW request body (HMAC providers) or
-   *  by plaintext-token equality (gitlab, which does not sign the body). */
-  verify(rawBody: Buffer, headerValue: string | undefined, secret: string): boolean;
+   *  by plaintext-token equality (gitlab, which does not sign the body). OPTIONAL: a `Bearer`-PAT-
+   *  authed webhook-source (harbor) ships none — see `signatureHeaderName`. */
+  verify?(rawBody: Buffer, headerValue: string | undefined, secret: string): boolean;
   /** Provider event name + payload → correlation hint (null = ignore). */
   mapEvent(eventName: string, payload: unknown): GitProviderEventHint | null;
 }
@@ -62,6 +70,21 @@ const ADAPTERS: Record<string, WebhookAdapter> = {
     eventHeaderName: "x-gitlab-event",
     verify: gitlabAdapter.verifyWebhook,
     mapEvent: gitlabAdapter.mapEvent
+  },
+  // Harbor as a WEBHOOK CHANGE-SOURCE (M15.3c, WEBHOOK-SOURCE shape) — a container REGISTRY SCP
+  // observes, NOT an executor/execution-system. Deliberately mapEvent-ONLY:
+  //   - no `verify` / `signatureHeaderName`: Harbor authenticates by putting `Bearer <scoped SCP
+  //     PAT>` in its single webhook "Auth Header" field (so the route's `requireAuth` gates the
+  //     push); it cannot send a separate HMAC-signature header, so no secret is configured for
+  //     `harbor` and the HMAC path is moot.
+  //   - no `eventHeaderName`: Harbor names its event in the BODY (`payload.type`), not a header, so
+  //     `extractHint` (webhook-processor.ts) derives the event name from the body for this adapter.
+  // `mapEvent` maps a `PUSH_ARTIFACT` image push to `{ repo, artifactDigest }`; correlation is on
+  // repo via the existing `source_mappings` (no correlator change). CONNECTED registries only — the
+  // air-gap PULL (SCP polling the registry) is a DEFERRED follow-on (docs/BUILD_AND_TEST.md §8).
+  harbor: {
+    sourceKind: harborWebhookSource.sourceKind,
+    mapEvent: harborWebhookSource.mapEvent
   }
 };
 

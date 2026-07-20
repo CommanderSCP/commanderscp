@@ -56,6 +56,15 @@ describe("verifierForSourceKind — resolves the right provider verifier via the
     expect(v.headerName).toBe("x-scp-signature-256");
     expect(v.verify(rawBody, githubSig, secret)).toBe(true); // generic scheme is sha256=<hex>
   });
+
+  it("harbor (a webhook-source with NO verify/signatureHeaderName) falls back to the generic verifier — a registry is Bearer-PAT authed, configures no secret, so this path is never exercised for it", () => {
+    // The harbor adapter ships mapEvent only (no HMAC scheme). verifierForSourceKind must not throw
+    // on the missing verify — it degrades to DEFAULT_VERIFIER rather than asserting a verify that
+    // isn't there. (In practice harbor configures no webhook secret, so verification never runs.)
+    const v = verifierForSourceKind("harbor");
+    expect(v.headerName).toBe("x-scp-signature-256");
+    expect(v.verify(rawBody, githubSig, secret)).toBe(true);
+  });
 });
 
 describe("webhookAdapterForSourceKind — event-hint mapping routes to the right provider", () => {
@@ -93,6 +102,21 @@ describe("webhookAdapterForSourceKind — event-hint mapping routes to the right
       commitSha: "9".repeat(40),
       correlationKey: "pipeline-99"
     });
+  });
+
+  it("harbor maps a PUSH_ARTIFACT (body-typed) to artifactDigest and declares NO event header (event name is in payload.type, not a header)", () => {
+    const adapter = webhookAdapterForSourceKind("harbor");
+    expect(adapter?.eventHeaderName).toBeUndefined();
+    expect(adapter?.verify).toBeUndefined();
+    const digest = "sha256:" + "cd".repeat(32);
+    const hint = adapter?.mapEvent("PUSH_ARTIFACT", {
+      type: "PUSH_ARTIFACT",
+      event_data: {
+        resources: [{ digest, tag: "v2" }],
+        repository: { repo_full_name: "acme/api" }
+      }
+    });
+    expect(hint).toMatchObject({ repo: "acme/api", artifactDigest: digest });
   });
 
   it("returns undefined for a source kind with no provider adapter", () => {
