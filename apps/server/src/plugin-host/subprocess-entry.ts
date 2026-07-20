@@ -78,6 +78,10 @@ async function loadPlugin(moduleName: string): Promise<LoadedPlugin> {
       const mod = await import("@scp/plugin-webhook-control");
       return { kind: "control", plugin: mod.createWebhookControlPlugin() };
     }
+    case "scan-result-control": {
+      const mod = await import("@scp/plugin-scan-result-control");
+      return { kind: "control", plugin: mod.createScanResultControlPlugin() };
+    }
     case "github": {
       const mod = await import("@scp/plugin-github");
       return { kind: "executor", plugin: mod.createGithubExecutorPlugin() };
@@ -179,14 +183,16 @@ function stderrLogger(instanceId: string): Logger {
 /**
  * The ONLY plugin modules permitted to reach loopback/private internal hosts (MAJOR #6 follow-up):
  * the genuine operator-plane escape hatches. `webhook-control`'s control-server URL is
- * operator-configured behind `policy:write` (never an ordinary tenant), and `federation-https`
- * dials on-prem/single-host peers. EVERY tenant-configurable plugin (webhook-notify, github,
- * argocd, terraform, managed-iac) is absent here, so its `ctx.http` cannot be pointed at
- * `127.0.0.1`/`10.x`/... — this gate is on MODULE IDENTITY, not on `allowedHosts` emptiness (which
- * tenant bindings default to, and which a tenant controls). Metadata/link-local stay blocked for
- * these modules too.
+ * operator-configured behind `policy:write` (never an ordinary tenant), `scan-result-control`'s
+ * scan-verdict source URL is the same (a control binding, same `policy:write` trust tier, and the
+ * verdict store is often an in-cluster/on-prem artifact registry reachable only at a private
+ * address), and `federation-https` dials on-prem/single-host peers. EVERY tenant-configurable
+ * plugin (webhook-notify, github, argocd, terraform, managed-iac) is absent here, so its `ctx.http`
+ * cannot be pointed at `127.0.0.1`/`10.x`/... — this gate is on MODULE IDENTITY, not on
+ * `allowedHosts` emptiness (which tenant bindings default to, and which a tenant controls).
+ * Metadata/link-local stay blocked for these modules too.
  */
-const OPERATOR_PLANE_MODULES = new Set(["webhook-control", "federation-https"]);
+const OPERATOR_PLANE_MODULES = new Set(["webhook-control", "scan-result-control", "federation-https"]);
 
 /**
  * M8 hardening (DESIGN.md §13, BUILD_AND_TEST.md §8 M8 item 6, "Federation mTLS transport
