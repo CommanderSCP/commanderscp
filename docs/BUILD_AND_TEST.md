@@ -32,7 +32,7 @@ All versions are pinned in-repo (`.nvmrc`, `package.json#packageManager`, `.tool
 | Helm | **3.16+** | documented; used in `deploy/helm` lint/test | |
 | kind | **0.27+** | documented | Optional local chart verification; CI chart-install job. |
 | skopeo | **1.16+** | documented | Air-gap bundle build (OCI layout copy). |
-| cosign | **2.x** | documented | Release artifact signing. |
+| cosign | **v3.1.2 pinned** (image-vendored); 2.x/3.x accepted from `PATH` | vendored by digest into the runtime image (`tools/cosign/`, `Dockerfile`); still *documented* as an operator prerequisite on `PATH` | Release artifact signing. The pinned binary lands at `/opt/scp/bin/cosign` and is what CI uses too (`scripts/install-pinned-cosign.sh`); an operator-supplied `PATH` cosign is still supported via version-adaptive flag probing. `install.sh` deliberately keeps requiring an **external** cosign. |
 | git | 2.40+ | documented | |
 
 Developer bootstrap check:

@@ -4,6 +4,7 @@
 // Never touches the network.
 
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 
 /** @type {{ name: string, ok: boolean, detail: string }[]} */
 const results = [];
@@ -82,6 +83,53 @@ check("docker daemon", () => {
     detail: v
       ? `reachable (server ${v})`
       : "daemon not reachable — start Docker Desktop/colima before `docker compose up`"
+  };
+});
+
+// The vendored, digest-pinned cosign (M17.3 E1). Kept in sync with tools/cosign/pin.env,
+// the Dockerfile and deploy/airgap/src/cosign-bin.ts by deploy/airgap/src/cosign-bin.test.ts.
+const COSIGN_PINNED_VERSION = "v3.1.2";
+const COSIGN_PINNED_IMAGE =
+  "ghcr.io/sigstore/cosign/cosign@sha256:bea051df6a6d3bc84288b6db098df38a81d87b7ed226f34d22aaae1bc329c2b7";
+const COSIGN_VENDORED_PATH = "/opt/scp/bin/cosign";
+
+check("cosign", () => {
+  // Same resolution order as deploy/airgap/src/cosign-bin.ts: explicit override -> the binary
+  // vendored into the runtime image -> whatever the operator has on PATH. Reporting WHICH one
+  // resolved matters as much as the version: only the first two are the vetted pin.
+  const override = process.env.SCP_COSIGN_BIN;
+  const vendored = existsSync(COSIGN_VENDORED_PATH) ? COSIGN_VENDORED_PATH : null;
+  const bin = override ?? vendored ?? "cosign";
+  const pinned = Boolean(override ?? vendored);
+
+  const out = run(bin, ["version"]);
+  if (!out) {
+    // Not-found-on-PATH is NOT a failure: BUILD_AND_TEST.md §1 lists cosign as "documented", and
+    // outside the runtime image it's only needed to build/verify air-gap bundles. A pinned binary
+    // that exists but won't run IS a failure — that's a broken image, not a missing optional tool.
+    return pinned
+      ? {
+          ok: false,
+          detail: `pinned cosign at ${bin} is not runnable — expected ${COSIGN_PINNED_VERSION} (${COSIGN_PINNED_IMAGE})`
+        }
+      : {
+          ok: true,
+          detail: `not installed (optional here; needed only to build/verify air-gap bundles). Vendored pin is ${COSIGN_PINNED_VERSION} ${COSIGN_PINNED_IMAGE} at ${COSIGN_VENDORED_PATH} inside the scp image; \`scripts/install-pinned-cosign.sh\` installs the same one locally.`
+        };
+  }
+  const reported = out.match(/GitVersion:\s*(\S+)/)?.[1] ?? "unknown";
+  if (!pinned) {
+    return {
+      ok: true,
+      detail: `${reported} from PATH (UNPINNED, operator-supplied — version-adaptive flag probing applies). Pin is ${COSIGN_PINNED_VERSION} ${COSIGN_PINNED_IMAGE}`
+    };
+  }
+  const ok = reported === COSIGN_PINNED_VERSION;
+  return {
+    ok,
+    detail: ok
+      ? `${reported} PINNED at ${bin} (${COSIGN_PINNED_IMAGE})`
+      : `PINNED path ${bin} reports ${reported} but the pin is ${COSIGN_PINNED_VERSION} (${COSIGN_PINNED_IMAGE}) — signing will fail closed; see tools/cosign/README.md`
   };
 });
 

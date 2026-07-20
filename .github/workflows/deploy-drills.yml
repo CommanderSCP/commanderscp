@@ -94,8 +94,12 @@ jobs:
       - run: pnpm build
       # Drill prerequisites installed in-workflow (same pattern as the integration CI job) —
       # nightly/on-demand build-time fetch, not a product runtime dependency.
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+      - name: Install the PINNED cosign (the same binary the scp image ships)
+        # See .github/workflows/ci.yml for the full rationale: pinned by digest
+        # (tools/cosign/pin.env), fails closed on a version mismatch, and replaces the deliberately
+        # unpinned `sigstore/cosign-installer@v3`. Left on PATH so install.sh — which requires an
+        # EXTERNAL cosign, unchanged — still finds one.
+        run: scripts/install-pinned-cosign.sh
       - name: Install skopeo + ansible
         run: |
           sudo apt-get update -qq
@@ -130,8 +134,12 @@ jobs:
         with:
           install_only: true
           version: v0.27.0
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+      - name: Install the PINNED cosign (the same binary the scp image ships)
+        # See .github/workflows/ci.yml for the full rationale: pinned by digest
+        # (tools/cosign/pin.env), fails closed on a version mismatch, and replaces the deliberately
+        # unpinned `sigstore/cosign-installer@v3`. Left on PATH so install.sh — which requires an
+        # EXTERNAL cosign, unchanged — still finds one.
+        run: scripts/install-pinned-cosign.sh
       - name: Install skopeo
         run: |
           command -v skopeo >/dev/null 2>&1 && exit 0
