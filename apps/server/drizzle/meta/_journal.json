@@ -211,6 +211,13 @@
       "when": 1785400000000,
       "tag": "0029_scan_requirement_floors",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1785500000000,
+      "tag": "0030_instance_cosign_keys",
+      "breakpoints": true
     }
   ]
 }
