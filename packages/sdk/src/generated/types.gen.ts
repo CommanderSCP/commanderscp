@@ -11755,6 +11755,121 @@ export type PolicyEvaluateResponses = {
 
 export type PolicyEvaluateResponse = PolicyEvaluateResponses[keyof PolicyEvaluateResponses];
 
+export type ListInstanceScanFloorsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/instance/scan-floors';
+};
+
+export type ListInstanceScanFloorsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListInstanceScanFloorsError = ListInstanceScanFloorsErrors[keyof ListInstanceScanFloorsErrors];
+
+export type ListInstanceScanFloorsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            tier: 'platform' | 'trust_domain';
+            origin: 'local' | 'federated';
+            maxCritical: number | null;
+            maxHigh: number | null;
+            maxMedium: number | null;
+            maxLow: number | null;
+            note: string | null;
+            updatedAt: string;
+        }>;
+    };
+};
+
+export type ListInstanceScanFloorsResponse = ListInstanceScanFloorsResponses[keyof ListInstanceScanFloorsResponses];
+
+export type PutInstanceScanFloorData = {
+    body: {
+        origin: 'local' | 'federated';
+        maxCritical?: number | null;
+        maxHigh?: number | null;
+        maxMedium?: number | null;
+        maxLow?: number | null;
+        note?: string | null;
+    };
+    path: {
+        tier: 'platform' | 'trust_domain';
+    };
+    query?: never;
+    url: '/instance/scan-floors/{tier}';
+};
+
+export type PutInstanceScanFloorErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutInstanceScanFloorError = PutInstanceScanFloorErrors[keyof PutInstanceScanFloorErrors];
+
+export type PutInstanceScanFloorResponses = {
+    /**
+     * Success
+     */
+    200: {
+        tier: 'platform' | 'trust_domain';
+        origin: 'local' | 'federated';
+        maxCritical: number | null;
+        maxHigh: number | null;
+        maxMedium: number | null;
+        maxLow: number | null;
+        note: string | null;
+        updatedAt: string;
+    };
+};
+
+export type PutInstanceScanFloorResponse = PutInstanceScanFloorResponses[keyof PutInstanceScanFloorResponses];
+
 export type ListCampaignsData = {
     body?: never;
     path?: never;

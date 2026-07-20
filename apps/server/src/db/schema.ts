@@ -1292,3 +1292,39 @@ export const changeSourceWebhookSecrets = pgTable(
     unique("change_source_webhook_secrets_org_source_key").on(table.orgId, table.sourceKind)
   ]
 );
+
+// -------------------------------------------------------------------------------------------
+// M17.5 — instance-scoped scan-requirement floors (ADR-0016 §3). Hand-authored table/RLS/grants in
+// drizzle/0029_scan_requirement_floors.sql; read that file's header for the full rationale.
+//
+// THE ONE TABLE IN THIS SCHEMA WITH NO `org_id`, and deliberately so: it carries the two ABOVE-ORG
+// tiers of the six-tier scan-requirement chain (platform -> trust domain (partition) -> org ->
+// containment domain -> service -> component). A deployment sits in exactly one partition, so a
+// trust-domain floor applies to EVERY org hosted on it. This is the documented exception to
+// DESIGN §4.2's "org_id NOT NULL on every tenant-scoped table" — the table is not tenant-scoped and
+// holds no per-tenant rows at all, so it exposes no cross-tenant visibility.
+//
+// `tier` is spelled `trust_domain`, NEVER bare `domain`: the trust domain (partition) is the
+// ambient federation boundary ABOVE org, while the `domain` OBJECT TYPE (the containment domain,
+// see the `federation_self` comment above) is an intra-org grouping BELOW org. Different concepts.
+//
+// Access: tenant-READ (RLS `FOR SELECT USING (true)`, `scp_app` holds SELECT only) / operator-WRITE
+// (over the admin connection — `scp_app` has no write grant AND there is no write policy).
+//
+// Every severity ceiling is NULLABLE: NULL = "this tier sets no ceiling for this severity", which
+// contributes NOTHING to the per-severity MIN. Absent is never read as 0.
+// -------------------------------------------------------------------------------------------
+export const scanRequirementFloors = pgTable(
+  "scan_requirement_floors",
+  {
+    tier: text("tier").notNull(), // 'platform' | 'trust_domain'
+    origin: text("origin").notNull().default("local"), // 'local' | 'federated'
+    maxCritical: integer("max_critical"),
+    maxHigh: integer("max_high"),
+    maxMedium: integer("max_medium"),
+    maxLow: integer("max_low"),
+    note: text("note"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [primaryKey({ columns: [table.tier, table.origin] })]
+);

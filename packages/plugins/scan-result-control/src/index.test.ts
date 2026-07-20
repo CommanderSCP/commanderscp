@@ -91,6 +91,15 @@ describe("scan-result-control plugin", () => {
     const evidence = ScanEvidenceSchema.parse(outcome.evidence);
     expect(evidence.digestMatch).toBe(true); // digest is fine; it's the vuln count that blocks
     expect(evidence.severityCounts.critical).toBe(1);
+    // M17.5: NEITHER source constrained anything — the applied 0/0 is the historical fail-closed
+    // DEFAULT, not a config value. The summary label must say so rather than collapsing to
+    // `"config"` and misdescribing the Decision's own inputs (charter principle 6). The
+    // per-severity map already reported this honestly; the summary now agrees with it.
+    expect(evidence.thresholdSource).toBe("default");
+    expect(evidence.thresholdSources?.maxCritical).toBe("default");
+    expect(evidence.thresholdSources?.maxHigh).toBe("default");
+    // And the block text must NOT claim a most-restrictive-wins merge decided it.
+    expect(outcome.detail).not.toMatch(/most-restrictive-wins/);
   });
 
   it("honors a configurable threshold — HIGH under maxHigh passes, over maxHigh fails", async () => {
@@ -206,5 +215,99 @@ describe("scan-result-control plugin", () => {
     const ctx = testCtx({ expectedDigest: DIGEST_A });
     const outcome = await plugin.evaluate(ctx, { changeId: "c1", controlId: "ctl1", context: {} });
     expect(outcome.status).toBe("fail");
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // M17.5 (ADR-0016) — the gate-resolved, most-restrictive-wins scoped threshold on the request
+  // context, preferred over the flat per-binding `config.threshold` exactly as `artifactDigest`
+  // is preferred over `config.expectedDigest`.
+  // -----------------------------------------------------------------------------------------
+
+  const scopedContext = (threshold: Record<string, number>) => ({
+    scanThreshold: {
+      threshold,
+      contributors: [{ tier: "platform" as const, source: "instance:platform:local", threshold }]
+    }
+  });
+
+  it("M17.5: context.scanThreshold TIGHTENS a looser per-binding config.threshold (the scoped floor wins)", async () => {
+    const plugin = createScanResultControlPlugin();
+    const ctx = testCtx({ ...baseConfig, threshold: { maxCritical: 99, maxHigh: 99 } }, async () => ({
+      status: 200,
+      headers: {},
+      body: trivyResult({ digest: DIGEST_A, severities: ["HIGH"] })
+    }));
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: scopedContext({ maxHigh: 0 })
+    });
+    expect(outcome.status).toBe("fail");
+    const evidence = ScanEvidenceSchema.parse(outcome.evidence);
+    expect(evidence.threshold.maxHigh).toBe(0);
+    // The DECIDING (breached) ceiling is maxHigh and it came from the scoped floor; maxCritical's
+    // applied 99 came from the config, so the honest summary is `mixed`.
+    expect(evidence.thresholdSources?.maxHigh).toBe("scoped");
+    expect(evidence.thresholdSources?.maxCritical).toBe("config");
+    expect(evidence.thresholdSource).toBe("mixed");
+    expect(outcome.detail).toMatch(/maxHigh=0 \(from scoped\)/);
+    expect(evidence.thresholdContributors?.[0]?.tier).toBe("platform");
+  });
+
+  it("M17.5: a per-binding config.threshold can still TIGHTEN below the scoped floor — most-restrictive-wins is symmetric, never a loosening", async () => {
+    const plugin = createScanResultControlPlugin();
+    const ctx = testCtx({ ...baseConfig, threshold: { maxCritical: 0, maxHigh: 0 } }, async () => ({
+      status: 200,
+      headers: {},
+      body: trivyResult({ digest: DIGEST_A, severities: ["HIGH"] })
+    }));
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: scopedContext({ maxHigh: 50 })
+    });
+    expect(outcome.status).toBe("fail");
+    const evidence = ScanEvidenceSchema.parse(outcome.evidence);
+    expect(evidence.threshold.maxHigh).toBe(0);
+    // THE LABEL, not just the number: the per-binding CONFIG (maxHigh 0) supplied the value that
+    // actually decided this block, even though a scoped floor (maxHigh 50) was threaded. Reporting
+    // `scoped` here would make the Decision misdescribe its own inputs (charter principle 6).
+    expect(evidence.thresholdSource).toBe("config");
+    expect(evidence.thresholdSources?.maxHigh).toBe("config");
+    expect(evidence.thresholdSources?.maxCritical).toBe("config");
+    expect(outcome.detail).toMatch(/maxHigh=0 \(from config\)/);
+    expect(outcome.detail).not.toMatch(/from scoped/);
+  });
+
+  it("M17.5: a severity the scoped floor sets but config does not is applied verbatim (no phantom 0 default)", async () => {
+    const plugin = createScanResultControlPlugin();
+    const ctx = testCtx(baseConfig, async () => ({
+      status: 200,
+      headers: {},
+      body: trivyResult({ digest: DIGEST_A, severities: ["MEDIUM", "MEDIUM"] })
+    }));
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: scopedContext({ maxMedium: 5 })
+    });
+    expect(outcome.status).toBe("pass");
+    expect(ScanEvidenceSchema.parse(outcome.evidence).threshold.maxMedium).toBe(5);
+  });
+
+  it("M17.5: a PRESENT-but-malformed context.scanThreshold FAILS CLOSED rather than silently using the looser per-binding threshold", async () => {
+    const plugin = createScanResultControlPlugin();
+    const ctx = testCtx({ ...baseConfig, threshold: { maxCritical: 99, maxHigh: 99 } }, async () => ({
+      status: 200,
+      headers: {},
+      body: trivyResult({ digest: DIGEST_A })
+    }));
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { scanThreshold: { threshold: { maxHigh: "zero" } } }
+    });
+    expect(outcome.status).toBe("fail");
+    expect(outcome.detail).toMatch(/malformed/);
   });
 });

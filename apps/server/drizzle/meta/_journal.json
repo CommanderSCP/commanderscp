@@ -204,6 +204,13 @@
       "when": 1785300000000,
       "tag": "0028_object_health",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1785400000000,
+      "tag": "0029_scan_requirement_floors",
+      "breakpoints": true
     }
   ]
 }

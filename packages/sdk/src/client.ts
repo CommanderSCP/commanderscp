@@ -177,6 +177,9 @@ import {
   initFederation as initFederationRequest,
   getFederationSelf as getFederationSelfRequest,
   listFederationPeers as listFederationPeersRequest,
+  // M17.5 (ADR-0016) — instance-scoped scan-requirement floors.
+  listInstanceScanFloors as listInstanceScanFloorsRequest,
+  putInstanceScanFloor as putInstanceScanFloorRequest,
   pairPeer as pairPeerRequest,
   getFederationStatus as getFederationStatusRequest,
   exportSyncBundle as exportSyncBundleRequest,
@@ -286,6 +289,8 @@ import type {
   FederationSelfInfo,
   InitFederationRequest,
   FederationPeer,
+  InstanceScanFloor,
+  PutInstanceScanFloorRequest,
   PairPeerRequest,
   FederationStatusResponse,
   ExportJournalRequest,
@@ -1461,6 +1466,33 @@ export class ScpClient {
         body: req
       });
       unwrap(result);
+    }
+  };
+
+  // -----------------------------------------------------------------------------------------
+  // M17.5: instance-scoped scan-requirement floors (ADR-0016 §3) — the two ABOVE-org tiers of the
+  // six-tier, most-restrictive-wins scan chain (platform + trust domain (partition)). They bind
+  // EVERY org on the deployment, so `put` is an OPERATOR action: it carries the deployment's
+  // `x-scp-operator-token`, never a tenant role. `list` is an ordinary authenticated read.
+  // -----------------------------------------------------------------------------------------
+  readonly instanceScanFloors = {
+    list: async (): Promise<InstanceScanFloor[]> => {
+      const result = await listInstanceScanFloorsRequest({ client: this.client });
+      return unwrap(result).items;
+    },
+    /** Author (upsert) one floor. `operatorToken` is the deployment-level `SCP_OPERATOR_TOKEN`. */
+    put: async (
+      tier: "platform" | "trust_domain",
+      req: PutInstanceScanFloorRequest,
+      operatorToken: string
+    ): Promise<InstanceScanFloor> => {
+      const result = await putInstanceScanFloorRequest({
+        client: this.client,
+        path: { tier },
+        body: req,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result);
     }
   };
 
