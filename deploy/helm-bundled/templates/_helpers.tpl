@@ -38,3 +38,19 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/name: {{ include "commanderscp.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
+
+{{/*
+commanderscp.federationRole — validate + echo the federation role (commander|outpost|retrans).
+METADATA for the M15.4 chart-render-time guardrail LINT only (see values.yaml); it is stamped as a
+label on each bundled-backend Namespace so tools/helm-verify can read the operator's declared role
+straight from the render and lint it against the enabled backends. Rendering fails fast on a typo so
+an operator never silently deploys with a role the guardrail can't interpret. This is a render-time
+self-consistency check, NOT SCP runtime authority.
+*/}}
+{{- define "commanderscp.federationRole" -}}
+{{- $role := .Values.federationRole | default "commander" -}}
+{{- if not (has $role (list "commander" "outpost" "retrans")) -}}
+{{- fail (printf "federationRole must be one of commander|outpost|retrans, got %q" $role) -}}
+{{- end -}}
+{{- $role -}}
+{{- end -}}
