@@ -9,9 +9,9 @@
 This ADR uses two tiers whose names collide in the codebase. They are **never** the same thing:
 
 - **trust domain (partition)** — the federation/trust boundary a *deployment* lives in. Owner framing (2026-07-20): *"a domain represents something similar to an AWS **partition**. Multiple orgs and their services build within a partition."* Like `aws` / `aws-us-gov` / `aws-cn`, a partition is **ambient**: every resource is born in exactly one, nothing crosses it, and it is **not** modelled as a row that groups accounts. It sits **above** org.
-- **containment domain** — the `domain` **object type** seeded at `drizzle/0002_rls_rbac_seed.sql:152` (`objects.domain_id`, `containment.ts`), an ordinary intra-org grouping that sits **below** org. `schema.ts:944-947` explicitly records that these are different concepts.
+- **containment domain** — the `domain` **object type** seeded at `apps/server/drizzle/0002_rls_rbac_seed.sql:152` (`objects.domain_id`, `containment.ts`), an ordinary intra-org grouping that sits **below** org. `schema.ts:944-947` explicitly records that these are different concepts.
 
-Wherever this document (or any doc it touches) needs one of them, it says **"trust domain (partition)"** or **"containment domain"** in full. Bare "domain" is not used for a tier.
+Wherever this document (or any doc it touches) needs one of them, it says **"trust domain (partition)"** or **"containment domain"** in full. Bare "domain" is not used for a tier — in prose *or* as a stored value: the floor table's tier literal is `trust_domain` (§3), never bare `domain`.
 
 ## Context
 
@@ -22,8 +22,8 @@ The policy engine **already** does exactly the right kind of resolution for othe
 ### What exists today (grounded — do not overstate)
 
 1. **There is no instance-wide *policy* scope today.** Policy matching is org-rooted (`policy-resolve.ts:40-49`), and `containmentChain` (`containment.ts:79-115`) is **org-filtered on every join and rooted at the org root** — it *structurally cannot* express any tier above org. Two tiers above org are therefore genuinely new.
-   The earlier draft of this ADR said "there is no instance-wide (cross-org) scope today; everything is org-rooted under RLS; every table carries `orgId`." **That was wrong as written**: `orgs` and `state_transitions` carry no `orgId` at all, and `object_types` / `relationship_types` / `roles` carry a **nullable** `orgId` whose NULL rows are exactly an instance-wide, operator-set, tenant-read primitive (`drizzle/0002_rls_rbac_seed.sql:44-70`). That nullable-orgId global-row pattern is the **closest structural precedent** for what this ADR needs.
-2. **The precedent does not generalise to `objects`.** The `objects` RLS policy has **no `OR org_id IS NULL` escape** (`drizzle/0002_rls_rbac_seed.sql:73-77`), so policies — which are graph objects — **cannot** use the nullable-orgId pattern without schema + RLS surgery.
+   The earlier draft of this ADR said "there is no instance-wide (cross-org) scope today; everything is org-rooted under RLS; every table carries `orgId`." **That was wrong as written**: `orgs` and `state_transitions` carry no `orgId` at all, and `object_types` / `relationship_types` / `roles` carry a **nullable** `orgId` whose NULL rows are exactly an instance-wide, operator-set, tenant-read primitive (`apps/server/drizzle/0002_rls_rbac_seed.sql:44-70`). That nullable-orgId global-row pattern is the **closest structural precedent** for what this ADR needs.
+2. **The precedent does not generalise to `objects`.** The `objects` RLS policy has **no `OR org_id IS NULL` escape** (`apps/server/drizzle/0002_rls_rbac_seed.sql:73-77`), so policies — which are graph objects — **cannot** use the nullable-orgId pattern without schema + RLS surgery.
 3. **The gate context already threads a digest.** The gate passes `{changeId, targetObjectIds, gateRef}` **plus a conditional `artifactDigest`**: `gate-orchestrator.ts` `buildControlContext` includes `artifactDigest` only when the change tracks one, and `scan-result-control` reads `req.context.artifactDigest`. Both shipped in M17.1 (#92) and are on `main`. That conditional-context threading is the pattern a resolved effective threshold **reuses** — it is not future work.
 4. **Containment ordering has a documented tie.** `containment.ts:60-73` records that containment-domain-vs-service is **not** a strict ordering (a genuine tie at equal depth). Any design relying on "most specific wins" override semantics would be undefined at that tie. See §4.
 
@@ -53,9 +53,9 @@ platform → trust domain (partition) → org → containment domain → service
 `containmentChain` cannot reach above org, and the nullable-orgId escape is unavailable on `objects` (Context 2). So the two above-org tiers get **one** new structure — not two:
 
 - **A single instance-scoped floor table with no `orgId`.** It carries **both** above-org tiers through two discriminator columns:
-  - `tier`: `platform | domain` — `domain` here means the **trust domain (partition)**.
+  - `tier`: `platform | trust_domain` — the literal is spelled `trust_domain`, **never** bare `domain`, so the column value cannot be confused with the `domain` object type (the containment domain) that already exists in the schema.
   - `origin`: `local | federated` — locally set by this deployment's operator, or arrived over federation.
-- **Tenant-READ / operator-WRITE**, following the **pattern** of the nullable-orgId global rows on `object_types` / `relationship_types` / `roles` (`0002:44-70`): operator-set, tenant-readable, never tenant-writable. It follows that pattern as its **own table** precisely because the pattern cannot be applied in place (the `objects` policy has no NULL-org escape).
+- **Tenant-READ / operator-WRITE**, following the **pattern** of the nullable-orgId global rows on `object_types` / `relationship_types` / `roles` (`apps/server/drizzle/0002_rls_rbac_seed.sql:44-70`): operator-set, tenant-readable, never tenant-writable. It follows that pattern as its **own table** precisely because the pattern cannot be applied in place (the `objects` policy has no NULL-org escape).
 - **Why one table covers both tiers.** A deployment **is** in exactly one partition — ambient, like AWS. So the trust-domain floor applies to **every** org hosted on that deployment; it needs no per-org row and no org column. Platform floors arrive **federated-in** from the commander (`origin: 'federated'`), consistent with "the commander is the source of truth for global config; outposts hold it read-only" (DESIGN §13).
 - It is a **Postgres table, not a service** (principle 4). No authz service, no external policy engine.
 
@@ -75,11 +75,11 @@ platform → trust domain (partition) → org → containment domain → service
 - **Graph-native (principle 2):** OK — org / containment domain / service / component requirements are policy/graph data on the existing resolver; only the two above-org tiers are new structure, and they share **one** table.
 - **PostgreSQL-only (principle 4):** OK — the floor tier is a **Postgres table**, not a service; no new required stateful dependency.
 - **Explainability (principle 6):** the effective threshold and its contributing scopes persist in the scan gate's Decision record, so a blocked promotion can show *which* tier set the binding severity floor.
-- **Multi-tenancy invariant (DESIGN §4.2):** the floor table is the **documented exception** to "`org_id NOT NULL` on every tenant-scoped table" — it is not tenant-scoped. It is operator-write / tenant-read, exposes no cross-tenant visibility (it holds no per-tenant rows at all), and contributes to resolution read-only. Recorded in DESIGN §6/§4.2.
+- **Multi-tenancy invariant (DESIGN §4.2):** the floor table is the **documented exception** to "`org_id NOT NULL` on every tenant-scoped table" — it is not tenant-scoped. It is operator-write / tenant-read, exposes no cross-tenant visibility (it holds no per-tenant rows at all), and contributes to resolution read-only. Recorded in DESIGN §4.2 (tenancy exception) and §10.1 (policy resolution).
 
 ## Known follow-up (out of scope here) — the trust-domain identity inconsistency
 
-The owner's partition model makes the trust domain a property of the **deployment**. But `federation_self` has `orgId` as **PRIMARY KEY** and `domainId` **UNIQUE** — a strict 1:1 org ↔ federation-domain (`schema.ts:940-963`, which explains that federation identity is org-scoped because the sync journal derives from the per-org outbox, and that "one org per instance is the expected shape"). So a deployment hosting **N** orgs today mints **N** trust-domain identities, and "multiple orgs in one federation domain" is **not representable**.
+The owner's partition model makes the trust domain a property of the **deployment**. But `federation_self` has `orgId` as **PRIMARY KEY** and `domainId` **UNIQUE** — a strict 1:1 org ↔ federation-domain (`apps/server/src/db/schema.ts:940-972`, which explains that federation identity is org-scoped because the sync journal derives from the per-org outbox, and that "one org per instance is the expected shape"). So a deployment hosting **N** orgs today mints **N** trust-domain identities, and "multiple orgs in one federation domain" is **not representable**.
 
 That is a genuine federation-model inconsistency with the partition framing. It is **explicitly not resolved here** — it needs its own ADR/milestone. **M17.5 is unaffected either way**: an *instance-scoped* floor with no `orgId` applies to every org on the deployment regardless of how many federation identities that deployment happens to mint.
 
