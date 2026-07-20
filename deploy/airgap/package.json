@@ -18,6 +18,7 @@
     "verify": "tsx src/verify-bundle.ts"
   },
   "dependencies": {
+    "@scp/cosign": "workspace:*",
     "commander": "^12.1.0",
     "yaml": "^2.9.0"
   },
