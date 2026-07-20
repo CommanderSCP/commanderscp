@@ -15,7 +15,8 @@ import { listRecentTransfers } from "./bundle-transfers-repo.js";
  */
 export async function getFederationStatus(
   tx: TenantTx,
-  orgId: string
+  orgId: string,
+  cosignPublicKey: string | null = null
 ): Promise<FederationStatusResponse> {
   const selfRow = await ensureFederationSelf(tx, orgId);
   const key = await ensureInstanceKey(tx, orgId);
@@ -42,7 +43,12 @@ export async function getFederationStatus(
       domainId: selfRow.domainId,
       name: selfRow.name,
       role: selfRow.role,
-      publicKey: key.publicKey
+      publicKey: key.publicKey,
+      // M17.3 (E5) — the LOCAL cosign verification public key an operator copies into a peer's
+      // `scp federation pair`. Resolved by the CALLER (route handler / test) via
+      // `getInstanceCosignPublicKey`, which provisions the keypair lazily OUTSIDE any open tx (the
+      // cosign generator is a subprocess and must never run while this status tx holds a connection).
+      cosignPublicKey
     },
     peers: peerStatuses
   };

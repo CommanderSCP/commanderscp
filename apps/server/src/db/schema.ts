@@ -1059,6 +1059,13 @@ export const federationPeerKeys = pgTable(
     orgId: uuid("org_id").notNull(),
     peerDomainId: uuid("peer_domain_id").notNull(),
     publicKey: text("public_key").notNull(), // base64 SPKI DER
+    // M17.3 (E5) — the peer's cosign MANIFEST-VERIFICATION public key (`cosign.pub` PEM), riding in
+    // the SAME key-window row as its Ed25519 `publicKey`: distributed via the existing out-of-band
+    // pairing exchange (zero new transport) and rotated by the SAME supersede mechanic (a changed
+    // Ed25519 OR cosign pubkey opens a new window). Nullable — a peer paired before E5, or one that
+    // never supplied a cosign key, has none. Verification against it is E6/M17.4; E5 only registers
+    // it. NEVER the private half.
+    cosignPublicKey: text("cosign_public_key"),
     effectiveFrom: timestamp("effective_from", { withTimezone: true }).notNull().defaultNow(),
     supersededAt: timestamp("superseded_at", { withTimezone: true }),
     // Sequence-anchored validity window (the actual verification anchor — see doc above).

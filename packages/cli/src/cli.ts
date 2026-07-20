@@ -189,6 +189,9 @@ function peerRow(p: FederationPeer): Record<string, string> {
     role: p.role,
     baseUrl: p.baseUrl ?? "",
     syncScope: p.syncScope.mode,
+    // M17.3 (E5) — whether this peer's cosign VERIFICATION key is registered (from pairing). Presence
+    // only in the table; the full PEM is in `--output json`. A peer paired before E5 shows "none".
+    cosign: p.cosignPublicKey ? "registered" : "none",
     pairedAt: p.pairedAt
   };
 }
@@ -203,6 +206,16 @@ function printFederationStatus(status: FederationStatusResponse, output: OutputF
       ? `Self: ${status.self.name} (${status.self.domainId}) role=${status.self.role}`
       : "Self: not initialized — run `scp federation init`"
   );
+  // M17.3 (E5) — the LOCAL cosign verification public key an operator copies into a peer's
+  // `scp federation pair --cosign-public-key ...` for out-of-band distribution (works file-only for
+  // air-gapped peers). Full value in `--output json`; here we note presence to keep the line compact.
+  if (status.self) {
+    console.log(
+      status.self.cosignPublicKey
+        ? `Cosign verification key: present (copy from \`scp federation self\` / --output json)`
+        : "Cosign verification key: not yet provisioned"
+    );
+  }
   if (status.peers.length === 0) {
     console.log("No paired peers.");
     return;
@@ -2194,6 +2207,10 @@ export function buildProgram(): Command {
       "the peer's Ed25519 public key (from their `scp federation self`)"
     )
     .option(
+      "--cosign-public-key <pem>",
+      "the peer's cosign verification public key (from their `scp federation self`) — registered for later manifest verification (M17.4)"
+    )
+    .option(
       "--base-url-of-peer <url>",
       "the peer's API base URL (outpost->commander mTLS transport only)"
     )
@@ -2211,6 +2228,7 @@ export function buildProgram(): Command {
           name: string;
           role: "commander" | "outpost" | "retrans";
           publicKey: string;
+          cosignPublicKey?: string;
           baseUrlOfPeer?: string;
           syncScope: string;
         }
@@ -2222,6 +2240,7 @@ export function buildProgram(): Command {
           name: opts.name,
           role: opts.role,
           publicKey: opts.publicKey,
+          cosignPublicKey: opts.cosignPublicKey,
           baseUrl: opts.baseUrlOfPeer,
           syncScope
         });
