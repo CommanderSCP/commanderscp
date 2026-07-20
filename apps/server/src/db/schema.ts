@@ -878,6 +878,36 @@ export const instanceKeys = pgTable(
   (table) => [uniqueIndex("instance_keys_org_id_key").on(table.orgId)]
 );
 
+/**
+ * M17.3 E4 (drizzle/0030_instance_cosign_keys.sql): each org's cosign MANIFEST-SIGNING keypair.
+ * Distinct from `instanceKeys` above (which holds the org's Ed25519 attestation/federation
+ * identity key): this holds the cosign keypair each org's commander signs its own promotion
+ * manifests with (E6) and whose PUBLIC half E5 distributes to outposts for verification.
+ *
+ * DEDICATED TABLE, DELIBERATELY NOT THE `secrets` VAULT (owner decision, M17.3 grounding Area C):
+ * `secrets/secrets-repo.ts` `resolveSecretRefs` resolves any `executor_bindings.secretRefs` entry
+ * an org names into a `secrets` row and `plugin-host/host.ts` injects the plaintext into a plugin
+ * subprocess. A dedicated table is STRUCTURALLY unreachable by that path (it queries `secrets`
+ * only), so the SCP signing key can never be pulled into a plugin — the vault-exfiltration hole
+ * cannot apply. Posture MIRRORS `instanceKeys`: ORG-SCOPED (one row per org), unique(orgId), full
+ * `org_isolation` RLS. `privateKey` is cosign's empty-password encrypted PEM (`cosign.key`) — the
+ * table's RLS + dedicated-table isolation are the protection, exactly the narrow plaintext-with-RLS
+ * exception `instanceKeys` documents. `privateKey` is server-side only and is NEVER returned over
+ * any HTTP API or SDK type.
+ */
+export const instanceCosignKeys = pgTable(
+  "instance_cosign_keys",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    privateKey: text("private_key").notNull(),
+    publicKey: text("public_key").notNull(),
+    fingerprint: text("fingerprint"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [uniqueIndex("instance_cosign_keys_org_id_key").on(table.orgId)]
+);
+
 // -------------------------------------------------------------------------------------------
 // M5 Campaigns & Initiatives (DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5). Hand-authored
 // grants/RLS/seed data in drizzle/0011_campaigns.sql (same pattern as 0002/0005/0007/0010).

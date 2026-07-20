@@ -37,3 +37,7 @@ export {
   type SigningKey,
   type VerifyResult
 } from "./cosign.js";
+
+// Non-interactive keypair generation (M17.3 E4) — returns PEM STRINGS for the server to persist,
+// leaving no key file on disk. The first apps/server consumer of this package.
+export { generateKeyPair, type GeneratedKeyPair } from "./keygen.js";
