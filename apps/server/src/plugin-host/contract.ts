@@ -83,10 +83,13 @@ export interface FederationTransportPluginClient {
  * gitea's separate `DiscoveryPlugin` export (same package, distinct module — like github/github-discovery).
  * M15.3b adds `gitlab`, a third git-provider `ExecutorPlugin` (same core) plus `gitlab-discovery`,
  * its separate `DiscoveryPlugin` export (same executor/discovery split).
+ * M17.1 adds `scan-result-control`, a second `ControlPlugin` (sibling of `webhook-control`) that
+ * turns a coordinated Trivy scan verdict into gate evidence (ADR-0013).
  */
 export type PluginModule =
   | "fake-executor"
   | "webhook-control"
+  | "scan-result-control"
   | "github"
   | "github-discovery"
   | "gitea"

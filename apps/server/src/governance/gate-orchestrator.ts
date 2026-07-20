@@ -10,6 +10,7 @@ import { activeFreezesForScopes, type FreezeRow } from "./freezes-repo.js";
 import { hasPermission } from "../authz/resolve.js";
 import { containmentChain, containmentScopeIds, nearestAncestorOfKind } from "../graph/containment.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { getChangeRow } from "../coordination/changes-repo.js";
 
 /**
  * The orchestrator every gate check (lifecycle-edge AND wave-boundary) funnels through — where
@@ -193,6 +194,53 @@ export async function resolveApprovalScope(
 }
 
 /**
+ * The digest the change is PROMOTING — its own tracked artifact digest, read from the change row's
+ * `sourceRef.artifact_digest` (DESIGN §9.1's projection jsonb: `{repo, ref, commit, run_url,
+ * workspace, artifact_digest, …}`). Threaded into every control-run context as
+ * `context.artifactDigest` so a digest-binding control (scan-result-control, ADR-0013 "nothing
+ * slipped in") binds its verdict to the CHANGE's REAL artifact — not to an operator-typed value on
+ * the control binding, which the same `policy:write` author configures alongside the scan source
+ * (a tautology). When the change tracks NO digest this returns `undefined`: leave
+ * `context.artifactDigest` unset (never invent one) so the control falls back to its own
+ * operator-pinned `config.expectedDigest`, a documented degraded/override path. Best-effort — a
+ * missing change row or malformed `sourceRef` yields `undefined`, never a throw (this only ENRICHES
+ * the gate context; it must never itself turn a gate into an error).
+ */
+async function resolveChangeArtifactDigest(
+  tx: TenantTx,
+  orgId: string,
+  changeObjectId: string
+): Promise<string | undefined> {
+  const row = await getChangeRow(tx, orgId, changeObjectId).catch(() => null);
+  const sourceRef = (row?.sourceRef ?? {}) as Record<string, unknown>;
+  const raw = sourceRef.artifact_digest ?? sourceRef.artifactDigest;
+  if (typeof raw === "string" && raw.length > 0) return raw;
+  if (Array.isArray(raw)) {
+    const first = raw.find((d): d is string => typeof d === "string" && d.length > 0);
+    if (first) return first;
+  }
+  return undefined;
+}
+
+/** The single control-run context shape both gate sites (prewarm + evaluate) build, so they agree
+ *  on what a control sees. `artifactDigest` is included ONLY when the change tracks one — its
+ *  absence is meaningful (the control then uses its operator-pinned fallback), so it is never keyed
+ *  to `undefined`. */
+function buildControlContext(input: {
+  changeId: string;
+  targetObjectIds: string[];
+  gateRef?: Record<string, unknown>;
+  artifactDigest?: string | undefined;
+}): Record<string, unknown> {
+  return {
+    changeId: input.changeId,
+    targetObjectIds: input.targetObjectIds,
+    ...(input.gateRef ? { gateRef: input.gateRef } : {}),
+    ...(input.artifactDigest ? { artifactDigest: input.artifactDigest } : {})
+  };
+}
+
+/**
  * Runs (never blocks, never writes a Decision) every required control a change's targets'
  * effective policies reference, and materializes every requireApprovals effect's approval
  * request — so that by the time a HUMAN calls `POST /changes/{id}/promote` (the host-less
@@ -244,13 +292,18 @@ export async function prewarmGovernanceForChange(
 
   const allControlIds = [...new Set(fired.flatMap((fp) => fp.requireControls))];
   if (allControlIds.length > 0) {
+    const artifactDigest = await resolveChangeArtifactDigest(tx, input.orgId, input.changeObjectId);
     await ensureControlRuns(tx, host, {
       orgId: input.orgId,
       changeObjectId: input.changeObjectId,
       controlObjectIds: allControlIds,
       gateKind: "lifecycle_edge",
       gateRef: { fromState: "validating", toState: "promoted" },
-      context: { changeId: input.changeObjectId, targetObjectIds: input.targetObjectIds }
+      context: buildControlContext({
+        changeId: input.changeObjectId,
+        targetObjectIds: input.targetObjectIds,
+        artifactDigest
+      })
     });
   }
 
@@ -354,7 +407,12 @@ export async function evaluateGovernanceGate(
         controlObjectIds: allControlIds,
         gateKind: ctx.gateKind,
         gateRef: ctx.gateRef,
-        context: { changeId: ctx.changeObjectId, targetObjectIds: ctx.targetObjectIds, gateRef: ctx.gateRef }
+        context: buildControlContext({
+          changeId: ctx.changeObjectId,
+          targetObjectIds: ctx.targetObjectIds,
+          gateRef: ctx.gateRef,
+          artifactDigest: await resolveChangeArtifactDigest(tx, ctx.orgId, ctx.changeObjectId)
+        })
       })
     : await readExistingControlOutcomes(tx, ctx.orgId, ctx.changeObjectId, allControlIds);
 

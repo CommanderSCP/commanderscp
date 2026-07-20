@@ -64,6 +64,77 @@ function fail(msg: string): void {
   failures.push(msg);
 }
 
+// =============================================================================================
+// M15.4 — federation-role bundled-backend guardrail (a CHART-RENDER-TIME SELF-CONSISTENCY LINT).
+//
+// HONEST SCOPE: this is a `helm template`-time misconfiguration guardrail, NOT SCP runtime
+// governance/authority. The OPERATOR sets BOTH `federationRole` AND the `bundledExecutor.*.enabled`
+// flags at install time; this lint pairs those two install-time values and fails the render-check
+// when a role enables a bundled backend it should not run. It is deliberately NOT wired to runtime
+// enforcement: the runtime `self_domain.role` (apps/server/src/federation/self-repo.ts) is ADVISORY
+// metadata set post-install via the federation API, with no bearing on a Helm install-time value and
+// no graph representation of bundled-backend enablement — so runtime enforcement here would fork the
+// engine. This tooling-only lint is the owner-chosen alternative (M15.4; ADR-0012 §M15.4 note).
+//
+// Each bundled backend ⇒ its own namespace; presence of resources in that namespace in the render is
+// how we detect "this backend is actually enabled" (robust: asserts on what WOULD deploy, not on the
+// --set flags we happened to pass).
+const BACKEND_NAMESPACES: Record<string, string> = {
+  argocd: "scp-argocd",
+  argoWorkflows: "scp-argo-workflows",
+  argoEvents: "scp-argo-events",
+  gitea: "scp-gitea"
+};
+
+// Allowed bundled backends per federation role. DOC SOURCE: ADR-0012 (outposts run Gitea as the
+// self-contained registry/git + the deploy engine; commander runs the full Standard Stack) + the
+// poke/retrans federation model (a `retrans` node is a validate-and-relay CDS-boundary relay — NOT
+// an execution site, so it bundles NOTHING) + the M15.4 milestone note in BUILD_AND_TEST.md §8.
+// Conservative where the docs are silent (outpost restricted to gitea + argocd; the build/event
+// backends — argoWorkflows/argoEvents — are commander-only) — the assumption is documented in the
+// M15.4 milestone note. If a future decision widens a role, widen this table (the single source of
+// truth) and the milestone note together.
+const ALLOWED_BUNDLED_BACKENDS_BY_ROLE: Record<string, ReadonlySet<string>> = {
+  commander: new Set(["argocd", "argoWorkflows", "argoEvents", "gitea"]),
+  outpost: new Set(["argocd", "gitea"]),
+  retrans: new Set<string>() // a CDS-boundary relay is not an execution site — bundle nothing
+};
+
+/** The federation role stamped onto every bundled-backend Namespace by
+ *  `commanderscp.federationRole` (templates/_helpers.tpl). Read straight from the render so the lint
+ *  checks the OPERATOR's declared role, not an assumption. Defaults to `commander` (the chart
+ *  default) if no labelled Namespace is present. */
+function renderedFederationRole(docs: K8sDoc[]): string {
+  const ns = docs.find(
+    (d) => d.kind === "Namespace" && d.metadata?.labels?.["commanderscp.io/federation-role"]
+  );
+  return ns?.metadata?.labels?.["commanderscp.io/federation-role"] ?? "commander";
+}
+
+/** Pure detector: given a role and a rendered bundled chart, return the list of guardrail
+ *  violations (a bundled backend that rendered but is not allowed for that role). Empty ⇒ clean.
+ *  This is the single decision function shared by the standing gate (feeds `fail()` → non-zero exit)
+ *  and the explicit negative-case test below (asserts it fires). */
+function federationRoleViolations(role: string, docs: K8sDoc[]): string[] {
+  const allowed = ALLOWED_BUNDLED_BACKENDS_BY_ROLE[role];
+  if (!allowed) {
+    return [`unknown federationRole '${role}' — expected one of ${Object.keys(ALLOWED_BUNDLED_BACKENDS_BY_ROLE).join("|")}`];
+  }
+  const allowedList = [...allowed].join(", ") || "none";
+  const violations: string[] = [];
+  for (const [backend, ns] of Object.entries(BACKEND_NAMESPACES)) {
+    const enabled = docs.some((d) => d.metadata?.namespace === ns || (d.kind === "Namespace" && d.metadata?.name === ns));
+    if (enabled && !allowed.has(backend)) {
+      violations.push(
+        `federationRole '${role}' may NOT enable bundled backend '${backend}' (renders into namespace ${ns}); ` +
+          `backends allowed for role '${role}': [${allowedList}]. ` +
+          `Disable bundledExecutor.${backend}.enabled or correct federationRole.`
+      );
+    }
+  }
+  return violations;
+}
+
 function assert(condition: unknown, msg: string): void {
   if (!condition) fail(msg);
 }
@@ -503,6 +574,15 @@ function verifyBundledChart(docs: K8sDoc[]): void {
       `[${label}] bundled backend image '${img}' is NOT retargeted — the air-gap install.sh must rewrite every image to the customer registry (an upstream ref breaks air-gapped installs)`
     );
   }
+
+  // M15.4 standing gate: run the federation-role guardrail on THIS render (default role=commander,
+  // every backend enabled ⇒ all allowed ⇒ clean). Reads the role stamped on the Namespaces. Feeds
+  // `fail()` — so if a future matrix change or template regression let a disallowed backend through
+  // here, helm-verify exits non-zero. (The explicit disallowed-combo proof is in main(), below.)
+  const role = renderedFederationRole(docs);
+  for (const v of federationRoleViolations(role, docs)) {
+    fail(`[${label}] federation-role guardrail (render-time lint): ${v}`);
+  }
 }
 
 function main(): void {
@@ -590,6 +670,66 @@ function main(): void {
       "--set", "bundledExecutor.gitea.image=registry.example.com/scp/gitea:1.26.1-rootless"
     ])
   );
+
+  // M15.4 federation-role guardrail (CHART-RENDER-TIME LINT, NOT runtime authority) — explicit
+  // positive AND negative cases. The operator sets both federationRole and the enabled flags; this
+  // lint catches the misconfiguration of a role enabling a backend it should not run.
+  console.log("helm-verify: checking the M15.4 federation-role bundled-backend guardrail (render-time lint)...");
+  {
+    const guardLabel = "federation-role-guardrail";
+
+    // POSITIVE: an `outpost` may run gitea + argocd (self-contained deploy target, ADR-0012). The
+    // role label must be stamped on the render, and the guardrail must find ZERO violations.
+    const okDocs = renderBundledChart([
+      "--set", "federationRole=outpost",
+      "--set", "bundledExecutor.gitea.enabled=true",
+      "--set", "bundledExecutor.gitea.image=registry.example.com/scp/gitea:1.26.1-rootless",
+      "--set", "bundledExecutor.argocd.enabled=true",
+      "--set", "bundledExecutor.argocd.image=registry.example.com/scp/argocd:v3.4.5",
+      "--set", "bundledExecutor.argocd.valkeyImage=registry.example.com/scp/valkey:8.2.3"
+    ]);
+    assert(
+      renderedFederationRole(okDocs) === "outpost",
+      `[${guardLabel}] federationRole=outpost must be stamped on the bundled-backend Namespaces (got '${renderedFederationRole(okDocs)}')`
+    );
+    const okViolations = federationRoleViolations("outpost", okDocs);
+    assert(
+      okViolations.length === 0,
+      `[${guardLabel}] POSITIVE case (outpost + gitea/argocd) must render clean, but the guardrail flagged: ${okViolations.join("; ")}`
+    );
+
+    // NEGATIVE: a `retrans` CDS-boundary relay is a validate-and-forward node, NOT an execution site
+    // — it may bundle NOTHING. Enabling gitea on it is exactly the misconfiguration the lint exists
+    // to catch. We PROVE the lint fires: render retrans + gitea, and assert the guardrail returns a
+    // violation naming the role + the offending backend. This is a REAL suite assertion — if a
+    // future change made the guardrail permissive, THIS assert fails and helm-verify goes red.
+    const badDocs = renderBundledChart([
+      "--set", "federationRole=retrans",
+      "--set", "bundledExecutor.gitea.enabled=true",
+      "--set", "bundledExecutor.gitea.image=registry.example.com/scp/gitea:1.26.1-rootless"
+    ]);
+    const badViolations = federationRoleViolations("retrans", badDocs);
+    assert(
+      badViolations.length > 0,
+      `[${guardLabel}] NEGATIVE case (retrans + gitea) MUST be flagged by the guardrail, but it returned no violations — the render-time lint is not firing`
+    );
+    assert(
+      badViolations.some((v) => v.includes("retrans") && v.includes("gitea")),
+      `[${guardLabel}] NEGATIVE case violation must name both the role (retrans) and the offending backend (gitea); got: ${badViolations.join("; ")}`
+    );
+    // And prove it reaches the process exit path: the same detector, fed to fail(), would set a
+    // non-zero exit. We simulate the standing-gate wiring against this disallowed render and confirm
+    // it would contribute at least one failure (without polluting the real suite tally).
+    const wouldFail: string[] = [];
+    for (const v of federationRoleViolations(renderedFederationRole(badDocs), badDocs)) wouldFail.push(v);
+    assert(
+      wouldFail.length > 0,
+      `[${guardLabel}] a disallowed (role, enabled-backends) render must produce a helm-verify failure (non-zero exit); it produced none`
+    );
+    console.log(
+      `  positive (outpost + gitea/argocd) clean; negative (retrans + gitea) correctly flagged: "${badViolations[0]}"`
+    );
+  }
 
   if (failures.length > 0) {
     console.error(`\nhelm-verify: ${failures.length} assertion(s) FAILED:\n`);

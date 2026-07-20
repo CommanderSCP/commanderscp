@@ -7,11 +7,13 @@ import { getObjectByIdOrUrnAnyType, isUuid } from "../graph/objects-repo.js";
 // `control_bindings.plugin_module` is a free-form string at the schema layer
 // (CreateControlBindingRequestSchema — z.string().min(1)), so THIS check is the only thing
 // standing between an attacker-controlled binding and `host.start()` provisioning an arbitrary
-// module. Deliberately just the one real ControlPlugin module — "fake-executor" is an
+// module. Deliberately just the real ControlPlugin modules — "fake-executor" is an
 // ExecutorPlugin (subprocess-entry.ts's `loadPlugin`), not a ControlPlugin, so accepting it here
 // would only ever produce a safe-but-confusing RPC "unknown method 'evaluate'" failure; excluding
 // it keeps this allowlist an honest description of what a control binding can actually reach.
-const KNOWN_CONTROL_MODULES: PluginHostInstanceConfig["module"][] = ["webhook-control"];
+// M17.1 adds "scan-result-control" (a ControlPlugin sibling of webhook-control that turns a
+// coordinated Trivy scan verdict into gate evidence).
+const KNOWN_CONTROL_MODULES: PluginHostInstanceConfig["module"][] = ["webhook-control", "scan-result-control"];
 
 function isKnownPluginModule(value: string): value is PluginHostInstanceConfig["module"] {
   return (KNOWN_CONTROL_MODULES as string[]).includes(value);

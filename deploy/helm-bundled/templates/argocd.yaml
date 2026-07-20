@@ -25,6 +25,9 @@ metadata:
   labels:
     {{- include "commanderscp.labels" . | nindent 4 }}
     app.kubernetes.io/component: bundled-argocd
+    # M15.4 metadata (see values.yaml federationRole): declared federation role, stamped for the
+    # chart-render-time guardrail lint (tools/helm-verify). Not runtime authority.
+    commanderscp.io/federation-role: {{ include "commanderscp.federationRole" . }}
 {{- $raw := .Files.Get "vendor/argocd/install.yaml" -}}
 {{- $raw = $raw | replace "quay.io/argoproj/argocd:v3.4.5" $a.image -}}
 {{- $raw = $raw | replace "public.ecr.aws/docker/library/redis:8.2.3-alpine" $a.valkeyImage -}}

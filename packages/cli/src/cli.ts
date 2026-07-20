@@ -1686,7 +1686,7 @@ export function buildProgram(): Command {
   controlCmd
     .command("bind <idOrUrn>")
     .description("Bind a Control to a ControlPlugin instance (DESIGN §10.2)")
-    .requiredOption("--plugin-module <module>", "e.g. webhook-control")
+    .requiredOption("--plugin-module <module>", "webhook-control | scan-result-control")
     .requiredOption("--plugin-instance-id <id>", "stable plugin-host instance id")
     .option("--config <json>", "JSON object — plugin instance config (e.g. webhook url)")
     .option("--base-url <url>", "API base URL override")

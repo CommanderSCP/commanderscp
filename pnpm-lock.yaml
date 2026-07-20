@@ -92,6 +92,9 @@ importers:
       '@scp/plugin-managed-iac':
         specifier: workspace:*
         version: link:../../packages/plugins/managed-iac
+      '@scp/plugin-scan-result-control':
+        specifier: workspace:*
+        version: link:../../packages/plugins/scan-result-control
       '@scp/plugin-smtp-notify':
         specifier: workspace:*
         version: link:../../packages/plugins/smtp-notify
@@ -506,6 +509,25 @@ importers:
 
   packages/plugins/oidc:
     devDependencies:
+      typescript:
+        specifier: ~5.8.0
+        version: 5.8.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
+
+  packages/plugins/scan-result-control:
+    dependencies:
+      '@scp/plugin-api':
+        specifier: workspace:*
+        version: link:../../plugin-api
+      '@scp/schemas':
+        specifier: workspace:*
+        version: link:../../schemas
+    devDependencies:
+      '@scp/plugin-testkit':
+        specifier: workspace:*
+        version: link:../../plugin-testkit
       typescript:
         specifier: ~5.8.0
         version: 5.8.3
