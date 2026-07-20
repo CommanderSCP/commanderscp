@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { cursorPageResponseSchema } from "./common.js";
+import { SbomRefSchema } from "./supply-chain.js";
 
 /**
  * M7 Real Executor Integrations wire contract (DESIGN.md §11/§12, BUILD_AND_TEST.md §8 M7).
@@ -313,6 +314,11 @@ export const ChangeReportRequestSchema = z.object({
   workspace: z.string().optional(),
   artifactDigest: z.string().optional(),
   status: z.enum(["planned", "applied", "errored", "discarded"]),
-  planJson: z.unknown().optional()
+  planJson: z.unknown().optional(),
+  /** M17.2 — a REFERENCE to the build-time SBOM the executor's coordinated Trivy pass emitted and
+   *  cosign-signed at origin (ADR-0015 §5). OPTIONAL and purely ADDITIVE: every existing reporter
+   *  keeps working unchanged. SCP stores the reference on the change's `sourceRef.sbom` and NEVER
+   *  the document bytes — it neither generates nor signs an SBOM (charter: coordinate, not execute). */
+  sbom: SbomRefSchema.optional()
 });
 export type ChangeReportRequest = z.infer<typeof ChangeReportRequestSchema>;

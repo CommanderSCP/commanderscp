@@ -1,4 +1,5 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
+import { SbomRefSchema, normalizeSbomDigest, type SbomRef } from "@scp/schemas";
 import { webhookAdapterForSourceKind } from "./webhook-adapters.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changeSourceEvents } from "../db/schema.js";
@@ -36,7 +37,7 @@ const BATCH_LIMIT = 20;
  * and use the generic shape, tracked as follow-up if TFC/Atlantis-native payloads need first-class
  * parsing.
  */
-interface ExtractedHint {
+export interface ExtractedHint {
   repo?: string;
   path?: string;
   correlationKey?: string;
@@ -47,19 +48,46 @@ interface ExtractedHint {
    *  this undefined, and the digest was — and still is — also folded into `correlationKey` for
    *  grouping). */
   artifactDigest?: string;
+  /** M17.2 — a REFERENCE to the build-time SBOM the EXECUTOR emitted and cosign-signed at origin
+   *  (ADR-0015 §5), lifted to the proposed Change's `sourceRef.sbom`. SCP never generates, signs, or
+   *  stores an SBOM document — only this reference. Carried today by the TYPED first-party report
+   *  ingress (`ChangeReportRequestSchema.sbom`); provider webhook adapters set no SBOM (a registry
+   *  push payload carries none), so this stays undefined for them. */
+  sbom?: SbomRef;
 }
 
+/**
+ * The FLAT first-party shape (`scp change-source report`'s typed body, or a hand-crafted
+ * `{repo, correlationKey}` test/curl payload). Reads the fields a first-party reporter sends at the
+ * TOP LEVEL of its body.
+ *
+ * M17.2 fixed a latent gap here: this used to read ONLY `repo`/`path`/`correlationKey`, so the typed
+ * report route's `artifactDigest` was NEVER lifted to the canonical `sourceRef.artifact_digest` — it
+ * survived purely as a raw camelCase key that `federation/promotion-repo.ts` and
+ * `governance/gate-orchestrator.ts` happened to also accept as a fallback. Both of those still read
+ * BOTH key shapes (legacy rows written before this fix must keep resolving), but a NEWLY reported
+ * change now gets the same canonicalization the harbor/git adapters get, so there is exactly one
+ * documented place a digest lives on new data.
+ */
 function genericHint(payload: unknown): ExtractedHint {
   if (!payload || typeof payload !== "object") return {};
   const p = payload as Record<string, unknown>;
+  const sbom = SbomRefSchema.safeParse(p.sbom);
   return {
     repo: typeof p.repo === "string" ? p.repo : undefined,
     path: typeof p.path === "string" ? p.path : undefined,
-    correlationKey: typeof p.correlationKey === "string" ? p.correlationKey : undefined
+    correlationKey: typeof p.correlationKey === "string" ? p.correlationKey : undefined,
+    artifactDigest:
+      typeof p.artifactDigest === "string" && p.artifactDigest.length > 0 ? p.artifactDigest : undefined,
+    // Best-effort: a malformed `sbom` on an otherwise-valid delivery is DROPPED, never a throw —
+    // an unparseable supply-chain reference must not wedge ingress for the whole tick (the raw
+    // payload is still preserved verbatim in `sourceRef`, so nothing is lost for forensics).
+    sbom: sbom.success ? sbom.data : undefined
   };
 }
 
-function extractHint(sourceKind: string, headers: unknown, payload: unknown): ExtractedHint {
+/** Exported for unit testing — the pure hint-extraction half of ingress (see `canonicalizeSourceRef`). */
+export function extractHint(sourceKind: string, headers: unknown, payload: unknown): ExtractedHint {
   const generic = genericHint(payload);
   // Provider-specific parsing is resolved through the per-sourceKind webhook ADAPTER REGISTRY
   // (`webhook-adapters.ts`, M15.1b) — github reads its nested payload via `x-github-event`, gitea
@@ -94,9 +122,48 @@ function extractHint(sourceKind: string, headers: unknown, payload: unknown): Ex
     correlationKey: providerHint.correlationKey ?? generic.correlationKey,
     // Additive forwarding (M15.3c): git-provider hints that don't set a digest leave this undefined,
     // so nothing about their behavior changes; harbor/gitea package pushes carry it through to
-    // `sourceRef.artifact_digest` below.
-    artifactDigest: providerHint.artifactDigest
+    // `sourceRef.artifact_digest` below. Falls back to the flat generic field (M17.2) so a
+    // first-party body that ALSO resolves an adapter does not lose its reported digest.
+    artifactDigest: providerHint.artifactDigest ?? generic.artifactDigest,
+    // No provider webhook payload carries an SBOM reference — it arrives only on the typed
+    // first-party report body, which the generic shape reads.
+    sbom: generic.sbom
   };
+}
+
+/**
+ * Build the Change's canonical `sourceRef` from the raw delivery payload plus whatever the hint
+ * extracted. The raw payload is kept VERBATIM (DESIGN §8 — replayable/auditable ingress); canonical
+ * keys are ADDED alongside it:
+ *   - `artifact_digest` — the artifact this release promotes, the connective tissue the M17.1 scan
+ *     gate binds to (`governance/gate-orchestrator.ts`, ADR-0013).
+ *   - `sbom` — a REFERENCE to the build-time SBOM (M17.2, ADR-0015 §5). Reference ONLY: `{format,
+ *     digest, location, signatureRef, …}`. SCP never generates, signs, or stores the document.
+ *
+ * Exported for unit testing: this is the one place canonical `source_ref` keys are minted, so it is
+ * the one place worth pinning with a test.
+ */
+export function canonicalizeSourceRef(
+  rawPayload: unknown,
+  hint: ExtractedHint
+): Record<string, unknown> {
+  const raw = ((rawPayload as Record<string, unknown>) ?? {}) as Record<string, unknown>;
+  const sourceRef: Record<string, unknown> = { ...raw };
+  if (hint.artifactDigest) sourceRef.artifact_digest = hint.artifactDigest;
+  if (hint.sbom) {
+    // Normalize the SBOM DOCUMENT's digest to `sha256:<lowercase-hex>` so what is persisted always
+    // compares byte-for-byte (same normalization `scan-result-control` applies to a Trivy digest).
+    sourceRef.sbom = { ...hint.sbom, digest: normalizeSbomDigest(hint.sbom.digest) ?? hint.sbom.digest };
+  } else if ("sbom" in raw) {
+    // The body carried an `sbom` that did NOT validate as a reference. The CONTRACT M17.3 reads is
+    // "`sourceRef.sbom`, when present, IS a valid `SbomRef`" — so an invalid one must not sit under
+    // that key masquerading as a real reference. Quarantine it under `sbom_invalid` instead: nothing
+    // is lost for forensics (DESIGN §8 keeps the delivery auditable), but no downstream reader can
+    // mistake garbage for an attested supply-chain reference.
+    delete sourceRef.sbom;
+    sourceRef.sbom_invalid = raw.sbom;
+  }
+  return sourceRef;
 }
 
 /**
@@ -159,16 +226,10 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
     // name informative. Concurrent double-processing of the SAME row is separately prevented by the
     // `FOR UPDATE SKIP LOCKED` claim above, so two ticks never both mint a change for one row.
     const name = `${row.sourceKind}${hint.repo ? `: ${hint.repo}` : ""}`;
-    // `sourceRef` is the raw delivery payload, kept verbatim (DESIGN §8). When the hint extracted an
-    // artifact digest (a registry/package push — harbor's `PUSH_ARTIFACT`, gitea's `package`), lift
-    // it to a canonical top-level `artifact_digest` key (schema.ts:378's documented `source_ref`
-    // shape) so a Harbor image push creates a Change carrying the image digest — the connective
-    // tissue the M17.1 scan gate binds to (`changes.sourceRef.artifact_digest`, ADR-0013). Additive:
-    // for a git push (no digest) the payload is passed through byte-identical, unchanged.
-    const rawSourceRef = (row.payload as Record<string, unknown>) ?? {};
-    const sourceRef = hint.artifactDigest
-      ? { ...rawSourceRef, artifact_digest: hint.artifactDigest }
-      : rawSourceRef;
+    // `sourceRef` is the raw delivery payload kept verbatim (DESIGN §8) plus canonical keys lifted
+    // from the hint — `artifact_digest` (M15.3c/M17.1) and `sbom` (M17.2). See
+    // `canonicalizeSourceRef`. Additive: a delivery with neither is passed through byte-identical.
+    const sourceRef = canonicalizeSourceRef(row.payload, hint);
     const { change } = await proposeChange(tx, {
       orgId,
       actorObjectId: SYSTEM_ACTOR_ID,

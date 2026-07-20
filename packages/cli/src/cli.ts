@@ -2799,6 +2799,17 @@ export function buildProgram(): Command {
     .option("--workspace <workspace>", "Terraform/OpenTofu workspace name")
     .option("--artifact-digest <digest>", "artifact digest linking this to an app-side change")
     .option("--plan-json <path>", "path to a `tofu show -json`-shaped plan file, attached verbatim")
+    // M17.2 (ADR-0015 §5) — a REFERENCE to the build-time SBOM the pipeline's own Trivy step emitted
+    // and cosign-signed. SCP stores the reference, NEVER the document: do not pipe the SBOM itself.
+    .option("--sbom-format <format>", "SBOM reference: cyclonedx|spdx (required to record an SBOM)")
+    .option("--sbom-digest <digest>", "SBOM reference: the SBOM DOCUMENT's own sha256 digest (not the artifact's)")
+    .option("--sbom-location <uri>", "SBOM reference: where the document lives (OCI referrer ref / URI)")
+    .option("--sbom-spec-version <version>", "SBOM reference: format spec version (e.g. 1.5, SPDX-2.3)")
+    .option("--sbom-media-type <type>", "SBOM reference: media type (e.g. application/vnd.cyclonedx+json)")
+    .option("--sbom-signature-ref <ref>", "SBOM reference: the ORIGIN cosign signature ref (SCP never signs)")
+    .option("--sbom-scanner <name>", "SBOM reference: which external tool produced it (e.g. trivy)")
+    .option("--sbom-scanner-version <version>", "SBOM reference: that tool's version")
+    .option("--sbom-generated-at <iso8601>", "SBOM reference: when the producer emitted it")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(
@@ -2812,6 +2823,15 @@ export function buildProgram(): Command {
           workspace?: string;
           artifactDigest?: string;
           planJson?: string;
+          sbomFormat?: string;
+          sbomDigest?: string;
+          sbomLocation?: string;
+          sbomSpecVersion?: string;
+          sbomMediaType?: string;
+          sbomSignatureRef?: string;
+          sbomScanner?: string;
+          sbomScannerVersion?: string;
+          sbomGeneratedAt?: string;
         }
       ) => {
         const client = await clientFromStoredCredentials(opts);
@@ -2822,6 +2842,34 @@ export function buildProgram(): Command {
         const planJson = opts.planJson
           ? JSON.parse(await readFile(opts.planJson, "utf8"))
           : undefined;
+        // An SBOM REFERENCE is all-or-nothing on its three required parts. Fail loudly on a partial
+        // one rather than silently dropping it — a supply-chain reference that quietly vanishes is
+        // exactly the failure mode ADR-0015 exists to prevent.
+        const sbomFlags = [opts.sbomFormat, opts.sbomDigest, opts.sbomLocation];
+        if (sbomFlags.some(Boolean) && !sbomFlags.every(Boolean)) {
+          throw new Error(
+            "--sbom-format, --sbom-digest and --sbom-location must be given together (an SBOM reference needs all three)"
+          );
+        }
+        const validSbomFormats = ["cyclonedx", "spdx"] as const;
+        if (opts.sbomFormat && !(validSbomFormats as readonly string[]).includes(opts.sbomFormat)) {
+          throw new Error(
+            `--sbom-format must be one of ${validSbomFormats.join("|")} (got '${opts.sbomFormat}')`
+          );
+        }
+        const sbom = opts.sbomFormat
+          ? {
+              format: opts.sbomFormat as (typeof validSbomFormats)[number],
+              digest: opts.sbomDigest!,
+              location: opts.sbomLocation!,
+              specVersion: opts.sbomSpecVersion,
+              mediaType: opts.sbomMediaType,
+              signatureRef: opts.sbomSignatureRef,
+              scanner: opts.sbomScanner,
+              scannerVersion: opts.sbomScannerVersion,
+              generatedAt: opts.sbomGeneratedAt
+            }
+          : undefined;
         const result = await client.changeSources.report(sourceKind, {
           status: opts.status as (typeof validStatuses)[number],
           repo: opts.repo,
@@ -2829,7 +2877,8 @@ export function buildProgram(): Command {
           correlationKey: opts.correlationKey,
           workspace: opts.workspace,
           artifactDigest: opts.artifactDigest,
-          planJson
+          planJson,
+          sbom
         });
         printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
       }

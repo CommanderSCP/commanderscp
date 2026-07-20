@@ -37713,7 +37713,50 @@
                       "discarded"
                     ]
                   },
-                  "planJson": {}
+                  "planJson": {},
+                  "sbom": {
+                    "type": "object",
+                    "properties": {
+                      "format": {
+                        "type": "string",
+                        "enum": [
+                          "cyclonedx",
+                          "spdx"
+                        ]
+                      },
+                      "specVersion": {
+                        "type": "string"
+                      },
+                      "digest": {
+                        "type": "string"
+                      },
+                      "location": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "mediaType": {
+                        "type": "string"
+                      },
+                      "signatureRef": {
+                        "type": "string"
+                      },
+                      "scanner": {
+                        "type": "string"
+                      },
+                      "scannerVersion": {
+                        "type": "string"
+                      },
+                      "generatedAt": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "format",
+                      "digest",
+                      "location"
+                    ],
+                    "additionalProperties": false
+                  }
                 },
                 "required": [
                   "status"
