@@ -83,12 +83,16 @@ export interface TestServer {
  * provisioning already applied by globalSetup. The pool connects as the real `scp_app` login
  * role, exactly like production (main.ts phase 2) — never as the container's superuser.
  */
-export async function buildTestServer(): Promise<TestServer> {
+export async function buildTestServer(opts: { operatorToken?: string } = {}): Promise<TestServer> {
   const config = loadConfig({
     DATABASE_URL: testDatabaseUrl(),
     SCP_RUNTIME_DATABASE_URL: testRuntimeDatabaseUrl(),
     SCP_PGBOSS_DATABASE_URL: testPgBossDatabaseUrl(),
-    SCP_COOKIE_SECRET: "test-cookie-secret-value"
+    SCP_COOKIE_SECRET: "test-cookie-secret-value",
+    // M17.5: the deployment-level operator credential that gates writing the instance-scoped scan
+    // floors. Unset by default so every existing test keeps the fail-closed default (the operator
+    // write surface is CLOSED unless a deployment configures a token).
+    ...(opts.operatorToken ? { SCP_OPERATOR_TOKEN: opts.operatorToken } : {})
   });
   const pool = createPool(config.runtimeDatabaseUrl);
   const db = createDb(pool);
@@ -158,9 +162,12 @@ export async function listenTestServer(
      *  boots). Used by governance.integration.test.ts's M4 automatic-rollback-on-failure suite;
      *  every other caller leaves this unset and gets ordinary auto-succeeding targets. */
     fakeExecutorConfig?: Record<string, unknown>;
+    /** M17.5: sets `SCP_OPERATOR_TOKEN` on the server under test, opening the operator-only
+     *  instance-scan-floor write surface. Unset ⇒ that surface stays closed (403). */
+    operatorToken?: string;
   } = {}
 ): Promise<ListeningTestServer> {
-  const server = await buildTestServer();
+  const server = await buildTestServer(opts.operatorToken ? { operatorToken: opts.operatorToken } : {});
   const address = await server.app.listen({ port: 0, host: "127.0.0.1" });
 
   let boss: PgBoss | undefined;

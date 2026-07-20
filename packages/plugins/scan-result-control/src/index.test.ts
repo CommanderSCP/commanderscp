@@ -207,4 +207,84 @@ describe("scan-result-control plugin", () => {
     const outcome = await plugin.evaluate(ctx, { changeId: "c1", controlId: "ctl1", context: {} });
     expect(outcome.status).toBe("fail");
   });
+
+  // -----------------------------------------------------------------------------------------
+  // M17.5 (ADR-0016) — the gate-resolved, most-restrictive-wins scoped threshold on the request
+  // context, preferred over the flat per-binding `config.threshold` exactly as `artifactDigest`
+  // is preferred over `config.expectedDigest`.
+  // -----------------------------------------------------------------------------------------
+
+  const scopedContext = (threshold: Record<string, number>) => ({
+    scanThreshold: {
+      threshold,
+      contributors: [{ tier: "platform" as const, source: "instance:platform:local", threshold }]
+    }
+  });
+
+  it("M17.5: context.scanThreshold TIGHTENS a looser per-binding config.threshold (the scoped floor wins)", async () => {
+    const plugin = createScanResultControlPlugin();
+    const ctx = testCtx({ ...baseConfig, threshold: { maxCritical: 99, maxHigh: 99 } }, async () => ({
+      status: 200,
+      headers: {},
+      body: trivyResult({ digest: DIGEST_A, severities: ["HIGH"] })
+    }));
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: scopedContext({ maxHigh: 0 })
+    });
+    expect(outcome.status).toBe("fail");
+    const evidence = ScanEvidenceSchema.parse(outcome.evidence);
+    expect(evidence.threshold.maxHigh).toBe(0);
+    expect(evidence.thresholdSource).toBe("scoped");
+    expect(evidence.thresholdContributors?.[0]?.tier).toBe("platform");
+  });
+
+  it("M17.5: a per-binding config.threshold can still TIGHTEN below the scoped floor — most-restrictive-wins is symmetric, never a loosening", async () => {
+    const plugin = createScanResultControlPlugin();
+    const ctx = testCtx({ ...baseConfig, threshold: { maxCritical: 0, maxHigh: 0 } }, async () => ({
+      status: 200,
+      headers: {},
+      body: trivyResult({ digest: DIGEST_A, severities: ["HIGH"] })
+    }));
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: scopedContext({ maxHigh: 50 })
+    });
+    expect(outcome.status).toBe("fail");
+    expect(ScanEvidenceSchema.parse(outcome.evidence).threshold.maxHigh).toBe(0);
+  });
+
+  it("M17.5: a severity the scoped floor sets but config does not is applied verbatim (no phantom 0 default)", async () => {
+    const plugin = createScanResultControlPlugin();
+    const ctx = testCtx(baseConfig, async () => ({
+      status: 200,
+      headers: {},
+      body: trivyResult({ digest: DIGEST_A, severities: ["MEDIUM", "MEDIUM"] })
+    }));
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: scopedContext({ maxMedium: 5 })
+    });
+    expect(outcome.status).toBe("pass");
+    expect(ScanEvidenceSchema.parse(outcome.evidence).threshold.maxMedium).toBe(5);
+  });
+
+  it("M17.5: a PRESENT-but-malformed context.scanThreshold FAILS CLOSED rather than silently using the looser per-binding threshold", async () => {
+    const plugin = createScanResultControlPlugin();
+    const ctx = testCtx({ ...baseConfig, threshold: { maxCritical: 99, maxHigh: 99 } }, async () => ({
+      status: 200,
+      headers: {},
+      body: trivyResult({ digest: DIGEST_A })
+    }));
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { scanThreshold: { threshold: { maxHigh: "zero" } } }
+    });
+    expect(outcome.status).toBe("fail");
+    expect(outcome.detail).toMatch(/malformed/);
+  });
 });

@@ -11,6 +11,8 @@ import { hasPermission } from "../authz/resolve.js";
 import { containmentChain, containmentScopeIds, nearestAncestorOfKind } from "../graph/containment.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { getChangeRow } from "../coordination/changes-repo.js";
+import { resolveEffectiveScanThreshold } from "./scan-requirements.js";
+import type { EffectiveScanThreshold } from "@scp/schemas";
 
 /**
  * The orchestrator every gate check (lifecycle-edge AND wave-boundary) funnels through — where
@@ -225,18 +227,27 @@ async function resolveChangeArtifactDigest(
 /** The single control-run context shape both gate sites (prewarm + evaluate) build, so they agree
  *  on what a control sees. `artifactDigest` is included ONLY when the change tracks one — its
  *  absence is meaningful (the control then uses its operator-pinned fallback), so it is never keyed
- *  to `undefined`. */
+ *  to `undefined`.
+ *
+ *  M17.5 (ADR-0016) threads `scanThreshold` through the SAME conditional-context mechanism, on
+ *  purpose: the resolved most-restrictive-wins ceiling across the six scan-requirement tiers is
+ *  another gate-computed FACT the control needs, exactly like the change's real artifact digest, and
+ *  ADR-0016 §4 names this shipped pattern as the one design (A) reuses rather than inventing a
+ *  second mechanism. Absent when NO tier contributes a ceiling — the control then falls back to its
+ *  per-binding `config.threshold`, the unchanged M17.1 behaviour. */
 function buildControlContext(input: {
   changeId: string;
   targetObjectIds: string[];
   gateRef?: Record<string, unknown>;
   artifactDigest?: string | undefined;
+  scanThreshold?: EffectiveScanThreshold | undefined;
 }): Record<string, unknown> {
   return {
     changeId: input.changeId,
     targetObjectIds: input.targetObjectIds,
     ...(input.gateRef ? { gateRef: input.gateRef } : {}),
-    ...(input.artifactDigest ? { artifactDigest: input.artifactDigest } : {})
+    ...(input.artifactDigest ? { artifactDigest: input.artifactDigest } : {}),
+    ...(input.scanThreshold ? { scanThreshold: input.scanThreshold } : {})
   };
 }
 
@@ -293,6 +304,14 @@ export async function prewarmGovernanceForChange(
   const allControlIds = [...new Set(fired.flatMap((fp) => fp.requireControls))];
   if (allControlIds.length > 0) {
     const artifactDigest = await resolveChangeArtifactDigest(tx, input.orgId, input.changeObjectId);
+    // M17.5: `matches` is already gathered above — hand it to the resolver so the six-tier MIN
+    // costs no extra policy round-trip.
+    const scanThreshold = await resolveEffectiveScanThreshold(tx, {
+      orgId: input.orgId,
+      targetObjectIds: input.targetObjectIds,
+      actorObjectId: input.actorObjectId,
+      matches
+    });
     await ensureControlRuns(tx, host, {
       orgId: input.orgId,
       changeObjectId: input.changeObjectId,
@@ -302,7 +321,8 @@ export async function prewarmGovernanceForChange(
       context: buildControlContext({
         changeId: input.changeObjectId,
         targetObjectIds: input.targetObjectIds,
-        artifactDigest
+        artifactDigest,
+        scanThreshold
       })
     });
   }
@@ -411,7 +431,15 @@ export async function evaluateGovernanceGate(
           changeId: ctx.changeObjectId,
           targetObjectIds: ctx.targetObjectIds,
           gateRef: ctx.gateRef,
-          artifactDigest: await resolveChangeArtifactDigest(tx, ctx.orgId, ctx.changeObjectId)
+          artifactDigest: await resolveChangeArtifactDigest(tx, ctx.orgId, ctx.changeObjectId),
+          // M17.5 — the six-tier most-restrictive-wins scan ceiling, resolved from the SAME
+          // `matches` this gate already computed (ADR-0016 §4 design A).
+          scanThreshold: await resolveEffectiveScanThreshold(tx, {
+            orgId: ctx.orgId,
+            targetObjectIds: ctx.targetObjectIds,
+            actorObjectId: ctx.actorObjectId,
+            matches
+          })
         })
       })
     : await readExistingControlOutcomes(tx, ctx.orgId, ctx.changeObjectId, allControlIds);

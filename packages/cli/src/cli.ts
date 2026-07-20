@@ -2034,6 +2034,108 @@ export function buildProgram(): Command {
     });
 
   // -------------------------------------------------------------------------------------
+  // -------------------------------------------------------------------------------------
+  // instance scan-floors (M17.5 — ADR-0016). The two ABOVE-org tiers of the six-tier,
+  // most-restrictive-wins scan-requirement chain:
+  //   platform -> trust domain (partition) -> org -> containment domain -> service -> component
+  // These are INSTANCE-scoped: they bind EVERY org on the deployment, so authoring one is an
+  // OPERATOR action gated by the deployment's SCP_OPERATOR_TOKEN — never a tenant role, however
+  // privileged inside its own org. Reading is an ordinary authenticated call, because a gate you
+  // cannot inspect is not explainable.
+  //
+  // `trust-domain` is the AMBIENT FEDERATION boundary (a partition) above org — NOT the intra-org
+  // containment `domain` object type below org (`scp domain ...`). Different concepts; the stored
+  // tier literal is `trust_domain`, never bare `domain`.
+  // -------------------------------------------------------------------------------------
+  const scanFloorsCmd = program
+    .command("scan-floors")
+    .description(
+      "Instance-scoped scan-requirement floors (ADR-0016) — the platform + trust-domain (partition) tiers that bind every org on this deployment"
+    );
+
+  scanFloorsCmd
+    .command("list")
+    .description("List the instance-scoped scan-requirement floors binding this deployment")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const floors = await client.instanceScanFloors.list();
+      printResult(floors, opts.output, (raw) => {
+        const item = raw as (typeof floors)[number];
+        return {
+          tier: item.tier,
+          origin: item.origin,
+          maxCritical: item.maxCritical === null ? "-" : String(item.maxCritical),
+          maxHigh: item.maxHigh === null ? "-" : String(item.maxHigh),
+          maxMedium: item.maxMedium === null ? "-" : String(item.maxMedium),
+          maxLow: item.maxLow === null ? "-" : String(item.maxLow),
+          note: item.note ?? ""
+        };
+      });
+    });
+
+  scanFloorsCmd
+    .command("set")
+    .description(
+      "Author an instance-scoped scan-requirement floor (OPERATOR ONLY — requires SCP_OPERATOR_TOKEN; a floor may only ever TIGHTEN what orgs below it can pass)"
+    )
+    .requiredOption("--tier <tier>", "platform|trust-domain (the partition tier, not the intra-org containment domain)")
+    .option("--origin <origin>", "local|federated", "local")
+    .option("--max-critical <n>", "ceiling on CRITICAL findings (omit to leave unset — unset never means 0)")
+    .option("--max-high <n>", "ceiling on HIGH findings")
+    .option("--max-medium <n>", "ceiling on MEDIUM findings")
+    .option("--max-low <n>", "ceiling on LOW findings")
+    .option("--note <text>", "free-text note recorded with the floor")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          tier: string;
+          origin: "local" | "federated";
+          maxCritical?: string;
+          maxHigh?: string;
+          maxMedium?: string;
+          maxLow?: string;
+          note?: string;
+        }
+      ) => {
+        const operatorToken = process.env.SCP_OPERATOR_TOKEN;
+        if (!operatorToken) {
+          throw new Error(
+            "SCP_OPERATOR_TOKEN is not set — instance scan floors bind every org on the deployment, so authoring one requires the deployment operator token, not your tenant login."
+          );
+        }
+        // Accept the friendlier `trust-domain` on the command line, but send the canonical
+        // `trust_domain` literal — never bare `domain` (ADR-0016 terminology).
+        const tier = opts.tier === "trust-domain" ? "trust_domain" : opts.tier;
+        if (tier !== "platform" && tier !== "trust_domain") {
+          throw new Error(`--tier must be 'platform' or 'trust-domain' (got '${opts.tier}')`);
+        }
+        const num = (v: string | undefined): number | undefined => {
+          if (v === undefined) return undefined;
+          const n = Number(v);
+          if (!Number.isInteger(n) || n < 0) throw new Error(`expected a non-negative integer, got '${v}'`);
+          return n;
+        };
+        const client = await clientFromStoredCredentials(opts);
+        const floor = await client.instanceScanFloors.put(
+          tier,
+          {
+            origin: opts.origin,
+            maxCritical: num(opts.maxCritical),
+            maxHigh: num(opts.maxHigh),
+            maxMedium: num(opts.maxMedium),
+            maxLow: num(opts.maxLow),
+            note: opts.note
+          },
+          operatorToken
+        );
+        printResult(floor, opts.output, (item) => item as unknown as Record<string, string>);
+      }
+    );
+
   // federation (M6 Federation Basics — DESIGN.md §13, BUILD_AND_TEST.md §8 M6). `export`/`import`
   // work on `.scpbundle` files on disk (the built-in file transport — "the air gap is the design
   // center", §13) so they're the ones CI's two-domain E2E drives via a real file-copy across an

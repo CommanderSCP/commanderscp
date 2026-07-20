@@ -31,6 +31,19 @@ export interface ServerConfig {
    */
   pgBossDatabaseUrl: string;
   role: "all" | "api" | "worker";
+  /**
+   * M17.5 (ADR-0016) — the INSTANCE OPERATOR's shared secret (`SCP_OPERATOR_TOKEN`). Authenticates
+   * the one write surface that is deliberately NOT a tenant capability: authoring the
+   * instance-scoped scan-requirement floors (`scan_requirement_floors` — platform + trust domain),
+   * which apply to EVERY org hosted on this deployment. A tenant admin, however privileged inside
+   * their own org, must never be able to author or loosen them, so no RBAC permission can grant
+   * this — it is a separate, deployment-level credential.
+   *
+   * UNSET (the default) means the operator write surface is CLOSED: the route 403s rather than
+   * falling back to any tenant credential. Fail-closed, and air-gap friendly (an env var, no
+   * external IdP).
+   */
+  operatorToken?: string;
   bootstrapOrgName: string;
   bootstrapAdminUsername: string;
   cookieSecret: string;
@@ -320,6 +333,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     secretsMasterKeyWasGenerated: secretsMasterKey.wasGenerated,
     skipMigrations: env.SCP_SKIP_MIGRATIONS === "true",
     graphQueryStatementTimeoutMs: Number(env.SCP_GRAPH_QUERY_TIMEOUT_MS ?? 5000),
-    federationServerMtls: loadFederationServerMtlsConfig(env)
+    federationServerMtls: loadFederationServerMtlsConfig(env),
+    operatorToken:
+      env.SCP_OPERATOR_TOKEN && env.SCP_OPERATOR_TOKEN.length > 0 ? env.SCP_OPERATOR_TOKEN : undefined
   };
 }

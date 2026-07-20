@@ -28,7 +28,13 @@
  * artifact.
  */
 import type { ControlOutcome, ControlPlugin, ControlRequest, PluginContext } from "@scp/plugin-api";
-import { ScanEvidenceSchema, type ScanEvidence, type ScanThreshold } from "@scp/schemas";
+import {
+  EffectiveScanThresholdSchema,
+  ScanEvidenceSchema,
+  type EffectiveScanThreshold,
+  type ScanEvidence,
+  type ScanThreshold
+} from "@scp/schemas";
 
 export interface ScanResultControlConfig {
   /** Operator-configured source of the Trivy result JSON for this change's artifact — fetched with
@@ -142,13 +148,60 @@ function resolveScannerVersion(raw: TrivyResultJson, config: ScanResultControlCo
   return "unknown";
 }
 
-function resolveThreshold(config: ScanResultControlConfig): ScanThreshold {
-  const t = config.threshold ?? {};
+/**
+ * M17.5 (ADR-0016) — the GATE-RESOLVED, most-restrictive-wins ceiling across the six scan-
+ * requirement tiers (platform -> trust domain (partition) -> org -> containment domain -> service ->
+ * component), threaded onto the request context by `gate-orchestrator.ts`'s `buildControlContext` —
+ * the exact same conditional-context mechanism that already carries `artifactDigest`.
+ *
+ * Returns `undefined` when the gate threaded nothing (no tier set any ceiling — the unchanged M17.1
+ * path). A PRESENT-BUT-MALFORMED value is a distinct, louder case: it means the gate produced
+ * something this control cannot interpret, and silently ignoring it would apply a LOOSER threshold
+ * than governance resolved. That is exactly the "silent pass" this plugin exists to prevent, so the
+ * caller fails closed on it (`"malformed"`).
+ */
+function resolveContextThreshold(req: ControlRequest): EffectiveScanThreshold | undefined | "malformed" {
+  const raw = (req.context as { scanThreshold?: unknown }).scanThreshold;
+  if (raw === undefined || raw === null) return undefined;
+  const parsed = EffectiveScanThresholdSchema.safeParse(raw);
+  return parsed.success ? parsed.data : "malformed";
+}
+
+/**
+ * The threshold this verdict is judged against.
+ *
+ * PREFERS the gate-resolved scoped ceiling over the flat per-binding `config.threshold` — mirroring
+ * exactly how `resolveExpectedDigest` prefers `context.artifactDigest` over `config.expectedDigest`.
+ * Where BOTH set a ceiling for a severity the tighter one wins (per-severity MIN), because
+ * most-restrictive-wins is the whole model: a per-binding config value must never be able to LOOSEN
+ * what the platform/trust-domain/org/containment-domain/service/component chain resolved. A severity
+ * neither source constrains keeps its historical default — `maxCritical`/`maxHigh` = 0 (fail-closed:
+ * any Critical or High fails), `maxMedium`/`maxLow` unbounded — so a binding with no scoped floor
+ * behaves precisely as it did in M17.1.
+ */
+function resolveThreshold(
+  config: ScanResultControlConfig,
+  scoped: EffectiveScanThreshold | undefined
+): { threshold: ScanThreshold; source: "config" | "scoped" } {
+  const fromConfig = config.threshold ?? {};
+  const fromScoped = scoped?.threshold ?? {};
+  const tightest = (a: number | undefined, b: number | undefined): number | undefined => {
+    if (a === undefined) return b;
+    if (b === undefined) return a;
+    return Math.min(a, b);
+  };
+  const maxCritical = tightest(fromConfig.maxCritical, fromScoped.maxCritical);
+  const maxHigh = tightest(fromConfig.maxHigh, fromScoped.maxHigh);
+  const maxMedium = tightest(fromConfig.maxMedium, fromScoped.maxMedium);
+  const maxLow = tightest(fromConfig.maxLow, fromScoped.maxLow);
   return {
-    maxCritical: t.maxCritical ?? 0,
-    maxHigh: t.maxHigh ?? 0,
-    ...(t.maxMedium !== undefined ? { maxMedium: t.maxMedium } : {}),
-    ...(t.maxLow !== undefined ? { maxLow: t.maxLow } : {})
+    threshold: {
+      maxCritical: maxCritical ?? 0,
+      maxHigh: maxHigh ?? 0,
+      ...(maxMedium !== undefined ? { maxMedium } : {}),
+      ...(maxLow !== undefined ? { maxLow } : {})
+    },
+    source: scoped ? "scoped" : "config"
   };
 }
 
@@ -168,6 +221,15 @@ export function createScanResultControlPlugin(): ControlPlugin {
 
       if (!config.url) {
         return fail("scan-result-control: no 'url' configured on this binding");
+      }
+
+      // M17.5: read the gate-resolved scoped ceiling BEFORE any network work — a threaded value we
+      // cannot interpret must fail closed, never quietly fall back to the looser per-binding config.
+      const scoped = resolveContextThreshold(req);
+      if (scoped === "malformed") {
+        return fail(
+          "scan-result-control: context.scanThreshold is present but malformed — refusing to fall back to the (looser) per-binding threshold"
+        );
       }
 
       const expectedDigest = resolveExpectedDigest(ctx, req);
@@ -222,7 +284,7 @@ export function createScanResultControlPlugin(): ControlPlugin {
       }
 
       const counts = countSeverities(trivy);
-      const threshold = resolveThreshold(config);
+      const { threshold, source: thresholdSource } = resolveThreshold(config, scoped);
       const digestMatch = digestHex(scanned) === digestHex(expectedDigest);
 
       const evidence: ScanEvidence = ScanEvidenceSchema.parse({
@@ -232,7 +294,12 @@ export function createScanResultControlPlugin(): ControlPlugin {
         expectedDigest,
         digestMatch,
         severityCounts: counts,
-        threshold
+        // The RESOLVED threshold actually applied, plus WHERE it came from and WHICH tiers set it —
+        // so a blocked promotion's Decision explains why it blocked, not merely that it did
+        // (charter principle 6, ADR-0016 §5).
+        threshold,
+        thresholdSource,
+        ...(scoped ? { thresholdContributors: scoped.contributors } : {})
       });
 
       if (!digestMatch) {
@@ -248,7 +315,11 @@ export function createScanResultControlPlugin(): ControlPlugin {
       if (overThreshold(counts, threshold)) {
         return {
           status: "fail",
-          detail: `scan-result-control: verdict exceeds threshold — critical=${counts.critical}, high=${counts.high}, medium=${counts.medium}, low=${counts.low}`,
+          detail: `scan-result-control: verdict exceeds ${thresholdSource === "scoped" ? "the scoped (most-restrictive-wins) " : ""}threshold ${JSON.stringify(threshold)} — critical=${counts.critical}, high=${counts.high}, medium=${counts.medium}, low=${counts.low}${
+            scoped && scoped.contributors.length > 0
+              ? ` [tiers: ${scoped.contributors.map((c) => `${c.tier}(${c.source})`).join(", ")}]`
+              : ""
+          }`,
           evidence
         };
       }
