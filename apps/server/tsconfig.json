@@ -12,6 +12,7 @@
     { "path": "../../packages/iac" },
     { "path": "../../packages/plugin-api" },
     { "path": "../../packages/plugins/fake-executor" },
-    { "path": "../../packages/plugins/webhook-control" }
+    { "path": "../../packages/plugins/webhook-control" },
+    { "path": "../../packages/plugins/scan-result-control" }
   ]
 }

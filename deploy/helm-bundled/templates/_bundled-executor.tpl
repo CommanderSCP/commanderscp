@@ -51,6 +51,10 @@ metadata:
   labels:
     {{- include "commanderscp.labels" .ctx | nindent 4 }}
     app.kubernetes.io/component: {{ .component }}
+    # M15.4 metadata (see values.yaml federationRole): the operator's declared federation role,
+    # stamped here so the chart-render-time guardrail lint (tools/helm-verify) can read the role
+    # straight from the render and check it against the enabled bundled backends. Not runtime authority.
+    commanderscp.io/federation-role: {{ include "commanderscp.federationRole" .ctx }}
 ---
 {{ $out | join "\n---\n" }}
 {{- end -}}

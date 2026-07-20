@@ -7,6 +7,21 @@
 # the one you are applying. `--server-side` is REQUIRED: the vendored CRDs are large enough that
 # client-side apply's last-applied-configuration annotation would overflow the per-object limit.
 # =============================================================================================
+
+# Federation role of the outpost this bundle is being applied to (commander | outpost | retrans).
+# METADATA ONLY — it drives a CHART-RENDER-TIME self-consistency LINT (M15.4), not any SCP runtime
+# authority. The operator sets BOTH this role AND the bundledExecutor.*.enabled flags below at
+# install time, so pairing an install-time role with the install-time enablement lets tooling
+# (tools/helm-verify) catch a MISCONFIGURATION: a role enabling a bundled backend it should not run
+# (e.g. a `retrans` CDS-boundary relay — a validate-and-forward node, not an execution site —
+# enabling any executor at all). This is deliberately NOT runtime enforcement: the runtime
+# `self_domain.role` (commander|outpost|retrans, set post-install via the federation API) is
+# ADVISORY metadata with no bearing on a Helm install-time value and no graph representation of
+# bundled-backend enablement, so runtime enforcement here would be a fork (owner decision, M15.4).
+# The allowed-backends-per-role matrix lives in tools/helm-verify/src/verify.ts; invalid values are
+# rejected at render (see commanderscp.federationRole in templates/_helpers.tpl).
+federationRole: commander
+
 bundledExecutor:
   argocd:
     enabled: false
