@@ -310,7 +310,11 @@ export async function prewarmGovernanceForChange(
       orgId: input.orgId,
       targetObjectIds: input.targetObjectIds,
       actorObjectId: input.actorObjectId,
-      matches
+      matches,
+      // M17.5 fix: ceilings come from the FIRED set only — same `fired` that decided
+      // `allControlIds`, so a conditional scan-requirement policy whose condition was false
+      // cannot tighten anything here either.
+      firedPolicies: fired
     });
     await ensureControlRuns(tx, host, {
       orgId: input.orgId,
@@ -438,7 +442,10 @@ export async function evaluateGovernanceGate(
             orgId: ctx.orgId,
             targetObjectIds: ctx.targetObjectIds,
             actorObjectId: ctx.actorObjectId,
-            matches
+            matches,
+            // ...and from the FIRED set only — a contributor whose condition evaluated false
+            // contributes no ceiling, exactly as it contributes no requireControls.
+            firedPolicies: fired
           })
         })
       })

@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { ScpApiError, ScpClient } from "@scp/sdk";
 import type { ScanThresholdContribution } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
@@ -107,6 +107,7 @@ async function expectApiError(fn: () => Promise<unknown>): Promise<ScpApiError> 
 interface ScanEvidenceShape {
   threshold: { maxCritical: number; maxHigh: number; maxMedium?: number; maxLow?: number };
   thresholdSource?: string;
+  thresholdSources?: Record<string, string>;
   thresholdContributors?: ScanThresholdContribution[];
 }
 
@@ -131,7 +132,27 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     operator = new ScpClient({ baseUrl: server.baseUrl, token: bootstrap.adminToken });
   });
 
+  /**
+   * `scan_requirement_floors` is INSTANCE-GLOBAL (no `org_id`) and the integration suite runs
+   * `singleFork` against ONE shared Postgres, so a live floor left behind here (e.g. platform
+   * maxHigh = 0) would silently tighten EVERY later suite's gates — notably M17.1's supply-chain
+   * scan tests. Each test sets exactly the floors it needs, but a test that FAILS mid-way never
+   * reaches the next one's `setInstanceFloors`, so clearing must happen in a hook that runs
+   * regardless of outcome. Both rows are reset to all-NULL (inert) after every test AND once more
+   * at teardown, so this file is self-contained no matter where it fails.
+   */
+  async function clearInstanceFloors(): Promise<void> {
+    if (!operator) return;
+    await setInstanceFloors({});
+  }
+
+  afterEach(async () => {
+    await clearInstanceFloors();
+  });
+
   afterAll(async () => {
+    // Before the server closes — the API is the only way to write these rows.
+    await clearInstanceFloors().catch(() => undefined);
     await server?.close();
     await trivy?.close();
   });
@@ -175,13 +196,15 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     admin: ScpClient,
     name: string,
     scopeObjectId: string,
-    threshold: Record<string, number>
+    threshold: Record<string, number>,
+    condition?: string
   ) {
     return admin.policies.create({
       name,
       properties: {
         scope: { objectRef: scopeObjectId },
         enforcement: "advisory",
+        ...(condition ? { condition } : {}),
         effects: [{ scanThreshold: threshold }]
       }
     });
@@ -330,6 +353,52 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
   });
 
   // -----------------------------------------------------------------------------------------
+  // (b2) A CONDITIONAL scan-requirement policy contributes its ceiling ONLY when its condition
+  //      fired — the same condition semantics `requireControls`/`requireApprovals` already have.
+  //      Both arms are identical but for the condition string, and both run at the REAL gate.
+  // -----------------------------------------------------------------------------------------
+
+  it("(b2) a conditional scan-requirement policy whose condition is FALSE does not tighten the effective threshold — the SAME policy with a TRUE condition does", async () => {
+    // ARM 1 — the component floor (maxHigh: 0) carries an always-FALSE condition. It must NOT
+    // fire, so the only ceiling in play is the org's maxHigh: 5 and two HIGHs pass. Were the
+    // ceiling folded in from every MATCHED policy rather than the FIRED set, this would block —
+    // fail-closed, but citing a policy whose condition was false (charter principle 6).
+    const orgFalse = await createTestOrg(server, "cond-false");
+    const adminFalse = new ScpClient({ baseUrl: server.baseUrl, token: orgFalse.adminToken });
+    const chainFalse = await buildChain(adminFalse, "cond-false");
+    await scanFloorPolicy(adminFalse, "floor-org", orgFalse.orgId, { maxHigh: 5 });
+    await scanFloorPolicy(adminFalse, "floor-conditional", chainFalse.component.id, { maxHigh: 0 }, "1 == 2");
+    const controlFalse = await scanControl(adminFalse, orgFalse, { suffix: "cond-false", severities: ["HIGH", "HIGH"] });
+    await requireScanControl(adminFalse, "scan-gate", chainFalse.component.id, controlFalse.id);
+
+    const changeFalse = await adminFalse.changes.propose({ name: "cond-false-change", targets: [chainFalse.component.id] });
+    const runFalse = await waitForControlRun(adminFalse, changeFalse.id, controlFalse.id, "pass");
+    const evidenceFalse = runFalse.evidence as unknown as ScanEvidenceShape;
+    expect(evidenceFalse.threshold.maxHigh).toBe(5); // the org floor, NOT the false-condition 0
+    // ...and the non-firing policy is not even named as a contributor, so the Decision cannot
+    // attribute the ceiling to a policy that never applied.
+    expect((evidenceFalse.thresholdContributors ?? []).map((c) => c.source).join(",")).not.toMatch(/floor-conditional/);
+    expect((evidenceFalse.thresholdContributors ?? []).some((c) => c.source.includes("floor-org"))).toBe(true);
+
+    // ARM 2 — byte-for-byte the same fixture, condition flipped to always-TRUE. Now it fires and
+    // tightens maxHigh to 0, and the same two HIGHs block.
+    const orgTrue = await createTestOrg(server, "cond-true");
+    const adminTrue = new ScpClient({ baseUrl: server.baseUrl, token: orgTrue.adminToken });
+    const chainTrue = await buildChain(adminTrue, "cond-true");
+    await scanFloorPolicy(adminTrue, "floor-org", orgTrue.orgId, { maxHigh: 5 });
+    await scanFloorPolicy(adminTrue, "floor-conditional", chainTrue.component.id, { maxHigh: 0 }, "1 == 1");
+    const controlTrue = await scanControl(adminTrue, orgTrue, { suffix: "cond-true", severities: ["HIGH", "HIGH"] });
+    await requireScanControl(adminTrue, "scan-gate", chainTrue.component.id, controlTrue.id);
+
+    const changeTrue = await adminTrue.changes.propose({ name: "cond-true-change", targets: [chainTrue.component.id] });
+    const runTrue = await waitForControlRun(adminTrue, changeTrue.id, controlTrue.id, "fail");
+    const evidenceTrue = runTrue.evidence as unknown as ScanEvidenceShape;
+    expect(evidenceTrue.threshold.maxHigh).toBe(0);
+    expect((evidenceTrue.thresholdContributors ?? []).some((c) => c.source.includes("floor-conditional"))).toBe(true);
+    expect(runTrue.detail).toMatch(/exceeds/i);
+  });
+
+  // -----------------------------------------------------------------------------------------
   // (c) The instance-scoped floors apply to EVERY org on the deployment.
   // -----------------------------------------------------------------------------------------
 
@@ -354,7 +423,11 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
       const run = await waitForControlRun(admin, change.id, control.id, "fail");
       const evidence = run.evidence as unknown as ScanEvidenceShape;
       expect(evidence.threshold.maxHigh, `${label} must be bound by the platform floor`).toBe(0);
-      expect(evidence.thresholdSource).toBe("scoped");
+      // The applied maxHigh really came from the instance floor; maxCritical's applied 99 came from
+      // the per-binding config — so the honest summary is `mixed`, per-severity provenance below.
+      expect(evidence.thresholdSource).toBe("mixed");
+      expect(evidence.thresholdSources?.maxHigh).toBe("scoped");
+      expect(evidence.thresholdSources?.maxCritical).toBe("config");
       expect((evidence.thresholdContributors ?? []).some((c) => c.tier === "platform")).toBe(true);
       await assertStaysExecuting(admin, change.id);
     }

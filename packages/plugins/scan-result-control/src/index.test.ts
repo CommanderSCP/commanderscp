@@ -236,7 +236,12 @@ describe("scan-result-control plugin", () => {
     expect(outcome.status).toBe("fail");
     const evidence = ScanEvidenceSchema.parse(outcome.evidence);
     expect(evidence.threshold.maxHigh).toBe(0);
-    expect(evidence.thresholdSource).toBe("scoped");
+    // The DECIDING (breached) ceiling is maxHigh and it came from the scoped floor; maxCritical's
+    // applied 99 came from the config, so the honest summary is `mixed`.
+    expect(evidence.thresholdSources?.maxHigh).toBe("scoped");
+    expect(evidence.thresholdSources?.maxCritical).toBe("config");
+    expect(evidence.thresholdSource).toBe("mixed");
+    expect(outcome.detail).toMatch(/maxHigh=0 \(from scoped\)/);
     expect(evidence.thresholdContributors?.[0]?.tier).toBe("platform");
   });
 
@@ -253,7 +258,16 @@ describe("scan-result-control plugin", () => {
       context: scopedContext({ maxHigh: 50 })
     });
     expect(outcome.status).toBe("fail");
-    expect(ScanEvidenceSchema.parse(outcome.evidence).threshold.maxHigh).toBe(0);
+    const evidence = ScanEvidenceSchema.parse(outcome.evidence);
+    expect(evidence.threshold.maxHigh).toBe(0);
+    // THE LABEL, not just the number: the per-binding CONFIG (maxHigh 0) supplied the value that
+    // actually decided this block, even though a scoped floor (maxHigh 50) was threaded. Reporting
+    // `scoped` here would make the Decision misdescribe its own inputs (charter principle 6).
+    expect(evidence.thresholdSource).toBe("config");
+    expect(evidence.thresholdSources?.maxHigh).toBe("config");
+    expect(evidence.thresholdSources?.maxCritical).toBe("config");
+    expect(outcome.detail).toMatch(/maxHigh=0 \(from config\)/);
+    expect(outcome.detail).not.toMatch(/from scoped/);
   });
 
   it("M17.5: a severity the scoped floor sets but config does not is applied verbatim (no phantom 0 default)", async () => {

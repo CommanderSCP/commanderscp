@@ -10,6 +10,7 @@ import {
 import { containmentChain } from "../graph/containment.js";
 import { matchPoliciesForTargets } from "./policy-resolve.js";
 import type { MatchedPolicy } from "./policy-model.js";
+import type { FiredPolicy } from "./evaluate.js";
 
 /**
  * M17.5 — SCOPED SCAN-REQUIREMENT RESOLUTION (ADR-0016).
@@ -51,6 +52,18 @@ import type { MatchedPolicy } from "./policy-model.js";
  * ABSENT NEVER MEANS ZERO. A tier that sets no ceiling for a severity contributes NOTHING for that
  * severity. Reading "no floor" as 0 would make it the TIGHTEST possible ceiling and would block
  * everything — the exact inversion of the intended semantics.
+ *
+ * CONDITIONS ARE HONOURED — a ceiling comes ONLY from the FIRED set. An org-and-below contributor
+ * whose CEL `condition` evaluated FALSE contributes NOTHING, exactly as it contributes no
+ * `requireControls`/`requireApprovals` (evaluate.ts `resolveFiredPolicies`; gate-orchestrator.ts
+ * drives both off the same `fired`). Anything else would let `when env == "prod", maxCritical: 0`
+ * silently apply in dev — tightening-only, so never unsafe, but SILENTLY over-restrictive and a
+ * block citing a policy whose condition was false (charter principle 6: every verdict must explain
+ * itself). Fail-closed semantics are INHERITED, not reinvented: `resolveFiredPolicies` already
+ * fires a group closed when a REQUIRED contributor's condition ERRORS and counts that contributor
+ * in `contributingPolicyVersions`, so such a contributor still supplies its ceiling.
+ *
+ * The instance-scoped floors (platform / trust domain) carry no condition and are unaffected.
  */
 
 /** A `scanThreshold` effect on a policy document — the org-and-below tiers' authoring surface
@@ -160,6 +173,27 @@ export interface ResolveScanThresholdInput {
   /** The already-gathered policy matches, when the caller has them (both gate sites do) — avoids a
    *  second identical `matchPoliciesForTargets` round-trip. Omit and this resolves them itself. */
   matches?: MatchedPolicy[];
+  /** The condition-resolved firing set (evaluate.ts `resolveFiredPolicies`) — REQUIRED, not
+   *  optional, so no call site can silently fall back to "every match contributes" and reintroduce
+   *  ceilings from policies whose condition was false. May include non-firing groups; they are
+   *  filtered here. */
+  firedPolicies: FiredPolicy[];
+}
+
+/**
+ * The `(policyObjectId, policyVersion)` keys of every contributor that actually FIRED — plus, by
+ * construction, any REQUIRED contributor whose condition ERRORED, because `resolveFiredPolicies`
+ * fires that group closed and counts the errored contributor in `contributingPolicyVersions`. This
+ * is the same set that drives `requireControls`/`requireApprovals`, so a scan ceiling can never
+ * apply under a condition that didn't hold.
+ */
+function firedContributorKeys(firedPolicies: FiredPolicy[]): Set<string> {
+  const keys = new Set<string>();
+  for (const fp of firedPolicies) {
+    if (!fp.fired) continue;
+    for (const c of fp.contributingPolicyVersions) keys.add(`${c.policyObjectId}::${c.policyVersion}`);
+  }
+  return keys;
 }
 
 /**
@@ -193,7 +227,12 @@ export async function resolveEffectiveScanThreshold(
     }
   }
 
+  // Only the FIRED contributors may set a ceiling (see the module doc). A matched-but-not-fired
+  // policy is dropped here exactly as it is dropped from `requireControls` at the gate.
+  const firedKeys = firedContributorKeys(input.firedPolicies);
+
   for (const match of matches) {
+    if (!firedKeys.has(`${match.policyObjectId}::${match.policyVersion}`)) continue;
     for (const effect of match.effects as unknown[]) {
       const threshold = parseScanThresholdEffect(effect);
       if (!threshold) continue;

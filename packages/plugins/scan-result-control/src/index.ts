@@ -33,7 +33,9 @@ import {
   ScanEvidenceSchema,
   type EffectiveScanThreshold,
   type ScanEvidence,
-  type ScanThreshold
+  type ScanThreshold,
+  type ScanThresholdSource,
+  type ScanThresholdSourceMap
 } from "@scp/schemas";
 
 export interface ScanResultControlConfig {
@@ -178,39 +180,69 @@ function resolveContextThreshold(req: ControlRequest): EffectiveScanThreshold | 
  * neither source constrains keeps its historical default — `maxCritical`/`maxHigh` = 0 (fail-closed:
  * any Critical or High fails), `maxMedium`/`maxLow` unbounded — so a binding with no scoped floor
  * behaves precisely as it did in M17.1.
+ *
+ * THE REPORTED SOURCE IS THE DECIDING SOURCE, PER SEVERITY. Because the merge is a per-severity MIN
+ * over TWO sources, "a scoped floor was threaded" is a different claim from "the scoped floor set
+ * the ceiling that blocked this change" — with `config.maxHigh = 0` against `scoped.maxHigh = 50`
+ * the applied 0 came from the CONFIG. Labelling that `"scoped"` would make the Decision misdescribe
+ * its own inputs (charter principle 6), so every severity carries the source that actually supplied
+ * its applied value, and the summary label is `"mixed"` when both sources decided something.
  */
 function resolveThreshold(
   config: ScanResultControlConfig,
   scoped: EffectiveScanThreshold | undefined
-): { threshold: ScanThreshold; source: "config" | "scoped" } {
+): { threshold: ScanThreshold; source: "config" | "scoped" | "mixed"; sources: ScanThresholdSourceMap } {
   const fromConfig = config.threshold ?? {};
   const fromScoped = scoped?.threshold ?? {};
-  const tightest = (a: number | undefined, b: number | undefined): number | undefined => {
-    if (a === undefined) return b;
-    if (b === undefined) return a;
-    return Math.min(a, b);
+  /** The tighter of the two, plus WHICH one supplied it. A tie is attributed to `scoped`: the
+   *  scoped chain alone yields the same ceiling, so the attribution is true either way. */
+  const tightest = (
+    fromConfigValue: number | undefined,
+    fromScopedValue: number | undefined
+  ): { value: number | undefined; source: ScanThresholdSource } => {
+    if (fromConfigValue === undefined && fromScopedValue === undefined) return { value: undefined, source: "default" };
+    if (fromScopedValue === undefined) return { value: fromConfigValue, source: "config" };
+    if (fromConfigValue === undefined) return { value: fromScopedValue, source: "scoped" };
+    return fromConfigValue < fromScopedValue
+      ? { value: fromConfigValue, source: "config" }
+      : { value: fromScopedValue, source: "scoped" };
   };
-  const maxCritical = tightest(fromConfig.maxCritical, fromScoped.maxCritical);
-  const maxHigh = tightest(fromConfig.maxHigh, fromScoped.maxHigh);
-  const maxMedium = tightest(fromConfig.maxMedium, fromScoped.maxMedium);
-  const maxLow = tightest(fromConfig.maxLow, fromScoped.maxLow);
+  const critical = tightest(fromConfig.maxCritical, fromScoped.maxCritical);
+  const high = tightest(fromConfig.maxHigh, fromScoped.maxHigh);
+  const medium = tightest(fromConfig.maxMedium, fromScoped.maxMedium);
+  const low = tightest(fromConfig.maxLow, fromScoped.maxLow);
+
+  const sources: ScanThresholdSourceMap = {
+    maxCritical: critical.source,
+    maxHigh: high.source,
+    ...(medium.value !== undefined ? { maxMedium: medium.source } : {}),
+    ...(low.value !== undefined ? { maxLow: low.source } : {})
+  };
+  const decided = new Set(Object.values(sources).filter((s) => s !== "default"));
+  const source: "config" | "scoped" | "mixed" =
+    decided.size > 1 ? "mixed" : decided.size === 1 ? ([...decided][0] as "config" | "scoped") : "config";
+
   return {
     threshold: {
-      maxCritical: maxCritical ?? 0,
-      maxHigh: maxHigh ?? 0,
-      ...(maxMedium !== undefined ? { maxMedium } : {}),
-      ...(maxLow !== undefined ? { maxLow } : {})
+      maxCritical: critical.value ?? 0,
+      maxHigh: high.value ?? 0,
+      ...(medium.value !== undefined ? { maxMedium: medium.value } : {}),
+      ...(low.value !== undefined ? { maxLow: low.value } : {})
     },
-    source: scoped ? "scoped" : "config"
+    source,
+    sources
   };
 }
 
-function overThreshold(counts: ScanEvidence["severityCounts"], threshold: ScanThreshold): boolean {
-  if (counts.critical > threshold.maxCritical) return true;
-  if (counts.high > threshold.maxHigh) return true;
-  if (threshold.maxMedium !== undefined && counts.medium > threshold.maxMedium) return true;
-  if (threshold.maxLow !== undefined && counts.low > threshold.maxLow) return true;
-  return false;
+/** Every severity whose count exceeds its applied ceiling — named, so the fail detail can say which
+ *  ceiling was breached AND which source supplied it. */
+function breachedSeverities(counts: ScanEvidence["severityCounts"], threshold: ScanThreshold): Array<keyof ScanThresholdSourceMap> {
+  const breached: Array<keyof ScanThresholdSourceMap> = [];
+  if (counts.critical > threshold.maxCritical) breached.push("maxCritical");
+  if (counts.high > threshold.maxHigh) breached.push("maxHigh");
+  if (threshold.maxMedium !== undefined && counts.medium > threshold.maxMedium) breached.push("maxMedium");
+  if (threshold.maxLow !== undefined && counts.low > threshold.maxLow) breached.push("maxLow");
+  return breached;
 }
 
 export function createScanResultControlPlugin(): ControlPlugin {
@@ -284,7 +316,7 @@ export function createScanResultControlPlugin(): ControlPlugin {
       }
 
       const counts = countSeverities(trivy);
-      const { threshold, source: thresholdSource } = resolveThreshold(config, scoped);
+      const { threshold, source: thresholdSource, sources: thresholdSources } = resolveThreshold(config, scoped);
       const digestMatch = digestHex(scanned) === digestHex(expectedDigest);
 
       const evidence: ScanEvidence = ScanEvidenceSchema.parse({
@@ -299,6 +331,7 @@ export function createScanResultControlPlugin(): ControlPlugin {
         // (charter principle 6, ADR-0016 §5).
         threshold,
         thresholdSource,
+        thresholdSources,
         ...(scoped ? { thresholdContributors: scoped.contributors } : {})
       });
 
@@ -312,10 +345,14 @@ export function createScanResultControlPlugin(): ControlPlugin {
         };
       }
 
-      if (overThreshold(counts, threshold)) {
+      const breached = breachedSeverities(counts, threshold);
+      if (breached.length > 0) {
+        // Name the breached ceilings AND the source that actually supplied each one — a block must
+        // never cite "the scoped threshold" when the per-binding config set the deciding value.
+        const breachDetail = breached.map((k) => `${k}=${threshold[k]} (from ${thresholdSources[k]})`).join(", ");
         return {
           status: "fail",
-          detail: `scan-result-control: verdict exceeds ${thresholdSource === "scoped" ? "the scoped (most-restrictive-wins) " : ""}threshold ${JSON.stringify(threshold)} — critical=${counts.critical}, high=${counts.high}, medium=${counts.medium}, low=${counts.low}${
+          detail: `scan-result-control: verdict exceeds ${thresholdSource === "config" ? "" : "the effective (most-restrictive-wins) "}threshold — breached ${breachDetail}; counts critical=${counts.critical}, high=${counts.high}, medium=${counts.medium}, low=${counts.low}${
             scoped && scoped.contributors.length > 0
               ? ` [tiers: ${scoped.contributors.map((c) => `${c.tier}(${c.source})`).join(", ")}]`
               : ""

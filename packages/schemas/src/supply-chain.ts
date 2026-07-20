@@ -118,6 +118,20 @@ export const EffectiveScanThresholdSchema = z.object({
 });
 export type EffectiveScanThreshold = z.infer<typeof EffectiveScanThresholdSchema>;
 
+/** Which of the two ceiling sources supplied the value ACTUALLY applied for one severity. */
+export const ScanThresholdSourceSchema = z.enum(["config", "scoped", "default"]);
+export type ScanThresholdSource = z.infer<typeof ScanThresholdSourceSchema>;
+
+/** Per-severity provenance of the applied threshold. Only severities the applied threshold actually
+ *  carries appear (`maxMedium`/`maxLow` are omitted when unbounded). */
+export const ScanThresholdSourceMapSchema = z.object({
+  maxCritical: ScanThresholdSourceSchema,
+  maxHigh: ScanThresholdSourceSchema,
+  maxMedium: ScanThresholdSourceSchema.optional(),
+  maxLow: ScanThresholdSourceSchema.optional()
+});
+export type ScanThresholdSourceMap = z.infer<typeof ScanThresholdSourceMapSchema>;
+
 /** One instance-scoped (above-org) floor row — the API projection of `scan_requirement_floors`
  *  (no `orgId`: it applies to EVERY org on the deployment). */
 export const InstanceScanFloorSchema = z.object({
@@ -178,11 +192,18 @@ export const ScanEvidenceSchema = z.object({
   severityCounts: ScanSeverityCountsSchema,
   /** The threshold ACTUALLY applied to reach this verdict (post-merge). */
   threshold: ScanThresholdSchema,
-  /** M17.5 (ADR-0016) — WHERE the applied threshold came from. `"config"` = the flat per-binding
-   *  `config.threshold` (the M17.1 status quo, unchanged when the gate threads no scoped floor);
-   *  `"scoped"` = the gate-resolved, most-restrictive-wins merge across the six tiers. Optional so
-   *  every pre-M17.5 evidence document still parses. */
-  thresholdSource: z.enum(["config", "scoped"]).optional(),
+  /** M17.5 (ADR-0016) — WHERE the APPLIED ceilings actually came from, per severity. This is the
+   *  honest label: the two sources are merged per-severity (tighter wins), so "the gate threaded a
+   *  scoped floor" is NOT the same claim as "the scoped floor decided this verdict".
+   *  `"config"` = the flat per-binding `config.threshold` supplied the applied (tightest) value;
+   *  `"scoped"` = the gate-resolved six-tier merge did; `"default"` = neither source constrained
+   *  that severity and the historical fail-closed default (0) applies. */
+  thresholdSources: ScanThresholdSourceMapSchema.optional(),
+  /** Summary of `thresholdSources`: `"config"`/`"scoped"` when every constrained severity was
+   *  decided by that one source, `"mixed"` when both decided at least one severity each. Never
+   *  reports `"scoped"` merely because a scoped floor was present — see `thresholdSources`.
+   *  Optional so every pre-M17.5 evidence document still parses. */
+  thresholdSource: z.enum(["config", "scoped", "mixed"]).optional(),
   /** M17.5 — every tier that contributed a ceiling to the merged threshold, so a blocked promotion's
    *  Decision can explain WHICH tier set the binding severity floor (charter principle 6). */
   thresholdContributors: z.array(ScanThresholdContributionSchema).optional()
