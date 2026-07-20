@@ -1,0 +1,24 @@
+-- ===========================================================================================
+-- M17.3 E5 — distribute each peer's cosign PUBLIC key so a domain can LATER verify that peer's
+-- cosign-signed promotion manifest (verification itself is E6/M17.4 — this is pure distribution).
+--
+-- EXPAND phase (additive, backward-compatible). Add a single nullable `cosign_public_key` column to
+-- `federation_peer_keys`, the per-peer public-key registry. The cosign verification key rides in the
+-- SAME key-window row as the peer's Ed25519 `public_key`: it is exchanged in the SAME out-of-band
+-- pairing step (the operator copies the peer's `scp federation status`/`self` output into the other
+-- side's `scp federation pair`), so an air-gapped peer that only receives files gets it with ZERO new
+-- transport. Rotation reuses the EXISTING supersede mechanic (peers-repo.ts `pairPeer`): a changed
+-- Ed25519 OR cosign pubkey supersedes the current window and opens a new one, so the old cosign key
+-- is retained in its own sequence-anchored window exactly as the Ed25519 key is.
+--
+-- NULLABLE, NO BACKFILL. A peer paired before E5 (or one whose operator never supplied a cosign key)
+-- simply has NULL here — that peer's manifests just aren't cosign-verifiable yet, which is the
+-- correct fail-closed default until it is re-paired with a cosign key. A public key is NOT a secret,
+-- so this column carries no vault/RLS concern beyond the table's existing `org_isolation` policy
+-- (inherited unchanged — no policy/grant change needed for an additive column).
+--
+-- Plain additive column: no RLS/grant statement is required (unlike 0030), so this is a trivial
+-- expand migration.
+-- ===========================================================================================
+
+ALTER TABLE "federation_peer_keys" ADD COLUMN IF NOT EXISTS "cosign_public_key" text;

@@ -75,7 +75,15 @@ export const FederationSelfSchema = z.object({
   domainId: z.string().uuid(),
   name: z.string(),
   role: FederationRoleSchema,
-  publicKey: z.string()
+  publicKey: z.string(),
+  /** M17.3 (E5) — this domain's cosign MANIFEST-VERIFICATION public key (`cosign.pub` PEM), the
+   *  non-secret half of the org's `instance_cosign_keys` keypair. Distributed to peers via the SAME
+   *  out-of-band pairing exchange as `publicKey` (the operator copies `scp federation status`/`self`
+   *  output into the other side's `scp federation pair`), so an air-gapped peer that only receives
+   *  files gets it with ZERO new transport. Verification of a cosign-signed promotion manifest AGAINST
+   *  this key is E6/M17.4 — this increment only distributes it. `null` until lazily provisioned;
+   *  optional so an older peer/client that never carried it still parses. NEVER the private half. */
+  cosignPublicKey: z.string().nullable().optional()
 });
 export type FederationSelfInfo = z.infer<typeof FederationSelfSchema>;
 
@@ -94,6 +102,14 @@ export const PairPeerRequestSchema = z.object({
   name: z.string().min(1).max(200),
   role: z.enum(["commander", "outpost", "retrans"]),
   publicKey: z.string().min(1),
+  /** M17.3 (E5) — the peer's cosign MANIFEST-VERIFICATION public key, carried ALONGSIDE its Ed25519
+   *  `publicKey` in the same out-of-band pairing exchange (the operator copies the peer's
+   *  `scp federation status`/`self` output here). Optional/additive so an OLD pair request that
+   *  predates E5 still pairs. Registered as this peer's TRUSTED cosign key; a cosign pubkey ever
+   *  found INSIDE a promotion bundle is only match-checked against this REGISTERED value at verify
+   *  time (E6/M17.4), never trusted over it — mirroring how approval-evidence `publicKey` is
+   *  compared, never trusted (promotion-repo.ts). */
+  cosignPublicKey: z.string().optional(),
   baseUrl: z.string().url().optional(),
   syncScope: SyncScopeSchema.optional()
 });
@@ -106,6 +122,10 @@ export const FederationPeerSchema = z.object({
   baseUrl: z.string().nullable(),
   syncScope: SyncScopeSchema,
   publicKey: z.string(),
+  /** M17.3 (E5) — the peer's REGISTERED cosign verification public key (from pairing). `null` for a
+   *  peer paired before E5 or one that never supplied one. This is the ONLY value E6/M17.4 trusts to
+   *  verify that peer's cosign-signed promotion manifests. */
+  cosignPublicKey: z.string().nullable().optional(),
   pairedAt: z.string().datetime()
 });
 export type FederationPeer = z.infer<typeof FederationPeerSchema>;

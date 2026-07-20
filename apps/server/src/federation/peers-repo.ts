@@ -24,11 +24,16 @@ export interface FederationPeerRow {
   syncScope: SyncScope;
   pairedAt: string;
   publicKey: string;
+  /** M17.3 (E5) — the peer's REGISTERED cosign verification public key from pairing (the CURRENT
+   *  key window). `null` for a peer paired before E5 or one that never supplied one. This is the
+   *  ONLY value E6/M17.4 trusts to verify that peer's cosign-signed promotion manifests. */
+  cosignPublicKey: string | null;
 }
 
 function toPeerRow(
   peer: typeof federationPeers.$inferSelect,
-  publicKey: string
+  publicKey: string,
+  cosignPublicKey: string | null
 ): FederationPeerRow {
   return {
     id: peer.id,
@@ -38,15 +43,18 @@ function toPeerRow(
     baseUrl: peer.baseUrl,
     syncScope: peer.syncScope as SyncScope,
     pairedAt: peer.pairedAt.toISOString(),
-    publicKey
+    publicKey,
+    cosignPublicKey
   };
 }
 
-export async function currentPeerPublicKey(
+/** The CURRENT (non-superseded) key-window row for a peer — both the Ed25519 `publicKey` and, since
+ *  E5, the cosign verification pubkey ride in this SAME row. `null` when the peer has no key yet. */
+export async function currentPeerKeyRow(
   tx: TenantTx,
   orgId: string,
   peerDomainId: string
-): Promise<string | null> {
+): Promise<{ publicKey: string; cosignPublicKey: string | null } | null> {
   const rows = await tx
     .select()
     .from(federationPeerKeys)
@@ -59,7 +67,18 @@ export async function currentPeerPublicKey(
     )
     .orderBy(desc(federationPeerKeys.effectiveFrom))
     .limit(1);
-  return rows[0]?.publicKey ?? null;
+  const row = rows[0];
+  if (!row) return null;
+  return { publicKey: row.publicKey, cosignPublicKey: row.cosignPublicKey ?? null };
+}
+
+export async function currentPeerPublicKey(
+  tx: TenantTx,
+  orgId: string,
+  peerDomainId: string
+): Promise<string | null> {
+  const row = await currentPeerKeyRow(tx, orgId, peerDomainId);
+  return row?.publicKey ?? null;
 }
 
 export interface PeerKeyWindow {
@@ -120,6 +139,10 @@ export interface PairPeerInput {
   name: string;
   role: "commander" | "outpost" | "retrans";
   publicKey: string;
+  /** M17.3 (E5) — the peer's cosign verification public key, exchanged in the SAME out-of-band
+   *  pairing step as `publicKey`. Optional/additive: an OLD pair request lacking it still pairs
+   *  (the peer's cosign key stays `null`). Registered ALONGSIDE `publicKey` in the same key window. */
+  cosignPublicKey?: string | null;
   baseUrl?: string;
   syncScope?: SyncScope;
 }
@@ -135,8 +158,13 @@ export async function pairPeer(tx: TenantTx, input: PairPeerInput): Promise<Fede
     .limit(1);
 
   const syncScope = input.syncScope ?? { mode: "full" as const };
+  // ADDITIVE (E5): distinguish "cosign key omitted" (undefined — a pre-E5 client that never knew the
+  // field; PRESERVE whatever is already registered) from "cosign key supplied" (a concrete value —
+  // set or rotate). The over-the-wire schema is `.optional()` (not nullable), so absent === undefined.
+  const cosignProvided = input.cosignPublicKey !== undefined;
 
   if (!existing[0]) {
+    const cosignPublicKey = cosignProvided ? (input.cosignPublicKey ?? null) : null;
     const [row] = await tx
       .insert(federationPeers)
       .values({
@@ -153,9 +181,10 @@ export async function pairPeer(tx: TenantTx, input: PairPeerInput): Promise<Fede
       id: uuidv7(),
       orgId: input.orgId,
       peerDomainId: input.domainId,
-      publicKey: input.publicKey
+      publicKey: input.publicKey,
+      cosignPublicKey
     });
-    return toPeerRow(row, input.publicKey);
+    return toPeerRow(row, input.publicKey, cosignPublicKey);
   }
 
   const [row] = await tx
@@ -170,14 +199,28 @@ export async function pairPeer(tx: TenantTx, input: PairPeerInput): Promise<Fede
     .returning();
   if (!row) throw new Error("pairPeer: failed to update peer");
 
-  const current = await currentPeerPublicKey(tx, input.orgId, input.domainId);
-  if (current !== input.publicKey) {
+  const current = await currentPeerKeyRow(tx, input.orgId, input.domainId);
+  // The cosign key that WILL be in the window after this pairing: the supplied one when provided,
+  // else the currently-registered one (a pre-E5 re-pair never strips an existing cosign key).
+  const nextCosign = cosignProvided
+    ? (input.cosignPublicKey ?? null)
+    : (current?.cosignPublicKey ?? null);
+  // M17.3 (E5): a rotation is a change to EITHER key in the window — the Ed25519 signing key OR the
+  // cosign verification key. Both ride the SAME window row, so either change supersedes the old row
+  // and opens a new one carrying BOTH current values (the unchanged key is re-carried verbatim).
+  const rotated =
+    current === null ||
+    current.publicKey !== input.publicKey ||
+    (current.cosignPublicKey ?? null) !== nextCosign;
+  if (rotated) {
     const now = new Date();
     // SECURITY-SENSITIVE (M6 review fix — CRITICAL): anchor the rotation to the AUTHENTICATED
     // journal sequence, not a timestamp. The old key legitimately signed everything this domain has
     // already applied from the peer (its cursor high-water mark); the new key takes over from there.
     // Every future import applies only entries beyond the cursor, so the old key is hard-revoked for
-    // all content that will ever be applied — no timestamp fallback an attacker could backdate.
+    // all content that will ever be applied — no timestamp fallback an attacker could backdate. The
+    // cosign key rides the SAME window, so the OLD cosign key is retained in its superseded window
+    // exactly as the Ed25519 key is (fully reconstructible history for both).
     const anchor = await maxAppliedSequenceForPeer(tx, input.orgId, input.domainId);
     await tx
       .update(federationPeerKeys)
@@ -194,19 +237,20 @@ export async function pairPeer(tx: TenantTx, input: PairPeerInput): Promise<Fede
       orgId: input.orgId,
       peerDomainId: input.domainId,
       publicKey: input.publicKey,
+      cosignPublicKey: nextCosign,
       effectiveFrom: now,
       effectiveFromSequence: anchor
     });
   }
-  return toPeerRow(row, input.publicKey);
+  return toPeerRow(row, input.publicKey, nextCosign);
 }
 
 export async function listPeers(tx: TenantTx, orgId: string): Promise<FederationPeerRow[]> {
   const rows = await tx.select().from(federationPeers).where(eq(federationPeers.orgId, orgId));
   const out: FederationPeerRow[] = [];
   for (const row of rows) {
-    const key = await currentPeerPublicKey(tx, orgId, row.id);
-    out.push(toPeerRow(row, key ?? ""));
+    const key = await currentPeerKeyRow(tx, orgId, row.id);
+    out.push(toPeerRow(row, key?.publicKey ?? "", key?.cosignPublicKey ?? null));
   }
   return out;
 }
@@ -235,6 +279,6 @@ export async function getPeerByIdOrName(
     throw notFound(
       `federation peer '${idOrName}' not found — pair it first with 'scp federation pair'`
     );
-  const key = await currentPeerPublicKey(tx, orgId, rows[0].id);
-  return toPeerRow(rows[0], key ?? "");
+  const key = await currentPeerKeyRow(tx, orgId, rows[0].id);
+  return toPeerRow(rows[0], key?.publicKey ?? "", key?.cosignPublicKey ?? null);
 }

@@ -12669,6 +12669,7 @@ export type GetFederationSelfResponses = {
         name: string;
         role: 'unset' | 'commander' | 'outpost' | 'retrans';
         publicKey: string;
+        cosignPublicKey?: string | null;
     };
 };
 
@@ -12732,6 +12733,7 @@ export type ListFederationPeersResponses = {
             };
         };
         publicKey: string;
+        cosignPublicKey?: string | null;
         pairedAt: string;
     }>;
 };
@@ -12744,6 +12746,7 @@ export type PairPeerData = {
         name: string;
         role: 'commander' | 'outpost' | 'retrans';
         publicKey: string;
+        cosignPublicKey?: string;
         baseUrl?: string;
         syncScope?: {
             mode: 'full';
@@ -12827,6 +12830,7 @@ export type PairPeerResponses = {
             };
         };
         publicKey: string;
+        cosignPublicKey?: string | null;
         pairedAt: string;
     };
 };
@@ -12877,6 +12881,7 @@ export type GetFederationStatusResponses = {
             name: string;
             role: 'unset' | 'commander' | 'outpost' | 'retrans';
             publicKey: string;
+            cosignPublicKey?: string | null;
         } | null;
         peers: Array<{
             peer: {
@@ -12899,6 +12904,7 @@ export type GetFederationStatusResponses = {
                     };
                 };
                 publicKey: string;
+                cosignPublicKey?: string | null;
                 pairedAt: string;
             };
             lastAppliedSequence: number | null;

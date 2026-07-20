@@ -27,6 +27,7 @@ import { badRequest } from "../errors.js";
 import { initFederationSelf, ensureFederationSelf } from "../federation/self-repo.js";
 import { pairPeer, listPeers } from "../federation/peers-repo.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
+import { getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
 import { getFederationStatus } from "../federation/status-repo.js";
 import { exportSyncBundle } from "../federation/export-repo.js";
 import { importSyncBundle } from "../federation/import-repo.js";
@@ -127,7 +128,12 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
           publicKey: key.publicKey
         };
       });
-      reply.status(200).send(result);
+      // M17.3 (E5) — surface the LOCAL cosign verification public key for out-of-band pairing. Resolved
+      // OUTSIDE the tx above: `getInstanceCosignPublicKey` provisions the keypair lazily via a cosign
+      // subprocess, which must never run while a tx (and its pooled connection) is held open. Only the
+      // PUBLIC half is returned — the accessor's type structurally omits the private key.
+      const cosign = await getInstanceCosignPublicKey(deps.db, auth.orgId);
+      reply.status(200).send({ ...result, cosignPublicKey: cosign.publicKey });
     }
   });
 
@@ -213,6 +219,10 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
+      // M17.3 (E5) — resolve the LOCAL cosign public key BEFORE opening the status tx: its lazy
+      // provisioning runs a cosign subprocess, which must never execute while the status tx holds a
+      // pooled connection. Only the public half is ever returned.
+      const cosign = await getInstanceCosignPublicKey(deps.db, auth.orgId);
       const status = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         await authorize(tx, {
           orgId: auth.orgId,
@@ -220,7 +230,7 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
           permission: "federation:read",
           scopeObjectId: auth.orgId
         });
-        return getFederationStatus(tx, auth.orgId);
+        return getFederationStatus(tx, auth.orgId, cosign.publicKey);
       });
       reply.status(200).send(status);
     }

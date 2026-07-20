@@ -48636,6 +48636,16 @@
                     },
                     "publicKey": {
                       "type": "string"
+                    },
+                    "cosignPublicKey": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -48777,6 +48787,9 @@
                   "publicKey": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "cosignPublicKey": {
+                    "type": "string"
                   },
                   "baseUrl": {
                     "type": "string",
@@ -48990,6 +49003,16 @@
                     },
                     "publicKey": {
                       "type": "string"
+                    },
+                    "cosignPublicKey": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "pairedAt": {
                       "type": "string",
@@ -49270,6 +49293,16 @@
                       "publicKey": {
                         "type": "string"
                       },
+                      "cosignPublicKey": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "pairedAt": {
                         "type": "string",
                         "format": "date-time",
@@ -49423,6 +49456,16 @@
                             },
                             "publicKey": {
                               "type": "string"
+                            },
+                            "cosignPublicKey": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             }
                           },
                           "required": [
@@ -49554,6 +49597,16 @@
                               },
                               "publicKey": {
                                 "type": "string"
+                              },
+                              "cosignPublicKey": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
                               },
                               "pairedAt": {
                                 "type": "string",
