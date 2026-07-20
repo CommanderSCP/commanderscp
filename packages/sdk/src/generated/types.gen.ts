@@ -9803,6 +9803,17 @@ export type ReportChangeSourceData = {
         artifactDigest?: string;
         status: 'planned' | 'applied' | 'errored' | 'discarded';
         planJson?: unknown;
+        sbom?: {
+            format: 'cyclonedx' | 'spdx';
+            specVersion?: string;
+            digest: string;
+            location: string;
+            mediaType?: string;
+            signatureRef?: string;
+            scanner?: string;
+            scannerVersion?: string;
+            generatedAt?: string;
+        };
     };
     path: {
         sourceKind: string;

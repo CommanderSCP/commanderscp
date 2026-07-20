@@ -4,6 +4,10 @@ import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpApiError, ScpClient } from "@scp/sdk";
 import type { DesiredStateManifest } from "@scp/schemas";
+import { eq } from "drizzle-orm";
+import { withTenantTx } from "../db/tenant-tx.js";
+import { changeSourceEvents, changes } from "../db/schema.js";
+import { processChangeSourceEvents } from "../coordination/webhook-processor.js";
 import {
   createTestComponent,
   createTestOrg,
@@ -1515,6 +1519,104 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
         digestMatch: true,
         artifactDigest: MATCH_DIGEST,
         expectedDigest: MATCH_DIGEST
+      });
+    });
+
+    // -------------------------------------------------------------------------------------------
+    // M17.2 REGRESSION GUARD for the artifactDigest canonicalization fix.
+    //
+    // A change created through the TYPED first-party report ingress (`POST
+    // /change-sources/{kind}/report` — the route M17.2 teaches to carry an SBOM reference) reports
+    // its artifact digest as a FLAT camelCase `artifactDigest`. Before M17.2 that value was never
+    // lifted to the documented canonical `sourceRef.artifact_digest`; it survived only because
+    // `resolveChangeArtifactDigest` also accepts the camelCase spelling as a fallback. M17.2 lifts
+    // it properly — and this test proves the fix HELPS rather than breaks M17.1's shipped binding:
+    // the scan gate must still bind the Trivy verdict to a report-route change's real digest.
+    // -------------------------------------------------------------------------------------------
+    it("M17.2 regression: a change created via the TYPED REPORT route (flat artifactDigest, now canonicalized) still binds the M17.1 scan gate to its real artifact — clean+matching scan promotes, and the SBOM reference rode along on the same report", async () => {
+      const org = await createTestOrg(server, "scan-report-route");
+      const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+      const target = await createTestComponent(admin, { name: "scan-report-target" });
+      const repo = `acme/${randomUUID().slice(0, 8)}`;
+      await admin.changeSources.createMapping("terraform", { repoPattern: repo, component: target.id });
+
+      const control = await createScanControl(admin, org, {
+        urnSuffix: "scan-report-route",
+        digest: MATCH_DIGEST,
+        severities: ["MEDIUM", "LOW"] // under threshold
+        // expectedDigest deliberately OMITTED — the ONLY digest to bind against is the one the
+        // report route's change carries, which is exactly what the canonicalization fix produces.
+      });
+      await createPolicy(admin, org, {
+        name: "scan-gate",
+        urnSuffix: "scan-report-route-policy",
+        enforcement: "required",
+        scopeObjectId: target.id,
+        requireControlIds: [control.id]
+      });
+
+      // The executor's CI step reports its apply result — flat `artifactDigest`, plus the M17.2 SBOM
+      // REFERENCE its coordinated Trivy pass emitted and cosign-signed at ORIGIN. SCP stores the
+      // reference; it never generates, signs, or stores the SBOM document.
+      const sbomDigest = "sha256:" + "5d".repeat(32);
+      await admin.changeSources.report("terraform", {
+        status: "applied",
+        repo,
+        artifactDigest: MATCH_DIGEST,
+        sbom: {
+          format: "cyclonedx",
+          specVersion: "1.5",
+          digest: sbomDigest,
+          location: `registry.test/${repo}@${sbomDigest}`,
+          mediaType: "application/vnd.cyclonedx+json",
+          signatureRef: `registry.test/${repo}:sbom.sig`,
+          scanner: "trivy",
+          scannerVersion: "0.58.1"
+        }
+      });
+      await withTenantTx(server.deps.db, org.orgId, (tx) => processChangeSourceEvents(tx, org.orgId));
+
+      const changeObjectId = await waitUntil(
+        async () => {
+          const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+            tx.select().from(changeSourceEvents).where(eq(changeSourceEvents.orgId, org.orgId))
+          );
+          return rows.find((r) => r.resultingChangeObjectId)?.resultingChangeObjectId ?? undefined;
+        },
+        { describe: "the reported event produced a Change", timeoutMs: 15_000 }
+      );
+
+      // The canonicalization fix landed on the persisted row: BOTH the canonical digest key AND the
+      // SBOM REFERENCE (reference only — no document bytes exist anywhere in this system).
+      const changeRow = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        tx.select().from(changes).where(eq(changes.objectId, changeObjectId))
+      );
+      const sourceRef = changeRow[0]!.sourceRef as {
+        artifact_digest?: string;
+        sbom?: Record<string, unknown>;
+      };
+      expect(sourceRef.artifact_digest).toBe(MATCH_DIGEST);
+      expect(sourceRef.sbom).toMatchObject({
+        format: "cyclonedx",
+        digest: sbomDigest,
+        signatureRef: `registry.test/${repo}:sbom.sig`
+      });
+
+      // ...and M17.1's binding STILL WORKS off it: the gate threads the change's digest into the
+      // control context, the clean matching verdict passes, and the change promotes.
+      await waitForControlRun(admin, changeObjectId, control.id, "pass");
+      await waitForValidating(admin, changeObjectId);
+      const promoted = await admin.changes.promote(changeObjectId);
+      expect(promoted.state).toBe("promoted");
+
+      const explained = await admin.changes.explain(changeObjectId);
+      const controlRun = explained.controlRuns.find((r) => r.controlObjectId === control.id);
+      expect(controlRun!.evidence).toMatchObject({
+        scanner: "trivy",
+        digestMatch: true,
+        artifactDigest: MATCH_DIGEST,
+        expectedDigest: MATCH_DIGEST // ← came from the change, via the canonicalized sourceRef key
       });
     });
   });
