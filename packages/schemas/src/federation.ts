@@ -200,6 +200,44 @@ export const PromotionApprovalEvidenceSchema = z.object({
 });
 export type PromotionApprovalEvidence = z.infer<typeof PromotionApprovalEvidenceSchema>;
 
+/**
+ * M17.3 (E3) — a TYPED entry in a promotion bundle's artifact set. The rich source of truth the
+ * flat `artifactDigests` array is projected FROM: `artifacts[]` holds both the tracked OCI image(s)
+ * (`type: "oci"`) and the build-time SBOM blob (`type: "blob"`), while `artifactDigests` stays as
+ * `artifacts.map(a => a.digest)` so an OLDER outpost that reads only `artifactDigests` keeps working.
+ *
+ * EXPAND phase (this increment): `artifacts` is OPTIONAL and DELIBERATELY EXCLUDED from the Ed25519
+ * bundle checksum (which stays over `{header, change, controlOutcomes, approvals, artifactDigests}`),
+ * so a bundle with `artifacts` present is byte-identical, under the checksum, to a v1 bundle without
+ * it — the wire is backward/forward compatible and `formatVersion` stays `1`. The CONTRACT phase
+ * (fold `artifacts` into the checksum under `formatVersion 2`, drop `artifactDigests`) is a FUTURE
+ * release. NO cosign / signing is introduced here — `signatureRef` merely CARRIES the executor's
+ * pre-existing ORIGIN signature reference (empty where none was reported); SCP signs nothing new.
+ *
+ * A superset shape holding both artifact kinds: `{type, digest}` are required; `location`/`format`
+ * describe a blob (e.g. the SBOM document's storage ref + document format); `signatureRef` is the
+ * ORIGIN executor's signature reference for that artifact.
+ */
+export const ArtifactRefSchema = z.object({
+  /** `oci` = a tracked container image/artifact by registry digest; `blob` = a referenced document
+   *  (today: the build-time SBOM). */
+  type: z.enum(["oci", "blob"]),
+  /** The artifact's content digest — carried VERBATIM from the change's tracked
+   *  `sourceRef.artifact_digest` (OCI) or the already-normalized `sourceRef.sbom.digest` (blob), so
+   *  the projected `artifactDigests` remains identical to a pre-E3 export of the same change. */
+  digest: z.string(),
+  /** The ORIGIN executor's signature reference for this artifact (a `.sig` ref / OCI referrer /
+   *  Rekor entry). Empty where the executor reported none. SCP NEVER produces this — it only relays
+   *  the reference the producing domain already emitted. */
+  signatureRef: z.string().optional(),
+  /** WHERE a blob artifact lives (OCI referrer ref, registry URL, or artifact-store URI). Unset for
+   *  OCI images, whose `digest` already locates them within their repository. */
+  location: z.string().optional(),
+  /** A blob artifact's document format (e.g. `"cyclonedx"`/`"spdx"` for the SBOM). Unset for OCI. */
+  format: z.string().optional()
+});
+export type ArtifactRef = z.infer<typeof ArtifactRefSchema>;
+
 export const PromotionControlOutcomeSchema = z.object({
   controlUrn: z.string().nullable(),
   status: z.string(),
@@ -229,7 +267,13 @@ export const PromotionBundleSchema = z.object({
   }),
   controlOutcomes: z.array(PromotionControlOutcomeSchema),
   approvals: z.array(PromotionApprovalEvidenceSchema),
+  /** The FLAT projection kept for backward compatibility — `artifacts.map(a => a.digest)`. Required,
+   *  unchanged, and IN the Ed25519 checksum payload (an old outpost verifies against exactly this). */
   artifactDigests: z.array(z.string()),
+  /** M17.3 (E3) — the TYPED artifact set `artifactDigests` is projected from. Optional and EXCLUDED
+   *  from the checksum (see `ArtifactRefSchema`); absent (`undefined`, never `[]`) when the change
+   *  tracks no artifacts, so the canonical string is byte-identical to a v1 bundle. */
+  artifacts: z.array(ArtifactRefSchema).optional(),
   checksum: z.string(),
   bundleSignature: z.string()
 });

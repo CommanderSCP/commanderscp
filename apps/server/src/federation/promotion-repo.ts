@@ -1,4 +1,5 @@
 import type {
+  ArtifactRef,
   ImportPromotionResponse,
   PromotionBundle,
   PromotionApprovalEvidence
@@ -44,6 +45,30 @@ import { FEDERATION_IMPORT_ACTOR_ID } from "./import-repo.js";
  * the local Change still lands in `proposed` and must earn its own LOCAL approvals regardless.
  */
 
+/**
+ * The EXACT field set the promotion bundle's Ed25519 checksum is computed over — the SINGLE source
+ * of that list, shared by export and import so the two can never drift (checksum covers the HEADER
+ * too — M6 review fix). M17.3 (E3): `artifacts` is DELIBERATELY NOT in this list, so adding the
+ * typed artifact set to a bundle does not change its checksum or signature; a bundle with
+ * `artifacts` present hashes byte-identically to a v1 bundle without it. `computeBundleChecksum`
+ * canonicalizes by sorting keys deeply, so the field order here does not affect the result.
+ */
+export function promotionChecksumPayload(bundle: {
+  header: PromotionBundle["header"];
+  change: PromotionBundle["change"];
+  controlOutcomes: PromotionBundle["controlOutcomes"];
+  approvals: PromotionBundle["approvals"];
+  artifactDigests: PromotionBundle["artifactDigests"];
+}) {
+  return {
+    header: bundle.header,
+    change: bundle.change,
+    controlOutcomes: bundle.controlOutcomes,
+    approvals: bundle.approvals,
+    artifactDigests: bundle.artifactDigests
+  };
+}
+
 export interface ExportPromotionInput {
   orgId: string;
   peerIdOrName: string;
@@ -79,16 +104,40 @@ export async function exportPromotionBundle(
     for (const vote of votes) approvals.push(vote.attestation);
   }
 
+  // M17.3 (E3): build the TYPED artifact set from the change's tracked refs, then project the flat
+  // `artifactDigests` FROM it. `artifacts` is the rich source; `artifactDigests` is the backward-
+  // compatible flattening an older outpost reads. The OCI digest(s) are carried VERBATIM (identical
+  // to the pre-E3 projection); the SBOM travels as a `blob` entry.
   const sourceRef = change.sourceRef ?? {};
   const artifactDigest =
     (sourceRef as Record<string, unknown>).artifact_digest ??
     (sourceRef as Record<string, unknown>).artifactDigest;
-  const artifactDigests =
+  const ociDigests =
     typeof artifactDigest === "string"
       ? [artifactDigest]
       : Array.isArray(artifactDigest)
         ? artifactDigest.filter((d): d is string => typeof d === "string")
         : [];
+
+  const artifactSet: ArtifactRef[] = ociDigests.map((digest) => ({ type: "oci", digest }));
+
+  const sbom = (sourceRef as Record<string, unknown>).sbom;
+  if (sbom && typeof sbom === "object" && !Array.isArray(sbom)) {
+    const sbomRef = sbom as Record<string, unknown>;
+    if (typeof sbomRef.digest === "string") {
+      const blob: ArtifactRef = { type: "blob", digest: sbomRef.digest };
+      if (typeof sbomRef.location === "string") blob.location = sbomRef.location;
+      if (typeof sbomRef.format === "string") blob.format = sbomRef.format;
+      if (typeof sbomRef.signatureRef === "string") blob.signatureRef = sbomRef.signatureRef;
+      artifactSet.push(blob);
+    }
+  }
+
+  // Derived flat projection — the checksummed, backward-compatible field. `artifacts` itself is
+  // `undefined` (NOT `[]`) when empty, so `JSON.stringify` drops it and the canonical bundle string
+  // is byte-identical to a v1 bundle for a change that tracks no artifacts.
+  const artifactDigests = artifactSet.map((a) => a.digest);
+  const artifacts = artifactSet.length > 0 ? artifactSet : undefined;
 
   const header = {
     formatVersion: 1 as const,
@@ -107,8 +156,16 @@ export async function exportPromotionBundle(
   };
   // Checksum covers the HEADER too (M6 review fix — CRITICAL: an unsigned header let its
   // exporterDomainId / peerDomainId / sourceChangeObjectId / exportedAt be rewritten in transit).
-  const checksumPayload = { header, change: changePayload, controlOutcomes, approvals, artifactDigests };
-  const checksum = computeBundleChecksum(checksumPayload);
+  // `artifacts` is EXCLUDED (M17.3 E3) — `promotionChecksumPayload` is the single source of the list.
+  const checksum = computeBundleChecksum(
+    promotionChecksumPayload({
+      header,
+      change: changePayload,
+      controlOutcomes,
+      approvals,
+      artifactDigests
+    })
+  );
   const key = await ensureInstanceKey(tx, input.orgId);
   const bundleSignature = signBundleChecksum(key.privateKey, checksum);
 
@@ -127,6 +184,8 @@ export async function exportPromotionBundle(
     controlOutcomes,
     approvals,
     artifactDigests,
+    // `undefined` when empty → dropped by JSON.stringify, so a no-artifact bundle is unchanged.
+    artifacts,
     checksum,
     bundleSignature
   };
@@ -151,14 +210,9 @@ export async function importPromotionBundle(
   //    NEVER a timestamp-selected key (that was the `bundle.header.exportedAt` /
   //    `evidence.record.timestamp` backdating vector). A rotated-away key is hard-revoked for
   //    promotion: a bundle it signed no longer verifies once the peer has rotated.
-  const checksumPayload = {
-    header: bundle.header,
-    change: bundle.change,
-    controlOutcomes: bundle.controlOutcomes,
-    approvals: bundle.approvals,
-    artifactDigests: bundle.artifactDigests
-  };
-  if (computeBundleChecksum(checksumPayload) !== bundle.checksum) {
+  //    `artifacts` (M17.3 E3) is EXCLUDED from this recompute exactly as it is at export — the
+  //    typed set never participates in checksum/signature verification in the EXPAND phase.
+  if (computeBundleChecksum(promotionChecksumPayload(bundle)) !== bundle.checksum) {
     throw conflict("promotion bundle checksum mismatch (rejected, fail-closed)");
   }
   const currentKey = await currentPeerPublicKey(tx, orgId, peer.id);
@@ -203,7 +257,10 @@ export async function importPromotionBundle(
       ...(bundle.change.sourceRef ?? {}),
       promotedFromDomain: bundle.header.exporterDomainId,
       sourceChangeObjectId: bundle.header.sourceChangeObjectId,
-      artifactDigests: bundle.artifactDigests
+      artifactDigests: bundle.artifactDigests,
+      // M17.3 (E3): carry the TYPED artifact set onto the imported change when present. Purely
+      // informational — it took no part in the checksum/signature verification above.
+      ...(bundle.artifacts ? { artifacts: bundle.artifacts } : {})
     },
     targets,
     importedFromDomain: peer.id

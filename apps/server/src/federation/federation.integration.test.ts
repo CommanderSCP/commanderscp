@@ -11,20 +11,26 @@ import { ensureFederationSelf, type FederationSelf } from "./self-repo.js";
 import { pairPeer } from "./peers-repo.js";
 import { exportSyncBundle } from "./export-repo.js";
 import { importSyncBundle } from "./import-repo.js";
-import { exportPromotionBundle, importPromotionBundle } from "./promotion-repo.js";
+import {
+  exportPromotionBundle,
+  importPromotionBundle,
+  promotionChecksumPayload
+} from "./promotion-repo.js";
 import { getCursor } from "./cursors-repo.js";
 import { createOverlay, getMergedOverlayView } from "./overlay-repo.js";
 import { handFillObject } from "./handfill-repo.js";
-import { proposeChange } from "../coordination/changes-repo.js";
+import { proposeChange, getChange } from "../coordination/changes-repo.js";
 import { materializeApprovalRequest, castApprovalVote } from "../governance/approvals-repo.js";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
 import {
   computeBundleChecksum,
   signBundleChecksum,
+  verifyBundleSignature,
   computeJournalRowHash,
   signJournalRowHash
 } from "@scp/schemas/federation-journal";
 import type { PromotionBundle } from "@scp/schemas";
+import { PromotionBundleSchema } from "@scp/schemas";
 
 /**
  * M6 Federation Basics — Testcontainers integration coverage (BUILD_AND_TEST.md §8 M6 DoD).
@@ -55,14 +61,7 @@ function resignPromotionBundle(
   bundle: PromotionBundle,
   exporterPrivateKeyB64: string
 ): PromotionBundle {
-  const checksumPayload = {
-    header: bundle.header,
-    change: bundle.change,
-    controlOutcomes: bundle.controlOutcomes,
-    approvals: bundle.approvals,
-    artifactDigests: bundle.artifactDigests
-  };
-  const checksum = computeBundleChecksum(checksumPayload);
+  const checksum = computeBundleChecksum(promotionChecksumPayload(bundle));
   const bundleSignature = signBundleChecksum(exporterPrivateKeyB64, checksum);
   return { ...bundle, checksum, bundleSignature };
 }
@@ -850,7 +849,9 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     await domainB.close();
   });
 
-  async function proposeApprovedChangeInA(): Promise<{ changeId: string; changeUrn: string }> {
+  async function proposeApprovedChangeInA(
+    sourceRef?: Record<string, unknown>
+  ): Promise<{ changeId: string; changeUrn: string }> {
     const target = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
       createObject(tx, {
         orgId: domainA.orgId,
@@ -880,7 +881,8 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
         actorObjectId: domainA.orgId,
         requestId: "t-promo-change",
         name: `promote-me-${randomUUID()}`,
-        targets: [target.id]
+        targets: [target.id],
+        ...(sourceRef ? { sourceRef } : {})
       })
     );
     await withTenantTx(domainA.db, domainA.orgId, async (tx) => {
@@ -1028,5 +1030,176 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     );
     expect(result.approvalsAccepted).toBe(0);
     expect(result.approvalsRejected).toBe(1);
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // M17.3 (E3) — the TYPED artifact set. The crux is COMPATIBILITY: `artifacts[]` is the rich
+  // source, `artifactDigests` its backward-compatible flat projection, and the typed set takes
+  // NO part in the Ed25519 checksum/signature (EXPAND phase). NO cosign/signing is introduced.
+  // -----------------------------------------------------------------------------------------
+
+  const OCI_DIGEST = "sha256:" + "a".repeat(64);
+  const SBOM_DIGEST = "sha256:" + "b".repeat(64);
+  const sourceRefWithArtifacts = {
+    artifact_digest: OCI_DIGEST,
+    sbom: {
+      format: "cyclonedx",
+      digest: SBOM_DIGEST,
+      location: "oci://registry.example/app/sbom@" + SBOM_DIGEST,
+      signatureRef: "oci://registry.example/app/sbom.sig"
+    }
+  };
+
+  it("E3: an exported bundle carries a TYPED artifacts[] (oci image + sbom blob) and artifactDigests is its derived projection", async () => {
+    const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts);
+    const bundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      exportPromotionBundle(tx, {
+        orgId: domainA.orgId,
+        peerIdOrName: domainB.orgName,
+        changeIdOrUrn: changeId
+      })
+    );
+
+    expect(bundle.header.formatVersion).toBe(1); // NOT bumped
+    expect(bundle.artifacts).toBeDefined();
+    expect(bundle.artifacts).toEqual([
+      { type: "oci", digest: OCI_DIGEST },
+      {
+        type: "blob",
+        digest: SBOM_DIGEST,
+        location: sourceRefWithArtifacts.sbom.location,
+        format: "cyclonedx",
+        signatureRef: sourceRefWithArtifacts.sbom.signatureRef
+      }
+    ]);
+    // artifactDigests === artifacts.map(a => a.digest)
+    expect(bundle.artifactDigests).toEqual(bundle.artifacts!.map((a) => a.digest));
+  });
+
+  it("E3 CHECKSUM-INVARIANCE: the real exported checksum is byte-identical with vs without artifacts[]", async () => {
+    const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts);
+    const bundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      exportPromotionBundle(tx, {
+        orgId: domainA.orgId,
+        peerIdOrName: domainB.orgName,
+        changeIdOrUrn: changeId
+      })
+    );
+    // The exporter's own checksum verifies over the field list that EXCLUDES artifacts.
+    expect(computeBundleChecksum(promotionChecksumPayload(bundle))).toBe(bundle.checksum);
+    // Stripping artifacts[] leaves the checksum unchanged (it was never in the payload).
+    const { artifacts: _dropped, ...withoutArtifacts } = bundle;
+    expect(computeBundleChecksum(promotionChecksumPayload(withoutArtifacts as PromotionBundle))).toBe(
+      bundle.checksum
+    );
+  });
+
+  it("E3 NEW->OLD: a bundle exported WITH artifacts[] verifies and imports under an OLD import path that only knows artifactDigests", async () => {
+    const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts);
+    const bundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      exportPromotionBundle(tx, {
+        orgId: domainA.orgId,
+        peerIdOrName: domainB.orgName,
+        changeIdOrUrn: changeId
+      })
+    );
+    expect(bundle.artifacts).toBeDefined();
+
+    // Simulate an OLD peer that predates E3: strip artifacts[] entirely from the wire.
+    const { artifacts: _stripped, ...oldShape } = bundle;
+    const oldBundle = oldShape as PromotionBundle;
+    expect(oldBundle.artifacts).toBeUndefined();
+    expect(oldBundle.artifactDigests).toEqual([OCI_DIGEST, SBOM_DIGEST]);
+
+    // Checksum + signature STILL verify against the exporter's key (the stripped field was never
+    // protected, and its absence changes nothing under the checksum).
+    const aKey = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      ensureInstanceKey(tx, domainA.orgId)
+    );
+    expect(computeBundleChecksum(promotionChecksumPayload(oldBundle))).toBe(oldBundle.checksum);
+    expect(verifyBundleSignature(oldBundle.checksum, oldBundle.bundleSignature, aKey.publicKey)).toBe(
+      true
+    );
+
+    // And the old-shape bundle imports cleanly.
+    const result = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      importPromotionBundle(tx, domainB.orgId, oldBundle)
+    );
+    expect(result.approvalsAccepted).toBe(1);
+    expect(result.approvalsRejected).toBe(0);
+  });
+
+  it("E3 OLD->NEW: a v1 bundle with NO artifacts[] imports cleanly (optional, undefined)", async () => {
+    const { changeId } = await proposeApprovedChangeInA(); // no sourceRef → no artifacts
+    const bundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      exportPromotionBundle(tx, {
+        orgId: domainA.orgId,
+        peerIdOrName: domainB.orgName,
+        changeIdOrUrn: changeId
+      })
+    );
+    // No tracked artifacts → artifacts is undefined (NOT []), and JSON.stringify drops it.
+    expect(bundle.artifacts).toBeUndefined();
+    expect(JSON.stringify(bundle)).not.toContain("\"artifacts\"");
+    expect(bundle.artifactDigests).toEqual([]);
+
+    const result = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      importPromotionBundle(tx, domainB.orgId, bundle)
+    );
+    expect(result.approvalsAccepted).toBe(1);
+    expect(result.approvalsRejected).toBe(0);
+  });
+
+  it("E3 ROUND-TRIP: export->import preserves the typed set (incl. the SBOM blob) and the derived artifactDigests on the imported change", async () => {
+    const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts);
+    const bundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      exportPromotionBundle(tx, {
+        orgId: domainA.orgId,
+        peerIdOrName: domainB.orgName,
+        changeIdOrUrn: changeId
+      })
+    );
+    // The wire survives a full Zod parse (ingress validation) without losing artifacts[].
+    const parsed = PromotionBundleSchema.parse(JSON.parse(JSON.stringify(bundle)));
+    expect(parsed.artifacts).toEqual(bundle.artifacts);
+
+    const result = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      importPromotionBundle(tx, domainB.orgId, parsed)
+    );
+
+    // sourceRef lives on the change row — read it back through getChange.
+    const localChange = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      getChange(tx, domainB.orgId, result.localChangeObjectId)
+    );
+    const sr = localChange.sourceRef as Record<string, unknown>;
+    expect(sr).toBeTruthy();
+    // The imported change carries BOTH the derived digests and the typed set.
+    expect(sr.artifactDigests).toEqual([OCI_DIGEST, SBOM_DIGEST]);
+    const importedArtifacts = sr.artifacts as Array<Record<string, unknown>> | undefined;
+    expect(importedArtifacts).toBeDefined();
+    const blob = importedArtifacts!.find((a) => a.type === "blob");
+    expect(blob?.digest).toBe(SBOM_DIGEST);
+    expect(blob?.format).toBe("cyclonedx");
+  });
+
+  it("E3 FAIL-CLOSED: tampering with artifactDigests still fails the existing bundle checksum", async () => {
+    const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts);
+    const bundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      exportPromotionBundle(tx, {
+        orgId: domainA.orgId,
+        peerIdOrName: domainB.orgName,
+        changeIdOrUrn: changeId
+      })
+    );
+    // Mutate the protected flat field WITHOUT re-signing → checksum mismatch, rejected fail-closed.
+    const tampered: PromotionBundle = {
+      ...bundle,
+      artifactDigests: [...bundle.artifactDigests, "sha256:" + "e".repeat(64)]
+    };
+    await expect(
+      withTenantTx(domainB.db, domainB.orgId, (tx) =>
+        importPromotionBundle(tx, domainB.orgId, tampered)
+      )
+    ).rejects.toMatchObject({ status: 409, detail: expect.stringMatching(/checksum mismatch/) });
   });
 });
