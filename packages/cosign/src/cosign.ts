@@ -303,6 +303,66 @@ export async function verifyBlob(
   }
 }
 
+export interface VerifyImageOptions {
+  /** Allow HTTP / self-signed-TLS registries. The outpost-local Gitea/Harbor registry an air-gap
+   *  operator side-loads bytes into is commonly plain HTTP or self-signed — and it is SAFE to allow
+   *  here because the artifact's authenticity is proven by the cosign SIGNATURE (verified against the
+   *  exporter's distributed public key), NOT by registry transport security: a registry MITM cannot
+   *  forge a signature that verifies against that key. Off by default (a TLS commander registry). */
+  allowInsecureRegistry?: boolean;
+}
+
+/**
+ * `cosign verify` a container image / OCI artifact against the REGISTRY-ATTACHED signature, keyful
+ * and offline (`--insecure-ignore-tlog=true` — the origin never wrote a Rekor entry we could or would
+ * check; `--key` pins the exact public key, so no Fulcio identity is consulted). `imageRef` MUST be
+ * digest-pinned (`registry/repo@sha256:…`) so verification binds to exact bytes. cosign READS the
+ * registry to fetch the manifest + its `.sig`; it never pushes or pulls image bytes anywhere else.
+ *
+ * Never throws — a failed verification (tampered/unsigned/absent image, wrong key) is a normal,
+ * expected, fail-closed outcome reported as `{ ok: false }`. A MISSING image (bytes not present in
+ * the reachable registry) makes cosign's own fetch fail, which surfaces here as `{ ok: false }` too —
+ * exactly the fail-closed "absent artifact FAILS" the per-artifact pre-deploy gate requires.
+ */
+export function verifyImage(
+  imageRef: string,
+  pubKeyPath: string,
+  options: VerifyImageOptions = {}
+): VerifyResult {
+  const args = ["verify", "--key", pubKeyPath, "--insecure-ignore-tlog=true"];
+  if (options.allowInsecureRegistry) args.push("--allow-insecure-registry");
+  args.push(imageRef);
+  try {
+    const { stdout, stderr } = run(cosign().bin, args, { log: false });
+    return { ok: true, detail: (stdout + stderr).trim() || "Verified OK" };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, detail: message };
+  }
+}
+
+/**
+ * Verify a digest-pinned OCI `imageRef`'s registry-attached signature against an IN-MEMORY cosign
+ * PUBLIC key PEM (the ergonomic seam the SERVER uses — the exporter's distributed cosign key lives in
+ * Postgres as a PEM string, not a file). Materializes the key to a private scratch dir, runs
+ * {@link verifyImage}, scrubs the dir, and returns a boolean. NEVER throws — a bad/absent signature
+ * is a normal, expected, fail-closed outcome reported as `false`.
+ */
+export async function verifyImageSignature(
+  imageRef: string,
+  publicKeyPem: string,
+  options: VerifyImageOptions = {}
+): Promise<boolean> {
+  const dir = await makeScratchDir();
+  try {
+    const pubPath = path.join(dir, "cosign.pub");
+    await writeFile(pubPath, publicKeyPem, "utf8");
+    return verifyImage(imageRef, pubPath, options).ok;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 /** Read a bundled public key file's bytes back out (used by verify-bundle.ts to sanity-check the file exists and is non-empty before trusting it). */
 export async function readPublicKey(pubKeyPath: string): Promise<string> {
   const content = await readFile(pubKeyPath, "utf8");

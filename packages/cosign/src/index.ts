@@ -33,11 +33,14 @@ export {
   signBlobFlags,
   signBlobDetached,
   verifyBlobDetached,
+  verifyImage,
+  verifyImageSignature,
   signBlob,
   verifyBlob,
   readPublicKey,
   type SigningKey,
-  type VerifyResult
+  type VerifyResult,
+  type VerifyImageOptions
 } from "./cosign.js";
 
 // Non-interactive keypair generation (M17.3 E4) — returns PEM STRINGS for the server to persist,

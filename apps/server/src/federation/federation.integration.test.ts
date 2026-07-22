@@ -1418,7 +1418,8 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
 // manifest at bundle import (the OUTPOST's universal pre-deploy validation, ADR-0011). ONE gate
 // runs at every receiving hop; the outpost NEVER re-scans (trust scan-at-source). Fail-closed over
 // signature + set-equality + the tie + self-binding + a downgrade defense. Part-(b) (per-artifact
-// origin verify at the outpost's registry) is DEFERRED to M15.5 (the artifact-bytes channel).
+// BYTE verify where the operator-loaded bytes land) runs later as the PRE-DEPLOY gate — see
+// coordination/pre-deploy-gate.integration.test.ts; byte TRANSPORT itself remains M15.5.
 // ---------------------------------------------------------------------------------------------
 describe("M17.4(a) / M15.2 receiver manifest verification (Testcontainers)", () => {
   let commander: IsolatedDomain; // the exporting commander
