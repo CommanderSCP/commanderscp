@@ -44,6 +44,8 @@ import {
   resolveExecutorPluginInstance,
   DEFAULT_BINDING_TYPE
 } from "./executor-bindings-repo.js";
+import { evaluateRegionalDeployGate } from "./regional-executors.js";
+import { REGIONAL_EXECUTOR_EXPECTED_MODULE } from "@scp/schemas";
 import { processChangeSourceEvents } from "./webhook-processor.js";
 import { matchPoliciesForTargets } from "../governance/policy-resolve.js";
 import { resolvePolicies } from "../governance/policy-model.js";
@@ -642,6 +644,58 @@ async function reconcileExecutingChange(
 }
 
 /**
+ * The shared FAIL-CLOSED effects for a wave target that must NOT be driven against the shared default
+ * executor — the masking-gap block (M12/ADR-0006) and the silent-region-deploy block (M15.6) both use
+ * it so they emit an IDENTICAL, consistent set of records: terminalize the target on the dedicated
+ * `no_executor` status, a `block` Decision (with decision_id), a hash-chained audit event referencing
+ * it, fail the wave, and park the change (reconcile-blocked). Idempotent: `markWaveTargetNoExecutor`'s
+ * status guard returns false when a prior tick already blocked+audited this target, in which case this
+ * appends nothing and just reports "still blocked" (true). Must run INSIDE the caller's tenant tx.
+ */
+async function blockWaveTargetNoExecutor(
+  tx: TenantTx,
+  args: {
+    orgId: string;
+    change: ChangeRow;
+    waveId: string;
+    waveTargetId: string;
+    targetObjectId: string;
+    action: string;
+    summary: string;
+    remediation: string;
+    reason: string;
+    inputContext: Record<string, unknown>;
+  }
+): Promise<boolean> {
+  const terminalized = await markWaveTargetNoExecutor(tx, args.orgId, args.waveTargetId);
+  if (!terminalized) return true; // a prior tick already blocked+audited this — append nothing.
+
+  const decision = await insertDecision(tx, {
+    orgId: args.orgId,
+    kind: "wave_target",
+    subjectId: args.change.objectId,
+    verdict: "block",
+    inputContext: args.inputContext,
+    reasonTree: { summary: args.summary, remediation: args.remediation }
+  });
+  await appendAuditEvent(tx, {
+    orgId: args.orgId,
+    actorId: SYSTEM_ACTOR_ID,
+    action: args.action,
+    subjectId: args.change.objectId,
+    reason: args.reason,
+    decisionId: decision.id,
+    requestId: "reconcile"
+  });
+  // Fail the wave and park the change — the same terminal+park the failed-wave path produces, but
+  // reached directly so no auto-rollback of an un-runnable pipeline is attempted (it would only hit
+  // the same gap). Awaits an operator.
+  await markWaveTerminal(tx, args.orgId, args.waveId, "failed");
+  await markChangeReconcileBlocked(tx, args.orgId, args.change.objectId);
+  return true;
+}
+
+/**
  * Triggers one wave target — the crash-safe three-step design that fixes PR #7 review CRITICAL
  * #2 ("duplicate/lost external `trigger()` calls"). The bug: the old code called
  * `plugin.trigger()` (an irreversible external side effect) and then wrote its result INTO the
@@ -697,64 +751,87 @@ async function triggerWaveTarget(
   try {
     // FAIL-CLOSED on a masking executor-binding gap (M12 — docs/adr/0006). Keyed on the RESOLVED
     // routing `type` reconcile actually triggers (ADR-0007), and TARGET-LOCAL only — no
-    // component->service/deployment-target walk-up (that is future M12 work). Two populations,
-    // disambiguated by whether the target has ANY binding:
+    // component->service/deployment-target walk-up (that is future M12 work). Three populations,
+    // disambiguated by binding presence + whether the target declares multi-region membership:
     //
-    //   (a) INTENDED-FAKE — the target has ZERO executor bindings: the shared fake executor IS its
-    //       configured executor for rehearsal/demo/test. KEEP fake-succeeding (fall through, below).
+    //   (a) INTENDED-FAKE — a PLAIN target (not a declared region) with ZERO executor bindings: the
+    //       shared fake executor IS its configured executor for rehearsal/demo/test. KEEP
+    //       fake-succeeding (fall through, below). Non-region behaviour is UNCHANGED.
     //   (b) MASKING-GAP — the target has >=1 real binding but NONE for `type`: fake-succeeding
     //       would GREEN a misconfiguration (e.g. it has a `configuration` binding but receives an
-    //       `image` release). Block loudly — emit a `block` Decision (with decision_id) naming the
-    //       gap, write the hash-chained audit event, terminalize the target on the dedicated
-    //       `no_executor` status, fail the wave, and PARK the change (reconcile-blocked) for manual
-    //       remediation (bind the Type, then cancel/rollback/re-propose). The Decision NAMES the gap
-    //       only — it never auto-offers the managed-iac executor (charter: managed execution is never
-    //       a default). All emitted ONCE: `markWaveTargetNoExecutor`'s status guard makes a later
-    //       tick that finds it already `no_executor` a no-op.
+    //       `image` release). Block loudly.
+    //   (c) SILENT-REGION-DEPLOY (M15.6 — regional-executors.ts) — a DECLARED region target (carries
+    //       properties.environment + properties.region) with NO resolvable binding of `type`: case
+    //       (a)'s intended-fake fallthrough would deploy a real prod region against the shared
+    //       default executor — a SILENT region deploy the config surface promises never happens. It
+    //       is NOT intended-fake, so block it too. SCOPED to declared region targets only (the gate
+    //       returns null for a plain target, so (a) stands for everything non-region).
+    //
+    // Each block emits a `block` Decision (with decision_id) naming the gap, writes the hash-chained
+    // audit event, terminalizes the target on the dedicated `no_executor` status, fails the wave, and
+    // PARKS the change (reconcile-blocked) for manual remediation. The Decision NAMES the gap only —
+    // it never auto-offers the managed-iac executor (charter: managed execution is never a default).
+    // All emitted ONCE: `markWaveTargetNoExecutor`'s status guard makes a later tick that finds it
+    // already `no_executor` a no-op.
     const blocked = await withTenantTx(db, orgId, async (tx) => {
       const forType = await getExecutorBinding(tx, orgId, targetObjectId, type);
       if (forType) return false; // a real binding for this type — normal coordinate path.
+
+      // (c) declared region target with no resolvable binding — must not fall through to (a).
+      const regionGate = await evaluateRegionalDeployGate(tx, orgId, targetObjectId, type);
+      if (regionGate && !regionGate.deployAllowed) {
+        return blockWaveTargetNoExecutor(tx, {
+          orgId,
+          change,
+          waveId,
+          waveTargetId,
+          targetObjectId,
+          action: "change.wave_target.no_executor",
+          summary:
+            `wave target ${targetObjectId} is region '${regionGate.region}' of multi-region ` +
+            `environment '${regionGate.environment}' but has no '${type}' executor binding — ` +
+            `refusing to deploy it silently against the default executor`,
+          remediation:
+            `bind an Argo CD (${REGIONAL_EXECUTOR_EXPECTED_MODULE}) execution-system for the '${type}' ` +
+            `pipeline of this region target, then cancel/rollback/re-propose the change`,
+          reason:
+            `region '${regionGate.region}' of environment '${regionGate.environment}' has no '${type}' ` +
+            `executor binding (declared multi-region target ${targetObjectId})`,
+          inputContext: {
+            waveId,
+            targetObjectId,
+            requestedType: type,
+            environment: regionGate.environment,
+            region: regionGate.region,
+            gate: "regional_argocd_silent_deploy"
+          }
+        });
+      }
+
       const all = await listExecutorBindingsForTarget(tx, orgId, targetObjectId);
       if (all.length === 0) return false; // case (a): intended-fake, behaviour unchanged.
 
       // case (b): masking gap.
-      const terminalized = await markWaveTargetNoExecutor(tx, orgId, waveTargetId);
-      if (!terminalized) return true; // a prior tick already blocked+audited this — append nothing.
-
       const boundTypes = all.map((b) => b.type).sort();
-      const decision = await insertDecision(tx, {
+      return blockWaveTargetNoExecutor(tx, {
         orgId,
-        kind: "wave_target",
-        subjectId: change.objectId,
-        verdict: "block",
+        change,
+        waveId,
+        waveTargetId,
+        targetObjectId,
+        action: "change.wave_target.no_executor",
+        summary:
+          `wave target ${targetObjectId} has no '${type}' executor binding ` +
+          `(bound: ${boundTypes.join(", ")}) — refusing to fake-succeed a masking gap`,
+        remediation: `bind the '${type}' pipeline for this target, then cancel/rollback/re-propose the change`,
+        reason: `no '${type}' executor binding for target ${targetObjectId} (bound: ${boundTypes.join(", ")})`,
         inputContext: {
           waveId,
           targetObjectId,
           requestedType: type,
           boundTypes
-        },
-        reasonTree: {
-          summary:
-            `wave target ${targetObjectId} has no '${type}' executor binding ` +
-            `(bound: ${boundTypes.join(", ")}) — refusing to fake-succeed a masking gap`,
-          remediation: `bind the '${type}' pipeline for this target, then cancel/rollback/re-propose the change`
         }
       });
-      await appendAuditEvent(tx, {
-        orgId,
-        actorId: SYSTEM_ACTOR_ID,
-        action: "change.wave_target.no_executor",
-        subjectId: change.objectId,
-        reason: `no '${type}' executor binding for target ${targetObjectId} (bound: ${boundTypes.join(", ")})`,
-        decisionId: decision.id,
-        requestId: "reconcile"
-      });
-      // Fail the wave and park the change — the same terminal+park the failed-wave path produces, but
-      // reached directly so no auto-rollback of an un-runnable pipeline is attempted (it would only
-      // hit the same gap). Awaits an operator.
-      await markWaveTerminal(tx, orgId, waveId, "failed");
-      await markChangeReconcileBlocked(tx, orgId, change.objectId);
-      return true;
     });
     if (blocked) return;
 

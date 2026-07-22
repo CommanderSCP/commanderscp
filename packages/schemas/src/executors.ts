@@ -130,7 +130,10 @@ export type RepurposeExecutorBindingRequest = z.infer<typeof RepurposeExecutorBi
 // ordinary per-region executor binding (1:1, resolved per target via `getExecutorBinding`). The
 // surface is a READ + VALIDATE view of `prod env -> {region -> argocd binding}`; the operator still
 // declares each region by binding it (the existing `PUT /executors/{idOrUrn}/binding`), so nothing
-// on the per-target binding path changes — this is purely additive.
+// on the per-target binding path changes — the view itself is purely additive. It is BACKED by a
+// deploy-time gate (`evaluateRegionalDeployGate`, enforced in the reconcile trigger path): a change
+// to a declared region target with no resolvable executor binding of its type is REFUSED
+// (fail-closed) rather than silently dispatched against the shared default executor.
 // -------------------------------------------------------------------------------------------
 
 /** The executor module a region's binding is EXPECTED to resolve to for this milestone — Argo CD
@@ -174,9 +177,14 @@ export const RegionalExecutorViewSchema = z.object({
   /** The module each region is expected to be bound to — `argocd`. */
   expectedModule: z.literal(REGIONAL_EXECUTOR_EXPECTED_MODULE),
   regions: z.array(RegionalExecutorEntrySchema),
-  /** True iff there is ≥1 region and EVERY region has its own Argo CD binding of `type`. A
-   *  multi-region prod env that is `valid: false` must NOT be deployed region-by-region silently —
-   *  `problems` names each gap. */
+  /** True iff there is ≥1 region and EVERY region has its own Argo CD binding of `type`. This
+   *  verdict combines an ENFORCED signal and an ADVISORY one. ENFORCED: every region must resolve
+   *  SOME executor binding of `type` — an UNBOUND region target is REFUSED at deploy time (a
+   *  fail-closed block Decision from the reconcile gate, `evaluateRegionalDeployGate`), never
+   *  silently dispatched against the shared default executor. ADVISORY: each binding should resolve
+   *  to Argo CD (`isExpectedModule`); a region bound to a non-Argo-CD module makes `valid:false` and
+   *  is named in `problems`, but still deploys against its bound executor — fix it before relying on
+   *  it. `problems` names each gap either way. */
   valid: z.boolean(),
   /** Human-readable, per-gap explanations (empty when `valid`). */
   problems: z.array(z.string())

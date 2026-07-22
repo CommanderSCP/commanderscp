@@ -10,7 +10,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { changeWaveTargets } from "../db/schema.js";
+import { auditEvents, changes, changeWaveTargets, decisions } from "../db/schema.js";
 
 /**
  * M15.6 — Multi-region Argo CD as a first-class, tested SETTING (ADR-0017 §3).
@@ -211,5 +211,130 @@ describe("M15.6: multi-region Argo CD — config surface + per-region fan-out", 
     expect(amerInstance).toBe(`execution-system:${amerSys.id}`);
     expect(apacInstance).toBe(`execution-system:${apacSys.id}`);
     expect(amerInstance).not.toBe(apacInstance);
+  });
+
+  // ---------------------------------------------------------------------------------------------
+  // FAIL-CLOSED enforcement of the no-silent-deploy property (regional-executors.ts). The config
+  // surface above is READ-ONLY; the actual guarantee lives at DEPLOY time. A change targeting a
+  // DECLARED region deployment-target (properties.environment + properties.region) with NO resolvable
+  // executor binding must be REFUSED — a block Decision (decision_id) + hash-chained audit + parked
+  // change — NOT silently triggered against the shared default fake executor. SCOPED: a plain,
+  // non-region target with no binding keeps its pre-existing default-executor behaviour untouched.
+  // ---------------------------------------------------------------------------------------------
+
+  /** The full change_wave_targets row for one target object (null until the plan materializes it). */
+  async function waveTargetRow(targetId: string) {
+    const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(changeWaveTargets)
+        .where(
+          and(
+            eq(changeWaveTargets.orgId, org.orgId),
+            eq(changeWaveTargets.targetObjectId, targetId)
+          )
+        )
+        .limit(1)
+    );
+    return rows[0];
+  }
+  const decisionsFor = (changeId: string) =>
+    withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(decisions).where(eq(decisions.subjectId, changeId))
+    );
+  const auditFor = (changeId: string) =>
+    withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(auditEvents).where(eq(auditEvents.subjectId, changeId))
+    );
+  const changeRow = async (changeId: string) => {
+    const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(changes).where(eq(changes.objectId, changeId))
+    );
+    return rows[0]!;
+  };
+
+  it("refusal (fail-closed): a declared region target with NO Argo CD binding is REFUSED, not silently deployed against the default executor", async () => {
+    const env = `prod-refuse-${randomUUID().slice(0, 6)}`;
+    // APAC is bound (a drivable fake-executor stand-in for its regional Argo CD); AMER is left UNBOUND.
+    const apacSys = await createRegionalArgocd("fake-executor", "apac-refuse");
+    const amer = await createRegionTarget(env, "amer"); // declared region, NO binding
+    const apac = await createRegionTarget(env, "apac");
+    await admin.executors.putBinding(apac.id, { executionSystemId: apacSys.id });
+
+    const change = await admin.changes.propose({
+      name: `promote ${env}`,
+      targets: [amer.id, apac.id]
+    });
+
+    // AMER's wave target must terminalize on the dedicated `no_executor` status — the fail-closed
+    // gate firing — rather than being triggered against the shared default executor.
+    const amerTarget = await waitUntil(
+      async () => {
+        const row = await waveTargetRow(amer.id);
+        return row && row.status === "no_executor" ? row : undefined;
+      },
+      { describe: `AMER region target refused (no_executor)`, timeoutMs: 25_000 }
+    );
+
+    // It was NEVER handed to the shared default fake executor (that is exactly the silent deploy the
+    // overclaimed comment promised never happens — now actually enforced).
+    expect(amerTarget.executorPluginId).not.toBe("fake-executor");
+    expect(amerTarget.executorRef).toBeNull();
+
+    // A `block` Decision with a decision_id names the region gap.
+    const blockDecision = (await decisionsFor(change.id)).find(
+      (d) => d.kind === "wave_target" && d.verdict === "block"
+    );
+    expect(blockDecision).toBeDefined();
+    expect(blockDecision!.id).toEqual(expect.any(String));
+    expect(blockDecision!.inputContext).toMatchObject({
+      environment: env,
+      region: "amer",
+      gate: "regional_argocd_silent_deploy"
+    });
+
+    // A hash-chained audit event carries that decision_id.
+    const noExecEvent = (await auditFor(change.id)).find(
+      (e) => e.action === "change.wave_target.no_executor"
+    );
+    expect(noExecEvent).toBeDefined();
+    expect(noExecEvent!.decisionId).toBe(blockDecision!.id);
+    expect(noExecEvent!.rowHash).toEqual(expect.any(String)); // linked into the org's hash chain.
+
+    // The change is PARKED (reconcile_blocked) — never silently succeeded.
+    expect((await changeRow(change.id)).reconcileBlockedAt).not.toBeNull();
+  });
+
+  it("scope guard: a PLAIN (non-region) unbound deployment-target keeps its pre-existing default-executor behaviour — the region gate never touches it", async () => {
+    // No properties.environment / properties.region ⇒ NOT a declared region target. Zero bindings ⇒
+    // the intended-fake path: the shared default executor IS its rehearsal executor. The M15.6 gate
+    // must leave this exactly as it was (case (a)); this pins that it does not over-fire.
+    const plain = await admin.object("deployment-target").create({
+      name: `plain-${randomUUID().slice(0, 8)}`,
+      properties: {}
+    });
+
+    const change = await admin.changes.propose({
+      name: `deploy plain target`,
+      targets: [plain.id]
+    });
+
+    // It is triggered against the shared DEFAULT fake executor, exactly as before — NOT newly blocked.
+    const target = await waitUntil(
+      async () => {
+        const row = await waveTargetRow(plain.id);
+        return row && row.executorPluginId ? row : undefined;
+      },
+      { describe: `plain target triggered against default executor`, timeoutMs: 25_000 }
+    );
+
+    expect(target.executorPluginId).toBe("fake-executor"); // DEFAULT_EXECUTOR_INSTANCE_ID — unchanged.
+    expect(target.status).not.toBe("no_executor");
+
+    // No block Decision from the region gate, and the change is NOT parked.
+    expect(
+      (await decisionsFor(change.id)).some((d) => d.kind === "wave_target" && d.verdict === "block")
+    ).toBe(false);
+    expect((await changeRow(change.id)).reconcileBlockedAt).toBeNull();
   });
 });
