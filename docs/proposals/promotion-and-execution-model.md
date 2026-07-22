@@ -2,7 +2,7 @@
 
 **Status:** Proposed — pending review (2026-07-18)
 **Role:** Master synthesis of the change→build→supply-chain→promotion→validation→deploy flow settled with the owner on 2026-07-18. It ties together and is authoritative over the per-topic ADRs it references.
-**Relates to:** [ADR-0009](../adr/0009-optional-poke-mode-federation.md) (poke), [ADR-0010](../adr/0010-outpost-local-artifact-infra.md) (outpost local infra), [ADR-0011](../adr/0011-universal-outpost-validation.md) (validation), [ADR-0012](../adr/0012-registry-consolidation.md) (registry), [ADR-0013](../adr/0013-supply-chain-scan-sbom-manifest.md) (supply chain), [ADR-0015](../adr/0015-cosign-cross-boundary-signing.md) (cosign end-to-end signing), [ADR-0016](../adr/0016-scoped-scan-requirement-policies.md) (scoped scan policies); proposals `bundled-executor-backends.md`, `outpost-local-artifact-infra.md`, `federation-outposts-ui.md`, `managed-execution-tier.md`, `execution-strategy.md`; DESIGN.md §12–§13.
+**Relates to:** [ADR-0009](../adr/0009-optional-poke-mode-federation.md) (poke), [ADR-0010](../adr/0010-outpost-local-artifact-infra.md) (outpost local infra), [ADR-0011](../adr/0011-universal-outpost-validation.md) (validation), [ADR-0012](../adr/0012-registry-consolidation.md) (registry), [ADR-0013](../adr/0013-supply-chain-scan-sbom-manifest.md) (supply chain), [ADR-0015](../adr/0015-cosign-cross-boundary-signing.md) (cosign end-to-end signing), [ADR-0016](../adr/0016-scoped-scan-requirement-policies.md) (scoped scan policies), [ADR-0017](../adr/0017-ownership-refinement.md) (**build devolves to the originating outpost; the commander owns only the cross-boundary gate — this §2/§3 is rewritten to match, 2026-07-20**), [ADR-0018](../adr/0018-domain-local-dev-pipelines.md) (domain-local dev/beta pipelines are scan-exempt by path); proposals `bundled-executor-backends.md`, `outpost-local-artifact-infra.md`, `federation-outposts-ui.md`, `managed-execution-tier.md`, `execution-strategy.md`; DESIGN.md §12–§13.
 
 ## 0. The invariant that governs everything
 
@@ -15,7 +15,7 @@ CommanderSCP **coordinates** execution systems; it does not build, test, scan, s
 
 | Stage | Mechanism | Notes |
 |---|---|---|
-| **build + test** (any artifact: image, rpm, npm, deb, …) | **Argo Workflows** (bundled, M11.3) | Generic containerized-step engine — tool-agnostic. Images use Kaniko/Buildkit; packages just run their toolchain. BYO CI (GitHub Actions / GitLab) coordinated instead where present. SCP never runs CI. |
+| **build + test** (any artifact: image, rpm, npm, deb, …) | **the originating outpost's Argo Workflows** (bundled, M11.3) — [ADR-0017](../adr/0017-ownership-refinement.md) | Generic containerized-step engine — tool-agnostic. Images use Kaniko/Buildkit; packages just run their toolchain. BYO CI (GitHub Actions / GitLab) coordinated instead where present. **Build runs in the domain where the change originates — the commander never runs build** (ADR-0017 §2, a favorable tightening of principle 1). SCP never runs CI. |
 | **scan + SBOM** | **coordinated Trivy step** (in Argo Workflows) | One pass emits both the vulnerability scan and the SBOM. Results made available to the commander as **gate evidence** — not a registry feature (see §4, ADR-0013). Pass-criteria is **scoped** (platform → trust domain (partition) → org → containment domain → service → component, most-restrictive-wins — ADR-0016). |
 | **store** — **images** (OCI), **code** (git), **packages** (rpm/npm/Maven/Helm/…) | **Gitea unified registry** (default) — the image repo, code repo, **and** package repo in one service | Harbor is **not bundled**; an org that wants Harbor coordinates its **existing** one via the import path (ADR-0012, M15.3). |
 | **sign** | **cosign — end-to-end** (ADR-0015) | cosign signs **all** cross-boundary artifact types (images, rpm/deb/npm, config bundles, infra plans, SBOM) **and** the promotion manifest — a **new** supply-chain layer, keyful/offline (`--tlog-upload=false`, no Fulcio/Rekor). cosign is **already used on the release path (operator-supplied on `PATH`, unpinned by design) — *not vendored today***; M17.3 must vendor a **pinned** binary for the runtime sign/verify path (ADR-0015 Consequences). **Ed25519 stays for federation transport** (bundle envelope / journal / attestations), unchanged — cosign is NOT the M4/M6/M8 signing (that was Ed25519). The **executor signs the artifact(s) and the SBOM** at build; the **commander signs only its own promotion manifest** (coordinate-not-execute). |
@@ -23,19 +23,21 @@ CommanderSCP **coordinates** execution systems; it does not build, test, scan, s
 | **deploy → hosts/VMs** (rpm/npm install, config files, systemd) | **Ansible** via **`scp-runner-ops`** (behind the scenes) / BYO Ansible-Tower/Salt | Argo CD is k8s-only and cannot reach a host. Most sensitive execution class in the system. |
 | **provision → cloud infra** (Terraform / OpenTofu / CDK / CDKTF / Pulumi) | **Argo Workflows** plan→gate→apply, or **`scp-managed-iac`** | SCP gates the *plan*; cloud creds live in the workflow env, not SCP. Not Argo CD (it cannot natively run IaC; Crossplane/tf-controller would be a separate, larger commitment — not chosen). |
 
-## 2. Ownership model
+## 2. Ownership model — refined 2026-07-20 ([ADR-0017](../adr/0017-ownership-refinement.md))
 
-- **Build artifacts** (image, rpm, npm) → **commander-owned**.
-- **Shared config/infra repo** → **commander-owned**.
-- **Domain-specific config/infra repo** (for outposts in a *different* domain than the commander) → **outpost-owned**, on the outpost's local Gitea.
+**Build execution devolves to the originating outpost; the commander owns *only* the cross-boundary gate.**
 
-**Domain-specific artifacts are outpost-autonomous:** built, tested, and deployed within the outpost's own domain; the commander does **not** track, scan, or sign them. They therefore never cross a boundary and skip the supply-chain gate and validation entirely (§4, §6).
+- **Build (of any tracked artifact: image, rpm, npm, shared config/infra, or domain-specific config/infra)** → runs in the **originating outpost's own Argo Workflows** (or BYO CI). **The commander never runs build.**
+- **The commander owns only the cross-boundary gate:** it **consumes the scan verdict** (M17.1; scoped pass-criteria ADR-0016/M17.5) and **cosign-signs only its own promotion manifest** (M17.3 E4–E6) — never an origin artifact or the SBOM ([ADR-0015 §5](../adr/0015-cosign-cross-boundary-signing.md)). Its export-time gate (M17.3 E6) hard-refuses any digest lacking a passing, digest-bound scan.
+- **Repo/byte hosting per trust tier is a separate, unchanged axis:** the **shared config/infra repo** and the commercial-tier git/image repos may remain **commander-hosted**, while **domain-specific config/infra repos** are **outpost-owned** on the outpost's local Gitea ([ADR-0010](../adr/0010-outpost-local-artifact-infra.md), [ADR-0011](../adr/0011-universal-outpost-validation.md), [ADR-0012](../adr/0012-registry-consolidation.md), M15). *Where bytes live* is orthogonal to *where build executes* (ADR-0017 §2).
+
+**Domain-specific artifacts are outpost-autonomous:** built, tested, and deployed within the outpost's own domain; the commander does **not** track, scan, or sign them. They therefore never cross a boundary and skip the supply-chain gate and validation entirely (§4, §6). *Domain-local **dev/beta** pipelines are likewise scan-exempt — by path, backstopped by the E6 export gate — see [ADR-0018](../adr/0018-domain-local-dev-pipelines.md).*
 
 ## 3. The flow, end to end
 
 1. **Engineer merges to main** in the relevant repo (owned per §2).
-2. **Build + test** run on the coordinating domain's Argo Workflows (commander for builds + shared config/infra; the outpost for its own domain-specific config/infra). SCP consumes pass/fail as gate evidence.
-3. **Commander scans** the artifact(s) it tracks (Trivy step) — see §4. *Domain-specific outpost artifacts are never scanned (they don't cross a boundary).*
+2. **Build + test** run on the **originating outpost's** Argo Workflows — the domain where the change originates, for **every** tracked artifact including shared config/infra ([ADR-0017](../adr/0017-ownership-refinement.md) §2; **the commander never runs build**). SCP consumes pass/fail as gate evidence.
+3. **The commander consumes the scan verdict** for the cross-boundary artifact(s) it gates (the coordinated Trivy step runs at the origin; the commander does not run it) — see §4. *Domain-specific outpost artifacts are never scanned (they don't cross a boundary).*
 4. **SBOM is emitted by the same coordinated Trivy pass** at build time — an **executor** output the commander consumes and references (SCP never runs the pass itself, §0).
 5. **Signing (cosign, end-to-end — ADR-0015):** the **executor cosign-signs the artifact(s) AND the SBOM at build** (the SBOM is a build-time output of the executor's Trivy pass); the **commander cosign-signs ONLY the promotion manifest** enumerating exactly the authorized artifact set — only if scans pass. SCP never signs an origin artifact, SBOM included (ADR-0015 §5). cosign covers **all** cross-boundary artifact types + the manifest; Ed25519 remains the untouched federation-transport layer.
 6. **Commander notifies** the relevant outposts/retrans, in pipeline order, that a promotion is pending — **poke** (poke-mode, opt-in per outpost) / **poll** (default) / **air-gap bundle file** (sneakernet). Poke reaches air-gapped domains via the retrans chain (§5).
@@ -84,6 +86,9 @@ Because CommanderSCP is **one binary** (commander/outpost/retrans are runtime ro
 | Outposts management UI + outpost's own local UI | M16 |
 | Cloud IaC via Argo Workflows / `scp-managed-iac` | M7 (managed-iac exists) |
 | Host deploy via `scp-runner-ops` | proposed (`managed-execution-tier.md`) — needs a milestone home |
+| Ownership refinement — build devolves to originating outpost; commander = boundary gate only (ADR-0017) | **docs-only (ADR-0017)** — no new build code; does not block M17.4/M15.2/M15.5 |
+| Multi-region Argo CD *setting* — one outpost owns Argo CD per region for a prod env (ADR-0017 §3) | **M15.6 (new, small)** — per-region deploy-target bindings already work; adds the config surface + test |
+| Domain-local dev/beta pipelines — scan-exempt by path, E6-backstopped (ADR-0018) | **M18 (new, the very end)** |
 
 ## Open items carried forward
 
