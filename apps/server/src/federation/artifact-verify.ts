@@ -260,7 +260,11 @@ export async function verifyAuthorizedArtifactSet(
  *   - OCI: `location` (when set) is the fully-qualified, digest-pinned image ref in the local
  *     registry; absent an explicit `location`, an OCI `digest` alone does not locate a repository,
  *     so the artifact is UNRESOLVABLE → treated as absent (fail-closed) until the byte channel
- *     records where the image landed.
+ *     records where the image landed. The location's REGISTRY HOST is bundle-supplied and unsigned,
+ *     so it is egress-guarded BEFORE cosign ever dials it: the host must appear in the
+ *     operator-configured `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` allowlist (ADR-0019 §4; fail-closed
+ *     when unset), symmetric with the blob URL guard below — digest binding already prevents
+ *     SUBSTITUTION, this prevents a hostile bundle picking the egress TARGET.
  *   - blob: `location` is an HTTP(S) URL to fetch the blob bytes; `signatureRef` is an HTTP(S) URL
  *     to fetch the origin detached signature. A `404` (bytes not there yet) resolves to absent; a
  *     transport error propagates and the gate fails closed. BOTH URLs are bundle-supplied and
@@ -275,19 +279,32 @@ export async function verifyAuthorizedArtifactSet(
 export class LocationRegistryReader implements ArtifactRegistryReader {
   /** Operator-configured base URLs blob `location`/`signatureRef` may fall under (SSRF guard). */
   private readonly allowedBlobBaseUrls: URL[];
+  /** Operator-configured OCI registry `host[:port]` entries cosign may dial (egress guard —
+   *  ADR-0019 §4, the blob allowlist's symmetric other half). */
+  private readonly allowedOciRegistryHosts: string[];
 
-  constructor(opts?: { allowedBlobBaseUrls?: string[] }) {
+  constructor(opts?: { allowedBlobBaseUrls?: string[]; allowedOciRegistryHosts?: string[] }) {
     const raw = opts?.allowedBlobBaseUrls ?? blobBaseUrlsFromEnv();
     this.allowedBlobBaseUrls = raw
       .map((b) => b.trim())
       .filter((b) => b.length > 0)
       .map((b) => new URL(b));
+    this.allowedOciRegistryHosts = (opts?.allowedOciRegistryHosts ?? ociRegistryHostsFromEnv())
+      .map((h) => h.trim().toLowerCase())
+      .filter((h) => h.length > 0);
   }
 
   async resolveOci(artifact: ArtifactRef): Promise<string | null> {
     const ref = artifact.location?.trim();
-    if (ref && ref.length > 0) return ref;
-    return null;
+    if (!ref || ref.length === 0) return null;
+    // OCI-HOST EGRESS GUARD (fail-closed, BEFORE cosign ever dials): the location's registry host
+    // is bundle-supplied, unsigned metadata. Digest binding (verifyOne) already prevents artifact
+    // SUBSTITUTION, but `cosign verify` still performs registry-API GETs against whatever host the
+    // location names — a blind egress channel symmetric to the blob fetch. The host must be
+    // operator-allowlisted (SCP_ARTIFACT_OCI_REGISTRY_HOSTS); throwing surfaces as a
+    // `verification error (fail-closed)` on the artifact, exactly like the blob URL guard.
+    this.assertOciRegistryHostAllowed(ref);
+    return ref;
   }
 
   async resolveBlob(artifact: ArtifactRef): Promise<ResolvedBlob | null> {
@@ -341,6 +358,50 @@ export class LocationRegistryReader implements ArtifactRegistryReader {
     // Empty allowlist + allowInternalPrivate=true → only those always-blocked classes apply here.
     await assertEgressAllowed(url, [], true);
   }
+
+  /** Throws unless the OCI ref's registry `host[:port]` matches an operator-configured allowlist
+   *  entry EXACTLY (case-insensitive; no suffix/wildcard matching — a `host:port` is a specific
+   *  service, exactly as the blob guard treats origins). UNSET/empty allowlist rejects every OCI
+   *  location (fail-closed) — the operator opts the OCI verify egress in explicitly, symmetric
+   *  with SCP_ARTIFACT_BLOB_BASE_URLS. */
+  private assertOciRegistryHostAllowed(ref: string): void {
+    if (this.allowedOciRegistryHosts.length === 0) {
+      throw new Error(
+        `oci registry host not allowlisted: location '${ref}' rejected — no operator-configured ` +
+          `OCI registry hosts (SCP_ARTIFACT_OCI_REGISTRY_HOSTS unset = every OCI verify refused; ` +
+          `bundle-supplied registry hosts are never dialed unguarded, fail-closed)`
+      );
+    }
+    const host = ociRegistryHostOf(ref);
+    if (!host) {
+      throw new Error(
+        `oci registry host not allowlisted: location '${ref}' carries no explicit registry host ` +
+          `(a hostless ref would dial an implicit default registry) — refusing to dial (fail-closed)`
+      );
+    }
+    if (!this.allowedOciRegistryHosts.includes(host)) {
+      throw new Error(
+        `oci registry host not allowlisted: '${host}' (location '${ref}') is not in the ` +
+          `operator-configured OCI registry hosts (SCP_ARTIFACT_OCI_REGISTRY_HOSTS) — ` +
+          `bundle-supplied locations cannot steer outpost egress (fail-closed)`
+      );
+    }
+  }
+}
+
+/**
+ * The registry `host[:port]` an OCI reference would dial, lowercased, or `null` when the ref names
+ * no explicit registry. Per the docker/OCI reference grammar the first `/`-separated component is a
+ * registry host only when it contains a `.` or a `:` or is exactly `localhost` — otherwise the ref
+ * is repo-only shorthand that an OCI client resolves against an IMPLICIT default registry, which an
+ * allowlist can never vouch for → `null` (caller fails closed).
+ */
+export function ociRegistryHostOf(ref: string): string | null {
+  const slash = ref.indexOf("/");
+  if (slash <= 0) return null;
+  const first = ref.slice(0, slash).toLowerCase();
+  if (first === "localhost" || first.includes(".") || first.includes(":")) return first;
+  return null;
 }
 
 /** `SCP_ARTIFACT_BLOB_BASE_URLS` — comma-separated, operator-configured base URLs the outpost's
@@ -348,6 +409,14 @@ export class LocationRegistryReader implements ArtifactRegistryReader {
  *  the operator opts the byte channel in explicitly; bundles never pick egress targets. */
 function blobBaseUrlsFromEnv(): string[] {
   return (process.env.SCP_ARTIFACT_BLOB_BASE_URLS ?? "").split(",");
+}
+
+/** `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` — comma-separated, operator-configured OCI registry
+ *  `host[:port]` entries the per-artifact `cosign verify` may dial (ADR-0019 §4 — the symmetric
+ *  other half of SCP_ARTIFACT_BLOB_BASE_URLS). UNSET means EVERY OCI verify is refused
+ *  (fail-closed): the operator opts the OCI egress in explicitly; bundles never pick dial targets. */
+function ociRegistryHostsFromEnv(): string[] {
+  return (process.env.SCP_ARTIFACT_OCI_REGISTRY_HOSTS ?? "").split(",");
 }
 
 function isHttpUrl(value: string): boolean {

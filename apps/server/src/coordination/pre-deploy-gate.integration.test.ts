@@ -47,8 +47,11 @@ import { PRE_DEPLOY_ARTIFACT_VERIFY_DECISION_KIND } from "./pre-deploy-gate.js";
  *
  * Fail-closed axes proven here: MISSING bytes, a wrong-key/tampered image signature, a bad blob
  * signature, SUBSTITUTION via the unsigned `location` (a different validly-signed image/blob than
- * the manifest-authorized digest — digest binding), and SSRF (a bundle-supplied blob URL outside
- * the operator-configured `SCP_ARTIFACT_BLOB_BASE_URLS` is rejected WITHOUT being fetched) — each
+ * the manifest-authorized digest — digest binding), SSRF (a bundle-supplied blob URL outside
+ * the operator-configured `SCP_ARTIFACT_BLOB_BASE_URLS` is rejected WITHOUT being fetched), and
+ * the symmetric OCI-HOST guard (ADR-0019 §4 / M15.5(c): a bundle-supplied OCI location whose
+ * registry host is outside the operator-configured `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` is rejected
+ * WITHOUT cosign ever dialing it, and an UNSET allowlist refuses every OCI verify) — each
  * BLOCKS the deploy with a `block` Decision + hash-chained audit event, PARKS the change, and
  * never fires `trigger()`. Scope axes: a domain-local change (no manifest — ADR-0013 exemption)
  * and a pre-manifest imported change deploy UNGATED, exactly as before.
@@ -70,8 +73,9 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
   let blobBaseUrl: string;
   const blobStore = new Map<string, Buffer>(); // path -> bytes; anything absent 404s (missing bytes)
   /** A second, NOT-allowlisted HTTP endpoint modeling an internal in-cluster service a hostile
-   *  bundle tries to steer the outpost's blob fetch at (SSRF axis h). Counts every request it
-   *  receives — the guard must block BEFORE any request, so this must stay at 0. */
+   *  bundle tries to steer the outpost's blob fetch at (SSRF axis h) — and, doubling as a decoy
+   *  OCI registry host, the target of a non-allowlisted oci `location` (OCI-host axis i). Counts
+   *  every request it receives — both guards must block BEFORE any request, so this must stay 0. */
   let forbiddenServer: Server;
   let forbiddenUrl: string;
   let forbiddenHits = 0;
@@ -96,6 +100,11 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     // SIGNATURE is the trust anchor, not registry TLS; see VerifyImageOptions.allowInsecureRegistry).
     registry = await new GenericContainer("registry:2").withExposedPorts(5000).start();
     registryHost = `${registry.getHost()}:${registry.getMappedPort(5000)}`;
+    // OCI-host egress guard config (ADR-0019 §4): the OPERATOR allowlists the registry host(s) the
+    // per-artifact `cosign verify` may dial — this IS the operator-configures-it story: the byte
+    // channel's registry is named explicitly, every other bundle-supplied host is refused before
+    // any dial, and UNSET refuses every OCI verify (fail-closed; proven in axis j).
+    process.env.SCP_ARTIFACT_OCI_REGISTRY_HOSTS = registryHost;
 
     // Where blob artifacts (SBOM et al.) land: an HTTP store serving `location`/`signatureRef` URLs.
     blobServer = createServer((req, res) => {
@@ -183,6 +192,7 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
 
   afterAll(async () => {
     delete process.env.SCP_ARTIFACT_BLOB_BASE_URLS;
+    delete process.env.SCP_ARTIFACT_OCI_REGISTRY_HOSTS;
     await server?.close();
     await registry?.stop();
     await new Promise<void>((resolve) => (blobServer ? blobServer.close(() => resolve()) : resolve()));
@@ -372,6 +382,9 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
 
   // ---------------------------------------------------------------------------------------------
   // (a) PASS — bytes present, image + blob signatures verify against the exporter key -> deploy.
+  // Doubles as the OCI-host allowlist POSITIVE axis: the image's registry host IS the
+  // operator-allowlisted SCP_ARTIFACT_OCI_REGISTRY_HOSTS entry (beforeAll), so the verify dials it
+  // exactly as before the allowlist existed.
   // ---------------------------------------------------------------------------------------------
   it("(a) PASS: present + exporter-signed oci image AND blob => the deploy proceeds", async () => {
     const image = await pushImage("scp/pass-img", "pass");
@@ -545,6 +558,59 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(reason).toMatch(/SSRF|not under any operator-configured blob base URL/i);
     // The forbidden endpoint was NEVER contacted — the guard fires before the fetch, not after.
     expect(forbiddenHits).toBe(hitsBefore);
+  }, 120_000);
+
+  // ---------------------------------------------------------------------------------------------
+  // (i) OCI-HOST EGRESS (ADR-0019 §4, the #108 residual closed) — a hostile bundle-supplied OCI
+  // `location` naming a NON-allowlisted registry host. Digest binding already prevents
+  // substitution, but cosign would still DIAL that host (blind registry-API GETs — the egress
+  // channel symmetric to the blob fetch). The guard must reject BEFORE cosign is invoked: the
+  // decoy endpoint (hit-counting, reachable) must see ZERO requests.
+  // ---------------------------------------------------------------------------------------------
+  it("(i) OCI-HOST: an oci location naming a non-allowlisted registry host is BLOCKED fail-closed WITHOUT cosign ever dialing it", async () => {
+    const hitsBefore = forbiddenHits;
+    // A well-formed, digest-pinned ref at the decoy host — the digest MATCHES the authorized one,
+    // so nothing but the host guard would stop this verify from dialing.
+    const decoyHost = new URL(forbiddenUrl).host; // host:port — reachable, NOT allowlisted
+    const digest = sha256(Buffer.from(`oci-host-axis-${randomUUID()}`));
+    const { changeId, componentId } = await proposeImportedChange([
+      { type: "oci", digest, location: `${decoyHost}/scp/exfil@${digest}`, signatureRef: "registry-attached" }
+    ]);
+
+    await tick();
+    const { reason } = await expectBlocked(changeId, componentId);
+    expect(reason).toMatch(/oci registry host not allowlisted/i);
+    expect(reason).toContain(decoyHost); // names the refused host for operator remediation
+    // The decoy registry was NEVER contacted — the guard fires before cosign, not after.
+    expect(forbiddenHits).toBe(hitsBefore);
+  }, 120_000);
+
+  // ---------------------------------------------------------------------------------------------
+  // (j) OCI-HOST UNSET — SCP_ARTIFACT_OCI_REGISTRY_HOSTS unset refuses EVERY OCI verify
+  // (fail-closed, symmetric with the blob allowlist; the DELIBERATE M15.5(c) behavior change —
+  // operators must set the variable on upgrade). Even a present, correctly-exporter-signed image
+  // in the local registry is refused: the operator has not opted the OCI egress in.
+  // ---------------------------------------------------------------------------------------------
+  it("(j) OCI-HOST UNSET: with no configured allowlist, every OCI verify is refused fail-closed — even a valid artifact", async () => {
+    const image = await pushImage("scp/unset-env-img", "unset-env");
+    signImage(image.ref, exporterKey.keyPath); // genuinely valid — would pass axis (a) if configured
+
+    const { changeId, componentId } = await proposeImportedChange([
+      { type: "oci", digest: image.digest, location: image.ref, signatureRef: "registry-attached" }
+    ]);
+
+    const saved = process.env.SCP_ARTIFACT_OCI_REGISTRY_HOSTS;
+    delete process.env.SCP_ARTIFACT_OCI_REGISTRY_HOSTS;
+    try {
+      await tick();
+    } finally {
+      if (saved === undefined) delete process.env.SCP_ARTIFACT_OCI_REGISTRY_HOSTS;
+      else process.env.SCP_ARTIFACT_OCI_REGISTRY_HOSTS = saved;
+    }
+
+    const { reason } = await expectBlocked(changeId, componentId);
+    expect(reason).toMatch(/oci registry host not allowlisted/i);
+    expect(reason).toMatch(/SCP_ARTIFACT_OCI_REGISTRY_HOSTS unset/i);
   }, 120_000);
 
   // ---------------------------------------------------------------------------------------------
