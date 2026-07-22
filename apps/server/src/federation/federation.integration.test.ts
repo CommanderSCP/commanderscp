@@ -85,10 +85,17 @@ async function pair(
   a: IsolatedDomain,
   b: IsolatedDomain,
   role: "outpost" | "commander",
-  syncScope?: SyncScope
+  syncScope?: SyncScope,
+  opts: { cosign?: boolean } = {}
 ) {
   const key = await withTenantTx(b.db, b.orgId, (tx) => ensureInstanceKey(tx, b.orgId));
   const self = await withTenantTx(b.db, b.orgId, (tx) => ensureFederationSelf(tx, b.orgId));
+  // M17.3 (E5) / M17.4(a): register b's cosign VERIFICATION public key alongside its Ed25519 key so
+  // a receiver can cosign-verify b's promotion manifests. Opt-in — sync-only tests don't need it, and
+  // a peer paired WITHOUT it models a genuine pre-E5 peer (the back-compat / downgrade axis).
+  const cosignPublicKey = opts.cosign
+    ? (await getInstanceCosignPublicKey(b.db, b.orgId)).publicKey
+    : undefined;
   await withTenantTx(a.db, a.orgId, (tx) =>
     pairPeer(tx, {
       orgId: a.orgId,
@@ -96,6 +103,7 @@ async function pair(
       name: b.orgName,
       role,
       publicKey: key.publicKey,
+      ...(cosignPublicKey !== undefined ? { cosignPublicKey } : {}),
       syncScope
     })
   );
@@ -845,8 +853,10 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
       ensureFederationSelf(tx, domainA.orgId)
     );
 
-    await pair(domainA, domainB, "outpost");
-    await pair(domainB, domainA, "commander");
+    // Pair E5-complete (cosign keys exchanged both ways) — the realistic post-E5/E6 setup. domainB's
+    // record of domainA carries domainA's cosign key, so M17.4(a) can verify domainA's manifests.
+    await pair(domainA, domainB, "outpost", undefined, { cosign: true });
+    await pair(domainB, domainA, "commander", undefined, { cosign: true });
   }, 60_000);
 
   afterAll(async () => {
@@ -975,9 +985,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     const bundle = await exportBundleA(changeId);
     expect(bundle.approvals.length).toBe(1);
 
-    const result = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
-      importPromotionBundle(tx, domainB.orgId, bundle)
-    );
+    const result = await importPromotionBundle(domainB.db, domainB.orgId, bundle);
     expect(result.approvalsAccepted).toBe(1);
     expect(result.approvalsRejected).toBe(0);
     expect(result.importedFromDomain).toBe(selfA.domainId);
@@ -1018,9 +1026,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
       exporterKey.privateKey
     );
 
-    const result = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
-      importPromotionBundle(tx, domainB.orgId, tamperedBundle)
-    );
+    const result = await importPromotionBundle(domainB.db, domainB.orgId, tamperedBundle);
     expect(result.approvalsAccepted).toBe(0);
     expect(result.approvalsRejected).toBe(1);
     // The Change itself still lands — approvals are evidence, never a gate on the import itself.
@@ -1069,9 +1075,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
       key.privateKey
     );
 
-    const result = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
-      importPromotionBundle(tx, domainB.orgId, tamperedBundle)
-    );
+    const result = await importPromotionBundle(domainB.db, domainB.orgId, tamperedBundle);
     expect(result.approvalsAccepted).toBe(0);
     expect(result.approvalsRejected).toBe(1);
   });
@@ -1126,19 +1130,18 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     );
   });
 
-  it("E3 NEW->OLD: a bundle exported WITH artifacts[] verifies and imports under an OLD import path that only knows artifactDigests", async () => {
+  it("E3 CHECKSUM byte-identity holds when artifacts[] is stripped (the field was never in the checksum)", async () => {
     const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts);
     const bundle = await exportBundleA(changeId);
     expect(bundle.artifacts).toBeDefined();
 
-    // Simulate an OLD peer that predates E3: strip artifacts[] entirely from the wire.
+    // Strip artifacts[] entirely from the wire — the Ed25519 checksum/signature STILL verify against
+    // the exporter's key (the stripped field was never protected by the checksum — the E3 invariant).
     const { artifacts: _stripped, ...oldShape } = bundle;
     const oldBundle = oldShape as PromotionBundle;
     expect(oldBundle.artifacts).toBeUndefined();
     expect(oldBundle.artifactDigests).toEqual([OCI_DIGEST, SBOM_DIGEST]);
 
-    // Checksum + signature STILL verify against the exporter's key (the stripped field was never
-    // protected, and its absence changes nothing under the checksum).
     const aKey = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
       ensureInstanceKey(tx, domainA.orgId)
     );
@@ -1147,12 +1150,12 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
       true
     );
 
-    // And the old-shape bundle imports cleanly.
-    const result = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
-      importPromotionBundle(tx, domainB.orgId, oldBundle)
-    );
-    expect(result.approvalsAccepted).toBe(1);
-    expect(result.approvalsRejected).toBe(0);
+    // BUT M17.4(a) now BINDS artifacts[] via the cosign manifest (which enumerates [oci, sbom]) — so
+    // stripping the typed set while the manifest still claims it is a DETECTED set-equality violation
+    // (the Ed25519 layer is blind to it; the cosign layer is not). Rejected fail-closed.
+    await expect(
+      importPromotionBundle(domainB.db, domainB.orgId, oldBundle)
+    ).rejects.toMatchObject({ status: 409 });
   });
 
   it("E3 OLD->NEW: a v1 bundle with NO artifacts[] imports cleanly (optional, undefined)", async () => {
@@ -1168,9 +1171,9 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     expect(computeBundleChecksum(promotionChecksumPayload(bundle))).toBe(bundle.checksum);
     expect(bundle.artifactDigests).toEqual([]);
 
-    const result = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
-      importPromotionBundle(tx, domainB.orgId, bundle)
-    );
+    // The manifest binds an EMPTY set and bundle.artifacts is undefined→[] — set-equality + tie both
+    // hold, so M17.4(a) verifies and the import lands.
+    const result = await importPromotionBundle(domainB.db, domainB.orgId, bundle);
     expect(result.approvalsAccepted).toBe(1);
     expect(result.approvalsRejected).toBe(0);
   });
@@ -1182,9 +1185,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     const parsed = PromotionBundleSchema.parse(JSON.parse(JSON.stringify(bundle)));
     expect(parsed.artifacts).toEqual(bundle.artifacts);
 
-    const result = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
-      importPromotionBundle(tx, domainB.orgId, parsed)
-    );
+    const result = await importPromotionBundle(domainB.db, domainB.orgId, parsed);
 
     // sourceRef lives on the change row — read it back through getChange.
     const localChange = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
@@ -1210,9 +1211,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
       artifactDigests: [...bundle.artifactDigests, "sha256:" + "e".repeat(64)]
     };
     await expect(
-      withTenantTx(domainB.db, domainB.orgId, (tx) =>
-        importPromotionBundle(tx, domainB.orgId, tampered)
-      )
+      importPromotionBundle(domainB.db, domainB.orgId, tampered)
     ).rejects.toMatchObject({ status: 409, detail: expect.stringMatching(/checksum mismatch/) });
   });
 
@@ -1336,11 +1335,12 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     ).toBe(bundle.checksum);
   });
 
-  it("E6 NEW->OLD: an old outpost ignoring the manifest fields still verifies + imports the Ed25519 bundle", async () => {
+  it("E6 CHECKSUM byte-identity holds when the manifest siblings are stripped (they were never in the checksum)", async () => {
     const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts);
     const bundle = await exportBundleA(changeId);
 
-    // Simulate an OLD peer that predates E6: it drops the unknown manifest siblings entirely.
+    // Drop the manifest siblings — the Ed25519 checksum/signature STILL verify (they were never in
+    // the checksum payload; the E3/E6 invariant). This is the byte-identity claim only.
     const { promotionManifest: _m, manifestSignature: _s, ...oldShape } = bundle;
     const oldBundle = oldShape as PromotionBundle;
     expect(oldBundle.promotionManifest).toBeUndefined();
@@ -1354,10 +1354,13 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
       verifyBundleSignature(oldBundle.checksum, oldBundle.bundleSignature, aKey.publicKey)
     ).toBe(true);
 
-    const result = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
-      importPromotionBundle(tx, domainB.orgId, oldBundle)
-    );
-    expect(result.approvalsAccepted).toBe(1);
+    // BUT domainB paired domainA E5-complete (has its cosign key), so M17.4(a) treats a manifest-less
+    // bundle from an E6-capable peer as a DOWNGRADE attack — rejected fail-closed (the receiver refuses
+    // to silently accept the strictly-weaker Ed25519-only bundle). The genuine pre-E5 back-compat path
+    // (no cosign key registered → ACCEPT) is covered in the M17.4(a) receiver-verify block below.
+    await expect(
+      importPromotionBundle(domainB.db, domainB.orgId, oldBundle)
+    ).rejects.toMatchObject({ status: 409 });
   });
 
   it("E6 SWAP-DEFENSE: a manifestSignature does NOT verify against a DIFFERENT bundle's manifest", async () => {
@@ -1407,5 +1410,234 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
         cosignPub.publicKey
       )
     ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// M17.4(a) / M15.2 — RECEIVER-side verification of the commander's cosign-signed promotion
+// manifest at bundle import (the OUTPOST's universal pre-deploy validation, ADR-0011). ONE gate
+// runs at every receiving hop; the outpost NEVER re-scans (trust scan-at-source). Fail-closed over
+// signature + set-equality + the tie + self-binding + a downgrade defense. Part-(b) (per-artifact
+// origin verify at the outpost's registry) is DEFERRED to M15.5 (the artifact-bytes channel).
+// ---------------------------------------------------------------------------------------------
+describe("M17.4(a) / M15.2 receiver manifest verification (Testcontainers)", () => {
+  let commander: IsolatedDomain; // the exporting commander
+  let outpostWithKey: IsolatedDomain; // paired E5-complete (has the commander's cosign key)
+  let outpostNoKey: IsolatedDomain; // paired pre-E5 (NO cosign key — the back-compat axis)
+  let selfCommander: FederationSelf;
+
+  const OCI = "sha256:" + "c".repeat(64);
+
+  beforeAll(async () => {
+    commander = await createIsolatedDomain("m174Commander");
+    outpostWithKey = await createIsolatedDomain("m174WithKey");
+    outpostNoKey = await createIsolatedDomain("m174NoKey");
+    selfCommander = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      ensureFederationSelf(tx, commander.orgId)
+    );
+
+    // commander ↔ outpostWithKey: E5-complete — the outpost holds the commander's cosign key, so the
+    // receiver gate can verify the commander's manifests.
+    await pair(commander, outpostWithKey, "outpost", undefined, { cosign: true });
+    await pair(outpostWithKey, commander, "commander", undefined, { cosign: true });
+    // commander ↔ outpostNoKey: LEGACY — the outpost's record of the commander carries NO cosign key
+    // (a genuine pre-E5 peer), so a manifest-less bundle is honest back-compat, not a downgrade.
+    await pair(commander, outpostNoKey, "outpost");
+    await pair(outpostNoKey, commander, "commander");
+  }, 120_000);
+
+  afterAll(async () => {
+    await commander.close();
+    await outpostWithKey.close();
+    await outpostNoKey.close();
+  });
+
+  async function seedPassingScan(changeId: string, ociDigest: string): Promise<void> {
+    await withTenantTx(commander.db, commander.orgId, (tx) =>
+      insertControlRun(tx, {
+        orgId: commander.orgId,
+        controlObjectId: randomUUID(),
+        changeObjectId: changeId,
+        gateKind: "lifecycle_edge",
+        gateRef: { fromState: "validating", toState: "promoted" },
+        status: "pass",
+        evidence: {
+          scanner: "trivy",
+          scannerVersion: "0.50.0",
+          artifactDigest: ociDigest,
+          expectedDigest: ociDigest,
+          digestMatch: true,
+          severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
+          threshold: { maxCritical: 0, maxHigh: 0 }
+        }
+      })
+    );
+  }
+
+  /** Build a valid, cosign-signed promotion bundle addressed to `receiver`, with the change's target
+   *  synced there first so a legit import can resolve it. `sourceRef.artifact_digest` (when present)
+   *  is auto scan-gated so the E6 export gate passes. */
+  async function buildBundleToward(
+    receiver: IsolatedDomain,
+    sourceRef: Record<string, unknown>
+  ): Promise<PromotionBundle> {
+    const target = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      createObject(tx, {
+        orgId: commander.orgId,
+        domainId: null,
+        typeId: "service",
+        actorObjectId: commander.orgId,
+        requestId: "m174-target",
+        name: `m174-target-${randomUUID()}`
+      })
+    );
+    // Sync the target (and any not-yet-sent objects) to the receiver from ITS cursor.
+    const cursor = await withTenantTx(receiver.db, receiver.orgId, (tx) =>
+      getCursor(tx, receiver.orgId, selfCommander.domainId, selfCommander.domainId)
+    );
+    const syncBundle = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      exportSyncBundle(tx, commander.orgId, receiver.orgName, cursor.sequence)
+    );
+    await withTenantTx(receiver.db, receiver.orgId, (tx) =>
+      importSyncBundle(tx, receiver.orgId, syncBundle)
+    );
+
+    const { change } = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      proposeChange(tx, {
+        orgId: commander.orgId,
+        actorObjectId: commander.orgId,
+        requestId: "m174-change",
+        name: `m174-change-${randomUUID()}`,
+        targets: [target.id],
+        sourceRef
+      })
+    );
+    const oci = typeof sourceRef.artifact_digest === "string" ? sourceRef.artifact_digest : undefined;
+    if (oci) await seedPassingScan(change.id, oci);
+
+    const outcome = await exportPromotionBundle(commander.db, {
+      orgId: commander.orgId,
+      peerIdOrName: receiver.orgName,
+      changeIdOrUrn: change.id
+    });
+    if (outcome.refused) throw new Error(`unexpected export refusal: ${outcome.reason}`);
+    return outcome.bundle;
+  }
+
+  /** Import and capture the fail-closed 409 (with its surfaced decision_id). */
+  async function expectImportBlocked(
+    receiver: IsolatedDomain,
+    bundle: PromotionBundle
+  ): Promise<{ status: number; decisionId?: string; detail?: string }> {
+    try {
+      await importPromotionBundle(receiver.db, receiver.orgId, bundle);
+      throw new Error("expected importPromotionBundle to reject fail-closed");
+    } catch (err) {
+      const e = err as { status?: number; decisionId?: string; detail?: string };
+      expect(e.status).toBe(409);
+      return { status: e.status!, decisionId: e.decisionId, detail: e.detail };
+    }
+  }
+
+  it("(b) a MATCHING bundle imports (signature + set-equality + tie + self-binding all hold)", async () => {
+    const bundle = await buildBundleToward(outpostWithKey, { artifact_digest: OCI });
+    expect(bundle.promotionManifest).toBeDefined();
+    const result = await importPromotionBundle(outpostWithKey.db, outpostWithKey.orgId, bundle);
+    expect(result.localChangeObjectId).toBeTruthy();
+    expect(result.importedFromDomain).toBe(selfCommander.domainId);
+  });
+
+  it("(a) an INJECTED/SUBSTITUTED artifacts[] entry is REJECTED with a block Decision (set-equality)", async () => {
+    const bundle = await buildBundleToward(outpostWithKey, { artifact_digest: OCI });
+    // Substitute the arrived typed set for a DIFFERENT digest WITHOUT touching the cosign manifest.
+    // artifacts[] is EXCLUDED from the Ed25519 checksum, so the envelope still verifies — only the
+    // cosign manifest's set-equality catches the swap.
+    const injected: PromotionBundle = {
+      ...bundle,
+      artifacts: [{ type: "oci", digest: "sha256:" + "9".repeat(64) }]
+    };
+    const blocked = await expectImportBlocked(outpostWithKey, injected);
+    expect(blocked.decisionId).toBeTruthy();
+    const decision = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      getDecision(tx, outpostWithKey.orgId, blocked.decisionId!)
+    );
+    expect(decision.verdict).toBe("block");
+    expect(decision.kind).toBe("promotion-import-manifest-verify");
+  });
+
+  it("(c) a LIFTED manifest (from a different bundle) is REJECTED (self-binding)", async () => {
+    const bundleX = await buildBundleToward(outpostWithKey, { artifact_digest: OCI });
+    const bundleY = await buildBundleToward(outpostWithKey, {
+      artifact_digest: "sha256:" + "2".repeat(64)
+    });
+    // Lift Y's cosign-signed manifest + signature onto X's bundle. Y's signature verifies over Y's
+    // manifest, but Y's manifest binds Y's changeUrn/sourceChangeObjectId — not X's — so self-binding
+    // rejects the swap.
+    const lifted: PromotionBundle = {
+      ...bundleX,
+      promotionManifest: bundleY.promotionManifest,
+      manifestSignature: bundleY.manifestSignature
+    };
+    const blocked = await expectImportBlocked(outpostWithKey, lifted);
+    expect(blocked.decisionId).toBeTruthy();
+  });
+
+  it("(d) a tampered artifactDigests that DIVERGES from the manifest is REJECTED (the tie)", async () => {
+    const bundle = await buildBundleToward(outpostWithKey, { artifact_digest: OCI });
+    // Tamper the Ed25519-anchored artifactDigests to diverge from the manifest, but leave artifacts[]
+    // matching the manifest (so set-equality still passes and the TIE is what catches it). Re-sign the
+    // Ed25519 envelope with the commander's REAL key so the transport gate passes and control reaches
+    // the manifest verify — isolating the tie from the checksum check.
+    const commanderKey = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      ensureInstanceKey(tx, commander.orgId)
+    );
+    const tampered = resignPromotionBundle(
+      { ...bundle, artifactDigests: ["sha256:" + "3".repeat(64)] },
+      commanderKey.privateKey
+    );
+    const blocked = await expectImportBlocked(outpostWithKey, tampered);
+    expect(blocked.decisionId).toBeTruthy();
+    const decision = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      getDecision(tx, outpostWithKey.orgId, blocked.decisionId!)
+    );
+    expect(decision.reasonTree.summary).toMatch(/anchors diverge|artifactDigests/i);
+  });
+
+  it("(e) a genuine pre-E5 bundle (no manifest, peer has NO cosign key) is ACCEPTED (back-compat)", async () => {
+    // Metadata-only promotion toward the LEGACY outpost, then strip the E6 manifest siblings to model
+    // a genuine pre-E5/E6 Ed25519-only bundle. The legacy outpost has no cosign trust anchor for the
+    // commander, so this is honest back-compat — ACCEPT.
+    const bundle = await buildBundleToward(outpostNoKey, {});
+    const { promotionManifest: _m, manifestSignature: _s, ...oldShape } = bundle;
+    const oldBundle = oldShape as PromotionBundle;
+    expect(oldBundle.promotionManifest).toBeUndefined();
+    const result = await importPromotionBundle(outpostNoKey.db, outpostNoKey.orgId, oldBundle);
+    expect(result.localChangeObjectId).toBeTruthy();
+  });
+
+  it("(f) DOWNGRADE: no manifest but the peer HAS a cosign key is REJECTED", async () => {
+    // Same strip, but toward the E5-complete outpost that DOES hold the commander's cosign key — a
+    // manifest-less bundle from an E6-capable peer is a downgrade attack, rejected fail-closed.
+    const bundle = await buildBundleToward(outpostWithKey, { artifact_digest: OCI });
+    const { promotionManifest: _m, manifestSignature: _s, ...oldShape } = bundle;
+    const stripped = oldShape as PromotionBundle;
+    const blocked = await expectImportBlocked(outpostWithKey, stripped);
+    expect(blocked.decisionId).toBeTruthy();
+    const decision = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      getDecision(tx, outpostWithKey.orgId, blocked.decisionId!)
+    );
+    expect(decision.reasonTree.summary).toMatch(/DOWNGRADE/i);
+  });
+
+  it("(g) a BAD manifestSignature is REJECTED (signature)", async () => {
+    const bundle = await buildBundleToward(outpostWithKey, { artifact_digest: OCI });
+    const other = await buildBundleToward(outpostWithKey, {
+      artifact_digest: "sha256:" + "4".repeat(64)
+    });
+    // Replace the signature with a valid-base64 but WRONG signature (another bundle's) — cosign
+    // verify-blob returns false over this manifest, so the gate rejects fail-closed.
+    const badSig: PromotionBundle = { ...bundle, manifestSignature: other.manifestSignature };
+    const blocked = await expectImportBlocked(outpostWithKey, badSig);
+    expect(blocked.decisionId).toBeTruthy();
   });
 });
