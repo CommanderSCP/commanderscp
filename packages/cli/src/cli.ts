@@ -2675,6 +2675,40 @@ export function buildProgram(): Command {
       }
     );
 
+  // M15.6 (ADR-0017 §3): read + validate a prod environment's per-region Argo CD set. A region is a
+  // deployment-target with properties.environment=<env>/region=<label>; its Argo CD is an ordinary
+  // per-region binding. Surfaces `prod env -> {region -> argocd binding}` and a validation verdict.
+  executorCmd
+    .command("regional <environment>")
+    .description("Read + validate a prod environment's per-region Argo CD bindings (M15.6)")
+    .option("--type <type>", "binding routing Type to resolve per region (default: configuration)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (environment: string, opts: BaseCliOpts & { type?: ExecutorType }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const view = await client.executors.getRegionalExecutors(environment, opts.type);
+      if (opts.output === "json") {
+        printResult(view, opts.output, (item) => item as unknown as Record<string, string>);
+        return;
+      }
+      // Table view: one row per region, then the verdict + any problems.
+      printResult(view.regions, opts.output, (item) => {
+        const r = item as (typeof view.regions)[number];
+        return {
+          region: r.region || "(unset)",
+          target: r.targetName,
+          bound: String(r.bound),
+          module: r.pluginModule ?? "-",
+          argocd: String(r.isExpectedModule),
+          executionSystem: r.executionSystemId ?? "-"
+        } as Record<string, string>;
+      });
+      process.stdout.write(
+        `\nenvironment '${view.environment}' — valid: ${view.valid}\n` +
+          (view.problems.length ? view.problems.map((p) => `  - ${p}`).join("\n") + "\n" : "")
+      );
+    });
+
   const notifyCmd = program
     .command("notify")
     .description("Configure NotificationPlugin channels (DESIGN §11)");
