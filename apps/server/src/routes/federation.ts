@@ -219,19 +219,26 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
-      // M17.3 (E5) — resolve the LOCAL cosign public key BEFORE opening the status tx: its lazy
-      // provisioning runs a cosign subprocess, which must never execute while the status tx holds a
-      // pooled connection. Only the public half is ever returned.
-      const cosign = await getInstanceCosignPublicKey(deps.db, auth.orgId);
-      const status = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, {
+      // M17.3 (E5) — authorize FIRST, in its own tx, so the cosign public-key resolution below is
+      // GATED behind the permission check: `getInstanceCosignPublicKey` LAZILY PROVISIONS this org's
+      // keypair (via a cosign subprocess) on first call, and an authenticated-but-unauthorized caller
+      // (no `federation:read`) must never trigger that provisioning just by hitting this route.
+      // Mirrors /exports/promotion's ordering (authorize in its own tx, then the out-of-tx work).
+      await withTenantTx(deps.db, auth.orgId, (tx) =>
+        authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "federation:read",
           scopeObjectId: auth.orgId
-        });
-        return getFederationStatus(tx, auth.orgId, cosign.publicKey);
-      });
+        })
+      );
+      // Only NOW resolve the LOCAL cosign public key — OUTSIDE any tx: its lazy provisioning runs a
+      // cosign subprocess, which must never execute while a tx holds a pooled connection. Only the
+      // public half is ever returned.
+      const cosign = await getInstanceCosignPublicKey(deps.db, auth.orgId);
+      const status = await withTenantTx(deps.db, auth.orgId, (tx) =>
+        getFederationStatus(tx, auth.orgId, cosign.publicKey)
+      );
       reply.status(200).send(status);
     }
   });
