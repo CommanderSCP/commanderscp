@@ -65,7 +65,7 @@
  * it extracts the SAME digest-pinned binary that ships in the image (scripts/install-pinned-cosign.sh,
  * `.github/workflows/ci.yml`), so CI validates the binary production actually uses.
  */
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -241,6 +241,65 @@ export function verifyBlobDetached(filePath: string, sigPath: string, pubKeyPath
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, detail: message };
+  }
+}
+
+/**
+ * Sign an IN-MEMORY blob with IN-MEMORY cosign private-key material, returning the detached
+ * signature as a base64 string. The seam the SERVER (M17.3 E6) uses to cosign-sign a promotion
+ * MANIFEST with the org's `instance_cosign_keys` private key: it materializes the key + blob to a
+ * fresh, private scratch dir, runs the offline/air-gap `sign-blob` (the same `--tlog-upload=false`
+ * flag set as every other call here — NOTHING is uploaded to Rekor), reads the detached signature
+ * back, and SCRUBS the scratch dir (KEY FILE INCLUDED) before returning. No key material survives
+ * the call on disk, in success OR failure — the `finally` runs on both paths.
+ *
+ * `privateKeyPem` is cosign's empty-password encrypted PEM (`COSIGN_PASSWORD=''`), exactly what
+ * `generateKeyPair`/`instance_cosign_keys` produce and store.
+ */
+export async function signBlob(blob: string | Buffer, privateKeyPem: string): Promise<string> {
+  const dir = await makeScratchDir();
+  try {
+    const keyPath = path.join(dir, "cosign.key");
+    const blobPath = path.join(dir, "blob.bin");
+    const sigPath = path.join(dir, "blob.sig");
+    await writeFile(keyPath, privateKeyPem, "utf8");
+    await writeFile(blobPath, blob);
+    signBlobDetached(blobPath, sigPath, {
+      keyPath,
+      pubKeyPath: "",
+      password: "",
+      isEphemeral: true
+    });
+    const sig = await readFile(sigPath, "utf8");
+    return sig.trim();
+  } finally {
+    // Best-effort scrub of the scratch dir (private key file included) regardless of outcome.
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Verify a detached base64 `signature` over an IN-MEMORY blob against an IN-MEMORY cosign PUBLIC
+ * key PEM. Materializes all three to a scratch dir, runs `verify-blob`
+ * (`--insecure-ignore-tlog=true`, offline), scrubs, and returns a boolean. NEVER throws — a bad
+ * signature is a normal, expected outcome (a swapped/forged manifest), reported as `false`.
+ */
+export async function verifyBlob(
+  blob: string | Buffer,
+  signature: string,
+  publicKeyPem: string
+): Promise<boolean> {
+  const dir = await makeScratchDir();
+  try {
+    const pubPath = path.join(dir, "cosign.pub");
+    const blobPath = path.join(dir, "blob.bin");
+    const sigPath = path.join(dir, "blob.sig");
+    await writeFile(pubPath, publicKeyPem, "utf8");
+    await writeFile(blobPath, blob);
+    await writeFile(sigPath, signature, "utf8");
+    return verifyBlobDetached(blobPath, sigPath, pubPath).ok;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 }
 

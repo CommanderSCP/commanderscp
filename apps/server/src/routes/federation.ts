@@ -23,7 +23,7 @@ import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
-import { badRequest } from "../errors.js";
+import { badRequest, conflict } from "../errors.js";
 import { initFederationSelf, ensureFederationSelf } from "../federation/self-repo.js";
 import { pairPeer, listPeers } from "../federation/peers-repo.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
@@ -301,20 +301,29 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       // M9.3 (ADR-0001) — see the /exports route above for what this does and doesn't change.
       await enforceFederationMtls(deps, request);
       const auth = await requireAuth(deps, request);
-      const bundle = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, {
+      // Authorize in its own tx — `exportPromotionBundle` manages its OWN transaction phases around
+      // an out-of-tx cosign subprocess (it takes `deps.db`, not this tx), so authz runs first here.
+      await withTenantTx(deps.db, auth.orgId, (tx) =>
+        authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "federation:write",
           scopeObjectId: auth.orgId
-        });
-        return exportPromotionBundle(tx, {
-          orgId: auth.orgId,
-          peerIdOrName: request.body.peer,
-          changeIdOrUrn: request.body.change
-        });
+        })
+      );
+      const outcome = await exportPromotionBundle(deps.db, {
+        orgId: auth.orgId,
+        peerIdOrName: request.body.peer,
+        changeIdOrUrn: request.body.change,
+        actorObjectId: auth.subjectObjectId
       });
-      reply.status(200).send(bundle);
+      // M17.3 (E6) HARD-GATE: a promotion lacking a passing, digest-bound scan for every substantive
+      // artifact is REFUSED — surfaced as a 409 carrying the audited `decision_id`, like every other
+      // blocked response (DESIGN.md §6/§10.4). The Decision was already persisted by the export.
+      if (outcome.refused) {
+        throw conflict(outcome.reason, { decisionId: outcome.decisionId });
+      }
+      reply.status(200).send(outcome.bundle);
     }
   });
 

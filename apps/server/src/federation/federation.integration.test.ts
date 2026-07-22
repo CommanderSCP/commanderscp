@@ -21,15 +21,20 @@ import { createOverlay, getMergedOverlayView } from "./overlay-repo.js";
 import { handFillObject } from "./handfill-repo.js";
 import { proposeChange, getChange } from "../coordination/changes-repo.js";
 import { materializeApprovalRequest, castApprovalVote } from "../governance/approvals-repo.js";
+import { insertControlRun } from "../governance/controls-repo.js";
+import { getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
+import { getDecision } from "../coordination/decisions-repo.js";
+import { verifyBlob } from "@scp/cosign";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
 import {
+  canonicalStringify,
   computeBundleChecksum,
   signBundleChecksum,
   verifyBundleSignature,
   computeJournalRowHash,
   signJournalRowHash
 } from "@scp/schemas/federation-journal";
-import type { PromotionBundle } from "@scp/schemas";
+import type { ControlOutcomeStatus, PromotionBundle } from "@scp/schemas";
 import { PromotionBundleSchema } from "@scp/schemas";
 
 /**
@@ -850,8 +855,10 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
   });
 
   async function proposeApprovedChangeInA(
-    sourceRef?: Record<string, unknown>
+    sourceRef?: Record<string, unknown>,
+    opts: { seedScan?: boolean } = {}
   ): Promise<{ changeId: string; changeUrn: string }> {
+    const seedScan = opts.seedScan ?? true;
     const target = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
       createObject(tx, {
         orgId: domainA.orgId,
@@ -904,19 +911,68 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
       });
     });
 
+    // M17.3 (E6): the export scan gate HARD-REFUSES any promotion whose substantive artifact lacks a
+    // passing, digest-bound scan. When this change tracks an OCI artifact, seed the passing,
+    // digest-bound scan outcome the boundary re-check requires so the (non-gate) assertions below can
+    // export. Changes with NO substantive artifact need no scan (the gate passes vacuously).
+    const seedOci =
+      seedScan && sourceRef && typeof sourceRef.artifact_digest === "string"
+        ? sourceRef.artifact_digest
+        : undefined;
+    if (seedOci) await seedPassingScan(change.id, seedOci);
+
     return { changeId: change.id, changeUrn: change.urn };
+  }
+
+  /** Insert a `trivy` scan control run for `changeId`. Defaults to the PASSING, digest-bound outcome
+   *  the M17.3 E6 export gate re-checks (status pass + digestMatch + scanned digest == promoted); the
+   *  overrides let a test seed a FAILED or digest-mismatched outcome to exercise the fail-closed path. */
+  async function seedScanOutcome(
+    changeId: string,
+    ociDigest: string,
+    over: { status?: ControlOutcomeStatus; digestMatch?: boolean; scannedDigest?: string } = {}
+  ): Promise<void> {
+    await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      insertControlRun(tx, {
+        orgId: domainA.orgId,
+        controlObjectId: randomUUID(),
+        changeObjectId: changeId,
+        gateKind: "lifecycle_edge",
+        gateRef: { fromState: "validating", toState: "promoted" },
+        status: over.status ?? "pass",
+        evidence: {
+          scanner: "trivy",
+          scannerVersion: "0.50.0",
+          artifactDigest: over.scannedDigest ?? ociDigest,
+          expectedDigest: ociDigest,
+          digestMatch: over.digestMatch ?? true,
+          severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
+          threshold: { maxCritical: 0, maxHigh: 0 }
+        }
+      })
+    );
+  }
+
+  /** The passing, digest-bound scan the gate requires — the default `seedScanOutcome`. */
+  async function seedPassingScan(changeId: string, ociDigest: string): Promise<void> {
+    await seedScanOutcome(changeId, ociDigest);
+  }
+
+  /** Export from domain A and unwrap the success bundle — throws if the gate unexpectedly refused. */
+  async function exportBundleA(changeId: string): Promise<PromotionBundle> {
+    const outcome = await exportPromotionBundle(domainA.db, {
+      orgId: domainA.orgId,
+      peerIdOrName: domainB.orgName,
+      changeIdOrUrn: changeId
+    });
+    if (outcome.refused) throw new Error(`unexpected export refusal: ${outcome.reason}`);
+    return outcome.bundle;
   }
 
   it("a valid approval attestation in a promotion bundle is accepted as evidence, and the local change lands in `proposed`", async () => {
     const { changeId } = await proposeApprovedChangeInA();
 
-    const bundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
-      exportPromotionBundle(tx, {
-        orgId: domainA.orgId,
-        peerIdOrName: domainB.orgName,
-        changeIdOrUrn: changeId
-      })
-    );
+    const bundle = await exportBundleA(changeId);
     expect(bundle.approvals.length).toBe(1);
 
     const result = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
@@ -934,13 +990,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
 
   it("SECURITY: a promotion bundle with a forged approval attestation (signed by the WRONG key) rejects that approval as evidence, but does not block the import", async () => {
     const { changeId } = await proposeApprovedChangeInA();
-    const bundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
-      exportPromotionBundle(tx, {
-        orgId: domainA.orgId,
-        peerIdOrName: domainB.orgName,
-        changeIdOrUrn: changeId
-      })
-    );
+    const bundle = await exportBundleA(changeId);
     expect(bundle.approvals.length).toBe(1);
 
     // Forge: sign the SAME record with a throwaway key not registered as domain A's, then have
@@ -979,13 +1029,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
 
   it("SECURITY: a promotion bundle whose approval binds a DIFFERENT object than the one being promoted is rejected as evidence", async () => {
     const { changeId } = await proposeApprovedChangeInA();
-    const bundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
-      exportPromotionBundle(tx, {
-        orgId: domainA.orgId,
-        peerIdOrName: domainB.orgName,
-        changeIdOrUrn: changeId
-      })
-    );
+    const bundle = await exportBundleA(changeId);
 
     // Re-sign the SAME attestation record but with the URN swapped (binding mismatch) — the
     // per-attestation signature IS valid (genuinely produced by domain A's real key over the
@@ -1052,13 +1096,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
 
   it("E3: an exported bundle carries a TYPED artifacts[] (oci image + sbom blob) and artifactDigests is its derived projection", async () => {
     const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts);
-    const bundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
-      exportPromotionBundle(tx, {
-        orgId: domainA.orgId,
-        peerIdOrName: domainB.orgName,
-        changeIdOrUrn: changeId
-      })
-    );
+    const bundle = await exportBundleA(changeId);
 
     expect(bundle.header.formatVersion).toBe(1); // NOT bumped
     expect(bundle.artifacts).toBeDefined();
@@ -1078,13 +1116,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
 
   it("E3 CHECKSUM-INVARIANCE: the real exported checksum is byte-identical with vs without artifacts[]", async () => {
     const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts);
-    const bundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
-      exportPromotionBundle(tx, {
-        orgId: domainA.orgId,
-        peerIdOrName: domainB.orgName,
-        changeIdOrUrn: changeId
-      })
-    );
+    const bundle = await exportBundleA(changeId);
     // The exporter's own checksum verifies over the field list that EXCLUDES artifacts.
     expect(computeBundleChecksum(promotionChecksumPayload(bundle))).toBe(bundle.checksum);
     // Stripping artifacts[] leaves the checksum unchanged (it was never in the payload).
@@ -1096,13 +1128,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
 
   it("E3 NEW->OLD: a bundle exported WITH artifacts[] verifies and imports under an OLD import path that only knows artifactDigests", async () => {
     const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts);
-    const bundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
-      exportPromotionBundle(tx, {
-        orgId: domainA.orgId,
-        peerIdOrName: domainB.orgName,
-        changeIdOrUrn: changeId
-      })
-    );
+    const bundle = await exportBundleA(changeId);
     expect(bundle.artifacts).toBeDefined();
 
     // Simulate an OLD peer that predates E3: strip artifacts[] entirely from the wire.
@@ -1131,16 +1157,15 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
 
   it("E3 OLD->NEW: a v1 bundle with NO artifacts[] imports cleanly (optional, undefined)", async () => {
     const { changeId } = await proposeApprovedChangeInA(); // no sourceRef → no artifacts
-    const bundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
-      exportPromotionBundle(tx, {
-        orgId: domainA.orgId,
-        peerIdOrName: domainB.orgName,
-        changeIdOrUrn: changeId
-      })
-    );
-    // No tracked artifacts → artifacts is undefined (NOT []), and JSON.stringify drops it.
+    const bundle = await exportBundleA(changeId);
+    // No tracked artifacts → the top-level ENVELOPE `artifacts` field is undefined (NOT []), so it
+    // is dropped from the CHECKSUM-relevant canonical string and the envelope stays byte-identical to
+    // a v1 bundle. (M17.3 E6 adds a checksum-EXCLUDED `promotionManifest` sibling that legitimately
+    // enumerates the — here empty — artifact set, so the whole-bundle JSON is no longer the right
+    // proxy; assert the E3 invariant precisely on the checksum payload instead.)
     expect(bundle.artifacts).toBeUndefined();
-    expect(JSON.stringify(bundle)).not.toContain("\"artifacts\"");
+    expect(JSON.stringify(promotionChecksumPayload(bundle))).not.toContain("\"artifacts\"");
+    expect(computeBundleChecksum(promotionChecksumPayload(bundle))).toBe(bundle.checksum);
     expect(bundle.artifactDigests).toEqual([]);
 
     const result = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
@@ -1152,13 +1177,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
 
   it("E3 ROUND-TRIP: export->import preserves the typed set (incl. the SBOM blob) and the derived artifactDigests on the imported change", async () => {
     const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts);
-    const bundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
-      exportPromotionBundle(tx, {
-        orgId: domainA.orgId,
-        peerIdOrName: domainB.orgName,
-        changeIdOrUrn: changeId
-      })
-    );
+    const bundle = await exportBundleA(changeId);
     // The wire survives a full Zod parse (ingress validation) without losing artifacts[].
     const parsed = PromotionBundleSchema.parse(JSON.parse(JSON.stringify(bundle)));
     expect(parsed.artifacts).toEqual(bundle.artifacts);
@@ -1184,13 +1203,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
 
   it("E3 FAIL-CLOSED: tampering with artifactDigests still fails the existing bundle checksum", async () => {
     const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts);
-    const bundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
-      exportPromotionBundle(tx, {
-        orgId: domainA.orgId,
-        peerIdOrName: domainB.orgName,
-        changeIdOrUrn: changeId
-      })
-    );
+    const bundle = await exportBundleA(changeId);
     // Mutate the protected flat field WITHOUT re-signing → checksum mismatch, rejected fail-closed.
     const tampered: PromotionBundle = {
       ...bundle,
@@ -1201,5 +1214,198 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
         importPromotionBundle(tx, domainB.orgId, tampered)
       )
     ).rejects.toMatchObject({ status: 409, detail: expect.stringMatching(/checksum mismatch/) });
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // M17.3 (E6) — the CAPSTONE. Export HARD-REFUSES (with a decision_id) every cross-boundary
+  // promotion lacking a passing, digest-bound scan for each SUBSTANTIVE artifact (SBOM EXEMPT), and
+  // co-signs a SELF-BINDING cosign manifest (no swap vector) that is EXCLUDED from the Ed25519
+  // checksum. SCP signs only its OWN manifest (coordinate-not-execute). Uses REAL cosign.
+  // -----------------------------------------------------------------------------------------
+
+  it("E6 HARD-GATE: a substantive artifact with a FAILED scan is REFUSED at export with a decision_id", async () => {
+    const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts, { seedScan: false });
+    // Seed a FAILED scan for the OCI artifact — a present-but-failing outcome must still refuse.
+    await seedScanOutcome(changeId, OCI_DIGEST, { status: "fail" });
+
+    const outcome = await exportPromotionBundle(domainA.db, {
+      orgId: domainA.orgId,
+      peerIdOrName: domainB.orgName,
+      changeIdOrUrn: changeId
+    });
+    expect(outcome.refused).toBe(true);
+    if (!outcome.refused) throw new Error("expected refusal");
+    expect(outcome.reason).toContain(OCI_DIGEST);
+
+    // The block persisted an audited Decision that resolves by its decision_id (DESIGN §6/§10.4).
+    const decision = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      getDecision(tx, domainA.orgId, outcome.decisionId)
+    );
+    expect(decision.verdict).toBe("block");
+    expect(decision.kind).toBe("promotion-export-scan-gate");
+  });
+
+  it("E6 UNIVERSAL/FAIL-CLOSED: a substantive artifact with NO scan outcome is REFUSED", async () => {
+    const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts, { seedScan: false });
+    // No scan seeded at all — a MISSING scan refuses exactly like a failed one (universal gate).
+    const outcome = await exportPromotionBundle(domainA.db, {
+      orgId: domainA.orgId,
+      peerIdOrName: domainB.orgName,
+      changeIdOrUrn: changeId
+    });
+    expect(outcome.refused).toBe(true);
+    if (!outcome.refused) throw new Error("expected refusal");
+    expect(outcome.decisionId).toBeTruthy();
+    expect(outcome.reason).toContain(OCI_DIGEST);
+  });
+
+  it("E6 DIGEST-BINDING: a passing scan of a DIFFERENT digest does NOT satisfy the gate (refused)", async () => {
+    const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts, { seedScan: false });
+    // A passing scan, but of some OTHER image — digestMatch true against the WRONG digest must not
+    // authorize this artifact (defense-in-depth boundary re-check of M17.1's digest binding).
+    const otherDigest = "sha256:" + "f".repeat(64);
+    await seedScanOutcome(changeId, otherDigest, { scannedDigest: otherDigest, digestMatch: true });
+
+    const outcome = await exportPromotionBundle(domainA.db, {
+      orgId: domainA.orgId,
+      peerIdOrName: domainB.orgName,
+      changeIdOrUrn: changeId
+    });
+    expect(outcome.refused).toBe(true);
+  });
+
+  it("E6 SIGN: a passing digest-bound scan EXPORTS and carries a cosign-signed SELF-BINDING manifest", async () => {
+    const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts); // auto-seeds passing scan
+    const bundle = await exportBundleA(changeId);
+
+    expect(bundle.promotionManifest).toBeDefined();
+    expect(bundle.manifestSignature).toBeTruthy();
+    // The manifest SELF-BINDS this bundle's identity (swap defense).
+    expect(bundle.promotionManifest!.sourceChangeObjectId).toBe(bundle.header.sourceChangeObjectId);
+    expect(bundle.promotionManifest!.exporterDomainId).toBe(bundle.header.exporterDomainId);
+    expect(bundle.promotionManifest!.peerDomainId).toBe(bundle.header.peerDomainId);
+    expect(bundle.promotionManifest!.changeUrn).toBe(bundle.change.urn);
+    expect(bundle.promotionManifest!.artifacts.map((a) => a.digest)).toEqual(bundle.artifactDigests);
+
+    // verify-blob the manifest with domain A's cosign PUBLIC key (E5) — proves a real signature.
+    const cosignPub = await getInstanceCosignPublicKey(domainA.db, domainA.orgId);
+    const ok = await verifyBlob(
+      canonicalStringify(bundle.promotionManifest),
+      bundle.manifestSignature!,
+      cosignPub.publicKey
+    );
+    expect(ok).toBe(true);
+
+    // Negative control: tampering the manifest breaks verification (the signature is meaningful).
+    const tamperedManifest = {
+      ...bundle.promotionManifest!,
+      changeUrn: "urn:scp:elsewhere:change:not-this-one"
+    };
+    const tamperedOk = await verifyBlob(
+      canonicalStringify(tamperedManifest),
+      bundle.manifestSignature!,
+      cosignPub.publicKey
+    );
+    expect(tamperedOk).toBe(false);
+  });
+
+  it("E6 SBOM-EXEMPT: an unscanned SBOM blob alongside a scanned OCI image still exports", async () => {
+    // proposeApprovedChangeInA seeds a passing scan for the OCI digest ONLY — never the SBOM digest.
+    const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts);
+    const bundle = await exportBundleA(changeId);
+    // The SBOM blob is present in the artifact set but was NOT independently scan-gated.
+    const blob = bundle.artifacts!.find((a) => a.type === "blob");
+    expect(blob?.digest).toBe(SBOM_DIGEST);
+    // And the manifest still enumerates BOTH (self-binding covers the full set).
+    expect(bundle.promotionManifest!.artifacts.map((a) => a.digest)).toEqual([
+      OCI_DIGEST,
+      SBOM_DIGEST
+    ]);
+  });
+
+  it("E6 CHECKSUM-EXCLUDED: the Ed25519 checksum is byte-identical with vs without the manifest fields", async () => {
+    const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts);
+    const bundle = await exportBundleA(changeId);
+    expect(bundle.promotionManifest).toBeDefined();
+    // The exporter's own checksum verifies over the payload that EXCLUDES the manifest fields.
+    expect(computeBundleChecksum(promotionChecksumPayload(bundle))).toBe(bundle.checksum);
+    // Stripping BOTH manifest siblings changes nothing under the checksum (E3 invariant preserved).
+    const { promotionManifest: _m, manifestSignature: _s, ...withoutManifest } = bundle;
+    expect(
+      computeBundleChecksum(promotionChecksumPayload(withoutManifest as PromotionBundle))
+    ).toBe(bundle.checksum);
+  });
+
+  it("E6 NEW->OLD: an old outpost ignoring the manifest fields still verifies + imports the Ed25519 bundle", async () => {
+    const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts);
+    const bundle = await exportBundleA(changeId);
+
+    // Simulate an OLD peer that predates E6: it drops the unknown manifest siblings entirely.
+    const { promotionManifest: _m, manifestSignature: _s, ...oldShape } = bundle;
+    const oldBundle = oldShape as PromotionBundle;
+    expect(oldBundle.promotionManifest).toBeUndefined();
+    expect(oldBundle.manifestSignature).toBeUndefined();
+
+    const aKey = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      ensureInstanceKey(tx, domainA.orgId)
+    );
+    expect(computeBundleChecksum(promotionChecksumPayload(oldBundle))).toBe(oldBundle.checksum);
+    expect(
+      verifyBundleSignature(oldBundle.checksum, oldBundle.bundleSignature, aKey.publicKey)
+    ).toBe(true);
+
+    const result = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      importPromotionBundle(tx, domainB.orgId, oldBundle)
+    );
+    expect(result.approvalsAccepted).toBe(1);
+  });
+
+  it("E6 SWAP-DEFENSE: a manifestSignature does NOT verify against a DIFFERENT bundle's manifest", async () => {
+    // Two DISTINCT promotions (different change ids / URNs / artifact digests).
+    const otherOci = "sha256:" + "1".repeat(64);
+    const a = await proposeApprovedChangeInA(sourceRefWithArtifacts);
+    const b = await proposeApprovedChangeInA({ artifact_digest: otherOci });
+    const bundleA = await exportBundleA(a.changeId);
+    const bundleB = await exportBundleA(b.changeId);
+    expect(bundleA.promotionManifest!.sourceChangeObjectId).not.toBe(
+      bundleB.promotionManifest!.sourceChangeObjectId
+    );
+
+    const cosignPub = await getInstanceCosignPublicKey(domainA.db, domainA.orgId);
+    // Control: A's signature verifies against A's OWN manifest.
+    expect(
+      await verifyBlob(
+        canonicalStringify(bundleA.promotionManifest),
+        bundleA.manifestSignature!,
+        cosignPub.publicKey
+      )
+    ).toBe(true);
+    // Attack: A's signature LIFTED onto B's manifest does NOT verify (self-binding broke the swap).
+    expect(
+      await verifyBlob(
+        canonicalStringify(bundleB.promotionManifest),
+        bundleA.manifestSignature!,
+        cosignPub.publicKey
+      )
+    ).toBe(false);
+  });
+
+  it("E6 EDGE CASE — no substantive artifact: a metadata-only promotion EXPORTS (vacuous pass) with a signed manifest over an empty artifact set", async () => {
+    // No sourceRef → no oci/rpm/deb/npm/config/infra artifact to scan. Owner-confirmed behavior: the
+    // gate ("every substantive artifact is scanned") is vacuously satisfied, so export PROCEEDS — a
+    // config/policy-only promotion is not blocked — and still carries a cosign-signed manifest.
+    const { changeId } = await proposeApprovedChangeInA();
+    const bundle = await exportBundleA(changeId);
+    expect(bundle.artifacts).toBeUndefined(); // no typed artifact set on the envelope
+    expect(bundle.promotionManifest).toBeDefined();
+    expect(bundle.promotionManifest!.artifacts).toEqual([]); // manifest binds an empty set
+    const cosignPub = await getInstanceCosignPublicKey(domainA.db, domainA.orgId);
+    expect(
+      await verifyBlob(
+        canonicalStringify(bundle.promotionManifest),
+        bundle.manifestSignature!,
+        cosignPub.publicKey
+      )
+    ).toBe(true);
   });
 });

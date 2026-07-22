@@ -33,6 +33,8 @@ export {
   signBlobFlags,
   signBlobDetached,
   verifyBlobDetached,
+  signBlob,
+  verifyBlob,
   readPublicKey,
   type SigningKey,
   type VerifyResult
