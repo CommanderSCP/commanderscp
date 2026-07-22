@@ -195,6 +195,7 @@ import {
   listExecutorBindings as listExecutorBindingsRequest,
   deleteExecutorBinding as deleteExecutorBindingRequest,
   repurposeExecutorBinding as repurposeExecutorBindingRequest,
+  getRegionalExecutors as getRegionalExecutorsRequest,
   putNotificationBinding as putNotificationBindingRequest,
   listNotificationBindings as listNotificationBindingsRequest,
   deleteNotificationBinding as deleteNotificationBindingRequest,
@@ -306,6 +307,7 @@ import type {
   CreateExecutorBindingRequest,
   ExecutorBinding,
   ExecutorType,
+  RegionalExecutorView,
   CreateNotificationBindingRequest,
   NotificationBinding,
   NotificationBindingListResponse,
@@ -1619,6 +1621,21 @@ export class ScpClient {
         path: { idOrUrn },
         body: { type: toType },
         ...(fromType ? { query: { type: fromType } } : {})
+      });
+      return unwrap(result);
+    },
+    /** Multi-region Argo CD (M15.6, ADR-0017 §3): read + validate a prod environment's per-region
+     *  Argo CD set — `prod env -> {region -> argocd binding}`. `type` omitted ⇒ 'configuration'
+     *  (Argo CD is GitOps sync). `valid` is false (with per-gap `problems`) if any region lacks its
+     *  own Argo CD binding, so a multi-region prod env is never silently deployed against nothing. */
+    getRegionalExecutors: async (
+      environment: string,
+      type?: ExecutorType
+    ): Promise<RegionalExecutorView> => {
+      const result = await getRegionalExecutorsRequest({
+        client: this.client,
+        path: { environment },
+        ...(type ? { query: { type } } : {})
       });
       return unwrap(result);
     }

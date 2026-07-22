@@ -14197,6 +14197,69 @@ export type ListExecutorBindingsResponses = {
 
 export type ListExecutorBindingsResponse = ListExecutorBindingsResponses[keyof ListExecutorBindingsResponses];
 
+export type GetRegionalExecutorsData = {
+    body?: never;
+    path: {
+        environment: string;
+    };
+    query?: {
+        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+    };
+    url: '/environments/{environment}/regional-executors';
+};
+
+export type GetRegionalExecutorsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetRegionalExecutorsError = GetRegionalExecutorsErrors[keyof GetRegionalExecutorsErrors];
+
+export type GetRegionalExecutorsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        environment: string;
+        type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        expectedModule: 'argocd';
+        regions: Array<{
+            region: string;
+            targetId: string;
+            targetName: string;
+            bound: boolean;
+            pluginModule: string | null;
+            isExpectedModule: boolean;
+            executionSystemId: string | null;
+            externalRef: string | null;
+        }>;
+        valid: boolean;
+        problems: Array<string>;
+    };
+};
+
+export type GetRegionalExecutorsResponse = GetRegionalExecutorsResponses[keyof GetRegionalExecutorsResponses];
+
 export type DeleteNotificationBindingData = {
     body?: never;
     path: {
