@@ -25,6 +25,21 @@ export {
   type ResolvedCosign
 } from "./cosign-bin.js";
 
+// Skopeo binary resolution + provenance assertion (M15.5 c1) — the same pinned-vs-probe pattern
+// applied to the vendored skopeo. Resolution only; no product behavior (the c2 relay is the
+// first consumer). The release/bundle path's operator-PATH skopeo does NOT go through this.
+export {
+  PINNED_SKOPEO_VERSION,
+  PINNED_SKOPEO_IMAGE,
+  VENDORED_SKOPEO_PATH,
+  SKOPEO_BIN_ENV,
+  resolveSkopeo,
+  skopeoReportedVersion,
+  assertPinnedSkopeoVersion,
+  type SkopeoSource,
+  type ResolvedSkopeo
+} from "./skopeo-bin.js";
+
 // Keyful/offline signing + verification wrapper.
 export {
   cosignAvailable,
