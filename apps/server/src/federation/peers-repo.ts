@@ -81,6 +81,22 @@ export async function currentPeerPublicKey(
   return row?.publicKey ?? null;
 }
 
+/** The peer's CURRENT cosign VERIFICATION public key (PEM), or `null` when the peer has none
+ *  registered (paired pre-E5, or never supplied one). Parallels `currentPeerPublicKey` and rides
+ *  the SAME non-superseded key window as the Ed25519 key, so a cosign rotation is anchored to the
+ *  same journal-sequence window (never a timestamp). This is the ONLY key M17.4(a) trusts to verify
+ *  that peer's cosign-signed promotion manifests — `null` is load-bearing for the downgrade defense
+ *  (a manifest-less bundle from a peer that HAS a cosign key is a downgrade; from one that has none
+ *  it is genuine pre-E6 back-compat). */
+export async function currentPeerCosignPublicKey(
+  tx: TenantTx,
+  orgId: string,
+  peerDomainId: string
+): Promise<string | null> {
+  const row = await currentPeerKeyRow(tx, orgId, peerDomainId);
+  return row?.cosignPublicKey ?? null;
+}
+
 export interface PeerKeyWindow {
   publicKey: string;
   effectiveFromSequence: number;

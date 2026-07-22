@@ -360,7 +360,12 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       // M9.3 (ADR-0001) — see the /exports route above for what this does and doesn't change.
       await enforceFederationMtls(deps, request);
       const auth = await requireAuth(deps, request);
-      const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+      // Authorize + record the mTLS advisory in their OWN tx. A PROMOTION import cannot run inside a
+      // single held tx — M17.4(a)'s manifest verification runs a cosign `verify-blob` SUBPROCESS and
+      // `importPromotionBundle` manages its own transaction phases around it (it takes `deps.db`, not
+      // this tx), exactly like `exportPromotionBundle`.
+      const body = request.body;
+      await withTenantTx(deps.db, auth.orgId, async (tx) => {
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
@@ -375,18 +380,20 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
           {
             orgId: auth.orgId,
             mtlsPeerDomainId: request.mtlsPeerDomainId,
-            exporterDomainId: request.body.header.exporterDomainId
+            exporterDomainId: body.header.exporterDomainId
           },
           request.log
         );
-        if (isPromotionBundle(request.body)) {
-          const imported = await importPromotionBundle(tx, auth.orgId, request.body);
-          return { kind: "promotion" as const, ...imported };
-        }
-        const imported = await importSyncBundle(tx, auth.orgId, request.body);
-        return { kind: "sync" as const, ...imported };
       });
-      reply.status(200).send(result);
+      if (isPromotionBundle(body)) {
+        const imported = await importPromotionBundle(deps.db, auth.orgId, body);
+        reply.status(200).send({ kind: "promotion" as const, ...imported });
+        return;
+      }
+      const imported = await withTenantTx(deps.db, auth.orgId, (tx) =>
+        importSyncBundle(tx, auth.orgId, body)
+      );
+      reply.status(200).send({ kind: "sync" as const, ...imported });
     }
   });
 

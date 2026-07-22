@@ -12,13 +12,17 @@ import {
   signBundleChecksum,
   verifyBundleSignature
 } from "@scp/schemas/federation-journal";
-import { signBlob } from "@scp/cosign";
+import { signBlob, verifyBlob } from "@scp/cosign";
 import type { Db } from "../db/client.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { badRequest, conflict } from "../errors.js";
 import { ensureFederationSelf } from "./self-repo.js";
-import { getPeerByIdOrName, currentPeerPublicKey } from "./peers-repo.js";
+import {
+  getPeerByIdOrName,
+  currentPeerPublicKey,
+  currentPeerCosignPublicKey
+} from "./peers-repo.js";
 import { recordBundleTransfer } from "./bundle-transfers-repo.js";
 import { ensureInstanceKey, verifyAttestation } from "../governance/attestation.js";
 import { ensureInstanceCosignKey } from "../governance/cosign-keys.js";
@@ -380,35 +384,306 @@ export async function exportPromotionBundle(
   return { refused: false, bundle };
 }
 
+/**
+ * M17.4(a) / M15.2 — the RECEIVER-side verification of the commander's cosign-signed SELF-BINDING
+ * promotion manifest (the send-side counterpart is `buildPromotionManifest` + the E6 export gate).
+ * This is the outpost's universal pre-deploy validation (ADR-0011): ONE implementation runs at
+ * EVERY receiving hop — a commander importing from a peer, or (M15.2) an outpost verifying a
+ * commander-promoted artifact BEFORE deploy. The outpost NEVER re-scans (trust scan-at-source,
+ * ADR-0013/ADR-0015 §6a) — this gate re-verifies the signed metadata, it does not re-run any scan.
+ *
+ * Metadata-only + coordinate-not-execute: it checks digests/signatures/identity, never artifact
+ * BYTES (those are absent from a federation bundle — ADR-0009). Per-artifact `cosign verify` of each
+ * artifact's ORIGIN `signatureRef` is part-(b), DEFERRED to M15.5 (the unresolved artifact-bytes
+ * channel — ADR-0015 §6b, the "honest open gap"): it needs the bytes at the outpost's Gitea/registry
+ * and is NOT half-built here.
+ *
+ * FAIL-CLOSED over five properties, in order:
+ *  1. SIGNATURE — `cosign verify-blob canonicalStringify(manifest)` against the EXPORTER peer's
+ *     registered cosign pubkey (E5) must return true (the EXACT bytes phase-3 of export signed).
+ *  2. SET-EQUALITY — `bundle.artifacts` (typed, `undefined`→`[]`) EXACTLY equals `manifest.artifacts`
+ *     as a MULTISET over `{type,digest,signatureRef}` (equal cardinality + membership; no
+ *     add/substitute). Manifest entries carry no `location`/`format`, so only those three fields are
+ *     compared. This is the ONLY thing protecting `bundle.artifacts` — it is EXCLUDED from the
+ *     Ed25519 checksum (E3), so nothing else binds it.
+ *  3. THE TIE — `bundle.artifactDigests` (which IS in the Ed25519 checksum) EQUALS
+ *     `manifest.artifacts.map(a => a.digest)` as a multiset. This binds the cosign-anchored set to the
+ *     Ed25519-anchored set so neither can be tampered independently of the other.
+ *  4. SELF-BINDING — the manifest's `sourceChangeObjectId`/`exporterDomainId`/`peerDomainId`/
+ *     `changeUrn` each equal the bundle's, blocking a manifest lifted from a different bundle.
+ *  5. BACK-COMPAT + DOWNGRADE DEFENSE — absent manifest AND the peer has NO cosign key => ACCEPT
+ *     (a genuine pre-E5/E6 Ed25519-only bundle). Absent manifest BUT the peer HAS a cosign key =>
+ *     DOWNGRADE ATTACK => FAIL-CLOSED (an attacker stripped the manifest to dodge this gate). A
+ *     PRESENT manifest is ALWAYS verified — including when no cosign key is registered, which then
+ *     fails closed (present but unverifiable).
+ *
+ * Pure of the DB and of any transaction: the ONLY side effect is the `verifyBlob` cosign SUBPROCESS
+ * (step 1), which is exactly why `importPromotionBundle` calls this OUTSIDE its apply tx (the
+ * codebase forbids holding a pooled connection across a cosign subprocess — see `exportPromotionBundle`).
+ */
+export interface ManifestVerifyContext {
+  reason: string;
+  detail: Record<string, unknown>;
+}
+export type ManifestVerifyResult = { ok: true } | ({ ok: false } & ManifestVerifyContext);
+
+/** Canonical multiset key for an artifact entry — only the three fields the manifest carries. */
+function artifactKey(a: { type: string; digest: string; signatureRef?: string | undefined }): string {
+  return JSON.stringify([a.type, a.digest, a.signatureRef ?? ""]);
+}
+/** Multiset equality: equal cardinality AND identical element counts (sort the canonical keys). */
+function multisetEqual(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const as = [...a].sort();
+  const bs = [...b].sort();
+  return as.every((v, i) => v === bs[i]);
+}
+
+export async function verifyPromotionManifest(args: {
+  bundle: PromotionBundle;
+  exporterCosignPubkey: string | null;
+}): Promise<ManifestVerifyResult> {
+  const { bundle, exporterCosignPubkey } = args;
+  const manifest = bundle.promotionManifest;
+  const manifestSignature = bundle.manifestSignature;
+
+  // 5. BACK-COMPAT + DOWNGRADE DEFENSE (evaluated first — governs whether a manifest is even required).
+  if (!manifest || !manifestSignature) {
+    if (exporterCosignPubkey) {
+      return {
+        ok: false,
+        reason:
+          "promotion bundle carries NO cosign manifest, but the exporter peer HAS a registered " +
+          "cosign key — a manifest-less bundle from an E5/E6-capable peer is a DOWNGRADE attack " +
+          "(rejected, fail-closed)",
+        detail: {
+          check: "downgrade",
+          hasManifest: Boolean(manifest),
+          hasSignature: Boolean(manifestSignature),
+          peerHasCosignKey: true
+        }
+      };
+    }
+    // Genuine pre-E5/E6 Ed25519-only bundle from a peer with no cosign trust anchor — ACCEPT.
+    return { ok: true };
+  }
+
+  // A manifest is PRESENT → always verify. Without a trust anchor it cannot be verified → fail closed.
+  if (!exporterCosignPubkey) {
+    return {
+      ok: false,
+      reason:
+        "promotion bundle carries a cosign manifest but the exporter peer has NO registered cosign " +
+        "key to verify it against (rejected, fail-closed) — re-pair the peer to exchange its E5 key",
+      detail: { check: "signature", peerHasCosignKey: false }
+    };
+  }
+
+  // 1. SIGNATURE — cosign verify-blob over the EXACT canonical bytes the exporter signed (subprocess).
+  const sigOk = await verifyBlob(
+    canonicalStringify(manifest),
+    manifestSignature,
+    exporterCosignPubkey
+  );
+  if (!sigOk) {
+    return {
+      ok: false,
+      reason: "promotion manifest cosign signature verification failed (rejected, fail-closed)",
+      detail: { check: "signature" }
+    };
+  }
+
+  // 4. SELF-BINDING — the manifest must bind EXACTLY this bundle's identity (blocks a manifest-swap).
+  if (manifest.sourceChangeObjectId !== bundle.header.sourceChangeObjectId) {
+    return {
+      ok: false,
+      reason: "promotion manifest sourceChangeObjectId does not bind this bundle (rejected, fail-closed)",
+      detail: {
+        check: "self-binding",
+        field: "sourceChangeObjectId",
+        manifest: manifest.sourceChangeObjectId,
+        bundle: bundle.header.sourceChangeObjectId
+      }
+    };
+  }
+  if (manifest.exporterDomainId !== bundle.header.exporterDomainId) {
+    return {
+      ok: false,
+      reason: "promotion manifest exporterDomainId does not bind this bundle (rejected, fail-closed)",
+      detail: {
+        check: "self-binding",
+        field: "exporterDomainId",
+        manifest: manifest.exporterDomainId,
+        bundle: bundle.header.exporterDomainId
+      }
+    };
+  }
+  if (manifest.peerDomainId !== bundle.header.peerDomainId) {
+    return {
+      ok: false,
+      reason: "promotion manifest peerDomainId does not bind this bundle (rejected, fail-closed)",
+      detail: {
+        check: "self-binding",
+        field: "peerDomainId",
+        manifest: manifest.peerDomainId,
+        bundle: bundle.header.peerDomainId
+      }
+    };
+  }
+  if (manifest.changeUrn !== bundle.change.urn) {
+    return {
+      ok: false,
+      reason: "promotion manifest changeUrn does not bind this bundle (rejected, fail-closed)",
+      detail: {
+        check: "self-binding",
+        field: "changeUrn",
+        manifest: manifest.changeUrn,
+        bundle: bundle.change.urn
+      }
+    };
+  }
+
+  // 2. SET-EQUALITY — the arrived typed set EXACTLY equals the authorized (signed) set. `undefined`→[].
+  const bundleArtifacts = bundle.artifacts ?? [];
+  const bundleKeys = bundleArtifacts.map(artifactKey);
+  const manifestKeys = manifest.artifacts.map(artifactKey);
+  if (!multisetEqual(bundleKeys, manifestKeys)) {
+    return {
+      ok: false,
+      reason:
+        "promotion bundle's arrived artifact set does not exactly equal the cosign-signed manifest's " +
+        "authorized set — an artifact was injected, substituted, added, or dropped (rejected, fail-closed)",
+      detail: {
+        check: "set-equality",
+        bundleArtifacts: bundleKeys.sort(),
+        manifestArtifacts: manifestKeys.sort()
+      }
+    };
+  }
+
+  // 3. THE TIE — the Ed25519-anchored digest list must equal the cosign-anchored one (load-bearing:
+  //    the typed `artifacts[]` is EXCLUDED from the Ed25519 checksum, so ONLY this ties the two
+  //    anchors together, blocking independent tampering of either set).
+  const ed25519Digests = [...bundle.artifactDigests].sort();
+  const manifestDigests = manifest.artifacts.map((a) => a.digest).sort();
+  if (!multisetEqual(ed25519Digests, manifestDigests)) {
+    return {
+      ok: false,
+      reason:
+        "promotion bundle's Ed25519-anchored artifactDigests do not equal the cosign-signed manifest's " +
+        "digest set — the two anchors diverge, so one was tampered independently (rejected, fail-closed)",
+      detail: {
+        check: "tie",
+        artifactDigests: ed25519Digests,
+        manifestDigests
+      }
+    };
+  }
+
+  return { ok: true };
+}
+
+/**
+ * Import a Promotion Bundle. Takes a `Db` (not a single `TenantTx`) because M17.4(a)'s manifest
+ * verification runs a cosign `verify-blob` SUBPROCESS, and the codebase forbids holding a pooled
+ * connection open across a cosign subprocess (`exportPromotionBundle` splits phases for exactly this
+ * reason). Three phases around the out-of-tx subprocess:
+ *   1. tx: address-to-self + resolve exporter peer + Ed25519 checksum/signature gate + resolve the
+ *      peer's cosign pubkey. (No cosign subprocess yet — pure DB.)
+ *   2. NO tx: M17.4(a) `verifyPromotionManifest` — the cosign subprocess + set/tie/self-binding/
+ *      downgrade checks. On failure, persist a `block` Decision + hash-chained audit event in a
+ *      fresh tx and throw a 409 carrying `decision_id` (mirrors the export gate — DESIGN §6/§10.4).
+ *   3. tx: apply — propose the local Change, attach approval evidence, record the transfer.
+ */
 export async function importPromotionBundle(
-  tx: TenantTx,
+  db: Db,
   orgId: string,
   bundle: PromotionBundle
 ): Promise<ImportPromotionResponse> {
-  const self = await ensureFederationSelf(tx, orgId);
-  if (bundle.header.peerDomainId !== self.domainId) {
-    throw conflict(
-      `promotion bundle is addressed to domain '${bundle.header.peerDomainId}', not this domain ('${self.domainId}')`
-    );
-  }
-  const peer = await getPeerByIdOrName(tx, orgId, bundle.header.exporterDomainId);
+  // Phase 1 — envelope gate + resolve the exporter's cosign pubkey, all inside one tx (no subprocess).
+  const phase1 = await withTenantTx(db, orgId, async (tx) => {
+    const self = await ensureFederationSelf(tx, orgId);
+    if (bundle.header.peerDomainId !== self.domainId) {
+      throw conflict(
+        `promotion bundle is addressed to domain '${bundle.header.peerDomainId}', not this domain ('${self.domainId}')`
+      );
+    }
+    const peer = await getPeerByIdOrName(tx, orgId, bundle.header.exporterDomainId);
 
-  // 1. Bundle-level checksum + signature — fail closed, exactly like a sync bundle. Checksum covers
-  //    the header (M6 review fix — CRITICAL). A promotion bundle carries no journal sequence to
-  //    anchor key selection to, so it is verified against the peer's CURRENT (non-superseded) key —
-  //    NEVER a timestamp-selected key (that was the `bundle.header.exportedAt` /
-  //    `evidence.record.timestamp` backdating vector). A rotated-away key is hard-revoked for
-  //    promotion: a bundle it signed no longer verifies once the peer has rotated.
-  //    `artifacts` (M17.3 E3) is EXCLUDED from this recompute exactly as it is at export — the
-  //    typed set never participates in checksum/signature verification in the EXPAND phase.
-  if (computeBundleChecksum(promotionChecksumPayload(bundle)) !== bundle.checksum) {
-    throw conflict("promotion bundle checksum mismatch (rejected, fail-closed)");
-  }
-  const currentKey = await currentPeerPublicKey(tx, orgId, peer.id);
-  if (!currentKey || !verifyBundleSignature(bundle.checksum, bundle.bundleSignature, currentKey)) {
-    throw conflict("promotion bundle signature verification failed (rejected, fail-closed)");
+    // 1. Bundle-level checksum + signature — fail closed, exactly like a sync bundle. Checksum covers
+    //    the header (M6 review fix — CRITICAL). A promotion bundle carries no journal sequence to
+    //    anchor key selection to, so it is verified against the peer's CURRENT (non-superseded) key —
+    //    NEVER a timestamp-selected key (that was the `bundle.header.exportedAt` /
+    //    `evidence.record.timestamp` backdating vector). A rotated-away key is hard-revoked for
+    //    promotion: a bundle it signed no longer verifies once the peer has rotated.
+    //    `artifacts` (M17.3 E3) is EXCLUDED from this recompute exactly as it is at export — the
+    //    typed set never participates in checksum/signature verification in the EXPAND phase.
+    if (computeBundleChecksum(promotionChecksumPayload(bundle)) !== bundle.checksum) {
+      throw conflict("promotion bundle checksum mismatch (rejected, fail-closed)");
+    }
+    const currentKey = await currentPeerPublicKey(tx, orgId, peer.id);
+    if (!currentKey || !verifyBundleSignature(bundle.checksum, bundle.bundleSignature, currentKey)) {
+      throw conflict("promotion bundle signature verification failed (rejected, fail-closed)");
+    }
+
+    // M17.4(a): resolve the EXPORTER peer's cosign verification key — the SAME non-superseded window
+    // the Ed25519 key rode. `null` when the peer has none (governs back-compat vs downgrade below).
+    const exporterCosignPubkey = await currentPeerCosignPublicKey(tx, orgId, peer.id);
+    return { peerId: peer.id, exporterCosignPubkey };
+  });
+
+  // Phase 2 — M17.4(a) / M15.2 manifest verification, OUTSIDE any tx (cosign `verify-blob` subprocess).
+  // This is metadata-only (digests/signatures/identity) and complete without artifact BYTES.
+  // TODO(M15.5 / M17.4(b)): per-artifact `cosign verify` of each `artifacts[].signatureRef` against
+  // the ORIGIN signature belongs at the outpost's local Gitea/registry where the bytes land — blocked
+  // on the unresolved artifact-bytes transport channel (ADR-0015 §6b, the "honest open gap"). Do NOT
+  // add it here: a federation bundle carries no bytes (ADR-0009).
+  const verified = await verifyPromotionManifest({
+    bundle,
+    exporterCosignPubkey: phase1.exporterCosignPubkey
+  });
+  if (!verified.ok) {
+    // Persist a `block` Decision + hash-chained audit event and reject fail-closed with a decision_id
+    // (mirrors the export scan gate — DESIGN §6/§10.4). `subjectId` is the exporter's change object id
+    // (a uuid; `decisions.subject_id` has no FK, so a not-locally-resolved id is fine).
+    const decisionId = await withTenantTx(db, orgId, async (tx) => {
+      const decision = await insertDecision(tx, {
+        orgId,
+        kind: "promotion-import-manifest-verify",
+        subjectId: bundle.header.sourceChangeObjectId,
+        verdict: "block",
+        inputContext: {
+          exporterDomainId: bundle.header.exporterDomainId,
+          peerDomainId: bundle.header.peerDomainId,
+          changeUrn: bundle.change.urn,
+          ...verified.detail
+        },
+        reasonTree: { summary: verified.reason }
+      });
+      await appendAuditEvent(tx, {
+        orgId,
+        actorId: FEDERATION_IMPORT_ACTOR_ID,
+        action: "federation.promotion.import.blocked",
+        subjectId: bundle.header.sourceChangeObjectId,
+        reason: verified.reason,
+        decisionId: decision.id,
+        requestId: `federation-promotion-import:${bundle.header.sourceChangeObjectId}`
+      });
+      return decision.id;
+    });
+    throw conflict(verified.reason, { decisionId });
   }
 
+  // Phase 3 — apply the import inside a fresh tx (no subprocess).
+  return withTenantTx(db, orgId, (tx) => applyPromotionImport(tx, orgId, bundle, phase1.peerId));
+}
+
+async function applyPromotionImport(
+  tx: TenantTx,
+  orgId: string,
+  bundle: PromotionBundle,
+  peerId: string
+): Promise<ImportPromotionResponse> {
   // 2. Resolve local targets. Promotion targets are carried as object ids in `properties.targets`
   //    — these resolve locally only if the target objects were already replicated (a full-graph
   //    sync bundle preserves ids verbatim across domains — graph/objects-repo.ts's
@@ -458,7 +733,7 @@ export async function importPromotionBundle(
       ...(bundle.manifestSignature ? { manifestSignature: bundle.manifestSignature } : {})
     },
     targets,
-    importedFromDomain: peer.id
+    importedFromDomain: peerId
   });
 
   // 3. Validate each approval attestation against the EXPORTING domain's OWN registered key —
@@ -473,7 +748,7 @@ export async function importPromotionBundle(
     // signer-chosen `evidence.record.timestamp` (the backdating vector — M6 review fix, CRITICAL).
     // An approval signed by a since-rotated key is marked verified:false (non-fatal — the local
     // change must earn its OWN approvals regardless), preserving compromise recovery.
-    const registeredKey = await currentPeerPublicKey(tx, orgId, peer.id);
+    const registeredKey = await currentPeerPublicKey(tx, orgId, peerId);
     const selfConsistent = verifyAttestation(evidence);
     const signedByRegisteredKey = registeredKey !== null && registeredKey === evidence.publicKey;
     const bindsThisChange = evidence.record.approvedObjectUrn === bundle.change.urn;
@@ -486,7 +761,7 @@ export async function importPromotionBundle(
       id: uuidv7(),
       orgId,
       changeObjectId: change.id,
-      originDomainId: peer.id,
+      originDomainId: peerId,
       attestation: evidence,
       verified
     });
@@ -494,7 +769,7 @@ export async function importPromotionBundle(
 
   await recordBundleTransfer(tx, {
     orgId,
-    peerDomainId: peer.id,
+    peerDomainId: peerId,
     direction: "import",
     kind: "promotion",
     status: "confirmed",
@@ -504,7 +779,7 @@ export async function importPromotionBundle(
   return {
     localChangeObjectId: change.id,
     localChangeUrn: change.urn,
-    importedFromDomain: peer.id,
+    importedFromDomain: peerId,
     approvalsAccepted: accepted,
     approvalsRejected: rejected
   };
