@@ -34,9 +34,70 @@
  * offline throughout (no Fulcio/Rekor) — see @scp/cosign.
  */
 import type { ArtifactRef } from "@scp/schemas";
+import { createHash } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { makeScratchDir, verifyBlobDetached, verifyImageSignature } from "@scp/cosign";
+import { assertEgressAllowed } from "../plugin-host/egress-guard.js";
+
+/**
+ * ## Digest binding (substitution/replay defense)
+ *
+ * The signed promotion manifest binds `{type, digest, signatureRef}` — `location` is BUNDLE-SIDE
+ * metadata, populated when the bytes land, and is NOT covered by any signature. So `location` is
+ * hostile-controllable and must NEVER pick what gets verified: a location pointing at a DIFFERENT
+ * validly-signed artifact (same exporter key) would otherwise pass. This module therefore binds
+ * every verification to the AUTHORIZED `artifact.digest`:
+ *
+ *   - OCI: the ref handed to `cosign verify` is CONSTRUCTED from the location's repository part +
+ *     `@<artifact.digest>` — cosign then registry-verifies content-addressed bytes AT that digest.
+ *     If the location carries a digest suffix that differs from `artifact.digest`, that is a
+ *     substitution attempt → fail closed WITHOUT invoking cosign.
+ *   - blob: sha256 over the FETCHED bytes must equal `artifact.digest` before the detached
+ *     signature verdict counts — validly-signed but WRONG bytes fail closed.
+ */
+
+/** Normalize a sha256 digest (`sha256:<64 hex>` or bare hex) to lowercase `sha256:<hex>`;
+ *  `null` when it is not a well-formed sha256 digest (unverifiable → caller fails closed). */
+export function normalizeSha256Digest(raw: string): string | null {
+  const value = raw.trim().toLowerCase();
+  const hex = value.startsWith("sha256:") ? value.slice("sha256:".length) : value;
+  return /^[0-9a-f]{64}$/.test(hex) ? `sha256:${hex}` : null;
+}
+
+/**
+ * Bind a resolved OCI reference to the AUTHORIZED digest: keep the repository (and any tag) part,
+ * force the digest to `artifact.digest`. A resolved ref whose own digest suffix disagrees with the
+ * authorized digest is a substitution attempt and fails WITHOUT invoking cosign.
+ */
+function bindOciRefToAuthorizedDigest(
+  resolvedRef: string,
+  authorizedDigest: string
+): { ok: true; ref: string } | { ok: false; reason: string } {
+  const digest = normalizeSha256Digest(authorizedDigest);
+  if (!digest) {
+    return {
+      ok: false,
+      reason: `authorized artifact digest '${authorizedDigest}' is not a well-formed sha256 digest — cannot bind verification (fail-closed)`
+    };
+  }
+  const at = resolvedRef.lastIndexOf("@");
+  let repoPart = resolvedRef;
+  if (at >= 0) {
+    const refDigest = normalizeSha256Digest(resolvedRef.slice(at + 1));
+    if (refDigest !== digest) {
+      return {
+        ok: false,
+        reason:
+          `oci digest mismatch: resolved location pins '${resolvedRef.slice(at + 1)}' but the ` +
+          `authorized (manifest-signed) digest is '${digest}' — location is unsigned and cannot ` +
+          `substitute the artifact (fail-closed)`
+      };
+    }
+    repoPart = resolvedRef.slice(0, at);
+  }
+  return { ok: true, ref: `${repoPart}@${digest}` };
+}
 
 /** The bytes + origin detached signature a `blob` artifact resolves to in the reachable registry. */
 export interface ResolvedBlob {
@@ -89,10 +150,16 @@ async function verifyOne(
   const base = { type: artifact.type, digest: artifact.digest };
   try {
     if (artifact.type === "oci") {
-      const imageRef = await reader.resolveOci(artifact);
-      if (!imageRef) {
+      const resolvedRef = await reader.resolveOci(artifact);
+      if (!resolvedRef) {
         return { ...base, ok: false, reason: "oci image bytes absent from the reachable registry (fail-closed)" };
       }
+      // DIGEST BINDING: never verify whatever the (unsigned) location points at — verify AT the
+      // authorized digest. A location pinning a different digest is a substitution → fail closed
+      // before cosign ever runs.
+      const bound = bindOciRefToAuthorizedDigest(resolvedRef, artifact.digest);
+      if (!bound.ok) return { ...base, ok: false, reason: bound.reason };
+      const imageRef = bound.ref;
       const ok = await verifyImageSignature(imageRef, cosignPublicKeyPem, { allowInsecureRegistry });
       return ok
         ? { ...base, ok: true, reason: `oci signature verified (${imageRef})` }
@@ -108,6 +175,28 @@ async function verifyOne(
       // No origin signature reference to verify against — cannot prove authenticity, so fail closed
       // rather than wave an unsigned blob through.
       return { ...base, ok: false, reason: "blob carries no origin signatureRef to verify against (fail-closed)" };
+    }
+    // DIGEST BINDING: the fetched bytes must BE the authorized artifact — a valid signature over
+    // DIFFERENT bytes (substitution via the unsigned location) must not pass. Checked before the
+    // signature verdict counts.
+    const authorizedDigest = normalizeSha256Digest(artifact.digest);
+    if (!authorizedDigest) {
+      return {
+        ...base,
+        ok: false,
+        reason: `authorized artifact digest '${artifact.digest}' is not a well-formed sha256 digest — cannot bind verification (fail-closed)`
+      };
+    }
+    const fetchedDigest = `sha256:${createHash("sha256").update(resolved.bytes).digest("hex")}`;
+    if (fetchedDigest !== authorizedDigest) {
+      return {
+        ...base,
+        ok: false,
+        reason:
+          `blob digest mismatch: fetched bytes hash to '${fetchedDigest}' but the authorized ` +
+          `(manifest-signed) digest is '${authorizedDigest}' — location is unsigned and cannot ` +
+          `substitute the artifact (fail-closed)`
+      };
     }
     const dir = await makeScratchDir();
     try {
@@ -174,12 +263,27 @@ export async function verifyAuthorizedArtifactSet(
  *     records where the image landed.
  *   - blob: `location` is an HTTP(S) URL to fetch the blob bytes; `signatureRef` is an HTTP(S) URL
  *     to fetch the origin detached signature. A `404` (bytes not there yet) resolves to absent; a
- *     transport error propagates and the gate fails closed.
+ *     transport error propagates and the gate fails closed. BOTH URLs are bundle-supplied and
+ *     unsigned, so they are SSRF-guarded before any request: they must fall under an
+ *     operator-configured base URL (`SCP_ARTIFACT_BLOB_BASE_URLS`, fail-closed when unset), may
+ *     never resolve to link-local/cloud-metadata or the unspecified address, redirects are refused,
+ *     and responses are size-capped — see `assertBlobUrlAllowed`/`fetchBytes`.
  *
  * This reads bytes only to HASH/VERIFY them (a temp buffer, never re-pushed) — a registry READ, not
  * byte transport (M15.5). No credentials are held; the local registry is reachable to the outpost.
  */
 export class LocationRegistryReader implements ArtifactRegistryReader {
+  /** Operator-configured base URLs blob `location`/`signatureRef` may fall under (SSRF guard). */
+  private readonly allowedBlobBaseUrls: URL[];
+
+  constructor(opts?: { allowedBlobBaseUrls?: string[] }) {
+    const raw = opts?.allowedBlobBaseUrls ?? blobBaseUrlsFromEnv();
+    this.allowedBlobBaseUrls = raw
+      .map((b) => b.trim())
+      .filter((b) => b.length > 0)
+      .map((b) => new URL(b));
+  }
+
   async resolveOci(artifact: ArtifactRef): Promise<string | null> {
     const ref = artifact.location?.trim();
     if (ref && ref.length > 0) return ref;
@@ -190,23 +294,94 @@ export class LocationRegistryReader implements ArtifactRegistryReader {
     const location = artifact.location?.trim();
     const sigRef = artifact.signatureRef?.trim();
     if (!location || !isHttpUrl(location)) return null;
+    // SSRF GUARD (fail-closed, BEFORE any request): `location`/`signatureRef` are bundle-supplied,
+    // unsigned strings — a hostile bundle must not turn the outpost into a blind in-cluster GET
+    // client at deploy time. Both URLs must fall under an operator-CONFIGURED blob base URL
+    // (SCP_ARTIFACT_BLOB_BASE_URLS), and even then may never target link-local (cloud metadata) or
+    // the unspecified address. Throwing here surfaces as a `verification error (fail-closed)`.
+    await this.assertBlobUrlAllowed(location);
     const bytes = await fetchBytes(location);
     if (bytes === null) return null; // absent (404) → fail-closed missing.
     // The origin detached signature must itself be fetchable; an unfetchable/absent signature means
     // we cannot prove authenticity → surface as an EMPTY signature, which fails verification closed.
-    const signature = sigRef && isHttpUrl(sigRef) ? ((await fetchBytes(sigRef))?.toString("utf8") ?? "") : "";
+    let signature = "";
+    if (sigRef && isHttpUrl(sigRef)) {
+      await this.assertBlobUrlAllowed(sigRef);
+      signature = (await fetchBytes(sigRef))?.toString("utf8") ?? "";
+    }
     return { bytes, signature };
   }
+
+  /** Throws unless `url` falls under an operator-configured blob base URL (origin AND path prefix
+   *  — the port matters: a same-host different-port URL is a different service). Reuses the plugin
+   *  egress guard afterwards for the always-blocked classes (link-local/cloud-metadata,
+   *  unspecified), DNS-resolved; loopback/private are permitted because the operator explicitly
+   *  configured this base (the outpost-local registry is commonly in-cluster/private). */
+  private async assertBlobUrlAllowed(url: string): Promise<void> {
+    if (this.allowedBlobBaseUrls.length === 0) {
+      throw new Error(
+        `blob location '${url}' rejected: no operator-configured blob base URLs ` +
+          `(SCP_ARTIFACT_BLOB_BASE_URLS) — bundle-supplied URLs are never fetched unguarded (SSRF, fail-closed)`
+      );
+    }
+    const target = new URL(url);
+    const underAllowedBase = this.allowedBlobBaseUrls.some((base) => {
+      if (target.origin !== base.origin) return false;
+      const basePath = base.pathname.endsWith("/") ? base.pathname : `${base.pathname}/`;
+      return target.pathname === base.pathname || target.pathname.startsWith(basePath);
+    });
+    if (!underAllowedBase) {
+      throw new Error(
+        `blob location '${url}' rejected: not under any operator-configured blob base URL ` +
+          `(SCP_ARTIFACT_BLOB_BASE_URLS) — bundle-supplied URLs cannot steer outpost egress (SSRF, fail-closed)`
+      );
+    }
+    // Defense in depth via the EXISTING plugin egress guard: link-local (169.254/16 incl. cloud
+    // metadata, fe80::/10) and unspecified are blocked unconditionally, after DNS resolution.
+    // Empty allowlist + allowInternalPrivate=true → only those always-blocked classes apply here.
+    await assertEgressAllowed(url, [], true);
+  }
+}
+
+/** `SCP_ARTIFACT_BLOB_BASE_URLS` — comma-separated, operator-configured base URLs the outpost's
+ *  blob byte channel actually lives at. UNSET means NO blob location is fetchable (fail-closed):
+ *  the operator opts the byte channel in explicitly; bundles never pick egress targets. */
+function blobBaseUrlsFromEnv(): string[] {
+  return (process.env.SCP_ARTIFACT_BLOB_BASE_URLS ?? "").split(",");
 }
 
 function isHttpUrl(value: string): boolean {
   return value.startsWith("http://") || value.startsWith("https://");
 }
 
-/** GET a URL's bytes; `null` on a 404 (absent), throw on any other transport/HTTP fault (infra). */
+/** Blobs here are detached-signed DOCUMENTS (SBOMs et al.), not images — 64 MiB is generous, and a
+ *  cap means a hostile/looping location cannot balloon outpost memory (fail-closed above it). */
+const MAX_BLOB_BYTES = 64 * 1024 * 1024;
+
+/** GET a URL's bytes; `null` on a 404 (absent), throw on any other transport/HTTP fault (infra).
+ *  Redirects are NOT followed (a redirect could re-point an allowed URL at a forbidden target) and
+ *  the response is size-capped — both throw, surfacing as fail-closed verification errors. */
 async function fetchBytes(url: string): Promise<Buffer | null> {
-  const res = await fetch(url);
+  const res = await fetch(url, { redirect: "error" });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`registry read ${url} -> HTTP ${res.status}`);
-  return Buffer.from(await res.arrayBuffer());
+  const declared = Number(res.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > MAX_BLOB_BYTES) {
+    throw new Error(`registry read ${url} -> declared ${declared} bytes exceeds the ${MAX_BLOB_BYTES}-byte blob cap`);
+  }
+  const chunks: Buffer[] = [];
+  let total = 0;
+  const reader = res.body?.getReader();
+  if (!reader) return Buffer.alloc(0);
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_BLOB_BYTES) {
+      await reader.cancel();
+      throw new Error(`registry read ${url} -> response exceeds the ${MAX_BLOB_BYTES}-byte blob cap`);
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks);
 }

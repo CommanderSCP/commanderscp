@@ -46,9 +46,12 @@ import { PRE_DEPLOY_ARTIFACT_VERIFY_DECISION_KIND } from "./pre-deploy-gate.js";
  * `cosign verify-blob` (origin detached sig, `signatureRef`) for `blob`. Keyful/offline.
  *
  * Fail-closed axes proven here: MISSING bytes, a wrong-key/tampered image signature, a bad blob
- * signature — each BLOCKS the deploy with a `block` Decision + hash-chained audit event, PARKS
- * the change, and never fires `trigger()`. Scope axes: a domain-local change (no manifest —
- * ADR-0013 exemption) and a pre-manifest imported change deploy UNGATED, exactly as before.
+ * signature, SUBSTITUTION via the unsigned `location` (a different validly-signed image/blob than
+ * the manifest-authorized digest — digest binding), and SSRF (a bundle-supplied blob URL outside
+ * the operator-configured `SCP_ARTIFACT_BLOB_BASE_URLS` is rejected WITHOUT being fetched) — each
+ * BLOCKS the deploy with a `block` Decision + hash-chained audit event, PARKS the change, and
+ * never fires `trigger()`. Scope axes: a domain-local change (no manifest — ADR-0013 exemption)
+ * and a pre-manifest imported change deploy UNGATED, exactly as before.
  *
  * Coordinate-not-execute: the suite's registry reads happen inside cosign/the gate — SCP never
  * pushes, copies, or transports bytes (byte TRANSPORT is M15.5; the operator side-load here is
@@ -66,6 +69,12 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
   let blobServer: Server;
   let blobBaseUrl: string;
   const blobStore = new Map<string, Buffer>(); // path -> bytes; anything absent 404s (missing bytes)
+  /** A second, NOT-allowlisted HTTP endpoint modeling an internal in-cluster service a hostile
+   *  bundle tries to steer the outpost's blob fetch at (SSRF axis h). Counts every request it
+   *  receives — the guard must block BEFORE any request, so this must stay at 0. */
+  let forbiddenServer: Server;
+  let forbiddenUrl: string;
+  let forbiddenHits = 0;
 
   let scratch: string; // key material for the test's "exporter" and an attacker
   let exporterKey: { keyPath: string; pubKeyPath: string; publicKeyPem: string };
@@ -101,6 +110,18 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     });
     await new Promise<void>((resolve) => blobServer.listen(0, "127.0.0.1", resolve));
     blobBaseUrl = `http://127.0.0.1:${(blobServer.address() as AddressInfo).port}`;
+    // SSRF guard config: the OPERATOR allowlists the blob byte channel's base URL. Only this base
+    // is fetchable by the gate — every other bundle-supplied URL must be rejected before any request.
+    process.env.SCP_ARTIFACT_BLOB_BASE_URLS = blobBaseUrl;
+
+    // The internal service a hostile bundle points at (a different origin — not allowlisted).
+    forbiddenServer = createServer((_req, res) => {
+      forbiddenHits += 1;
+      res.statusCode = 200;
+      res.end("internal service response");
+    });
+    await new Promise<void>((resolve) => forbiddenServer.listen(0, "127.0.0.1", resolve));
+    forbiddenUrl = `http://127.0.0.1:${(forbiddenServer.address() as AddressInfo).port}`;
 
     // Key material. The EXPORTER's cosign keypair models the E5-distributed key: its PUBLIC half is
     // registered on the peer pairing (below) — the ONLY trust anchor the gate verifies against. The
@@ -161,9 +182,11 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
   }, 180_000);
 
   afterAll(async () => {
+    delete process.env.SCP_ARTIFACT_BLOB_BASE_URLS;
     await server?.close();
     await registry?.stop();
     await new Promise<void>((resolve) => (blobServer ? blobServer.close(() => resolve()) : resolve()));
+    await new Promise<void>((resolve) => (forbiddenServer ? forbiddenServer.close(() => resolve()) : resolve()));
     if (scratch) await rm(scratch, { recursive: true, force: true });
   });
 
@@ -447,6 +470,81 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(failing.map((f) => f.type).sort()).toEqual(["blob", "oci"]);
     expect(failing.find((f) => f.type === "blob")!.reason).toMatch(/absent/i);
     expect(decisionId).toEqual(expect.any(String));
+  }, 120_000);
+
+  // ---------------------------------------------------------------------------------------------
+  // (f) SUBSTITUTION (oci) — `location` is UNSIGNED bundle-side metadata; pointing it at a
+  // DIFFERENT validly-signed image (same exporter key!) must NOT pass. The gate binds verification
+  // to the manifest-signed `artifact.digest`, so the mismatch fails closed before cosign runs.
+  // ---------------------------------------------------------------------------------------------
+  it("(f) SUBSTITUTION-OCI: a location pinning a different validly-exporter-signed image than the authorized digest is BLOCKED on digest mismatch", async () => {
+    // BOTH images genuinely signed by the exporter — the substitution's whole point is that the
+    // decoy's registry-attached signature IS valid; only the digest binding can catch it.
+    const victim = await pushImage("scp/substitution-victim", "victim");
+    signImage(victim.ref, exporterKey.keyPath);
+    const decoy = await pushImage("scp/substitution-decoy", "decoy");
+    signImage(decoy.ref, exporterKey.keyPath);
+    expect(decoy.digest).not.toBe(victim.digest);
+
+    // Authorized (manifest-signed) digest = the victim's; hostile unsigned `location` = the decoy.
+    const { changeId, componentId } = await proposeImportedChange([
+      { type: "oci", digest: victim.digest, location: decoy.ref, signatureRef: "registry-attached" }
+    ]);
+
+    await tick();
+    const { reason } = await expectBlocked(changeId, componentId);
+    expect(reason).toMatch(/oci digest mismatch/i);
+    expect(reason).toContain(victim.digest); // names the authorized digest the location tried to dodge
+  }, 120_000);
+
+  // ---------------------------------------------------------------------------------------------
+  // (g) SUBSTITUTION (blob) — validly-signed bytes whose sha256 != the authorized digest. The
+  // detached signature verifies (exporter key, real bytes) — only hashing the FETCHED bytes and
+  // requiring equality with `artifact.digest` catches the swap.
+  // ---------------------------------------------------------------------------------------------
+  it("(g) SUBSTITUTION-BLOB: exporter-signed blob bytes whose sha256 differs from the authorized digest are BLOCKED on digest mismatch", async () => {
+    // The exporter validly signs the DECOY bytes; the manifest authorized a DIFFERENT document.
+    const decoy = await serveSignedBlob(
+      "substituted-sbom",
+      Buffer.from(`{"sbom":"decoy-${randomUUID()}"}`),
+      exporterKey.keyPath,
+      exporterKey.pubKeyPath
+    );
+    const authorizedDigest = sha256(Buffer.from(`{"sbom":"authorized-but-never-served"}`));
+    expect(decoy.digest).not.toBe(authorizedDigest);
+
+    const { changeId, componentId } = await proposeImportedChange([
+      { type: "blob", digest: authorizedDigest, location: decoy.location, signatureRef: decoy.signatureRef, format: "cyclonedx" }
+    ]);
+
+    await tick();
+    const { reason } = await expectBlocked(changeId, componentId);
+    expect(reason).toMatch(/blob digest mismatch/i);
+  }, 120_000);
+
+  // ---------------------------------------------------------------------------------------------
+  // (h) SSRF — a hostile bundle-supplied blob `location` steering the outpost at an internal
+  // service it can reach. The guard must reject BEFORE any request leaves the process: only
+  // operator-configured base URLs (SCP_ARTIFACT_BLOB_BASE_URLS) are fetchable.
+  // ---------------------------------------------------------------------------------------------
+  it("(h) SSRF: a blob location targeting a non-allowlisted internal endpoint is BLOCKED fail-closed WITHOUT being fetched", async () => {
+    const hitsBefore = forbiddenHits;
+    const bytes = Buffer.from(`{"sbom":"ssrf-${randomUUID()}"}`);
+    const { changeId, componentId } = await proposeImportedChange([
+      {
+        type: "blob",
+        digest: sha256(bytes),
+        location: `${forbiddenUrl}/latest/internal-service`, // reachable, internal, NOT allowlisted
+        signatureRef: `${forbiddenUrl}/latest/internal-service.sig`,
+        format: "cyclonedx"
+      }
+    ]);
+
+    await tick();
+    const { reason } = await expectBlocked(changeId, componentId);
+    expect(reason).toMatch(/SSRF|not under any operator-configured blob base URL/i);
+    // The forbidden endpoint was NEVER contacted — the guard fires before the fetch, not after.
+    expect(forbiddenHits).toBe(hitsBefore);
   }, 120_000);
 
   // ---------------------------------------------------------------------------------------------
