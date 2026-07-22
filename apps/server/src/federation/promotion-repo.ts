@@ -633,11 +633,13 @@ export async function importPromotionBundle(
   });
 
   // Phase 2 — M17.4(a) / M15.2 manifest verification, OUTSIDE any tx (cosign `verify-blob` subprocess).
-  // This is metadata-only (digests/signatures/identity) and complete without artifact BYTES.
-  // TODO(M15.5 / M17.4(b)): per-artifact `cosign verify` of each `artifacts[].signatureRef` against
-  // the ORIGIN signature belongs at the outpost's local Gitea/registry where the bytes land — blocked
-  // on the unresolved artifact-bytes transport channel (ADR-0015 §6b, the "honest open gap"). Do NOT
-  // add it here: a federation bundle carries no bytes (ADR-0009).
+  // This is metadata-only (digests/signatures/identity) and complete without artifact BYTES: it
+  // proves "these are the authorized digests" and records the verified `artifacts[]` set on the
+  // imported change's `sourceRef`. M17.4(b) is the complementary BYTE verify — per-artifact
+  // `cosign verify` of each authorized artifact at the outpost's local registry where the bytes land
+  // — and it deliberately runs LATER, as a PRE-DEPLOY GATE (coordination/pre-deploy-gate.ts), NOT
+  // here: a federation bundle carries no bytes (ADR-0009) and the operator side-loads them AFTER this
+  // metadata import. Byte TRANSPORT itself remains M15.5.
   const verified = await verifyPromotionManifest({
     bundle,
     exporterCosignPubkey: phase1.exporterCosignPubkey

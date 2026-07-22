@@ -51,6 +51,7 @@ import { matchPoliciesForTargets } from "../governance/policy-resolve.js";
 import { resolvePolicies } from "../governance/policy-model.js";
 import { prewarmGovernanceForChange } from "../governance/gate-orchestrator.js";
 import { reconcileCampaignsOrgTick } from "./campaign-reconcile.js";
+import { runPreDeployArtifactGate } from "./pre-deploy-gate.js";
 
 /**
  * The resumable reconciliation loop (DESIGN.md §9.3/§9.4, BUILD_AND_TEST.md §8 M3): "pg-boss
@@ -241,6 +242,17 @@ async function advanceCoordinatedChanges(db: Db, orgId: string, gateDeps: GateDe
     const lock = await tryAcquireChangeCoordinationLock(db, change.objectId);
     if (!lock) continue;
     try {
+      // M17.4(b) PRE-DEPLOY GATE: `coordinated -> executing` is the last point before
+      // `reconcileExecutingChange` triggers this change's deploy executor(s). For a change carrying
+      // a VERIFIED CROSS-BOUNDARY promotion manifest (an imported promotion — ADR-0013 exempts
+      // domain-local changes, which this no-ops for), re-read the reachable registry and verify every
+      // authorized artifact's bytes are present + authentic against the exporter's cosign key. Any
+      // failure BLOCKS: it persists a block Decision + audit and PARKS the change, and we skip the
+      // transition so the deploy never fires. Runs cosign subprocesses OUTSIDE a tx (opens its own).
+      // Fail-closed. Coordinate-not-execute: verify-only, no byte transport (M15.5), no re-scan.
+      const gate = await runPreDeployArtifactGate(db, orgId, change);
+      if (gate.blocked) continue;
+
       // Coupled pipelines (M12 P4B): a change with unsatisfied cross-change prerequisites
       // (`properties.requires`) parks in `waiting` instead of entering execution; one with none —
       // OR one whose prerequisites are ALREADY satisfied — proceeds straight to `executing` exactly
@@ -298,6 +310,14 @@ async function advanceWaitingChanges(db: Db, orgId: string, gateDeps: GateDeps):
     const lock = await tryAcquireChangeCoordinationLock(db, change.objectId);
     if (!lock) continue;
     try {
+      // M17.4(b) defense-in-depth: `waiting -> executing` is a SECOND edge into execution. Today no
+      // manifest-carrying change can reach it (applyPromotionImport STRIPS `requires` on promotion,
+      // so an imported cross-boundary change never parks in `waiting`), but the invariant "no change
+      // carrying a verified cross-boundary manifest enters `executing` without per-artifact byte
+      // verification" must hold independently of that stripping. No-op for everything else.
+      const gate = await runPreDeployArtifactGate(db, orgId, change);
+      if (gate.blocked) continue;
+
       const requires = requiresOf(object.properties as Record<string, unknown>);
       await withTenantTx(db, orgId, async (tx) => {
         const unmet = await unsatisfiedRequirements(tx, orgId, change.objectId, requires);
