@@ -18,6 +18,8 @@ import {
   PluginManifestListResponseSchema,
   ProblemSchema,
   PutSecretRequestSchema,
+  RegionalExecutorEnvParamSchema,
+  RegionalExecutorViewSchema,
   RegistryIdOrUrnParamSchema,
   RunDiscoveryRequestSchema,
   SecretConfiguredResponseSchema,
@@ -68,6 +70,7 @@ import {
   DEFAULT_BINDING_TYPE,
   EXECUTION_SYSTEM_INSTANCE_PREFIX
 } from "../coordination/executor-bindings-repo.js";
+import { buildRegionalExecutorView } from "../coordination/regional-executors.js";
 import {
   upsertNotificationBinding,
   listNotificationBindings,
@@ -541,6 +544,51 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
         return row;
       });
       reply.status(200).send(binding);
+    }
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // Multi-region Argo CD config surface (M15.6, ADR-0017 §3) — a READ + VALIDATE view of one prod
+  // environment's per-region Argo CD set: `prod env -> {region -> argocd binding}`. Additive; adds
+  // no new object type (a region is a `deployment-target` with properties.environment/region, its
+  // Argo CD an ordinary per-region binding). The operator still declares each region by binding it
+  // via `PUT /executors/:idOrUrn/binding` — this route surfaces the whole set coherently and flags a
+  // region with no Argo CD of its own instead of silently deploying it against nothing.
+  // -----------------------------------------------------------------------------------------
+  typed.route({
+    method: "GET",
+    url: "/api/v1/environments/:environment/regional-executors",
+    schema: {
+      params: RegionalExecutorEnvParamSchema,
+      // `type` omitted ⇒ 'configuration' (Argo CD is GitOps sync) — the Type each region's binding
+      // is resolved at, mirroring the single-binding GET.
+      querystring: z.object({ type: ExecutorTypeSchema.optional() }),
+      response: { 200: RegionalExecutorViewSchema, 401: ProblemSchema, 403: ProblemSchema }
+    },
+    config: {
+      openapi: {
+        operationId: "getRegionalExecutors",
+        summary:
+          "Read + validate a prod environment's per-region Argo CD set (region -> argocd binding)",
+        tags: ["executors"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const view = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // The view spans every region deployment-target in the environment, so authorize at the org
+        // root — the same org-scoped read bar the secret/plugin-list reads use. Per-target object
+        // reads are already gated when the operator binds each region.
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:read",
+          scopeObjectId: auth.orgId
+        });
+        const type = request.query.type ?? DEFAULT_BINDING_TYPE;
+        return buildRegionalExecutorView(tx, auth.orgId, request.params.environment, type);
+      });
+      reply.status(200).send(view);
     }
   });
 

@@ -123,6 +123,75 @@ export const RepurposeExecutorBindingRequestSchema = z.object({
 export type RepurposeExecutorBindingRequest = z.infer<typeof RepurposeExecutorBindingRequestSchema>;
 
 // -------------------------------------------------------------------------------------------
+// Multi-region Argo CD — the first-class config SURFACE for one outpost owning an Argo CD per
+// region for a single prod environment (M15.6, ADR-0017 §3). This adds NO new object type: a
+// region is an ordinary `deployment-target` carrying `properties.environment` (the env name it
+// belongs to, e.g. "prod") + `properties.region` (e.g. "amer"), and its per-region Argo CD is an
+// ordinary per-region executor binding (1:1, resolved per target via `getExecutorBinding`). The
+// surface is a READ + VALIDATE view of `prod env -> {region -> argocd binding}`; the operator still
+// declares each region by binding it (the existing `PUT /executors/{idOrUrn}/binding`), so nothing
+// on the per-target binding path changes — the view itself is purely additive. It is BACKED by a
+// deploy-time gate (`evaluateRegionalDeployGate`, enforced in the reconcile trigger path): a change
+// to a declared region target with no resolvable executor binding of its type is REFUSED
+// (fail-closed) rather than silently dispatched against the shared default executor.
+// -------------------------------------------------------------------------------------------
+
+/** The executor module a region's binding is EXPECTED to resolve to for this milestone — Argo CD
+ *  (GitOps `configuration` sync). Kept as a named constant so the surface, the validator, and the
+ *  docs share one definition of "regional Argo CD". */
+export const REGIONAL_EXECUTOR_EXPECTED_MODULE = "argocd" as const;
+
+/** Path param for the regional-executor view — the prod environment's name (the value each region
+ *  deployment-target carries under `properties.environment`). */
+export const RegionalExecutorEnvParamSchema = z.object({
+  environment: z.string().min(1)
+});
+export type RegionalExecutorEnvParam = z.infer<typeof RegionalExecutorEnvParamSchema>;
+
+/** One region's slot in the view: the region deployment-target and whether it has an Argo CD
+ *  binding of the requested Type. `isExpectedModule` is the per-region validity signal (bound AND
+ *  the binding resolves to `argocd`). */
+export const RegionalExecutorEntrySchema = z.object({
+  /** `properties.region` on the deployment-target (e.g. "amer", "apac"). */
+  region: z.string(),
+  targetId: z.string().uuid(),
+  targetName: z.string(),
+  /** True iff a binding of the requested Type exists for this region target. */
+  bound: z.boolean(),
+  /** The module the binding resolves to (the execution-system's `kind`, or an inline module), or
+   *  null when unbound. */
+  pluginModule: z.string().nullable(),
+  /** True iff `bound` AND `pluginModule === "argocd"` — the per-region pass signal. */
+  isExpectedModule: z.boolean(),
+  /** The imported/coordinated Argo CD execution-system backing this region, when system-backed. */
+  executionSystemId: z.string().nullable(),
+  externalRef: z.string().nullable()
+});
+export type RegionalExecutorEntry = z.infer<typeof RegionalExecutorEntrySchema>;
+
+/** The coherent `prod env -> {region -> argocd binding}` view + validation verdict (M15.6). */
+export const RegionalExecutorViewSchema = z.object({
+  environment: z.string(),
+  /** The binding Type resolved for each region (default `configuration` — Argo CD is GitOps sync). */
+  type: ExecutorTypeSchema,
+  /** The module each region is expected to be bound to — `argocd`. */
+  expectedModule: z.literal(REGIONAL_EXECUTOR_EXPECTED_MODULE),
+  regions: z.array(RegionalExecutorEntrySchema),
+  /** True iff there is ≥1 region and EVERY region has its own Argo CD binding of `type`. This
+   *  verdict combines an ENFORCED signal and an ADVISORY one. ENFORCED: every region must resolve
+   *  SOME executor binding of `type` — an UNBOUND region target is REFUSED at deploy time (a
+   *  fail-closed block Decision from the reconcile gate, `evaluateRegionalDeployGate`), never
+   *  silently dispatched against the shared default executor. ADVISORY: each binding should resolve
+   *  to Argo CD (`isExpectedModule`); a region bound to a non-Argo-CD module makes `valid:false` and
+   *  is named in `problems`, but still deploys against its bound executor — fix it before relying on
+   *  it. `problems` names each gap either way. */
+  valid: z.boolean(),
+  /** Human-readable, per-gap explanations (empty when `valid`). */
+  problems: z.array(z.string())
+});
+export type RegionalExecutorView = z.infer<typeof RegionalExecutorViewSchema>;
+
+// -------------------------------------------------------------------------------------------
 // Notification bindings (DESIGN §11 NotificationPlugin — an org's configured channels).
 // -------------------------------------------------------------------------------------------
 
