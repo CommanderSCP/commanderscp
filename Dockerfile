@@ -26,7 +26,19 @@
 # arm64 is deliberately out of scope). Keep in sync with tools/cosign/pin.env — the test at
 # deploy/airgap/src/cosign-bin.test.ts fails if they drift.
 ARG COSIGN_IMAGE=ghcr.io/sigstore/cosign/cosign@sha256:bea051df6a6d3bc84288b6db098df38a81d87b7ed226f34d22aaae1bc329c2b7
+
+# Vendored, DIGEST-PINNED skopeo (M15.5 c1 — provenance: tools/skopeo/README.md, pin source of
+# truth: tools/skopeo/pin.env). Same shape as the cosign pin above: the linux/amd64 PLATFORM
+# manifest digest of the upstream project's own official image (skopeo publishes NO release
+# binaries at all — the image IS the official binary distribution). Keep in sync with
+# tools/skopeo/pin.env — deploy/airgap/src/skopeo-bin.test.ts fails if they drift.
+# (Both ARGs sit above the first FROM: an ARG consumed by a FROM must be declared in the global
+# scope before any stage begins — the classic builder hard-errors otherwise.)
+ARG SKOPEO_IMAGE=quay.io/skopeo/stable@sha256:8b23fe434af822adf71bc7c8674a8dfab379771aa1400fb81ff655a5cecfca87
+
 FROM ${COSIGN_IMAGE} AS cosign
+
+FROM ${SKOPEO_IMAGE} AS skopeo
 
 FROM node:22-bookworm-slim AS base
 RUN corepack enable && corepack prepare pnpm@10.12.1 --activate
@@ -61,6 +73,49 @@ COPY --from=build /app /app
 # `docker build`, no buildx — so it isn't an option either.) The executable bit is asserted for
 # real by the CI step that runs `cosign version` out of this path.
 COPY --from=cosign /ko-app/cosign /opt/scp/bin/cosign
+# The pinned skopeo (M15.5 c1), beside cosign under /opt/scp — same reasoning: a path that cannot
+# collide with an operator-installed skopeo, so packages/cosign/src/skopeo-bin.ts can tell the
+# vetted pin (static behavior + fail-closed version assertion) apart from somebody else's build.
+#
+# DEVIATION from the cosign pin: cosign's ko-built binary is static; skopeo's is DYNAMICALLY
+# linked against Fedora sonames (libgpgme.so.45, libsubid.so.5, …) that Debian does not ship. So
+# we vendor the binary PLUS its closed shared-library closure PLUS Fedora's own ELF loader under
+# /opt/scp/libexec/skopeo, and /opt/scp/bin/skopeo is a wrapper that runs the binary against
+# exactly those vendored libraries (never the host's — host glibc version is irrelevant). The
+# library list below is the full `ldd` closure of the pinned binary, verified closed (each lib's
+# own deps are already in the list). If an upstream update renames a soname, this COPY fails the
+# build loudly — see tools/skopeo/README.md "Updating the pin" for how to regenerate the list.
+COPY --from=skopeo /usr/bin/skopeo /opt/scp/libexec/skopeo/skopeo
+COPY --from=skopeo \
+  /lib64/ld-linux-x86-64.so.2 \
+  /lib64/libacl.so.1 \
+  /lib64/libassuan.so.0 \
+  /lib64/libattr.so.1 \
+  /lib64/libaudit.so.1 \
+  /lib64/libbz2.so.1 \
+  /lib64/libc.so.6 \
+  /lib64/libcap-ng.so.0 \
+  /lib64/libcrypt.so.2 \
+  /lib64/libeconf.so.0 \
+  /lib64/libgpg-error.so.0 \
+  /lib64/libgpgme.so.45 \
+  /lib64/libm.so.6 \
+  /lib64/libpam.so.0 \
+  /lib64/libpam_misc.so.0 \
+  /lib64/libpcre2-8.so.0 \
+  /lib64/libresolv.so.2 \
+  /lib64/libselinux.so.1 \
+  /lib64/libsemanage.so.2 \
+  /lib64/libsepol.so.2 \
+  /lib64/libsqlite3.so.0 \
+  /lib64/libsubid.so.5 \
+  /opt/scp/libexec/skopeo/lib/
+# Wrapper (mode +x is preserved from git) and the minimal containers-policy. The policy is
+# insecureAcceptAnything — skopeo here is a byte mover; artifact trust is enforced by cosign
+# manifest verification at promotion import (M17.4a), not by skopeo's simple-signing/GPG policy
+# engine. See tools/skopeo/README.md "The policy.json choice".
+COPY tools/skopeo/skopeo-wrapper.sh /opt/scp/bin/skopeo
+COPY tools/skopeo/policy.json /etc/containers/policy.json
 WORKDIR /app/apps/server
 EXPOSE 8080
 CMD ["node", "dist/main.js"]
