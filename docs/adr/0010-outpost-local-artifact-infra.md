@@ -49,5 +49,5 @@ The capability is **opt-in and role-scoped** — a `federation.role` gate + poli
 
 **Resolved (owner, 2026-07-18)**
 - **Gitea DB** = shared bundled Postgres if an existing bundled instance is available, else SQLite+PVC — never a dedicated new Postgres just for Gitea.
-- **Artifact-bytes transport** = operator-loaded + SCP-verify against the signed attestation, first; the retrans/CDS byte-relay is deferred (M15.5).
+- **Artifact-bytes transport** = operator-loaded + SCP-verify against the signed attestation, first; the retrans/CDS byte-relay was deferred (M15.5) and is now **required and designed** — [ADR-0019](0019-artifact-byte-channel.md) (owner finish-all-of-M15 mandate, 2026-07-20; operator-loaded remains the MVP row and sneakernet fallback).
 - **Git executor** = **git-service-agnostic** (provider adapters behind one interface: GitHub/GitLab/Gitea/generic git), not a Gitea-specific module.
