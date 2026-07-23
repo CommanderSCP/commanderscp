@@ -9322,6 +9322,7 @@ export type ExplainChangeResponses = {
                 satisfied: boolean;
                 satisfiedByChangeId: string | null;
             }>;
+            malformed?: Array<unknown>;
         } | null;
     };
 };
@@ -9803,6 +9804,11 @@ export type ReportChangeSourceData = {
         artifactDigest?: string;
         status: 'planned' | 'applied' | 'errored' | 'discarded';
         planJson?: unknown;
+        provides?: Array<string>;
+        requires?: Array<{
+            key: string;
+            at: string;
+        }>;
         sbom?: {
             format: 'cyclonedx' | 'spdx';
             specVersion?: string;

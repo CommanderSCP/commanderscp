@@ -73,6 +73,24 @@ function parseList(value: string | undefined): string[] | undefined {
     .filter((s) => s.length > 0);
 }
 
+/** M12 P4B — parse a `--requires` flag value: comma-separated `key@objectIdOrUrn` entries (the
+ *  SAME format on `scp change propose` and `scp change-source report`). Split on the LAST '@' so a
+ *  URN (which contains ':' but not '@') survives; a missing/empty half is a clear error, not a
+ *  silent drop. */
+function parseRequiresFlag(
+  value: string | undefined
+): { key: string; at: string }[] | undefined {
+  if (value === undefined) return undefined;
+  return value.split(",").map((entry) => {
+    const at = entry.slice(entry.lastIndexOf("@") + 1).trim();
+    const key = entry.slice(0, entry.lastIndexOf("@")).trim();
+    if (entry.lastIndexOf("@") < 0 || !key || !at) {
+      throw new Error(`--requires entry '${entry}' must be 'key@objectIdOrUrn'`);
+    }
+    return { key, at };
+  });
+}
+
 function objectRow(o: GraphObject): Record<string, string> {
   return {
     id: o.id,
@@ -1516,18 +1534,7 @@ export function buildProgram(): Command {
         }
       ) => {
         const client = await clientFromStoredCredentials(opts);
-        // Each `--requires` entry is `key@objectIdOrUrn`. Split on the LAST '@' so a URN (which
-        // contains ':' but not '@') survives; a missing/empty half is a clear error, not a silent drop.
-        const requires = opts.requires
-          ? opts.requires.split(",").map((entry) => {
-              const at = entry.slice(entry.lastIndexOf("@") + 1).trim();
-              const key = entry.slice(0, entry.lastIndexOf("@")).trim();
-              if (entry.lastIndexOf("@") < 0 || !key || !at) {
-                throw new Error(`--requires entry '${entry}' must be 'key@objectIdOrUrn'`);
-              }
-              return { key, at };
-            })
-          : undefined;
+        const requires = parseRequiresFlag(opts.requires);
         const created = await client.changes.propose(
           {
             name: opts.name,
@@ -1553,7 +1560,7 @@ export function buildProgram(): Command {
     .description("List Changes")
     .option(
       "--state <state>",
-      "filter by state (proposed|evaluated|coordinated|executing|validating|promoted|cancelled|rolled_back)"
+      "filter by state (proposed|evaluated|coordinated|waiting|executing|validating|promoted|cancelled|rolled_back)"
     )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
@@ -3025,6 +3032,17 @@ export function buildProgram(): Command {
     .option("--workspace <workspace>", "Terraform/OpenTofu workspace name")
     .option("--artifact-digest <digest>", "artifact digest linking this to an app-side change")
     .option("--plan-json <path>", "path to a `tofu show -json`-shaped plan file, attached verbatim")
+    // M12 P4B coupled pipelines — THE pipeline declaration channel (a raw provider push webhook
+    // cannot carry a key; this CI step can). Same flag format as `scp change propose`.
+    .option(
+      "--provides <keys>",
+      "M12 P4B coupled pipelines: comma-separated keys this release makes true at its targets when it succeeds"
+    )
+    .option(
+      "--requires <list>",
+      "M12 P4B coupled pipelines: comma-separated prerequisites as key@objectIdOrUrn — the resulting " +
+        "change WAITS until another change provides each key at that object before it executes"
+    )
     // M17.2 (ADR-0015 §5) — a REFERENCE to the build-time SBOM the pipeline's own Trivy step emitted
     // and cosign-signed. SCP stores the reference, NEVER the document: do not pipe the SBOM itself.
     .option("--sbom-format <format>", "SBOM reference: cyclonedx|spdx (required to record an SBOM)")
@@ -3049,6 +3067,8 @@ export function buildProgram(): Command {
           workspace?: string;
           artifactDigest?: string;
           planJson?: string;
+          provides?: string;
+          requires?: string;
           sbomFormat?: string;
           sbomDigest?: string;
           sbomLocation?: string;
@@ -3104,7 +3124,9 @@ export function buildProgram(): Command {
           workspace: opts.workspace,
           artifactDigest: opts.artifactDigest,
           planJson,
-          sbom
+          sbom,
+          provides: parseList(opts.provides),
+          requires: parseRequiresFlag(opts.requires)
         });
         printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
       }

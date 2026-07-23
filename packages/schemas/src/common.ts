@@ -48,3 +48,14 @@ export function stringArrayQueryParam() {
     z.array(z.string())
   );
 }
+
+/** One coupled-pipeline prerequisite (M12 P4B): a `key` that must be provided by another change AT
+ *  a specific object `at` before this change may execute. Lives here (not changes.ts) so
+ *  executors.ts's `ChangeReportRequestSchema` can reuse the EXACT same shape without an
+ *  import cycle (changes.ts already imports executors.ts for `ExecutorTypeSchema`). */
+export const ChangeRequirementSchema = z.object({
+  key: z.string().min(1),
+  /** id or URN of the object the key must be true at (resolved to an id at propose time). */
+  at: z.string().min(1)
+});
+export type ChangeRequirement = z.infer<typeof ChangeRequirementSchema>;

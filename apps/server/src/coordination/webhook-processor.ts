@@ -1,8 +1,12 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
-import { SbomRefSchema, normalizeSbomDigest, type SbomRef } from "@scp/schemas";
+import { z } from "zod";
+import { ChangeRequirementSchema, SbomRefSchema, normalizeSbomDigest, type SbomRef } from "@scp/schemas";
 import { webhookAdapterForSourceKind } from "./webhook-adapters.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changeSourceEvents } from "../db/schema.js";
+import { badRequest, ProblemError } from "../errors.js";
+import { appendAuditEvent } from "../audit/audit-repo.js";
+import { insertDecision } from "./decisions-repo.js";
 import { linkToCoordinatedChange, matchComponentForSource } from "./correlation.js";
 import { proposeChange } from "./changes-repo.js";
 import { deriveUrn } from "../graph/urn.js";
@@ -54,6 +58,22 @@ export interface ExtractedHint {
    *  ingress (`ChangeReportRequestSchema.sbom`); provider webhook adapters set no SBOM (a registry
    *  push payload carries none), so this stays undefined for them. */
   sbom?: SbomRef;
+  /** M12 P4B coupled pipelines — `ChangeReportRequestSchema.provides`, read from the flat
+   *  first-party report body and threaded into `proposeChange` exactly as `POST /changes` threads
+   *  its own typed field. Provider webhook payloads carry no coupling key (coupled-pipelines.md
+   *  §6#1 — a raw push webhook CANNOT declare one; the CI report step is THE channel). */
+  provides?: string[];
+  /** M12 P4B — `ChangeReportRequestSchema.requires`. `at` is an id-or-URN here, resolved by
+   *  `proposeChange` (an unresolvable one is refused — see `processChangeSourceEvents`). */
+  requires?: { key: string; at: string }[];
+  /** M12 P4B fail-closed: set (verbatim) when the body carried a `requires` that does NOT parse as
+   *  `{key, at}[]`. NOT dropped-and-proceed (that would execute a release whose author declared a
+   *  prerequisite — the exact fail-open P4B closes) and NOT quarantined-but-proposed like `sbom`
+   *  (an SBOM reference is metadata; `requires` is an execution precondition): the processor
+   *  REFUSES the event, recording a Decision + audit. The typed `/report` route's Zod validation
+   *  makes this unreachable for SDK/CLI reporters — it exists for hand-crafted raw-`/webhook`
+   *  payloads. */
+  requiresInvalid?: unknown;
 }
 
 /**
@@ -73,6 +93,14 @@ function genericHint(payload: unknown): ExtractedHint {
   if (!payload || typeof payload !== "object") return {};
   const p = payload as Record<string, unknown>;
   const sbom = SbomRefSchema.safeParse(p.sbom);
+  // M12 P4B — the coupling declaration, validated against the SAME shapes `POST /changes` uses.
+  // `provides`: a malformed value is dropped like `sbom` (fail-CLOSED for the coupling: a dropped
+  // `provides` releases nobody; waiters keep waiting and their wait-status names the gap).
+  // `requires`: a malformed value is the OPPOSITE case — dropping it would fail OPEN (the release
+  // executes as if uncoupled), so it is carried under `requiresInvalid` and the processor refuses
+  // the event with a recorded Decision.
+  const provides = z.array(z.string().min(1)).safeParse(p.provides);
+  const requires = z.array(ChangeRequirementSchema).safeParse(p.requires);
   return {
     repo: typeof p.repo === "string" ? p.repo : undefined,
     path: typeof p.path === "string" ? p.path : undefined,
@@ -82,7 +110,15 @@ function genericHint(payload: unknown): ExtractedHint {
     // Best-effort: a malformed `sbom` on an otherwise-valid delivery is DROPPED, never a throw —
     // an unparseable supply-chain reference must not wedge ingress for the whole tick (the raw
     // payload is still preserved verbatim in `sourceRef`, so nothing is lost for forensics).
-    sbom: sbom.success ? sbom.data : undefined
+    sbom: sbom.success ? sbom.data : undefined,
+    provides: provides.success && provides.data.length > 0 ? provides.data : undefined,
+    ...(p.requires === undefined || p.requires === null
+      ? {}
+      : requires.success
+        ? requires.data.length > 0
+          ? { requires: requires.data }
+          : {}
+        : { requiresInvalid: p.requires })
   };
 }
 
@@ -127,7 +163,14 @@ export function extractHint(sourceKind: string, headers: unknown, payload: unkno
     artifactDigest: providerHint.artifactDigest ?? generic.artifactDigest,
     // No provider webhook payload carries an SBOM reference — it arrives only on the typed
     // first-party report body, which the generic shape reads.
-    sbom: generic.sbom
+    sbom: generic.sbom,
+    // M12 P4B: no provider webhook payload carries a coupling declaration either (§6#1) — like
+    // `sbom`, these ride the flat first-party shape. Carried through EXPLICITLY because this
+    // branch reconstructs field-by-field rather than spreading `generic`: omitting them here is
+    // the one line that would silently drop a coupling from a body that also resolves an adapter.
+    provides: generic.provides,
+    requires: generic.requires,
+    requiresInvalid: generic.requiresInvalid
   };
 }
 
@@ -230,35 +273,96 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
     // from the hint — `artifact_digest` (M15.3c/M17.1) and `sbom` (M17.2). See
     // `canonicalizeSourceRef`. Additive: a delivery with neither is passed through byte-identical.
     const sourceRef = canonicalizeSourceRef(row.payload, hint);
-    const { change } = await proposeChange(tx, {
-      orgId,
-      actorObjectId: SYSTEM_ACTOR_ID,
-      requestId: `webhook-${row.id}`,
-      name,
-      urn: deriveUrn(orgId, "change", name, row.id),
-      sourceKind: row.sourceKind,
-      sourceRef,
-      correlationKey: hint.correlationKey,
-      targets: [match.componentObjectId],
-      // WHICH pipeline this release drives — the routing Type (ADR-0007), straight from the mapping
-      // that matched it (M12 P4A). One release = one source = one pipeline, so the Type belongs to the
-      // CHANGE rather than to each target — a release needing both would be two releases.
-      type: match.type
-    });
+    try {
+      // SAVEPOINT (nested transaction) around the propose: this ingress is persist-then-PROCESS, so
+      // a caller-shaped defect in the payload (M12 P4B: an unresolvable `requires[].at`, a malformed
+      // `requires`) surfaces HERE, not as a 4xx on the report/webhook request. Without the
+      // savepoint, that defect would poison the whole tick's transaction and the row would retry —
+      // and refail — forever, wedging every event queued behind it. With it, the failed propose
+      // rolls back cleanly and the refusal is recorded in the OUTER transaction below.
+      await tx.transaction(async (inner) => {
+        if (hint.requiresInvalid !== undefined) {
+          throw badRequest(
+            `report carried a malformed \`requires\` — each entry must be {key, at} (got ${JSON.stringify(hint.requiresInvalid)})`
+          );
+        }
+        const { change } = await proposeChange(inner, {
+          orgId,
+          actorObjectId: SYSTEM_ACTOR_ID,
+          requestId: `webhook-${row.id}`,
+          name,
+          urn: deriveUrn(orgId, "change", name, row.id),
+          sourceKind: row.sourceKind,
+          sourceRef,
+          correlationKey: hint.correlationKey,
+          targets: [match.componentObjectId],
+          // WHICH pipeline this release drives — the routing Type (ADR-0007), straight from the mapping
+          // that matched it (M12 P4A). One release = one source = one pipeline, so the Type belongs to the
+          // CHANGE rather than to each target — a release needing both would be two releases.
+          type: match.type,
+          // M12 P4B: the coupling declaration from the typed report body (`scp change-source
+          // report --provides/--requires`), threaded IDENTICALLY to `POST /changes`' typed fields —
+          // same `at` resolution inside `proposeChange`, same storage, same routing-guard behaviour.
+          provides: hint.provides,
+          requires: hint.requires
+        });
 
-    if (hint.correlationKey) {
-      await linkToCoordinatedChange(tx, {
+        if (hint.correlationKey) {
+          await linkToCoordinatedChange(inner, {
+            orgId,
+            changeObjectId: change.id,
+            correlationKey: hint.correlationKey,
+            actorObjectId: SYSTEM_ACTOR_ID,
+            requestId: `webhook-${row.id}`
+          });
+        }
+
+        await inner
+          .update(changeSourceEvents)
+          .set({ processedAt: new Date(), resultingChangeObjectId: change.id })
+          .where(eq(changeSourceEvents.id, row.id));
+      });
+    } catch (err) {
+      // The REFUSAL surface for a caller-shaped defect (a 4xx `ProblemError` thrown by our own
+      // validation — e.g. M12 P4B's unresolvable `requires[].at`, which `POST /changes` turns into
+      // a 404 but this async path cannot). The event is marked processed WITH NO resulting change,
+      // and the refusal is recorded as a Decision + audit event (charter principle 6 — never a
+      // silent drop, and never the infinite retry a permanent defect would otherwise cause).
+      // Anything else (DB failure, transient error) still rethrows: the row stays unprocessed and
+      // persist-then-process's replayability retries it next tick, exactly as before.
+      if (!(err instanceof ProblemError) || err.status >= 500) throw err;
+      const reason = err.detail ?? err.message;
+      const decision = await insertDecision(tx, {
         orgId,
-        changeObjectId: change.id,
-        correlationKey: hint.correlationKey,
-        actorObjectId: SYSTEM_ACTOR_ID,
+        kind: "ingress",
+        subjectId: row.id,
+        verdict: "block",
+        inputContext: {
+          changeSourceEventId: row.id,
+          sourceKind: row.sourceKind,
+          repo: hint.repo ?? null,
+          path: hint.path ?? null,
+          provides: hint.provides ?? null,
+          requires: hint.requires ?? hint.requiresInvalid ?? null,
+          error: reason
+        },
+        reasonTree: {
+          summary: `change-source event refused: ${reason}`
+        }
+      });
+      await appendAuditEvent(tx, {
+        orgId,
+        actorId: SYSTEM_ACTOR_ID,
+        action: "change_source.event.refused",
+        subjectId: row.id,
+        reason,
+        decisionId: decision.id,
         requestId: `webhook-${row.id}`
       });
+      await tx
+        .update(changeSourceEvents)
+        .set({ processedAt: new Date() })
+        .where(eq(changeSourceEvents.id, row.id));
     }
-
-    await tx
-      .update(changeSourceEvents)
-      .set({ processedAt: new Date(), resultingChangeObjectId: change.id })
-      .where(eq(changeSourceEvents.id, row.id));
   }
 }
