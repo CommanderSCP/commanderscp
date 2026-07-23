@@ -1,0 +1,147 @@
+# Proposal: M13 — air-gap CDS validate-and-promote: the staging node, DeliveryTarget, and managed scanning
+
+**Status:** Draft — proposed 2026-07-22, pending owner review.
+**Relates to:** [ADR-0004](../adr/0004-service-naming-commander-outpost-retrans.md) (the `retrans` role §13.1 formalizes), [ADR-0009](../adr/0009-optional-poke-mode-federation.md) (metadata-only bundles; the poke chain), [ADR-0011](../adr/0011-universal-outpost-validation.md) (universal receiver validation), [ADR-0013](../adr/0013-supply-chain-scan-sbom-manifest.md) (scan-at-source), [ADR-0016](../adr/0016-scoped-scan-requirement-policies.md) (scoped thresholds), [ADR-0017](../adr/0017-ownership-refinement.md) (build devolution; the commander owns only the gate), [ADR-0019](../adr/0019-artifact-byte-channel.md) (the byte channel this rides on), **M15.5(c) (PR #112)** — the retrans byte relay, on `feat/m15-5c3-retrans-relay`, referenced throughout as the shipped-shape this proposal automates, [PROJECT_CHARTER.md](../../PROJECT_CHARTER.md) "Managed Execution Exception" (§13.3 proposes extending it — **owner sign-off required**), [DESIGN.md](../DESIGN.md) §12 (the `scp-managed-iac` runner pattern §13.3 mirrors).
+
+---
+
+## Why now: E6 is universal, and the boundary walk is manual
+
+**M17.3 E6 hard-refuses any cross-boundary export lacking passing, digest-bound scan evidence.** The export gate (`evaluatePromotionScanGate`, `apps/server/src/federation/promotion-repo.ts:116-140`, called from `exportPromotionBundle`) is deliberately universal and fail-closed: *"a MISSING scan refuses exactly like a FAILED one"* (`promotion-repo.ts:110-111`), **whether or not a scan-requirement policy is bound**. This is by design — scanning exists to authorize boundary crossing ([ADR-0013](../adr/0013-supply-chain-scan-sbom-manifest.md)), and E6 is the structural backstop [ADR-0018](../adr/0018-domain-local-dev-pipelines.md)'s dev exemption leans on. We are not proposing to weaken it by one bit.
+
+But it has a hard consequence: **an org WITHOUT a pipeline scanner cannot promote into (or out of) an air-gapped domain at all.** Every export of a substantive artifact refuses at E6, because nothing in the org's pipelines ever produced the evidence. Today the only evidence ingress is the `scan-result-control` `ControlPlugin`, which **pulls** Trivy result JSON from a per-binding, operator-configured URL (`packages/plugins/scan-result-control/src/index.ts:1-8,43-46`) — evidence some external scanner produced. No scanner in the pipeline, no evidence, no crossing. For the pipeline-less orgs the Managed Execution Exception exists to serve, the air-gap story currently ends at a `409`.
+
+And even for orgs that **can** produce evidence, the CDS crossing itself is a six-step manual operator walk (runbook `docs/runbooks/retrans-relay.md` on the M15.5(c) branch, PR #112):
+
+1. **Commander:** `scp federation promote --out` **twice** — one `.scpbundle` addressed to the retrans, one addressed to the destination outpost.
+2. **Operator:** walk the retrans-addressed `.scpbundle` to the retrans instance.
+3. **Retrans:** `scp federation import` (M17.4(a) verifies the manifest), then `scp federation relay` (skopeo pull → validate → signed tarball into `SCP_RELAY_OUT_DIR`).
+4. **Operator:** carry the tarball **and** the outpost-addressed `.scpbundle` across the CDS.
+5. **Operator:** distribute the retrans instance's cosign public key out-of-band.
+6. **Outpost:** `scp federation import` of the `.scpbundle`, then `scp federation relay-import --file … --change … --pubkey …`.
+
+Only the M17.4(b) pre-deploy byte verify is automatic. Everything upstream of it is a human typing commands and walking files.
+
+**M13 completes the air-gap story for both populations:**
+
+- **§13.3 (managed scanning)** satisfies E6 **at source** for pipeline-less orgs — a Mode-C managed scanner whose evidence enters through the existing shapes, with **zero gate changes**.
+- **§13.1 (the staging node) + §13.2 (DeliveryTarget)** automate the boundary walk — steps 2–4 and 6 become an unattended loop; the operator's remaining job is whatever their CDS product requires of them.
+
+Everything rides machinery that exists: the M15.5(c) relay pipeline and its 409 role gate (PR #112, `apps/server/src/federation/retrans-relay.ts`), the caller-independent import verify paths (`import-repo.ts`, `promotion-repo.ts`, `importRelayTarball`), the pg-boss self-rescheduling tick pattern (`apps/server/src/coordination/observe.ts::startObserveLoop`), `ScanEvidenceSchema`'s designed-for-a-second-scanner shape (`packages/schemas/src/supply-chain.ts:180-181`), the `scp-managed-iac` runner pattern (DESIGN.md §12), and the digest-pinned tool-vendoring discipline (`tools/cosign/pin.env`, `tools/skopeo/pin.env`, #111).
+
+---
+
+## 13.1 The staging node — the retrans role, formalized
+
+The role already exists. [ADR-0004](../adr/0004-service-naming-commander-outpost-retrans.md) defined `retrans` as a CDS-boundary store-and-forward validation relay — *never originates config, holds no local authoritative objects, never terminates a promotion* — and shipped it declared, not built. M15.5(c) (PR #112) activated its arm: `buildRelayTarball` hard-refuses `409` unless `self.role === "retrans"` (`retrans-relay.ts:356-360`), while destination import runs on any role. What remains manual is the *walk*: someone has to import what arrived, run the relay, and drop what leaves.
+
+**The staging node is that walk, automated.** A `role: retrans` instance runs an unattended loop:
+
+```
+inbound arrival (inbox) ──▶ auto-import ──▶ auto-relay build ──▶ outbound drop (DeliveryTarget, §13.2)
+```
+
+- **Inbound arrival.** An **inbox** — a filesystem directory by default, an S3 prefix under §13.2 — where the two channel artifacts land: `.scpbundle` metadata bundles and `scp-relay-*.tar.gz` byte tarballs, deposited by the low side's DeliveryTarget drop or by the org's CDS on the high side.
+- **Auto-import.** The loop lists the inbox and routes each file to the **existing** import path for its kind: `.scpbundle` → the federation import (checksum + Ed25519 exporter-signature verify, hash-chained journal replay, foreign-origin rejection in `import-repo.ts`; promotion bundles additionally get the M17.4(a) manifest-signature + set-equality verify in `promotion-repo.ts`); relay tarballs → `importRelayTarball` (tarball signature, per-file checksums, local-authorized-set cross-check, push-by-digest + re-inspect). **Zero changes to the verify path**: import verification is caller-independent today — the CLI names a file and POSTs; the loop names a file and calls the same repos. The only thing being automated is *who names the file*.
+- **Auto-relay.** When a promotion import succeeds on a `retrans`-role instance, the loop schedules `buildRelayTarball` for it. The 409 role gate stays exactly as PR #112 built it — the staging node satisfies it because it *is* the retrans; commanders and outposts still cannot relay.
+- **Outbound drop.** The built tarball and the onward outpost-addressed `.scpbundle` are written via the destination peer's DeliveryTarget (§13.2). Filesystem default = today's `SCP_RELAY_OUT_DIR` behavior, unchanged.
+
+**Trigger.** A pg-boss self-rescheduling tick loop cloned from `startObserveLoop` (`apps/server/src/coordination/observe.ts` — the established singleton pattern: `boss.work` handler re-`send`s with `startAfter` + `singletonKey`), scanning the inbox on an interval (`SCP_STAGING_TICK_INTERVAL_SECONDS`, default 60). That is the **default and the backstop**. Where poke-mode is enabled, the [ADR-0009](../adr/0009-optional-poke-mode-federation.md) poke chain is the low-latency option: the commander pokes the reachable low-side retrans → immediate cycle; the high-side retrans pokes the outpost after dropping (ADR-0009's hop-by-hop propagation, owner-clarified 2026-07-18). The poke never replaces the tick — a dropped poke self-heals on the next interval, exactly the ADR-0009 sparse-safety-net model.
+
+**Invariants, restated so no reader blurs them:**
+
+- **Metadata bundles stay byte-free** ([ADR-0009](../adr/0009-optional-poke-mode-federation.md)). The staging node moves **two separate channel artifacts** — the `.scpbundle` and the relay tarball — and never merges them. The bundle format does not change.
+- **Retrans never terminates a promotion** ([ADR-0004](../adr/0004-service-naming-commander-outpost-retrans.md), unamended). Promotion state advances only at the commander and the receiving outpost. The staging node imports, relays, and drops; it decides nothing about the promotion.
+- **The receiver's M17.4(a)+(b) run unweakened** ([ADR-0019](../adr/0019-artifact-byte-channel.md) §2 step 7). The staging node adds **no verification authority** — it is granted zero trust, exactly like the manual relay it automates. Nothing downstream changes because a loop carried the bytes instead of a human.
+- **Inbox contents are untrusted.** File names and contents are data, not commands. The `resolveUnderDir` traversal guard on relay-tarball intake (PR #112 — file names inside the intake dir only, no traversal) survives automation, and every failing verify refuses with a block Decision, same as today. Automation changes who names the file, never what is trusted.
+- **Every automated action writes the same Decisions and hash-chained audit events the manual CLI writes** (charter principle 6). An unattended import that refuses a tampered bundle produces the identical block Decision + audit event an operator-invoked one does.
+
+**Status surface.** `bundle_transfers` rows (created → submitted → confirmed; *"purely observational bookkeeping — never consulted for authority/idempotency decisions"*, `apps/server/src/federation/bundle-transfers-repo.ts:7-13`) become the staging node's progress ledger: each automated hop updates the corresponding transfer row, so the commander UI/CLI — and the M16.1 boundary pipeline stages — show real per-hop state for an air-gapped peer's handoffs. Whether the staging node auto-**confirms** transfers upward is Open Question 4.
+
+---
+
+## 13.2 DeliveryTarget — filling exactly the ADR-0019 deferral, and no more
+
+[ADR-0019](../adr/0019-artifact-byte-channel.md) explicitly did **not** design CDS handoff mechanics: *"drop-directory vs. diode transfer varies per CDS product; the relay's contract ends at 'signed tarball out / signed tarball in'"* (ADR-0019, Consequences). This section fills exactly that hole — how a signed file gets from SCP to the CDS's intake, and from the CDS's output to SCP — and nothing more. Everything past the drop (diode transfer, content inspection, the CDS product's review queue) is the org's CDS, out of scope (charter principle 1). **SCP hands bundles TO the CDS; it never operates the CDS.**
+
+**Config shape — per-peer, with today's env as the instance-level fallback.** A `deliveryTarget` jsonb column beside `syncScope` on `federation_peers` (`apps/server/src/db/schema.ts:1022-1037` — the row today carries `role`, `baseUrl`, and the one `syncScope` jsonb), exposed through a zod-validated view following the M15.6 shape (`buildRegionalExecutorView` + fail-closed gate, `apps/server/src/coordination/regional-executors.ts` — validated config view, per-gap `problems`, never a silent misdeploy). Absent per-peer config, behavior is **exactly today's**: the instance-level env (`SCP_RELAY_OUT_DIR` / `SCP_RELAY_IN_DIR`, PR #112 `RelayConfig`) is the fallback. No migration of existing setups required.
+
+**Providers:**
+
+| Provider | What it is | Status |
+|---|---|---|
+| `filesystem` (default) | A directory path per direction — literally today's `SCP_RELAY_OUT_DIR`/`SCP_RELAY_IN_DIR` behavior, made per-peer | The write/read code exists (PR #112); only the per-peer resolution is new |
+| `s3-compatible` | `endpoint`/`bucket`/`prefix` per direction — **operator config only, never bundle-steered** (the ADR-0019 §4 pattern: bundle data never picks an egress target; a peer configured to *require* a delivery target with none set **fails closed**) | Net-new runtime code — see honesty note |
+
+**Honesty note — the Helm `objectStorage.s3` block is inert vocabulary, not behavior.** `deploy/helm/values.yaml:112-124` defines `objectStorage.provider: filesystem|s3` with an `s3.{bucket,region,endpoint,existingSecret}` block, and DESIGN.md §16 says "S3-compatible provider configurable" — but **no server code reads any storage config today**: when `provider != filesystem` the deployment mounts an `emptyDir` and injects no S3 env vars. This proposal **reuses the naming and config shape** so the vocabulary stays coherent; the runtime provider layer — an interface with filesystem and S3 put/list/get implementations — is **net-new code**, and we say so rather than citing the values block as existing behavior.
+
+**The two seams, precisely:**
+
+- **Write seam:** the single tarball-emission point — `buildRelayTarball` writes `SCP_RELAY_OUT_DIR/scp-relay-<id>.tar.gz` (PR #112) — plus the CLI's `--out` writes for `.scpbundle` files. A provider `put()` slots at exactly these points.
+- **Read seam:** the §13.1 inbox loop lists a filesystem directory or an S3 prefix and feeds each object to the **existing** import paths. The verify paths need zero changes (§13.1).
+
+**Credentials.** New vault keys `delivery/<peer>/<target>` under the [ADR-0019](../adr/0019-artifact-byte-channel.md) §3 **artifact-store credential class** — an S3 bucket is a passive shelf, squarely the class §3 defined. **Write-scoped** for outbound drops, **read-scoped** for the inbox; same AES-256-GCM `secrets` vault, resolved at use, injected via mode-0600 scratch config, never argv/logs/Decisions — the exact discipline of PR #112's `relay/source-read/<host>` / `relay/dest-push/<host>` keys. ADR-0019 §3 recorded the credential-class expansion honestly; this adds *targets within* that class, not a new class.
+
+**Air-gap and principle 4.** The S3 client is **vendored at build time** (no runtime fetch, principle 5), and S3 remains **optional**: filesystem is the default, the two-container floor is unchanged, and **PostgreSQL stays the only required stateful dependency** (principle 4) — a delivery bucket is the org's/CDS's infrastructure, not SCP's. Client choice is Open Question 3.
+
+---
+
+## 13.3 Managed scanning — `scp-managed-scan`, the Mode-C analogue of `scp-managed-iac`
+
+For orgs with no pipeline scanner, SCP provides one — behind the same executor interface, in the same runner-image pattern DESIGN.md §12 established for `scp-managed-iac`:
+
+- **A thin orchestrator plugin** (`scp-managed-scan`) behind the standard executor interface. It schedules runs, collects results, and publishes evidence; it contains no scanner.
+- **A separate `scp-runner-scan` image** carrying digest-pinned **Trivy** and **OpenSCAP (`oscap`)** — the tools exist **only** in the runner image, exactly as `tofu` exists only in `scp-runner-iac` (*"the only place `tofu` exists in the whole system"*, `apps/runner-iac/README.md`). Pins follow the `tools/*/pin.env` vendoring discipline with drift-failing tests (the #111 skopeo pattern): `tools/trivy/pin.env`, `tools/openscap/pin.env`.
+- **Ephemeral, single-shot containers** — a Kubernetes Job in production, `docker run` under compose — with `--network none` **except** an operator-allowlisted registry pull for the subject image (the ADR-0019 §4 allowlist treatment: the registry host must be operator-allowlisted; nothing in tenant data steers egress). No phone-home, ever (principle 5): vulnerability data is pre-loaded (below), and the scanner runs with DB downloads disabled.
+
+**Evidence exits through the EXISTING shapes — zero gate changes.** `ScanEvidenceSchema`'s `scanner` field is `z.literal("trivy")` *"a field, not a constant, so the evidence is self-describing in a Decision and a future second scanner slots in without a shape change"* (`packages/schemas/src/supply-chain.ts:180-181`) — it was designed for exactly this: the literal grows to an enum (`"trivy" | "openscap"`). Results are served to the **existing** `scan-result-control` pull URL (the per-binding operator-configured `url` the control fetches via `ctx.http`). The M17.5 six-tier threshold resolution (`apps/server/src/governance/scan-requirements.ts`) and the E6 export gate are **untouched** — they consume evidence identically whether an org's own Trivy step or the managed runner produced it. Because SCP has no blob storage anywhere (*"SCP has no blob storage anywhere … reference in, reference out"*, `supply-chain.ts:224-227`) and must not grow one, the runner's result JSON is published to the domain's **Gitea** (the bundled/local unified registry, ADR-0012 — its generic package registry) and the control binding's pull URL points there; SCP persists only references, as today (Open Question 5 records this placement for sign-off).
+
+**Scan-once-at-source — and why the staging node NEVER scans.** The managed scanner runs **where artifacts are built**: the *originating* outpost, under [ADR-0017](../adr/0017-ownership-refinement.md) §2 build devolution (the commander never runs build for other domains' artifacts; where the root domain is itself the origin, the commander instance's coordination of its own domain's build is "the source"). This resolves an apparent tension head-on: *if M13 completes the air-gap story, shouldn't the CDS staging node scan what crosses?* **No — and E6 is the reason it doesn't need to.** A staging-node scan would be either a **re-scan** (contradicting ADR-0013's trust-scan-at-source, restated by ADR-0011 and ADR-0010: receivers never re-scan) or a **gap-fill for a gap that cannot exist**: E6 hard-refuses any export lacking passing digest-bound evidence, so every artifact that legitimately reaches a staging node **already carries passing evidence**. The boundary node stays exactly as thin as ADR-0004 declared it; managed scanning lands at source, where ADR-0013 put scanning in the first place.
+
+**Default-permissive means ADOPTION, never gate-weakening.** Resolving the second tension explicitly: "default-permissive" describes when a managed scan is *scheduled*, not what the gates *enforce*. **No scan-requirement policy bound → no managed scan is scheduled** — an org that never crosses a boundary pays nothing, matching ADR-0013's "boundary-authorization gate, not a general quality gate" framing and ADR-0018's path-based exemption. Where a policy **is** bound — or a cross-boundary promotion is attempted — the M17.5 fail-closed floor rules and E6 apply **unchanged**. The managed scanner adds a way to *satisfy* the gates; it adds no way to loosen them.
+
+**Offline scanner data — the DB rides the channel that already exists.** The Trivy vulnerability DB is itself an **OCI artifact** upstream — so it travels the **existing artifact byte channel** like any other artifact: cosign-signed, digest-bound, relayed by M15.5(c)/§13.1 or carried in the air-gap bundle across boundaries. SCAP data-stream content (plain files) rides as `blob` artifacts on the same channel. Connected instances refresh via an **operator-invoked, allowlisted registry pull** (the vendored-skopeo machinery, #111); air-gapped instances refresh via the promotion channel at whatever cadence the org promotes. No new transport, no new trust: the DB is verified digest-bound at the receiving end like every other artifact. (This is genuinely new *cadence* ground — the `pin.env` discipline refreshes by commit, and no periodically-refreshable data artifact exists in the system today; the refresh runbook is increment 13.3b.)
+
+**Increment order: Trivy first, OpenSCAP second.** Trivy result JSON already maps onto `ScanEvidenceSchema` (severity counts, digest binding). OpenSCAP's XCCDF rule results need an explicit mapping (failed-rule severities → the four severity counts the threshold model acts on) — designed and landed as the second half of 13.3a, not hand-waved into the first.
+
+**NEW CHARTER GROUND — said plainly.** The charter's **Managed Execution Exception** enumerates managed-IaC (2026-07-08) plus three host-reaching classes (2026-07-12), and states: *"Extending this class allowlist requires owner sign-off."* Adding `scp-managed-scan` as a second non-host-reaching enumerated managed class **requires owner sign-off** — this proposal requests it (Open Question 1, with proposed wording) rather than reinterpreting the existing text. The [ADR-0017](../adr/0017-ownership-refinement.md) tightening — *"the commander only consumes the verdict"* — and `supply-chain.ts:18`'s *"SCP NEVER runs Trivy"* are **preserved for the GATE**: the governance engines still only consume evidence; the gate never runs a scanner; E6 never runs a scanner. But the **runner genuinely executes scans** in SCP-shipped containers, so the exception must be **extended, not silently reinterpreted** — and if approved, the `supply-chain.ts` header comment is revised to "the SCP *gate* never runs Trivy; the charter-enumerated `scp-managed-scan` runner may" as part of the build. The six-gate boundary test remains the only route into managed execution (charter: *"Managed execution is never a default"*); `scp-managed-scan` passes through it like any managed class.
+
+**The alternative, presented fairly: keep scanning BYO-only.** Ship no managed scanner; instead publish a documented, vendorable **coordinated scan-step recipe** (an Argo Workflows template the org's *own* build engine executes — Mode B-flavored, coordinate-only, no charter change). An org without any build engine at all remains unable to promote across boundaries until it adopts one. This preserves charter minimalism at the cost of exactly the population the Managed Execution Exception exists to serve — pipeline-less orgs — for whom the air-gap story would stay closed. **Recommendation: extend the exception (§13.3 as proposed); the owner decides.**
+
+---
+
+## Phasing — build increments, each with a DoD
+
+Two independent tracks: the **boundary track** (13.1/13.2) and the **scanning track** (13.3). Within each track increments are ordered; across tracks everything is independent. 13.1a and 13.2a are independent of each other (13.1a can ship against env-configured filesystem dirs alone).
+
+| Increment | Contents | Done / verified by |
+|---|---|---|
+| **13.1a — inbox ingest loop (filesystem) + auto-import** | The pg-boss tick loop (cloned from `startObserveLoop`); inbox listing; routing `.scpbundle` → federation import, relay tarballs → `importRelayTarball`; `bundle_transfers` row updates | Integration (real Postgres): a `.scpbundle` and a relay tarball dropped into the inbox are imported unattended with the **same** verification outcomes as CLI-invoked imports; a tampered bundle is refused with the identical block Decision + audit event; a traversal-shaped filename is refused; re-processing an already-imported file is a no-op (idempotent); the transfer row reflects each hop |
+| **13.1b — auto-relay + poke-chain trigger** | Auto-schedule `buildRelayTarball` after a successful promotion import on `role=retrans`; poke wakes an immediate cycle where enabled | Integration: a promotion imported on a retrans-role instance yields a signed relay tarball in the outbound target with no operator command; the 409 role gate still refuses non-retrans roles; a poke triggers an immediate cycle; a dropped poke self-heals on the next tick |
+| **13.2a — DeliveryTarget config + filesystem provider + per-peer view** | `deliveryTarget` jsonb on `federation_peers`; zod-validated view (M15.6 shape) with per-gap `problems`; provider interface + filesystem impl; env fallback preserved | Integration: per-peer targets resolve per peer; absent config falls back to `SCP_RELAY_OUT_DIR`/`IN_DIR` byte-for-byte; a peer requiring a target with none set fails closed with a named `problem`; parity — the view rides API→SDK→CLI, additive within `/v1` |
+| **13.2b — S3 provider + delivery credentials** | S3-compatible put/list/get (vendored client); `delivery/<peer>/<target>` vault keys, write-scoped out / read-scoped in | Integration (MinIO via Testcontainers): outbound drop lands in the bucket/prefix; the inbox loop ingests from a prefix and the same verify paths run; credentials resolve from the vault, never argv/logs; endpoint is operator config only — nothing bundle-supplied can steer it; unset-where-required fails closed |
+| **13.3a — `scp-runner-scan` image + managed-scan plugin + evidence emit** (Trivy first, OpenSCAP second) | Runner image with digest-pinned Trivy + `oscap` (`tools/*/pin.env` + drift tests); thin orchestrator behind the executor interface; result published to the Gitea-hosted pull URL; `scanner` literal grows; XCCDF→severity mapping | Integration: an ephemeral runner scans a subject image with `--network none` + allowlisted registry pull only; the emitted evidence parses via `ScanEvidenceSchema` and the **unmodified** `scan-result-control`/M17.5/E6 machinery consumes it — a passing managed scan unblocks an E6 export that refused before, with zero gate-code changes; grep-level proof the scanners exist only in the runner image; no policy bound → no run scheduled (adoption semantics) |
+| **13.3b — offline DB channel + refresh runbook** | trivy-db as an OCI artifact + SCAP content as blobs on the existing byte channel; operator-invoked allowlisted refresh (connected); promotion-channel refresh (air-gapped); the runbook | Integration: a DB artifact rides the relay/bundle path and verifies digest-bound at the receiver; the runner consumes the pre-loaded DB with downloads disabled (offline proof); runbook merged documenting both refresh modes + staleness surfacing |
+
+---
+
+## Open questions for the owner
+
+1. **The big one — extend the Managed Execution Exception to enumerate `scp-managed-scan`?** The runner genuinely executes scans, so this needs a charter amendment, not a reinterpretation (§13.3). Proposed wording, for the charter's Managed Execution Exception section:
+
+   > *Amendment proposed 2026-07-22.*
+   > *Where an organization has no scanning capability in its execution systems, CommanderSCP may provide a built-in managed scanner (`scp-managed-scan`).*
+   > *The managed scanner is read-only with respect to the scanned subject: it analyzes artifacts and emits evidence; it never modifies, deploys, or provisions anything.*
+   > *It implements the standard executor interface, runs in isolated single-shot ephemeral runners from a separate `scp-runner-scan` image, holds only scoped vaulted credentials (registry read for the subject artifact), and restricts network egress to an operator-allowlisted registry.*
+   > *CommanderSCP's governance gates consume scan evidence identically whether an external scanner or the managed scanner produced it; the gates themselves never run a scanner.*
+   > *Extending this class allowlist further requires owner sign-off.*
+
+   The alternative — keep scanning BYO-only with a documented coordinated scan-step recipe — is presented in §13.3. **Recommendation: extend.**
+
+2. **OpenSCAP scope.** Image/OS compliance scanning of the artifact under promotion only, or also host-level SCAP against running infrastructure? **Recommendation: image-only for M13** — host-level SCAP is host-reaching-adjacent territory (a different charter conversation, closer to `scp-runner-ops`) and the boundary gate only ever needed artifact evidence.
+
+3. **S3 client choice.** **Recommendation: a minimal vendored client — `aws4fetch`** (a tiny SigV4 signer over `fetch`, dependency-free, auditably small, works against any S3-compatible endpoint including MinIO). The full `@aws-sdk/client-s3` is the fallback if signing edge cases bite, at a much larger vendoring/audit surface. Either way: vendored at build, offline at runtime (principle 5).
+
+4. **Should the staging node auto-CONFIRM `bundle_transfers` upward?** **Recommendation: yes** — the tracking is explicitly observational, never authority (`bundle-transfers-repo.ts:7-13`), so auto-confirmation changes no trust decision; it just makes the M16.1 boundary stages truthful without an operator remembering to confirm. If the owner prefers human confirmation as an operational attestation ("a person saw it cross"), the loop leaves transfers at `submitted`.
+
+5. **Where managed-scan evidence bytes live.** SCP has no blob storage and must not grow one (`supply-chain.ts:224-227`); §13.3 proposes the domain's **Gitea** (generic package registry) as the evidence store, with the `scan-result-control` binding's pull URL pointing at it. Flagged because it makes bundled/local Gitea a soft prerequisite for managed scanning in a domain (any operator-hosted HTTP location also works — the control just pulls a URL). **Recommendation: Gitea by default, any operator URL accepted.**
