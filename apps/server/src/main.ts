@@ -14,6 +14,7 @@ import { SubprocessPluginHost } from "./plugin-host/host.js";
 import { startReconcileLoop } from "./coordination/reconcile.js";
 import { startObserveLoop } from "./coordination/observe.js";
 import { startWatchdogLoop } from "./coordination/watchdog.js";
+import { startInboxLoop } from "./federation/inbox-loop.js";
 import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
 import {
   DEFAULT_EXECUTOR_INSTANCE_ID,
@@ -132,11 +133,16 @@ async function main(): Promise<void> {
     // M10.2 observe()-driver: the PULL side of change detection (webhook is push). Same queue-per-
     // capability pattern under the same `role === "all" || "worker"` guard; a much slower cadence.
     const observeLoop = await startObserveLoop(boss, db, pluginHost, config.secretsMasterKey);
+    // M13.1a staging-node inbox ingest (proposal §13.1): same queue-per-capability pattern under
+    // the same role guard — but DEFAULT-OFF (explicit `SCP_INBOX_LOOP=1` opt-in; without it this
+    // returns an inert handle and never schedules a tick — an unconfigured instance does not spin).
+    const inboxLoop = await startInboxLoop(boss, db, config.secretsMasterKey);
 
     app.addHook("onClose", async () => {
       await reconcileLoop.stop();
       await watchdogLoop.stop();
       await observeLoop.stop();
+      await inboxLoop.stop();
       await pluginHost.stop();
       await relay.stop();
       await boss.stop({ graceful: false, timeout: 1000 }).catch(() => undefined);

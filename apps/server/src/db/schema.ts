@@ -1171,6 +1171,41 @@ export const bundleTransfers = pgTable(
   ]
 );
 
+/** M13.1a (proposal §13.1) — the unattended inbox loop's PROCESSED-FILE LEDGER: one row per
+ *  (org, inbox dir, file name, content sha256) the loop has terminally handled, keyed on CONTENT
+ *  identity so a replaced file (same name, new bytes) is processed as new while a re-listed
+ *  identical file is a silent no-op. Deliberately separate from `bundle_transfers` (per-hop
+ *  observational bookkeeping with no file identity — see drizzle/0034's header for the documented
+ *  ledger decision). INSERT-only from the loop; files themselves are always LEFT IN PLACE in the
+ *  inbox ("quarantined" is a ledger state, never a filesystem move). */
+export const federationInboxFiles = pgTable(
+  "federation_inbox_files",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    /** The RESOLVED inbox directory the file was listed in (per-peer DeliveryTarget inDir or the
+     *  instance `SCP_RELAY_IN_DIR` fallback). */
+    inboxDir: text("inbox_dir").notNull(),
+    fileName: text("file_name").notNull(),
+    /** sha256 (hex) of the file content; sentinel `-` when the file could not be read at all
+     *  (e.g. a traversal-shaped name refused before any read). */
+    sha256: text("sha256").notNull(),
+    outcome: text("outcome").notNull(), // 'imported' | 'forwarded' | 'refused' | 'skipped'
+    detail: text("detail"),
+    decisionId: uuid("decision_id"),
+    processedAt: timestamp("processed_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    uniqueIndex("federation_inbox_files_identity").on(
+      table.orgId,
+      table.inboxDir,
+      table.fileName,
+      table.sha256
+    ),
+    index("federation_inbox_files_org_processed").on(table.orgId, table.processedAt)
+  ]
+);
+
 /** Imported-approval EVIDENCE (DESIGN §13: "approvals transfer as evidence, never as authority").
  *  Deliberately a separate table from `approval_votes` — these rows are never counted toward a
  *  LOCAL `approval_requests` quorum; they are read-only, attestation-validated proof attached to

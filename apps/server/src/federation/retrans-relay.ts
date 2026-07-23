@@ -75,7 +75,9 @@
  */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
 import path from "node:path";
 import { z } from "zod";
 import type { ArtifactRef } from "@scp/schemas";
@@ -100,6 +102,7 @@ import { getSecretValue } from "../secrets/secrets-repo.js";
 import { ensureInstanceCosignKey } from "../governance/cosign-keys.js";
 import { ensureFederationSelf } from "./self-repo.js";
 import { currentPeerCosignPublicKey } from "./peers-repo.js";
+import { recordBundleTransfer } from "./bundle-transfers-repo.js";
 import { FEDERATION_IMPORT_ACTOR_ID } from "./import-repo.js";
 import {
   LocationRegistryReader,
@@ -113,6 +116,8 @@ import {
 
 export const RETRANS_RELAY_VALIDATE_DECISION_KIND = "retrans-relay-validate";
 export const RETRANS_RELAY_IMPORT_DECISION_KIND = "retrans-relay-import";
+/** M13.1a — the retrans's push-less VALIDATE-AND-FORWARD verdicts (proposal §13.1). */
+export const RETRANS_RELAY_FORWARD_DECISION_KIND = "retrans-relay-forward";
 
 // -------------------------------------------------------------------------------------------------
 // Config surface (documented in docs/runbooks/retrans-relay.md). All operator-configured env —
@@ -285,6 +290,14 @@ function repoWithoutTag(repoRef: string): string {
 }
 
 const sha256Hex = (buf: Buffer): string => createHash("sha256").update(buf).digest("hex");
+
+/** Streaming sha256 (hex) of a file on disk — relay tarballs can be multi-GB, so never a whole-
+ *  file Buffer. Used for the `bundle_transfers` checksum (M13.1a D4) and the inbox ledger. */
+export async function sha256File(filePath: string): Promise<string> {
+  const hash = createHash("sha256");
+  await pipeline(createReadStream(filePath), hash);
+  return hash.digest("hex");
+}
 
 // -------------------------------------------------------------------------------------------------
 // The relay's SOURCE reader — LocationRegistryReader (both allowlists) + the operator-configured
@@ -776,6 +789,194 @@ export type ImportRelayTarballResult =
 /** Internal refusal signal for phase 2 — every refusal path converges on one block Decision. */
 class RelayImportRefusal extends Error {}
 
+interface VerifiedRelayOci {
+  artifact: RelayBundleArtifact;
+  digest: string;
+  ociDir: string;
+  signatures: { tag: string; dir: string }[];
+}
+interface VerifiedRelayBlob {
+  artifact: RelayBundleArtifact;
+  digest: string;
+  bytes: Buffer;
+  sig: string;
+}
+interface VerifiedRelayTarball {
+  bundleRoot: string;
+  relayManifest: RelayBundleManifest;
+  verifiedOci: VerifiedRelayOci[];
+  verifiedBlobs: VerifiedRelayBlob[];
+}
+
+/**
+ * M13.1a EXTRACTION (proposal §13.1 — "a refactor, not a new trust decision"): the verification
+ * half of the destination import, byte-equivalent to what `importRelayTarball` always ran inline
+ * with its registry-push flow, now callable WITHOUT the push half so a `role: retrans` staging
+ * node can validate-and-forward a tarball it has no registry to push into. The checks, in order,
+ * exactly as before:
+ *
+ *   1. tarball transport integrity — CHECKSUMS.txt.sig against the OPERATOR/PAIRING-provided
+ *      relay cosign public key (never a key found inside the tarball), then every file against
+ *      CHECKSUMS.txt;
+ *   2. relay-manifest parse + binding to THIS change's imported source change;
+ *   3. AUTHORIZATION CROSS-CHECK — every carried artifact must be in the LOCAL change's own
+ *      M17.4(a)-verified authorized set (zero trust in the relay's own manifest);
+ *   4. per-artifact pre-push verification — OCI layout digest + integrity self-check, blob
+ *      byte-hash equality.
+ *
+ * `requireBlobLandingDir` is the ONE caller-mode difference: the destination import lands blob
+ * bytes in `config.blobOutDir` and must therefore refuse when it is unconfigured (unchanged
+ * behavior); the retrans forward never lands blobs — the tarball is forwarded whole — so the
+ * landing-dir config check does not apply there. Throws {@link RelayImportRefusal} on any
+ * failing check; the caller converges every refusal on one block Decision.
+ */
+async function extractAndVerifyRelayTarball(args: {
+  workDir: string;
+  tarballPath: string;
+  relayCosignPublicKeyPem: string;
+  /** The local change's `sourceRef.sourceChangeObjectId` (the binding target), or null when the
+   *  change carries none — which refuses, exactly as before. */
+  localSourceChangeObjectId: string | null;
+  /** The LOCAL change's own M17.4(a)-verified authorized set — the AUTHORITY on what may cross. */
+  authorized: ArtifactRef[];
+  requireBlobLandingDir: boolean;
+  config: RelayConfig;
+}): Promise<VerifiedRelayTarball> {
+  const { workDir, config } = args;
+  execFileSync("tar", ["xzf", args.tarballPath, "-C", workDir], { encoding: "utf8" });
+  const entries = (await readdir(workDir, { withFileTypes: true })).filter((e) => e.isDirectory());
+  const rootEntry = entries.length === 1 ? entries[0] : undefined;
+  if (!rootEntry)
+    throw new RelayImportRefusal("relay tarball does not contain exactly one bundle directory");
+  const bundleRoot = path.join(workDir, rootEntry.name);
+
+  // 1. Tarball transport integrity: CHECKSUMS.txt.sig against the OPERATOR-PROVIDED retrans
+  //    public key (never a key found inside the tarball), then every file against CHECKSUMS.txt.
+  const pubKeyPath = path.join(workDir, "relay-cosign.pub");
+  await writeFile(pubKeyPath, args.relayCosignPublicKeyPem, "utf8");
+  const checksumsPath = path.join(bundleRoot, "CHECKSUMS.txt");
+  const sigResult = verifyBlobDetached(checksumsPath, `${checksumsPath}.sig`, pubKeyPath);
+  if (!sigResult.ok) {
+    throw new RelayImportRefusal(
+      "relay tarball CHECKSUMS.txt signature does not verify against the provided retrans " +
+        "cosign public key (rejected, fail-closed)"
+    );
+  }
+  const checksumEntries = airgapChecksums.parseChecksums(await readFile(checksumsPath, "utf8"));
+  const mismatches = await airgapChecksums.verifyChecksums(bundleRoot, checksumEntries);
+  if (mismatches.length > 0) {
+    throw new RelayImportRefusal(
+      `relay tarball failed checksum verification: ` +
+        mismatches.map((m) => `${m.relativePath}: ${m.reason}`).join("; ")
+    );
+  }
+
+  // 2. Parse the relay manifest + bind it to THIS change.
+  let relayManifest: RelayBundleManifest;
+  try {
+    relayManifest = RelayBundleManifestSchema.parse(
+      JSON.parse(await readFile(path.join(bundleRoot, "relay-manifest.json"), "utf8"))
+    );
+  } catch (err) {
+    throw new RelayImportRefusal(
+      `relay tarball manifest is malformed: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  if (
+    !args.localSourceChangeObjectId ||
+    relayManifest.sourceChangeObjectId !== args.localSourceChangeObjectId
+  ) {
+    throw new RelayImportRefusal(
+      `relay tarball is for source change '${relayManifest.sourceChangeObjectId}' but the local ` +
+        `change was imported from source change '${args.localSourceChangeObjectId ?? "<none>"}' — ` +
+        `wrong tarball for this promotion (rejected, fail-closed)`
+    );
+  }
+
+  // 3. AUTHORIZATION CROSS-CHECK (zero trust in the relay): every artifact the tarball carries
+  //    must be in the LOCAL change's own M17.4(a)-verified authorized set. ONE unauthorized
+  //    entry refuses the WHOLE import — nothing is pushed.
+  const authorizedKeys = new Set(
+    args.authorized.map((a) => `${a.type}:${normalizeSha256Digest(a.digest) ?? a.digest}`)
+  );
+  for (const artifact of relayManifest.artifacts) {
+    const key = `${artifact.type}:${normalizeSha256Digest(artifact.digest) ?? artifact.digest}`;
+    if (!authorizedKeys.has(key)) {
+      throw new RelayImportRefusal(
+        `relay tarball carries artifact ${key} which is NOT in this change's authorized ` +
+          `(manifest-signed) set — unauthorized artifacts never cross (rejected, fail-closed; ` +
+          `nothing was pushed)`
+      );
+    }
+  }
+
+  // 4. Pre-push verification of every carried artifact (still before ANY push).
+  const verifiedOci: VerifiedRelayOci[] = [];
+  const verifiedBlobs: VerifiedRelayBlob[] = [];
+  for (const artifact of relayManifest.artifacts) {
+    const digest = normalizeSha256Digest(artifact.digest);
+    if (!digest) {
+      throw new RelayImportRefusal(
+        `relay tarball artifact digest '${artifact.digest}' is not a well-formed sha256 digest`
+      );
+    }
+    if (artifact.type === "oci") {
+      if (!artifact.ociPath || !artifact.ociTag || !artifact.ociSignatures?.length) {
+        throw new RelayImportRefusal(
+          `relay tarball oci artifact ${digest} is missing its layout paths`
+        );
+      }
+      const ociDir = path.join(bundleRoot, artifact.ociPath);
+      const landed = await airgapOciLayout.readOciManifestDigest(ociDir);
+      if (landed !== digest) {
+        throw new RelayImportRefusal(
+          `relay tarball layout for ${digest} actually contains manifest ${landed} — ` +
+            `substitution inside the tarball (rejected, fail-closed)`
+        );
+      }
+      const integrity = await airgapOciLayout.verifyOciLayoutIntegrity(ociDir);
+      if (integrity.length > 0) {
+        throw new RelayImportRefusal(
+          `relay tarball layout for ${digest} failed integrity check: ` +
+            integrity.map((m) => `${m.relativePath}: ${m.reason}`).join("; ")
+        );
+      }
+      verifiedOci.push({
+        artifact,
+        digest,
+        ociDir,
+        signatures: artifact.ociSignatures.map((s) => ({
+          tag: s.tag,
+          dir: path.join(bundleRoot, s.path)
+        }))
+      });
+    } else {
+      if (!artifact.blobPath || !artifact.blobSigPath) {
+        throw new RelayImportRefusal(
+          `relay tarball blob artifact ${digest} is missing its byte paths`
+        );
+      }
+      if (args.requireBlobLandingDir && !config.blobOutDir) {
+        throw new RelayImportRefusal(
+          "relay tarball carries blob artifacts but SCP_RELAY_BLOB_OUT_DIR is not configured — " +
+            "the destination blob byte channel directory must be operator-configured"
+        );
+      }
+      const bytes = await readFile(path.join(bundleRoot, artifact.blobPath));
+      const fetched = `sha256:${sha256Hex(bytes)}`;
+      if (fetched !== digest) {
+        throw new RelayImportRefusal(
+          `relay tarball blob for ${digest} actually hashes to ${fetched} (rejected, fail-closed)`
+        );
+      }
+      const sig = await readFile(path.join(bundleRoot, artifact.blobSigPath), "utf8");
+      verifiedBlobs.push({ artifact, digest, bytes, sig });
+    }
+  }
+
+  return { bundleRoot, relayManifest, verifiedOci, verifiedBlobs };
+}
+
 export async function importRelayTarball(
   db: Db,
   input: ImportRelayTarballInput
@@ -819,153 +1020,33 @@ export async function importRelayTarball(
 
   // Phase 2 (no tx): verify EVERYTHING about the tarball, then push. All verification (signature,
   // checksums, authorization cross-check, per-layout digest + integrity, blob digests) completes
-  // BEFORE the first push — a tampered or unauthorized tarball pushes NOTHING.
+  // BEFORE the first push — a tampered or unauthorized tarball pushes NOTHING. The verification
+  // itself is `extractAndVerifyRelayTarball` — extracted (M13.1a, byte-equivalent) so the retrans
+  // forward path runs the SAME checks without the push half below.
   const workDir = await makeScratchDir();
   const pushed: RelayPushedArtifact[] = [];
   let refusalReason: string | null = null;
+  // TOCTOU close (copy-once-then-operate-on-the-private-copy): input.tarballPath sits in the
+  // attacker-writable low-side inbox. Ingest its bytes into the server-controlled scratch dir
+  // EXACTLY once, then hash + verify ALL from that private copy — so the D4 confirmed-transfer
+  // checksum below describes the SAME bytes that were verified and imported, never a post-verify
+  // swap of the inbox file. After this copy `input.tarballPath` is never read again. The copy+hash
+  // live INSIDE the try so a missing/unreadable inbox path converges to the fail-closed block
+  // Decision (route → 409), not a raw throw that leaks the scratch dir.
+  let tarballSha256: string | null = null;
   try {
-    execFileSync("tar", ["xzf", input.tarballPath, "-C", workDir], { encoding: "utf8" });
-    const entries = (await readdir(workDir, { withFileTypes: true })).filter((e) =>
-      e.isDirectory()
-    );
-    const rootEntry = entries.length === 1 ? entries[0] : undefined;
-    if (!rootEntry)
-      throw new RelayImportRefusal("relay tarball does not contain exactly one bundle directory");
-    const bundleRoot = path.join(workDir, rootEntry.name);
-
-    // 1. Tarball transport integrity: CHECKSUMS.txt.sig against the OPERATOR-PROVIDED retrans
-    //    public key (never a key found inside the tarball), then every file against CHECKSUMS.txt.
-    const pubKeyPath = path.join(workDir, "relay-cosign.pub");
-    await writeFile(pubKeyPath, input.relayCosignPublicKeyPem, "utf8");
-    const checksumsPath = path.join(bundleRoot, "CHECKSUMS.txt");
-    const sigResult = verifyBlobDetached(checksumsPath, `${checksumsPath}.sig`, pubKeyPath);
-    if (!sigResult.ok) {
-      throw new RelayImportRefusal(
-        "relay tarball CHECKSUMS.txt signature does not verify against the provided retrans " +
-          "cosign public key (rejected, fail-closed)"
-      );
-    }
-    const checksumEntries = airgapChecksums.parseChecksums(await readFile(checksumsPath, "utf8"));
-    const mismatches = await airgapChecksums.verifyChecksums(bundleRoot, checksumEntries);
-    if (mismatches.length > 0) {
-      throw new RelayImportRefusal(
-        `relay tarball failed checksum verification: ` +
-          mismatches.map((m) => `${m.relativePath}: ${m.reason}`).join("; ")
-      );
-    }
-
-    // 2. Parse the relay manifest + bind it to THIS change.
-    let relayManifest: RelayBundleManifest;
-    try {
-      relayManifest = RelayBundleManifestSchema.parse(
-        JSON.parse(await readFile(path.join(bundleRoot, "relay-manifest.json"), "utf8"))
-      );
-    } catch (err) {
-      throw new RelayImportRefusal(
-        `relay tarball manifest is malformed: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-    if (
-      !ctx.sourceChangeObjectId ||
-      relayManifest.sourceChangeObjectId !== ctx.sourceChangeObjectId
-    ) {
-      throw new RelayImportRefusal(
-        `relay tarball is for source change '${relayManifest.sourceChangeObjectId}' but the local ` +
-          `change was imported from source change '${ctx.sourceChangeObjectId ?? "<none>"}' — ` +
-          `wrong tarball for this promotion (rejected, fail-closed)`
-      );
-    }
-
-    // 3. AUTHORIZATION CROSS-CHECK (zero trust in the relay): every artifact the tarball carries
-    //    must be in the LOCAL change's own M17.4(a)-verified authorized set. ONE unauthorized
-    //    entry refuses the WHOLE import — nothing is pushed.
-    const authorizedKeys = new Set(
-      ctx.authorized.map((a) => `${a.type}:${normalizeSha256Digest(a.digest) ?? a.digest}`)
-    );
-    for (const artifact of relayManifest.artifacts) {
-      const key = `${artifact.type}:${normalizeSha256Digest(artifact.digest) ?? artifact.digest}`;
-      if (!authorizedKeys.has(key)) {
-        throw new RelayImportRefusal(
-          `relay tarball carries artifact ${key} which is NOT in this change's authorized ` +
-            `(manifest-signed) set — unauthorized artifacts never cross (rejected, fail-closed; ` +
-            `nothing was pushed)`
-        );
-      }
-    }
-
-    // 4. Pre-push verification of every carried artifact (still before ANY push).
-    const verifiedOci: {
-      artifact: RelayBundleArtifact;
-      digest: string;
-      ociDir: string;
-      signatures: { tag: string; dir: string }[];
-    }[] = [];
-    const verifiedBlobs: {
-      artifact: RelayBundleArtifact;
-      digest: string;
-      bytes: Buffer;
-      sig: string;
-    }[] = [];
-    for (const artifact of relayManifest.artifacts) {
-      const digest = normalizeSha256Digest(artifact.digest);
-      if (!digest) {
-        throw new RelayImportRefusal(
-          `relay tarball artifact digest '${artifact.digest}' is not a well-formed sha256 digest`
-        );
-      }
-      if (artifact.type === "oci") {
-        if (!artifact.ociPath || !artifact.ociTag || !artifact.ociSignatures?.length) {
-          throw new RelayImportRefusal(
-            `relay tarball oci artifact ${digest} is missing its layout paths`
-          );
-        }
-        const ociDir = path.join(bundleRoot, artifact.ociPath);
-        const landed = await airgapOciLayout.readOciManifestDigest(ociDir);
-        if (landed !== digest) {
-          throw new RelayImportRefusal(
-            `relay tarball layout for ${digest} actually contains manifest ${landed} — ` +
-              `substitution inside the tarball (rejected, fail-closed)`
-          );
-        }
-        const integrity = await airgapOciLayout.verifyOciLayoutIntegrity(ociDir);
-        if (integrity.length > 0) {
-          throw new RelayImportRefusal(
-            `relay tarball layout for ${digest} failed integrity check: ` +
-              integrity.map((m) => `${m.relativePath}: ${m.reason}`).join("; ")
-          );
-        }
-        verifiedOci.push({
-          artifact,
-          digest,
-          ociDir,
-          signatures: artifact.ociSignatures.map((s) => ({
-            tag: s.tag,
-            dir: path.join(bundleRoot, s.path)
-          }))
-        });
-      } else {
-        if (!artifact.blobPath || !artifact.blobSigPath) {
-          throw new RelayImportRefusal(
-            `relay tarball blob artifact ${digest} is missing its byte paths`
-          );
-        }
-        if (!config.blobOutDir) {
-          throw new RelayImportRefusal(
-            "relay tarball carries blob artifacts but SCP_RELAY_BLOB_OUT_DIR is not configured — " +
-              "the destination blob byte channel directory must be operator-configured"
-          );
-        }
-        const bytes = await readFile(path.join(bundleRoot, artifact.blobPath));
-        const fetched = `sha256:${sha256Hex(bytes)}`;
-        if (fetched !== digest) {
-          throw new RelayImportRefusal(
-            `relay tarball blob for ${digest} actually hashes to ${fetched} (rejected, fail-closed)`
-          );
-        }
-        const sig = await readFile(path.join(bundleRoot, artifact.blobSigPath), "utf8");
-        verifiedBlobs.push({ artifact, digest, bytes, sig });
-      }
-    }
+    const privateTarball = path.join(workDir, "ingress-relay.tar.gz");
+    await copyFile(input.tarballPath, privateTarball);
+    tarballSha256 = await sha256File(privateTarball);
+    const { verifiedOci, verifiedBlobs } = await extractAndVerifyRelayTarball({
+      workDir,
+      tarballPath: privateTarball,
+      relayCosignPublicKeyPem: input.relayCosignPublicKeyPem,
+      localSourceChangeObjectId: ctx.sourceChangeObjectId,
+      authorized: ctx.authorized,
+      requireBlobLandingDir: true,
+      config
+    });
 
     // 5. PUSH — the install.sh pattern: push, then RE-INSPECT the landed digest from the registry
     //    (a push cannot silently substitute what was verified). Destination is the relay's OWN
@@ -1124,10 +1205,260 @@ export async function importRelayTarball(
       decisionId: decision.id,
       requestId: `federation-relay-import:${ctx.change.objectId}`
     });
+    // M13.1a (D4, validate-gated by construction — this tx runs only after every verification
+    // above passed and the bytes landed): the tarball hop's `bundle_transfers` row, CONFIRMED.
+    // Purely observational bookkeeping (the repo header's invariant holds — never authority);
+    // written for the CLI and the unattended inbox loop alike, so both paths stay identical.
+    if (ctx.change.importedFromDomain) {
+      await recordBundleTransfer(tx, {
+        orgId: input.orgId,
+        peerDomainId: ctx.change.importedFromDomain,
+        direction: "import",
+        kind: "promotion",
+        status: "confirmed",
+        checksum: tarballSha256
+      });
+    }
     return decision.id;
   });
 
   return { refused: false, localChangeObjectId: ctx.change.objectId, pushed, decisionId };
+}
+
+// -------------------------------------------------------------------------------------------------
+// RETRANS SIDE, INBOUND — validateAndForwardRelayTarball (M13.1a, proposal §13.1): the push-less
+// VALIDATE-AND-FORWARD for a relay tarball ARRIVING AT a `role: retrans` staging node (the
+// high-side hop of a double-retrans CDS crossing). A retrans has NO registry to push into
+// (deployment profile, §13.1) — its whole job on this hop is: run the SAME verification the
+// destination import runs (`extractAndVerifyRelayTarball`, the byte-equivalent extraction — "a
+// refactor, not a new trust decision"), then hand the UNTOUCHED original tarball bytes to the
+// outbound DeliveryTarget drop. It imports nothing, pushes nothing, decides nothing about the
+// promotion (ADR-0004: retrans never terminates a promotion).
+// -------------------------------------------------------------------------------------------------
+
+export interface ForwardRelayTarballInput {
+  orgId: string;
+  /** The LOCAL imported change at the retrans (its `.scpbundle` import — M17.4(a) already ran). */
+  changeIdOrUrn: string;
+  /** Absolute path of the arriving relay tarball (caller resolves it under the inbox). */
+  tarballPath: string;
+  /** The UPSTREAM relay instance's cosign PUBLIC key PEM (the low-side retrans that built and
+   *  signed this tarball) — registered on its peer row at pairing, or operator-provided. */
+  relayCosignPublicKeyPem: string;
+  /** The resolved OUTBOUND drop directory (the onward DeliveryTarget — §13.2). */
+  outDir: string;
+  /** The DOWNSTREAM boundary peer this onward hop targets (its federation domain id) — the loop
+   *  resolves it from `resolveOnwardOutDir`'s peer match. Used ONLY to attribute the onward
+   *  `export`/`submitted` `bundle_transfers` row to the peer the drop actually goes to (M16.1
+   *  per-peer surface); observational only (the ledger is never authority). Absent (env-fallback
+   *  drop, no downstream peer resolvable) → falls back to the upstream import peer. */
+  onwardPeerDomainId?: string;
+  /** File name to drop under `outDir` (defaults to the tarball's own basename); rides the
+   *  `resolveUnderDir` traversal guard. */
+  fileName?: string;
+  config?: RelayConfig;
+}
+
+export type ForwardRelayTarballResult =
+  | {
+      refused: false;
+      localChangeObjectId: string;
+      /** Where the (byte-identical) tarball was dropped for the onward hop. */
+      forwardedPath: string;
+      artifacts: RelayArtifactSummary[];
+      decisionId: string;
+    }
+  | { refused: true; decisionId: string; reason: string };
+
+export async function validateAndForwardRelayTarball(
+  db: Db,
+  input: ForwardRelayTarballInput
+): Promise<ForwardRelayTarballResult> {
+  const config = input.config ?? relayConfigFromEnv();
+
+  // Phase 1 (tx): ROLE ARM + resolve the local change's own (a)-verified authorized set — the
+  // AUTHORITY on what may pass through (zero trust in the tarball's own manifest). Pure DB.
+  const ctx = await withTenantTx(db, input.orgId, async (tx) => {
+    const self = await ensureFederationSelf(tx, input.orgId);
+    // The SAME role arm as buildRelayTarball (ADR-0004): only a retrans-role instance runs the
+    // push-less forward — an outpost that receives a tarball IMPORTS it (importRelayTarball).
+    if (self.role !== "retrans") {
+      throw conflict(
+        `relay validate-and-forward requires federation role 'retrans' (this domain's role is ` +
+          `'${self.role}') — outposts import relay tarballs (scp federation relay-import); only ` +
+          `the CDS-boundary staging node forwards them (proposal §13.1)`
+      );
+    }
+    const change = await getChangeRow(tx, input.orgId, input.changeIdOrUrn);
+    const manifestRef = crossBoundaryManifestOf(change);
+    if (!manifestRef) {
+      throw badRequest(
+        "local change carries no M17.4(a)-verified cross-boundary promotion manifest — import " +
+          "the promotion .scpbundle (scp federation import) BEFORE forwarding its byte tarball"
+      );
+    }
+    const sourceRef = (change.sourceRef ?? {}) as Record<string, unknown>;
+    return {
+      change,
+      authorized: manifestRef.artifacts,
+      sourceChangeObjectId:
+        typeof sourceRef.sourceChangeObjectId === "string" ? sourceRef.sourceChangeObjectId : null
+    };
+  });
+
+  // Phase 2 (no tx): the EXTRACTED verification — tarball signature, per-file checksums,
+  // manifest binding, authorized-set cross-check, per-artifact layout/blob integrity — with the
+  // push half absent and `requireBlobLandingDir: false` (the tarball is forwarded WHOLE; nothing
+  // lands here). Then the onward drop of the ORIGINAL file bytes. NO skopeo ever runs on this
+  // path — the retrans profile needs no registry for the forward hop.
+  const workDir = await makeScratchDir();
+  // TOCTOU close (copy-once-then-operate-on-the-private-copy): input.tarballPath sits in the
+  // attacker-writable low-side inbox. A low-side writer who SWAPS it between our verify and our
+  // forward-copy would push UNVALIDATED bytes across the boundary drop under an allow Decision —
+  // the exact zero-trust invariant this feature protects. So we ingest its bytes into the
+  // server-controlled scratch dir EXACTLY once, then hash + verify + forward-copy ALL from that
+  // private copy. After this copy `input.tarballPath` is never read again: a mid-window swap
+  // changes only the abandoned inbox file, never the bytes we verify/forward/hash. The copy+hash
+  // live INSIDE the try so a missing/unreadable inbox path converges to the fail-closed block
+  // Decision (D4), not a raw throw.
+  let tarballSha256: string | null = null;
+  let refusalReason: string | null = null;
+  let artifacts: RelayArtifactSummary[] = [];
+  let forwardedPath: string | null = null;
+  try {
+    const privateTarball = path.join(workDir, "ingress-relay.tar.gz");
+    await copyFile(input.tarballPath, privateTarball);
+    tarballSha256 = await sha256File(privateTarball);
+    const verified = await extractAndVerifyRelayTarball({
+      workDir,
+      tarballPath: privateTarball,
+      relayCosignPublicKeyPem: input.relayCosignPublicKeyPem,
+      localSourceChangeObjectId: ctx.sourceChangeObjectId,
+      authorized: ctx.authorized,
+      requireBlobLandingDir: false,
+      config
+    });
+    artifacts = verified.relayManifest.artifacts.map((a) => ({ type: a.type, digest: a.digest }));
+    // The onward drop: the VERIFIED private-copy bytes, byte-identical to what was validated (the
+    // low-side retrans's signature stays the receiving outpost's trust anchor — this node re-signs
+    // NOTHING and adds no verification authority). Copied from the private copy, never re-read from
+    // the inbox. The drop file name (naming only, not a byte read) rides the traversal guard.
+    const dropName = input.fileName ?? path.basename(input.tarballPath);
+    const dropPath = resolveUnderDir(input.outDir, dropName);
+    await mkdir(input.outDir, { recursive: true });
+    await copyFile(privateTarball, dropPath);
+    forwardedPath = dropPath;
+  } catch (err) {
+    // Same convergence as the destination import: a failing check (or a failed drop — which must
+    // equally never confirm, D4) becomes ONE block Decision, fail-closed.
+    if (err instanceof RelayImportRefusal) refusalReason = err.message;
+    else
+      refusalReason = `relay forward error (fail-closed): ${err instanceof Error ? err.message : String(err)}`;
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+
+  if (refusalReason !== null || forwardedPath === null) {
+    const reason = refusalReason ?? "relay forward failed (fail-closed)";
+    // D4 — VALIDATE-GATED, NEVER BLIND: a refusal writes the block Decision + hash-chained audit
+    // event and NO `bundle_transfers` confirmation — the transfer visibly stalls at the boundary
+    // rather than the ledger asserting a crossing that validation refused.
+    const decisionId = await withTenantTx(db, input.orgId, async (tx) => {
+      const decision = await insertDecision(tx, {
+        orgId: input.orgId,
+        kind: RETRANS_RELAY_FORWARD_DECISION_KIND,
+        subjectId: ctx.change.objectId,
+        verdict: "block",
+        inputContext: {
+          tarballPath: input.tarballPath,
+          tarballSha256,
+          sourceChangeObjectId: ctx.sourceChangeObjectId,
+          authorizedArtifacts: ctx.authorized.map((a) => ({ type: a.type, digest: a.digest }))
+        },
+        reasonTree: { summary: reason }
+      });
+      await appendAuditEvent(tx, {
+        orgId: input.orgId,
+        actorId: FEDERATION_IMPORT_ACTOR_ID,
+        action: "federation.relay.forward.blocked",
+        subjectId: ctx.change.objectId,
+        reason,
+        decisionId: decision.id,
+        requestId: `federation-relay-forward:${ctx.change.objectId}`
+      });
+      return decision.id;
+    });
+    return { refused: true, decisionId, reason };
+  }
+
+  // Success (validate-gated, D4): allow Decision + audit + the CONFIRMED inbound-hop transfer row
+  // and the SUBMITTED onward-drop row — the M16.1 boundary pipeline's per-hop state.
+  const finalForwardedPath = forwardedPath;
+  const decisionId = await withTenantTx(db, input.orgId, async (tx) => {
+    const decision = await insertDecision(tx, {
+      orgId: input.orgId,
+      kind: RETRANS_RELAY_FORWARD_DECISION_KIND,
+      subjectId: ctx.change.objectId,
+      verdict: "allow",
+      inputContext: {
+        tarballPath: input.tarballPath,
+        tarballSha256,
+        sourceChangeObjectId: ctx.sourceChangeObjectId,
+        authorizedArtifacts: ctx.authorized.map((a) => ({ type: a.type, digest: a.digest })),
+        forwardedPath: finalForwardedPath
+      },
+      reasonTree: {
+        summary:
+          "relay tarball signature + checksums verified and every carried artifact is in the " +
+          "local authorized set; tarball forwarded byte-identical to the onward delivery drop — " +
+          "no registry push (retrans deployment profile), no verification authority added " +
+          "(the receiving outpost's M17.4(a)+(b) gates run unweakened)"
+      }
+    });
+    await appendAuditEvent(tx, {
+      orgId: input.orgId,
+      actorId: FEDERATION_IMPORT_ACTOR_ID,
+      action: "federation.relay.forwarded",
+      subjectId: ctx.change.objectId,
+      reason: `relay tarball validated and forwarded: ${finalForwardedPath}`,
+      decisionId: decision.id,
+      requestId: `federation-relay-forward:${ctx.change.objectId}`
+    });
+    // The inbound hop's CONFIRMED row is keyed on the UPSTREAM low-side peer we imported from.
+    if (ctx.change.importedFromDomain) {
+      await recordBundleTransfer(tx, {
+        orgId: input.orgId,
+        peerDomainId: ctx.change.importedFromDomain,
+        direction: "import",
+        kind: "promotion",
+        status: "confirmed",
+        checksum: tarballSha256
+      });
+    }
+    // The onward hop's SUBMITTED row is keyed on the DOWNSTREAM boundary peer the drop TARGETS —
+    // not the upstream peer (minor fix: this used to mis-attribute the onward hop to the source).
+    // Env-fallback drop (no downstream peer resolvable) → attribute to the upstream peer as before.
+    const onwardPeerDomainId = input.onwardPeerDomainId ?? ctx.change.importedFromDomain;
+    if (onwardPeerDomainId) {
+      await recordBundleTransfer(tx, {
+        orgId: input.orgId,
+        peerDomainId: onwardPeerDomainId,
+        direction: "export",
+        kind: "promotion",
+        status: "submitted",
+        checksum: tarballSha256
+      });
+    }
+    return decision.id;
+  });
+
+  return {
+    refused: false,
+    localChangeObjectId: ctx.change.objectId,
+    forwardedPath: finalForwardedPath,
+    artifacts,
+    decisionId
+  };
 }
 
 /** Re-exported for the route/test layer: is `candidate` (a file name, possibly nested) safely
