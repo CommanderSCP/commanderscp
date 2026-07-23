@@ -64,6 +64,14 @@ commander ──.scpbundle──▶ retrans ──scp-relay-<id>.tar.gz──▶
 Also load-bearing (shipped earlier, shared with the pre-deploy verify — ADR-0019 §4):
 `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` and `SCP_ARTIFACT_BLOB_BASE_URLS`. **Unset = fail-closed** —
 every OCI dial / blob fetch is refused until the operator opts the byte channel in explicitly.
+And `SCP_ARTIFACT_INSECURE_HOSTS` (outpost side) — the pre-deploy gate's sibling of
+`SCP_RELAY_INSECURE_HOSTS`: comma-separated registry `host[:port]` entries the M17.4(b)
+per-artifact `cosign verify` may dial without TLS verification (`--allow-insecure-registry`),
+per host. A plain-HTTP/self-signed outpost-local registry (the bundled Gitea, a `registry:2`)
+must be listed here **in addition to** `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` — the egress allowlist
+answers "may we dial it at all?", this one "may TLS verification be skipped?". Hosts not listed
+always get full TLS verification. **Unset = TLS verification everywhere** (safe: the cosign
+signature, not transport TLS, is the trust anchor — a MITM can only cause fail-closed denial).
 
 ## Credentials (ADR-0019 §3 — the artifact-store class)
 

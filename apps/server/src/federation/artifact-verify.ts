@@ -327,9 +327,9 @@ export class LocationRegistryReader implements ArtifactRegistryReader {
       .map((b) => b.trim())
       .filter((b) => b.length > 0)
       .map((b) => new URL(b));
-    this.allowedOciRegistryHosts = (opts?.allowedOciRegistryHosts ?? ociRegistryHostsFromEnv())
-      .map((h) => h.trim().toLowerCase())
-      .filter((h) => h.length > 0);
+    this.allowedOciRegistryHosts = opts?.allowedOciRegistryHosts
+      ? parseRegistryHostList(opts.allowedOciRegistryHosts)
+      : ociRegistryHostsFromEnv();
   }
 
   async resolveOci(artifact: ArtifactRef): Promise<string | null> {
@@ -430,6 +430,19 @@ export class LocationRegistryReader implements ArtifactRegistryReader {
 }
 
 /**
+ * Normalize a registry `host[:port]` allowlist — the ONE parse shared by every comma-separated
+ * host-list configuration surface (`SCP_ARTIFACT_OCI_REGISTRY_HOSTS`, the pre-deploy gate's
+ * `SCP_ARTIFACT_INSECURE_HOSTS`, the relay's `SCP_RELAY_INSECURE_HOSTS`): entries trimmed and
+ * lowercased, empties dropped — so membership checks against {@link ociRegistryHostOf}'s
+ * lowercased output can never diverge between subsystems. Accepts the raw comma-separated env
+ * string or an already-split array.
+ */
+export function parseRegistryHostList(raw: string | readonly string[] | undefined): string[] {
+  const entries = typeof raw === "string" ? raw.split(",") : (raw ?? []);
+  return entries.map((h) => h.trim().toLowerCase()).filter((h) => h.length > 0);
+}
+
+/**
  * The registry `host[:port]` an OCI reference would dial, lowercased, or `null` when the ref names
  * no explicit registry. Per the docker/OCI reference grammar the first `/`-separated component is a
  * registry host only when it contains a `.` or a `:` or is exactly `localhost` — otherwise the ref
@@ -456,7 +469,7 @@ function blobBaseUrlsFromEnv(): string[] {
  *  other half of SCP_ARTIFACT_BLOB_BASE_URLS). UNSET means EVERY OCI verify is refused
  *  (fail-closed): the operator opts the OCI egress in explicitly; bundles never pick dial targets. */
 function ociRegistryHostsFromEnv(): string[] {
-  return (process.env.SCP_ARTIFACT_OCI_REGISTRY_HOSTS ?? "").split(",");
+  return parseRegistryHostList(process.env.SCP_ARTIFACT_OCI_REGISTRY_HOSTS);
 }
 
 function isHttpUrl(value: string): boolean {

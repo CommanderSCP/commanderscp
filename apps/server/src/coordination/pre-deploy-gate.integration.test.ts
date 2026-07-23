@@ -105,6 +105,10 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     // channel's registry is named explicitly, every other bundle-supplied host is refused before
     // any dial, and UNSET refuses every OCI verify (fail-closed; proven in axis j).
     process.env.SCP_ARTIFACT_OCI_REGISTRY_HOSTS = registryHost;
+    // Per-host TLS scoping: the gate grants cosign `--allow-insecure-registry` ONLY to hosts in
+    // SCP_ARTIFACT_INSECURE_HOSTS (a separate list from the egress allowlist above — this IS the
+    // operator story for a plain-HTTP registry: list it here or it gets full TLS verification).
+    process.env.SCP_ARTIFACT_INSECURE_HOSTS = registryHost;
 
     // Where blob artifacts (SBOM et al.) land: an HTTP store serving `location`/`signatureRef` URLs.
     blobServer = createServer((req, res) => {
@@ -193,6 +197,7 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
   afterAll(async () => {
     delete process.env.SCP_ARTIFACT_BLOB_BASE_URLS;
     delete process.env.SCP_ARTIFACT_OCI_REGISTRY_HOSTS;
+    delete process.env.SCP_ARTIFACT_INSECURE_HOSTS;
     await server?.close();
     await registry?.stop();
     await new Promise<void>((resolve) => (blobServer ? blobServer.close(() => resolve()) : resolve()));

@@ -224,6 +224,10 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
     // deliberately NOT listed.
     process.env.SCP_ARTIFACT_OCI_REGISTRY_HOSTS = `${srcHost},${destHost},${authedHost}`;
     process.env.SCP_ARTIFACT_BLOB_BASE_URLS = `${blobBaseUrl},${destBlobBaseUrl}`;
+    // Per-host TLS scoping for the RECEIVING outpost's M17.4(b) gate (SCP_ARTIFACT_INSECURE_HOSTS
+    // — the gate-side sibling of the relay's SCP_RELAY_INSECURE_HOSTS): the plain-HTTP test
+    // registries must be listed for the gate's cosign verify to skip TLS verification.
+    process.env.SCP_ARTIFACT_INSECURE_HOSTS = `${srcHost},${destHost},${authedHost}`;
 
     // Federation identities + roles: A commander, B RETRANS, C outpost.
     commanderDomainId = (
@@ -326,6 +330,7 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
   afterAll(async () => {
     delete process.env.SCP_ARTIFACT_OCI_REGISTRY_HOSTS;
     delete process.env.SCP_ARTIFACT_BLOB_BASE_URLS;
+    delete process.env.SCP_ARTIFACT_INSECURE_HOSTS;
     await commander?.close();
     await retrans?.close();
     await outpost?.close();

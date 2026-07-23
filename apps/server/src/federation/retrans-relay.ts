@@ -106,6 +106,7 @@ import {
   bindOciRefToAuthorizedDigest,
   normalizeSha256Digest,
   ociRegistryHostOf,
+  parseRegistryHostList,
   verifyAuthorizedArtifactSet,
   type ResolvedBlob
 } from "./artifact-verify.js";
@@ -158,10 +159,9 @@ export function relayConfigFromEnv(): RelayConfig {
     destRepo: env.SCP_RELAY_DEST_REPO || undefined,
     blobOutDir: env.SCP_RELAY_BLOB_OUT_DIR || undefined,
     blobBaseUrl: env.SCP_RELAY_BLOB_BASE_URL || undefined,
-    insecureHosts: (env.SCP_RELAY_INSECURE_HOSTS ?? "")
-      .split(",")
-      .map((h) => h.trim().toLowerCase())
-      .filter((h) => h.length > 0),
+    // The ONE shared host-list parse (artifact-verify.ts) — same normalize as the gate's
+    // SCP_ARTIFACT_INSECURE_HOSTS, so the two TLS allowlists can never diverge in parsing.
+    insecureHosts: parseRegistryHostList(env.SCP_RELAY_INSECURE_HOSTS),
     certDir: env.SCP_RELAY_CERT_DIR || undefined
   };
 }
