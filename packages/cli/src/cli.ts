@@ -34,6 +34,7 @@ import type {
   UpdateObjectRequest,
   UpsertObjectRequest,
   // M6: Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN §13).
+  DeliveryTarget,
   FederationPeer,
   FederationStatusResponse,
   ImportBundleRequest,
@@ -211,6 +212,9 @@ function peerRow(p: FederationPeer): Record<string, string> {
     // M17.3 (E5) — whether this peer's cosign VERIFICATION key is registered (from pairing). Presence
     // only in the table; the full PEM is in `--output json`. A peer paired before E5 shows "none".
     cosign: p.cosignPublicKey ? "registered" : "none",
+    // M13.2a (§13.2) — the peer's DeliveryTarget provider, or "env" when none is configured (the
+    // instance `SCP_RELAY_OUT_DIR`/`SCP_RELAY_IN_DIR` fallback). Full dirs are in `--output json`.
+    delivery: p.deliveryTarget?.provider ?? "env",
     pairedAt: p.pairedAt
   };
 }
@@ -2273,6 +2277,21 @@ export function buildProgram(): Command {
       "full|policies_only|changes_only|status_only (custom/label-selector not exposed via CLI yet)",
       "full"
     )
+    // M13.2a (§13.2) — the peer's DeliveryTarget (filesystem provider). Omitting BOTH dir flags
+    // leaves any existing target untouched (re-pair-safe); --clear-delivery-target resets the peer
+    // to the instance-env fallback (`SCP_RELAY_OUT_DIR`/`SCP_RELAY_IN_DIR`).
+    .option(
+      "--delivery-out-dir <dir>",
+      "SERVER-side absolute directory where channel artifacts addressed to this peer are dropped (filesystem DeliveryTarget)"
+    )
+    .option(
+      "--delivery-in-dir <dir>",
+      "SERVER-side absolute directory where channel artifacts FROM this peer arrive (the inbox)"
+    )
+    .option(
+      "--clear-delivery-target",
+      "clear the peer's DeliveryTarget (fall back to the instance env dirs)"
+    )
     .option("--base-url <url>", "this domain's own API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(
@@ -2285,10 +2304,29 @@ export function buildProgram(): Command {
           cosignPublicKey?: string;
           baseUrlOfPeer?: string;
           syncScope: string;
+          deliveryOutDir?: string;
+          deliveryInDir?: string;
+          clearDeliveryTarget?: boolean;
         }
       ) => {
+        if (opts.clearDeliveryTarget && (opts.deliveryOutDir || opts.deliveryInDir)) {
+          throw new Error(
+            "--clear-delivery-target cannot be combined with --delivery-out-dir/--delivery-in-dir"
+          );
+        }
         const client = await clientFromStoredCredentials(opts);
         const syncScope = { mode: opts.syncScope } as SyncScope;
+        // Tri-state (mirrors the API's re-pair discipline): undefined preserves any existing
+        // target, an object sets it, explicit null clears it.
+        const deliveryTarget: DeliveryTarget | null | undefined = opts.clearDeliveryTarget
+          ? null
+          : opts.deliveryOutDir || opts.deliveryInDir
+            ? {
+                provider: "filesystem",
+                ...(opts.deliveryOutDir ? { outDir: opts.deliveryOutDir } : {}),
+                ...(opts.deliveryInDir ? { inDir: opts.deliveryInDir } : {})
+              }
+            : undefined;
         const peer = await client.federation.pair({
           domainId: opts.domainId,
           name: opts.name,
@@ -2296,7 +2334,8 @@ export function buildProgram(): Command {
           publicKey: opts.publicKey,
           cosignPublicKey: opts.cosignPublicKey,
           baseUrl: opts.baseUrlOfPeer,
-          syncScope
+          syncScope,
+          deliveryTarget
         });
         printResult(peer, opts.output, (item) => peerRow(item as FederationPeer));
       }
@@ -2333,19 +2372,35 @@ export function buildProgram(): Command {
     )
     .requiredOption("--peer <idOrName>", "peer to export for")
     .option("--since <sequence>", "sequence to export since (default: from genesis)")
-    .requiredOption("--out <file>", "output .scpbundle file path")
+    .option("--out <file>", "output .scpbundle file path (local write — today's manual walk)")
+    // M13.2a (§13.2) — the server-side drop through the peer's DeliveryTarget (per-peer config,
+    // else the instance SCP_RELAY_OUT_DIR fallback; neither → fail-closed named problem).
+    .option(
+      "--deliver",
+      "drop the bundle server-side into the peer's DeliveryTarget instead of (or as well as) --out"
+    )
     .option("--base-url <url>", "API base URL override")
-    .action(async (opts: BaseCliOpts & { peer: string; since?: string; out: string }) => {
-      const client = await clientFromStoredCredentials(opts);
-      const bundle = await client.federation.exportSync({
-        peer: opts.peer,
-        sinceSequence: opts.since !== undefined ? Number(opts.since) : undefined
-      });
-      await writeFile(opts.out, JSON.stringify(bundle, null, 2), "utf8");
-      console.log(
-        `Exported ${bundle.entries.length} entries (sequence ${bundle.header.sinceSequence + 1}..${bundle.header.throughSequence}) to ${opts.out}`
-      );
-    });
+    .action(
+      async (opts: BaseCliOpts & { peer: string; since?: string; out?: string; deliver?: boolean }) => {
+        if (!opts.out && !opts.deliver) {
+          throw new Error("provide --out <file>, --deliver, or both");
+        }
+        const client = await clientFromStoredCredentials(opts);
+        const bundle = await client.federation.exportSync({
+          peer: opts.peer,
+          sinceSequence: opts.since !== undefined ? Number(opts.since) : undefined,
+          deliver: opts.deliver || undefined
+        });
+        if (opts.out) await writeFile(opts.out, JSON.stringify(bundle, null, 2), "utf8");
+        const where = [
+          ...(opts.out ? [opts.out] : []),
+          ...(opts.deliver ? [`the peer's DeliveryTarget (server-side)`] : [])
+        ].join(" and ");
+        console.log(
+          `Exported ${bundle.entries.length} entries (sequence ${bundle.header.sinceSequence + 1}..${bundle.header.throughSequence}) to ${where}`
+        );
+      }
+    );
 
   federationCmd
     .command("promote")
@@ -2354,17 +2409,32 @@ export function buildProgram(): Command {
     )
     .requiredOption("--peer <idOrName>", "destination peer")
     .requiredOption("--change <idOrUrn>", "the Change to promote")
-    .requiredOption("--out <file>", "output .scpbundle file path")
+    .option("--out <file>", "output .scpbundle file path (local write — today's manual walk)")
+    // M13.2a (§13.2) — the server-side drop through the peer's DeliveryTarget.
+    .option(
+      "--deliver",
+      "drop the bundle server-side into the peer's DeliveryTarget instead of (or as well as) --out"
+    )
     .option("--base-url <url>", "API base URL override")
-    .action(async (opts: BaseCliOpts & { peer: string; change: string; out: string }) => {
-      const client = await clientFromStoredCredentials(opts);
-      const bundle = await client.federation.exportPromotion({
-        peer: opts.peer,
-        change: opts.change
-      });
-      await writeFile(opts.out, JSON.stringify(bundle, null, 2), "utf8");
-      console.log(`Exported promotion bundle for change ${opts.change} to ${opts.out}`);
-    });
+    .action(
+      async (opts: BaseCliOpts & { peer: string; change: string; out?: string; deliver?: boolean }) => {
+        if (!opts.out && !opts.deliver) {
+          throw new Error("provide --out <file>, --deliver, or both");
+        }
+        const client = await clientFromStoredCredentials(opts);
+        const bundle = await client.federation.exportPromotion({
+          peer: opts.peer,
+          change: opts.change,
+          deliver: opts.deliver || undefined
+        });
+        if (opts.out) await writeFile(opts.out, JSON.stringify(bundle, null, 2), "utf8");
+        const where = [
+          ...(opts.out ? [opts.out] : []),
+          ...(opts.deliver ? [`the peer's DeliveryTarget (server-side)`] : [])
+        ].join(" and ");
+        console.log(`Exported promotion bundle for change ${opts.change} to ${where}`);
+      }
+    );
 
   federationCmd
     .command("import <file>")
@@ -2402,11 +2472,17 @@ export function buildProgram(): Command {
       "Validate-then-relay an imported promotion's artifact bytes into a signed tarball (retrans role only; fail-closed)"
     )
     .requiredOption("--change <idOrUrn>", "the LOCAL imported change (from `scp federation import`)")
+    // M13.2a (§13.2) — the outbound drop resolves through the named DESTINATION peer's
+    // DeliveryTarget; omitted, it resolves through the instance env (SCP_RELAY_OUT_DIR) as before.
+    .option(
+      "--peer <idOrName>",
+      "destination peer whose DeliveryTarget receives the tarball drop (default: instance env)"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
-    .action(async (opts: BaseCliOpts & { change: string }) => {
+    .action(async (opts: BaseCliOpts & { change: string; peer?: string }) => {
       const client = await clientFromStoredCredentials(opts);
-      const result = await client.federation.relay({ change: opts.change });
+      const result = await client.federation.relay({ change: opts.change, peer: opts.peer });
       if (opts.output === "json") {
         console.log(JSON.stringify(result, null, 2));
         return;

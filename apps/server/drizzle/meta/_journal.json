@@ -232,6 +232,13 @@
       "when": 1785700000000,
       "tag": "0032_state_transitions_waiting",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1785800000000,
+      "tag": "0033_federation_peer_delivery_target",
+      "breakpoints": true
     }
   ]
 }

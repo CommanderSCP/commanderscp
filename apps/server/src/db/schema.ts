@@ -1028,6 +1028,14 @@ export const federationPeers = pgTable(
     role: text("role").notNull(), // as seen from here: 'commander' | 'outpost' | 'retrans'
     baseUrl: text("base_url"), // set on an outpost's record of its commander — what federation-https dials
     syncScope: jsonb("sync_scope").notNull().default({ mode: "full" }),
+    /** M13.2a (proposal §13.2) — the peer's per-peer DeliveryTarget (`DeliveryTargetSchema`,
+     *  packages/schemas): where signed channel artifacts (`.scpbundle` / relay tarballs) addressed
+     *  to this peer are dropped, and where inbound ones from it arrive. NULLABLE, no backfill: a
+     *  NULL falls back to the instance env (`SCP_RELAY_OUT_DIR`/`SCP_RELAY_IN_DIR` — PR #112's
+     *  behavior, byte-identical), so existing setups migrate as no-ops. jsonb (not columns) because
+     *  13.2b adds a `provider: 's3-compatible'` member additively — registry-shaped data, not a new
+     *  table (charter principle 2). */
+    deliveryTarget: jsonb("delivery_target"),
     pairedAt: timestamp("paired_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },

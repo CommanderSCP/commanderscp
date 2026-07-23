@@ -29,7 +29,13 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { badRequest, conflict } from "../errors.js";
 import { initFederationSelf, ensureFederationSelf } from "../federation/self-repo.js";
-import { pairPeer, listPeers } from "../federation/peers-repo.js";
+import { pairPeer, listPeers, getPeerByIdOrName } from "../federation/peers-repo.js";
+import {
+  assertDeliveryTargetRooted,
+  dropDeliveryFile,
+  requireOutboundDir,
+  resolveDeliveryTarget
+} from "../federation/delivery-target.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
 import { getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
 import { getFederationStatus } from "../federation/status-repo.js";
@@ -179,6 +185,10 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         if (request.body.domainId === self.domainId) {
           throw badRequest("cannot pair this domain with itself");
         }
+        // M13.2a residual (#110 pattern): a per-peer deliveryTarget dir is honored only inside the
+        // operator-declared SCP_DELIVERY_ROOTS — refuse an out-of-root (or unrooted) dir here so it
+        // is NEVER stored (the resolution side re-checks fail-closed for anything already in the DB).
+        assertDeliveryTargetRooted(request.body.deliveryTarget);
         return pairPeer(tx, { orgId: auth.orgId, ...request.body });
       });
       reply.status(201).send(peer);
@@ -281,15 +291,37 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       // here rather than a Fastify `onRequest` hook.
       await enforceFederationMtls(deps, request);
       const auth = await requireAuth(deps, request);
-      const bundle = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+      const { bundle, deliverPeer } = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "federation:write",
           scopeObjectId: auth.orgId
         });
-        return exportSyncBundle(tx, auth.orgId, request.body.peer, request.body.sinceSequence);
+        // M13.2a (§13.2): `deliver` resolves the peer row FIRST — a delivery with no resolvable
+        // drop directory refuses fail-closed BEFORE the export does any work.
+        const deliverPeer = request.body.deliver
+          ? await getPeerByIdOrName(tx, auth.orgId, request.body.peer)
+          : null;
+        if (deliverPeer) requireOutboundDir(resolveDeliveryTarget(deliverPeer));
+        const bundle = await exportSyncBundle(
+          tx,
+          auth.orgId,
+          request.body.peer,
+          request.body.sinceSequence
+        );
+        return { bundle, deliverPeer };
       });
+      if (request.body.deliver && deliverPeer) {
+        // The server-side leg of the CDS walk (§13.2 write seam): the SAME bytes the CLI's --out
+        // writes (`JSON.stringify(bundle, null, 2)`), dropped through the peer's DeliveryTarget
+        // (per-peer config, else the SCP_RELAY_OUT_DIR instance fallback — today's behavior).
+        await dropDeliveryFile(
+          resolveDeliveryTarget(deliverPeer),
+          `scp-sync-${bundle.header.exporterDomainId}-${bundle.header.throughSequence}.scpbundle`,
+          JSON.stringify(bundle, null, 2)
+        );
+      }
       reply.status(200).send(bundle);
     }
   });
@@ -328,6 +360,15 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
           scopeObjectId: auth.orgId
         })
       );
+      // M13.2a (§13.2): `deliver` resolves the peer's DeliveryTarget FIRST — a delivery with no
+      // resolvable drop directory refuses fail-closed (named per-gap problem) BEFORE the export
+      // gates run, so a refused delivery never leaves a signed bundle with nowhere to go.
+      const deliverPeer = request.body.deliver
+        ? await withTenantTx(deps.db, auth.orgId, (tx) =>
+            getPeerByIdOrName(tx, auth.orgId, request.body.peer)
+          )
+        : null;
+      if (deliverPeer) requireOutboundDir(resolveDeliveryTarget(deliverPeer));
       const outcome = await exportPromotionBundle(deps.db, {
         orgId: auth.orgId,
         peerIdOrName: request.body.peer,
@@ -339,6 +380,16 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       // blocked response (DESIGN.md §6/§10.4). The Decision was already persisted by the export.
       if (outcome.refused) {
         throw conflict(outcome.reason, { decisionId: outcome.decisionId });
+      }
+      if (deliverPeer) {
+        // The server-side leg of the CDS walk (§13.2 write seam): the SAME bytes the CLI's --out
+        // writes, dropped through the peer's DeliveryTarget (per-peer config, else the
+        // SCP_RELAY_OUT_DIR instance fallback — today's behavior, byte-identical).
+        await dropDeliveryFile(
+          resolveDeliveryTarget(deliverPeer),
+          `scp-promotion-${outcome.bundle.header.sourceChangeObjectId}.scpbundle`,
+          JSON.stringify(outcome.bundle, null, 2)
+        );
       }
       reply.status(200).send(outcome.bundle);
     }
@@ -448,16 +499,21 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         })
       );
       const config = relayConfigFromEnv();
-      if (!config.outDir) {
-        throw badRequest(
-          "SCP_RELAY_OUT_DIR is not configured — the operator must set the relay tarball drop directory"
-        );
-      }
+      // M13.2a (§13.2) — the outbound drop resolves through the DESTINATION peer's DeliveryTarget
+      // when the request names one; absent a peer, through the instance env (`SCP_RELAY_OUT_DIR`)
+      // exactly as before — byte-identical. NEITHER resolvable → fail-closed 400 carrying the
+      // named per-gap problem (never a silent default path).
+      const deliverPeer = request.body.peer
+        ? await withTenantTx(deps.db, auth.orgId, (tx) =>
+            getPeerByIdOrName(tx, auth.orgId, request.body.peer as string)
+          )
+        : null;
+      const outDir = requireOutboundDir(resolveDeliveryTarget(deliverPeer, config));
       const outcome = await buildRelayTarball(deps.db, {
         orgId: auth.orgId,
         changeIdOrUrn: request.body.change,
         masterKey: deps.config.secretsMasterKey,
-        outDir: config.outDir,
+        outDir,
         config
       });
       // FAIL-CLOSED: a failing/tampered/unauthorized/missing artifact refused the whole relay —
