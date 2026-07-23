@@ -33,6 +33,7 @@ import { appendAuditEvent } from "../audit/audit-repo.js";
 import { currentPeerCosignPublicKey } from "../federation/peers-repo.js";
 import {
   LocationRegistryReader,
+  parseRegistryHostList,
   verifyAuthorizedArtifactSet,
   type ArtifactRegistryReader
 } from "../federation/artifact-verify.js";
@@ -41,6 +42,23 @@ import { markChangeReconcileBlocked, type ChangeRow } from "./changes-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 
 export const PRE_DEPLOY_ARTIFACT_VERIFY_DECISION_KIND = "pre-deploy-artifact-verify";
+
+/**
+ * `SCP_ARTIFACT_INSECURE_HOSTS` — comma-separated registry `host[:port]` entries this gate's
+ * per-artifact `cosign verify` may dial WITHOUT registry TLS verification
+ * (`--allow-insecure-registry`), scoped PER HOST via the predicate form of
+ * `AllowInsecureRegistry` — exactly the relay's `SCP_RELAY_INSECURE_HOSTS` posture, as a SEPARATE
+ * variable (different subsystem, different config surface) sharing the one parse
+ * ({@link parseRegistryHostList}). Hosts NOT listed get full TLS verification even when
+ * egress-allowlisted in `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` — the two lists answer different
+ * questions ("may we dial it at all?" vs "may TLS verification be skipped?"). Listing a
+ * plain-HTTP/self-signed outpost-local registry here is safe: the cosign SIGNATURE over the
+ * authorized digest — not transport TLS — is the trust anchor, so a TLS MITM can only cause a
+ * fail-closed denial. UNSET = TLS verification everywhere (secure default).
+ */
+export function artifactInsecureRegistryHosts(): string[] {
+  return parseRegistryHostList(process.env.SCP_ARTIFACT_INSECURE_HOSTS);
+}
 
 /** The subset of a change's `sourceRef` this gate reads — the fields M17.4(a) recorded on import. */
 interface CrossBoundaryManifestRef {
@@ -115,13 +133,17 @@ export async function runPreDeployArtifactGate(
       "no exporter cosign public key registered for the promoting peer — cannot verify artifact " +
       "signatures at deploy (rejected, fail-closed); re-pair the peer to exchange its E5 key";
   } else {
+    // PER-HOST TLS scoping (mirrors the relay's SCP_RELAY_INSECURE_HOSTS): the outpost-local
+    // registry is commonly HTTP/self-signed and the cosign SIGNATURE — not registry TLS — is the
+    // trust anchor, but TLS-off is granted only to hosts the operator explicitly listed in
+    // SCP_ARTIFACT_INSECURE_HOSTS; every other host keeps full TLS verification. Never a blanket
+    // `true`.
+    const insecureHosts = artifactInsecureRegistryHosts();
     result = await verifyAuthorizedArtifactSet({
       artifacts: manifestRef.artifacts,
       cosignPublicKeyPem,
       reader,
-      // The outpost-local registry is commonly HTTP/self-signed; the cosign SIGNATURE is the trust
-      // anchor, not registry TLS (see artifact-verify.ts / verifyImage).
-      allowInsecureRegistry: true
+      allowInsecureRegistry: (host) => insecureHosts.includes(host.toLowerCase())
     });
     if (result.ok) return { blocked: false }; // every artifact present + authentic — deploy proceeds.
     blockReason =

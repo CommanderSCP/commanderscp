@@ -96,7 +96,7 @@ describe("verifyAuthorizedArtifactSet cosign wiring", () => {
     ]);
   });
 
-  it("the BOOLEAN form passes through unchanged (existing M17.4(b) gate call sites)", async () => {
+  it("the BOOLEAN form passes through unchanged (no production caller uses blanket `true` anymore — the M17.4(b) gate and the relay both use the per-host predicate)", async () => {
     await verifyAuthorizedArtifactSet({
       artifacts: [artifactA, artifactB],
       cosignPublicKeyPem: "mock-pem",
