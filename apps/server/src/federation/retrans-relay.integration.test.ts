@@ -106,6 +106,12 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
   let attackerKeyPath: string;
   let cosignBin: string;
   let imageSignFlags: string[];
+  /** Flags forcing the LEGACY `sha256-<hex>.sig` tag attach scheme (empty when this cosign knows
+   *  no other scheme). Cosign v3 defaults to the OCI 1.1 referrers-FALLBACK tag (an image index)
+   *  against `registry:2`, so the (a) round-trip exercises that scheme; signing ONE image with
+   *  these flags makes the same suite run prove the relay's discovery finds the legacy scheme
+   *  too — both storage vintages covered regardless of the ambient cosign's default. */
+  let legacySchemeSignFlags: string[];
 
   let relayOutDir: string;
 
@@ -243,6 +249,9 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
       "--allow-insecure-registry",
       "--yes"
     ];
+    legacySchemeSignFlags = signHelp.includes("--new-bundle-format")
+      ? ["--new-bundle-format=false"]
+      : [];
 
     // Pairing (all out-of-band key exchange, as in production):
     //   A pairs B and C (so it can export promotions to each);
@@ -374,8 +383,8 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
     return { ref: `${host}/${repo}@${digest}`, digest };
   }
 
-  function signImage(ref: string, keyPath: string): void {
-    execFileSync(cosignBin, ["sign", "--key", keyPath, ...imageSignFlags, ref], {
+  function signImage(ref: string, keyPath: string, extraFlags: string[] = []): void {
+    execFileSync(cosignBin, ["sign", "--key", keyPath, ...imageSignFlags, ...extraFlags, ref], {
       encoding: "utf8",
       env: { ...process.env, COSIGN_PASSWORD: "" }
     });
@@ -649,8 +658,13 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
   // ---------------------------------------------------------------------------------------------
 
   it("a tampered artifact at the source (signed by the WRONG key) refuses the relay with a block Decision + audit — and NOTHING reaches the destination registry", async () => {
+    // Real signature, WRONG key — a forged/substituted build — attached under the LEGACY
+    // `sha256-<hex>.sig` tag scheme (where this cosign can be told to): the relay's discovery
+    // must FIND the signature artifact under EITHER attach scheme first (the (a) round-trip
+    // already covers this cosign's default — the referrers-fallback index under cosign v3), and
+    // only THEN refuse on verification. A discovery miss would produce the wrong refusal reason.
     const tampered = await pushImage(srcHost, SRC_REPO, "tampered-artifact");
-    signImage(tampered.ref, attackerKeyPath); // real signature, WRONG key — a forged/substituted build.
+    signImage(tampered.ref, attackerKeyPath, legacySchemeSignFlags);
     const changeAtA = await proposeTrackedChangeAtA(tampered.digest);
     const bundleForB = await exportPromotionFromA(changeAtA, "retrans-b");
     const importedAtB = await importPromotionBundle(retrans.db, retrans.orgId, bundleForB);

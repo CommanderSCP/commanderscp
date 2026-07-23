@@ -508,6 +508,7 @@ export async function buildRelayTarball(
           const hex = digest.slice("sha256:".length);
           const sigRepo = repoWithoutTag(bound.ref.slice(0, bound.ref.lastIndexOf("@")));
           const ociSignatures: { tag: string; path: string }[] = [];
+          const sigProbeFailures: string[] = [];
           for (const sigTag of [`sha256-${hex}.sig`, `sha256-${hex}`]) {
             const sigRelPath = path.posix.join("images", `${name}-sig-${ociSignatures.length}`);
             try {
@@ -521,17 +522,24 @@ export async function buildRelayTarball(
                 `oci:${path.join(bundleRoot, sigRelPath)}:sig`
               ]);
               ociSignatures.push({ tag: sigTag, path: sigRelPath });
-            } catch {
-              // This particular tag scheme isn't present — fine as long as SOME signature
-              // artifact exists (asserted below); the VALIDATE step still independently proves
-              // the signature verifies against the exporter's key.
+            } catch (err) {
+              // This particular tag scheme isn't present (or its artifact couldn't be copied) —
+              // fine as long as SOME signature artifact lands (asserted below); the VALIDATE step
+              // still independently proves the signature verifies against the exporter's key.
+              // Recorded so the fail-closed refusal names the REAL per-tag error: an absent tag
+              // ("manifest unknown") reads very differently from a copy-tooling failure (e.g. a
+              // pre-1.16 skopeo refusing the referrers-fallback OCI index under
+              // --preserve-digests), and the refusal is all an operator gets.
+              sigProbeFailures.push(
+                `${sigTag}: ${err instanceof Error ? err.message : String(err)}`
+              );
             }
           }
           if (ociSignatures.length === 0) {
             throw new Error(
               "no registry-attached cosign signature artifact found for the image (neither the " +
                 "legacy `.sig` tag nor the referrers-fallback tag) — an unsigned artifact never " +
-                "crosses (fail-closed)"
+                `crosses (fail-closed). Signature tag probes: ${sigProbeFailures.join("; ")}`
             );
           }
           bundleArtifacts.push({
