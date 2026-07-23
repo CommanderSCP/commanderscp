@@ -10,7 +10,9 @@
  * CHARTER — coordinate, NOT execute (principle 1): this plugin NEVER runs Trivy. Trivy runs inside
  * an execution system SCP merely coordinates (the Argo Workflows Trivy step, ADR-0012); this plugin
  * only *consumes* the resulting verdict JSON as evidence. It holds no scanner credentials and
- * launches no scan.
+ * launches no scan. (Since ADR-0020, the commander's separate `scp-managed-scan` promotion scan
+ * step is a genuine, charter-enumerated exception that DOES execute scans — this plugin remains
+ * the org-pipeline evidence ingress and is unaffected: it still runs no scanner of any kind.)
  *
  * SCOPE (ADR-0013) — this is a BOUNDARY-CROSSING AUTHORIZATION gate, not a universal code-quality
  * gate. It fires ONLY where an operator binds a scan control into a policy's `requireControls` (or a

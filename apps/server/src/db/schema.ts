@@ -1355,7 +1355,14 @@ export const scanRequirementFloors = pgTable(
   "scan_requirement_floors",
   {
     tier: text("tier").notNull(), // 'platform' | 'trust_domain'
-    origin: text("origin").notNull().default("local"), // 'local' | 'federated'
+    // 'local' | 'federated'. NOTE (dated 2026-07-23, M17.5 follow-on): the CHECK admits both, but
+    // NO federation writer producing `origin: 'federated'` rows exists — only the operator PUT
+    // (routes/instance-scan-floors.ts) writes this table. Under the 2026-07-23 D5 decision
+    // (outposts/retrans never evaluate scan policy — they validate the commander's signature, not
+    // requirements), federated-origin floors are DORMANT until a genuine multi-commander
+    // distribution need exists. Not a bug; see the matching note in scan-requirements.ts and the
+    // ADR-0016 addendum.
+    origin: text("origin").notNull().default("local"),
     maxCritical: integer("max_critical"),
     maxHigh: integer("max_high"),
     maxMedium: integer("max_medium"),

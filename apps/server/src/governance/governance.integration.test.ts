@@ -1238,8 +1238,10 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
   // M17.1 (ADR-0013): the `scan-result-control` ControlPlugin — a coordinated Trivy scan VERDICT
   // turned into gate evidence, proven through the REAL gate seam (not a plugin-unit tautology):
   // a required policy naming the scan control genuinely blocks promotion when the verdict fails
-  // (over-threshold OR digest-mismatch) and lets it through when the verdict passes. SCP consumes
-  // the verdict; it never runs Trivy (charter coordinate-not-execute).
+  // (over-threshold OR digest-mismatch) and lets it through when the verdict passes. This
+  // plugin/gate consumes the verdict; it never runs Trivy itself (charter coordinate-not-execute) —
+  // the charter-enumerated `scp-managed-scan` runner is what scans, as the commander's promotion
+  // scan step (ADR-0020).
   // -----------------------------------------------------------------------------------------
 
   describe("scan-result-control (Trivy verdict as a boundary-authorization gate)", () => {

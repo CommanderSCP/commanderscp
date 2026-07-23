@@ -23,9 +23,10 @@
  *
  * SCP only READS the registry to verify — `cosign verify` (OCI, registry-attached signature) and
  * `cosign verify-blob` (blob, detached origin signature). It NEVER transports bytes between
- * registries/domains (that is byte TRANSPORT, M15.5) and NEVER re-scans (scan-at-source is trusted;
- * the export gate already enforced a passing scan per substantive artifact — M17.1/E6). No
- * byte-moving code lives here.
+ * registries/domains (that is byte TRANSPORT, M15.5) and NEVER re-scans — receiver-side
+ * never-re-scan is UNCHANGED: the promotion scan step now executes once, at the commander, before
+ * signing (ADR-0020), and the export gate already enforced a passing scan per substantive artifact
+ * off that evidence — M17.1/E6. No byte-moving code lives here.
  *
  * ## Fail-closed
  *

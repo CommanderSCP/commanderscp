@@ -1511,8 +1511,10 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
 // ---------------------------------------------------------------------------------------------
 // M17.4(a) / M15.2 — RECEIVER-side verification of the commander's cosign-signed promotion
 // manifest at bundle import (the OUTPOST's universal pre-deploy validation, ADR-0011). ONE gate
-// runs at every receiving hop; the outpost NEVER re-scans (trust scan-at-source). Fail-closed over
-// signature + set-equality + the tie + self-binding + a downgrade defense. Part-(b) (per-artifact
+// runs at every receiving hop; the outpost NEVER re-scans — receiver-side never-re-scan is
+// UNCHANGED; the one scan now executes at the commander before signing, per promotion journey
+// (ADR-0020). Fail-closed over signature + set-equality + the tie + self-binding + a downgrade
+// defense. Part-(b) (per-artifact
 // BYTE verify where the operator-loaded bytes land) runs later as the PRE-DEPLOY gate — see
 // coordination/pre-deploy-gate.integration.test.ts; byte TRANSPORT itself remains M15.5.
 // ---------------------------------------------------------------------------------------------
