@@ -4,6 +4,8 @@
 **Context doc:** [docs/proposals/promotion-and-execution-model.md](../proposals/promotion-and-execution-model.md)
 **Relates to:** [ADR-0002](0002-execution-strategy.md) (three-mode execution strategy); [ADR-0004](0004-service-naming-commander-outpost-retrans.md) (commander/outpost/retrans roles); [ADR-0012](0012-registry-consolidation.md) (bundled-backend per-role allowlist — the build/event-backend rationale reconciled below); [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (scan as a boundary-authorization gate; the executor signs artifacts, the commander signs only the manifest); [ADR-0015](0015-cosign-cross-boundary-signing.md) (§5 — the coordinate-not-execute signing split); [ADR-0016](0016-scoped-scan-requirement-policies.md) (§"Known follow-up" — the per-domain-vs-per-org federation-identity question, left **open** and **deferred** here too); [ADR-0018](0018-domain-local-dev-pipelines.md) (the domain-local dev-pipeline exemption that keys on origin-domain-locality); charter principle 1 (coordinate, not execute), principle 2 (graph-native)
 
+> **Evolution note (2026-07-23, [ADR-0020](0020-first-class-commander-scanning.md)):** §2's "the commander … does **not** run the scan" is superseded by exactly one step — the commander's cross-boundary gate role now **includes the promotion scan step** (the charter-enumerated `scp-managed-scan` runner scans at the commander before signing). Build stays devolved to the originating outpost; the commander still never runs build; the manifest-only signing pin and the E6 export gate below are unchanged.
+
 ## Context
 
 Three ownership questions were settled with the owner on 2026-07-20. None is a new mechanism — each is a
