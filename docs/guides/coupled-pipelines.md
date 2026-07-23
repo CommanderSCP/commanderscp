@@ -67,9 +67,10 @@ scp change-source report github \
 ```
 
 `us-east-1` here is the id or URN of the **deployment-target** (or component) graph object the key
-must be true at — not a free-text region string. Look it up once (`scp deployment-target get
-us-east-1`) and hardcode the id/URN in your pipeline config, the same way you'd hardcode any other
-infra reference.
+must be true at — not a free-text region string. `get` resolves by id/URN only, so you can't look
+one up by its plain name directly; instead run `scp deployment-target list` once, find the
+`us-east-1` row, and hardcode its id/URN in your pipeline config, the same way you'd hardcode any
+other infra reference.
 
 Both flags also exist on `scp change propose` (`--provides <keys>` / `--requires
 key@objectIdOrUrn,...`) if you're proposing a change directly against the API rather than through

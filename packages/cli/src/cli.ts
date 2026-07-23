@@ -394,9 +394,16 @@ function printWaitStatusBody(waitStatus: ChangeWaitStatus | null, standalone: bo
     return;
   }
   const outstanding = waitStatus.requirements.filter((r) => !r.satisfied).length;
-  const header = waitStatus.waiting
-    ? `Waiting on ${outstanding} of ${waitStatus.requirements.length} prerequisite(s):`
-    : `Coupled prerequisites (${waitStatus.requirements.length}, all satisfied):`;
+  // Derived from `outstanding`, not `waitStatus.waiting` alone: `waiting` reflects the change's
+  // STATE (`state === "waiting"`), which is false for a change read before it ever parked (still
+  // `coordinated`/`proposed`) or after it released (`executing`/`validating`/`promoted`) — either
+  // of which can still have an outstanding row (a not-yet-evaluated requirement, or a provider
+  // that was cancelled after release). Heading off `waiting` alone would print "all satisfied"
+  // over a row printing OUTSTANDING.
+  const header =
+    outstanding > 0
+      ? `Waiting on ${outstanding} of ${waitStatus.requirements.length} prerequisite(s):`
+      : `Coupled prerequisites (${waitStatus.requirements.length}, all satisfied):`;
   console.log(standalone ? header : `\n${header}`);
   for (const req of waitStatus.requirements) {
     const at = req.atName ? `${req.atName} (${req.at})` : req.at;

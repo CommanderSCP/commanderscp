@@ -110,6 +110,16 @@ const DIAGNOSTIC_LIMIT = 20;
  * DECLARE, not what is live right now. Served by the same `obj_props` GIN index as
  * `requirementStatuses` (`jsonb_path_ops` covers `@>`, not the `jsonb_array_elements_text` unnest
  * itself, but the `@>` prefilter is what keeps this cheap).
+ *
+ * FAIL-CLOSED on a non-array `provides` (same class as `requiresOf`'s malformed-`requires`
+ * handling, coupled-pipelines.md §10): a version-skewed federation peer or a corrupted legacy row
+ * can carry `properties.provides` as a scalar rather than an array — past the API's typed
+ * validation, exactly like a malformed `requires` entry. `jsonb_array_elements_text` raises
+ * `cannot extract elements from a scalar` on such a row, which would 500 this diagnostic (and
+ * therefore `explain`/`wait-status`) for every OTHER, well-formed waiter at the same scope. The
+ * `jsonb_typeof(...) = 'array'` guard excludes the junk row from the unnest before it is ever
+ * evaluated, rather than trying to catch or coerce it — the row is simply not a source of
+ * suggestions, and every well-formed provider at the scope is unaffected.
  */
 export async function listProvidedKeysAtScope(tx: TenantTx, orgId: string, at: string): Promise<string[]> {
   const scopeProbe = JSON.stringify({ targets: [at] });
@@ -121,6 +131,7 @@ export async function listProvidedKeysAtScope(tx: TenantTx, orgId: string, at: s
     WHERE c.org_id = ${orgId}::uuid
       AND o.deleted_at IS NULL
       AND o.properties @> ${scopeProbe}::jsonb
+      AND jsonb_typeof(o.properties -> 'provides') = 'array'
     ORDER BY key
     LIMIT ${DIAGNOSTIC_LIMIT}
   `);

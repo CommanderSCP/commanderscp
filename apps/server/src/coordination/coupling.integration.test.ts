@@ -763,6 +763,54 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     expect(explained.waitStatus).toEqual((await admin.changes.explain(waiter.id)).waitStatus);
   }, 60_000);
 
+  it("wait-status still renders when a change at the scope carries a non-array `provides` (raw-SQL federation skew) — the junk row is simply excluded from 'did you mean'", async () => {
+    const infra = await createTestComponent(admin, { name: "junk-provides-infra" });
+    const app = await createTestComponent(admin, { name: "junk-provides-app" });
+
+    // A real, well-formed provider at `infra` — must still show up in "did you mean".
+    const provider = await admin.changes.propose({
+      name: "well-formed provider",
+      targets: [infra.id],
+      provides: ["feature-a"]
+    });
+    await reaches(provider.id, "validating");
+
+    // A change at the SAME scope whose `provides` is a bare scalar, not an array — the shape
+    // `jsonb_array_elements_text` cannot unnest. The typed API (Zod array) makes this unreachable
+    // through POST /changes, so it is materialized past validation with raw SQL, exactly the
+    // federation-skew / corrupted-legacy-row shape the malformed-`requires` machinery fail-closes
+    // on (coupled-pipelines.md §10) — mirrored here on the `provides` side.
+    const junkProvider = await admin.changes.propose({
+      name: "junk provides scalar",
+      targets: [infra.id]
+    });
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(objects)
+        .set({
+          properties: sql`jsonb_set(${objects.properties}, '{provides}', '"junk-scalar"'::jsonb)`
+        })
+        .where(eq(objects.id, junkProvider.id))
+    );
+
+    // A waiter with a typo'd key at the SAME scope triggers `listProvidedKeysAtScope`.
+    const waiter = await admin.changes.propose({
+      name: "waiter triggering did-you-mean at the junk-carrying scope",
+      targets: [app.id],
+      requires: [{ key: "feture-a", at: infra.id }]
+    });
+    await reaches(waiter.id, "waiting");
+
+    // Must NOT 500 — the scalar-`provides` row is simply excluded; the well-formed row still
+    // surfaces.
+    const explained = await admin.changes.explain(waiter.id);
+    expect(explained.waitStatus).not.toBeNull();
+    expect(explained.waitStatus!.waiting).toBe(true);
+    const req = explained.waitStatus!.requirements[0]!;
+    expect(req.satisfied).toBe(false);
+    expect(req.didYouMean).toEqual(["feature-a"]);
+  }, 60_000);
+
   it("once satisfied, 'did you mean' disappears — the question is moot for a satisfied requirement", async () => {
     const infra = await createTestComponent(admin, { name: "didyoumean-satisfied-infra" });
     const app = await createTestComponent(admin, { name: "didyoumean-satisfied-app" });
