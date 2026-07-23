@@ -358,7 +358,8 @@ export const KNOWN_EXECUTOR_MODULES: PluginModule[] = [
   "gitlab",
   "argocd",
   "terraform",
-  "managed-iac"
+  "managed-iac",
+  "managed-scan"
 ];
 
 /**
@@ -451,6 +452,32 @@ function managedIacServerSettings(): {
     runnerImage: process.env.SCP_MANAGED_IAC_RUNNER_IMAGE,
     networkMode: process.env.SCP_MANAGED_IAC_NETWORK_MODE ?? "none",
     workspaceRoot: process.env.SCP_MANAGED_IAC_WORKSPACE_ROOT ?? join(tmpdir(), "scp-managed-iac")
+  };
+}
+
+/**
+ * SERVER/OPERATOR-GOVERNED `scp-managed-scan` runner settings (ADR-0020 §1) — the exact same
+ * never-tenant-suppliable trust tier as `managedIacServerSettings` above. The commander's promotion
+ * scan step (`federation/promotion-scan-step.ts`) reads these directly; a tenant managed-scan
+ * binding (should one ever be created) has them injected here, spread LAST, so tenant config can
+ * never influence WHAT image runs or on WHICH network.
+ *
+ *  - SCP_MANAGED_SCAN_RUNNER_IMAGE  — the vetted, pinned `scp-runner-scan` image (unset ⇒ managed
+ *    scanning is not enabled; a managed-scan binding then fails closed with a clear error).
+ *  - SCP_MANAGED_SCAN_NETWORK_MODE  — `docker create --network` (default "none" — the runner reaches
+ *    no hosts; the SERVER, not the runner, pulls the scan subject's bytes).
+ *  - SCP_MANAGED_SCAN_WORKSPACE_ROOT — operator root the promotion scan step derives per-run scratch
+ *    directories (pulled OCI layout + evidence sink) under.
+ */
+export function managedScanServerSettings(): {
+  runnerImage: string | undefined;
+  networkMode: string;
+  workspaceRoot: string;
+} {
+  return {
+    runnerImage: process.env.SCP_MANAGED_SCAN_RUNNER_IMAGE,
+    networkMode: process.env.SCP_MANAGED_SCAN_NETWORK_MODE ?? "none",
+    workspaceRoot: process.env.SCP_MANAGED_SCAN_WORKSPACE_ROOT ?? join(tmpdir(), "scp-managed-scan")
   };
 }
 
@@ -572,6 +599,18 @@ export async function resolveExecutorPluginInstance(
     if (!settings.runnerImage) {
       throw new Error(
         "managed-iac binding used but Mode 2 is not enabled (SCP_MANAGED_IAC_RUNNER_IMAGE is unset)"
+      );
+    }
+    serverInjected.runnerImage = settings.runnerImage;
+    serverInjected.networkMode = settings.networkMode;
+    serverInjected.workspaceRoot = settings.workspaceRoot;
+  }
+
+  if (pluginModule === "managed-scan") {
+    const settings = managedScanServerSettings();
+    if (!settings.runnerImage) {
+      throw new Error(
+        "managed-scan binding used but managed scanning is not enabled (SCP_MANAGED_SCAN_RUNNER_IMAGE is unset)"
       );
     }
     serverInjected.runnerImage = settings.runnerImage;

@@ -1,0 +1,23 @@
+{
+  "name": "@scp/plugin-managed-scan",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsc -b -w",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests",
+    "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests"
+  },
+  "devDependencies": {
+    "@scp/plugin-testkit": "workspace:*",
+    "typescript": "~5.8.0",
+    "vitest": "^3.0.0"
+  },
+  "dependencies": {
+    "@scp/plugin-api": "workspace:*"
+  }
+}

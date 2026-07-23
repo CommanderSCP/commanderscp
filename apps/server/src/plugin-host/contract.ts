@@ -85,6 +85,10 @@ export interface FederationTransportPluginClient {
  * its separate `DiscoveryPlugin` export (same executor/discovery split).
  * M17.1 adds `scan-result-control`, a second `ControlPlugin` (sibling of `webhook-control`) that
  * turns a coordinated Trivy scan verdict into gate evidence (ADR-0013).
+ * M13.3a adds `managed-scan`, a second managed-execution `ExecutorPlugin` (sibling of `managed-iac`,
+ * same charter-enumerated pattern): the thin orchestrator behind the commander's promotion scan
+ * step, launching ephemeral `scp-runner-scan` containers (ADR-0020 §1). Like `managed-iac` it is a
+ * `KNOWN_EXECUTOR_MODULE` and gets server-injected runner settings (executor-bindings-repo.ts).
  */
 export type PluginModule =
   | "fake-executor"
@@ -100,6 +104,7 @@ export type PluginModule =
   | "argocd-discovery"
   | "terraform"
   | "managed-iac"
+  | "managed-scan"
   | "webhook-notify"
   | "smtp-notify"
   | "federation-https";
