@@ -149,7 +149,8 @@ async function verifyOne(
   artifact: ArtifactRef,
   cosignPublicKeyPem: string,
   reader: ArtifactRegistryReader,
-  allowInsecureRegistry: boolean
+  allowInsecureRegistry: AllowInsecureRegistry,
+  cosignEnv: NodeJS.ProcessEnv | undefined
 ): Promise<ArtifactVerifyOutcome> {
   const base = { type: artifact.type, digest: artifact.digest };
   try {
@@ -164,7 +165,18 @@ async function verifyOne(
       const bound = bindOciRefToAuthorizedDigest(resolvedRef, artifact.digest);
       if (!bound.ok) return { ...base, ok: false, reason: bound.reason };
       const imageRef = bound.ref;
-      const ok = await verifyImageSignature(imageRef, cosignPublicKeyPem, { allowInsecureRegistry });
+      // PER-HOST TLS scoping: with the predicate form, `--allow-insecure-registry` is granted only
+      // for the specific registry host this ref dials (mirroring skopeo's per-host
+      // `--…-tls-verify=false`); a hostless ref (predicate unanswerable) stays TLS-verified.
+      const host = ociRegistryHostOf(imageRef);
+      const allowInsecure =
+        typeof allowInsecureRegistry === "function"
+          ? host !== null && allowInsecureRegistry(host)
+          : allowInsecureRegistry;
+      const ok = await verifyImageSignature(imageRef, cosignPublicKeyPem, {
+        allowInsecureRegistry: allowInsecure,
+        env: cosignEnv
+      });
       return ok
         ? { ...base, ok: true, reason: `oci signature verified (${imageRef})` }
         : { ...base, ok: false, reason: `oci signature verification failed (${imageRef})` };
@@ -225,6 +237,13 @@ async function verifyOne(
   }
 }
 
+/** Whether OCI `cosign verify` may skip registry TLS verification: a blanket boolean, or —
+ *  preferred — a PER-HOST predicate over the registry `host[:port]` the ref dials (lowercased,
+ *  from {@link ociRegistryHostOf}), so TLS-off is scoped to an explicit operator allowlist
+ *  exactly the way skopeo's `--src/dest-tls-verify=false` is (e.g. the M15.5(c) relay's
+ *  `SCP_RELAY_INSECURE_HOSTS`). */
+export type AllowInsecureRegistry = boolean | ((registryHost: string) => boolean);
+
 export interface VerifyAuthorizedArtifactSetArgs {
   /** The (a)-verified authorized set — the imported change's `sourceRef.artifacts`. */
   artifacts: ArtifactRef[];
@@ -232,9 +251,16 @@ export interface VerifyAuthorizedArtifactSetArgs {
    *  promoting peer). Both OCI and blob signatures are verified against THIS key. */
   cosignPublicKeyPem: string;
   reader: ArtifactRegistryReader;
-  /** Passed through to OCI `cosign verify` — true for the outpost-local (HTTP/self-signed)
-   *  registry; the signature, not registry TLS, is the trust anchor. */
-  allowInsecureRegistry?: boolean;
+  /** Passed through to OCI `cosign verify` — see {@link AllowInsecureRegistry}. The signature,
+   *  not registry TLS, is the trust anchor for HTTP/self-signed registries, but TLS-off must
+   *  still be host-scoped operator configuration, never a blanket default. */
+  allowInsecureRegistry?: AllowInsecureRegistry;
+  /** Extra environment variables for the cosign `verify` subprocesses ONLY (e.g. `DOCKER_CONFIG`
+   *  pointing at a per-invocation scratch auth dir for credentialed source registries).
+   *  Per-invocation by design — callers must never feed cosign credentials by mutating
+   *  `process.env`, which would leak them into every concurrent subprocess (see
+   *  `VerifyImageOptions.env` in @scp/cosign). */
+  cosignEnv?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -250,7 +276,15 @@ export async function verifyAuthorizedArtifactSet(
   const allowInsecureRegistry = args.allowInsecureRegistry ?? false;
   const outcomes: ArtifactVerifyOutcome[] = [];
   for (const artifact of args.artifacts) {
-    outcomes.push(await verifyOne(artifact, args.cosignPublicKeyPem, args.reader, allowInsecureRegistry));
+    outcomes.push(
+      await verifyOne(
+        artifact,
+        args.cosignPublicKeyPem,
+        args.reader,
+        allowInsecureRegistry,
+        args.cosignEnv
+      )
+    );
   }
   const failing = outcomes.filter((o) => !o.ok);
   return { ok: failing.length === 0, outcomes, failing };

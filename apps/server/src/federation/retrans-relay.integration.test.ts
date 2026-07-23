@@ -32,6 +32,7 @@ import {
   buildRelayTarball,
   importRelayTarball,
   relayDestPushSecretKey,
+  relaySourceReadSecretKey,
   type RelayConfig
 } from "./retrans-relay.js";
 
@@ -64,6 +65,17 @@ import {
  *  (e) CREDS — the destination push credential is resolved from the EXISTING secrets vault
  *      (ADR-0019 §3 artifact-store class, per-registry key) against an AUTH-REQUIRING registry,
  *      and never appears in logs, Decisions, or audit events.
+ *  (f) SOURCE CREDS + ENV ISOLATION — the SOURCE-read credential round-trip: the relay pull is
+ *      refused by an auth-requiring source registry until `relay/source-read/<host>` is vaulted,
+ *      then succeeds (skopeo pull AND cosign validate both authenticate via the per-invocation
+ *      authfile/DOCKER_CONFIG); the password appears NOWHERE (stderr, Decisions, audit), and
+ *      `process.env.DOCKER_CONFIG` is byte-identical before/during/after the run — sampled on an
+ *      interval and with a CONCURRENT M17.4(b) pre-deploy verify (a different auth need) running
+ *      unaffected: per-invocation subprocess env, never a process-global mutation.
+ *  (g) TLS SCOPING — the validate pass grants cosign's `--allow-insecure-registry` ONLY to hosts
+ *      in `SCP_RELAY_INSECURE_HOSTS` (per host, mirroring skopeo's `--…-tls-verify=false`); a
+ *      plain-HTTP source NOT in the list is refused end-to-end with TLS verification on. (The
+ *      cosign-side per-host wiring itself is unit-proven in artifact-verify.test.ts.)
  */
 
 const sha256 = (buf: Buffer): string => "sha256:" + createHash("sha256").update(buf).digest("hex");
@@ -73,6 +85,12 @@ const sha256 = (buf: Buffer): string => "sha256:" + createHash("sha256").update(
 const HTPASSWD_LINE = "relay:$2y$05$.6wnUMMR2w21boPhbUfAxOeqMSxRAIOe5QU1bmxKaRlDlYtD74hFK\n";
 const DEST_PUSH_PASSWORD = "relay-push-secret-7";
 const DEST_PUSH_CRED = `relay:${DEST_PUSH_PASSWORD}`;
+/** Second pre-generated bcrypt htpasswd line, the SOURCE-read identity (axis f): user `puller`,
+ *  password `src-read-secret-13` — distinct from the push credential so the never-leaked
+ *  assertions are unambiguous per credential. */
+const SRC_HTPASSWD_LINE = "puller:$2y$05$x9zVp7YK9uwbUhYk60AiNeQp/L.ArwqoNmuna52oNtELSMz8biObO\n";
+const SRC_PULL_PASSWORD = "src-read-secret-13";
+const SRC_PULL_CRED = `puller:${SRC_PULL_PASSWORD}`;
 
 describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 registries + cosign + skopeo)", () => {
   let commander: IsolatedDomain; // A — the exporter
@@ -155,7 +173,9 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
           REGISTRY_AUTH_HTPASSWD_REALM: "relay-test",
           REGISTRY_AUTH_HTPASSWD_PATH: "/auth/htpasswd"
         })
-        .withCopyContentToContainer([{ content: HTPASSWD_LINE, target: "/auth/htpasswd" }])
+        .withCopyContentToContainer([
+          { content: HTPASSWD_LINE + SRC_HTPASSWD_LINE, target: "/auth/htpasswd" }
+        ])
         .start()
     ]);
     srcHost = `${srcRegistry.getHost()}:${srcRegistry.getMappedPort(5000)}`;
@@ -199,10 +219,10 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
     await new Promise<void>((resolve) => forbiddenServer.listen(0, "127.0.0.1", resolve));
     forbiddenHost = `127.0.0.1:${(forbiddenServer.address() as AddressInfo).port}`;
 
-    // Operator allowlists (ADR-0019 §4): the source registry + blob base (for the relay's pull at
-    // B) and the destination registry + blob base (for C's M17.4(b) gate). The decoy host is
+    // Operator allowlists (ADR-0019 §4): the source registries + blob base (for the relay's pull
+    // at B) and the destination registry + blob base (for C's M17.4(b) gate). The decoy host is
     // deliberately NOT listed.
-    process.env.SCP_ARTIFACT_OCI_REGISTRY_HOSTS = `${srcHost},${destHost}`;
+    process.env.SCP_ARTIFACT_OCI_REGISTRY_HOSTS = `${srcHost},${destHost},${authedHost}`;
     process.env.SCP_ARTIFACT_BLOB_BASE_URLS = `${blobBaseUrl},${destBlobBaseUrl}`;
 
     // Federation identities + roles: A commander, B RETRANS, C outpost.
@@ -322,22 +342,30 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
   // Harness — the exporter's build executor side: push + cosign-sign artifacts at the SOURCE.
   // ---------------------------------------------------------------------------------------------
 
-  /** Minimal OCI image push over the distribution API. Returns the digest-pinned reference. */
+  /** Minimal OCI image push over the distribution API (Basic auth when `auth` is given —
+   *  `user:password`, for the authed registry). Returns the digest-pinned reference. */
   async function pushImage(
     host: string,
     repo: string,
-    seed: string
+    seed: string,
+    auth?: string
   ): Promise<{ ref: string; digest: string }> {
+    const authHeaders: Record<string, string> = auth
+      ? { authorization: `Basic ${Buffer.from(auth).toString("base64")}` }
+      : {};
     async function pushBlob(bytes: Buffer): Promise<{ digest: string; size: number }> {
       const digest = sha256(bytes);
-      const start = await fetch(`http://${host}/v2/${repo}/blobs/uploads/`, { method: "POST" });
+      const start = await fetch(`http://${host}/v2/${repo}/blobs/uploads/`, {
+        method: "POST",
+        headers: authHeaders
+      });
       if (start.status !== 202) throw new Error(`blob upload start: HTTP ${start.status}`);
       const loc = start.headers.get("location") ?? "";
       const url = new URL(loc.startsWith("http") ? loc : `http://${host}${loc}`);
       url.searchParams.set("digest", digest);
       const put = await fetch(url, {
         method: "PUT",
-        headers: { "content-type": "application/octet-stream" },
+        headers: { "content-type": "application/octet-stream", ...authHeaders },
         body: new Uint8Array(bytes)
       });
       if (put.status !== 201) throw new Error(`blob upload put: HTTP ${put.status}`);
@@ -376,18 +404,35 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
     const digest = sha256(manifest);
     const put = await fetch(`http://${host}/v2/${repo}/manifests/${digest}`, {
       method: "PUT",
-      headers: { "content-type": "application/vnd.oci.image.manifest.v1+json" },
+      headers: { "content-type": "application/vnd.oci.image.manifest.v1+json", ...authHeaders },
       body: new Uint8Array(manifest)
     });
     if (put.status !== 201) throw new Error(`manifest put: HTTP ${put.status}`);
     return { ref: `${host}/${repo}@${digest}`, digest };
   }
 
-  function signImage(ref: string, keyPath: string, extraFlags: string[] = []): void {
+  function signImage(
+    ref: string,
+    keyPath: string,
+    extraFlags: string[] = [],
+    extraEnv: Record<string, string> = {}
+  ): void {
     execFileSync(cosignBin, ["sign", "--key", keyPath, ...imageSignFlags, ...extraFlags, ref], {
       encoding: "utf8",
-      env: { ...process.env, COSIGN_PASSWORD: "" }
+      env: { ...process.env, COSIGN_PASSWORD: "", ...extraEnv }
     });
+  }
+
+  /** A scratch docker-config dir holding Basic auth for `host` — the harness-side ("build
+   *  executor at A") counterpart of the relay's own per-invocation authfile: cosign's registry
+   *  writes/reads honor DOCKER_CONFIG. */
+  async function harnessDockerConfigDir(host: string, cred: string): Promise<string> {
+    const dir = await mkdtemp(path.join(scratch, "harness-docker-"));
+    await writeFile(
+      path.join(dir, "config.json"),
+      JSON.stringify({ auths: { [host]: { auth: Buffer.from(cred).toString("base64") } } })
+    );
+    return dir;
   }
 
   /** Serve an SBOM blob + its origin detached signature (signed with A's instance key). */
@@ -831,4 +876,154 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
     );
     expect(JSON.stringify(allAudit)).not.toContain(DEST_PUSH_PASSWORD);
   }, 240_000);
+
+  // ---------------------------------------------------------------------------------------------
+  // (f) SOURCE CREDS + ENV ISOLATION — the authed-SOURCE round-trip and the per-invocation
+  //     subprocess-env guarantee (no process.env.DOCKER_CONFIG mutation, ever).
+  // ---------------------------------------------------------------------------------------------
+
+  it("an authed SOURCE registry: pull refused without the vaulted read credential, succeeds after putSecret — credential never leaks and process.env.DOCKER_CONFIG is never mutated (concurrent verify unaffected)", async () => {
+    // Build-executor side at A: image bytes in the AUTH-REQUIRING source registry, cosign-signed
+    // with A's instance key (cosign authenticates via a harness-side DOCKER_CONFIG, the same way
+    // any real build executor would).
+    const authedImage = await pushImage(
+      authedHost,
+      "scp/authed-app",
+      "authed-source-artifact",
+      SRC_PULL_CRED
+    );
+    const harnessCfg = await harnessDockerConfigDir(authedHost, SRC_PULL_CRED);
+    signImage(authedImage.ref, commanderKeyPath, [], { DOCKER_CONFIG: harnessCfg });
+    const changeAtA = await proposeTrackedChangeAtA(authedImage.digest);
+    const bundleForB = await exportPromotionFromA(changeAtA, "retrans-b");
+    const importedAtB = await importPromotionBundle(retrans.db, retrans.orgId, bundleForB);
+    const authedConfig = relayConfig({ sourceRepo: `${authedHost}/scp/authed-app` });
+    const retransMasterKey = Buffer.alloc(32, 7);
+
+    // WITHOUT the vaulted secret: the source registry refuses the pull; the relay fails closed
+    // (block Decision, no tarball) — proves auth is really enforced on the pull path.
+    const noCred = await buildRelayTarball(retrans.db, {
+      orgId: retrans.orgId,
+      changeIdOrUrn: importedAtB.localChangeObjectId,
+      masterKey: retransMasterKey,
+      outDir: relayOutDir,
+      config: authedConfig
+    });
+    expect(noCred.refused).toBe(true);
+    if (!noCred.refused) throw new Error("unreachable");
+    expect(noCred.reason).toMatch(/unauthorized|authentication required/i);
+
+    // Vault the per-registry SOURCE-read credential (ADR-0019 §3 — same vault, same envelope,
+    // per-registry key) at the retrans instance.
+    await withTenantTx(retrans.db, retrans.orgId, (tx) =>
+      putSecret(tx, {
+        orgId: retrans.orgId,
+        key: relaySourceReadSecretKey(authedHost),
+        value: SRC_PULL_CRED,
+        masterKey: retransMasterKey
+      })
+    );
+
+    // Reset C's landed locations to the ANONYMOUS destination registry (axis (e) re-pointed them
+    // at the authed one) so the concurrent M17.4(b) verify below has a genuinely DIFFERENT auth
+    // need than the relay: an anonymous registry read.
+    const reset = await importRelayTarball(outpost.db, {
+      orgId: outpost.orgId,
+      changeIdOrUrn: changeAtOutpost,
+      tarballPath,
+      relayCosignPublicKeyPem: retransCosignPub,
+      masterKey: Buffer.alloc(32, 9),
+      config: relayConfig()
+    });
+    expect(reset.refused).toBe(false);
+
+    // ENV ISOLATION (the multi-tenant guarantee): pin process.env.DOCKER_CONFIG to a sentinel,
+    // SAMPLE it on an interval THROUGHOUT the credentialed run, and run a CONCURRENT pre-deploy
+    // verify with a different auth need — the relay's registry auth must ride per-invocation
+    // subprocess env only. Under a process-global mutation the sampler observes the scratch
+    // config dir during the window and byte-identity fails.
+    const sentinel = path.join(scratch, "sentinel-docker-config");
+    const savedDockerConfig = process.env.DOCKER_CONFIG;
+    process.env.DOCKER_CONFIG = sentinel;
+    const observed = new Set<string | undefined>();
+    const sampler = setInterval(() => observed.add(process.env.DOCKER_CONFIG), 2);
+    let captured = "";
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
+      captured += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+      return (originalWrite as (c: string | Uint8Array, ...a: unknown[]) => boolean)(
+        chunk,
+        ...rest
+      );
+    }) as typeof process.stderr.write;
+    let result: Awaited<ReturnType<typeof buildRelayTarball>>;
+    let gate: Awaited<ReturnType<typeof runPreDeployArtifactGate>>;
+    let dockerConfigAfterRun: string | undefined;
+    try {
+      const changeRow = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+        getChangeRow(tx, outpost.orgId, changeAtOutpost)
+      );
+      [result, gate] = await Promise.all([
+        buildRelayTarball(retrans.db, {
+          orgId: retrans.orgId,
+          changeIdOrUrn: importedAtB.localChangeObjectId,
+          masterKey: retransMasterKey,
+          outDir: relayOutDir,
+          config: authedConfig
+        }),
+        runPreDeployArtifactGate(outpost.db, outpost.orgId, changeRow)
+      ]);
+      dockerConfigAfterRun = process.env.DOCKER_CONFIG;
+    } finally {
+      process.stderr.write = originalWrite;
+      clearInterval(sampler);
+      if (savedDockerConfig === undefined) delete process.env.DOCKER_CONFIG;
+      else process.env.DOCKER_CONFIG = savedDockerConfig;
+    }
+
+    // The relay succeeded with the vaulted credential: skopeo pulled AND the cosign validate pass
+    // authenticated (per-invocation DOCKER_CONFIG), all against the auth-requiring source.
+    expect(result.refused).toBe(false);
+    if (result.refused) throw new Error("unreachable");
+    expect(result.artifacts).toEqual([{ type: "oci", digest: authedImage.digest }]);
+    // The CONCURRENT verify (anonymous destination registry — a different auth need) passed,
+    // untouched by the relay's source credentials.
+    expect(gate.blocked).toBe(false);
+    // process.env.DOCKER_CONFIG: byte-identical after the run, and NEVER anything else during it.
+    expect(dockerConfigAfterRun).toBe(sentinel);
+    expect([...observed]).toEqual([sentinel]);
+    // The source-read password appears NOWHERE: not in process output (skopeo/cosign argv is
+    // logged; creds ride the 0600 authfile / per-invocation env), not in Decisions, not in audit.
+    expect(captured).not.toContain(SRC_PULL_PASSWORD);
+    const allDecisions = await withTenantTx(retrans.db, retrans.orgId, (tx) =>
+      tx.select().from(decisions)
+    );
+    expect(JSON.stringify(allDecisions)).not.toContain(SRC_PULL_PASSWORD);
+    const allAudit = await withTenantTx(retrans.db, retrans.orgId, (tx) =>
+      tx.select().from(auditEvents)
+    );
+    expect(JSON.stringify(allAudit)).not.toContain(SRC_PULL_PASSWORD);
+  }, 240_000);
+
+  // ---------------------------------------------------------------------------------------------
+  // (g) TLS SCOPING — `--allow-insecure-registry` only for SCP_RELAY_INSECURE_HOSTS hosts,
+  //     mirroring skopeo's per-host `--…-tls-verify=false`. The cosign-side per-host WIRING is
+  //     proven in artifact-verify.test.ts (unit, mocked cosign seam) — cosign's own
+  //     go-containerregistry auto-downgrades LOOPBACK registry hosts to HTTP regardless of the
+  //     flag, so a Testcontainers loopback registry cannot observe the negative case live. The
+  //     skopeo pull path CAN, end-to-end:
+  // ---------------------------------------------------------------------------------------------
+
+  it("a plain-HTTP source host not in SCP_RELAY_INSECURE_HOSTS is refused end-to-end (TLS verification enforced on the relay)", async () => {
+    const result = await buildRelayTarball(retrans.db, {
+      orgId: retrans.orgId,
+      changeIdOrUrn: changeAtRetrans,
+      masterKey: Buffer.alloc(32, 7),
+      outDir: relayOutDir,
+      config: relayConfig({ insecureHosts: [] })
+    });
+    expect(result.refused).toBe(true);
+    if (!result.refused) throw new Error("unreachable");
+    expect(result.reason).toMatch(/https|tls/i);
+  }, 120_000);
 });
