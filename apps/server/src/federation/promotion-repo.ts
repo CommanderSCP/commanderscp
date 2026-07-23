@@ -389,8 +389,10 @@ export async function exportPromotionBundle(
  * promotion manifest (the send-side counterpart is `buildPromotionManifest` + the E6 export gate).
  * This is the outpost's universal pre-deploy validation (ADR-0011): ONE implementation runs at
  * EVERY receiving hop — a commander importing from a peer, or (M15.2) an outpost verifying a
- * commander-promoted artifact BEFORE deploy. The outpost NEVER re-scans (trust scan-at-source,
- * ADR-0013/ADR-0015 §6a) — this gate re-verifies the signed metadata, it does not re-run any scan.
+ * commander-promoted artifact BEFORE deploy. The outpost NEVER re-scans — receiver-side
+ * never-re-scan is UNCHANGED (ADR-0013/ADR-0015 §6a); the one scan now executes at the commander,
+ * before signing, per promotion journey (ADR-0020) — this gate re-verifies the signed metadata, it
+ * does not re-run any scan.
  *
  * Metadata-only + coordinate-not-execute: it checks digests/signatures/identity, never artifact
  * BYTES (those are absent from a federation bundle — ADR-0009). Per-artifact `cosign verify` of each

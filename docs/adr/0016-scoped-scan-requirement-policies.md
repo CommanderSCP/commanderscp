@@ -104,3 +104,7 @@ That is a genuine federation-model inconsistency with the partition framing. It 
 - `ScanThresholdSchema` gains a scoped-requirement representation and the gate context carries a resolved effective threshold (additive schema/codegen work).
 - The trust-domain-identity inconsistency above remains open and will need its own ADR.
 - The `platform` tier's `origin: 'federated'` rows depend on the federation config channel carrying them — additive federation-config work, alongside the cosign pubkey field (ADR-0015 §4).
+
+## Addendum (2026-07-23) — `origin: 'federated'` is dormant, not missing
+
+The `scan_requirement_floors.origin` CHECK admits `local | federated`, but no federation writer producing `federated` rows exists yet — only the operator PUT (`apps/server/src/routes/instance-scan-floors.ts`) writes this table, always with `origin: 'local'`. Under the 2026-07-23 D5 decision (ADR-0020 §3: outposts and retrans never evaluate scan policy — they validate the commander's signature, not requirements), federated-origin floors are **dormant by design** until a genuine multi-commander distribution need exists; this is not the gap the "known follow-up" section above describes, and needs no ADR of its own. The resolution code (`readInstanceScanFloors`, `apps/server/src/governance/scan-requirements.ts`) already merges both origins uniformly and needs no change when a federated writer eventually lands.

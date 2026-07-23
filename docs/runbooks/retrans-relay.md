@@ -82,6 +82,16 @@ Grant the source credential **read** on the artifact repositories only, and the 
 credential **push** on the relay repository only — no admin, no delete. Rotation = `scp secret put`
 again; the next relay run resolves the new value. Anonymous registries need no secret.
 
+### Scoping (added 2026-07-23)
+
+The vault keys above are scoped **per-registry-host only**, not literally per-peer. ADR-0019 §3
+describes the credential class as "per-peer AND per-registry" — that per-peer property holds
+**implicitly** today: a retrans instance serves exactly one CDS boundary/peer, so its per-host
+keys are per-peer in practice by deployment shape, not by key encoding. A future multi-peer
+retrans (one instance relaying for more than one boundary) would need the peer encoded in the key
+shape itself (e.g. `relay/source-read/<peerId>/<host>`) — a vault key migration at that point, not
+a gap today.
+
 ## TLS / CA — the recorded decision
 
 The SCP runtime image ships **no CA bundle** (recorded during the #111 skopeo vendoring). For a

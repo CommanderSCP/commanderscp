@@ -156,7 +156,15 @@ export function mergeScanThresholds(contributors: ScanThresholdContribution[]): 
 
 /** The instance-scoped (above-org) floors — `platform` + `trust_domain`, read through the ORDINARY
  *  tenant transaction under the table's tenant-read RLS policy. No privileged connection is needed
- *  to EVALUATE a gate (ADR-0016 §3's stated reason for preferring this over a privileged table). */
+ *  to EVALUATE a gate (ADR-0016 §3's stated reason for preferring this over a privileged table).
+ *
+ *  NOTE (dated 2026-07-23, M17.5 follow-on): this reads BOTH `origin: 'local'` and `origin:
+ *  'federated'` rows uniformly — but no federation writer producing `origin: 'federated'` rows
+ *  exists; only the operator PUT (routes/instance-scan-floors.ts) writes this table today. Under
+ *  the 2026-07-23 D5 decision, outposts/retrans never evaluate scan policy (they validate the
+ *  commander's signature, not requirements), so federated-origin floors are DORMANT until a
+ *  genuine multi-commander distribution need exists. This resolution code is already correct for
+ *  that future — nothing here needs to change when a federated writer eventually lands. */
 export async function readInstanceScanFloors(tx: TenantTx): Promise<ScanThresholdContribution[]> {
   const result = await tx.execute<{
     tier: string;

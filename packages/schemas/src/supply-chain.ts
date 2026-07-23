@@ -15,10 +15,12 @@ import { z } from "zod";
  * its evidence through `ScanEvidenceSchema` before returning it, so a shape regression fails the
  * plugin's own tests rather than silently shipping malformed evidence into a Decision).
  *
- * CHARTER — coordinate, not execute: SCP NEVER runs Trivy. This evidence is the shape of a verdict
- * SCP *consumes* from a scan an execution system already ran (Argo Workflows Trivy step, ADR-0012);
- * `scanner`/`scannerVersion` record WHICH external scanner produced it, they are not a claim SCP
- * scanned anything.
+ * CHARTER — coordinate, not execute: the SCP *gate* never runs Trivy; the charter-enumerated
+ * `scp-managed-scan` runner does, as the promotion scan step (ADR-0020). This evidence is the
+ * shape of a verdict the gate *consumes* — either from an org's own coordinated Trivy step (Argo
+ * Workflows, ADR-0012) or from the commander-resident `scp-managed-scan` promotion scan step
+ * (ADR-0020) — `scanner`/`scannerVersion` record WHICH scanner produced it, they are not a claim
+ * the gate scanned anything itself.
  */
 
 /** Per-severity vulnerability counts distilled from a Trivy result's `Results[].Vulnerabilities[]`
@@ -226,6 +228,14 @@ export type ScanEvidence = z.infer<typeof ScanEvidenceSchema>;
 // already a string reference inside a jsonb column — and federation/promotion bundles are
 // METADATA-ONLY by ADR-0009. Storing SBOM bytes would be a net-new storage subsystem AND would
 // break the metadata-only bundle invariant. So: reference in, reference out.
+//
+// 2026-07-23 evolution (ADR-0020, "managed-scan-evidence"): this reference-only posture is evolved
+// — narrowly — for evidence the commander's own `scp-managed-scan` promotion scan step produces.
+// That evidence lands commander-resident in a Postgres-backed evidence store (still no blob
+// storage, no new stateful service — a registry-shaped table, not bytes-out-to-Gitea) because the
+// commander is that evidence's ORIGIN, not a cache of someone else's bytes. Org-pipeline SBOM/scan
+// evidence above stays reference-only, unchanged; see ADR-0020 §3 and the merged proposal
+// docs/proposals/airgap-cds-validate-promote.md §13.3.
 //
 // WHERE it is persisted: `changes.sourceRef.sbom` (the report body is persisted verbatim and becomes
 // the change's canonical `sourceRef` — `coordination/webhook-processor.ts`). `source_ref` is jsonb,

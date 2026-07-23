@@ -166,6 +166,11 @@ export function relayConfigFromEnv(): RelayConfig {
   };
 }
 
+/** Scoping (dated 2026-07-23, ADR-0019 §3 addendum): these keys are per-registry-host only, not
+ *  literally per-peer. Per-peer scoping holds IMPLICITLY today because a retrans instance serves
+ *  exactly one boundary/peer, so its per-host keys are per-peer in practice. A future multi-peer
+ *  retrans would need the peer encoded in the key shape (e.g. `relay/source-read/<peerId>/<host>`)
+ *  — a vault migration at that point, not a change needed now. */
 /** Vault key (existing `secrets` table) holding the READ-only pull credential (`user:password`)
  *  for one SOURCE registry host — per-registry scoping, ADR-0019 §3. */
 export function relaySourceReadSecretKey(host: string): string {
