@@ -97,7 +97,7 @@ RUN dnf install -y --setopt=install_weak_deps=False --disablerepo="*" --enablere
 # binary runs on the glibc (Fedora) base — fails the build loudly if it does not.
 COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
 COPY --from=trivy /trivy-cache /root/.cache/trivy
-RUN trivy version && trivy --cache-dir /root/.cache/trivy image --download-db-only --skip-db-update >/dev/null 2>&1 || true
+RUN trivy version && { trivy --cache-dir /root/.cache/trivy image --download-db-only --skip-db-update >/dev/null 2>&1 || true; }
 
 # The scanners are provided above; add only the run shim on top. No further package-manager calls.
 COPY run.sh /run.sh
