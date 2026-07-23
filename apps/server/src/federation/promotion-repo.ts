@@ -38,6 +38,11 @@ import {
 import { importedApprovalEvidence } from "../db/schema.js";
 import { v7 as uuidv7 } from "uuid";
 import { FEDERATION_IMPORT_ACTOR_ID } from "./import-repo.js";
+import {
+  runPromotionScanStep,
+  createServerManagedScanRunner,
+  type ManagedScanRunner
+} from "./promotion-scan-step.js";
 
 /**
  * Promotion Bundles (DESIGN.md §13 "federated change promotion" — grafted semantics). A change
@@ -89,6 +94,11 @@ export interface ExportPromotionInput {
   /** The subject exporting the promotion — recorded on the gate-refusal Decision + audit event so a
    *  block is attributable. Defaults to the federation import actor when the caller omits it. */
   actorObjectId?: string;
+  /** ADR-0020 / §13.3: the commander's promotion scan step runner. Injected so the step is
+   *  hermetically testable (a fake returns canned counts); omitted ⇒ the default server-side
+   *  skopeo-pull + `scp-managed-scan` runner. Pass `null` to DISABLE the managed step entirely (the
+   *  legacy behaviour — only org-pipeline evidence satisfies E6), which the pre-13.3a tests rely on. */
+  scanRunner?: ManagedScanRunner | null;
 }
 
 /**
@@ -183,6 +193,23 @@ export async function exportPromotionBundle(
   // Phase 1 — resolve the cosign signing keypair OUTSIDE any tx (first-use keygen runs a subprocess
   // that must never execute while a pooled DB connection is held open).
   const cosignPair = await ensureInstanceCosignKey(db, input.orgId);
+
+  // Phase 1.5 — THE COMMANDER'S PROMOTION SCAN STEP (ADR-0020, proposal §13.3), BEFORE the E6 gate
+  // so its managed evidence exists when the gate reads. It deposits digest-bound managed-scan
+  // `control_runs` rows for every substantive artifact NOT already covered by org-pipeline evidence;
+  // the UNCHANGED gate below then consumes them. `scanRunner === null` disables the step (the legacy,
+  // org-pipeline-only path the pre-13.3a tests exercise); undefined ⇒ the default server-side
+  // skopeo-pull + `scp-managed-scan` runner (itself inert, producing no evidence, when managed
+  // scanning is not enabled — so a boundary export then still refuses fail-closed). Runs OUTSIDE any
+  // tx (it pulls bytes + launches containers — the subprocess invariant this function already honors).
+  if (input.scanRunner !== null) {
+    const runner: ManagedScanRunner = input.scanRunner ?? createServerManagedScanRunner();
+    await runPromotionScanStep(
+      db,
+      { orgId: input.orgId, changeIdOrUrn: input.changeIdOrUrn, actorObjectId },
+      runner
+    );
+  }
 
   // Phase 2 — gather + gate inside a single tx. Either commits a refusal Decision (and returns it)
   // or returns the fully-assembled build context (nothing signed yet).

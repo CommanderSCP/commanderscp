@@ -36,6 +36,7 @@
     "@scp/plugin-gitlab": "workspace:*",
     "@scp/plugin-harbor": "workspace:*",
     "@scp/plugin-managed-iac": "workspace:*",
+    "@scp/plugin-managed-scan": "workspace:*",
     "@scp/plugin-scan-result-control": "workspace:*",
     "@scp/plugin-smtp-notify": "workspace:*",
     "@scp/plugin-terraform": "workspace:*",

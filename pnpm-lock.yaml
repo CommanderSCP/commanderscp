@@ -98,6 +98,9 @@ importers:
       '@scp/plugin-managed-iac':
         specifier: workspace:*
         version: link:../../packages/plugins/managed-iac
+      '@scp/plugin-managed-scan':
+        specifier: workspace:*
+        version: link:../../packages/plugins/managed-scan
       '@scp/plugin-scan-result-control':
         specifier: workspace:*
         version: link:../../packages/plugins/scan-result-control
@@ -521,6 +524,22 @@ importers:
       nock:
         specifier: ^13.5.0
         version: 13.5.6
+      typescript:
+        specifier: ~5.8.0
+        version: 5.8.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
+
+  packages/plugins/managed-scan:
+    dependencies:
+      '@scp/plugin-api':
+        specifier: workspace:*
+        version: link:../../plugin-api
+    devDependencies:
+      '@scp/plugin-testkit':
+        specifier: workspace:*
+        version: link:../../plugin-testkit
       typescript:
         specifier: ~5.8.0
         version: 5.8.3
