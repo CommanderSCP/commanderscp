@@ -16,6 +16,10 @@ import {
   PairPeerRequestSchema,
   ProblemSchema,
   PromotionBundleSchema,
+  RelayBuildRequestSchema,
+  RelayBuildResponseSchema,
+  RelayImportRequestSchema,
+  RelayImportResponseSchema,
   SyncBundleSchema
 } from "@scp/schemas";
 import type { ImportBundleRequest, PromotionBundle } from "@scp/schemas";
@@ -34,6 +38,12 @@ import { importSyncBundle } from "../federation/import-repo.js";
 import { exportPromotionBundle, importPromotionBundle } from "../federation/promotion-repo.js";
 import { createOverlay, getMergedOverlayView } from "../federation/overlay-repo.js";
 import { handFillObject } from "../federation/handfill-repo.js";
+import {
+  buildRelayTarball,
+  importRelayTarball,
+  relayConfigFromEnv,
+  resolveUnderDir
+} from "../federation/retrans-relay.js";
 import {
   enforceFederationMtls,
   recordImportExporterBindingAdvisory
@@ -394,6 +404,129 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         importSyncBundle(tx, auth.orgId, body)
       );
       reply.status(200).send({ kind: "sync" as const, ...imported });
+    }
+  });
+
+  // M15.5(c) — the retrans validate-then-relay (ADR-0019 §2). SOURCE side: build the signed byte
+  // tarball for an imported, M17.4(a)-verified promotion. Only a `role: retrans` instance may run
+  // it (the repo function enforces the role, 409 otherwise). The tarball lands in the
+  // operator-configured SCP_RELAY_OUT_DIR drop directory — the CDS crossing itself is out-of-band,
+  // the same boundary the `.scpbundle` walk draws.
+  typed.route({
+    method: "POST",
+    url: "/api/v1/federation/relay",
+    schema: {
+      body: RelayBuildRequestSchema,
+      response: {
+        200: RelayBuildResponseSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema,
+        409: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "buildRelayTarball",
+        summary:
+          "Retrans validate-then-relay: pull + validate the authorized artifact bytes and build the signed relay tarball (role: retrans)",
+        tags: ["federation"]
+      }
+    },
+    handler: async (request, reply) => {
+      await enforceFederationMtls(deps, request);
+      const auth = await requireAuth(deps, request);
+      // Authorize in its own tx — `buildRelayTarball` manages its OWN transaction phases around
+      // skopeo/cosign subprocesses (it takes `deps.db`), like export/importPromotionBundle.
+      await withTenantTx(deps.db, auth.orgId, (tx) =>
+        authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:write",
+          scopeObjectId: auth.orgId
+        })
+      );
+      const config = relayConfigFromEnv();
+      if (!config.outDir) {
+        throw badRequest(
+          "SCP_RELAY_OUT_DIR is not configured — the operator must set the relay tarball drop directory"
+        );
+      }
+      const outcome = await buildRelayTarball(deps.db, {
+        orgId: auth.orgId,
+        changeIdOrUrn: request.body.change,
+        masterKey: deps.config.secretsMasterKey,
+        outDir: config.outDir,
+        config
+      });
+      // FAIL-CLOSED: a failing/tampered/unauthorized/missing artifact refused the whole relay —
+      // 409 carrying the persisted block Decision id, like every blocked response (DESIGN §6/§10.4).
+      if (outcome.refused) {
+        throw conflict(outcome.reason, { decisionId: outcome.decisionId });
+      }
+      reply.status(200).send(outcome);
+    }
+  });
+
+  // M15.5(c) — DESTINATION side: verify a relay tarball (signature + checksums + local-authorized
+  // cross-check) and push its artifacts into the outpost's local registry by digest + re-inspect
+  // (the install.sh pattern). The receiving M17.4(a)+(b) gates run unchanged afterwards — the
+  // relay is granted ZERO TRUST.
+  typed.route({
+    method: "POST",
+    url: "/api/v1/federation/relay/import",
+    schema: {
+      body: RelayImportRequestSchema,
+      response: {
+        200: RelayImportResponseSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema,
+        409: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "importRelayTarball",
+        summary:
+          "Destination side of the retrans relay: verify the signed tarball and push its artifacts into the local registry by digest (+ re-inspect)",
+        tags: ["federation"]
+      }
+    },
+    handler: async (request, reply) => {
+      await enforceFederationMtls(deps, request);
+      const auth = await requireAuth(deps, request);
+      await withTenantTx(deps.db, auth.orgId, (tx) =>
+        authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:write",
+          scopeObjectId: auth.orgId
+        })
+      );
+      const config = relayConfigFromEnv();
+      if (!config.inDir) {
+        throw badRequest(
+          "SCP_RELAY_IN_DIR is not configured — the operator must set the relay tarball intake directory"
+        );
+      }
+      // The API names a file INSIDE the operator-configured intake directory only — never an
+      // arbitrary server path (traversal refused).
+      const tarballPath = resolveUnderDir(config.inDir, request.body.file);
+      const outcome = await importRelayTarball(deps.db, {
+        orgId: auth.orgId,
+        changeIdOrUrn: request.body.change,
+        tarballPath,
+        relayCosignPublicKeyPem: request.body.relayCosignPublicKey,
+        masterKey: deps.config.secretsMasterKey,
+        config
+      });
+      if (outcome.refused) {
+        throw conflict(outcome.reason, { decisionId: outcome.decisionId });
+      }
+      reply.status(200).send(outcome);
     }
   });
 

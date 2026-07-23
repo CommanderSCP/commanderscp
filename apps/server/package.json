@@ -24,6 +24,7 @@
     "@nats-io/jetstream": "^3.4.0",
     "@nats-io/nats-core": "^3.4.0",
     "@nats-io/transport-node": "^3.4.0",
+    "@scp/airgap": "workspace:*",
     "@scp/cosign": "workspace:*",
     "@scp/plugin-api": "workspace:*",
     "@scp/plugin-argocd": "workspace:*",
