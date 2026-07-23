@@ -365,6 +365,9 @@ function resolveOnwardOutDir(
 ): { dir: string; peerDomainId?: string } | { problem: string } {
   const peerOut = peers
     .map((peer) => ({ peer, resolved: resolveDeliveryTarget(peer, config) }))
+    // Filesystem onward dirs only — an s3-compatible peer has `outbound.dir === null` (location is
+    // `outbound.s3`); the onward relay-tarball s3 drop is a follow-on (see the relay route's scope
+    // note), so it is correctly skipped here rather than treated as an unresolved fs dir.
     .filter(({ resolved }) => resolved.outbound.source === "peer" && resolved.outbound.dir !== null);
   if (peerOut.length === 1)
     return {
@@ -726,6 +729,11 @@ export async function inboxOrgTick(
   const seenDirs = new Set<string>();
   for (const peer of peers) {
     const resolved = resolveDeliveryTarget(peer, config);
+    // M13.2b census note: this tick sweeps FILESYSTEM inboxes only — an s3-compatible peer resolves
+    // with `inbound.dir === null` (its location is `inbound.s3`), so the guard below correctly
+    // skips it. Sweeping an s3 inbox needs vault-cred threading + local temp-file materialization
+    // (the `listInbox`/`getDeliveryFile` s3 seams exist; wiring them into the per-file processor,
+    // which reads a local path, is a follow-on to this increment) — not a silent drop of an fs dir.
     if (resolved.inbound.source === "peer" && resolved.inbound.dir !== null) {
       if (!seenDirs.has(resolved.inbound.dir)) {
         seenDirs.add(resolved.inbound.dir);

@@ -49271,6 +49271,35 @@
                               "provider"
                             ],
                             "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "provider": {
+                                "type": "string",
+                                "const": "s3-compatible"
+                              },
+                              "endpoint": {
+                                "type": "string",
+                                "format": "uri"
+                              },
+                              "bucket": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "outPrefix": {
+                                "type": "string"
+                              },
+                              "inPrefix": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "provider",
+                              "endpoint",
+                              "bucket"
+                            ],
+                            "additionalProperties": false
                           }
                         ]
                       },
@@ -49441,6 +49470,35 @@
                               },
                               "required": [
                                 "provider"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "provider": {
+                                  "type": "string",
+                                  "const": "s3-compatible"
+                                },
+                                "endpoint": {
+                                  "type": "string",
+                                  "format": "uri"
+                                },
+                                "bucket": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "outPrefix": {
+                                  "type": "string"
+                                },
+                                "inPrefix": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "provider",
+                                "endpoint",
+                                "bucket"
                               ],
                               "additionalProperties": false
                             }
@@ -49762,6 +49820,35 @@
                                 },
                                 "required": [
                                   "provider"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "provider": {
+                                    "type": "string",
+                                    "const": "s3-compatible"
+                                  },
+                                  "endpoint": {
+                                    "type": "string",
+                                    "format": "uri"
+                                  },
+                                  "bucket": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "outPrefix": {
+                                    "type": "string"
+                                  },
+                                  "inPrefix": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "provider",
+                                  "endpoint",
+                                  "bucket"
                                 ],
                                 "additionalProperties": false
                               }
@@ -50099,6 +50186,35 @@
                                         },
                                         "required": [
                                           "provider"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "provider": {
+                                            "type": "string",
+                                            "const": "s3-compatible"
+                                          },
+                                          "endpoint": {
+                                            "type": "string",
+                                            "format": "uri"
+                                          },
+                                          "bucket": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          "outPrefix": {
+                                            "type": "string"
+                                          },
+                                          "inPrefix": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "provider",
+                                          "endpoint",
+                                          "bucket"
                                         ],
                                         "additionalProperties": false
                                       }

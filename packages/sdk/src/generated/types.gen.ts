@@ -12844,6 +12844,12 @@ export type ListFederationPeersResponses = {
             provider: 'filesystem';
             outDir?: string;
             inDir?: string;
+        } | {
+            provider: 's3-compatible';
+            endpoint: string;
+            bucket: string;
+            outPrefix?: string;
+            inPrefix?: string;
         } | null;
         pairedAt: string;
     }>;
@@ -12877,6 +12883,12 @@ export type PairPeerData = {
             provider: 'filesystem';
             outDir?: string;
             inDir?: string;
+        } | {
+            provider: 's3-compatible';
+            endpoint: string;
+            bucket: string;
+            outPrefix?: string;
+            inPrefix?: string;
         } | null;
     };
     path?: never;
@@ -12951,6 +12963,12 @@ export type PairPeerResponses = {
             provider: 'filesystem';
             outDir?: string;
             inDir?: string;
+        } | {
+            provider: 's3-compatible';
+            endpoint: string;
+            bucket: string;
+            outPrefix?: string;
+            inPrefix?: string;
         } | null;
         pairedAt: string;
     };
@@ -13030,6 +13048,12 @@ export type GetFederationStatusResponses = {
                     provider: 'filesystem';
                     outDir?: string;
                     inDir?: string;
+                } | {
+                    provider: 's3-compatible';
+                    endpoint: string;
+                    bucket: string;
+                    outPrefix?: string;
+                    inPrefix?: string;
                 } | null;
                 pairedAt: string;
             };

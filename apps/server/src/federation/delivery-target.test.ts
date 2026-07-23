@@ -6,13 +6,17 @@ import { DeliveryTargetSchema } from "@scp/schemas";
 import {
   assertDeliveryTargetRooted,
   dropDeliveryFile,
+  isDeliveryS3EndpointAllowed,
   isUnderDeliveryRoot,
   listInbox,
+  normalizeS3Origin,
   parseDeliveryRoots,
+  parseDeliveryS3Endpoints,
   requireInboundDir,
   requireOutboundDir,
   resolveDeliveryTarget
 } from "./delivery-target.js";
+import { deliveryTargetSecretKey, parseDeliveryS3Credential } from "./retrans-relay.js";
 
 /**
  * M13.2a — DeliveryTarget VIEW resolution (proposal §13.2), unit-proven per gap:
@@ -287,5 +291,173 @@ describe("listInbox — the §13.1a read surface: names only, no traversal", () 
     expect(await rejectedDetail(listInbox({ name: "gapped", deliveryTarget: null }, {}))).toContain(
       "SCP_RELAY_IN_DIR"
     );
+  });
+});
+
+// ===========================================================================================
+// M13.2b — the s3-compatible provider: the endpoint/bucket allowlist (ADR-0019 §4 symmetry) and
+// the fail-closed resolution. The MinIO round-trip (put/list/get + multipart) is proven in the
+// integration suite; these unit tests pin the ALLOWLIST predicate + the fail-closed resolution.
+// ===========================================================================================
+
+const s3Target = (t: {
+  endpoint: string;
+  bucket: string;
+  outPrefix?: string;
+  inPrefix?: string;
+}) => ({ provider: "s3-compatible" as const, ...t });
+
+const s3Peer = (t: { endpoint: string; bucket: string; outPrefix?: string; inPrefix?: string }) => ({
+  name: "s3-tenant",
+  deliveryTarget: s3Target(t)
+});
+
+describe("SCP_DELIVERY_S3_ENDPOINTS — the endpoint/bucket allowlist (endpoint-shaped, NOT path-shaped)", () => {
+  it("parseDeliveryS3Endpoints: comma/newline-separated; endpoint normalized to origin; +bucket pins", () => {
+    expect(parseDeliveryS3Endpoints("https://minio.a:9000, https://minio.b:9000+bundles")).toEqual([
+      { origin: "https://minio.a:9000", bucket: null },
+      { origin: "https://minio.b:9000", bucket: "bundles" }
+    ]);
+    // Colons inside the URL are NOT entry separators (unlike SCP_DELIVERY_ROOTS): a lone endpoint
+    // with a port survives as one entry.
+    expect(parseDeliveryS3Endpoints("https://host:9000")).toEqual([
+      { origin: "https://host:9000", bucket: null }
+    ]);
+    // Trailing path / uppercase host normalize to the bare origin (lowercased).
+    expect(parseDeliveryS3Endpoints("https://MinIO.A:9000/ignored/path")).toEqual([
+      { origin: "https://minio.a:9000", bucket: null }
+    ]);
+    expect(parseDeliveryS3Endpoints("not-a-url, ,  ")).toEqual([]); // unparseable + empties dropped
+    expect(parseDeliveryS3Endpoints(undefined)).toEqual([]);
+  });
+
+  it("normalizeS3Origin: absolute http(s) only; strips path; lowercases host; rejects other schemes", () => {
+    expect(normalizeS3Origin("https://Host:9000/x")).toBe("https://host:9000");
+    expect(normalizeS3Origin("http://h")).toBe("http://h");
+    expect(normalizeS3Origin("ftp://h")).toBeNull();
+    expect(normalizeS3Origin("relative")).toBeNull();
+  });
+
+  it("isDeliveryS3EndpointAllowed: origin EQUALITY (never string-prefix), bucket-pin honored", () => {
+    const allow = parseDeliveryS3Endpoints("https://minio:9000, https://pinned:9000+only");
+    // Allowed: endpoint with no bucket-pin → any bucket.
+    expect(isDeliveryS3EndpointAllowed("https://minio:9000", "anything", allow)).toBe(true);
+    // Prefix-trick: a look-alike host must NOT match by string prefix.
+    expect(isDeliveryS3EndpointAllowed("https://minio:9000.evil.net", "b", allow)).toBe(false);
+    expect(isDeliveryS3EndpointAllowed("https://minio:90000", "b", allow)).toBe(false);
+    // Bucket-pin: only the exact bucket at that endpoint is allowed.
+    expect(isDeliveryS3EndpointAllowed("https://pinned:9000", "only", allow)).toBe(true);
+    expect(isDeliveryS3EndpointAllowed("https://pinned:9000", "other", allow)).toBe(false);
+    // Empty allowlist → nothing allowed (fail-closed).
+    expect(isDeliveryS3EndpointAllowed("https://minio:9000", "b", [])).toBe(false);
+  });
+});
+
+describe("resolveDeliveryTarget — s3-compatible (allowlist-gated, fail-closed)", () => {
+  const allow = parseDeliveryS3Endpoints("https://minio:9000");
+
+  it("an ALLOWLISTED endpoint resolves both directions; prefix normalized to end with '/'", () => {
+    const view = resolveDeliveryTarget(
+      s3Peer({ endpoint: "https://minio:9000", bucket: "drop", outPrefix: "out", inPrefix: "in/" }),
+      {},
+      [],
+      allow
+    );
+    expect(view.provider).toBe("s3-compatible");
+    expect(view.valid).toBe(true);
+    expect(view.outboundS3).toEqual({ endpoint: "https://minio:9000", bucket: "drop", prefix: "out/" });
+    expect(view.inboundS3).toEqual({ endpoint: "https://minio:9000", bucket: "drop", prefix: "in/" });
+    // The filesystem-shaped direction stays byte-identical (dir null, no problem) — census: fs
+    // consumers keyed on `.dir` correctly skip s3 rather than misread it.
+    expect(view.outbound).toEqual({ dir: null, source: "peer", problem: null });
+  });
+
+  it("omitted prefixes resolve to the bucket ROOT ('')", () => {
+    const view = resolveDeliveryTarget(
+      s3Peer({ endpoint: "https://minio:9000", bucket: "drop" }),
+      {},
+      [],
+      allow
+    );
+    expect(view.outboundS3?.prefix).toBe("");
+    expect(view.inboundS3?.prefix).toBe("");
+  });
+
+  it("UNSET allowlist + an s3 target => FAIL-CLOSED (both directions), never used", () => {
+    const view = resolveDeliveryTarget(
+      s3Peer({ endpoint: "https://minio:9000", bucket: "drop" }),
+      {},
+      [],
+      []
+    );
+    expect(view.valid).toBe(false);
+    expect(view.outboundS3).toBeNull();
+    expect(view.inboundS3).toBeNull();
+    expect(view.outbound.problem).toContain("SCP_DELIVERY_S3_ENDPOINTS is unset");
+    expect(view.inbound.problem).toContain("SCP_DELIVERY_S3_ENDPOINTS is unset");
+  });
+
+  it("an OUT-OF-ALLOWLIST endpoint is a fail-closed problem (both directions), never used", () => {
+    const view = resolveDeliveryTarget(
+      s3Peer({ endpoint: "https://evil:9000", bucket: "drop" }),
+      {},
+      [],
+      allow
+    );
+    expect(view.valid).toBe(false);
+    expect(view.outboundS3).toBeNull();
+    expect(view.outbound.problem).toContain("not in the operator s3 delivery allowlist");
+  });
+});
+
+describe("assertDeliveryTargetRooted — the pair-time gate, s3 sibling", () => {
+  const allow = parseDeliveryS3Endpoints("https://minio:9000+bundles");
+
+  it("accepts an allowlisted s3 target (endpoint+bucket pin satisfied)", () => {
+    expect(() =>
+      assertDeliveryTargetRooted(
+        s3Target({ endpoint: "https://minio:9000", bucket: "bundles" }),
+        [],
+        allow
+      )
+    ).not.toThrow();
+  });
+
+  it("refuses an out-of-allowlist s3 target at pair time (never stored)", () => {
+    expect(
+      problemDetail(() =>
+        assertDeliveryTargetRooted(
+          s3Target({ endpoint: "https://minio:9000", bucket: "other" }),
+          [],
+          allow
+        )
+      )
+    ).toContain("not in the operator s3 delivery allowlist");
+  });
+
+  it("UNSET allowlist + an s3 target => refused at pair time (fail-closed default)", () => {
+    expect(
+      problemDetail(() =>
+        assertDeliveryTargetRooted(s3Target({ endpoint: "https://minio:9000", bucket: "b" }), [], [])
+      )
+    ).toContain("no operator s3 delivery endpoints are declared");
+  });
+});
+
+describe("delivery credentials (ADR-0019 §3 artifact-store class)", () => {
+  it("deliveryTargetSecretKey: per-peer, per-direction, lowercased", () => {
+    expect(deliveryTargetSecretKey("High-Side", "out")).toBe("delivery/high-side/out");
+    expect(deliveryTargetSecretKey("high-side", "in")).toBe("delivery/high-side/in");
+  });
+
+  it("parseDeliveryS3Credential: first-colon split; malformed => null (fail-closed)", () => {
+    expect(parseDeliveryS3Credential("AKID:secret/with+base64=chars")).toEqual({
+      accessKeyId: "AKID",
+      secretAccessKey: "secret/with+base64=chars"
+    });
+    expect(parseDeliveryS3Credential("no-colon")).toBeNull();
+    expect(parseDeliveryS3Credential(":secret")).toBeNull();
+    expect(parseDeliveryS3Credential("akid:")).toBeNull();
+    expect(parseDeliveryS3Credential(undefined)).toBeNull();
   });
 });
