@@ -1,0 +1,21 @@
+-- ===========================================================================================
+-- M13.2a — DeliveryTarget substrate (docs/proposals/airgap-cds-validate-promote.md §13.2).
+--
+-- EXPAND phase (additive, backward-compatible). One nullable `delivery_target` jsonb column on
+-- `federation_peers`, BESIDE `sync_scope` — the per-peer "where do this peer's signed channel
+-- artifacts get dropped / picked up" config the ADR-0019 Consequences deferral left open. Shape
+-- is `DeliveryTargetSchema` (packages/schemas/src/federation.ts): a `provider`-discriminated
+-- union whose only M13.2a member is `filesystem` (`{ provider, outDir?, inDir? }`); 13.2b adds
+-- `s3-compatible` as a NEW union member — additive in the jsonb, no further migration.
+--
+-- NULLABLE, NO BACKFILL. A peer with NULL here resolves its delivery through the instance env
+-- (`SCP_RELAY_OUT_DIR` / `SCP_RELAY_IN_DIR` — PR #112's RelayConfig), which is EXACTLY today's
+-- behavior, so every existing setup migrates as a no-op. A peer that resolves NEITHER a per-peer
+-- value NOR the env for a direction it needs fails CLOSED at use with a named problem
+-- (federation/delivery-target.ts) — never a silent default path.
+--
+-- Plain additive column on an RLS-governed table: the existing `org_isolation` policy is
+-- inherited unchanged — no policy/grant statement needed (same class as 0031).
+-- ===========================================================================================
+
+ALTER TABLE "federation_peers" ADD COLUMN IF NOT EXISTS "delivery_target" jsonb;

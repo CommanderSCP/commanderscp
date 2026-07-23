@@ -48911,6 +48911,38 @@
                         "additionalProperties": false
                       }
                     ]
+                  },
+                  "deliveryTarget": {
+                    "anyOf": [
+                      {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "provider": {
+                                "type": "string",
+                                "const": "filesystem"
+                              },
+                              "outDir": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "inDir": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            },
+                            "required": [
+                              "provider"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 },
                 "required": [
@@ -49046,6 +49078,38 @@
                       "anyOf": [
                         {
                           "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "deliveryTarget": {
+                      "anyOf": [
+                        {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "provider": {
+                                  "type": "string",
+                                  "const": "filesystem"
+                                },
+                                "outDir": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "inDir": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "provider"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
                         },
                         {
                           "type": "null"
@@ -49335,6 +49399,38 @@
                         "anyOf": [
                           {
                             "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "deliveryTarget": {
+                        "anyOf": [
+                          {
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "provider": {
+                                    "type": "string",
+                                    "const": "filesystem"
+                                  },
+                                  "outDir": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "inDir": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "provider"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
                           },
                           {
                             "type": "null"
@@ -49646,6 +49742,38 @@
                                   }
                                 ]
                               },
+                              "deliveryTarget": {
+                                "anyOf": [
+                                  {
+                                    "oneOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "provider": {
+                                            "type": "string",
+                                            "const": "filesystem"
+                                          },
+                                          "outDir": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          "inDir": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          }
+                                        },
+                                        "required": [
+                                          "provider"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
                               "pairedAt": {
                                 "type": "string",
                                 "format": "date-time",
@@ -49915,6 +50043,9 @@
                     "type": "integer",
                     "minimum": 0,
                     "maximum": 9007199254740991
+                  },
+                  "deliver": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -50302,6 +50433,9 @@
                   "change": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "deliver": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -51678,6 +51812,10 @@
                 "type": "object",
                 "properties": {
                   "change": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "peer": {
                     "type": "string",
                     "minLength": 1
                   }

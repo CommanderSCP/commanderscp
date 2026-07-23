@@ -12741,6 +12741,11 @@ export type ListFederationPeersResponses = {
         };
         publicKey: string;
         cosignPublicKey?: string | null;
+        deliveryTarget?: {
+            provider: 'filesystem';
+            outDir?: string;
+            inDir?: string;
+        } | null;
         pairedAt: string;
     }>;
 };
@@ -12769,6 +12774,11 @@ export type PairPeerData = {
                 [key: string]: string;
             };
         };
+        deliveryTarget?: {
+            provider: 'filesystem';
+            outDir?: string;
+            inDir?: string;
+        } | null;
     };
     path?: never;
     query?: never;
@@ -12838,6 +12848,11 @@ export type PairPeerResponses = {
         };
         publicKey: string;
         cosignPublicKey?: string | null;
+        deliveryTarget?: {
+            provider: 'filesystem';
+            outDir?: string;
+            inDir?: string;
+        } | null;
         pairedAt: string;
     };
 };
@@ -12912,6 +12927,11 @@ export type GetFederationStatusResponses = {
                 };
                 publicKey: string;
                 cosignPublicKey?: string | null;
+                deliveryTarget?: {
+                    provider: 'filesystem';
+                    outDir?: string;
+                    inDir?: string;
+                } | null;
                 pairedAt: string;
             };
             lastAppliedSequence: number | null;
@@ -12937,6 +12957,7 @@ export type ExportSyncBundleData = {
     body: {
         peer: string;
         sinceSequence?: number;
+        deliver?: boolean;
     };
     path?: never;
     query?: never;
@@ -13034,6 +13055,7 @@ export type ExportPromotionBundleData = {
     body: {
         peer: string;
         change: string;
+        deliver?: boolean;
     };
     path?: never;
     query?: never;
@@ -13347,6 +13369,7 @@ export type ImportBundleResponse = ImportBundleResponses[keyof ImportBundleRespo
 export type BuildRelayTarballData = {
     body: {
         change: string;
+        peer?: string;
     };
     path?: never;
     query?: never;

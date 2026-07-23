@@ -97,6 +97,48 @@ export type InitFederationRequest = z.infer<typeof InitFederationRequestSchema>;
  *  (the outpost dials the commander to exchange keys); for air-gapped peers this is an out-of-band
  *  exchange of each side's public identity (`scp federation status` prints it; the operator
  *  copies it to the other side's `scp federation pair` call). */
+// -------------------------------------------------------------------------------------------
+// M13.2a — DeliveryTarget (docs/proposals/airgap-cds-validate-promote.md §13.2). WHERE a signed
+// channel artifact (a `.scpbundle` or an `scp-relay-*.tar.gz` byte tarball) is dropped for — or
+// picked up from — one peer's CDS crossing. Per-peer configuration BESIDE `syncScope`; absent
+// per-peer config falls back to the instance env (`SCP_RELAY_OUT_DIR`/`SCP_RELAY_IN_DIR` — PR
+// #112's behavior, unchanged). SCP hands files TO the CDS; it never operates the CDS (charter
+// principle 1) — everything past the drop is the org's CDS product.
+// -------------------------------------------------------------------------------------------
+
+/** A delivery-target directory: SERVER-side, absolute, traversal-free. Validated at CONFIG time
+ *  (here) AND re-checked fail-closed at resolution time (`delivery-target.ts`) — a stored value
+ *  that somehow bypassed this schema still never steers a write/list outside itself. */
+export const DeliveryDirSchema = z
+  .string()
+  .min(1)
+  .refine((dir) => dir.startsWith("/"), {
+    message: "delivery-target directories must be absolute server-side paths"
+  })
+  .refine((dir) => !dir.split("/").some((seg) => seg === ".." || seg === "."), {
+    message: "delivery-target directories must not contain '.' or '..' traversal segments"
+  });
+
+/** The `filesystem` provider — literally today's `SCP_RELAY_OUT_DIR`/`SCP_RELAY_IN_DIR` behavior
+ *  made per-peer: a directory path per direction. Both directions optional so a peer can configure
+ *  only the side it uses (each unresolvable direction is a fail-closed problem AT USE, never a
+ *  silent default path). */
+export const FilesystemDeliveryTargetSchema = z.object({
+  provider: z.literal("filesystem"),
+  /** Outbound drop directory — where THIS instance writes channel artifacts addressed to the peer. */
+  outDir: DeliveryDirSchema.optional(),
+  /** Inbound intake directory — where channel artifacts FROM the peer arrive (the §13.1a inbox). */
+  inDir: DeliveryDirSchema.optional()
+});
+export type FilesystemDeliveryTarget = z.infer<typeof FilesystemDeliveryTargetSchema>;
+
+/** Discriminated on `provider` so 13.2b adds `provider: 's3-compatible'` as a new union member —
+ *  additive, no shape change to the filesystem member. */
+export const DeliveryTargetSchema = z.discriminatedUnion("provider", [
+  FilesystemDeliveryTargetSchema
+]);
+export type DeliveryTarget = z.infer<typeof DeliveryTargetSchema>;
+
 export const PairPeerRequestSchema = z.object({
   domainId: z.string().uuid(),
   name: z.string().min(1).max(200),
@@ -111,7 +153,12 @@ export const PairPeerRequestSchema = z.object({
    *  compared, never trusted (promotion-repo.ts). */
   cosignPublicKey: z.string().optional(),
   baseUrl: z.string().url().optional(),
-  syncScope: SyncScopeSchema.optional()
+  syncScope: SyncScopeSchema.optional(),
+  /** M13.2a (§13.2) — the peer's per-peer DeliveryTarget. Tri-state on re-pair, mirroring
+   *  `cosignPublicKey`'s additive discipline: ABSENT (undefined) preserves whatever is already
+   *  configured (an old client that never knew the field can't strip it); an OBJECT sets/replaces
+   *  it; explicit `null` clears it back to the instance-env fallback. */
+  deliveryTarget: DeliveryTargetSchema.nullable().optional()
 });
 export type PairPeerRequest = z.infer<typeof PairPeerRequestSchema>;
 
@@ -126,6 +173,9 @@ export const FederationPeerSchema = z.object({
    *  peer paired before E5 or one that never supplied one. This is the ONLY value E6/M17.4 trusts to
    *  verify that peer's cosign-signed promotion manifests. */
   cosignPublicKey: z.string().nullable().optional(),
+  /** M13.2a (§13.2) — the peer's configured DeliveryTarget, `null` when none is set (the instance
+   *  env `SCP_RELAY_OUT_DIR`/`SCP_RELAY_IN_DIR` fallback applies — today's behavior, unchanged). */
+  deliveryTarget: DeliveryTargetSchema.nullable().optional(),
   pairedAt: z.string().datetime()
 });
 export type FederationPeer = z.infer<typeof FederationPeerSchema>;
@@ -165,7 +215,12 @@ export type FederationStatusResponse = z.infer<typeof FederationStatusResponseSc
 
 export const ExportJournalRequestSchema = z.object({
   peer: z.string().min(1), // peer domain id or name
-  sinceSequence: z.number().int().nonnegative().optional()
+  sinceSequence: z.number().int().nonnegative().optional(),
+  /** M13.2a (§13.2) — when true the server ALSO drops the exported `.scpbundle` into the peer's
+   *  resolved DeliveryTarget (per-peer config, else the `SCP_RELAY_OUT_DIR` instance fallback;
+   *  BOTH absent refuses fail-closed). The response body stays the bundle document, unchanged —
+   *  the drop is the server-side leg of the CDS walk the operator otherwise does by hand. */
+  deliver: z.boolean().optional()
 });
 export type ExportJournalRequest = z.infer<typeof ExportJournalRequestSchema>;
 
@@ -348,7 +403,11 @@ export type PromotionBundle = z.infer<typeof PromotionBundleSchema>;
 
 export const ExportPromotionRequestSchema = z.object({
   peer: z.string().min(1),
-  change: z.string().min(1) // idOrUrn
+  change: z.string().min(1), // idOrUrn
+  /** M13.2a (§13.2) — when true the server ALSO drops the exported `.scpbundle` into the peer's
+   *  resolved DeliveryTarget (per-peer config, else the `SCP_RELAY_OUT_DIR` instance fallback;
+   *  BOTH absent refuses fail-closed). Response body unchanged (the bundle document). */
+  deliver: z.boolean().optional()
 });
 export type ExportPromotionRequest = z.infer<typeof ExportPromotionRequestSchema>;
 
@@ -372,7 +431,11 @@ export type ImportPromotionResponse = z.infer<typeof ImportPromotionResponseSche
  *  promotion (retrans-role instances only). */
 export const RelayBuildRequestSchema = z.object({
   /** The LOCAL imported change (id or URN) whose authorized artifact bytes should be relayed. */
-  change: z.string().min(1)
+  change: z.string().min(1),
+  /** M13.2a (§13.2) — the DESTINATION peer (id or name) whose DeliveryTarget receives the outbound
+   *  tarball drop. Optional/additive: absent, the drop resolves through the instance env
+   *  (`SCP_RELAY_OUT_DIR`) exactly as before — byte-identical behavior. */
+  peer: z.string().min(1).optional()
 });
 export type RelayBuildRequest = z.infer<typeof RelayBuildRequestSchema>;
 

@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, isNull, or } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
-import type { SyncScope } from "@scp/schemas";
+import type { DeliveryTarget, SyncScope } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { federationPeers, federationPeerKeys } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
@@ -22,6 +22,9 @@ export interface FederationPeerRow {
   role: "commander" | "outpost" | "retrans";
   baseUrl: string | null;
   syncScope: SyncScope;
+  /** M13.2a (§13.2) — the peer's per-peer DeliveryTarget; `null` = resolve through the instance
+   *  env (`SCP_RELAY_OUT_DIR`/`SCP_RELAY_IN_DIR`) — today's behavior, unchanged. */
+  deliveryTarget: DeliveryTarget | null;
   pairedAt: string;
   publicKey: string;
   /** M17.3 (E5) — the peer's REGISTERED cosign verification public key from pairing (the CURRENT
@@ -42,6 +45,7 @@ function toPeerRow(
     role: peer.role as "commander" | "outpost" | "retrans",
     baseUrl: peer.baseUrl,
     syncScope: peer.syncScope as SyncScope,
+    deliveryTarget: (peer.deliveryTarget as DeliveryTarget | null) ?? null,
     pairedAt: peer.pairedAt.toISOString(),
     publicKey,
     cosignPublicKey
@@ -161,6 +165,10 @@ export interface PairPeerInput {
   cosignPublicKey?: string | null;
   baseUrl?: string;
   syncScope?: SyncScope;
+  /** M13.2a (§13.2) — tri-state, mirroring `cosignPublicKey`'s additive discipline: `undefined`
+   *  (field absent — an old client) PRESERVES whatever is already configured; an object SETS it;
+   *  explicit `null` CLEARS it back to the instance-env fallback. */
+  deliveryTarget?: DeliveryTarget | null;
 }
 
 /** Idempotent upsert: pairing the same peer again updates its metadata; a public-key CHANGE is
@@ -189,7 +197,8 @@ export async function pairPeer(tx: TenantTx, input: PairPeerInput): Promise<Fede
         name: input.name,
         role: input.role,
         baseUrl: input.baseUrl ?? null,
-        syncScope
+        syncScope,
+        deliveryTarget: input.deliveryTarget ?? null
       })
       .returning();
     if (!row) throw new Error("pairPeer: failed to insert peer");
@@ -209,7 +218,11 @@ export async function pairPeer(tx: TenantTx, input: PairPeerInput): Promise<Fede
       name: input.name,
       role: input.role,
       baseUrl: input.baseUrl ?? existing[0].baseUrl,
-      syncScope
+      syncScope,
+      // Tri-state (see PairPeerInput): absent preserves, object sets, explicit null clears — a
+      // re-pair from an old client that never knew the field can never strip a configured target.
+      deliveryTarget:
+        input.deliveryTarget !== undefined ? input.deliveryTarget : existing[0].deliveryTarget
     })
     .where(and(eq(federationPeers.orgId, input.orgId), eq(federationPeers.id, input.domainId)))
     .returning();
