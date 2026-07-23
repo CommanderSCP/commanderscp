@@ -1326,6 +1326,28 @@ Managed execution is never a default; the six-gate boundary test is the only rou
 
 Rollback for host-reaching classes is best-effort convergent, evidenced by captured prior state.
 
+Amendment approved 2026-07-23.
+
+The commander executes scans and signatures as part of the promotion process.
+
+Managed scanning (`scp-managed-scan`) is a first-class commander service: the promotion scan step scans the artifacts under promotion, evaluates the results against the bound scan-requirement policies, and only then signs and exports.
+
+Scanning methods (Trivy, OpenSCAP, and future scanner plugins) are registry data assigned to artifact types; the promotion scan step selects scanners by each artifact's type.
+
+Scan evidence produced by an organization's own pipelines remains a supported ingress; the governance gates consume evidence identically from either source.
+
+The managed scanner is read-only with respect to the scanned subject: it analyzes artifacts and emits evidence; it never modifies, deploys, or provisions anything, and it executes no change.
+
+`scp-managed-scan` implements the standard executor interface, runs in isolated single-shot ephemeral runners from a separate `scp-runner-scan` image, holds only scoped vaulted credentials, and reaches no hosts.
+
+Runner network egress is `--network none`, excepting operator-allowlisted registry pulls for the subject artifact's bytes.
+
+Scan evidence and signing live at the commander only; outposts and boundary relays validate the commander's signature — the transitive proof that scans passed — and never store, read, or produce scan evidence.
+
+`scp-managed-scan` joins small Infrastructure-as-Code deployments as a non-host-reaching enumerated managed class.
+
+Extending this class allowlist further requires owner sign-off.
+
 ---
 
 ## Bundled Executor Backends
