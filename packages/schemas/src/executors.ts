@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ChangeRequirementSchema, cursorPageResponseSchema } from "./common.js";
-import { SbomRefSchema } from "./supply-chain.js";
+import { SbomRefSchema, ScanMethodSchema } from "./supply-chain.js";
 
 /**
  * M7 Real Executor Integrations wire contract (DESIGN.md §11/§12, BUILD_AND_TEST.md §8 M7).
@@ -121,6 +121,47 @@ export const RepurposeExecutorBindingRequestSchema = z.object({
   type: ExecutorTypeSchema
 });
 export type RepurposeExecutorBindingRequest = z.infer<typeof RepurposeExecutorBindingRequestSchema>;
+
+// -------------------------------------------------------------------------------------------
+// Scanner-assignment registry (ADR-0020 §2, proposal §13.3, M13.3a). The commander's promotion
+// scan step reads each artifact's executor Type and selects the managed scan METHOD(S) assigned to
+// that Type. This is REGISTRY DATA keyed on the EXISTING `ExecutorType` taxonomy (owner decision
+// 2026-07-23) — NOT a new content-type axis — so a scanner is assigned to `image`/`rpm`/`deb`/`npm`/
+// `infrastructure`/`configuration`, the same closed set that already routes executor bindings.
+//
+// INSTANCE-SCOPED (owner decision 2026-07-23), mirroring `scan_requirement_floors`: no `org_id`, the
+// assignments bind every org on the deployment, operator-authored, tenant-readable. See
+// drizzle/0035_scanner_assignments.sql (RLS mirrors 0029) and routes/scanner-assignments.ts.
+//
+// FAIL-CLOSED BY DESIGN: a Type with NO assignment (or an empty `methods`) produces NO managed
+// evidence — so E6 refuses that Type's cross-boundary promotion unless valid org-pipeline evidence
+// already covers the digest. An unassigned/empty Type is a deliberate "no managed scanner", never a
+// silent pass. The seed assigns `configuration -> []` for exactly this reason (documented in 0035).
+// -------------------------------------------------------------------------------------------
+
+/** One Type's scanner assignment — the API projection of a `scanner_assignments` row. `methods` is
+ *  the set of managed scan methods the promotion scan step runs for this Type (possibly empty). */
+export const ScannerAssignmentSchema = z.object({
+  executorType: ExecutorTypeSchema,
+  methods: z.array(ScanMethodSchema),
+  updatedAt: z.string()
+});
+export type ScannerAssignment = z.infer<typeof ScannerAssignmentSchema>;
+
+export const ScannerAssignmentListResponseSchema = z.object({
+  items: z.array(ScannerAssignmentSchema)
+});
+export type ScannerAssignmentListResponse = z.infer<typeof ScannerAssignmentListResponseSchema>;
+
+/** Operator-authored write body for `PUT /instance/scanner-assignments`. `executorType` MUST be in
+ *  the closed `ExecutorType` set (Zod-validated, not a pg enum — mirrors `executor_bindings.type`);
+ *  `methods` MUST be valid `ScanMethod`s (duplicates are de-duplicated server-side). An empty
+ *  `methods` explicitly clears the assignment (that Type produces no managed evidence — fail-closed). */
+export const PutScannerAssignmentRequestSchema = z.object({
+  executorType: ExecutorTypeSchema,
+  methods: z.array(ScanMethodSchema)
+});
+export type PutScannerAssignmentRequest = z.infer<typeof PutScannerAssignmentRequestSchema>;
 
 // -------------------------------------------------------------------------------------------
 // Multi-region Argo CD — the first-class config SURFACE for one outpost owning an Argo CD per

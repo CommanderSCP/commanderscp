@@ -44,6 +44,7 @@ import { registerFederationRoutes } from "./routes/federation.js";
 import { registerExecutorRoutes } from "./routes/executors.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerInstanceScanFloorRoutes } from "./routes/instance-scan-floors.js";
+import { registerScannerAssignmentRoutes } from "./routes/scanner-assignments.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -222,6 +223,7 @@ export async function buildApp(
   }
   registerGovernanceRoutes(app, deps);
   registerInstanceScanFloorRoutes(app, deps); // M17.5 instance-scoped scan floors (ADR-0016)
+  registerScannerAssignmentRoutes(app, deps); // M13.3a instance-scoped scanner assignments (ADR-0020)
   // M5: Campaigns & Initiatives (BUILD_AND_TEST.md §8 M5, DESIGN.md §9.5) — coordinate many
   // Changes over the same M3/M4 machinery; no new engine, see coordination/campaign-status.ts.
   registerCampaignRoutes(app, deps);

@@ -180,6 +180,9 @@ import {
   // M17.5 (ADR-0016) — instance-scoped scan-requirement floors.
   listInstanceScanFloors as listInstanceScanFloorsRequest,
   putInstanceScanFloor as putInstanceScanFloorRequest,
+  // M13.3a (ADR-0020) — instance-scoped scanner assignments.
+  listScannerAssignments as listScannerAssignmentsRequest,
+  putScannerAssignment as putScannerAssignmentRequest,
   pairPeer as pairPeerRequest,
   getFederationStatus as getFederationStatusRequest,
   exportSyncBundle as exportSyncBundleRequest,
@@ -295,6 +298,8 @@ import type {
   FederationPeer,
   InstanceScanFloor,
   PutInstanceScanFloorRequest,
+  ScannerAssignment,
+  PutScannerAssignmentRequest,
   PairPeerRequest,
   FederationStatusResponse,
   ExportJournalRequest,
@@ -1503,6 +1508,33 @@ export class ScpClient {
       const result = await putInstanceScanFloorRequest({
         client: this.client,
         path: { tier },
+        body: req,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result);
+    }
+  };
+
+  // -----------------------------------------------------------------------------------------
+  // M13.3a: instance-scoped scanner assignments (ADR-0020 §2) — the executor Type -> managed scan
+  // method(s) registry the commander's promotion scan step selects scanners from. They bind EVERY
+  // org on the deployment, so `put` is an OPERATOR action carrying the deployment's
+  // `x-scp-operator-token`, never a tenant role. `list` is an ordinary authenticated read. The
+  // twin of `instanceScanFloors`, on purpose.
+  // -----------------------------------------------------------------------------------------
+  readonly scannerAssignments = {
+    list: async (): Promise<ScannerAssignment[]> => {
+      const result = await listScannerAssignmentsRequest({ client: this.client });
+      return unwrap(result).items;
+    },
+    /** Assign (upsert) managed scan methods to an executor Type. `operatorToken` is the
+     *  deployment-level `SCP_OPERATOR_TOKEN`; an empty `methods` clears the assignment (fail-closed). */
+    put: async (
+      req: PutScannerAssignmentRequest,
+      operatorToken: string
+    ): Promise<ScannerAssignment> => {
+      const result = await putScannerAssignmentRequest({
+        client: this.client,
         body: req,
         headers: { "x-scp-operator-token": operatorToken }
       });
