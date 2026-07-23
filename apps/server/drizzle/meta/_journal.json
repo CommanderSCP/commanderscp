@@ -239,6 +239,13 @@
       "when": 1785800000000,
       "tag": "0033_federation_peer_delivery_target",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1785900000000,
+      "tag": "0034_federation_inbox_files",
+      "breakpoints": true
     }
   ]
 }

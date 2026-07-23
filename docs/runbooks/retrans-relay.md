@@ -74,6 +74,56 @@ answers "may we dial it at all?", this one "may TLS verification be skipped?". H
 always get full TLS verification. **Unset = TLS verification everywhere** (safe: the cosign
 signature, not transport TLS, is the trust anchor — a MITM can only cause fail-closed denial).
 
+## Unattended inbox ingest — the staging-node loop (M13.1a, proposal §13.1)
+
+The six-step walk above stays fully supported — but steps "import what arrived" can now run
+unattended. A pg-boss tick loop (`federation/inbox-loop.ts`, cloned from the observe-loop's
+self-rescheduling singleton shape) lists each resolved delivery inbox and routes every **new**
+file to the **existing** verify path for its kind. The loop automates only *who names the file*;
+every verification, Decision, and audit event is byte-identical to the CLI-invoked path (proven
+by `inbox-loop.integration.test.ts`).
+
+| Variable | Meaning |
+|---|---|
+| `SCP_INBOX_LOOP` | **`1` = enable** (default off — an unconfigured instance never schedules a tick). The explicit operator opt-in; deliberately an env var, not replicated config, so unattended ingest can only be switched on by this instance's own operator. |
+| `SCP_INBOX_TICK_INTERVAL_SECONDS` | Tick cadence (default `60`, floor `5`). The tick is the reliable floor; the ADR-0009 poke chain (M14) later *optimizes* latency but never replaces it. |
+
+What one tick does, per org (a multi-tenant instance ticks every org):
+
+1. Resolve inbox sources — every peer-configured `deliveryTarget.inDir` plus the instance
+   `SCP_RELAY_IN_DIR` fallback (13.2a resolution). Nothing resolvable → the tick is a cheap no-op.
+2. List file **names** (traversal-guarded, names only) and process `.scpbundle` files **before**
+   `scp-relay-*.tar.gz` files, so a bundle+tarball dropped together completes in one tick.
+3. Route role-aware: `.scpbundle` → the federation import (sync or promotion — the same repos the
+   API route calls). Relay tarball at an **outpost** → `importRelayTarball` (verify + push +
+   re-inspect, unchanged). Relay tarball at a **retrans** → the push-less **validate-and-forward**
+   (`validateAndForwardRelayTarball`): the *same* extracted verification (tarball signature,
+   per-file checksums, authorized-set cross-check, per-artifact layout/blob integrity — a
+   refactor, not a new trust decision) with no registry half, then the byte-identical tarball is
+   dropped to the onward DeliveryTarget (single peer-configured outbound dir, else
+   `SCP_RELAY_OUT_DIR`).
+4. **Validate-gated confirm (owner decision D4, never blind):** only a **passing** validation
+   records/confirms the `bundle_transfers` row (the verify paths write it themselves, in the same
+   tx as their allow Decision). Any failure → block Decision + hash-chained audit event, **no**
+   confirmation — the transfer visibly stalls at the boundary.
+5. Dedupe against the `federation_inbox_files` ledger (content identity: inbox dir + name +
+   sha256). Re-processing an already-handled file is a no-op; a *replaced* file (same name, new
+   bytes) is new work. Refused files are **quarantined in place** — the loop never deletes or
+   moves inbox files; the ledger row (+ Decision) is what stops re-processing. Foreign/unknown
+   files are skipped-with-log, never a crash; a bundle addressed to another org's domain and a
+   tarball whose `.scpbundle` has not landed yet are left for a later tick.
+
+**Tarball verification key, unattended:** the manual walk's out-of-band `--pubkey` becomes the
+pairing registry — the loop verifies arriving tarballs against the cosign public key registered
+for this org's (single) `role: retrans` peer (`scp federation pair --role retrans
+--cosign-public-key …`), the same E5 exchange that distributes every other federation key. No key
+material is ever read from the inbox. No (or ambiguous) retrans peer → tarballs stay unprocessed
+with a logged config gap.
+
+Out of scope in M13.1a (deliberately): the poke-chain trigger (M14) and the retrans auto-relay
+build after a promotion import (13.1b) — a retrans still runs `scp federation relay` to *build*
+tarballs; the loop automates the receiving/forwarding ends.
+
 ## Credentials (ADR-0019 §3 — the artifact-store class)
 
 Registry credentials only — **never** credentials to infrastructure execution systems manage
