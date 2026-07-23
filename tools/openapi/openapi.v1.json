@@ -49451,58 +49451,34 @@
                     "deliveryTarget": {
                       "anyOf": [
                         {
-                          "oneOf": [
-                            {
-                              "type": "object",
-                              "properties": {
-                                "provider": {
-                                  "type": "string",
-                                  "const": "filesystem"
-                                },
-                                "outDir": {
-                                  "type": "string",
-                                  "minLength": 1
-                                },
-                                "inDir": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
-                              },
-                              "required": [
-                                "provider"
-                              ],
-                              "additionalProperties": false
+                          "type": "object",
+                          "properties": {
+                            "provider": {
+                              "type": "string"
                             },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "provider": {
-                                  "type": "string",
-                                  "const": "s3-compatible"
-                                },
-                                "endpoint": {
-                                  "type": "string",
-                                  "format": "uri"
-                                },
-                                "bucket": {
-                                  "type": "string",
-                                  "minLength": 1
-                                },
-                                "outPrefix": {
-                                  "type": "string"
-                                },
-                                "inPrefix": {
-                                  "type": "string"
-                                }
-                              },
-                              "required": [
-                                "provider",
-                                "endpoint",
-                                "bucket"
-                              ],
-                              "additionalProperties": false
+                            "outDir": {
+                              "type": "string"
+                            },
+                            "inDir": {
+                              "type": "string"
+                            },
+                            "endpoint": {
+                              "type": "string"
+                            },
+                            "bucket": {
+                              "type": "string"
+                            },
+                            "outPrefix": {
+                              "type": "string"
+                            },
+                            "inPrefix": {
+                              "type": "string"
                             }
-                          ]
+                          },
+                          "required": [
+                            "provider"
+                          ],
+                          "additionalProperties": false
                         },
                         {
                           "type": "null"
@@ -49801,58 +49777,34 @@
                       "deliveryTarget": {
                         "anyOf": [
                           {
-                            "oneOf": [
-                              {
-                                "type": "object",
-                                "properties": {
-                                  "provider": {
-                                    "type": "string",
-                                    "const": "filesystem"
-                                  },
-                                  "outDir": {
-                                    "type": "string",
-                                    "minLength": 1
-                                  },
-                                  "inDir": {
-                                    "type": "string",
-                                    "minLength": 1
-                                  }
-                                },
-                                "required": [
-                                  "provider"
-                                ],
-                                "additionalProperties": false
+                            "type": "object",
+                            "properties": {
+                              "provider": {
+                                "type": "string"
                               },
-                              {
-                                "type": "object",
-                                "properties": {
-                                  "provider": {
-                                    "type": "string",
-                                    "const": "s3-compatible"
-                                  },
-                                  "endpoint": {
-                                    "type": "string",
-                                    "format": "uri"
-                                  },
-                                  "bucket": {
-                                    "type": "string",
-                                    "minLength": 1
-                                  },
-                                  "outPrefix": {
-                                    "type": "string"
-                                  },
-                                  "inPrefix": {
-                                    "type": "string"
-                                  }
-                                },
-                                "required": [
-                                  "provider",
-                                  "endpoint",
-                                  "bucket"
-                                ],
-                                "additionalProperties": false
+                              "outDir": {
+                                "type": "string"
+                              },
+                              "inDir": {
+                                "type": "string"
+                              },
+                              "endpoint": {
+                                "type": "string"
+                              },
+                              "bucket": {
+                                "type": "string"
+                              },
+                              "outPrefix": {
+                                "type": "string"
+                              },
+                              "inPrefix": {
+                                "type": "string"
                               }
-                            ]
+                            },
+                            "required": [
+                              "provider"
+                            ],
+                            "additionalProperties": false
                           },
                           {
                             "type": "null"
@@ -50167,58 +50119,34 @@
                               "deliveryTarget": {
                                 "anyOf": [
                                   {
-                                    "oneOf": [
-                                      {
-                                        "type": "object",
-                                        "properties": {
-                                          "provider": {
-                                            "type": "string",
-                                            "const": "filesystem"
-                                          },
-                                          "outDir": {
-                                            "type": "string",
-                                            "minLength": 1
-                                          },
-                                          "inDir": {
-                                            "type": "string",
-                                            "minLength": 1
-                                          }
-                                        },
-                                        "required": [
-                                          "provider"
-                                        ],
-                                        "additionalProperties": false
+                                    "type": "object",
+                                    "properties": {
+                                      "provider": {
+                                        "type": "string"
                                       },
-                                      {
-                                        "type": "object",
-                                        "properties": {
-                                          "provider": {
-                                            "type": "string",
-                                            "const": "s3-compatible"
-                                          },
-                                          "endpoint": {
-                                            "type": "string",
-                                            "format": "uri"
-                                          },
-                                          "bucket": {
-                                            "type": "string",
-                                            "minLength": 1
-                                          },
-                                          "outPrefix": {
-                                            "type": "string"
-                                          },
-                                          "inPrefix": {
-                                            "type": "string"
-                                          }
-                                        },
-                                        "required": [
-                                          "provider",
-                                          "endpoint",
-                                          "bucket"
-                                        ],
-                                        "additionalProperties": false
+                                      "outDir": {
+                                        "type": "string"
+                                      },
+                                      "inDir": {
+                                        "type": "string"
+                                      },
+                                      "endpoint": {
+                                        "type": "string"
+                                      },
+                                      "bucket": {
+                                        "type": "string"
+                                      },
+                                      "outPrefix": {
+                                        "type": "string"
+                                      },
+                                      "inPrefix": {
+                                        "type": "string"
                                       }
-                                    ]
+                                    },
+                                    "required": [
+                                      "provider"
+                                    ],
+                                    "additionalProperties": false
                                   },
                                   {
                                     "type": "null"

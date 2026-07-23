@@ -190,6 +190,27 @@ export const DeliveryTargetSchema = z.discriminatedUnion("provider", [
 ]);
 export type DeliveryTarget = z.infer<typeof DeliveryTargetSchema>;
 
+/** PERMISSIVE RESPONSE VIEW of a DeliveryTarget — the shape RESPONSE bodies advertise, deliberately
+ *  NOT a discriminatedUnion. A strict `oneOf` in a RESPONSE is inherently NON-additive: every new
+ *  provider member is an oasdiff `response-property-one-of-added` BREAKING change (a strict client
+ *  generated against the old contract might reject the new variant). We dodge that permanently by
+ *  advertising ONE open object that is a SUPERSET of every provider's fields — `provider` a plain
+ *  string, all fields optional, no `oneOf`/discriminator — so adding the Nth provider only ever adds
+ *  OPTIONAL properties (additive), never a union member. The stored strict-union value serialized on
+ *  the wire is unchanged and is always a valid instance of this superset; this is a TYPE/CONTRACT
+ *  loosening only, no runtime/behavior change. REQUESTS keep the strict `DeliveryTargetSchema` union
+ *  — widening a REQUEST union is permissive-input, NOT oasdiff-breaking. */
+export const DeliveryTargetViewSchema = z.object({
+  provider: z.string(),
+  outDir: z.string().optional(),
+  inDir: z.string().optional(),
+  endpoint: z.string().optional(),
+  bucket: z.string().optional(),
+  outPrefix: z.string().optional(),
+  inPrefix: z.string().optional()
+});
+export type DeliveryTargetView = z.infer<typeof DeliveryTargetViewSchema>;
+
 export const PairPeerRequestSchema = z.object({
   domainId: z.string().uuid(),
   name: z.string().min(1).max(200),
@@ -225,8 +246,10 @@ export const FederationPeerSchema = z.object({
    *  verify that peer's cosign-signed promotion manifests. */
   cosignPublicKey: z.string().nullable().optional(),
   /** M13.2a (§13.2) — the peer's configured DeliveryTarget, `null` when none is set (the instance
-   *  env `SCP_RELAY_OUT_DIR`/`SCP_RELAY_IN_DIR` fallback applies — today's behavior, unchanged). */
-  deliveryTarget: DeliveryTargetSchema.nullable().optional(),
+   *  env `SCP_RELAY_OUT_DIR`/`SCP_RELAY_IN_DIR` fallback applies — today's behavior, unchanged).
+   *  RESPONSE uses the permissive `DeliveryTargetViewSchema` (superset object, no `oneOf`) so adding
+   *  a provider stays oasdiff-additive; the stored strict-union value is a valid instance of it. */
+  deliveryTarget: DeliveryTargetViewSchema.nullable().optional(),
   pairedAt: z.string().datetime()
 });
 export type FederationPeer = z.infer<typeof FederationPeerSchema>;

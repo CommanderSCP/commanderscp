@@ -12841,13 +12841,11 @@ export type ListFederationPeersResponses = {
         publicKey: string;
         cosignPublicKey?: string | null;
         deliveryTarget?: {
-            provider: 'filesystem';
+            provider: string;
             outDir?: string;
             inDir?: string;
-        } | {
-            provider: 's3-compatible';
-            endpoint: string;
-            bucket: string;
+            endpoint?: string;
+            bucket?: string;
             outPrefix?: string;
             inPrefix?: string;
         } | null;
@@ -12960,13 +12958,11 @@ export type PairPeerResponses = {
         publicKey: string;
         cosignPublicKey?: string | null;
         deliveryTarget?: {
-            provider: 'filesystem';
+            provider: string;
             outDir?: string;
             inDir?: string;
-        } | {
-            provider: 's3-compatible';
-            endpoint: string;
-            bucket: string;
+            endpoint?: string;
+            bucket?: string;
             outPrefix?: string;
             inPrefix?: string;
         } | null;
@@ -13045,13 +13041,11 @@ export type GetFederationStatusResponses = {
                 publicKey: string;
                 cosignPublicKey?: string | null;
                 deliveryTarget?: {
-                    provider: 'filesystem';
+                    provider: string;
                     outDir?: string;
                     inDir?: string;
-                } | {
-                    provider: 's3-compatible';
-                    endpoint: string;
-                    bucket: string;
+                    endpoint?: string;
+                    bucket?: string;
                     outPrefix?: string;
                     inPrefix?: string;
                 } | null;
