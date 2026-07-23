@@ -116,12 +116,51 @@ describe("@scp/plugin-managed-scan: container isolation", () => {
   });
 });
 
-describe("@scp/plugin-managed-scan: fail-closed", () => {
-  it("an unsupported method fails CLOSED without touching docker (OpenSCAP is a follow-on)", async () => {
+describe("@scp/plugin-managed-scan: openscap dispatch (M13.3b)", () => {
+  it("dispatches openscap with the profile + datastream as trailing run.sh argv", async () => {
     const plugin = createManagedScanExecutorPlugin();
     const ref = await plugin.trigger(ctx(), {
       kind: "custom",
+      parameters: {
+        method: "openscap",
+        inputDir: join(scratch, "oci"),
+        outputDir: join(scratch, "out"),
+        profile: "xccdf_org.ssgproject.content_profile_standard",
+        datastream: "/usr/share/xml/scap/ssg/content/ssg-debian11-ds.xml"
+      }
+    });
+    const args = createCall()!.args;
+    // ENTRYPOINT argv after the image: method, profile, datastream (positional, per run.sh contract).
+    const imageIdx = args.indexOf("scp-runner-scan:vetted");
+    expect(args.slice(imageIdx + 1)).toEqual([
+      "openscap",
+      "xccdf_org.ssgproject.content_profile_standard",
+      "/usr/share/xml/scap/ssg/content/ssg-debian11-ds.xml"
+    ]);
+    // Still no bind mount / no docker.sock — same isolation as trivy.
+    expect(args).not.toContain("-v");
+    expect(args.join(" ")).not.toContain("docker.sock");
+    expect((await plugin.status(ctx(), ref)).phase).toBe("succeeded");
+  });
+
+  it("passes empty positional args when profile/datastream are unset (run.sh applies defaults)", async () => {
+    const plugin = createManagedScanExecutorPlugin();
+    await plugin.trigger(ctx(), {
+      kind: "custom",
       parameters: { method: "openscap", inputDir: join(scratch, "oci"), outputDir: join(scratch, "out") }
+    });
+    const args = createCall()!.args;
+    const imageIdx = args.indexOf("scp-runner-scan:vetted");
+    expect(args.slice(imageIdx + 1)).toEqual(["openscap", "", ""]);
+  });
+});
+
+describe("@scp/plugin-managed-scan: fail-closed", () => {
+  it("an unsupported method fails CLOSED without touching docker", async () => {
+    const plugin = createManagedScanExecutorPlugin();
+    const ref = await plugin.trigger(ctx(), {
+      kind: "custom",
+      parameters: { method: "grype", inputDir: join(scratch, "oci"), outputDir: join(scratch, "out") }
     });
     expect(dockerCalls).toHaveLength(0);
     const st = await plugin.status(ctx(), ref);

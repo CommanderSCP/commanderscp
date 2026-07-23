@@ -63,10 +63,10 @@ export interface ManagedScanConfig {
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_NETWORK_MODE = "none";
 
-/** The methods this runner image ships in THIS increment. `openscap` is a documented 13.3a
- *  follow-on (proposal §13.3 "Increment order: Trivy first, OpenSCAP second") — a `trigger()` naming
- *  it fails closed here rather than launching a container that would `exit 3`. */
-const SUPPORTED_METHODS = new Set(["trivy"]);
+/** The methods this runner image ships. Both `trivy` and `openscap` (M13.3b part 1 — proposal §13.3
+ *  "Increment order: Trivy first, OpenSCAP second") are dispatchable now; a `trigger()` naming any
+ *  other method fails closed here rather than launching a container that would `exit 2`. */
+const SUPPORTED_METHODS = new Set(["trivy", "openscap"]);
 
 function asConfig(config: unknown): ManagedScanConfig {
   const c = config as Partial<ManagedScanConfig> | undefined;
@@ -86,14 +86,22 @@ function asConfig(config: unknown): ManagedScanConfig {
 /** What the commander's promotion scan step passes on `intent.parameters` — all SERVER-controlled:
  *  the pulled OCI layout to scan and where the runner's evidence should land. */
 export interface ManagedScanIntentParameters {
-  /** The scan METHOD (registry-selected per artifact type). This increment: `"trivy"`. */
+  /** The scan METHOD (registry-selected per artifact type): `"trivy"` or `"openscap"`. */
   method: string;
   /** HOST path to the OCI image layout the SERVER pulled by digest (copied INTO the container's
    *  `/work/image`). The runner has no network and pulls nothing. */
   inputDir: string;
   /** HOST path the runner's `/work/out` evidence is copied back into (the commander reads
-   *  `<outputDir>/result.json`). */
+   *  `<outputDir>/result.json` for trivy, `<outputDir>/arf.xml` for openscap). */
   outputDir: string;
+  /** OpenSCAP only — the XCCDF profile id (`xccdf_..._profile_*`) to evaluate. Ignored by trivy.
+   *  Server-resolved from the scan-requirement/registry config (never tenant-suppliable steering of
+   *  the runner image/network); the profile only selects WHICH compliance baseline is asserted — the
+   *  gate threshold that authorizes/refuses is operator-governed and applied to the counts regardless. */
+  profile?: string;
+  /** OpenSCAP only — the ABSOLUTE path (inside the runner image) of the SSG datastream to evaluate
+   *  against (e.g. `/usr/share/xml/scap/ssg/content/ssg-debian11-ds.xml`). Ignored by trivy. */
+  datastream?: string;
 }
 
 interface RunResult {
@@ -111,17 +119,20 @@ async function runScanContainer(
   config: ManagedScanConfig,
   method: string,
   inputDir: string,
-  outputDir: string
+  outputDir: string,
+  scanArgs: string[]
 ): Promise<RunResult> {
   const docker = config.dockerBinary ?? "docker";
   const timeout = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxBuffer = 32 * 1024 * 1024;
 
   // 1. CREATE (not run) — no `-v` host bind mount, no docker.sock, server-fixed --network. The
-  //    container exists but hasn't started; `docker cp` (step 2) requires exactly that state.
+  //    container exists but hasn't started; `docker cp` (step 2) requires exactly that state. The
+  //    method + any method-specific run.sh args (openscap: profile, datastream) are the ENTRYPOINT
+  //    argv — server-resolved, never a mount or a network toggle.
   const { stdout: createOut } = await execFileAsync(
     docker,
-    ["create", "--network", config.networkMode, config.runnerImage, method],
+    ["create", "--network", config.networkMode, config.runnerImage, method, ...scanArgs],
     { timeout, maxBuffer }
   );
   const containerId = createOut.trim();
@@ -190,7 +201,7 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
   const externalId = `managed-scan::${intent.idempotencyKey ?? `${method}:${Date.now()}`}`;
 
   if (!SUPPORTED_METHODS.has(method)) {
-    const detail = `managed-scan: unsupported method '${method}' (this increment ships 'trivy' only — OpenSCAP is a 13.3a follow-on)`;
+    const detail = `managed-scan: unsupported method '${method}' (this runner image ships 'trivy' and 'openscap')`;
     outcomes.set(externalId, { succeeded: false, detail });
     return { externalId };
   }
@@ -201,8 +212,14 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
     return { externalId };
   }
 
+  // OpenSCAP takes two extra run.sh args (profile, datastream); trivy takes none. We pass them
+  // positionally; an empty string lets run.sh apply its documented default (its `${2:-default}` form
+  // treats "" as unset). Trivy ignores any trailing args.
+  const scanArgs: string[] =
+    method === "openscap" ? [params.profile ?? "", params.datastream ?? ""] : [];
+
   await mkdir(params.outputDir, { recursive: true });
-  const result = await runScanContainer(config, method, params.inputDir, params.outputDir);
+  const result = await runScanContainer(config, method, params.inputDir, params.outputDir, scanArgs);
   outcomes.set(externalId, {
     succeeded: result.succeeded,
     detail: result.succeeded

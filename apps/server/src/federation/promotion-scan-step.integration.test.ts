@@ -7,8 +7,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { GenericContainer, type StartedTestContainer } from "testcontainers";
+import pg from "pg";
 import { resolveSkopeo } from "@scp/cosign";
 import { resolveRunnerImage } from "@scp/plugin-testkit";
+import { managedScanServerSettings } from "../coordination/executor-bindings-repo.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { createObject } from "../graph/objects-repo.js";
 import { proposeChange } from "../coordination/changes-repo.js";
@@ -48,6 +50,14 @@ import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolat
  * (`artifactDigest` == the promoted digest, `digestMatch: true`) under the well-known managed-scan
  * control id — exactly the row the unchanged E6 gate reads.
  *
+ * M13.3b adds the second managed-scan METHOD end-to-end through the same DEFAULT server runner, with
+ * the runner image built ONCE (shared beforeAll — one oscap clean-pass + one oscap threshold-fail, no
+ * rebuild loop): (f) debian:11 vs ssg-debian11 `standard` scans clean → digest-bound `scanner:openscap`
+ * evidence → E6 exports; (g) oraclelinux:8 vs ssg-ol8 `standard` yields ≥1 HIGH-severity failed rule →
+ * status fail → E6 refuses with a decision_id. The `rpm` executor Type is assigned `openscap` in the
+ * instance scanner registry (registry-driven method selection), and `managedScanServerSettings().networkMode`
+ * is asserted `none` (the offline oscap scan succeeding under it is the --network none proof).
+ *
  * The three WIRING verdicts inject a `ManagedScanRunner` (the seam the step exposes precisely so
  * these branches are hermetic and DB-drift-free): short-circuit (spy asserted NOT invoked),
  * fail-closed unassigned type (spy asserted NOT invoked), and the `digestMatch: false` evidence
@@ -63,7 +73,7 @@ import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolat
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUNNER_SCAN_CONTEXT = resolve(__dirname, "../../../../apps/runner-scan");
-const RUNNER_IMAGE_TAG = "scp-runner-scan:m13-3a-integration-test";
+const RUNNER_IMAGE_TAG = "scp-runner-scan:m13-3b-integration-test";
 
 /** A real, deterministically CLEAN subject (calibrated against the pinned Trivy DB: 0 findings). */
 const CLEAN_SRC = "docker://docker.io/library/alpine:3.20";
@@ -71,6 +81,19 @@ const CLEAN_SRC = "docker://docker.io/library/alpine:3.20";
  *  fail-closed 0/0 default threshold). `debian:11` (bullseye) is old enough to carry advisories yet
  *  recent enough that they are NOT pruned from the DB the way EOL alpine's are. */
 const DIRTY_SRC = "docker://docker.io/library/debian:11";
+
+// --- OpenSCAP subjects (M13.3b — the second managed-scan method) ---------------------------------
+// Calibrated against the runner image's baked SSG content (oscap 1.4.2) using OSCAP_PROBE_ROOT over
+// the extracted image rootfs and the SSG `standard` profile — the mapping folds XCCDF high→high /
+// medium→medium / low→low, critical stays 0 (XCCDF has none), unknown/unset fold away:
+//   OSCAP CLEAN — debian:11 vs ssg-debian11 `standard`: only LOW-severity fails, ZERO high/critical →
+//                 within the fail-closed 0/0 (high) default → PASS. (low/medium are unbounded.)
+//   OSCAP DIRTY — oraclelinux:8 vs ssg-ol8 `standard`: ≥1 HIGH-severity fail (rpm-DB-checkable package
+//                 rules evaluate offline) → breaches maxHigh=0 → FAIL.
+const OSCAP_CLEAN_SRC = "docker://docker.io/library/debian:11";
+const OSCAP_DIRTY_SRC = "docker://docker.io/library/oraclelinux:8";
+const SSG = "/usr/share/xml/scap/ssg/content";
+const OSCAP_PROFILE = "xccdf_org.ssgproject.content_profile_standard";
 
 async function dockerAvailable(): Promise<boolean> {
   try {
@@ -94,6 +117,10 @@ describe.runIf(await dockerAvailable())(
     let cleanRepo: string;
     let dirtyDigest: string;
     let dirtyRepo: string;
+    let oscapCleanDigest: string;
+    let oscapCleanRepo: string;
+    let oscapDirtyDigest: string;
+    let oscapDirtyRepo: string;
 
     beforeAll(async () => {
       const resolved = resolveSkopeo();
@@ -125,6 +152,27 @@ describe.runIf(await dockerAvailable())(
       dirtyRepo = `${registryHost}/scp/dirty`;
       cleanDigest = await pushSubject(CLEAN_SRC, cleanRepo);
       dirtyDigest = await pushSubject(DIRTY_SRC, dirtyRepo);
+
+      // OpenSCAP subjects.
+      oscapCleanRepo = `${registryHost}/scp/oscap-clean`;
+      oscapDirtyRepo = `${registryHost}/scp/oscap-dirty`;
+      oscapCleanDigest = await pushSubject(OSCAP_CLEAN_SRC, oscapCleanRepo);
+      oscapDirtyDigest = await pushSubject(OSCAP_DIRTY_SRC, oscapDirtyRepo);
+
+      // Assign the `openscap` method to the `rpm` executor Type for THIS domain's instance-scoped
+      // scanner registry (default seed is `rpm -> [trivy]`). Instance-scoped `scanner_assignments`
+      // is SELECT-only for the runtime role, so the write runs over the domain's SUPERUSER admin
+      // connection — the same path routes/scanner-assignments.ts uses in production. `image` stays
+      // `trivy` (the trivy cases below are untouched); `configuration` stays `[]` (the fail-closed case).
+      const adminPool = new pg.Pool({ connectionString: domain.adminUrl });
+      try {
+        await adminPool.query(
+          `INSERT INTO scanner_assignments (executor_type, methods) VALUES ('rpm', '["openscap"]'::jsonb)
+             ON CONFLICT (executor_type) DO UPDATE SET methods = EXCLUDED.methods`
+        );
+      } finally {
+        await adminPool.end();
+      }
 
       // Server/operator-governed managed-scan settings + the ADR-0019 §4 OCI-host allowlist. The
       // registry is plain-HTTP, so it must also be listed insecure for the server's skopeo pull.
@@ -197,7 +245,8 @@ describe.runIf(await dockerAvailable())(
     async function proposeArtifactChange(
       digest: string,
       repo: string,
-      type: "image" | "configuration"
+      type: "image" | "configuration" | "rpm",
+      scan?: { profile: string; datastream: string }
     ): Promise<string> {
       const target = await withTenantTx(domain.db, domain.orgId, (tx) =>
         createObject(tx, {
@@ -217,7 +266,12 @@ describe.runIf(await dockerAvailable())(
           name: `scanstep-${randomUUID()}`,
           targets: [target.id],
           type,
-          sourceRef: { artifact_digest: digest, image: `${repo}@${digest}` }
+          sourceRef: {
+            artifact_digest: digest,
+            image: `${repo}@${digest}`,
+            // OpenSCAP-only per-artifact baseline selection (the OS's SSG datastream + XCCDF profile).
+            ...(scan ? { scanProfile: scan.profile, scanDatastream: scan.datastream } : {})
+          }
         })
       );
       return change.id;
@@ -394,5 +448,68 @@ describe.runIf(await dockerAvailable())(
       expect(ev.digestMatch).toBe(false);
       expect(runs[0]!.status).toBe("fail");
     }, 60_000);
+
+    // -------------------------------------------------------------------------------------------
+    // (f) OPENSCAP CLEAN — real oscap scan at the commander passes the profile → digest-bound
+    //     `scanner: openscap` evidence → E6 exports. The `rpm` type resolves to `openscap` (seeded
+    //     above), so this exercises registry-driven scanner selection AND the second method
+    //     end-to-end through the DEFAULT server runner (real skopeo pull + real scp-runner-scan).
+    // -------------------------------------------------------------------------------------------
+    it("(f) OPENSCAP: a clean image passes the profile at the commander → digest-bound (scanner:openscap) → E6 EXPORTS", async () => {
+      const changeId = await proposeArtifactChange(oscapCleanDigest, oscapCleanRepo, "rpm", {
+        profile: OSCAP_PROFILE,
+        datastream: `${SSG}/ssg-debian11-ds.xml`
+      });
+
+      // ASSERT the runner network is pinned `none` — the flag the plugin passes to `docker create
+      // --network`; a clean OFFLINE oscap scan succeeding under it is the network-none proof (the
+      // datastream is local, the extracted rootfs is local, so no egress is needed or permitted).
+      expect(managedScanServerSettings().networkMode).toBe("none");
+
+      const outcome = await exportToPeer(changeId);
+      expect(outcome.refused, outcome.refused ? outcome.reason : "expected export").toBe(false);
+      if (outcome.refused) throw new Error(outcome.reason);
+      expect(outcome.bundle.artifactDigests).toContain(oscapCleanDigest);
+
+      const runs = await managedRunsFor(changeId);
+      expect(runs).toHaveLength(1);
+      const run = runs[0]!;
+      expect(run.status).toBe("pass");
+      const ev = ScanEvidenceSchema.parse(run.evidence);
+      expect(ev.scanner).toBe("openscap"); // self-describing: the SECOND method produced this verdict
+      expect(ev.artifactDigest).toBe(oscapCleanDigest); // digest-bound to the PULL == promoted digest
+      expect(ev.expectedDigest).toBe(oscapCleanDigest);
+      expect(ev.digestMatch).toBe(true);
+      expect(ev.severityCounts.critical).toBe(0); // XCCDF has no critical — always 0 (the mapping)
+      expect(ev.severityCounts.high).toBe(0); // clean of high-severity failed rules
+      expect(ev.scannerVersion).not.toBe("unknown"); // a REAL oscap ran (version stamped from the run)
+    }, 180_000);
+
+    // -------------------------------------------------------------------------------------------
+    // (g) OPENSCAP over threshold — real oscap scan yields ≥1 HIGH-severity failed rule → status
+    //     fail → E6 refuses with a decision_id.
+    // -------------------------------------------------------------------------------------------
+    it("(g) OPENSCAP: an image failing the profile over threshold → status FAIL → E6 REFUSES with a decision_id", async () => {
+      const changeId = await proposeArtifactChange(oscapDirtyDigest, oscapDirtyRepo, "rpm", {
+        profile: OSCAP_PROFILE,
+        datastream: `${SSG}/ssg-ol8-ds.xml`
+      });
+
+      const outcome = await exportToPeer(changeId);
+      expect(outcome.refused).toBe(true);
+      if (!outcome.refused) throw new Error("expected refusal");
+      expect(outcome.decisionId).toMatch(/^[0-9a-f-]{36}$/);
+
+      const runs = await managedRunsFor(changeId);
+      expect(runs).toHaveLength(1);
+      const run = runs[0]!;
+      expect(run.status).toBe("fail");
+      const ev = ScanEvidenceSchema.parse(run.evidence);
+      expect(ev.scanner).toBe("openscap");
+      expect(ev.digestMatch).toBe(true); // it WAS the promoted artifact — it failed on findings
+      expect(ev.artifactDigest).toBe(oscapDirtyDigest);
+      expect(ev.severityCounts.high).toBeGreaterThan(0); // ≥1 high-severity failed rule
+      expect(ev.severityCounts.critical).toBe(0); // never a critical from XCCDF
+    }, 180_000);
   }
 );

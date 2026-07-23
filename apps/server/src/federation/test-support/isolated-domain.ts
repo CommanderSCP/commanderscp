@@ -43,6 +43,11 @@ export interface IsolatedDomain {
   db: Db;
   orgId: string;
   orgName: string;
+  /** The SUPERUSER connection URL for this domain's OWN database (not the RLS-scoped runtime role).
+   *  Exposed so a test can write INSTANCE-SCOPED operator config that the tenant pool cannot (e.g.
+   *  `scanner_assignments`, whose RLS/grants make it SELECT-only for the runtime role — the
+   *  operator-write path in production runs over the admin connection, routes/scanner-assignments.ts). */
+  adminUrl: string;
   close(): Promise<void>;
 }
 
@@ -113,6 +118,7 @@ export async function createIsolatedDomain(label: string): Promise<IsolatedDomai
     db,
     orgId,
     orgName,
+    adminUrl: newAdminUrl.toString(),
     close: async () => {
       await pool.end();
     }
