@@ -6,6 +6,7 @@ import { ScpClient } from "@scp/sdk";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { auditEvents, changeSourceEvents, changes, decisions, objects } from "../db/schema.js";
 import { runWatchdogSweep } from "./watchdog.js";
+import { compileAndPersistPlan } from "./plan-service.js";
 import { createInMemoryFakeHost } from "./test-support/fake-plugin-host.js";
 import {
   createTestComponent,
@@ -572,4 +573,269 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     // The stuck herd is untouched semantically: still waiting, not cancelled, not executed.
     expect(await stateOf(stuck[0]!)).toBe("waiting");
   }, 240_000);
+
+  // -----------------------------------------------------------------------------------------
+  // M12 P4B Phase 4 ergonomics close-out — KEY-REUSE WARN (coupled-pipelines.md §6#8): "key reuse
+  // fails open" — if more than one change satisfies the same requirement key at the same `at`,
+  // the chosen provider id is otherwise silently arbitrary. The release Decision must record every
+  // qualifying provider, not just the one it pinned, WITHOUT ever blocking the release.
+  // -----------------------------------------------------------------------------------------
+
+  it("two providers of the same key@scope, one waiter: releases exactly once, and the release Decision records the ambiguity", async () => {
+    const infra = await createTestComponent(admin, { name: "ambiguous-infra" });
+    const app = await createTestComponent(admin, { name: "ambiguous-app" });
+
+    const providerA = await admin.changes.propose({
+      name: "ambiguous provider A",
+      targets: [infra.id],
+      provides: ["reused-key"]
+    });
+    await reaches(providerA.id, "validating");
+
+    const providerB = await admin.changes.propose({
+      name: "ambiguous provider B",
+      targets: [infra.id],
+      provides: ["reused-key"]
+    });
+    await reaches(providerB.id, "validating");
+
+    // Both providers already validate BEFORE the waiter exists — required so the sweep sees BOTH
+    // qualifying providers on the waiter's FIRST evaluation. A waiter proposed normally at this
+    // point would skip `waiting` entirely: `advanceCoordinatedChanges` checks satisfaction AT the
+    // coordinated->{waiting,executing} routing decision (reconcile.ts §"one whose prerequisites
+    // are ALREADY satisfied — proceeds straight to executing"), so it would never touch the
+    // `waiting -> executing` release path `ambiguousProvidersFor` hangs off — the same reason the
+    // proposed-first ordering doesn't work here either: proposing the waiter before ANY provider,
+    // then creating the two providers one at a time, races the sweep against providerB's creation
+    // (as soon as providerA alone validates, the very next tick already finds the requirement
+    // satisfied and releases before providerB exists — confirmed empirically, not a hypothetical).
+    // So the waiter is materialized directly IN `waiting`, exactly the raw-insert technique the
+    // malformed-requires tests above use for the same reason — but ALSO given a compiled plan
+    // (`compileAndPersistPlan`, normally produced by the `evaluated -> coordinated` step this raw
+    // insert bypasses), because without one `reconcileExecutingChange` finds no wave to run and
+    // the change would hang in `executing` forever rather than ever reaching `validating`.
+    const waiterObjectId = uuidv7();
+    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const appRow = await tx.select().from(objects).where(eq(objects.id, app.id));
+      const now = new Date();
+      await tx.insert(objects).values({
+        id: waiterObjectId,
+        orgId: org.orgId,
+        domainId: appRow[0]!.domainId,
+        typeId: "change",
+        name: "raw waiter with two qualifying providers",
+        urn: `urn:scp:test:change:ambiguous-waiter-${waiterObjectId}`,
+        properties: { targets: [app.id], requires: [{ key: "reused-key", at: infra.id }] },
+        labels: {},
+        originDomainId: appRow[0]!.originDomainId,
+        contentHash: "test-fixture",
+        createdAt: now,
+        updatedAt: now
+      });
+      await tx.insert(changes).values({
+        objectId: waiterObjectId,
+        orgId: org.orgId,
+        state: "waiting",
+        stateEnteredAt: now,
+        lastHeartbeatAt: now,
+        createdAt: now,
+        updatedAt: now
+      });
+      await compileAndPersistPlan(tx, {
+        orgId: org.orgId,
+        changeObjectId: waiterObjectId,
+        targetObjectIds: [app.id],
+        topologyObjectId: null,
+        topologyVersion: null
+      });
+    });
+    await reaches(waiterObjectId, "validating");
+
+    // Releases exactly ONCE — a single `waiting -> executing` transition Decision, not one per
+    // qualifying provider.
+    const explained = await admin.changes.explain(waiterObjectId);
+    const releases = explained.decisions.filter(
+      (d) =>
+        d.kind === "transition" &&
+        (d.inputContext as { fromState?: string; toState?: string }).fromState === "waiting" &&
+        (d.inputContext as { fromState?: string; toState?: string }).toState === "executing"
+    );
+    expect(releases).toHaveLength(1);
+
+    // The ambiguity is recorded beside the pinned `satisfiedRequirements`, naming both providers —
+    // never blocking (the waiter released anyway).
+    const inputContext = releases[0]!.inputContext as {
+      satisfiedRequirements: Array<{ key: string; at: string; satisfiedByChangeObjectId: string }>;
+      ambiguousProviders?: Array<{ key: string; at: string; providerChangeObjectIds: string[] }>;
+    };
+    expect(inputContext.satisfiedRequirements).toEqual([
+      {
+        key: "reused-key",
+        at: infra.id,
+        satisfiedByChangeObjectId: inputContext.satisfiedRequirements[0]!.satisfiedByChangeObjectId
+      }
+    ]);
+    expect(inputContext.ambiguousProviders).toEqual([
+      { key: "reused-key", at: infra.id, providerChangeObjectIds: expect.arrayContaining([providerA.id, providerB.id]) }
+    ]);
+    expect(inputContext.ambiguousProviders![0]!.providerChangeObjectIds).toHaveLength(2);
+  }, 60_000);
+
+  it("a SINGLE provider (the common case) never records ambiguousProviders", async () => {
+    const infra = await createTestComponent(admin, { name: "unambiguous-infra" });
+    const app = await createTestComponent(admin, { name: "unambiguous-app" });
+
+    // Waiter proposed FIRST (no provider exists yet) so it genuinely PARKS in `waiting` and its
+    // release goes through `advanceWaitingChanges` — the one place `ambiguousProvidersFor` runs —
+    // rather than the already-satisfied-at-propose-time fast path (`advanceCoordinatedChanges`
+    // proceeding straight to `executing`), which pins no `satisfiedRequirements`/`ambiguousProviders`
+    // at all. Same ordering as the pre-existing "parks, then releases" tests above.
+    const waiter = await admin.changes.propose({
+      name: "waiter with exactly one qualifying provider",
+      targets: [app.id],
+      requires: [{ key: "sole-key", at: infra.id }]
+    });
+    await reaches(waiter.id, "waiting");
+
+    const provider = await admin.changes.propose({
+      name: "sole provider",
+      targets: [infra.id],
+      provides: ["sole-key"]
+    });
+    await reaches(provider.id, "validating");
+    await reaches(waiter.id, "validating");
+
+    const explained = await admin.changes.explain(waiter.id);
+    const release = explained.decisions.find(
+      (d) =>
+        d.kind === "transition" &&
+        (d.inputContext as { fromState?: string; toState?: string }).fromState === "waiting" &&
+        (d.inputContext as { fromState?: string; toState?: string }).toState === "executing"
+    );
+    expect(release).toBeDefined();
+    expect((release!.inputContext as Record<string, unknown>).ambiguousProviders).toBeUndefined();
+  }, 60_000);
+
+  // -----------------------------------------------------------------------------------------
+  // M12 P4B Phase 4 ergonomics close-out — "DID YOU MEAN?" (coupled-pipelines.md §3.7): for an
+  // UNSATISFIED requirement, wait-status additionally lists the `provides` keys that DO exist at
+  // that `at` object — the typo-diagnosis aid `listProvidedKeysAtScope` exists for.
+  // -----------------------------------------------------------------------------------------
+
+  it("explain's wait status lists 'did you mean' provided keys for an outstanding (typo'd) requirement, at the SAME scope only", async () => {
+    const infra = await createTestComponent(admin, { name: "didyoumean-infra" });
+    const otherScope = await createTestComponent(admin, { name: "didyoumean-other-scope" });
+    const app = await createTestComponent(admin, { name: "didyoumean-app" });
+
+    // A real provider at `infra`, under the CORRECT key.
+    const provider = await admin.changes.propose({
+      name: "provides the real key",
+      targets: [infra.id],
+      provides: ["feature-a"]
+    });
+    await reaches(provider.id, "validating");
+
+    // A provider at a DIFFERENT scope — must NOT show up in the "did you mean" for `infra`.
+    const wrongScopeProvider = await admin.changes.propose({
+      name: "provides a similarly-named key at the wrong scope",
+      targets: [otherScope.id],
+      provides: ["feature-z-wrong-scope"]
+    });
+    await reaches(wrongScopeProvider.id, "validating");
+
+    // The waiter asks for a TYPO'd key at the right scope — never satisfied.
+    const waiter = await admin.changes.propose({
+      name: "waiter with a typo'd key",
+      targets: [app.id],
+      requires: [{ key: "feture-a", at: infra.id }]
+    });
+    await reaches(waiter.id, "waiting");
+
+    const explained = await admin.changes.explain(waiter.id);
+    expect(explained.waitStatus!.waiting).toBe(true);
+    const req = explained.waitStatus!.requirements[0]!;
+    expect(req.satisfied).toBe(false);
+    expect(req.didYouMean).toEqual(["feature-a"]);
+    expect(req.didYouMean).not.toContain("feature-z-wrong-scope");
+
+    // `scp change wait-status` renders the SAME data via the SAME explain call — no dedicated route.
+    // (Exercised at the SDK layer here; the CLI is a thin renderer over exactly this response.)
+    expect(explained.waitStatus).toEqual((await admin.changes.explain(waiter.id)).waitStatus);
+  }, 60_000);
+
+  it("wait-status still renders when a change at the scope carries a non-array `provides` (raw-SQL federation skew) — the junk row is simply excluded from 'did you mean'", async () => {
+    const infra = await createTestComponent(admin, { name: "junk-provides-infra" });
+    const app = await createTestComponent(admin, { name: "junk-provides-app" });
+
+    // A real, well-formed provider at `infra` — must still show up in "did you mean".
+    const provider = await admin.changes.propose({
+      name: "well-formed provider",
+      targets: [infra.id],
+      provides: ["feature-a"]
+    });
+    await reaches(provider.id, "validating");
+
+    // A change at the SAME scope whose `provides` is a bare scalar, not an array — the shape
+    // `jsonb_array_elements_text` cannot unnest. The typed API (Zod array) makes this unreachable
+    // through POST /changes, so it is materialized past validation with raw SQL, exactly the
+    // federation-skew / corrupted-legacy-row shape the malformed-`requires` machinery fail-closes
+    // on (coupled-pipelines.md §10) — mirrored here on the `provides` side.
+    const junkProvider = await admin.changes.propose({
+      name: "junk provides scalar",
+      targets: [infra.id]
+    });
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(objects)
+        .set({
+          properties: sql`jsonb_set(${objects.properties}, '{provides}', '"junk-scalar"'::jsonb)`
+        })
+        .where(eq(objects.id, junkProvider.id))
+    );
+
+    // A waiter with a typo'd key at the SAME scope triggers `listProvidedKeysAtScope`.
+    const waiter = await admin.changes.propose({
+      name: "waiter triggering did-you-mean at the junk-carrying scope",
+      targets: [app.id],
+      requires: [{ key: "feture-a", at: infra.id }]
+    });
+    await reaches(waiter.id, "waiting");
+
+    // Must NOT 500 — the scalar-`provides` row is simply excluded; the well-formed row still
+    // surfaces.
+    const explained = await admin.changes.explain(waiter.id);
+    expect(explained.waitStatus).not.toBeNull();
+    expect(explained.waitStatus!.waiting).toBe(true);
+    const req = explained.waitStatus!.requirements[0]!;
+    expect(req.satisfied).toBe(false);
+    expect(req.didYouMean).toEqual(["feature-a"]);
+  }, 60_000);
+
+  it("once satisfied, 'did you mean' disappears — the question is moot for a satisfied requirement", async () => {
+    const infra = await createTestComponent(admin, { name: "didyoumean-satisfied-infra" });
+    const app = await createTestComponent(admin, { name: "didyoumean-satisfied-app" });
+
+    const waiter = await admin.changes.propose({
+      name: "waiter that will be satisfied",
+      targets: [app.id],
+      requires: [{ key: "will-be-satisfied", at: infra.id }]
+    });
+    await reaches(waiter.id, "waiting");
+
+    let explained = await admin.changes.explain(waiter.id);
+    // No provider exists at all yet — nothing to suggest.
+    expect(explained.waitStatus!.requirements[0]!.didYouMean ?? []).toEqual([]);
+
+    const provider = await admin.changes.propose({
+      name: "provides will-be-satisfied",
+      targets: [infra.id],
+      provides: ["will-be-satisfied"]
+    });
+    await reaches(provider.id, "validating");
+    await reaches(waiter.id, "validating");
+
+    explained = await admin.changes.explain(waiter.id);
+    expect(explained.waitStatus!.requirements[0]!.satisfied).toBe(true);
+    expect(explained.waitStatus!.requirements[0]!.didYouMean).toBeUndefined();
+  }, 60_000);
 });

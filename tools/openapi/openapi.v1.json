@@ -35645,6 +35645,12 @@
                                         "type": "null"
                                       }
                                     ]
+                                  },
+                                  "didYouMean": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
                                   }
                                 },
                                 "required": [

@@ -19,7 +19,12 @@ import {
 import { transitionChange } from "./transition.js";
 import { triggerRollback } from "./rollback.js";
 import { compileAndPersistPlan, getLatestPlanForChange } from "./plan-service.js";
-import { requirementStatuses, unsatisfiedRequirements, describeRequirements } from "./coupling.js";
+import {
+  requirementStatuses,
+  unsatisfiedRequirements,
+  describeRequirements,
+  ambiguousProvidersFor
+} from "./coupling.js";
 import {
   claimWaveTargetForTriggering,
   findLatestSucceededExecution,
@@ -369,6 +374,12 @@ async function advanceWaitingChanges(db: Db, orgId: string, gateDeps: GateDeps):
             .where(and(eq(changes.orgId, orgId), eq(changes.objectId, change.objectId)));
           return;
         }
+        // Key-reuse warn (M12 P4B Phase 4, coupled-pipelines.md §6#8): re-probes each NOW-satisfied
+        // requirement for a second (or third...) qualifying provider. Never blocks the release — a
+        // hotfix reusing a release key is legitimate — but the ambiguity is worth a permanent record
+        // beside `satisfiedRequirements`, since the chosen provider id above is otherwise silently
+        // arbitrary (no `ORDER BY` guarantee) whenever more than one change qualifies.
+        const ambiguous = await ambiguousProvidersFor(tx, orgId, change.objectId, statuses);
         await transitionChange(
           tx,
           {
@@ -390,7 +401,8 @@ async function advanceWaitingChanges(db: Db, orgId: string, gateDeps: GateDeps):
                       key: s.key,
                       at: s.at,
                       satisfiedByChangeObjectId: s.satisfiedByChangeObjectId
-                    }))
+                    })),
+                    ...(ambiguous.length > 0 ? { ambiguousProviders: ambiguous } : {})
                   }
                 }
               : {})
