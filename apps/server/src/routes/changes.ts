@@ -59,9 +59,9 @@ async function buildWaitStatus(
   orgId: string,
   change: Change
 ): Promise<ChangeWaitStatus | null> {
-  const requires = requiresOf(change.properties);
-  if (requires.length === 0) return null;
-  const statuses = await requirementStatuses(tx, orgId, change.id, requires);
+  const { requirements, malformed } = requiresOf(change.properties);
+  if (requirements.length === 0 && malformed.length === 0) return null;
+  const statuses = await requirementStatuses(tx, orgId, change.id, requirements);
   const atIds = [...new Set(statuses.map((s) => s.at))];
   const atObjects =
     atIds.length === 0
@@ -78,7 +78,11 @@ async function buildWaitStatus(
       atName: nameById.get(s.at) ?? null,
       satisfied: s.satisfied,
       satisfiedByChangeId: s.satisfiedByChangeObjectId
-    }))
+    })),
+    // Fail-closed diagnostics (coupled-pipelines.md §6#14): stored `requires` entries that don't
+    // parse as `{key, at}` make the change UNSATISFIABLE (it parks in `waiting`), so the 2am
+    // operator must be able to SEE them — surfaced verbatim, only when any exist.
+    ...(malformed.length > 0 ? { malformed } : {})
   };
 }
 

@@ -1,5 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { v7 as uuidv7 } from "uuid";
+import { and, eq, sql } from "drizzle-orm";
 import { ScpClient } from "@scp/sdk";
+import { withTenantTx } from "../db/tenant-tx.js";
+import { auditEvents, changeSourceEvents, changes, decisions, objects } from "../db/schema.js";
+import { runWatchdogSweep } from "./watchdog.js";
+import { createInMemoryFakeHost } from "./test-support/fake-plugin-host.js";
 import {
   createTestComponent,
   createTestOrg,
@@ -167,4 +174,402 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
       })
     ).rejects.toMatchObject({ status: 404 }); // getObjectByIdOrUrnAnyType 404s on an unresolvable ref
   });
+
+  // -----------------------------------------------------------------------------------------
+  // M12 P4B close-out — REPORT-INGRESS COUPLING THREADING (coupled-pipelines.md §3.8, §6#1).
+  // The CI report (`scp change-source report` → `POST /change-sources/{sourceKind}/report`) is
+  // THE declaration channel for a pipeline (a raw provider push webhook cannot carry a key), so a
+  // report-declared coupling must behave IDENTICALLY to `POST /changes`' typed fields.
+  // -----------------------------------------------------------------------------------------
+
+  /** Polls until the loop's processor has consumed the given ingress event, and returns its row. */
+  const processedEvent = (eventId: string) =>
+    waitUntil(
+      async () => {
+        const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+          tx.select().from(changeSourceEvents).where(eq(changeSourceEvents.id, eventId))
+        );
+        return rows[0]?.processedAt ? rows[0] : undefined;
+      },
+      { describe: `change_source_event ${eventId} processed`, timeoutMs: 25_000 }
+    );
+
+  it("a coupling declared on a typed report behaves IDENTICALLY to POST /changes: the change parks in waiting, then releases when a report-born provider validates", async () => {
+    const infra = await createTestComponent(admin, { name: "report-infra" });
+    const app = await createTestComponent(admin, { name: "report-app" });
+    const infraRepo = `acme/report-infra-${randomUUID().slice(0, 8)}`;
+    const appRepo = `acme/report-app-${randomUUID().slice(0, 8)}`;
+    await admin.changeSources.createMapping("terraform", { repoPattern: infraRepo, component: infra.id });
+    await admin.changeSources.createMapping("terraform", { repoPattern: appRepo, component: app.id });
+
+    // The app pipeline reports WITH a requirement — its change must park, exactly as a direct
+    // `POST /changes` with the same `requires` does.
+    const waiterReport = await admin.changeSources.report("terraform", {
+      status: "applied",
+      repo: appRepo,
+      requires: [{ key: "report-feature", at: infra.id }]
+    });
+    const waiterEvent = await processedEvent(waiterReport.eventId);
+    const waiterId = waiterEvent.resultingChangeObjectId!;
+    expect(waiterId).not.toBeNull();
+    await reaches(waiterId, "waiting");
+
+    // The report-born waiter's stored requires carry the RESOLVED object id — same propose-time
+    // `at` resolution as POST /changes.
+    const waiter = await admin.changes.get(waiterId);
+    expect(waiter.properties.requires).toEqual([{ key: "report-feature", at: infra.id }]);
+
+    // The infra pipeline reports WITH the provides key — once ITS change validates, the waiter
+    // releases. End to end, both halves declared by `scp change-source report` bodies alone.
+    const providerReport = await admin.changeSources.report("terraform", {
+      status: "applied",
+      repo: infraRepo,
+      provides: ["report-feature"]
+    });
+    const providerEvent = await processedEvent(providerReport.eventId);
+    const providerId = providerEvent.resultingChangeObjectId!;
+    const provider = await admin.changes.get(providerId);
+    expect(provider.properties.provides).toEqual(["report-feature"]);
+    await reaches(providerId, "validating");
+    await reaches(waiterId, "validating");
+
+    // Explainability (coupled-pipelines.md §3.6): the waiting->executing release Decision pins,
+    // per requirement key, WHICH change satisfied it at release time.
+    const explained = await admin.changes.explain(waiterId);
+    const release = explained.decisions.find(
+      (d) =>
+        d.kind === "transition" &&
+        (d.inputContext as { fromState?: string; toState?: string }).fromState === "waiting" &&
+        (d.inputContext as { fromState?: string; toState?: string }).toState === "executing"
+    );
+    expect(release).toBeDefined();
+    expect(release!.inputContext.satisfiedRequirements).toEqual([
+      { key: "report-feature", at: infra.id, satisfiedByChangeObjectId: providerId }
+    ]);
+  });
+
+  it("a report with an unresolvable `requires[].at` is REFUSED, not silently dropped: event marked processed with no change, Decision + audit recorded (the async counterpart of POST /changes' 404)", async () => {
+    const app = await createTestComponent(admin, { name: "report-bad-at-app" });
+    const repo = `acme/report-bad-at-${randomUUID().slice(0, 8)}`;
+    await admin.changeSources.createMapping("terraform", { repoPattern: repo, component: app.id });
+
+    const report = await admin.changeSources.report("terraform", {
+      status: "applied",
+      repo,
+      requires: [{ key: "feature-a", at: "urn:scp:does-not-exist:component:nope" }]
+    });
+    const event = await processedEvent(report.eventId);
+
+    // Refused: processed (never retried), but NO change was minted from it.
+    expect(event.resultingChangeObjectId).toBeNull();
+
+    // The refusal is a recorded engine verdict (charter principle 6): a Decision naming the defect…
+    const refusals = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(decisions)
+        .where(
+          and(
+            eq(decisions.orgId, org.orgId),
+            eq(decisions.kind, "ingress"),
+            eq(decisions.subjectId, report.eventId)
+          )
+        )
+    );
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]!.verdict).toBe("block");
+    expect((refusals[0]!.reasonTree as { summary: string }).summary).toContain("refused");
+    expect(JSON.stringify(refusals[0]!.inputContext)).toContain("does-not-exist");
+
+    // …hash-chained to an audit event in the same transaction.
+    const audits = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.orgId, org.orgId),
+            eq(auditEvents.action, "change_source.event.refused"),
+            eq(auditEvents.subjectId, report.eventId)
+          )
+        )
+    );
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.decisionId).toBe(refusals[0]!.id);
+  });
+
+  it("a raw webhook payload with a MALFORMED `requires` is refused (fail-closed), never proposed as if uncoupled", async () => {
+    const app = await createTestComponent(admin, { name: "webhook-malformed-app" });
+    const repo = `acme/webhook-malformed-${randomUUID().slice(0, 8)}`;
+    await admin.changeSources.createMapping("terraform", { repoPattern: repo, component: app.id });
+
+    // The typed /report route's Zod validation makes this shape unreachable for SDK/CLI callers —
+    // the raw /webhook z.record ingress is where junk can still arrive.
+    const ingress = await admin.changeSources.webhook("terraform", {
+      repo,
+      requires: [{ key: "missing-the-at-half" }]
+    });
+    const event = await processedEvent(ingress.eventId);
+    expect(event.resultingChangeObjectId).toBeNull();
+    const refusals = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(decisions)
+        .where(
+          and(
+            eq(decisions.orgId, org.orgId),
+            eq(decisions.kind, "ingress"),
+            eq(decisions.subjectId, ingress.eventId)
+          )
+        )
+    );
+    expect(refusals).toHaveLength(1);
+    expect((refusals[0]!.reasonTree as { summary: string }).summary).toContain("malformed");
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // M12 P4B close-out — FAIL-CLOSED on malformed STORED `requires` (coupled-pipelines.md §6#14).
+  // Propose-time typed validation refuses junk at the API, so a malformed stored entry can only
+  // arrive PAST the schema (federation peer skew, legacy row, operator surgery) — injected here
+  // with raw SQL exactly as such a row would exist in the wild. The change must be treated as
+  // UNSATISFIABLE: park in waiting, never release, never crash the sweep for its siblings, and
+  // wait-status must name the offending entry.
+  // -----------------------------------------------------------------------------------------
+
+  it("a waiter whose stored requires is corrupted PARKS (never releases, never executes), the sweep keeps serving healthy waiters, and wait-status names the malformed entry", async () => {
+    const infra = await createTestComponent(admin, { name: "malformed-infra" });
+    const app = await createTestComponent(admin, { name: "malformed-app" });
+
+    // A well-formed waiter parks first…
+    const corrupted = await admin.changes.propose({
+      name: "will be corrupted",
+      targets: [app.id],
+      requires: [{ key: "malformed-key", at: infra.id }]
+    });
+    await reaches(corrupted.id, "waiting");
+
+    // …then its stored requires is corrupted PAST the schema (raw SQL — the federation-skew /
+    // legacy-row shape the API can no longer produce).
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(objects)
+        .set({
+          properties: sql`jsonb_set(${objects.properties}, '{requires}', '[{"key":"malformed-key"}]'::jsonb)`
+        })
+        .where(eq(objects.id, corrupted.id))
+    );
+
+    // Even PROVIDING the original key must not release it now — the malformed entry is
+    // unsatisfiable, and satisfying the parseable-looking key would be exactly the fail-open bug.
+    const provider = await admin.changes.propose({
+      name: "provides malformed-key at infra",
+      targets: [infra.id],
+      provides: ["malformed-key"]
+    });
+    await reaches(provider.id, "validating");
+
+    // A HEALTHY waiter proposed AFTER the corrupted row still parks and releases — one bad row
+    // never bricks the sweep for the others.
+    const healthy = await admin.changes.propose({
+      name: "healthy waiter behind the corrupted one",
+      targets: [app.id],
+      requires: [{ key: "healthy-key", at: infra.id }]
+    });
+    await reaches(healthy.id, "waiting");
+    const healthyProvider = await admin.changes.propose({
+      name: "provides healthy-key at infra",
+      targets: [infra.id],
+      provides: ["healthy-key"]
+    });
+    await reaches(healthyProvider.id, "validating");
+    await reaches(healthy.id, "validating");
+
+    // The corrupted waiter is still parked — fail-closed, not crashed and not released.
+    expect(await stateOf(corrupted.id)).toBe("waiting");
+
+    // The 2am surface: wait-status names the malformed entry verbatim.
+    const explained = await admin.changes.explain(corrupted.id);
+    expect(explained.waitStatus).not.toBeNull();
+    expect(explained.waitStatus!.waiting).toBe(true);
+    expect(explained.waitStatus!.malformed).toEqual([{ key: "malformed-key" }]);
+  }, 60_000);
+
+  it("a change REACHING coordinated with malformed stored requires PARKS in waiting instead of executing (routing guard fail-closed)", async () => {
+    const app = await createTestComponent(admin, { name: "guard-malformed-app" });
+
+    // Materialize a change row directly in `coordinated` carrying junk requires — the state a
+    // version-skewed peer's row would be in when the routing guard first sees it. Raw inserts (no
+    // createObject) deliberately bypass every API-side validation layer.
+    const changeObjectId = uuidv7();
+    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const appRow = await tx.select().from(objects).where(eq(objects.id, app.id));
+      const now = new Date();
+      await tx.insert(objects).values({
+        id: changeObjectId,
+        orgId: org.orgId,
+        domainId: appRow[0]!.domainId,
+        typeId: "change",
+        name: "raw coordinated change with junk requires",
+        urn: `urn:scp:test:change:guard-malformed-${changeObjectId}`,
+        properties: { targets: [app.id], requires: "not-even-an-array" },
+        labels: {},
+        originDomainId: appRow[0]!.originDomainId,
+        contentHash: "test-fixture",
+        createdAt: now,
+        updatedAt: now
+      });
+      await tx.insert(changes).values({
+        objectId: changeObjectId,
+        orgId: org.orgId,
+        state: "coordinated",
+        stateEnteredAt: now,
+        lastHeartbeatAt: now,
+        createdAt: now,
+        updatedAt: now
+      });
+    });
+
+    // The routing guard must send it to `waiting` (fail-closed park), NEVER `executing`.
+    await reaches(changeObjectId, "waiting");
+    // And it stays there — unsatisfiable is unsatisfiable.
+    await new Promise((r) => setTimeout(r, 3_000));
+    expect(await stateOf(changeObjectId)).toBe("waiting");
+    const explained = await admin.changes.explain(changeObjectId);
+    expect(explained.waitStatus!.malformed).toEqual(["not-even-an-array"]);
+  }, 60_000);
+
+  it("the watchdog's 24h `waiting` warn NAMES the unsatisfied {key, at} pairs, not a generic message (§3.6 explainability)", async () => {
+    const infra = await createTestComponent(admin, { name: "watchdog-infra" });
+    const app = await createTestComponent(admin, { name: "watchdog-app" });
+    const waiter = await admin.changes.propose({
+      name: "watchdog-named waiter",
+      targets: [app.id],
+      requires: [{ key: "watchdog-key", at: infra.id }]
+    });
+    await reaches(waiter.id, "waiting");
+
+    // Simulate 25h of no progress (the `waiting` SLA is 24h) — `opts.now` is the established
+    // clock-injection seam, same as coordination.integration.test.ts's watchdog tests.
+    const farFuture = new Date(Date.now() + 25 * 60 * 60_000);
+    const flags = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      runWatchdogSweep(tx, org.orgId, createInMemoryFakeHost(), server.deps.config.secretsMasterKey, {
+        requestId: "coupling-watchdog-test",
+        now: farFuture
+      })
+    );
+    const flagged = flags.find((f) => f.changeObjectId === waiter.id);
+    expect(flagged).toBeDefined();
+
+    const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(decisions).where(eq(decisions.id, flagged!.decisionId))
+    );
+    const reasonTree = rows[0]!.reasonTree as { waitingOn?: string };
+    // The warn names the actual outstanding requirement — key AND scope — not a generic stall line.
+    expect(reasonTree.waitingOn).toContain("watchdog-key");
+    expect(reasonTree.waitingOn).toContain(infra.id);
+    expect((rows[0]!.inputContext as Record<string, unknown>).unsatisfiedRequirements).toEqual([
+      { key: "watchdog-key", at: infra.id }
+    ]);
+  }, 60_000);
+
+  // -----------------------------------------------------------------------------------------
+  // M12 P4B close-out — ROLLBACK EXEMPTION (coupled-pipelines.md §3.4): a rollback change NEVER
+  // parks and inherits NEITHER half of a coupling. Today that is true because rollback.ts happens
+  // not to spread the original's properties — an accident a tidy-up refactor could undo. This
+  // pins it as behaviour.
+  // -----------------------------------------------------------------------------------------
+
+  it("a rollback of a coupled change neither waits nor inherits provides/requires — even when the original's prerequisite is no longer satisfied", async () => {
+    const infra = await createTestComponent(admin, { name: "rollback-infra" });
+    const app = await createTestComponent(admin, { name: "rollback-app" });
+
+    const provider = await admin.changes.propose({
+      name: "rollback-test provider",
+      targets: [infra.id],
+      provides: ["rollback-feature"]
+    });
+    await reaches(provider.id, "validating");
+
+    // A change coupled on BOTH sides: requires the provider's key, provides one of its own.
+    const coupled = await admin.changes.propose({
+      name: "coupled change to roll back",
+      targets: [app.id],
+      provides: ["coupled-own-key"],
+      requires: [{ key: "rollback-feature", at: infra.id }]
+    });
+    await reaches(coupled.id, "validating");
+
+    // Kill the prerequisite: cancel the provider. If the rollback below INHERITED the original's
+    // `requires`, no provider in {validating, promoted} would exist any more and it would park in
+    // `waiting` forever — so it completing is the load-bearing assertion, not just a state check.
+    await admin.changes.cancel(provider.id, "test: remove the satisfier before rolling back");
+
+    const rollback = await admin.changes.rollback(coupled.id, "test: roll back the coupled change");
+    expect(rollback.rollbackOfObjectId).toBe(coupled.id);
+    // A rollback change auto-promotes once its waves succeed (reconcile's completeExecution).
+    await reaches(rollback.id, "promoted");
+
+    // Inherited NEITHER half of the coupling.
+    const rolled = await admin.changes.get(rollback.id);
+    expect(rolled.properties.requires).toBeUndefined();
+    expect(rolled.properties.provides).toBeUndefined();
+
+    // And it never parked: no waiting-entry Decision exists for it.
+    const explained = await admin.changes.explain(rollback.id);
+    const waitingTransitions = explained.decisions.filter(
+      (d) =>
+        d.kind === "transition" &&
+        (d.inputContext as { toState?: string }).toState === "waiting"
+    );
+    expect(waitingTransitions).toHaveLength(0);
+    expect(explained.waitStatus).toBeNull();
+  }, 60_000);
+
+  // -----------------------------------------------------------------------------------------
+  // M12 P4B close-out — STARVATION (coupled-pipelines.md §3.5 hazard): the waiting sweep serves
+  // oldest-`updated_at` first with a batch cap of 25 (reconcile's BATCH_LIMIT). Without the
+  // round-robin bump, >25 stuck waiters with frozen `updated_at` would occupy every batch slot
+  // forever and a releasable waiter behind them would never even be EVALUATED.
+  // -----------------------------------------------------------------------------------------
+
+  it("a releasable waiter behind >BATCH_LIMIT stuck waiters still releases (round-robin bump)", async () => {
+    const STUCK_COUNT = 26; // one more than reconcile.ts's BATCH_LIMIT (25)
+    const scope = await createTestComponent(admin, { name: "starvation-scope" });
+    const app = await createTestComponent(admin, { name: "starvation-app" });
+
+    // 26 waiters stuck on keys nobody will ever provide.
+    const stuck: string[] = [];
+    for (let i = 0; i < STUCK_COUNT; i += 1) {
+      const c = await admin.changes.propose({
+        name: `stuck waiter ${i}`,
+        targets: [app.id],
+        requires: [{ key: `never-provided-${i}`, at: scope.id }]
+      });
+      stuck.push(c.id);
+    }
+    for (const id of stuck) await reaches(id, "waiting", 60_000);
+
+    // The releasable waiter arrives LAST — youngest `updated_at`, i.e. sorted BEHIND all 26 in the
+    // oldest-first batch. This is exactly the row the pre-fix sweep could never reach.
+    const releasable = await admin.changes.propose({
+      name: "releasable waiter behind the stuck herd",
+      targets: [app.id],
+      requires: [{ key: "starvation-release", at: scope.id }]
+    });
+    await reaches(releasable.id, "waiting", 60_000);
+
+    const provider = await admin.changes.propose({
+      name: "provides starvation-release",
+      targets: [scope.id],
+      provides: ["starvation-release"]
+    });
+    await reaches(provider.id, "validating", 60_000);
+
+    // Within a few sweeps the round-robin must rotate the releasable waiter into the batch and
+    // release it. (Without the bump this times out: the same 25 frozen rows fill every batch.)
+    await reaches(releasable.id, "validating", 60_000);
+
+    // The stuck herd is untouched semantically: still waiting, not cancelled, not executed.
+    expect(await stateOf(stuck[0]!)).toBe("waiting");
+  }, 240_000);
 });

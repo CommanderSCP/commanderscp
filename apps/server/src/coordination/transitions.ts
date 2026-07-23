@@ -7,9 +7,12 @@ import { ChangeStateSchema } from "@scp/schemas";
  * be written as a pure function (the design's single guarded transition function... exist partly
  * for this)". `coordination/transition.ts`'s guarded transition function uses `isLegalTransition`
  * below as its legality gate — the SOLE runtime authority. (`drizzle/0007_change_coordination.sql`
- * also seeds a `state_transitions` table, but nothing reads it. An earlier version of this comment
- * claimed a `transitions.integration.test.ts` cross-checks the two; that file has never existed.
- * `transitions.test.ts` cross-checks THIS constant against a hardcoded edge set instead.)
+ * — plus `0032_state_transitions_waiting.sql` for the M12 P4B `waiting` edges — also seeds a
+ * `state_transitions` table. That table is still read by no runtime code, but it is now
+ * seeded-and-checked: `transitions.integration.test.ts` asserts SET EQUALITY, both directions and
+ * triggers included, between the DB rows and `LEGAL_TRANSITIONS`, so the two can never silently
+ * drift again. `transitions.test.ts` separately cross-checks THIS constant against a hardcoded
+ * edge set.)
  *
  * Edge rationale (DESIGN §9.1's diagram + prose):
  *  - The "happy path" states form a chain: proposed -> evaluated -> coordinated -> executing ->

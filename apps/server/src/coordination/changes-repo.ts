@@ -348,24 +348,50 @@ export function providesOf(properties: Record<string, unknown> | null | undefine
   return Array.isArray(provides) ? provides.filter((k): k is string => typeof k === "string") : [];
 }
 
-/** Cross-change prerequisites a change REQUIRES (M12 P4B), off `properties.requires` — each a
- *  `{ key, at }` with `at` already an object id (resolved at propose time). Absent/malformed
- *  entries are dropped, so an empty result means "no wait". */
+/** `requiresOf`'s parse result: the well-formed `{key, at}` requirements PLUS every stored entry
+ *  that did NOT parse. Callers must treat any `malformed` entry as an UNSATISFIABLE requirement. */
+export interface ParsedRequires {
+  requirements: { key: string; at: string }[];
+  /** Stored `requires` entries that do not parse as `{key, at}` — verbatim, for diagnostics. When
+   *  `properties.requires` is present but not an array at all, the whole raw value is one entry. */
+  malformed: unknown[];
+}
+
+/**
+ * Cross-change prerequisites a change REQUIRES (M12 P4B), off `properties.requires` — each a
+ * `{ key, at }` with `at` already an object id (resolved at propose time).
+ *
+ * FAIL-CLOSED (coupled-pipelines.md §6#14): a malformed entry is NOT silently dropped — it is
+ * returned under `malformed`, and every reader (the routing guard and the waiting-sweep predicate
+ * in reconcile.ts, wait-status in routes/changes.ts, the watchdog) treats a change carrying one as
+ * UNSATISFIABLE: it parks in `waiting` (where the 24h SLA flags it and wait-status names the bad
+ * entry) rather than proceeding as if uncoupled. Dropping used to be the behaviour, and it was
+ * fail-OPEN: a version-skewed federation peer or a corrupted legacy row would execute a release
+ * whose author explicitly declared a prerequisite. Deliberately returns rather than throws
+ * (`purposeOf`-style) — a throw at the sweep would let ONE bad row brick `advanceWaitingChanges`
+ * for every healthy waiter behind it; "unsatisfiable, skip, surface" contains the blast radius to
+ * the one change that carries the junk. Propose-time typed validation (Zod + `at` resolution) is
+ * unchanged — these entries can only arrive PAST the API.
+ */
 export function requiresOf(
   properties: Record<string, unknown> | null | undefined
-): { key: string; at: string }[] {
+): ParsedRequires {
   const requires = properties?.requires;
-  if (!Array.isArray(requires)) return [];
-  const out: { key: string; at: string }[] = [];
+  if (requires === undefined || requires === null) return { requirements: [], malformed: [] };
+  if (!Array.isArray(requires)) return { requirements: [], malformed: [requires] };
+  const requirements: { key: string; at: string }[] = [];
+  const malformed: unknown[] = [];
   for (const r of requires) {
     if (r && typeof r === "object") {
       const { key, at } = r as { key?: unknown; at?: unknown };
       if (typeof key === "string" && key.length > 0 && typeof at === "string" && at.length > 0) {
-        out.push({ key, at });
+        requirements.push({ key, at });
+        continue;
       }
     }
+    malformed.push(r);
   }
-  return out;
+  return { requirements, malformed };
 }
 
 /**

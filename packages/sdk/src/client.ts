@@ -1292,8 +1292,12 @@ export class ScpClient {
       });
       return unwrap(result);
     },
-    /** `scp change report --plan-json` (DESIGN §12 Mode 1) — a thin, typed wrapper around the SAME
-     *  webhook ingress `webhook()` above uses; not a new engine path. */
+    /** `scp change-source report` (DESIGN §12 Mode 1) — the GENERATED `reportChangeSource`
+     *  operation against its own typed route, `POST /change-sources/{sourceKind}/report`. Same
+     *  persist-then-process engine path as `webhook()` (one `change_source_events` row, same
+     *  processor), but PAT-authenticated (no HMAC) and fully typed — including the M12 P4B
+     *  coupled-pipeline declaration (`provides`/`requires`), which the raw webhook shape cannot
+     *  carry. */
     report: async (
       sourceKind: string,
       req: ChangeReportRequest

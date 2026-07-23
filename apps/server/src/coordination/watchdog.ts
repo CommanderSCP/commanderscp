@@ -3,8 +3,10 @@ import type PgBoss from "pg-boss";
 import type { ChangeState } from "@scp/schemas";
 import type { Db } from "../db/client.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
-import { changes, orgs } from "../db/schema.js";
+import { changes, objects, orgs } from "../db/schema.js";
 import { insertDecision } from "./decisions-repo.js";
+import { requiresOf } from "./changes-repo.js";
+import { describeRequirements, unsatisfiedRequirements } from "./coupling.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import type { PluginHost } from "../plugin-host/contract.js";
@@ -91,6 +93,41 @@ export async function runWatchdogSweep(
 
     for (const change of stalled) {
       const stalledForMs = now.getTime() - change.stateEnteredAt.getTime();
+      // M12 P4B (coupled-pipelines.md §3.6 — explainability): a `waiting` warn that says only
+      // "stalled in waiting for 24h" is strictly worse than the state badge. Name the actual
+      // unsatisfied `{key, at}` pairs (re-read LIVE at flag time via the same predicate the sweep
+      // uses) — and any malformed (unsatisfiable, fail-closed) entries — so the notification alone
+      // tells the operator what the change is waiting FOR.
+      let waitingDetail: { waitingOn: string; unsatisfied?: unknown; malformed?: unknown } | null =
+        null;
+      if (state === "waiting") {
+        const objRows = await tx
+          .select({ properties: objects.properties })
+          .from(objects)
+          .where(eq(objects.id, change.objectId))
+          .limit(1);
+        const { requirements, malformed } = requiresOf(
+          (objRows[0]?.properties ?? {}) as Record<string, unknown>
+        );
+        const unmet = await unsatisfiedRequirements(tx, orgId, change.objectId, requirements);
+        const parts: string[] = [];
+        if (unmet.length > 0) {
+          parts.push(`unsatisfied cross-change prerequisite(s): ${describeRequirements(unmet)}`);
+        }
+        if (malformed.length > 0) {
+          parts.push(
+            `${malformed.length} malformed (unsatisfiable) \`requires\` entr${malformed.length === 1 ? "y" : "ies"} — fail-closed, will never release; see \`scp change explain\``
+          );
+        }
+        waitingDetail = {
+          waitingOn:
+            parts.length > 0
+              ? parts.join("; ")
+              : "cross-change prerequisites (all currently satisfied — release expected next tick)",
+          ...(unmet.length > 0 ? { unsatisfied: unmet } : {}),
+          ...(malformed.length > 0 ? { malformed } : {})
+        };
+      }
       const decision = await insertDecision(tx, {
         orgId,
         kind: "watchdog",
@@ -101,18 +138,22 @@ export async function runWatchdogSweep(
           stateEnteredAt: change.stateEnteredAt.toISOString(),
           slaMs,
           stalledForMs,
-          checkedAt: now.toISOString()
+          checkedAt: now.toISOString(),
+          ...(waitingDetail?.unsatisfied ? { unsatisfiedRequirements: waitingDetail.unsatisfied } : {}),
+          ...(waitingDetail?.malformed ? { malformedRequires: waitingDetail.malformed } : {})
         },
         reasonTree: {
           summary: `change has shown no progress in state '${state}' for ${Math.round(
             stalledForMs / 1000
           )}s (SLA ${Math.round(slaMs / 1000)}s)`,
           waitingOn:
-            state === "executing"
-              ? "wave target executor status to report success/failure, or an operator to cancel/rollback"
-              : state === "validating"
-                ? "an operator to run `scp change promote` (or cancel/rollback)"
-                : "the reconciliation loop's next tick to advance this change, or an operator to investigate"
+            state === "waiting" && waitingDetail
+              ? waitingDetail.waitingOn
+              : state === "executing"
+                ? "wave target executor status to report success/failure, or an operator to cancel/rollback"
+                : state === "validating"
+                  ? "an operator to run `scp change promote` (or cancel/rollback)"
+                  : "the reconciliation loop's next tick to advance this change, or an operator to investigate"
         }
       });
 

@@ -35656,6 +35656,10 @@
                                 ],
                                 "additionalProperties": false
                               }
+                            },
+                            "malformed": {
+                              "type": "array",
+                              "items": {}
                             }
                           },
                           "required": [
@@ -37714,6 +37718,34 @@
                     ]
                   },
                   "planJson": {},
+                  "provides": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "requires": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "key": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "at": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "at"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
                   "sbom": {
                     "type": "object",
                     "properties": {
