@@ -58,7 +58,7 @@ commander ──.scpbundle──▶ retrans ──scp-relay-<id>.tar.gz──▶
 | `SCP_RELAY_DEST_REPO` | outpost | The destination local Gitea repository (`host[:port]/owner/repo`) images are pushed into by digest. Needs no allowlist — it is the relay's own configuration, never bundle data (ADR-0019 §4). |
 | `SCP_RELAY_BLOB_OUT_DIR` | outpost | Directory blob artifact bytes + origin signatures land in. |
 | `SCP_RELAY_BLOB_BASE_URL` | outpost | The URL that directory is served under — recorded as the landed blob `location`/`signatureRef`; must fall under the outpost's `SCP_ARTIFACT_BLOB_BASE_URLS` so the M17.4(b) gate can fetch it. |
-| `SCP_RELAY_INSECURE_HOSTS` | both | Comma-separated registry `host[:port]` entries skopeo may talk to without TLS verification (plain-HTTP/self-signed in-cluster registries). Safe because the cosign signature, not transport TLS, is the trust anchor. |
+| `SCP_RELAY_INSECURE_HOSTS` | both | Comma-separated registry `host[:port]` entries the relay may talk to without TLS verification — applied **per host** to both the skopeo pull/push (`--src/dest-tls-verify=false`) and the validate pass's cosign reads (`--allow-insecure-registry`); hosts not listed always get full TLS verification on both. Safe for listed hosts because the cosign signature, not transport TLS, is the trust anchor. |
 | `SCP_RELAY_CERT_DIR` | both | Operator-provided CA certificate directory for TLS registries (skopeo `--src-cert-dir`/`--dest-cert-dir`). See "TLS / CA" below. |
 
 Also load-bearing (shipped earlier, shared with the pre-deploy verify — ADR-0019 §4):
@@ -69,8 +69,9 @@ every OCI dial / blob fetch is refused until the operator opts the byte channel 
 
 Registry credentials only — **never** credentials to infrastructure execution systems manage
 (charter principle 1). Stored in the existing encrypted secrets vault (`scp secret put`), scoped
-**per registry host**, resolved at relay time, injected via a mode-0600 scratch auth file (never
-argv, never logs, never Decisions/audit):
+**per registry host**, resolved at relay time, injected via a mode-0600 scratch auth file — skopeo
+gets it as an explicit `--src/dest-authfile`, cosign as a per-invocation subprocess `DOCKER_CONFIG`
+env (never a process-global mutation, never argv, never logs, never Decisions/audit):
 
 ```
 scp secret put "relay/source-read/<source-host[:port]>"  --value "user:password"   # READ-only pull

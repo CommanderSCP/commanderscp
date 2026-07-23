@@ -52,7 +52,10 @@
  * under the keys {@link relaySourceReadSecretKey} / {@link relayDestPushSecretKey}. No
  * admin/delete grants are ever needed (read on source repos, push on destination repos). They are
  * handed to skopeo/cosign via a mode-0600 scratch docker auth file, NEVER via argv (argv is
- * logged) and never echoed into Decisions, audit events, or responses.
+ * logged) and never echoed into Decisions, audit events, or responses. The auth file reaches
+ * skopeo via explicit `--src/dest-authfile` flags and cosign via a PER-INVOCATION subprocess
+ * `DOCKER_CONFIG` env — never a `process.env` mutation, which on this multi-tenant server would
+ * leak one org's registry auth into every concurrently spawned cosign/skopeo subprocess.
  *
  * ## Roles
  *
@@ -425,14 +428,18 @@ export async function buildRelayTarball(
   const bundleRoot = path.join(workDir, bundleDirName);
   const failures: RelayFailure[] = [];
   let tarballPath: string | null = null;
-  const savedDockerConfig = process.env.DOCKER_CONFIG;
   try {
     await mkdir(path.join(bundleRoot, "images"), { recursive: true });
     await mkdir(path.join(bundleRoot, "blobs"), { recursive: true });
 
     // Credentialed source registries: cosign's registry reads honor DOCKER_CONFIG, skopeo takes an
     // explicit --src-authfile — BOTH point at the same 0600 scratch config so credentials never
-    // touch argv or logs. Restored in the finally.
+    // touch argv or logs. DOCKER_CONFIG is handed to cosign as a PER-INVOCATION subprocess env
+    // (`cosignEnv` below), NEVER by mutating process.env: this is a multi-tenant server, and a
+    // process-global mutation would leak this org's registry auth into every cosign/skopeo
+    // subprocess that happens to spawn during the window (another org's concurrent relay, an
+    // M17.4(b) pre-deploy-gate verify) — and two concurrent relays would race each other's
+    // save/restore.
     const dockerConfigDir = path.join(workDir, "docker-config");
     await mkdir(dockerConfigDir, { recursive: true, mode: 0o700 });
     const auths: Record<string, { auth: string }> = {};
@@ -442,7 +449,6 @@ export async function buildRelayTarball(
     const srcAuthFile = path.join(dockerConfigDir, "config.json");
     await writeFile(srcAuthFile, JSON.stringify({ auths }), { mode: 0o600 });
     const hasCreds = Object.keys(ctx.credsByHost).length > 0;
-    if (hasCreds) process.env.DOCKER_CONFIG = dockerConfigDir;
 
     const pullReader = new RelaySourceRegistryReader(config.sourceRepo);
     const pulledBlobs = new Map<string, ResolvedBlob>();
@@ -604,7 +610,13 @@ export async function buildRelayTarball(
           artifacts: ctx.artifacts,
           cosignPublicKeyPem: ctx.cosignPublicKeyPem,
           reader: validateReader,
-          allowInsecureRegistry: true
+          // TLS-off is scoped to the SAME explicit operator allowlist the skopeo pull uses
+          // (SCP_RELAY_INSECURE_HOSTS) — per host, never a blanket default: an allowlisted
+          // source host that serves proper TLS keeps full verification on the validate pass.
+          allowInsecureRegistry: (host) => config.insecureHosts.includes(host.toLowerCase()),
+          // Per-invocation subprocess env for cosign's credentialed registry reads — never a
+          // process.env mutation (see the dockerConfigDir comment above).
+          cosignEnv: hasCreds ? { DOCKER_CONFIG: dockerConfigDir } : undefined
         });
         if (!result.ok) {
           for (const f of result.failing)
@@ -655,8 +667,6 @@ export async function buildRelayTarball(
       execFileSync("tar", ["czf", tarballPath, "-C", workDir, bundleDirName], { encoding: "utf8" });
     }
   } finally {
-    if (savedDockerConfig === undefined) delete process.env.DOCKER_CONFIG;
-    else process.env.DOCKER_CONFIG = savedDockerConfig;
     await rm(workDir, { recursive: true, force: true });
   }
 

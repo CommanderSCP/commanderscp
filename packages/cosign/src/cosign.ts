@@ -310,6 +310,13 @@ export interface VerifyImageOptions {
    *  exporter's distributed public key), NOT by registry transport security: a registry MITM cannot
    *  forge a signature that verifies against that key. Off by default (a TLS commander registry). */
   allowInsecureRegistry?: boolean;
+  /** Extra environment variables overlaid onto `process.env` for THIS cosign subprocess only —
+   *  e.g. `DOCKER_CONFIG` pointing at a per-invocation scratch auth dir for a credentialed
+   *  registry read. Per-invocation by design: callers must NEVER mutate `process.env` to feed
+   *  cosign credentials — a process-global mutation leaks this caller's registry auth into every
+   *  CONCURRENT cosign/skopeo subprocess in a multi-tenant server (another org's relay, a
+   *  pre-deploy-gate verify), and two concurrent mutators race each other's save/restore. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -333,7 +340,7 @@ export function verifyImage(
   if (options.allowInsecureRegistry) args.push("--allow-insecure-registry");
   args.push(imageRef);
   try {
-    const { stdout, stderr } = run(cosign().bin, args, { log: false });
+    const { stdout, stderr } = run(cosign().bin, args, { log: false, env: options.env });
     return { ok: true, detail: (stdout + stderr).trim() || "Verified OK" };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
