@@ -23,7 +23,7 @@ import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { assertCoordinationTargetsWithinAuthority } from "../coordination/campaign-scope-authz.js";
 import { getChange, listChanges, proposeChange, requiresOf } from "../coordination/changes-repo.js";
-import { requirementStatuses } from "../coordination/coupling.js";
+import { requirementStatuses, listProvidedKeysAtScope } from "../coordination/coupling.js";
 import { transitionChange } from "../coordination/transition.js";
 import type { GateDeps } from "../coordination/gates.js";
 import { triggerRollback } from "../coordination/rollback.js";
@@ -53,15 +53,22 @@ import { conflict } from "../errors.js";
  * `requires`, each prerequisite's live satisfaction (and the object name it is `at`, for a readable
  * "Waiting on …" surface). Null when the change coupled nothing, so unchanged for every pre-P4B
  * change. Read-only: it re-evaluates the SAME predicate reconcile uses, it does not transition.
+ *
+ * "Did you mean?" (coupled-pipelines.md §3.7): for each UNSATISFIED requirement, also looks up
+ * `listProvidedKeysAtScope` — the `provides` keys ANY change has ever declared at that `at`
+ * object — so a typo'd key reads as "outstanding; keys provided here: feature-b, feature-c"
+ * instead of a bare blank. Only queried for unsatisfied requirements (a satisfied one has nothing
+ * to diagnose), and only ever off the read-only `explain`/`wait-status` path — never reconcile's
+ * hot loop.
  */
 async function buildWaitStatus(
   tx: TenantTx,
   orgId: string,
   change: Change
 ): Promise<ChangeWaitStatus | null> {
-  const requires = requiresOf(change.properties);
-  if (requires.length === 0) return null;
-  const statuses = await requirementStatuses(tx, orgId, change.id, requires);
+  const { requirements, malformed } = requiresOf(change.properties);
+  if (requirements.length === 0 && malformed.length === 0) return null;
+  const statuses = await requirementStatuses(tx, orgId, change.id, requirements);
   const atIds = [...new Set(statuses.map((s) => s.at))];
   const atObjects =
     atIds.length === 0
@@ -70,15 +77,26 @@ async function buildWaitStatus(
           where: (o, { and, eq, inArray }) => and(eq(o.orgId, orgId), inArray(o.id, atIds))
         });
   const nameById = new Map(atObjects.map((o) => [o.id, o.name]));
+  const requirementViews = await Promise.all(
+    statuses.map(async (s) => {
+      const didYouMean = s.satisfied ? [] : await listProvidedKeysAtScope(tx, orgId, s.at);
+      return {
+        key: s.key,
+        at: s.at,
+        atName: nameById.get(s.at) ?? null,
+        satisfied: s.satisfied,
+        satisfiedByChangeId: s.satisfiedByChangeObjectId,
+        ...(didYouMean.length > 0 ? { didYouMean } : {})
+      };
+    })
+  );
   return {
     waiting: change.state === "waiting",
-    requirements: statuses.map((s) => ({
-      key: s.key,
-      at: s.at,
-      atName: nameById.get(s.at) ?? null,
-      satisfied: s.satisfied,
-      satisfiedByChangeId: s.satisfiedByChangeObjectId
-    }))
+    requirements: requirementViews,
+    // Fail-closed diagnostics (coupled-pipelines.md §6#14): stored `requires` entries that don't
+    // parse as `{key, at}` make the change UNSATISFIABLE (it parks in `waiting`), so the 2am
+    // operator must be able to SEE them — surfaced verbatim, only when any exist.
+    ...(malformed.length > 0 ? { malformed } : {})
   };
 }
 

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CursorPageQuerySchema, cursorPageResponseSchema } from "./common.js";
+import { ChangeRequirementSchema, CursorPageQuerySchema, cursorPageResponseSchema } from "./common.js";
 import { ControlRunSchema } from "./governance.js";
 import { ExecutorTypeSchema, ExecutorCategorySchema } from "./executors.js";
 
@@ -55,14 +55,10 @@ export type Change = z.infer<typeof ChangeSchema>;
  * (coordination/plan-compiler.ts) derives wave order from their `depends_on` edges plus the
  * optional `topology`'s explicit wave groups.
  */
-/** One coupled-pipeline prerequisite (M12 P4B): a `key` that must be provided by another change AT
- *  a specific object `at` before this change may execute. See `CreateChangeRequestSchema.requires`. */
-export const ChangeRequirementSchema = z.object({
-  key: z.string().min(1),
-  /** id or URN of the object the key must be true at (resolved to an id at propose time). */
-  at: z.string().min(1)
-});
-export type ChangeRequirement = z.infer<typeof ChangeRequirementSchema>;
+// M12 P4B: `ChangeRequirementSchema` (one coupled-pipeline prerequisite `{key, at}`, see
+// `CreateChangeRequestSchema.requires`) moved to common.ts so executors.ts's
+// `ChangeReportRequestSchema` reuses the EXACT same shape without an import cycle — it is still
+// exported from `@scp/schemas` unchanged.
 
 export const CreateChangeRequestSchema = z.object({
   name: z.string().min(1).max(200),
@@ -237,7 +233,12 @@ export const ChangeRequirementStatusSchema = z.object({
   atName: z.string().nullable(),
   satisfied: z.boolean(),
   /** The change (validating|promoted) currently providing this key at `at`, or null while outstanding. */
-  satisfiedByChangeId: z.string().uuid().nullable()
+  satisfiedByChangeId: z.string().uuid().nullable(),
+  /** M12 P4B Phase 4 "did you mean" (coupled-pipelines.md §3.7): while UNSATISFIED, the `provides`
+   *  keys some change has actually declared at this `at` object — an exact, scoped diagnosis (not a
+   *  prefix guess) for a typo'd key. `.optional()`, present only when unsatisfied and non-empty;
+   *  absent once satisfied (the question is moot) and for every pre-Phase-4 explain caller. */
+  didYouMean: z.array(z.string()).optional()
 });
 export type ChangeRequirementStatus = z.infer<typeof ChangeRequirementStatusSchema>;
 
@@ -245,7 +246,14 @@ export type ChangeRequirementStatus = z.infer<typeof ChangeRequirementStatusSche
  *  that declared `requires`; null otherwise. `waiting` reflects the change's current state. */
 export const ChangeWaitStatusSchema = z.object({
   waiting: z.boolean(),
-  requirements: z.array(ChangeRequirementStatusSchema)
+  requirements: z.array(ChangeRequirementStatusSchema),
+  /** M12 P4B fail-closed (coupled-pipelines.md §6#14): stored `requires` entries that do NOT parse
+   *  as `{key, at}` (federation peer skew, a legacy row, or raw-SQL corruption — propose-time typed
+   *  validation refuses them, so they can only arrive PAST the API). A change carrying any is
+   *  UNSATISFIABLE: it parks in `waiting` (the watchdog SLA flags it) rather than proceeding as if
+   *  uncoupled, and the offending entries are surfaced here verbatim so an operator can see exactly
+   *  what to fix. `.optional()` not `.default()` — additive, absent for every well-formed change. */
+  malformed: z.array(z.unknown()).optional()
 });
 export type ChangeWaitStatus = z.infer<typeof ChangeWaitStatusSchema>;
 

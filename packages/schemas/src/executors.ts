@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { cursorPageResponseSchema } from "./common.js";
+import { ChangeRequirementSchema, cursorPageResponseSchema } from "./common.js";
 import { SbomRefSchema } from "./supply-chain.js";
 
 /**
@@ -371,9 +371,11 @@ export type BackfillSourceMappingsResponse = z.infer<typeof BackfillSourceMappin
 export type AcceptDiscoveryResponse = z.infer<typeof AcceptDiscoveryResponseSchema>;
 
 // -------------------------------------------------------------------------------------------
-// `scp change report --plan-json` (DESIGN §12 Mode 1: "a one-line CLI step... reports plan/apply
-// results"). A thin, typed wrapper around the SAME `POST /change-sources/{sourceKind}/webhook`
-// ingress every other source kind uses (routes/change-sources.ts) — not a new engine path.
+// `scp change-source report` (DESIGN §12 Mode 1: "a one-line CLI step... reports plan/apply
+// results"). Bound to its OWN typed route, `POST /change-sources/{sourceKind}/report`
+// (routes/change-sources.ts, operationId `reportChangeSource`) — the typed, PAT-authenticated
+// counterpart to the raw `/webhook` ingress. Same persist-then-process engine path (one
+// `change_source_events` row, processed by `coordination/webhook-processor.ts`), not a new one.
 // -------------------------------------------------------------------------------------------
 
 export const ChangeReportRequestSchema = z.object({
@@ -384,6 +386,17 @@ export const ChangeReportRequestSchema = z.object({
   artifactDigest: z.string().optional(),
   status: z.enum(["planned", "applied", "errored", "discarded"]),
   planJson: z.unknown().optional(),
+  /** M12 P4B coupled pipelines — the SAME shape as `CreateChangeRequestSchema.provides`: opaque
+   *  keys this release makes true at its targets when it succeeds. This is THE declaration channel
+   *  for a CI pipeline (a raw provider push webhook cannot carry a key — coupled-pipelines.md §6#1);
+   *  threaded by `webhook-processor.ts` into `proposeChange` identically to `POST /changes`. */
+  provides: z.array(z.string().min(1)).optional(),
+  /** M12 P4B — the SAME shape as `CreateChangeRequestSchema.requires`: cross-change prerequisites
+   *  `{key, at}`. `at` (id or URN) is resolved at PROPOSE time exactly as `POST /changes` resolves
+   *  it — but this route is persist-then-process, so a bad `at` cannot 404 the reporter: it is
+   *  recorded by the processor as a refused event (Decision + audit, event marked processed with no
+   *  resulting change), never a silent drop and never a silent forever-wait. */
+  requires: z.array(ChangeRequirementSchema).optional(),
   /** M17.2 — a REFERENCE to the build-time SBOM the executor's coordinated Trivy pass emitted and
    *  cosign-signed at origin (ADR-0015 §5). OPTIONAL and purely ADDITIVE: every existing reporter
    *  keeps working unchanged. SCP stores the reference on the change's `sourceRef.sbom` and NEVER

@@ -4,7 +4,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { SyncBundle, SyncScope } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { roleBindings, roles } from "../db/schema.js";
+import { changes, decisions, roleBindings, roles } from "../db/schema.js";
 import { createObject, getObjectByIdOrUrnAnyType, updateObject } from "../graph/objects-repo.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
 import { ensureFederationSelf, type FederationSelf } from "./self-repo.js";
@@ -19,7 +19,7 @@ import {
 import { getCursor } from "./cursors-repo.js";
 import { createOverlay, getMergedOverlayView } from "./overlay-repo.js";
 import { handFillObject } from "./handfill-repo.js";
-import { proposeChange, getChange } from "../coordination/changes-repo.js";
+import { proposeChange, getChange, requiresOf } from "../coordination/changes-repo.js";
 import { materializeApprovalRequest, castApprovalVote } from "../governance/approvals-repo.js";
 import { insertControlRun } from "../governance/controls-repo.js";
 import { getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
@@ -866,8 +866,15 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
 
   async function proposeApprovedChangeInA(
     sourceRef?: Record<string, unknown>,
-    opts: { seedScan?: boolean } = {}
-  ): Promise<{ changeId: string; changeUrn: string }> {
+    opts: {
+      seedScan?: boolean;
+      /** M12 P4B: propose the change WITH a coupling — `provides: ["feature-a"]` and
+       *  `requires: [{key: "infra-ready", at: <the change's own freshly-created target>}]` — to
+       *  exercise the promotion-import strip (§8 Q2). The target doubles as the `at` scope because
+       *  `requires[].at` must resolve in domain A at propose time. */
+      coupling?: boolean;
+    } = {}
+  ): Promise<{ changeId: string; changeUrn: string; targetId: string }> {
     const seedScan = opts.seedScan ?? true;
     const target = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
       createObject(tx, {
@@ -899,7 +906,10 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
         requestId: "t-promo-change",
         name: `promote-me-${randomUUID()}`,
         targets: [target.id],
-        ...(sourceRef ? { sourceRef } : {})
+        ...(sourceRef ? { sourceRef } : {}),
+        ...(opts.coupling
+          ? { provides: ["feature-a"], requires: [{ key: "infra-ready", at: target.id }] }
+          : {})
       })
     );
     await withTenantTx(domainA.db, domainA.orgId, async (tx) => {
@@ -931,7 +941,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
         : undefined;
     if (seedOci) await seedPassingScan(change.id, seedOci);
 
-    return { changeId: change.id, changeUrn: change.urn };
+    return { changeId: change.id, changeUrn: change.urn, targetId: target.id };
   }
 
   /** Insert a `trivy` scan control run for `changeId`. Defaults to the PASSING, digest-bound outcome
@@ -994,6 +1004,91 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
       getObjectByIdOrUrnAnyType(tx, domainB.orgId, result.localChangeObjectId)
     );
     expect(localChange.urn).toBe(result.localChangeUrn);
+  });
+
+  it("M12 P4B §8 Q2 round-trip: promotion STRIPS `requires` (imported change can never park in `waiting`), PRESERVES `provides` verbatim, and records the strip Decision", async () => {
+    // The change in A carries BOTH halves of a coupling: it provides `feature-a` and requires
+    // `infra-ready` at its own target (a real object in A, so propose-time `at` resolution passes).
+    const { changeId, targetId } = await proposeApprovedChangeInA(undefined, { coupling: true });
+
+    const bundle = await exportBundleA(changeId);
+    // The bundle itself carries the coupling VERBATIM (federation is a properties passthrough) —
+    // this is what makes the import-side strip assertion below meaningful rather than vacuous.
+    const bundleProps = bundle.change.properties as Record<string, unknown>;
+    expect(bundleProps.requires).toEqual([{ key: "infra-ready", at: targetId }]);
+    expect(bundleProps.provides).toEqual(["feature-a"]);
+
+    const result = await importPromotionBundle(domainB.db, domainB.orgId, bundle);
+
+    // 1. `requires` is STRIPPED on import (owner ruling: the commander already enforced the
+    //    coupling; its promotion IS the go-ahead — re-evaluating locally would be redundant or
+    //    deadlock). With zero requirements the routing guard sends the change coordinated ->
+    //    executing, never `waiting` (guard behaviour pinned by coupling.integration.test.ts).
+    // 2. `provides` is PRESERVED VERBATIM — this pins promotion-repo's properties spread against a
+    //    refactor: a promoted infra change must still be able to satisfy a LOCALLY-authored waiter
+    //    in the receiving domain.
+    const imported = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      getObjectByIdOrUrnAnyType(tx, domainB.orgId, result.localChangeObjectId)
+    );
+    const importedProps = imported.properties as Record<string, unknown>;
+    expect(importedProps.requires).toBeUndefined();
+    expect(importedProps.provides).toEqual(["feature-a"]);
+    const parsed = requiresOf(importedProps);
+    expect(parsed.requirements).toEqual([]);
+    expect(parsed.malformed).toEqual([]);
+
+    // 3. The strip is an engine verdict, so it is EXPLAINABLE (charter principle 6): a Decision in
+    //    the SAME import transaction pins the stripped requirements verbatim, with the "satisfied
+    //    upstream at commander" rationale.
+    const stripDecisions = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      tx
+        .select()
+        .from(decisions)
+        .where(
+          and(
+            eq(decisions.orgId, domainB.orgId),
+            eq(decisions.subjectId, result.localChangeObjectId),
+            eq(decisions.kind, "coupling")
+          )
+        )
+    );
+    expect(stripDecisions).toHaveLength(1);
+    expect(stripDecisions[0]!.verdict).toBe("allow");
+    const inputContext = stripDecisions[0]!.inputContext as Record<string, unknown>;
+    expect(inputContext.strippedRequires).toEqual([{ key: "infra-ready", at: targetId }]);
+    const reasonTree = stripDecisions[0]!.reasonTree as { summary?: string };
+    expect(reasonTree.summary).toContain("requires satisfied upstream at commander");
+
+    // 4. An UNCOUPLED promotion stays byte-identical: no strip Decision is written for it.
+    const plain = await proposeApprovedChangeInA();
+    const plainResult = await importPromotionBundle(
+      domainB.db,
+      domainB.orgId,
+      await exportBundleA(plain.changeId)
+    );
+    const plainDecisions = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      tx
+        .select()
+        .from(decisions)
+        .where(
+          and(
+            eq(decisions.orgId, domainB.orgId),
+            eq(decisions.subjectId, plainResult.localChangeObjectId),
+            eq(decisions.kind, "coupling")
+          )
+        )
+    );
+    expect(plainDecisions).toHaveLength(0);
+
+    // The imported change's projection row exists and is in `proposed` — the coupling strip never
+    // pre-advances the local lifecycle; local gates still apply from the start.
+    const importedRow = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      tx
+        .select()
+        .from(changes)
+        .where(eq(changes.objectId, result.localChangeObjectId))
+    );
+    expect(importedRow[0]!.state).toBe("proposed");
   });
 
   it("SECURITY: a promotion bundle with a forged approval attestation (signed by the WRONG key) rejects that approval as evidence, but does not block the import", async () => {

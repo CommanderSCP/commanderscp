@@ -2,7 +2,8 @@ import type PgBoss from "pg-boss";
 import type { TriggerIntent } from "@scp/plugin-api";
 import type { ExecutorType } from "@scp/schemas";
 import type { Db } from "../db/client.js";
-import { orgs } from "../db/schema.js";
+import { and, eq } from "drizzle-orm";
+import { changes, orgs } from "../db/schema.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import type { CelSandbox } from "../governance/cel-sandbox.js";
@@ -18,7 +19,12 @@ import {
 import { transitionChange } from "./transition.js";
 import { triggerRollback } from "./rollback.js";
 import { compileAndPersistPlan, getLatestPlanForChange } from "./plan-service.js";
-import { unsatisfiedRequirements, describeRequirements } from "./coupling.js";
+import {
+  requirementStatuses,
+  unsatisfiedRequirements,
+  describeRequirements,
+  ambiguousProvidersFor
+} from "./coupling.js";
 import {
   claimWaveTargetForTriggering,
   findLatestSucceededExecution,
@@ -261,17 +267,34 @@ async function advanceCoordinatedChanges(db: Db, orgId: string, gateDeps: GateDe
       // landing mid-tick. The `waiting` Decision (written by transitionChange, once) names the
       // outstanding prerequisites; while parked, `advanceWaitingChanges` re-checks WITHOUT writing a
       // Decision per tick — see its note on the flood.
-      const requires = requiresOf(object.properties as Record<string, unknown>);
+      //
+      // ROLLBACK EXEMPTION (coupled-pipelines.md §3.4 defence-in-depth): a rollback change NEVER
+      // parks. Today a rollback carries no `requires` anyway — but only because `rollback.ts`
+      // happens not to spread the original's properties, which is an accident a tidy-up refactor
+      // could undo, silently deadlocking every rollback of a coupled change. This guard states the
+      // invariant explicitly; a pinning test holds it.
+      //
+      // FAIL-CLOSED on malformed `requires` (coupled-pipelines.md §6#14): a stored entry that does
+      // not parse as `{key, at}` (federation peer skew, corrupted legacy row — impossible via the
+      // API, whose typed validation is unchanged) is UNSATISFIABLE, so the change PARKS in
+      // `waiting`, where the 24h SLA flags it and wait-status names the bad entry. Proceeding would
+      // be fail-open: executing a release whose author explicitly declared a prerequisite.
+      const { requirements, malformed } = change.rollbackOfObjectId
+        ? { requirements: [], malformed: [] }
+        : requiresOf(object.properties as Record<string, unknown>);
       await withTenantTx(db, orgId, async (tx) => {
         const unmet =
-          requires.length === 0
+          requirements.length === 0
             ? []
-            : await unsatisfiedRequirements(tx, orgId, change.objectId, requires);
-        const toState = unmet.length > 0 ? "waiting" : "executing";
-        const reason =
-          unmet.length > 0
-            ? `waiting on ${unmet.length} unsatisfied prerequisite(s): ${describeRequirements(unmet)}`
-            : "auto: beginning wave execution";
+            : await unsatisfiedRequirements(tx, orgId, change.objectId, requirements);
+        const parks = unmet.length > 0 || malformed.length > 0;
+        const toState = parks ? "waiting" : "executing";
+        const reason = parks
+          ? malformed.length > 0
+            ? `waiting: \`requires\` carries ${malformed.length} malformed (unsatisfiable) entr${malformed.length === 1 ? "y" : "ies"} — fail-closed; fix the change's stored requires` +
+              (unmet.length > 0 ? `; also unsatisfied: ${describeRequirements(unmet)}` : "")
+            : `waiting on ${unmet.length} unsatisfied prerequisite(s): ${describeRequirements(unmet)}`
+          : "auto: beginning wave execution";
         await transitionChange(
           tx,
           {
@@ -280,7 +303,8 @@ async function advanceCoordinatedChanges(db: Db, orgId: string, gateDeps: GateDe
             toState,
             actorObjectId: SYSTEM_ACTOR_ID,
             requestId: "reconcile",
-            reason
+            reason,
+            ...(malformed.length > 0 ? { extraInputContext: { malformedRequires: malformed } } : {})
           },
           gateDeps
         );
@@ -296,11 +320,28 @@ async function advanceCoordinatedChanges(db: Db, orgId: string, gateDeps: GateDe
 /**
  * M12 P4B: a change parked in `waiting` re-checks its cross-change prerequisites every tick and, the
  * moment ALL are satisfied, is released to `executing`. While a prerequisite is still outstanding
- * this does NOTHING — no state write, no Decision, no `state_entered_at` bump. That silence is
+ * this writes NO state change, NO Decision, and NO `state_entered_at` bump. That silence is
  * deliberate: a Decision-per-tick here would be the "blocked-gate flood" (~30k rows/day per waiter),
  * and leaving `state_entered_at` frozen is what lets the watchdog's 24h `waiting` SLA measure the
  * wait from when it actually began. The one Decision recording that the wait ended is written by the
- * `waiting -> executing` transition itself.
+ * `waiting -> executing` transition itself — its inputs pin, PER requirement, the id of the change
+ * that satisfied it (coupled-pipelines.md §3.6 — explainability, charter principle 6).
+ *
+ * The ONE write a still-waiting change gets is an `updated_at` bump (STARVATION fix,
+ * coupled-pipelines.md §3.5 hazard): `listChangeRowsInStates` serves oldest-`updated_at`-first with
+ * a BATCH_LIMIT cap, so >BATCH_LIMIT stuck waiters whose `updated_at` never moved would permanently
+ * occupy every batch slot and starve a releasable waiter sitting behind them. Bumping an evaluated,
+ * still-stuck waiter to the back of the queue round-robins the batch across ALL waiters, so every
+ * one is re-evaluated within a few ticks no matter how many are stuck.
+ *
+ * FAIL-CLOSED + SKIP-NOT-CRASH (coupled-pipelines.md §6#14): a waiter whose stored `requires`
+ * carries a malformed entry is UNSATISFIABLE — it stays parked (and is bumped like any other stuck
+ * waiter) rather than being released or thrown on. One bad row must never brick this sweep for the
+ * healthy waiters behind it; wait-status (routes/changes.ts) and the watchdog name the bad entry.
+ *
+ * ROLLBACK EXEMPTION (coupled-pipelines.md §3.4): a rollback change must never sit in `waiting` —
+ * the routing guard never sends one here, but if one ever lands here anyway (state imported, or a
+ * future refactor), it is released immediately rather than held behind a coupling it cannot answer.
  */
 async function advanceWaitingChanges(db: Db, orgId: string, gateDeps: GateDeps): Promise<void> {
   const rows = await withTenantTx(db, orgId, (tx) =>
@@ -318,10 +359,27 @@ async function advanceWaitingChanges(db: Db, orgId: string, gateDeps: GateDeps):
       const gate = await runPreDeployArtifactGate(db, orgId, change);
       if (gate.blocked) continue;
 
-      const requires = requiresOf(object.properties as Record<string, unknown>);
+      const { requirements, malformed } = change.rollbackOfObjectId
+        ? { requirements: [], malformed: [] }
+        : requiresOf(object.properties as Record<string, unknown>);
       await withTenantTx(db, orgId, async (tx) => {
-        const unmet = await unsatisfiedRequirements(tx, orgId, change.objectId, requires);
-        if (unmet.length > 0) return; // still waiting — write nothing (see the flood note above)
+        const statuses = await requirementStatuses(tx, orgId, change.objectId, requirements);
+        const unmet = statuses.filter((s) => !s.satisfied);
+        if (unmet.length > 0 || malformed.length > 0) {
+          // Still waiting (or unsatisfiable — malformed is never releasable). Round-robin bump so
+          // stuck waiters can't starve a releasable one out of the batch — see the doc comment.
+          await tx
+            .update(changes)
+            .set({ updatedAt: new Date() })
+            .where(and(eq(changes.orgId, orgId), eq(changes.objectId, change.objectId)));
+          return;
+        }
+        // Key-reuse warn (M12 P4B Phase 4, coupled-pipelines.md §6#8): re-probes each NOW-satisfied
+        // requirement for a second (or third...) qualifying provider. Never blocks the release — a
+        // hotfix reusing a release key is legitimate — but the ambiguity is worth a permanent record
+        // beside `satisfiedRequirements`, since the chosen provider id above is otherwise silently
+        // arbitrary (no `ORDER BY` guarantee) whenever more than one change qualifies.
+        const ambiguous = await ambiguousProvidersFor(tx, orgId, change.objectId, statuses);
         await transitionChange(
           tx,
           {
@@ -330,7 +388,24 @@ async function advanceWaitingChanges(db: Db, orgId: string, gateDeps: GateDeps):
             toState: "executing",
             actorObjectId: SYSTEM_ACTOR_ID,
             requestId: "reconcile",
-            reason: "auto: all cross-change prerequisites satisfied — beginning wave execution"
+            reason: change.rollbackOfObjectId
+              ? "auto: rollback change is exempt from cross-change prerequisites — beginning wave execution"
+              : "auto: all cross-change prerequisites satisfied — beginning wave execution",
+            // Explainability (coupled-pipelines.md §3.6, charter principle 6): pin, per requirement
+            // key, WHICH change satisfied it at release time — the historical record `scp change
+            // explain` shows even after live wait-status has moved on.
+            ...(statuses.length > 0
+              ? {
+                  extraInputContext: {
+                    satisfiedRequirements: statuses.map((s) => ({
+                      key: s.key,
+                      at: s.at,
+                      satisfiedByChangeObjectId: s.satisfiedByChangeObjectId
+                    })),
+                    ...(ambiguous.length > 0 ? { ambiguousProviders: ambiguous } : {})
+                  }
+                }
+              : {})
           },
           gateDeps
         );

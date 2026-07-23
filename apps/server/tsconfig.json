@@ -7,6 +7,7 @@
   },
   "include": ["src"],
   "references": [
+    { "path": "../../deploy/airgap" },
     { "path": "../../packages/cosign" },
     { "path": "../../packages/schemas" },
     { "path": "../../packages/sdk" },

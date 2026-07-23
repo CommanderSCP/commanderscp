@@ -361,6 +361,65 @@ export const ImportPromotionResponseSchema = z.object({
 });
 export type ImportPromotionResponse = z.infer<typeof ImportPromotionResponseSchema>;
 
+// ===========================================================================================
+// M15.5(c) — the RETRANS VALIDATE-THEN-RELAY (ADR-0019 §2). The byte tarball itself is a
+// SEPARATE channel artifact (never part of any federation bundle — bundles stay metadata-only,
+// ADR-0009); these are only the API request/response shapes for driving the relay. The tarball
+// crosses the CDS out-of-band as a file, exactly like the `.scpbundle` walk.
+// ===========================================================================================
+
+/** `POST /federation/relay` — build the signed relay tarball for an imported, M17.4(a)-verified
+ *  promotion (retrans-role instances only). */
+export const RelayBuildRequestSchema = z.object({
+  /** The LOCAL imported change (id or URN) whose authorized artifact bytes should be relayed. */
+  change: z.string().min(1)
+});
+export type RelayBuildRequest = z.infer<typeof RelayBuildRequestSchema>;
+
+export const RelayArtifactSummarySchema = z.object({
+  type: z.enum(["oci", "blob"]),
+  digest: z.string()
+});
+export type RelayArtifactSummary = z.infer<typeof RelayArtifactSummarySchema>;
+
+export const RelayBuildResponseSchema = z.object({
+  /** SERVER-side path of the built tarball (inside the operator-configured `SCP_RELAY_OUT_DIR`
+   *  drop directory) — the CDS crossing itself is out-of-band, like the `.scpbundle` walk. */
+  tarballPath: z.string(),
+  artifacts: z.array(RelayArtifactSummarySchema),
+  /** The persisted `retrans-relay-validate` allow Decision (principle 6 — every verdict is a Decision). */
+  decisionId: z.string()
+});
+export type RelayBuildResponse = z.infer<typeof RelayBuildResponseSchema>;
+
+/** `POST /federation/relay/import` — destination side: verify a relay tarball and push its
+ *  artifacts into the outpost's local registry by digest (+ re-inspect). */
+export const RelayImportRequestSchema = z.object({
+  /** Tarball file name (relative) inside the server's `SCP_RELAY_IN_DIR` drop directory. */
+  file: z.string().min(1),
+  /** The LOCAL imported change (id or URN) this tarball's bytes belong to — import the promotion
+   *  `.scpbundle` first; its M17.4(a)-verified artifact set is the authority on what may land. */
+  change: z.string().min(1),
+  /** The RETRANS instance's cosign PUBLIC key PEM (distributed out-of-band) — verifies the
+   *  tarball's CHECKSUMS.txt signature. Zero trust beyond transport integrity: the receiving
+   *  M17.4(a)+(b) gates still verify everything against the EXPORTER's key. */
+  relayCosignPublicKey: z.string().min(1)
+});
+export type RelayImportRequest = z.infer<typeof RelayImportRequestSchema>;
+
+export const RelayImportResponseSchema = z.object({
+  localChangeObjectId: z.string(),
+  pushed: z.array(
+    RelayArtifactSummarySchema.extend({
+      /** Where the bytes landed (digest-pinned registry ref / blob URL) — also recorded on the
+       *  change's `sourceRef.artifacts[].location` for the M17.4(b) pre-deploy byte verify. */
+      location: z.string().optional()
+    })
+  ),
+  decisionId: z.string()
+});
+export type RelayImportResponse = z.infer<typeof RelayImportResponseSchema>;
+
 /** `POST /federation/imports` accepts either bundle kind — the importer sniffs `header.kind`. */
 export const ImportBundleRequestSchema = z.union([SyncBundleSchema, PromotionBundleSchema]);
 export type ImportBundleRequest = z.infer<typeof ImportBundleRequestSchema>;

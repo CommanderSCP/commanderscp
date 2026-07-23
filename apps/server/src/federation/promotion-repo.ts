@@ -738,6 +738,31 @@ async function applyPromotionImport(
     importedFromDomain: peerId
   });
 
+  // M12 P4B §8 Q2, the AUDIT half of the strip above: when the bundle's change actually CARRIED a
+  // `requires` that was stripped, the strip itself is an engine verdict (charter principle 6 —
+  // every engine verdict persists a Decision with its inputs) and must not be invisible. Written in
+  // the SAME transaction as the import, with the stripped requirements pinned VERBATIM in the
+  // Decision inputs, so an outpost operator asking "why didn't this coupled release wait here?" gets
+  // a durable, queryable answer rather than an absence. No Decision when nothing was stripped — the
+  // common uncoupled promotion stays byte-identical.
+  if (_requiresStrippedOnPromotion !== undefined) {
+    await insertDecision(tx, {
+      orgId,
+      kind: "coupling",
+      subjectId: change.id,
+      verdict: "allow",
+      inputContext: {
+        strippedRequires: _requiresStrippedOnPromotion,
+        exporterDomainId: bundle.header.exporterDomainId,
+        sourceChangeObjectId: bundle.header.sourceChangeObjectId
+      },
+      reasonTree: {
+        summary:
+          "requires satisfied upstream at commander — stripped on promotion import (coupled-pipelines.md §8 Q2): the commander held this change in `waiting` until its prerequisites were satisfied there, and its promotion of this bundle IS the go-ahead; re-evaluating locally would be redundant or deadlock"
+      }
+    });
+  }
+
   // 3. Validate each approval attestation against the EXPORTING domain's OWN registered key —
   //    never merely against the key embedded in the attestation. Stored as evidence regardless of
   //    outcome (rejected ones are visible/auditable AS rejected, not silently dropped).

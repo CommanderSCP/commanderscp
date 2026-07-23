@@ -185,6 +185,9 @@ import {
   exportSyncBundle as exportSyncBundleRequest,
   exportPromotionBundle as exportPromotionBundleRequest,
   importBundle as importBundleRequest,
+  // M15.5(c) — the retrans validate-then-relay (ADR-0019 §2).
+  buildRelayTarball as buildRelayTarballRequest,
+  importRelayTarball as importRelayTarballRequest,
   createOverlay as createOverlayRequest,
   getMergedOverlayView as getMergedOverlayViewRequest,
   handFillObject as handFillObjectRequest,
@@ -301,6 +304,11 @@ import type {
   ImportBundleRequest,
   ImportResult,
   HandFillRequest,
+  // M15.5(c) — the retrans validate-then-relay (ADR-0019 §2).
+  RelayBuildRequest,
+  RelayBuildResponse,
+  RelayImportRequest,
+  RelayImportResponse,
   // M7: Real Executor Integrations (BUILD_AND_TEST.md §8 M7, DESIGN §11/§12).
   CreateWebhookSecretRequest,
   WebhookSecretConfiguredResponse,
@@ -1292,8 +1300,12 @@ export class ScpClient {
       });
       return unwrap(result);
     },
-    /** `scp change report --plan-json` (DESIGN §12 Mode 1) — a thin, typed wrapper around the SAME
-     *  webhook ingress `webhook()` above uses; not a new engine path. */
+    /** `scp change-source report` (DESIGN §12 Mode 1) — the GENERATED `reportChangeSource`
+     *  operation against its own typed route, `POST /change-sources/{sourceKind}/report`. Same
+     *  persist-then-process engine path as `webhook()` (one `change_source_events` row, same
+     *  processor), but PAT-authenticated (no HMAC) and fully typed — including the M12 P4B
+     *  coupled-pipeline declaration (`provides`/`requires`), which the raw webhook shape cannot
+     *  carry. */
     report: async (
       sourceKind: string,
       req: ChangeReportRequest
@@ -1535,6 +1547,21 @@ export class ScpClient {
      *  signature/hash-chain check (DESIGN §13). */
     import: async (bundle: ImportBundleRequest): Promise<ImportResult> => {
       const result = await importBundleRequest({ client: this.client, body: bundle });
+      return unwrap(result);
+    },
+    /** M15.5(c) retrans validate-then-relay (ADR-0019 §2), SOURCE side: pull + validate the
+     *  imported promotion's authorized artifact bytes and build the signed relay tarball in the
+     *  server's `SCP_RELAY_OUT_DIR` drop directory. Role `retrans` only; a failing artifact
+     *  refuses fail-closed with a 409 carrying the block `decision_id`. */
+    relay: async (req: RelayBuildRequest): Promise<RelayBuildResponse> => {
+      const result = await buildRelayTarballRequest({ client: this.client, body: req });
+      return unwrap(result);
+    },
+    /** M15.5(c) DESTINATION side: verify a relay tarball from the server's `SCP_RELAY_IN_DIR` and
+     *  push its artifacts into the local registry by digest (+ re-inspect). The receiving
+     *  M17.4(a)+(b) gates still verify everything — zero trust in the relay. */
+    relayImport: async (req: RelayImportRequest): Promise<RelayImportResponse> => {
+      const result = await importRelayTarballRequest({ client: this.client, body: req });
       return unwrap(result);
     },
     createOverlay: async (req: {

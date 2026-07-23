@@ -12,6 +12,7 @@ import type {
   Change,
   ChangeExplainResponse,
   ChangeState,
+  ChangeWaitStatus,
   CreateObjectRequest,
   Decision,
   DesiredStateManifest,
@@ -71,6 +72,24 @@ function parseList(value: string | undefined): string[] | undefined {
     .split(",")
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
+}
+
+/** M12 P4B — parse a `--requires` flag value: comma-separated `key@objectIdOrUrn` entries (the
+ *  SAME format on `scp change propose` and `scp change-source report`). Split on the LAST '@' so a
+ *  URN (which contains ':' but not '@') survives; a missing/empty half is a clear error, not a
+ *  silent drop. */
+function parseRequiresFlag(
+  value: string | undefined
+): { key: string; at: string }[] | undefined {
+  if (value === undefined) return undefined;
+  return value.split(",").map((entry) => {
+    const at = entry.slice(entry.lastIndexOf("@") + 1).trim();
+    const key = entry.slice(0, entry.lastIndexOf("@")).trim();
+    if (entry.lastIndexOf("@") < 0 || !key || !at) {
+      throw new Error(`--requires entry '${entry}' must be 'key@objectIdOrUrn'`);
+    }
+    return { key, at };
+  });
 }
 
 function objectRow(o: GraphObject): Record<string, string> {
@@ -363,6 +382,44 @@ function printApplyResult(plan: Plan, summary: PlanDiffSummary, output: OutputFo
 }
 
 /**
+ * Renders a Change's coupled-pipeline wait status (M12 P4B) — the shared body of `scp change
+ * explain` (embedded, alongside plan/Decisions) and `scp change wait-status` (standalone). `null`
+ * means the change declared no `requires`; a `wait-status` caller wants an explicit line for that
+ * case (there is nothing else on the screen to say so), `explain` silently omits the section
+ * instead (unchanged since Phase 4's `explain` support landed) — hence the `standalone` flag.
+ */
+function printWaitStatusBody(waitStatus: ChangeWaitStatus | null, standalone: boolean): void {
+  if (!waitStatus) {
+    if (standalone) console.log("(no coupled-pipeline prerequisites — this change declared no `requires`)");
+    return;
+  }
+  const outstanding = waitStatus.requirements.filter((r) => !r.satisfied).length;
+  // Derived from `outstanding`, not `waitStatus.waiting` alone: `waiting` reflects the change's
+  // STATE (`state === "waiting"`), which is false for a change read before it ever parked (still
+  // `coordinated`/`proposed`) or after it released (`executing`/`validating`/`promoted`) — either
+  // of which can still have an outstanding row (a not-yet-evaluated requirement, or a provider
+  // that was cancelled after release). Heading off `waiting` alone would print "all satisfied"
+  // over a row printing OUTSTANDING.
+  const header =
+    outstanding > 0
+      ? `Waiting on ${outstanding} of ${waitStatus.requirements.length} prerequisite(s):`
+      : `Coupled prerequisites (${waitStatus.requirements.length}, all satisfied):`;
+  console.log(standalone ? header : `\n${header}`);
+  for (const req of waitStatus.requirements) {
+    const at = req.atName ? `${req.atName} (${req.at})` : req.at;
+    const mark = req.satisfied ? `satisfied by change ${req.satisfiedByChangeId}` : "OUTSTANDING";
+    console.log(`  - ${req.key} @ ${at}: ${mark}`);
+    // "Did you mean?" (coupled-pipelines.md §3.7): only ever present on an outstanding requirement.
+    if (req.didYouMean && req.didYouMean.length > 0) {
+      console.log(`      did you mean one of: ${req.didYouMean.join(", ")}?`);
+    }
+  }
+  if (waitStatus.malformed && waitStatus.malformed.length > 0) {
+    console.log(`  malformed requires entries (unsatisfiable — fix and re-propose): ${JSON.stringify(waitStatus.malformed)}`);
+  }
+}
+
+/**
  * Prints a Change's compiled plan (waves/targets) and every Decision made about it, in order —
  * the CLI's window into the coordination engine's reasoning (BUILD_AND_TEST.md §8 M3 DoD:
  * "`scp change explain` renders" the Decision record). Deviates from `printResult`/`printTable`
@@ -379,20 +436,7 @@ function printExplainResult(result: ChangeExplainResponse, output: OutputFormat)
   console.log(`Change ${change.id} '${change.name}' — state: ${change.state}`);
 
   // M12 P4B: coupled-pipeline wait status. Present only for a change that declared `requires`.
-  if (waitStatus) {
-    const outstanding = waitStatus.requirements.filter((r) => !r.satisfied).length;
-    const header = waitStatus.waiting
-      ? `\nWaiting on ${outstanding} of ${waitStatus.requirements.length} prerequisite(s):`
-      : `\nCoupled prerequisites (${waitStatus.requirements.length}, all satisfied):`;
-    console.log(header);
-    for (const req of waitStatus.requirements) {
-      const at = req.atName ? `${req.atName} (${req.at})` : req.at;
-      const mark = req.satisfied
-        ? `satisfied by change ${req.satisfiedByChangeId}`
-        : "OUTSTANDING";
-      console.log(`  - ${req.key} @ ${at}: ${mark}`);
-    }
-  }
+  printWaitStatusBody(waitStatus, false);
 
   if (plan) {
     console.log(`\nPlan ${plan.id} (status: ${plan.status}):`);
@@ -1516,18 +1560,7 @@ export function buildProgram(): Command {
         }
       ) => {
         const client = await clientFromStoredCredentials(opts);
-        // Each `--requires` entry is `key@objectIdOrUrn`. Split on the LAST '@' so a URN (which
-        // contains ':' but not '@') survives; a missing/empty half is a clear error, not a silent drop.
-        const requires = opts.requires
-          ? opts.requires.split(",").map((entry) => {
-              const at = entry.slice(entry.lastIndexOf("@") + 1).trim();
-              const key = entry.slice(0, entry.lastIndexOf("@")).trim();
-              if (entry.lastIndexOf("@") < 0 || !key || !at) {
-                throw new Error(`--requires entry '${entry}' must be 'key@objectIdOrUrn'`);
-              }
-              return { key, at };
-            })
-          : undefined;
+        const requires = parseRequiresFlag(opts.requires);
         const created = await client.changes.propose(
           {
             name: opts.name,
@@ -1553,7 +1586,7 @@ export function buildProgram(): Command {
     .description("List Changes")
     .option(
       "--state <state>",
-      "filter by state (proposed|evaluated|coordinated|executing|validating|promoted|cancelled|rolled_back)"
+      "filter by state (proposed|evaluated|coordinated|waiting|executing|validating|promoted|cancelled|rolled_back)"
     )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
@@ -1585,6 +1618,27 @@ export function buildProgram(): Command {
       const client = await clientFromStoredCredentials(opts);
       const result = await client.changes.explain(id);
       printExplainResult(result, opts.output);
+    });
+
+  changeCmd
+    .command("wait-status <id>")
+    .description(
+      "M12 P4B: print ONLY a Change's coupled-pipeline wait status — which `requires` prerequisites " +
+        "are satisfied/outstanding (and by which change), a thin renderer over `explain`'s waitStatus"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      // No dedicated route (coupled-pipelines.md §3.8/§7 Phase 4) — `explain` already computes and
+      // returns `waitStatus`; this command is deliberately just that call, rendering only the one
+      // section instead of the full plan/Decisions/control-runs picture `explain` prints.
+      const result = await client.changes.explain(id);
+      if (opts.output === "json") {
+        console.log(JSON.stringify(result.waitStatus, null, 2));
+        return;
+      }
+      printWaitStatusBody(result.waitStatus, true);
     });
 
   changeCmd
@@ -2337,6 +2391,77 @@ export function buildProgram(): Command {
       printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
     });
 
+  // M15.5(c) — the retrans validate-then-relay (ADR-0019 §2). `relay` runs on the RETRANS-role
+  // instance: pull + validate the imported promotion's authorized artifact bytes and build the
+  // signed byte tarball in the server's SCP_RELAY_OUT_DIR drop directory. The tarball crosses the
+  // CDS out-of-band (a file walk, exactly like `.scpbundle`); `relay-import` runs on the
+  // DESTINATION outpost to verify it and push the bytes into the local registry by digest.
+  federationCmd
+    .command("relay")
+    .description(
+      "Validate-then-relay an imported promotion's artifact bytes into a signed tarball (retrans role only; fail-closed)"
+    )
+    .requiredOption("--change <idOrUrn>", "the LOCAL imported change (from `scp federation import`)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { change: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.federation.relay({ change: opts.change });
+      if (opts.output === "json") {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(`Relay tarball built (server-side): ${result.tarballPath}`);
+      for (const artifact of result.artifacts) {
+        console.log(`  ${artifact.type}  ${artifact.digest}`);
+      }
+      console.log(`Decision: ${result.decisionId}`);
+      console.log(
+        "Carry the tarball across the CDS out-of-band, then run `scp federation relay-import` on the destination."
+      );
+    });
+
+  federationCmd
+    .command("relay-import")
+    .description(
+      "Destination side of the retrans relay: verify a signed byte tarball and push its artifacts into the local registry by digest (+ re-inspect)"
+    )
+    .requiredOption(
+      "--file <name>",
+      "tarball file name inside the destination server's SCP_RELAY_IN_DIR drop directory"
+    )
+    .requiredOption(
+      "--change <idOrUrn>",
+      "the LOCAL imported change this tarball belongs to (import its .scpbundle first)"
+    )
+    .requiredOption(
+      "--pubkey <path>",
+      "path to the RETRANS instance's cosign PUBLIC key (distributed out-of-band) — verifies the tarball signature"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { file: string; change: string; pubkey: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const relayCosignPublicKey = await readFile(opts.pubkey, "utf8");
+      const result = await client.federation.relayImport({
+        file: opts.file,
+        change: opts.change,
+        relayCosignPublicKey
+      });
+      if (opts.output === "json") {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(`Relayed bytes landed for change ${result.localChangeObjectId}:`);
+      for (const artifact of result.pushed) {
+        console.log(`  ${artifact.type}  ${artifact.digest}  ${artifact.location ?? ""}`);
+      }
+      console.log(`Decision: ${result.decisionId}`);
+      console.log(
+        "The receiving M17.4(a)+(b) gates still verify everything before any deploy (zero trust in the relay)."
+      );
+    });
+
   federationCmd
     .command("hand-fill")
     .description(
@@ -2954,6 +3079,17 @@ export function buildProgram(): Command {
     .option("--workspace <workspace>", "Terraform/OpenTofu workspace name")
     .option("--artifact-digest <digest>", "artifact digest linking this to an app-side change")
     .option("--plan-json <path>", "path to a `tofu show -json`-shaped plan file, attached verbatim")
+    // M12 P4B coupled pipelines — THE pipeline declaration channel (a raw provider push webhook
+    // cannot carry a key; this CI step can). Same flag format as `scp change propose`.
+    .option(
+      "--provides <keys>",
+      "M12 P4B coupled pipelines: comma-separated keys this release makes true at its targets when it succeeds"
+    )
+    .option(
+      "--requires <list>",
+      "M12 P4B coupled pipelines: comma-separated prerequisites as key@objectIdOrUrn — the resulting " +
+        "change WAITS until another change provides each key at that object before it executes"
+    )
     // M17.2 (ADR-0015 §5) — a REFERENCE to the build-time SBOM the pipeline's own Trivy step emitted
     // and cosign-signed. SCP stores the reference, NEVER the document: do not pipe the SBOM itself.
     .option("--sbom-format <format>", "SBOM reference: cyclonedx|spdx (required to record an SBOM)")
@@ -2978,6 +3114,8 @@ export function buildProgram(): Command {
           workspace?: string;
           artifactDigest?: string;
           planJson?: string;
+          provides?: string;
+          requires?: string;
           sbomFormat?: string;
           sbomDigest?: string;
           sbomLocation?: string;
@@ -3033,7 +3171,9 @@ export function buildProgram(): Command {
           workspace: opts.workspace,
           artifactDigest: opts.artifactDigest,
           planJson,
-          sbom
+          sbom,
+          provides: parseList(opts.provides),
+          requires: parseRequiresFlag(opts.requires)
         });
         printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
       }
