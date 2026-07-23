@@ -18,10 +18,12 @@
 #               binary + the build-time-baked vulnerability DB OUT of a pinned Trivy stage into the
 #               final image — the same "copy the vetted binary out of an image that is never executed"
 #               discipline tools/cosign + tools/skopeo already use.
-#   - OpenSCAP — the FINAL base is a digest-pinned Fedora image (tools/openscap/pin.env) that carries
-#               `oscap` (openscap-scanner) + the SCAP Security Guide datastreams (scap-security-guide),
-#               installed at BUILD time. SCAP content lands at /usr/share/xml/scap/ssg/content/
-#               (ssg-<os>-ds.xml datastreams — e.g. ssg-debian11-ds.xml, ssg-ol8-ds.xml, ssg-fedora-ds.xml).
+#   - OpenSCAP — the FINAL base is a digest-pinned Fedora image (tools/openscap/pin.env) onto which
+#               `oscap` (openscap-scanner) + the SCAP Security Guide datastreams (scap-security-guide)
+#               are installed at BUILD time FROM THE FROZEN GA RELEASE REPO ONLY (not the rolling
+#               `updates` repo) at the pinned, fail-closed-asserted version. SCAP content lands at
+#               /usr/share/xml/scap/ssg/content/ (ssg-<os>-ds.xml — e.g. ssg-debian11-ds.xml,
+#               ssg-ol8-ds.xml, ssg-fedora-ds.xml).
 #
 # OFFLINE AT RUNTIME (charter principle 5): both scanners' data is pre-loaded at BUILD time (the one
 # place network is used — the same place cosign/skopeo/trivy-DB are vendored). At RUNTIME the runner is
@@ -31,12 +33,16 @@
 # the `type: "blob"` channel + refresh runbook — is increment 13.3b PART 2; this increment keeps the
 # build-time bake, so a disconnected build host needs a local mirror of the fedora + trivy sources.)
 #
-# HONEST LIMITATION (13.3b part 1): `oscap` + SSG are `dnf install`ed from the pinned Fedora base's
-# DEFAULT repos at build time, so the FEDORA IMAGE is digest-pinned but the exact oscap/SSG package
-# versions track those repos. tools/openscap/pin.env records the version the base's repos currently
-# serve; the Dockerfile asserts `oscap --version` succeeds (fails the build loudly if the toolchain is
-# broken). Fully offline package vendoring / exact-version pinning is 13.3b part 2, alongside the SCAP
-# content blob channel — deliberately out of scope here.
+# CONTENT-ADDRESSED, NOT FLOATING (this is the whole point — mirrors the trivy/cosign/skopeo pin
+# discipline). `oscap` + SSG are installed ONLY from the FROZEN Fedora GA release repo
+# (`--disablerepo=* --enablerepo=fedora`), an immutable snapshot Fedora never republishes into — NOT
+# the rolling `updates`/`updates-testing` repos (which is what made the exact tool version float at
+# build time). So the running oscap + the SSG datastreams are reproducible from the pin: the base is
+# digest-pinned AND its GA release tree is frozen, and the build ASSERTS the exact version fail-closed
+# (`oscap --version | grep -qF "(oscap) ${OPENSCAP_PINNED_VERSION}"` — the build FAILS LOUDLY on any
+# drift from tools/openscap/pin.env's OPENSCAP_PINNED_VERSION, never merely that oscap "runs"). The
+# drift test (packages/plugins/managed-scan/src/pin.test.ts) enforces that the pinned version + the
+# fail-closed assertion + the no-floating repo scoping all stay in the Dockerfile.
 
 # Both base-image pins are declared as GLOBAL build args BEFORE the first FROM — a build arg used in a
 # `FROM` must precede the first stage (an ARG declared inside a stage is blank at the next FROM). The
@@ -63,13 +69,25 @@ RUN trivy --cache-dir /trivy-cache image --download-db-only && trivy version
 # ---------------------------------------------------------------------------------------------------
 FROM ${OPENSCAP_IMAGE}
 
+# The exact oscap version this image is PINNED to (tools/openscap/pin.env OPENSCAP_PINNED_VERSION).
+# Re-declared here inside the final stage so the RUN below can read it (a global ARG is only in scope
+# for FROM lines). The drift test asserts this default matches pin.env byte-for-byte.
+ARG OPENSCAP_PINNED_VERSION=1.4.0
+
 # oscap (openscap-scanner) + the SCAP Security Guide datastreams, plus jq/tar for extracting the
 # docker-cp'd OCI layout into a rootfs (run.sh). `--setopt=install_weak_deps=False` keeps the image
 # lean (every extra byte is attack surface in a container the promotion scan step launches per
-# artifact). `oscap --version` asserts the toolchain is present and runnable — fails the build loudly.
-RUN dnf install -y --setopt=install_weak_deps=False \
+# artifact).
+#
+# NO FLOATING INSTALL: `--disablerepo=* --enablerepo=fedora` installs ONLY from the FROZEN Fedora GA
+# release repo — an immutable snapshot, NOT the rolling `updates` repo — so the oscap + SSG versions
+# are reproducible from the pinned base's frozen release tree (see the header comment). FAIL-CLOSED
+# VERSION ASSERTION: `oscap --version | grep -qF "(oscap) ${OPENSCAP_PINNED_VERSION}"` FAILS THE
+# BUILD LOUDLY unless the running oscap is EXACTLY the pinned version (not merely "runs") — the same
+# content-addressed discipline the Trivy/cosign/skopeo pins already enforce.
+RUN dnf install -y --setopt=install_weak_deps=False --disablerepo="*" --enablerepo=fedora \
       openscap-scanner scap-security-guide jq tar gzip \
-  && oscap --version \
+  && oscap --version | grep -qF "(oscap) ${OPENSCAP_PINNED_VERSION}" \
   && ls /usr/share/xml/scap/ssg/content/ssg-fedora-ds.xml \
   && dnf clean all
 

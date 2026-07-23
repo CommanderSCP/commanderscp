@@ -19,7 +19,9 @@ docker build -t scp-runner-scan:dev apps/runner-scan
   `COPY --from` a digest-pinned Trivy stage (`tools/trivy/pin.env`). The image no longer builds
   `FROM` Trivy's Alpine base — see below.
 - **OpenSCAP** (compliance) — the FINAL base is a digest-pinned Fedora image (`tools/openscap/pin.env`)
-  carrying `oscap` (openscap-scanner) + the SCAP Security Guide datastreams (scap-security-guide) at
+  onto which `oscap` (openscap-scanner) + the SCAP Security Guide datastreams (scap-security-guide)
+  are installed from the **frozen GA release repo only** (`--disablerepo=* --enablerepo=fedora`, not
+  the rolling `updates` repo) at a **fail-closed-asserted** pinned version, landing at
   `/usr/share/xml/scap/ssg/content/` (`ssg-<os>-ds.xml`). Fedora, not Alpine, because `oscap` + its
   OVAL/SCE probes + SSG content are glibc-linked — Alpine is an `ldd` nightmare.
 

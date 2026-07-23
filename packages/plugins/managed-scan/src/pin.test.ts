@@ -84,4 +84,38 @@ describe("openscap pin drift gate (M13.3b — the second managed-scan method)", 
     // The FINAL FROM must resolve to that ARG (content-addressed, no floating tag).
     expect(dockerfile).toMatch(/FROM\s+\$\{OPENSCAP_IMAGE\}/);
   });
+
+  it("apps/runner-scan/Dockerfile pins the oscap version to pin.env OPENSCAP_PINNED_VERSION (no drift)", () => {
+    // Mirrors the image drift check: the Dockerfile's `ARG OPENSCAP_PINNED_VERSION` default must equal
+    // pin.env's OPENSCAP_PINNED_VERSION byte-for-byte (not just a well-formed version string).
+    const pinnedVersion = readPin(OPENSCAP_PIN_ENV, "OPENSCAP_PINNED_VERSION");
+    const dockerfile = readFileSync(DOCKERFILE, "utf8");
+    const argMatch = /ARG\s+OPENSCAP_PINNED_VERSION=(\S+)/.exec(dockerfile);
+    expect(argMatch, "apps/runner-scan/Dockerfile must set `ARG OPENSCAP_PINNED_VERSION=<pin>`").not.toBeNull();
+    expect(argMatch![1]).toBe(pinnedVersion);
+  });
+
+  it("apps/runner-scan/Dockerfile asserts the oscap version FAIL-CLOSED (build fails on drift)", () => {
+    // The security-relevant guarantee: the build must assert the RUNNING oscap equals the pin, not
+    // merely that oscap runs. A `grep -qF` on `oscap --version` against ${OPENSCAP_PINNED_VERSION}
+    // makes the build exit non-zero on any version drift.
+    const dockerfile = readFileSync(DOCKERFILE, "utf8");
+    expect(
+      dockerfile,
+      "Dockerfile must assert `oscap --version | grep -qF ...${OPENSCAP_PINNED_VERSION}` (fail-closed)"
+    ).toMatch(/oscap\s+--version\s*\|\s*grep\s+-qF\b[^\n]*\$\{OPENSCAP_PINNED_VERSION\}/);
+  });
+
+  it("apps/runner-scan/Dockerfile installs oscap/SSG from the snapshotted repo, NOT the floating default set", () => {
+    // No-floating guard: the oscap+SSG install must be scoped to the frozen GA release repo
+    // (--enablerepo=<pin.env OPENSCAP_INSTALL_REPO>) with the rolling repos disabled (--disablerepo=*),
+    // so the tool version is reproducible from the pin rather than whatever the repos serve at build.
+    const installRepo = readPin(OPENSCAP_PIN_ENV, "OPENSCAP_INSTALL_REPO");
+    expect(installRepo, "OPENSCAP_INSTALL_REPO must name the frozen repo the Dockerfile installs from").toBeTruthy();
+    const dockerfile = readFileSync(DOCKERFILE, "utf8");
+    const installLine = /dnf\s+install[^\n]*openscap-scanner[^\n]*/.exec(dockerfile.replace(/\\\n\s*/g, " "));
+    expect(installLine, "Dockerfile must `dnf install ... openscap-scanner ...`").not.toBeNull();
+    expect(installLine![0], "install must disable the rolling repos (--disablerepo=*)").toMatch(/--disablerepo=(["']?)\*\1/);
+    expect(installLine![0], "install must enable only the pinned frozen repo").toContain(`--enablerepo=${installRepo}`);
+  });
 });

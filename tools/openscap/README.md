@@ -14,9 +14,11 @@ the single source of truth every consumer reads.
 | | |
 |---|---|
 | Tool | [OpenSCAP](https://github.com/OpenSCAP/openscap) (`oscap`) + [SCAP Security Guide](https://github.com/ComplianceAsCode/content) datastreams |
-| Version | **oscap 1.4.2** (`oscap --version`), from the pinned Fedora base's default repos at build time |
+| oscap version | **1.4.0** (`oscap --version`) — installed from the Fedora GA **frozen** release repo, **fail-closed asserted** at build (not the rolling `updates` repo) |
+| SSG content version | **0.1.74** (`scap-security-guide`, same frozen release repo) |
 | Image ref (**what the runner's FINAL stage builds FROM**) | `fedora@sha256:f1a3fab47bcb3c3ddf3135d5ee7ba8b7b25f2e809a47440936212a3a50957f3d` — the **multi-arch index (manifest-list) digest** for Fedora 41 |
 | linux/amd64 platform digest (production runner arch, provenance + drift-asserted) | `sha256:68bb1ba893be0c05991b2df55bc6571862bab7526fd6053b1ebacd53a2a75366` |
+| Install repo (frozen snapshot; `--disablerepo=* --enablerepo=fedora`) | `fedora` (Fedora 41 GA release tree — immutable) |
 | SCAP content path | `/usr/share/xml/scap/ssg/content/` (`ssg-<os>-ds.xml` datastreams — e.g. `ssg-debian11-ds.xml`, `ssg-ol8-ds.xml`, `ssg-fedora-ds.xml`) |
 | License | LGPL-2.1 (openscap) / BSD-3-Clause (SSG content) |
 
@@ -37,17 +39,31 @@ reproducible, resolving to the build host's architecture (amd64 in production, a
 dev/CI host) with no emulation. The linux/amd64 platform digest is recorded for provenance and
 asserted by the drift test as the production target arch.
 
-## HONEST LIMITATION — build-time package install (13.3b part 1)
+## Content-addressed install — frozen GA repo + fail-closed version assertion
 
-The **Fedora image is digest-pinned**, but `oscap` + SSG are `dnf install`ed from that base's
-default repos at build time, so the exact **package** versions track those repos rather than a
-content-addressed pin. `OPENSCAP_PINNED_VERSION` records the oscap version the base serves as of
-this pin; the Dockerfile asserts `oscap --version` **succeeds** at build (failing loudly if the
-toolchain is broken) but does not assert an exact version (which would break the build on every
-upstream repo refresh). Fully offline package vendoring / exact-version pinning **and** the SCAP
-content `type: "blob"` cross-boundary transport is **13.3b part 2** — deliberately out of scope for
-this increment, which keeps the build-time bake. A disconnected build host therefore needs a local
-mirror of the Fedora + Trivy sources until part 2 lands.
+The **Fedora image is digest-pinned** AND `oscap` + SSG are installed **only from the frozen Fedora
+GA release repo** (`--disablerepo=* --enablerepo=fedora` in the Dockerfile) — an immutable snapshot
+Fedora never republishes into — **not** the rolling `updates`/`updates-testing` repos. Installing
+from those rolling repos is what previously made the exact tool version *float* at build time (the
+repo served whatever was latest); scoping the install to the GA release tree makes the oscap + SSG
+versions **reproducible from the pin**. The build then **asserts the exact version fail-closed**:
+
+```dockerfile
+RUN dnf install -y --disablerepo="*" --enablerepo=fedora openscap-scanner scap-security-guide ... \
+ && oscap --version | grep -qF "(oscap) ${OPENSCAP_PINNED_VERSION}" \
+ && ...
+```
+
+so a version mismatch **fails the build loudly** rather than merely checking that oscap runs — the
+same content-addressed discipline the Trivy/cosign/skopeo pins already enforce.
+`packages/plugins/managed-scan/src/pin.test.ts` gates all of this: the `ARG OPENSCAP_PINNED_VERSION`
+default must equal `OPENSCAP_PINNED_VERSION`, the fail-closed `grep -qF` assertion must be present,
+and the install must be scoped to the frozen repo (no floating default set).
+
+A *fully* offline, sha256-per-RPM mirror of the closure **and** the SCAP-content `type: "blob"`
+cross-boundary transport is **13.3b part 2** — a disconnected build host still needs a local mirror
+of the Fedora GA release tree until then; the reproducibility guarantee here is the frozen GA
+snapshot plus the fail-closed version assertion.
 
 ## Trust on first vendor (read this before updating the pin)
 
@@ -77,7 +93,17 @@ fold away).
    docker manifest inspect fedora:<version> \
      | jq -r '.manifests[] | select(.platform.architecture=="amd64" and .platform.os=="linux") | .digest'
    ```
-4. Confirm `oscap --version` and the SSG content path inside a throwaway build, and update
-   `OPENSCAP_PINNED_VERSION` to the reported version.
+4. Determine the oscap + SSG versions the new base's **frozen GA release repo** serves (query the
+   release repo with the rolling repos disabled — the versions the Dockerfile install will resolve):
+   ```sh
+   docker run --rm fedora@<newdigest> \
+     dnf -q --disablerepo=updates --disablerepo=updates-testing \
+       list openscap-scanner scap-security-guide
+   ```
+   and update `OPENSCAP_PINNED_VERSION` + `OPENSCAP_SSG_VERSION` to those exact versions.
 5. Update `pin.env` (all keys) and this table; `apps/runner-scan/Dockerfile`'s `ARG OPENSCAP_IMAGE`
-   default must match `OPENSCAP_PINNED_IMAGE` (the drift test enforces it).
+   default must match `OPENSCAP_PINNED_IMAGE` and its `ARG OPENSCAP_PINNED_VERSION` default must match
+   `OPENSCAP_PINNED_VERSION` (the drift test enforces both, plus the fail-closed `grep -qF` assertion
+   and the frozen-repo scoping).
+6. `pnpm --filter @scp/plugin-managed-scan test` — `pin.test.ts` is the drift gate and will name any
+   copy you missed.

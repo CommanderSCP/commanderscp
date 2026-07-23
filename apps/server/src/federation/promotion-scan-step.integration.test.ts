@@ -83,17 +83,25 @@ const CLEAN_SRC = "docker://docker.io/library/alpine:3.20";
 const DIRTY_SRC = "docker://docker.io/library/debian:11";
 
 // --- OpenSCAP subjects (M13.3b — the second managed-scan method) ---------------------------------
-// Calibrated against the runner image's baked SSG content (oscap 1.4.2) using OSCAP_PROBE_ROOT over
-// the extracted image rootfs and the SSG `standard` profile — the mapping folds XCCDF high→high /
-// medium→medium / low→low, critical stays 0 (XCCDF has none), unknown/unset fold away:
-//   OSCAP CLEAN — debian:11 vs ssg-debian11 `standard`: only LOW-severity fails, ZERO high/critical →
-//                 within the fail-closed 0/0 (high) default → PASS. (low/medium are unbounded.)
+// Calibrated against the runner image's PINNED, content-addressed SSG content (oscap 1.4.0 /
+// scap-security-guide 0.1.74 — tools/openscap/pin.env, installed from the frozen Fedora GA release
+// repo, NOT the floating updates repo) using OSCAP_PROBE_ROOT over the runner-extracted image rootfs.
+// The mapping folds XCCDF high→high / medium→medium / low→low, critical stays 0 (XCCDF has none),
+// unknown/unset fold away:
+//   OSCAP CLEAN — debian:11 vs ssg-debian11 `anssi_np_nt28_minimal`: ZERO high/critical failed rules
+//                 (only low/medium fail, which are unbounded) → within the fail-closed 0/0 (high)
+//                 default → PASS. (Under SSG 0.1.74 the heavier `standard` profile carries one
+//                 high-severity fail on debian:11, so the clean case uses the ANSSI *minimal* profile —
+//                 the lightest baseline the pinned datastream ships — which is high-clean.)
 //   OSCAP DIRTY — oraclelinux:8 vs ssg-ol8 `standard`: ≥1 HIGH-severity fail (rpm-DB-checkable package
 //                 rules evaluate offline) → breaches maxHigh=0 → FAIL.
 const OSCAP_CLEAN_SRC = "docker://docker.io/library/debian:11";
 const OSCAP_DIRTY_SRC = "docker://docker.io/library/oraclelinux:8";
 const SSG = "/usr/share/xml/scap/ssg/content";
-const OSCAP_PROFILE = "xccdf_org.ssgproject.content_profile_standard";
+// The clean case uses the lightest baseline (high-clean under the pinned SSG); the dirty case uses
+// the heavier `standard` profile (which does carry a high-severity fail on ol8).
+const OSCAP_CLEAN_PROFILE = "xccdf_org.ssgproject.content_profile_anssi_np_nt28_minimal";
+const OSCAP_DIRTY_PROFILE = "xccdf_org.ssgproject.content_profile_standard";
 
 async function dockerAvailable(): Promise<boolean> {
   try {
@@ -457,7 +465,7 @@ describe.runIf(await dockerAvailable())(
     // -------------------------------------------------------------------------------------------
     it("(f) OPENSCAP: a clean image passes the profile at the commander → digest-bound (scanner:openscap) → E6 EXPORTS", async () => {
       const changeId = await proposeArtifactChange(oscapCleanDigest, oscapCleanRepo, "rpm", {
-        profile: OSCAP_PROFILE,
+        profile: OSCAP_CLEAN_PROFILE,
         datastream: `${SSG}/ssg-debian11-ds.xml`
       });
 
@@ -491,7 +499,7 @@ describe.runIf(await dockerAvailable())(
     // -------------------------------------------------------------------------------------------
     it("(g) OPENSCAP: an image failing the profile over threshold → status FAIL → E6 REFUSES with a decision_id", async () => {
       const changeId = await proposeArtifactChange(oscapDirtyDigest, oscapDirtyRepo, "rpm", {
-        profile: OSCAP_PROFILE,
+        profile: OSCAP_DIRTY_PROFILE,
         datastream: `${SSG}/ssg-ol8-ds.xml`
       });
 
