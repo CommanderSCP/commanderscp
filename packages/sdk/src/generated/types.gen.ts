@@ -9321,6 +9321,7 @@ export type ExplainChangeResponses = {
                 atName: string | null;
                 satisfied: boolean;
                 satisfiedByChangeId: string | null;
+                didYouMean?: Array<string>;
             }>;
             malformed?: Array<unknown>;
         } | null;

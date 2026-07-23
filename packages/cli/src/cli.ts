@@ -12,6 +12,7 @@ import type {
   Change,
   ChangeExplainResponse,
   ChangeState,
+  ChangeWaitStatus,
   CreateObjectRequest,
   Decision,
   DesiredStateManifest,
@@ -381,6 +382,37 @@ function printApplyResult(plan: Plan, summary: PlanDiffSummary, output: OutputFo
 }
 
 /**
+ * Renders a Change's coupled-pipeline wait status (M12 P4B) — the shared body of `scp change
+ * explain` (embedded, alongside plan/Decisions) and `scp change wait-status` (standalone). `null`
+ * means the change declared no `requires`; a `wait-status` caller wants an explicit line for that
+ * case (there is nothing else on the screen to say so), `explain` silently omits the section
+ * instead (unchanged since Phase 4's `explain` support landed) — hence the `standalone` flag.
+ */
+function printWaitStatusBody(waitStatus: ChangeWaitStatus | null, standalone: boolean): void {
+  if (!waitStatus) {
+    if (standalone) console.log("(no coupled-pipeline prerequisites — this change declared no `requires`)");
+    return;
+  }
+  const outstanding = waitStatus.requirements.filter((r) => !r.satisfied).length;
+  const header = waitStatus.waiting
+    ? `Waiting on ${outstanding} of ${waitStatus.requirements.length} prerequisite(s):`
+    : `Coupled prerequisites (${waitStatus.requirements.length}, all satisfied):`;
+  console.log(standalone ? header : `\n${header}`);
+  for (const req of waitStatus.requirements) {
+    const at = req.atName ? `${req.atName} (${req.at})` : req.at;
+    const mark = req.satisfied ? `satisfied by change ${req.satisfiedByChangeId}` : "OUTSTANDING";
+    console.log(`  - ${req.key} @ ${at}: ${mark}`);
+    // "Did you mean?" (coupled-pipelines.md §3.7): only ever present on an outstanding requirement.
+    if (req.didYouMean && req.didYouMean.length > 0) {
+      console.log(`      did you mean one of: ${req.didYouMean.join(", ")}?`);
+    }
+  }
+  if (waitStatus.malformed && waitStatus.malformed.length > 0) {
+    console.log(`  malformed requires entries (unsatisfiable — fix and re-propose): ${JSON.stringify(waitStatus.malformed)}`);
+  }
+}
+
+/**
  * Prints a Change's compiled plan (waves/targets) and every Decision made about it, in order —
  * the CLI's window into the coordination engine's reasoning (BUILD_AND_TEST.md §8 M3 DoD:
  * "`scp change explain` renders" the Decision record). Deviates from `printResult`/`printTable`
@@ -397,20 +429,7 @@ function printExplainResult(result: ChangeExplainResponse, output: OutputFormat)
   console.log(`Change ${change.id} '${change.name}' — state: ${change.state}`);
 
   // M12 P4B: coupled-pipeline wait status. Present only for a change that declared `requires`.
-  if (waitStatus) {
-    const outstanding = waitStatus.requirements.filter((r) => !r.satisfied).length;
-    const header = waitStatus.waiting
-      ? `\nWaiting on ${outstanding} of ${waitStatus.requirements.length} prerequisite(s):`
-      : `\nCoupled prerequisites (${waitStatus.requirements.length}, all satisfied):`;
-    console.log(header);
-    for (const req of waitStatus.requirements) {
-      const at = req.atName ? `${req.atName} (${req.at})` : req.at;
-      const mark = req.satisfied
-        ? `satisfied by change ${req.satisfiedByChangeId}`
-        : "OUTSTANDING";
-      console.log(`  - ${req.key} @ ${at}: ${mark}`);
-    }
-  }
+  printWaitStatusBody(waitStatus, false);
 
   if (plan) {
     console.log(`\nPlan ${plan.id} (status: ${plan.status}):`);
@@ -1592,6 +1611,27 @@ export function buildProgram(): Command {
       const client = await clientFromStoredCredentials(opts);
       const result = await client.changes.explain(id);
       printExplainResult(result, opts.output);
+    });
+
+  changeCmd
+    .command("wait-status <id>")
+    .description(
+      "M12 P4B: print ONLY a Change's coupled-pipeline wait status — which `requires` prerequisites " +
+        "are satisfied/outstanding (and by which change), a thin renderer over `explain`'s waitStatus"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      // No dedicated route (coupled-pipelines.md §3.8/§7 Phase 4) — `explain` already computes and
+      // returns `waitStatus`; this command is deliberately just that call, rendering only the one
+      // section instead of the full plan/Decisions/control-runs picture `explain` prints.
+      const result = await client.changes.explain(id);
+      if (opts.output === "json") {
+        console.log(JSON.stringify(result.waitStatus, null, 2));
+        return;
+      }
+      printWaitStatusBody(result.waitStatus, true);
     });
 
   changeCmd

@@ -233,7 +233,12 @@ export const ChangeRequirementStatusSchema = z.object({
   atName: z.string().nullable(),
   satisfied: z.boolean(),
   /** The change (validating|promoted) currently providing this key at `at`, or null while outstanding. */
-  satisfiedByChangeId: z.string().uuid().nullable()
+  satisfiedByChangeId: z.string().uuid().nullable(),
+  /** M12 P4B Phase 4 "did you mean" (coupled-pipelines.md §3.7): while UNSATISFIED, the `provides`
+   *  keys some change has actually declared at this `at` object — an exact, scoped diagnosis (not a
+   *  prefix guess) for a typo'd key. `.optional()`, present only when unsatisfied and non-empty;
+   *  absent once satisfied (the question is moot) and for every pre-Phase-4 explain caller. */
+  didYouMean: z.array(z.string()).optional()
 });
 export type ChangeRequirementStatus = z.infer<typeof ChangeRequirementStatusSchema>;
 
