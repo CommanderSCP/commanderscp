@@ -171,6 +171,20 @@ jobs:
           command -v skopeo >/dev/null 2>&1 && exit 0
           sudo apt-get update -qq
           sudo apt-get install -y -qq skopeo
+      - name: Install the PINNED skopeo (the same binary+library closure the scp image vendors)
+        # PINNED, not apt's (M15.5 c1/c3 — the M17.3 E1 argument, now for skopeo): apt gives this
+        # Ubuntu runner skopeo 1.13.3, BELOW the documented 1.16+ floor (BUILD_AND_TEST.md §1) and
+        # not the 1.22.2 the runtime image vendors. That drift broke the M15.5(c) relay suite for
+        # real: cosign v3 attaches image signatures under the OCI 1.1 referrers-FALLBACK tag (an
+        # image index with artifactType children), which skopeo 1.13.3 cannot copy with
+        # --preserve-digests ("Manifest list must be converted…cannot modify it"), so the relay's
+        # signature discovery found nothing and correctly fail-closed. The script installs the
+        # runtime image's own layout at /opt/scp (binary + library closure + wrapper), so
+        # packages/cosign/src/skopeo-bin.ts resolves it as the VENDORED pin — fail-closed version
+        # assertion included — exactly the resolution branch production takes. The apt skopeo
+        # above deliberately STAYS on PATH: it is the "operator's own skopeo" the air-gap
+        # install.sh suite exercises (probed, never version-asserted — see skopeo-bin.ts).
+        run: scripts/install-pinned-skopeo.sh
       - run: pnpm build
       - run: pnpm test:integration
       # Explicit, not part of test:integration's task graph (see comment above) — this is the

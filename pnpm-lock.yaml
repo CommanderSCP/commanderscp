@@ -62,6 +62,9 @@ importers:
       '@nats-io/transport-node':
         specifier: ^3.4.0
         version: 3.4.0
+      '@scp/airgap':
+        specifier: workspace:*
+        version: link:../../deploy/airgap
       '@scp/cosign':
         specifier: workspace:*
         version: link:../../packages/cosign

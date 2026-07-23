@@ -15,6 +15,11 @@ import { federationSelf } from "../db/schema.js";
  * `initFederationSelf` call (never inferred), so a domain silently defaults to none of
  * commander/outpost/retrans — federation stays fully opt-in per DESIGN §13 ("federation enhances
  * operation, it is never required for it").
+ *
+ * The `retrans` arm is no longer a placeholder (M15.5(c), ADR-0019): a `role: 'retrans'` instance
+ * — and ONLY one — may run the byte relay (`retrans-relay.ts::buildRelayTarball`), the ADR-0004
+ * validate-then-relay behavior. Role remains advisory for everything else, but the relay treats it
+ * as a hard precondition (fail-closed 409 on any other role).
  */
 export interface FederationSelf {
   orgId: string;

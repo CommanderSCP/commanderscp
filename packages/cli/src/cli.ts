@@ -2337,6 +2337,77 @@ export function buildProgram(): Command {
       printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
     });
 
+  // M15.5(c) — the retrans validate-then-relay (ADR-0019 §2). `relay` runs on the RETRANS-role
+  // instance: pull + validate the imported promotion's authorized artifact bytes and build the
+  // signed byte tarball in the server's SCP_RELAY_OUT_DIR drop directory. The tarball crosses the
+  // CDS out-of-band (a file walk, exactly like `.scpbundle`); `relay-import` runs on the
+  // DESTINATION outpost to verify it and push the bytes into the local registry by digest.
+  federationCmd
+    .command("relay")
+    .description(
+      "Validate-then-relay an imported promotion's artifact bytes into a signed tarball (retrans role only; fail-closed)"
+    )
+    .requiredOption("--change <idOrUrn>", "the LOCAL imported change (from `scp federation import`)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { change: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.federation.relay({ change: opts.change });
+      if (opts.output === "json") {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(`Relay tarball built (server-side): ${result.tarballPath}`);
+      for (const artifact of result.artifacts) {
+        console.log(`  ${artifact.type}  ${artifact.digest}`);
+      }
+      console.log(`Decision: ${result.decisionId}`);
+      console.log(
+        "Carry the tarball across the CDS out-of-band, then run `scp federation relay-import` on the destination."
+      );
+    });
+
+  federationCmd
+    .command("relay-import")
+    .description(
+      "Destination side of the retrans relay: verify a signed byte tarball and push its artifacts into the local registry by digest (+ re-inspect)"
+    )
+    .requiredOption(
+      "--file <name>",
+      "tarball file name inside the destination server's SCP_RELAY_IN_DIR drop directory"
+    )
+    .requiredOption(
+      "--change <idOrUrn>",
+      "the LOCAL imported change this tarball belongs to (import its .scpbundle first)"
+    )
+    .requiredOption(
+      "--pubkey <path>",
+      "path to the RETRANS instance's cosign PUBLIC key (distributed out-of-band) — verifies the tarball signature"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { file: string; change: string; pubkey: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const relayCosignPublicKey = await readFile(opts.pubkey, "utf8");
+      const result = await client.federation.relayImport({
+        file: opts.file,
+        change: opts.change,
+        relayCosignPublicKey
+      });
+      if (opts.output === "json") {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(`Relayed bytes landed for change ${result.localChangeObjectId}:`);
+      for (const artifact of result.pushed) {
+        console.log(`  ${artifact.type}  ${artifact.digest}  ${artifact.location ?? ""}`);
+      }
+      console.log(`Decision: ${result.decisionId}`);
+      console.log(
+        "The receiving M17.4(a)+(b) gates still verify everything before any deploy (zero trust in the relay)."
+      );
+    });
+
   federationCmd
     .command("hand-fill")
     .description(

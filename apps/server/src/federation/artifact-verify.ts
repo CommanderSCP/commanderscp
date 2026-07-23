@@ -69,8 +69,12 @@ export function normalizeSha256Digest(raw: string): string | null {
  * Bind a resolved OCI reference to the AUTHORIZED digest: keep the repository (and any tag) part,
  * force the digest to `artifact.digest`. A resolved ref whose own digest suffix disagrees with the
  * authorized digest is a substitution attempt and fails WITHOUT invoking cosign.
+ *
+ * Exported for the M15.5(c) retrans relay (federation/retrans-relay.ts), whose skopeo PULL step
+ * constructs its source refs with exactly this binding (ADR-0019 §2 step 2) — one implementation,
+ * shared, so the pull path and the verify path can never bind differently.
  */
-function bindOciRefToAuthorizedDigest(
+export function bindOciRefToAuthorizedDigest(
   resolvedRef: string,
   authorizedDigest: string
 ): { ok: true; ref: string } | { ok: false; reason: string } {
@@ -363,8 +367,10 @@ export class LocationRegistryReader implements ArtifactRegistryReader {
    *  entry EXACTLY (case-insensitive; no suffix/wildcard matching — a `host:port` is a specific
    *  service, exactly as the blob guard treats origins). UNSET/empty allowlist rejects every OCI
    *  location (fail-closed) — the operator opts the OCI verify egress in explicitly, symmetric
-   *  with SCP_ARTIFACT_BLOB_BASE_URLS. */
-  private assertOciRegistryHostAllowed(ref: string): void {
+   *  with SCP_ARTIFACT_BLOB_BASE_URLS. `protected` (not private) so the M15.5(c) retrans relay's
+   *  source-registry reader (retrans-relay.ts) can apply the SAME guard to its skopeo-pull refs —
+   *  ADR-0019 §4: the relay's pull side uses the same two allowlists as the verify path. */
+  protected assertOciRegistryHostAllowed(ref: string): void {
     if (this.allowedOciRegistryHosts.length === 0) {
       throw new Error(
         `oci registry host not allowlisted: location '${ref}' rejected — no operator-configured ` +

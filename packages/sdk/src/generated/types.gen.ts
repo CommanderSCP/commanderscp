@@ -13337,6 +13337,179 @@ export type ImportBundleResponses = {
 
 export type ImportBundleResponse = ImportBundleResponses[keyof ImportBundleResponses];
 
+export type BuildRelayTarballData = {
+    body: {
+        change: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/federation/relay';
+};
+
+export type BuildRelayTarballErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type BuildRelayTarballError = BuildRelayTarballErrors[keyof BuildRelayTarballErrors];
+
+export type BuildRelayTarballResponses = {
+    /**
+     * Success
+     */
+    200: {
+        tarballPath: string;
+        artifacts: Array<{
+            type: 'oci' | 'blob';
+            digest: string;
+        }>;
+        decisionId: string;
+    };
+};
+
+export type BuildRelayTarballResponse = BuildRelayTarballResponses[keyof BuildRelayTarballResponses];
+
+export type ImportRelayTarballData = {
+    body: {
+        file: string;
+        change: string;
+        relayCosignPublicKey: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/federation/relay/import';
+};
+
+export type ImportRelayTarballErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ImportRelayTarballError = ImportRelayTarballErrors[keyof ImportRelayTarballErrors];
+
+export type ImportRelayTarballResponses = {
+    /**
+     * Success
+     */
+    200: {
+        localChangeObjectId: string;
+        pushed: Array<{
+            type: 'oci' | 'blob';
+            digest: string;
+            location?: string;
+        }>;
+        decisionId: string;
+    };
+};
+
+export type ImportRelayTarballResponse = ImportRelayTarballResponses[keyof ImportRelayTarballResponses];
+
 export type CreateOverlayData = {
     body: {
         base: string;
