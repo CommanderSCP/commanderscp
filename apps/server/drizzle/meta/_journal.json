@@ -246,6 +246,13 @@
       "when": 1785900000000,
       "tag": "0034_federation_inbox_files",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1786000000000,
+      "tag": "0035_scanner_assignments",
+      "breakpoints": true
     }
   ]
 }

@@ -46,6 +46,18 @@ export const ScanThresholdSchema = z.object({
 });
 export type ScanThreshold = z.infer<typeof ScanThresholdSchema>;
 
+/**
+ * The managed-scan METHODS the commander's promotion scan step can run (ADR-0020 §2, proposal §13.3).
+ * A closed enum, extended only by a deliberate owner decision (a new scanner plugin lands as a new
+ * value here + a new runner-image tool). This is the value set the scanner-assignment registry maps
+ * artifact types onto (`ScannerAssignmentSchema` in executors.ts) and the value set `ScanEvidence.scanner`
+ * is widened to below — so evidence is self-describing about WHICH method produced it. M13 ships
+ * `trivy` first, `openscap` second (proposal §13.3 "Increment order"); both are enumerated up front so
+ * the registry and evidence shapes are stable across the two 13.3a increments.
+ */
+export const ScanMethodSchema = z.enum(["trivy", "openscap"]);
+export type ScanMethod = z.infer<typeof ScanMethodSchema>;
+
 
 // ===========================================================================================
 // M17.5 — SCOPED SCAN-REQUIREMENT POLICIES (ADR-0016), most-restrictive-wins over six tiers.
@@ -177,10 +189,13 @@ export type PutInstanceScanFloorRequest = z.infer<typeof PutInstanceScanFloorReq
  * change (the control returns `fail`, and this evidence records `digestMatch: false`).
  */
 export const ScanEvidenceSchema = z.object({
-  /** Always `"trivy"` for M17.1 — the one scanner whose result schema this control parses. A field,
-   *  not a constant, so the evidence is self-describing in a Decision and a future second scanner
-   *  slots in without a shape change. */
-  scanner: z.literal("trivy"),
+  /** WHICH scan method produced this verdict. Widened from `z.literal("trivy")` to `ScanMethodSchema`
+   *  (ADR-0020 §2 / proposal §13.3, 13.3a) — this was designed as a field "so a future second scanner
+   *  slots in without a shape change", and `openscap` is that second scanner. The widening is strictly
+   *  ADDITIVE and GATE-INVISIBLE: `trivy` is still accepted, so every existing evidence document (and
+   *  the E6 export gate's `ScanEvidenceSchema.safeParse`, promotion-repo.ts) parses byte-for-byte
+   *  unchanged; the gate reads only `digestMatch`/`artifactDigest`, never `scanner`. */
+  scanner: ScanMethodSchema,
   /** Trivy's own reported version (result JSON, best-effort) — `"unknown"` when the result omits it. */
   scannerVersion: z.string(),
   /** The artifact digest Trivy actually scanned, normalized to `sha256:<hex>` where derivable from

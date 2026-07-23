@@ -11877,6 +11877,105 @@ export type PutInstanceScanFloorResponses = {
 
 export type PutInstanceScanFloorResponse = PutInstanceScanFloorResponses[keyof PutInstanceScanFloorResponses];
 
+export type ListScannerAssignmentsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/instance/scanner-assignments';
+};
+
+export type ListScannerAssignmentsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListScannerAssignmentsError = ListScannerAssignmentsErrors[keyof ListScannerAssignmentsErrors];
+
+export type ListScannerAssignmentsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            executorType: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+            methods: Array<'trivy' | 'openscap'>;
+            updatedAt: string;
+        }>;
+    };
+};
+
+export type ListScannerAssignmentsResponse = ListScannerAssignmentsResponses[keyof ListScannerAssignmentsResponses];
+
+export type PutScannerAssignmentData = {
+    body: {
+        executorType: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        methods: Array<'trivy' | 'openscap'>;
+    };
+    path?: never;
+    query?: never;
+    url: '/instance/scanner-assignments';
+};
+
+export type PutScannerAssignmentErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutScannerAssignmentError = PutScannerAssignmentErrors[keyof PutScannerAssignmentErrors];
+
+export type PutScannerAssignmentResponses = {
+    /**
+     * Success
+     */
+    200: {
+        executorType: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        methods: Array<'trivy' | 'openscap'>;
+        updatedAt: string;
+    };
+};
+
+export type PutScannerAssignmentResponse = PutScannerAssignmentResponses[keyof PutScannerAssignmentResponses];
+
 export type ListCampaignsData = {
     body?: never;
     path?: never;

@@ -2207,6 +2207,96 @@ export function buildProgram(): Command {
       }
     );
 
+  // -------------------------------------------------------------------------------------
+  // instance scanner-assignments (M13.3a — ADR-0020 §2). The executor Type -> managed scan
+  // method(s) registry the commander's promotion scan step selects scanners from. Keyed on the
+  // EXISTING ExecutorType taxonomy (image|rpm|deb|npm|infrastructure|configuration). Like scan
+  // floors these are INSTANCE-scoped: they bind EVERY org on the deployment, so authoring one is an
+  // OPERATOR action gated by SCP_OPERATOR_TOKEN — never a tenant role. Reading is an ordinary
+  // authenticated call. An empty methods set CLEARS the assignment (that Type produces no managed
+  // evidence — fail-closed: E6 refuses unless org-pipeline evidence covers the digest).
+  // -------------------------------------------------------------------------------------
+  const scannerAssignmentsCmd = program
+    .command("scanner-assignments")
+    .description(
+      "Instance-scoped scanner assignments (ADR-0020) — the executor Type -> managed scan method(s) the commander's promotion scan step runs; bind every org on this deployment"
+    );
+
+  scannerAssignmentsCmd
+    .command("list")
+    .description("List the instance-scoped scanner assignments binding this deployment")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const assignments = await client.scannerAssignments.list();
+      printResult(assignments, opts.output, (raw) => {
+        const item = raw as (typeof assignments)[number];
+        return {
+          executorType: item.executorType,
+          methods: item.methods.length ? item.methods.join(",") : "(none)"
+        };
+      });
+    });
+
+  scannerAssignmentsCmd
+    .command("set")
+    .description(
+      "Assign managed scan methods to an executor Type (OPERATOR ONLY — requires SCP_OPERATOR_TOKEN; an empty --methods clears the assignment, leaving that Type with no managed scanner)"
+    )
+    .requiredOption("--type <executorType>", "image|rpm|deb|npm|infrastructure|configuration")
+    .option(
+      "--methods <list>",
+      "comma-separated scan methods (trivy|openscap); empty/omitted clears the assignment",
+      ""
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          type: string;
+          methods: string;
+        }
+      ) => {
+        const operatorToken = process.env.SCP_OPERATOR_TOKEN;
+        if (!operatorToken) {
+          throw new Error(
+            "SCP_OPERATOR_TOKEN is not set — scanner assignments bind every org on the deployment, so authoring one requires the deployment operator token, not your tenant login."
+          );
+        }
+        const validTypes = ["image", "rpm", "deb", "npm", "infrastructure", "configuration"] as const;
+        if (!(validTypes as readonly string[]).includes(opts.type)) {
+          throw new Error(`--type must be one of ${validTypes.join("|")} (got '${opts.type}')`);
+        }
+        const methods = opts.methods
+          .split(",")
+          .map((m) => m.trim())
+          .filter(Boolean);
+        for (const m of methods) {
+          if (m !== "trivy" && m !== "openscap") {
+            throw new Error(`--methods entries must be 'trivy' or 'openscap' (got '${m}')`);
+          }
+        }
+        const client = await clientFromStoredCredentials(opts);
+        const assignment = await client.scannerAssignments.put(
+          {
+            executorType: opts.type as (typeof validTypes)[number],
+            methods: methods as ("trivy" | "openscap")[]
+          },
+          operatorToken
+        );
+        printResult(assignment, opts.output, (item) => {
+          const a = item as typeof assignment;
+          return {
+            executorType: a.executorType,
+            methods: a.methods.length ? a.methods.join(",") : "(none)",
+            updatedAt: a.updatedAt
+          };
+        });
+      }
+    );
+
   // federation (M6 Federation Basics — DESIGN.md §13, BUILD_AND_TEST.md §8 M6). `export`/`import`
   // work on `.scpbundle` files on disk (the built-in file transport — "the air gap is the design
   // center", §13) so they're the ones CI's two-domain E2E drives via a real file-copy across an
