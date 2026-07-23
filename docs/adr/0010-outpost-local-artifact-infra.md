@@ -4,6 +4,8 @@
 **Context doc:** [docs/proposals/outpost-local-artifact-infra.md](../proposals/outpost-local-artifact-infra.md)
 **Relates to:** [ADR-0002](0002-execution-strategy.md) (execution strategy / bundled backends); [ADR-0004](0004-service-naming-commander-outpost-retrans.md) (commander/outpost/retrans); [ADR-0012](0012-registry-consolidation.md), [ADR-0013](0013-supply-chain-scan-sbom-manifest.md); DESIGN.md §12/§13/§16
 
+> **Evolution note (2026-07-23, [ADR-0020](0020-first-class-commander-scanning.md)):** "scan-at-source" now means **at the commander, before signing** — the promotion scan step, not the origin outpost's pipeline (which remains the supported alternate evidence ingress). This ADR's receiver-side half is untouched: outposts verify the signed manifest, never re-scan, and need no scanning registry.
+
 ## Amendment 2026-07-18 — outpost = Gitea only
 
 Superseded by [ADR-0012](0012-registry-consolidation.md)/[ADR-0013](0013-supply-chain-scan-sbom-manifest.md): the outpost's local infra is **Gitea only** — one service serving **images** (OCI container registry), **code** (git), and **packages** (rpm/npm/…) — **no local Harbor**. Outposts do not scan (scanning is a source-side boundary-authorization gate, ADR-0013), so they need no scanning registry; they verify the signed attestation/manifest and stay light. Harbor is **not bundled**; an org that runs Harbor coordinates its existing one via the import path (ADR-0012, M15.3). Read "local Harbor" below as "local Gitea registry."

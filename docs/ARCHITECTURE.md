@@ -6,7 +6,7 @@
 | **Status** | **Approved** — owner sign-off 2026-07-08 |
 | **Derives from** | [PROJECT_CHARTER.md](../PROJECT_CHARTER.md) and [DESIGN.md](DESIGN.md) — where a diagram and DESIGN.md disagree, DESIGN.md governs. |
 
-Three views of the same system. Every instance — commander or outpost — runs the identical `scpd` image plus PostgreSQL; the differences are configuration (role, enrollment) and which objects the instance is the single-writer authority for. (A third role, **retrans**, sits at a CDS boundary and is not separately diagrammed here — it validates and relays only; see DESIGN.md §13 and [ADR-0004](adr/0004-service-naming-commander-outpost-retrans.md).)
+Three views of the same system. Every instance — **commander**, **outpost**, or **retrans** — runs the identical `scpd` image plus PostgreSQL; the differences are configuration (role, enrollment) and which objects the instance is the single-writer authority for. The retrans is a **third first-class instance shape** (deployment profile owner-decided 2026-07-23): the same `scpd` image started in a deliberately slim `role: retrans` profile that sits at a CDS boundary and does exactly three things — **validate the cosign signature** (the commander's promotion-manifest and per-artifact signatures, the transitive proof that scans passed at the commander), **drop** the verified artifacts into the CDS via the destination peer's DeliveryTarget, and **track** the pass-through. It carries the vendored cosign + skopeo binaries and exercises only a relay slice of PostgreSQL (peers/keys, the `bundle_transfers` ledger, Decisions + audit, the imported-promotion reference data, pg-boss); it ships **none** of the outpost stack — no local Gitea/registry, no executor coordination, no deploy machinery, no UI. See DESIGN.md §13, [ADR-0004](adr/0004-service-naming-commander-outpost-retrans.md), and [docs/proposals/airgap-cds-validate-promote.md §13.1](proposals/airgap-cds-validate-promote.md).
 
 ## 1. Commander instance (detailed)
 
@@ -19,6 +19,7 @@ The commander is the Global Coordination Layer (DESIGN.md §13). What this view 
 - **Authoritative global config** — domain registry, org structure, global policies, release topologies, campaigns/initiatives, control definitions. The commander is the single-writer origin; every outpost holds these as read-only replicas.
 - **PostgreSQL as everything** — graph, outbox, pg-boss jobs, Decisions, hash-chained audit, sync journal, role bindings; NATS is the optional high-volume event backend; object storage holds bundles, evidence, and audit anchors.
 - **Cross-domain view** — outposts report status upward; the commander UI shows every domain, its sync freshness, in-flight changes, and campaign roll-up. The commander never edits outpost-owned data.
+- **Promotion scan step** (owner decision 2026-07-23, [ADR-0020](adr/0020-first-class-commander-scanning.md)) — the commander's promotion process runs **scan → evaluate → sign → export**: the charter-enumerated `scp-managed-scan` launches ephemeral runners from the separate `scp-runner-scan` image, evidence lands commander-resident, and the E6 export gate signs only if scans pass. Not yet drawn in the SVG (see the diagram note below).
 
 ## 2. Outpost domain instance (detailed)
 
@@ -43,6 +44,7 @@ The hub-and-spoke reference topology (DESIGN.md §13). What this view shows:
 - **Commander at the hub** — global config flows down as read-only replicas; status and audit flow up; the air-gapped spoke exchanges the same signed artifacts as files over removable media.
 - **Three outposts, one machinery** — connected Commercial, stricter GovCloud/FedRAMP, and a fully disconnected air-gapped domain all run the same image with the same engines; only policy strictness and transport differ. Every domain is fully operational when disconnected.
 - **Federated promotion** — Commercial → GovCloud → Air-gapped is a release topology whose waves are domains. A Promotion Bundle carries the change, provenance, control evidence, artifact digests, and per-approval Ed25519 attestations; each importing domain verifies signatures and attestations, instantiates its own local change, and re-gates under its own policies. **Approvals transfer as evidence, never authority.**
+- **Retrans at the CDS boundary** — between domains separated by a cross-domain solution sits the third instance shape (see the intro): a slim `role: retrans` relay that validates the commander's cosign signatures (never re-scanning — the signature is the transitive, non-decaying proof of scan-pass at the commander), drops verified artifacts into the CDS via the destination peer's DeliveryTarget, and records the pass-through in `bundle_transfers`. It never originates config, holds no local authoritative objects, and never terminates a promotion ([ADR-0004](adr/0004-service-naming-commander-outpost-retrans.md)); the receiving outpost still runs its full M17.4 verification, unweakened. Not yet drawn in the SVG (see the diagram note below).
 
 ## Conventions used in all three diagrams
 
@@ -51,3 +53,5 @@ The hub-and-spoke reference topology (DESIGN.md §13). What this view shows:
 - Every export is Ed25519-signed and hash-chained; every import is verified before apply.
 
 Diagrams are hand-maintained SVG in [diagrams/](diagrams/); update them alongside any DESIGN.md change that alters what they depict.
+
+> **Diagram deferral note (2026-07-23).** The SVGs do not yet depict the two 2026-07-23 evolutions described above: the **retrans node** (third instance shape, multi-domain overview) and the **commander promotion-scan step** ([ADR-0020](adr/0020-first-class-commander-scanning.md), commander view). The diagram updates are deliberately not redrawn in the docs PR that records the decisions; they are part of **M13.1's definition of done** (BUILD_AND_TEST.md §8, M13.1) so the deferral is tracked, not silent.

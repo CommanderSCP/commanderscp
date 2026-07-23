@@ -4,6 +4,8 @@
 **Context doc:** [docs/proposals/promotion-and-execution-model.md](../proposals/promotion-and-execution-model.md)
 **Relates to:** [ADR-0011](0011-universal-outpost-validation.md) (validation); [ADR-0012](0012-registry-consolidation.md) (scanning as a step); [ADR-0010](0010-outpost-local-artifact-infra.md) (trust scan-at-source); [ADR-0015](0015-cosign-cross-boundary-signing.md) (**the cosign signing mechanism this ADR relies on — NEW, not pre-existing**); [ADR-0016](0016-scoped-scan-requirement-policies.md) (scoped scan pass-criteria)
 
+> **Evolution note (2026-07-23, [ADR-0020](0020-first-class-commander-scanning.md)):** the scan **location** is evolved — the first-class evidence producer is now the commander's promotion scan step (`scp-managed-scan`, scan-before-sign at the commander), and the coordinated org-pipeline Trivy step described below becomes the supported **alternate** ingress. Everything else here stands: scan as boundary authorization (not a quality gate), never-re-scan downstream, the who-signs-what split, and the gates consuming evidence unchanged.
+
 ## Correction notes
 
 ### 2026-07-20 — who signs what, and cosign is not vendored
