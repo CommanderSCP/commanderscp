@@ -33,9 +33,18 @@ describe("M13.2a DeliveryTarget substrate (API surface)", () => {
   let org: TestOrg;
   const tempDirs: string[] = [];
   const savedEnv: Record<string, string | undefined> = {};
+  // The operator-declared root every per-peer dir must sit under (SCP_DELIVERY_ROOTS, #110 pattern).
+  let deliveryRoot: string;
 
   async function tempDir(): Promise<string> {
     const dir = await mkdtemp(path.join(tmpdir(), "scp-delivery-int-"));
+    tempDirs.push(dir);
+    return dir;
+  }
+
+  /** A fresh per-peer directory UNDER the operator root (so it is honored, not fail-closed). */
+  async function rootedDir(): Promise<string> {
+    const dir = await mkdtemp(path.join(deliveryRoot, "peer-"));
     tempDirs.push(dir);
     return dir;
   }
@@ -45,6 +54,11 @@ describe("M13.2a DeliveryTarget substrate (API surface)", () => {
     org = await createTestOrg(server, "delivery-target");
     savedEnv.SCP_RELAY_OUT_DIR = process.env.SCP_RELAY_OUT_DIR;
     savedEnv.SCP_RELAY_IN_DIR = process.env.SCP_RELAY_IN_DIR;
+    savedEnv.SCP_DELIVERY_ROOTS = process.env.SCP_DELIVERY_ROOTS;
+    // Declare the operator delivery root for the whole suite — per-peer dirs live under it.
+    deliveryRoot = await mkdtemp(path.join(tmpdir(), "scp-delivery-root-"));
+    tempDirs.push(deliveryRoot);
+    process.env.SCP_DELIVERY_ROOTS = deliveryRoot;
 
     const init = await server.app.inject({
       method: "POST",
@@ -57,17 +71,15 @@ describe("M13.2a DeliveryTarget substrate (API surface)", () => {
 
   afterEach(() => {
     // Every test starts from a clean instance env — no cross-test bleed through process.env.
-    for (const key of ["SCP_RELAY_OUT_DIR", "SCP_RELAY_IN_DIR"]) {
-      const saved = savedEnv[key];
-      if (saved === undefined) delete process.env[key];
-      else process.env[key] = saved;
-    }
     delete process.env.SCP_RELAY_OUT_DIR;
     delete process.env.SCP_RELAY_IN_DIR;
+    // Re-assert the suite-wide operator root (a test may narrow it to prove resolution-side
+    // fail-closed; restore it so the next test's per-peer dirs are honored again).
+    process.env.SCP_DELIVERY_ROOTS = deliveryRoot;
   });
 
   afterAll(async () => {
-    for (const key of ["SCP_RELAY_OUT_DIR", "SCP_RELAY_IN_DIR"]) {
+    for (const key of ["SCP_RELAY_OUT_DIR", "SCP_RELAY_IN_DIR", "SCP_DELIVERY_ROOTS"]) {
       const saved = savedEnv[key];
       if (saved === undefined) delete process.env[key];
       else process.env[key] = saved;
@@ -106,8 +118,8 @@ describe("M13.2a DeliveryTarget substrate (API surface)", () => {
   }
 
   it("PARITY: deliveryTarget is settable + visible via pair/list, with tri-state re-pair semantics", async () => {
-    const outDir = await tempDir();
-    const inDir = await tempDir();
+    const outDir = await rootedDir();
+    const inDir = await rootedDir();
     const domainId = randomUUID();
     const target = { provider: "filesystem", outDir, inDir };
 
@@ -142,8 +154,55 @@ describe("M13.2a DeliveryTarget substrate (API surface)", () => {
     }
   });
 
+  it("ROOT BOUND, PAIR TIME: an absolute dir OUTSIDE SCP_DELIVERY_ROOTS is refused (400, never stored)", async () => {
+    // Absolute + traversal-free (passes the schema) but outside the operator root → the #110 gate
+    // refuses it at pair time so a cross-tenant / arbitrary path is never written to the DB.
+    for (const field of ["outDir", "inDir"]) {
+      const refused = await pairPeer("outside-root-peer", {
+        deliveryTarget: { provider: "filesystem", [field]: "/etc/scp-other-tenant" }
+      });
+      expect(refused.statusCode, JSON.stringify(refused.body)).toBe(400);
+      expect((refused.body as { detail?: string }).detail).toContain(
+        "outside every operator-declared delivery root"
+      );
+    }
+    // And it did NOT land in the peer list.
+    expect((await listPeers()).some((p) => p.name === "outside-root-peer")).toBe(false);
+  });
+
+  it("ROOT BOUND, DELIVER TIME: a STORED dir no longer under the roots fails closed — no write", async () => {
+    const peerOut = await rootedDir();
+    const domainId = randomUUID();
+    const paired = await pairPeer("narrowed-peer", {
+      domainId,
+      deliveryTarget: { provider: "filesystem", outDir: peerOut }
+    });
+    expect(paired.statusCode, JSON.stringify(paired.body)).toBe(201);
+
+    // Operator NARROWS the roots to somewhere that no longer contains the stored dir (models an
+    // out-of-root value that reached the DB — a tightened policy, or a direct write). Resolution
+    // must fail closed and NEVER fall back to the env, NEVER write.
+    const otherRoot = await tempDir();
+    process.env.SCP_DELIVERY_ROOTS = otherRoot;
+    process.env.SCP_RELAY_OUT_DIR = await tempDir(); // an env fallback that must NOT be used
+
+    const refused = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/federation/exports",
+      headers: authHeader(org.adminToken),
+      payload: { peer: "narrowed-peer", deliver: true }
+    });
+    expect(refused.statusCode, refused.body).toBe(400);
+    expect((refused.json() as { detail?: string }).detail).toContain(
+      "outside every operator-declared delivery root"
+    );
+    // Nothing was written to the stored dir, and nothing leaked to the env fallback.
+    expect(await readdir(peerOut)).toEqual([]);
+    expect(await readdir(process.env.SCP_RELAY_OUT_DIR as string)).toEqual([]);
+  });
+
   it("WRITE SEAM, PER-PEER: deliver:true drops the sync bundle into the PEER's outDir, not the env's", async () => {
-    const peerOut = await tempDir();
+    const peerOut = await rootedDir();
     const envOut = await tempDir();
     process.env.SCP_RELAY_OUT_DIR = envOut;
     const paired = await pairPeer("drop-peer", {
@@ -227,7 +286,7 @@ describe("M13.2a DeliveryTarget substrate (API surface)", () => {
 
     // Naming a peer WITH a configured outDir carries resolution — the refusal is now the
     // (expected, downstream) retrans ROLE gate, proving the per-peer drop resolved.
-    const outDir = await tempDir();
+    const outDir = await rootedDir();
     const paired = await pairPeer("relay-dest", {
       deliveryTarget: { provider: "filesystem", outDir }
     });

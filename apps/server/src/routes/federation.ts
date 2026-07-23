@@ -31,6 +31,7 @@ import { badRequest, conflict } from "../errors.js";
 import { initFederationSelf, ensureFederationSelf } from "../federation/self-repo.js";
 import { pairPeer, listPeers, getPeerByIdOrName } from "../federation/peers-repo.js";
 import {
+  assertDeliveryTargetRooted,
   dropDeliveryFile,
   requireOutboundDir,
   resolveDeliveryTarget
@@ -184,6 +185,10 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         if (request.body.domainId === self.domainId) {
           throw badRequest("cannot pair this domain with itself");
         }
+        // M13.2a residual (#110 pattern): a per-peer deliveryTarget dir is honored only inside the
+        // operator-declared SCP_DELIVERY_ROOTS — refuse an out-of-root (or unrooted) dir here so it
+        // is NEVER stored (the resolution side re-checks fail-closed for anything already in the DB).
+        assertDeliveryTargetRooted(request.body.deliveryTarget);
         return pairPeer(tx, { orgId: auth.orgId, ...request.body });
       });
       reply.status(201).send(peer);

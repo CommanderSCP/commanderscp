@@ -4,8 +4,11 @@ import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { DeliveryTargetSchema } from "@scp/schemas";
 import {
+  assertDeliveryTargetRooted,
   dropDeliveryFile,
+  isUnderDeliveryRoot,
   listInbox,
+  parseDeliveryRoots,
   requireInboundDir,
   requireOutboundDir,
   resolveDeliveryTarget
@@ -55,7 +58,8 @@ describe("resolveDeliveryTarget — the validated per-peer view (M15.6 shape)", 
   it("uses the peer's own target when set (per direction, source 'peer')", () => {
     const view = resolveDeliveryTarget(
       { name: "high-side", deliveryTarget: fsTarget({ outDir: "/drops/out", inDir: "/drops/in" }) },
-      { outDir: "/env/out", inDir: "/env/in" }
+      { outDir: "/env/out", inDir: "/env/in" },
+      ["/drops"] // operator-declared roots: per-peer dirs are honored only inside them
     );
     expect(view.valid).toBe(true);
     expect(view.problems).toEqual([]);
@@ -75,7 +79,8 @@ describe("resolveDeliveryTarget — the validated per-peer view (M15.6 shape)", 
   it("resolves per DIRECTION independently (peer outDir + env inDir mix)", () => {
     const view = resolveDeliveryTarget(
       { name: "mixed", deliveryTarget: fsTarget({ outDir: "/drops/out" }) },
-      { outDir: "/env/out", inDir: "/env/in" }
+      { outDir: "/env/out", inDir: "/env/in" },
+      ["/drops"]
     );
     expect(view.valid).toBe(true);
     expect(view.outbound).toEqual({ dir: "/drops/out", source: "peer", problem: null });
@@ -133,18 +138,113 @@ describe("DeliveryTargetSchema — config-time validation (the same predicate, a
   });
 });
 
+describe("SCP_DELIVERY_ROOTS — the operator root bound on per-peer dirs (#110 pattern)", () => {
+  const rootedPeer = (dir: string) => ({ name: "tenant", deliveryTarget: fsTarget({ outDir: dir }) });
+
+  it("parseDeliveryRoots: comma/colon-separated absolutes, normalized; non-absolute dropped", () => {
+    expect(parseDeliveryRoots("/a,/b:/c")).toEqual(["/a", "/b", "/c"]);
+    expect(parseDeliveryRoots(" /a , /b ")).toEqual(["/a", "/b"]);
+    expect(parseDeliveryRoots("/data/roots/../escape")).toEqual(["/data/escape"]); // normalized
+    expect(parseDeliveryRoots("relative,,  ")).toEqual([]); // non-absolute + empties dropped
+    expect(parseDeliveryRoots(undefined)).toEqual([]);
+  });
+
+  it("isUnderDeliveryRoot: segment-safe — honors nested, rejects the /root-evil prefix trick", () => {
+    expect(isUnderDeliveryRoot("/root", ["/root"])).toBe(true); // the root itself
+    expect(isUnderDeliveryRoot("/root/sub/x", ["/root"])).toBe(true);
+    expect(isUnderDeliveryRoot("/root-evil", ["/root"])).toBe(false); // sibling, NOT under /root
+    expect(isUnderDeliveryRoot("/root-evil/x", ["/root"])).toBe(false);
+    expect(isUnderDeliveryRoot("/other", ["/root"])).toBe(false);
+  });
+
+  it("a per-peer dir INSIDE a declared root is honored (source 'peer')", () => {
+    const view = resolveDeliveryTarget(rootedPeer("/roots/tenant-a/out"), {}, ["/roots"]);
+    // Outbound (the configured direction) resolves cleanly; inbound is intentionally unset here.
+    expect(view.outbound).toEqual({ dir: "/roots/tenant-a/out", source: "peer", problem: null });
+  });
+
+  it("a per-peer dir OUTSIDE every declared root is a fail-closed problem — NEVER an env fallback", () => {
+    const view = resolveDeliveryTarget(
+      rootedPeer("/etc/other-tenant-in"),
+      { outDir: "/env/out" }, // env fallback present — must NOT mask the out-of-root dir
+      ["/roots"]
+    );
+    expect(view.valid).toBe(false);
+    expect(view.outbound.dir).toBeNull();
+    expect(view.outbound.source).toBeNull();
+    expect(view.outbound.problem).toContain("outside every operator-declared delivery root");
+    expect(view.outbound.problem).toContain("SCP_DELIVERY_ROOTS");
+  });
+
+  it("the /root-evil prefix trick does NOT satisfy the /root root (fail-closed)", () => {
+    const view = resolveDeliveryTarget(rootedPeer("/root-evil/drop"), {}, ["/root"]);
+    expect(view.valid).toBe(false);
+    expect(view.outbound.dir).toBeNull();
+    expect(view.outbound.problem).toContain("outside every operator-declared delivery root");
+  });
+
+  it("UNSET roots + a per-peer dir => FAIL-CLOSED (the honest multi-tenant default)", () => {
+    const view = resolveDeliveryTarget(rootedPeer("/anywhere/writable"), { outDir: "/env/out" }, []);
+    expect(view.valid).toBe(false);
+    expect(view.outbound.dir).toBeNull();
+    expect(view.outbound.problem).toContain("no operator delivery roots are declared");
+    expect(view.outbound.problem).toContain("SCP_DELIVERY_ROOTS is unset");
+  });
+
+  it("ENV-FALLBACK (no per-peer dir) works with roots UNSET — single-org deploys need no new config", () => {
+    for (const peer of [null, { name: "plain", deliveryTarget: null }]) {
+      const view = resolveDeliveryTarget(peer, { outDir: "/env/out", inDir: "/env/in" }, []);
+      expect(view.valid).toBe(true);
+      expect(view.outbound).toEqual({ dir: "/env/out", source: "env", problem: null });
+      expect(view.inbound).toEqual({ dir: "/env/in", source: "env", problem: null });
+    }
+  });
+
+  describe("assertDeliveryTargetRooted — the pair-time gate", () => {
+    it("accepts an in-root dir; passes null/undefined through (clear/preserve — env fallback)", () => {
+      expect(() =>
+        assertDeliveryTargetRooted(fsTarget({ outDir: "/roots/a/out" }), ["/roots"])
+      ).not.toThrow();
+      expect(() => assertDeliveryTargetRooted(null, [])).not.toThrow();
+      expect(() => assertDeliveryTargetRooted(undefined, [])).not.toThrow();
+    });
+
+    it("refuses an out-of-root dir at pair time (never stored)", () => {
+      expect(problemDetail(() =>
+        assertDeliveryTargetRooted(fsTarget({ inDir: "/etc/victim-in" }), ["/roots"])
+      )).toContain("outside every operator-declared delivery root");
+    });
+
+    it("refuses the /root-evil prefix trick at pair time", () => {
+      expect(problemDetail(() =>
+        assertDeliveryTargetRooted(fsTarget({ outDir: "/root-evil/out" }), ["/root"])
+      )).toContain("outside every operator-declared delivery root");
+    });
+
+    it("UNSET roots + a per-peer dir => refused at pair time (fail-closed default)", () => {
+      expect(problemDetail(() =>
+        assertDeliveryTargetRooted(fsTarget({ outDir: "/somewhere" }), [])
+      )).toContain("no operator delivery roots are declared");
+    });
+  });
+});
+
 describe("dropDeliveryFile — the filesystem write seam", () => {
   it("writes into the resolved outbound dir (creating it) and returns the absolute path", async () => {
     const base = await tempDir();
     const outDir = path.join(base, "not-yet-created");
-    const view = resolveDeliveryTarget({ name: "p", deliveryTarget: fsTarget({ outDir }) }, {});
+    const view = resolveDeliveryTarget({ name: "p", deliveryTarget: fsTarget({ outDir }) }, {}, [
+      base
+    ]);
     const written = await dropDeliveryFile(view, "bundle.scpbundle", "{}");
     expect(written).toBe(path.join(outDir, "bundle.scpbundle"));
   });
 
   it("refuses a traversal-hostile file NAME (the resolveUnderDir guard survives)", async () => {
     const outDir = await tempDir();
-    const view = resolveDeliveryTarget({ name: "p", deliveryTarget: fsTarget({ outDir }) }, {});
+    const view = resolveDeliveryTarget({ name: "p", deliveryTarget: fsTarget({ outDir }) }, {}, [
+      outDir
+    ]);
     expect(await rejectedDetail(dropDeliveryFile(view, "../escape.scpbundle", "{}"))).toContain(
       "does not resolve inside"
     );
@@ -158,16 +258,17 @@ describe("listInbox — the §13.1a read surface: names only, no traversal", () 
     await writeFile(path.join(inDir, "a-bundle.scpbundle"), "{}");
     await mkdir(path.join(inDir, "subdir"));
     await writeFile(path.join(inDir, "subdir", "nested.scpbundle"), "{}");
-    const names = await listInbox({ name: "p", deliveryTarget: fsTarget({ inDir }) });
+    const names = await listInbox({ name: "p", deliveryTarget: fsTarget({ inDir }) }, {}, [inDir]);
     expect(names).toEqual(["a-bundle.scpbundle", "b-relay.tar.gz"]);
   });
 
   it("an inbox that does not exist yet lists as empty (nothing has arrived)", async () => {
     const base = await tempDir();
-    const names = await listInbox({
-      name: "p",
-      deliveryTarget: fsTarget({ inDir: path.join(base, "never-created") })
-    });
+    const names = await listInbox(
+      { name: "p", deliveryTarget: fsTarget({ inDir: path.join(base, "never-created") }) },
+      {},
+      [base]
+    );
     expect(names).toEqual([]);
   });
 

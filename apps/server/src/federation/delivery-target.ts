@@ -25,6 +25,25 @@
  * fail-closed problem for its direction, and deliberately does NOT fall back to the env — falling
  * back would silently mask the misconfiguration.
  *
+ * ## Operator-root bounding (`SCP_DELIVERY_ROOTS` — the #108→#110 pattern, symmetric with ADR-0019 §4)
+ *
+ * On a MULTI-TENANT instance, an org admin with `federation:write` supplies the per-peer dirs. An
+ * absolute + traversal-free path is NOT enough: any server-writable absolute path (another org's
+ * `SCP_RELAY_IN_DIR`, any server-user-writable location) would otherwise be a legal drop target,
+ * and `dropDeliveryFile` does `mkdir -p` + overwriting `writeFile` there as the server user — a
+ * cross-tenant / arbitrary-path write. So a per-peer directory is honored ONLY when it sits at or
+ * under one of the OPERATOR-declared roots in `SCP_DELIVERY_ROOTS` — the same shape as
+ * `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` (#110): a data-supplied filesystem endpoint gated by an
+ * operator allowlist, enforced in BOTH places — refused at pair time (never stored) and re-checked
+ * fail-closed at resolution (a stored out-of-root dir is a named per-gap problem, never a silent
+ * env fallback, never used).
+ *
+ * DEFAULT — the honest multi-tenant default: `SCP_DELIVERY_ROOTS` UNSET + any per-peer dir set/used
+ * ⇒ FAIL-CLOSED (refuse). The operator must declare the roots before any per-peer dir is honored.
+ * The ENV-FALLBACK path (`SCP_RELAY_OUT_DIR`/`SCP_RELAY_IN_DIR` — operator-owned by definition)
+ * stays EXEMPT: no per-peer dir, no roots requirement, so single-org deploys keep working with zero
+ * new config.
+ *
  * ## The read-side surface (for the §13.1a inbox loop, stacked next)
  *
  * `listInbox(peer)` returns file NAMES within the resolved inbound directory — names only, never
@@ -54,6 +73,38 @@ export interface DeliveryTargetPeerRef {
 export interface DeliveryEnvDirs {
   outDir?: string;
   inDir?: string;
+}
+
+/**
+ * `SCP_DELIVERY_ROOTS` — comma/colon-separated ABSOLUTE roots a per-peer delivery directory must
+ * sit at or under to be honored (the #110 `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` pattern for a
+ * filesystem endpoint). Entries are trimmed, non-absolute ones dropped, and each normalized with
+ * `path.resolve` so a root written as `/data/roots/../escape` collapses to its real location.
+ * UNSET (or all-empty) ⇒ `[]` ⇒ every per-peer dir fails closed (see the module doc's DEFAULT).
+ * Accepts the raw env string or an already-split array (tests pass an array directly).
+ */
+export function parseDeliveryRoots(raw: string | readonly string[] | undefined): string[] {
+  const entries = typeof raw === "string" ? raw.split(/[,:]/) : (raw ?? []);
+  return entries
+    .map((r) => r.trim())
+    .filter((r) => r.startsWith("/"))
+    .map((r) => path.resolve(r));
+}
+
+/** The live operator-declared roots (`SCP_DELIVERY_ROOTS`). */
+export function deliveryRootsFromEnv(): string[] {
+  return parseDeliveryRoots(process.env.SCP_DELIVERY_ROOTS);
+}
+
+/**
+ * Is `dir` at or under one of `roots`? The check is on RESOLVED path SEGMENTS, never a raw string
+ * prefix — so a sibling like `/root-evil` never matches the root `/root` (string-prefix would),
+ * and `/roots/../escape` is normalized before comparison. `roots` are already resolved by
+ * {@link parseDeliveryRoots}; `dir` is resolved here. Mirrors `resolveUnderDir`'s boundary test.
+ */
+export function isUnderDeliveryRoot(dir: string, roots: readonly string[]): boolean {
+  const resolved = path.resolve(dir);
+  return roots.some((root) => resolved === root || resolved.startsWith(root + path.sep));
 }
 
 /** One direction of the resolved view. `dir === null` ⇔ `problem !== null` (per-gap, fail-closed:
@@ -91,7 +142,8 @@ function isSafeAbsoluteDir(dir: string): boolean {
 function resolveDirection(
   direction: "outbound" | "inbound",
   peer: DeliveryTargetPeerRef | null,
-  envDir: string | undefined
+  envDir: string | undefined,
+  roots: readonly string[]
 ): ResolvedDeliveryDirection {
   const field = direction === "outbound" ? "outDir" : "inDir";
   const envVar = direction === "outbound" ? "SCP_RELAY_OUT_DIR" : "SCP_RELAY_IN_DIR";
@@ -109,6 +161,32 @@ function resolveDirection(
           `peer '${peer?.name}' deliveryTarget ${field} '${peerDir}' is not an absolute, ` +
           `traversal-free server path — refusing to use it (fail-closed; fix the peer's ` +
           `deliveryTarget via \`scp federation pair\`)`
+      };
+    }
+    // #110 pattern (SCP_ARTIFACT_OCI_REGISTRY_HOSTS): a data-supplied endpoint is honored ONLY
+    // inside an operator allowlist. UNSET roots ⇒ no per-peer dir is honored (the honest
+    // multi-tenant default); a stored out-of-root dir ⇒ a named per-gap problem, NEVER an env
+    // fallback (which would mask a cross-tenant / arbitrary-path write).
+    if (roots.length === 0) {
+      return {
+        dir: null,
+        source: null,
+        problem:
+          `peer '${peer?.name}' configures a deliveryTarget ${field} '${peerDir}' but no operator ` +
+          `delivery roots are declared (SCP_DELIVERY_ROOTS is unset) — refusing to honor any ` +
+          `per-peer delivery directory (fail-closed; the operator must set SCP_DELIVERY_ROOTS to ` +
+          `the absolute root(s) per-peer dirs may live under before any per-peer dir is used)`
+      };
+    }
+    if (!isUnderDeliveryRoot(peerDir, roots)) {
+      return {
+        dir: null,
+        source: null,
+        problem:
+          `peer '${peer?.name}' deliveryTarget ${field} '${peerDir}' is outside every ` +
+          `operator-declared delivery root (SCP_DELIVERY_ROOTS) — refusing to use it (fail-closed; ` +
+          `the directory must be at or under one of the configured roots, or clear the per-peer ` +
+          `deliveryTarget to fall back to ${envVar})`
       };
     }
     return { dir: peerDir, source: "peer", problem: null };
@@ -135,11 +213,16 @@ function resolveDirection(
  */
 export function resolveDeliveryTarget(
   peer: DeliveryTargetPeerRef | null,
-  config?: DeliveryEnvDirs
+  config?: DeliveryEnvDirs,
+  roots?: readonly string[]
 ): ResolvedDeliveryTarget {
   const env = config ?? relayConfigFromEnv();
-  const outbound = resolveDirection("outbound", peer, env.outDir);
-  const inbound = resolveDirection("inbound", peer, env.inDir);
+  // Roots are a SEPARATE operator concern from the env-dir fallback: default them from the env
+  // independently so callers that pass a `RelayConfig` as `config` (the relay route) still get the
+  // operator's declared roots rather than an empty list.
+  const activeRoots = roots ?? deliveryRootsFromEnv();
+  const outbound = resolveDirection("outbound", peer, env.outDir, activeRoots);
+  const inbound = resolveDirection("inbound", peer, env.inDir, activeRoots);
   const problems = [outbound.problem, inbound.problem].filter((p): p is string => p !== null);
   return {
     provider: "filesystem",
@@ -200,9 +283,10 @@ export async function dropDeliveryFile(
  */
 export async function listInbox(
   peer: DeliveryTargetPeerRef | null,
-  config?: DeliveryEnvDirs
+  config?: DeliveryEnvDirs,
+  roots?: readonly string[]
 ): Promise<string[]> {
-  const resolved = resolveDeliveryTarget(peer, config);
+  const resolved = resolveDeliveryTarget(peer, config, roots);
   const inDir = requireInboundDir(resolved);
   let entries;
   try {
@@ -221,4 +305,45 @@ export async function listInbox(
     names.push(entry.name);
   }
   return names.sort();
+}
+
+/**
+ * CONFIG-TIME gate (the pair route): refuse a `deliveryTarget` whose directories fall outside the
+ * operator-declared roots BEFORE it is ever stored — the pairing half of the #110 allowlist
+ * (`SCP_ARTIFACT_OCI_REGISTRY_HOSTS`) pattern. Throws a fail-closed 400 `badRequest`; returns
+ * cleanly (no roots needed) when there is no per-peer directory to bound:
+ *
+ *   - `null`/`undefined` target — the tri-state CLEAR/PRESERVE cases: env fallback, no roots gate;
+ *   - a target object with a per-direction dir — each dir must sit under a root (schema has already
+ *     proven it absolute + traversal-free), else refuse; UNSET roots + any dir ⇒ refuse (the honest
+ *     multi-tenant default — the operator declares roots before any per-peer dir is honored).
+ *
+ * `roots` defaults to the live `SCP_DELIVERY_ROOTS`.
+ */
+export function assertDeliveryTargetRooted(
+  target: DeliveryTarget | null | undefined,
+  roots?: readonly string[]
+): void {
+  if (!target) return; // tri-state clear/preserve — env-fallback, no per-peer dir to bound.
+  const activeRoots = roots ?? deliveryRootsFromEnv();
+  for (const field of ["outDir", "inDir"] as const) {
+    const dir = target[field];
+    if (dir === undefined) continue;
+    const envVar = field === "outDir" ? "SCP_RELAY_OUT_DIR" : "SCP_RELAY_IN_DIR";
+    if (activeRoots.length === 0) {
+      throw badRequest(
+        `deliveryTarget ${field} '${dir}' cannot be honored: no operator delivery roots are ` +
+          `declared (SCP_DELIVERY_ROOTS is unset) — refusing to store any per-peer delivery ` +
+          `directory (set SCP_DELIVERY_ROOTS to the absolute root(s) per-peer dirs may live under, ` +
+          `or omit the per-peer dir to use the instance-level ${envVar} fallback)`
+      );
+    }
+    if (!isUnderDeliveryRoot(dir, activeRoots)) {
+      throw badRequest(
+        `deliveryTarget ${field} '${dir}' is outside every operator-declared delivery root ` +
+          `(SCP_DELIVERY_ROOTS) — refusing to store it (the directory must be at or under one of ` +
+          `the configured roots)`
+      );
+    }
+  }
 }
