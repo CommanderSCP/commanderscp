@@ -31,6 +31,7 @@ import {
   buildRelayTarball,
   importRelayTarball,
   sha256File,
+  validateAndForwardRelayTarball,
   type RelayConfig
 } from "./retrans-relay.js";
 import {
@@ -799,6 +800,103 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
     const transfers = await confirmedTransferWithChecksum(retrans, originalSha);
     expect(transfers).toContainEqual({ direction: "import", status: "confirmed" });
     expect(transfers).toContainEqual({ direction: "export", status: "submitted" });
+  }, 240_000);
+
+  // ---------------------------------------------------------------------------------------------
+  // (3b) TOCTOU — the CDS-boundary time-of-check/time-of-use close. The private copy makes a swap
+  //      of the attacker-writable inbox tarball (between the verify and the forward) a no-op.
+  // ---------------------------------------------------------------------------------------------
+
+  it("TOCTOU close: a low-side writer SWAPPING the inbox tarball during validate-and-forward can NEVER get the swapped (unverified) bytes across — the ingress copy-once makes the swap a no-op (validated bytes forwarded, else fail-closed)", async () => {
+    const localChangeAtB = (await findLocalChangeBySource(retrans, changeA2)) as string;
+    expect(localChangeAtB).not.toBeNull();
+    const validSha = await sha256File(tarball2Path);
+
+    // T = a CONTENT-corrupted repack (NOT re-signed): distinct bytes that FAIL verification. The
+    // vuln being closed: a naive verify-then-copy reads the inbox tarball TWICE, so a swap of V→T
+    // between the two reads forwards T (unverified) across the boundary under an ALLOW Decision.
+    // The fix reads the inbox exactly ONCE (the ingress copy) and verifies + forwards THAT private
+    // copy — so a mid-window swap changes only the abandoned inbox file, never the crossed bytes.
+    const tamperDir = await mkdtemp(path.join(scratch, "toctou-tamper-"));
+    execFileSync("tar", ["xzf", tarball2Path, "-C", tamperDir]);
+    const [rootName] = await readdir(tamperDir);
+    const bundleRoot = path.join(tamperDir, rootName as string);
+    const images = await readdir(path.join(bundleRoot, "images"));
+    await writeFile(
+      path.join(bundleRoot, "images", images[0] as string, "index.json"),
+      "{tampered-in-transit}"
+    );
+    const tamperedPath = path.join(tamperDir, `tampered-${path.basename(tarball2Path)}`);
+    execFileSync("tar", ["czf", tamperedPath, "-C", tamperDir, rootName as string]);
+    const tamperedBytes = await readFile(tamperedPath);
+    const tamperedSha = createHash("sha256").update(tamperedBytes).digest("hex");
+    expect(tamperedSha).not.toBe(validSha);
+
+    // Part A — a CLEAN forward (no swap): the forwarded bytes are byte-identical to what was
+    // VALIDATED (the deterministic positive; the forward reads the private copy, not the inbox).
+    const cleanInbox = path.join(scratch, "toctou-clean-inbox");
+    const cleanOut = path.join(scratch, "toctou-clean-out");
+    await mkdir(cleanInbox, { recursive: true });
+    await mkdir(cleanOut, { recursive: true });
+    const cleanInboxFile = path.join(cleanInbox, path.basename(tarball2Path));
+    await copyFile(tarball2Path, cleanInboxFile);
+    const clean = await validateAndForwardRelayTarball(retrans.db, {
+      orgId: retrans.orgId,
+      changeIdOrUrn: localChangeAtB,
+      tarballPath: cleanInboxFile,
+      relayCosignPublicKeyPem: retransCosignPub,
+      outDir: cleanOut,
+      config: retransConfig()
+    });
+    expect(clean.refused).toBe(false);
+    expect(await sha256File(path.join(cleanOut, path.basename(tarball2Path)))).toBe(validSha);
+
+    // Part B — HAMMER the inbox file with the tampered bytes across event-loop ticks WHILE the
+    // forward runs (a real low-side writer racing the verify→forward window).
+    const swapInbox = path.join(scratch, "toctou-swap-inbox");
+    const swapOut = path.join(scratch, "toctou-swap-out");
+    await mkdir(swapInbox, { recursive: true });
+    await mkdir(swapOut, { recursive: true });
+    const swapInboxFile = path.join(swapInbox, path.basename(tarball2Path));
+    await copyFile(tarball2Path, swapInboxFile);
+
+    let keepSwapping = true;
+    const forwardPromise = validateAndForwardRelayTarball(retrans.db, {
+      orgId: retrans.orgId,
+      changeIdOrUrn: localChangeAtB,
+      tarballPath: swapInboxFile,
+      relayCosignPublicKeyPem: retransCosignPub,
+      outDir: swapOut,
+      config: retransConfig()
+    });
+    const swapper = (async () => {
+      while (keepSwapping) {
+        await writeFile(swapInboxFile, tamperedBytes).catch(() => {});
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    })();
+    const swapped = await forwardPromise;
+    keepSwapping = false;
+    await swapper;
+
+    // THE INVARIANT: the swapped (tampered) bytes NEVER crossed the boundary. Either the op failed
+    // closed (a swap that landed during the single ingress copy corrupted it → refused; nothing
+    // forwarded under an allow), or the VALIDATED bytes were forwarded — never the swap.
+    const swapDropPath = path.join(swapOut, path.basename(tarball2Path));
+    let droppedSha: string | null = null;
+    try {
+      droppedSha = await sha256File(swapDropPath);
+    } catch {
+      droppedSha = null;
+    }
+    if (swapped.refused) {
+      const decision = await latestDecision(retrans, RETRANS_RELAY_FORWARD_DECISION_KIND);
+      expect(decision?.verdict).toBe("block");
+      if (droppedSha !== null) expect(droppedSha).not.toBe(tamperedSha);
+    } else {
+      expect(droppedSha).toBe(validSha);
+      expect(droppedSha).not.toBe(tamperedSha);
+    }
   }, 240_000);
 
   // ---------------------------------------------------------------------------------------------

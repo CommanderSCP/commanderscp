@@ -1026,11 +1026,21 @@ export async function importRelayTarball(
   const workDir = await makeScratchDir();
   const pushed: RelayPushedArtifact[] = [];
   let refusalReason: string | null = null;
-  const tarballSha256 = await sha256File(input.tarballPath);
+  // TOCTOU close (copy-once-then-operate-on-the-private-copy): input.tarballPath sits in the
+  // attacker-writable low-side inbox. Ingest its bytes into the server-controlled scratch dir
+  // EXACTLY once, then hash + verify ALL from that private copy — so the D4 confirmed-transfer
+  // checksum below describes the SAME bytes that were verified and imported, never a post-verify
+  // swap of the inbox file. After this copy `input.tarballPath` is never read again. The copy+hash
+  // live INSIDE the try so a missing/unreadable inbox path converges to the fail-closed block
+  // Decision (route → 409), not a raw throw that leaks the scratch dir.
+  let tarballSha256: string | null = null;
   try {
+    const privateTarball = path.join(workDir, "ingress-relay.tar.gz");
+    await copyFile(input.tarballPath, privateTarball);
+    tarballSha256 = await sha256File(privateTarball);
     const { verifiedOci, verifiedBlobs } = await extractAndVerifyRelayTarball({
       workDir,
-      tarballPath: input.tarballPath,
+      tarballPath: privateTarball,
       relayCosignPublicKeyPem: input.relayCosignPublicKeyPem,
       localSourceChangeObjectId: ctx.sourceChangeObjectId,
       authorized: ctx.authorized,
@@ -1237,6 +1247,12 @@ export interface ForwardRelayTarballInput {
   relayCosignPublicKeyPem: string;
   /** The resolved OUTBOUND drop directory (the onward DeliveryTarget — §13.2). */
   outDir: string;
+  /** The DOWNSTREAM boundary peer this onward hop targets (its federation domain id) — the loop
+   *  resolves it from `resolveOnwardOutDir`'s peer match. Used ONLY to attribute the onward
+   *  `export`/`submitted` `bundle_transfers` row to the peer the drop actually goes to (M16.1
+   *  per-peer surface); observational only (the ledger is never authority). Absent (env-fallback
+   *  drop, no downstream peer resolvable) → falls back to the upstream import peer. */
+  onwardPeerDomainId?: string;
   /** File name to drop under `outDir` (defaults to the tarball's own basename); rides the
    *  `resolveUnderDir` traversal guard. */
   fileName?: string;
@@ -1296,14 +1312,26 @@ export async function validateAndForwardRelayTarball(
   // lands here). Then the onward drop of the ORIGINAL file bytes. NO skopeo ever runs on this
   // path — the retrans profile needs no registry for the forward hop.
   const workDir = await makeScratchDir();
-  const tarballSha256 = await sha256File(input.tarballPath);
+  // TOCTOU close (copy-once-then-operate-on-the-private-copy): input.tarballPath sits in the
+  // attacker-writable low-side inbox. A low-side writer who SWAPS it between our verify and our
+  // forward-copy would push UNVALIDATED bytes across the boundary drop under an allow Decision —
+  // the exact zero-trust invariant this feature protects. So we ingest its bytes into the
+  // server-controlled scratch dir EXACTLY once, then hash + verify + forward-copy ALL from that
+  // private copy. After this copy `input.tarballPath` is never read again: a mid-window swap
+  // changes only the abandoned inbox file, never the bytes we verify/forward/hash. The copy+hash
+  // live INSIDE the try so a missing/unreadable inbox path converges to the fail-closed block
+  // Decision (D4), not a raw throw.
+  let tarballSha256: string | null = null;
   let refusalReason: string | null = null;
   let artifacts: RelayArtifactSummary[] = [];
   let forwardedPath: string | null = null;
   try {
+    const privateTarball = path.join(workDir, "ingress-relay.tar.gz");
+    await copyFile(input.tarballPath, privateTarball);
+    tarballSha256 = await sha256File(privateTarball);
     const verified = await extractAndVerifyRelayTarball({
       workDir,
-      tarballPath: input.tarballPath,
+      tarballPath: privateTarball,
       relayCosignPublicKeyPem: input.relayCosignPublicKeyPem,
       localSourceChangeObjectId: ctx.sourceChangeObjectId,
       authorized: ctx.authorized,
@@ -1311,13 +1339,14 @@ export async function validateAndForwardRelayTarball(
       config
     });
     artifacts = verified.relayManifest.artifacts.map((a) => ({ type: a.type, digest: a.digest }));
-    // The onward drop: the ORIGINAL tarball bytes, byte-identical (the low-side retrans's
-    // signature stays the receiving outpost's trust anchor — this node re-signs NOTHING and adds
-    // no verification authority). The drop file name rides the traversal guard.
+    // The onward drop: the VERIFIED private-copy bytes, byte-identical to what was validated (the
+    // low-side retrans's signature stays the receiving outpost's trust anchor — this node re-signs
+    // NOTHING and adds no verification authority). Copied from the private copy, never re-read from
+    // the inbox. The drop file name (naming only, not a byte read) rides the traversal guard.
     const dropName = input.fileName ?? path.basename(input.tarballPath);
     const dropPath = resolveUnderDir(input.outDir, dropName);
     await mkdir(input.outDir, { recursive: true });
-    await copyFile(input.tarballPath, dropPath);
+    await copyFile(privateTarball, dropPath);
     forwardedPath = dropPath;
   } catch (err) {
     // Same convergence as the destination import: a failing check (or a failed drop — which must
@@ -1395,6 +1424,7 @@ export async function validateAndForwardRelayTarball(
       decisionId: decision.id,
       requestId: `federation-relay-forward:${ctx.change.objectId}`
     });
+    // The inbound hop's CONFIRMED row is keyed on the UPSTREAM low-side peer we imported from.
     if (ctx.change.importedFromDomain) {
       await recordBundleTransfer(tx, {
         orgId: input.orgId,
@@ -1404,9 +1434,15 @@ export async function validateAndForwardRelayTarball(
         status: "confirmed",
         checksum: tarballSha256
       });
+    }
+    // The onward hop's SUBMITTED row is keyed on the DOWNSTREAM boundary peer the drop TARGETS —
+    // not the upstream peer (minor fix: this used to mis-attribute the onward hop to the source).
+    // Env-fallback drop (no downstream peer resolvable) → attribute to the upstream peer as before.
+    const onwardPeerDomainId = input.onwardPeerDomainId ?? ctx.change.importedFromDomain;
+    if (onwardPeerDomainId) {
       await recordBundleTransfer(tx, {
         orgId: input.orgId,
-        peerDomainId: ctx.change.importedFromDomain,
+        peerDomainId: onwardPeerDomainId,
         direction: "export",
         kind: "promotion",
         status: "submitted",

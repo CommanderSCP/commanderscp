@@ -70,6 +70,7 @@
  * reliable floor a poke later optimizes) and the retrans auto-relay build after a promotion
  * import.
  */
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { and, eq, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
@@ -361,11 +362,16 @@ function upstreamRelayCosignKey(peers: FederationPeerRow[]): string | null {
 function resolveOnwardOutDir(
   peers: FederationPeerRow[],
   config: RelayConfig
-): { dir: string } | { problem: string } {
+): { dir: string; peerDomainId?: string } | { problem: string } {
   const peerOut = peers
     .map((peer) => ({ peer, resolved: resolveDeliveryTarget(peer, config) }))
     .filter(({ resolved }) => resolved.outbound.source === "peer" && resolved.outbound.dir !== null);
-  if (peerOut.length === 1) return { dir: peerOut[0]!.resolved.outbound.dir as string };
+  if (peerOut.length === 1)
+    return {
+      dir: peerOut[0]!.resolved.outbound.dir as string,
+      // The downstream boundary peer — threaded to attribute the onward transfer row to it.
+      peerDomainId: peerOut[0]!.peer.id
+    };
   if (peerOut.length > 1) {
     return {
       problem:
@@ -413,7 +419,33 @@ export async function processInboxFile(
     });
   }
 
-  const sha256 = await sha256File(filePath);
+  // Content identity for the dedupe ledger. For a `.scpbundle` we read the bytes ONCE and hash the
+  // SAME buffer we hand to JSON.parse (in processBundleFile) — so the ledger's content-identity
+  // matches EXACTLY the bytes that were imported, closing the separate-hash-read-vs-parse-read
+  // window. For a relay tarball (potentially multi-GB) we stream-hash the file; its verify path
+  // re-ingests the bytes into a server-controlled private copy (retrans-relay: copy-once) so a
+  // post-hash swap of the inbox file cannot change what is verified/forwarded/imported.
+  const isBundle = fileName.endsWith(".scpbundle");
+  let bundleBytes: Buffer | null = null;
+  let sha256: string;
+  if (isBundle) {
+    try {
+      bundleBytes = await readFile(filePath);
+    } catch (err) {
+      return refuseFile(db, {
+        orgId,
+        source,
+        fileName,
+        sha256: UNREADABLE_SHA,
+        reason: `.scpbundle not readable (rejected, fail-closed): ${err instanceof Error ? err.message : String(err)}`,
+        underlyingDecisionId: null
+      });
+    }
+    sha256 = createHash("sha256").update(bundleBytes).digest("hex");
+  } else {
+    sha256 = await sha256File(filePath);
+  }
+
   const processed = await withTenantTx(db, orgId, (tx) =>
     ledgerHas(tx, orgId, source.dir, fileName, sha256)
   );
@@ -421,8 +453,8 @@ export async function processInboxFile(
     return { outcome: "already-processed", detail: "content already in the inbox ledger", decisionId: null };
   }
 
-  if (fileName.endsWith(".scpbundle")) {
-    return processBundleFile(db, orgId, ctx, source, fileName, filePath, sha256);
+  if (isBundle) {
+    return processBundleFile(db, orgId, ctx, source, fileName, bundleBytes!, sha256);
   }
   if (RELAY_TARBALL_RE.test(fileName)) {
     return processRelayTarballFile(db, orgId, ctx, source, fileName, filePath, sha256, masterKey, config);
@@ -442,12 +474,14 @@ async function processBundleFile(
   ctx: { self: FederationSelf },
   source: InboxSource,
   fileName: string,
-  filePath: string,
+  /** The bytes already read ONCE by processInboxFile — the SAME buffer whose sha256 is the ledger
+   *  identity, so what is parsed/imported here is exactly what the ledger records (no re-read). */
+  rawBytes: Buffer,
   sha256: string
 ): Promise<InboxFileOutcome> {
   let parsed: ImportBundleRequest;
   try {
-    const raw = JSON.parse(await readFile(filePath, "utf8")) as unknown;
+    const raw = JSON.parse(rawBytes.toString("utf8")) as unknown;
     const result = ImportBundleRequestSchema.safeParse(raw);
     if (!result.success) {
       return refuseFile(db, {
@@ -582,6 +616,7 @@ async function processRelayTarballFile(
         tarballPath: filePath,
         relayCosignPublicKeyPem: relayKey,
         outDir: onward.dir,
+        onwardPeerDomainId: onward.peerDomainId,
         fileName,
         config
       });
