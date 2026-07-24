@@ -54098,6 +54098,12 @@
                     },
                     "woken": {
                       "type": "boolean"
+                    },
+                    "wokenSync": {
+                      "type": "boolean"
+                    },
+                    "wokenInbox": {
+                      "type": "boolean"
                     }
                   },
                   "required": [

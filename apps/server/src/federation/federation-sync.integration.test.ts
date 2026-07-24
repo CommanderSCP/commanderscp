@@ -30,6 +30,7 @@ import {
   federationSyncOrgTick,
   isPeerDue,
   pullFromCommanderPeer,
+  resetFederationCertWarningDedupe,
   FEDERATION_SYNC_DECISION_KIND
 } from "./federation-sync.js";
 import type { FederationClientMtls } from "./federation-outbound.js";
@@ -539,6 +540,40 @@ describe.skipIf(!opensslAvailable())("M14.4 scheduler mode — poke vs poll cade
     const noCerts = await tickAt(1, { mtls: null });
     expect(noCerts).toHaveLength(1);
     expect(noCerts[0]!.outcome).toBe("refused");
+  });
+
+  it("(f2) D4 FALLBACK IS REACHABLE: cert paths set but the FILE IS MISSING — the tick still pulls at the frequent cadence and never throws", async () => {
+    await setPeerState({
+      pokeMode: true,
+      lastPokeReceivedAt: new Date(T0 - 1000),
+      lastPullAttemptAt: new Date(T0 - 120_000),
+      lastPullSuccessAt: new Date(T0 - 120_000)
+    });
+    // With USABLE cert material this proven poke-mode peer is sparse and NOT due 120s after a
+    // successful pull — the baseline the next assertion is measured against.
+    expect(await tickAt(0)).toHaveLength(0);
+
+    // Now the D4 case that was UNREACHABLE: the operator's paths are still set but the mounted
+    // secret was rotated away / unmounted, so `resolveFederationClientMtls` throws ENOENT. Called
+    // unguarded, that throw escaped into `runFederationSyncSweep`'s per-org catch and NO peer was
+    // pulled at ANY cadence — `last_pull_attempt_at` never advanced again, which is strictly worse
+    // than the decided behaviour (D4: "both halves of poke-mode fail the same way" — the sender
+    // goes inert, so the scheduler must degrade, not die).
+    resetFederationCertWarningDedupe();
+    const outcomes = await federationSyncOrgTick(outpost.db, outpost.orgId, {
+      env: {
+        SCP_FEDERATION_SYNC_BEARER: commander.adminToken,
+        SCP_FEDERATION_MTLS_CERT_FILE: path.join(tmpdir(), "scp-does-not-exist.crt"),
+        SCP_FEDERATION_MTLS_KEY_FILE: path.join(tmpdir(), "scp-does-not-exist.key")
+      },
+      now: new Date(T0 + 1000)
+    });
+    // NO throw, and the peer WAS attempted — it fell back to the frequent cadence (no runtime cert
+    // material ⇒ never sparse), then the https peer's dial was fail-closed refused, never plain.
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.outcome).toBe("refused");
+    // And the attempt really was stamped, so the loop keeps making progress.
+    expect(Date.parse((await peerState()).lastPullAttemptAt!)).toBe(T0 + 1000);
   });
 
   it("REPLICA SAFETY: the claim is a conditional UPDATE — concurrent ticks pull the peer once", async () => {

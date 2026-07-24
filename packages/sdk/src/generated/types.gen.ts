@@ -14045,6 +14045,8 @@ export type FederationPokeResponses = {
     202: {
         accepted: true;
         woken: boolean;
+        wokenSync?: boolean;
+        wokenInbox?: boolean;
     };
 };
 

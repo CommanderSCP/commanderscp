@@ -383,6 +383,9 @@ describe.skipIf(!opensslAvailable())("M14.4 air-gap poke leg — the poke wakes 
   let relay: { domainId: string; leaf: TestLeafCert };
   let sends: Recorded[] = [];
   let previousInboxLoop: string | undefined;
+  /** Which queue's `boss.send` should THROW — models "that loop's queue does not exist on this
+   *  process" (a split topology), the case the two independent try/catches exist for. */
+  let failQueue: string | null = null;
 
   beforeAll(async () => {
     // The inbox wake is sent only where the deployment actually RUNS an inbox loop — otherwise the
@@ -407,6 +410,9 @@ describe.skipIf(!opensslAvailable())("M14.4 air-gap poke leg — the poke wakes 
     const deps: AppDeps = { db, config };
     deps.boss = {
       send: async (queue: string) => {
+        if (queue === failQueue) {
+          throw new Error(`queue ${queue} does not exist on this process`);
+        }
         sends.push({ queue });
         return "job-id";
       }
@@ -455,8 +461,38 @@ describe.skipIf(!opensslAvailable())("M14.4 air-gap poke leg — the poke wakes 
 
   beforeEach(() => {
     sends = [];
+    failQueue = null;
     pokeRateLimiter.reset();
   });
+
+  /** One mTLS poke from the enrolled high-side retrans. */
+  async function poke(): Promise<{ status: number; json: Record<string, unknown> | undefined }> {
+    return new Promise((resolve, reject) => {
+      const req = https.request(
+        {
+          hostname: "127.0.0.1",
+          port,
+          path: "/api/v1/federation/poke",
+          method: "POST",
+          ca: ca.caCrtPem,
+          cert: relay.leaf.certPem,
+          key: relay.leaf.keyPem,
+          rejectUnauthorized: false,
+          agent: false,
+          headers: { authorization: `Bearer ${adminToken}` }
+        },
+        (r) => {
+          let raw = "";
+          r.on("data", (chunk: Buffer) => (raw += chunk.toString("utf8")));
+          r.on("end", () =>
+            resolve({ status: r.statusCode ?? 0, json: raw ? JSON.parse(raw) : undefined })
+          );
+        }
+      );
+      req.on("error", reject);
+      req.end();
+    });
+  }
 
   it("the sync sweep alone would do NOTHING here (no role:commander peer to pull from)", async () => {
     const outcomes = await federationSyncOrgTick(db, orgId, { env: {}, mtls: null });
@@ -496,5 +532,43 @@ describe.skipIf(!opensslAvailable())("M14.4 air-gap poke leg — the poke wakes 
     const queues = sends.map((s) => s.queue);
     expect(queues).toContain(INBOX_QUEUE);
     expect(queues).toContain(FEDERATION_SYNC_QUEUE);
+  });
+
+  /**
+   * N3 — THE TWO INDEPENDENT TRY/CATCHES, ACTUALLY EXERCISED. Every other test here injects a
+   * recording boss whose `send` always succeeds, so the isolation between the two wakes was only
+   * correct BY INSPECTION. A real split topology is precisely the case where one queue does not
+   * exist on the process serving the request, and a `boss.send` for it THROWS.
+   */
+  it("N3: when the SYNC queue's send throws, the poke is still accepted and the AIR-GAP (inbox) leg still fires", async () => {
+    failQueue = FEDERATION_SYNC_QUEUE;
+    const res = await poke();
+
+    expect(res.status).toBe(202);
+    // The other leg is unaffected — one failing wake never aborts the handler…
+    expect(sends.map((s) => s.queue)).toEqual([INBOX_QUEUE]);
+    // …and `woken` reports the leg that ACTUALLY fired. On a pure air-gap outpost the sync queue is
+    // absent by construction, so keying `woken` on the sync wake alone reported `false` for a poke
+    // that had just successfully woken the very leg M14.4 added.
+    expect(res.json).toMatchObject({
+      accepted: true,
+      woken: true,
+      wokenSync: false,
+      wokenInbox: true
+    });
+  });
+
+  it("N3: when the INBOX queue's send throws, the poke is still accepted and the SYNC leg still fires", async () => {
+    failQueue = INBOX_QUEUE;
+    const res = await poke();
+
+    expect(res.status).toBe(202);
+    expect(sends.map((s) => s.queue)).toEqual([FEDERATION_SYNC_QUEUE]);
+    expect(res.json).toMatchObject({
+      accepted: true,
+      woken: true,
+      wokenSync: true,
+      wokenInbox: false
+    });
   });
 });

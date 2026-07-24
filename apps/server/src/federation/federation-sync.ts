@@ -11,8 +11,10 @@
  *
  * The poke design's reliability floor is a SPARSE SAFETY-NET reconcile plus PULL-ON-(RE)CONNECT/
  * STARTUP. This loop provides BOTH backstop legs from day one:
- *   - **Pull-on-startup:** the loop's first `boss.send` fires an immediate tick when the loop starts
- *     — a fresh (re)connected process pulls once right away rather than waiting a full interval.
+ *   - **Pull-on-(re)connect:** the loop's first `boss.send` fires an immediate FORCED tick when the
+ *     loop starts (`reason: "startup"`) — a fresh (re)connected process pulls every peer right away
+ *     rather than waiting a full interval. It must FORCE past the M14.4 due-gate because that gate's
+ *     state (`last_pull_attempt_at`) is a DB column that SURVIVES the restart.
  *   - **Sparse safety-net:** the self-rescheduling interval tick IS the safety net. In poll-mode it
  *     is the (configurable) frequent poll; in poke-mode (M14.4) its FREQUENT leg is disabled while
  *     startup + a sparse interval remain, so a dropped poke self-heals within a bounded window. The
@@ -62,6 +64,28 @@
  *   - {@link wakeFederationSyncNow} + the handler's `force` path — a poke BYPASSES the due-gate and
  *     does NOT re-schedule. Without that bypass the poke would be swallowed by the very gate it
  *     complements ("this peer isn't due for another 14 minutes") and pull nothing.
+ *
+ * ### FORCE and RESCHEDULE are TWO INDEPENDENT FLAGS (not one boolean)
+ *
+ * The due-gate has two distinct kinds of tick that must bypass it, and they differ in the OTHER
+ * axis — whether the tick owes the loop a re-schedule:
+ *
+ * | tick             | `reason`    | forces past the due-gate | re-schedules the interval chain |
+ * |------------------|-------------|--------------------------|---------------------------------|
+ * | interval         | (none)      | no                       | YES                             |
+ * | pull-on-(re)connect | `startup` | YES                    | YES — it BOOTSTRAPS the chain   |
+ * | poke             | `poke`      | YES                      | no — it rides ALONGSIDE the chain |
+ *
+ * The STARTUP tick must force. `last_pull_attempt_at` is a DB COLUMN, so it SURVIVES a process
+ * restart: a peer that pulled two minutes before a rolling upgrade / OOM kill / node drain comes
+ * back NON-NULL and NOT due, and a non-forcing startup tick would pull NOTHING — the outpost then
+ * stays stale for the remainder of the sparse window. Pull-on-(re)connect is an explicit leg of the
+ * decided reliability floor (proposal §4); poke-mode must not weaken it.
+ *
+ * But it must ALSO re-schedule: the startup tick is the tick that STARTS the self-rescheduling
+ * chain. Collapsing the two flags into one boolean breaks one of them — "forced ⇒ no re-schedule"
+ * kills the loop outright, "forced ⇒ re-schedule" reintroduces the duplicate interval jobs the poke
+ * path deliberately avoids.
  *
  * Still out of scope here: the `pokeMode` flag itself (M14.1, peers-repo), the contentless poke
  * endpoint (M14.2, routes/federation.ts) and the commander poke sender (M14.3, poke-sender.ts).
@@ -214,7 +238,9 @@ export function effectivePullIntervalSeconds(
  * M14.4 — THE MODE SWITCH, as a pure DB-free predicate: is this peer due for a pull at `now`?
  *
  * `true` when the peer has never been attempted (`lastPullAttemptAt === null` — deliberately "due
- * now", so pull-on-startup and every pre-M14.4 row survive the gate untouched) or when its
+ * now", so every pre-M14.4 row survives the gate untouched and drizzle/0038 needs no backfill; note
+ * this does NOT cover pull-on-(re)connect, since the column survives a restart — that leg FORCES,
+ * see {@link FEDERATION_SYNC_STARTUP_REASON}) or when its
  * {@link effectivePullIntervalSeconds} has elapsed since the last attempt. The scheduler re-checks
  * the same condition inside an atomic conditional UPDATE (`claimPeerPull`) so the decision is also
  * safe across worker replicas; this predicate exists so the truth table itself is unit-testable
@@ -257,6 +283,57 @@ export interface FederationSyncOptions {
   force?: boolean;
   /** Test seam — deterministic clock for the due-gate/claim (defaults to `new Date()`). */
   now?: Date;
+}
+
+/**
+ * M14.4 (owner decision D4) — the RUNTIME client-cert probe, and the reason it never throws.
+ *
+ * {@link resolveFederationClientMtls} throws in TWO situations: a HALF-configured cert/key pair, and
+ * `readFileSync` failing on a configured-but-missing/unreadable file (a rotated-away or unmounted
+ * secret — `SCP_FEDERATION_MTLS_CERT_FILE`/`_KEY_FILE` still set, the file gone). Calling it
+ * unguarded from the tick made that throw escape into `runFederationSyncSweep`'s per-org catch,
+ * where it was logged as "org <id> tick failed" and NO peer was pulled at ANY cadence —
+ * `last_pull_attempt_at` never advanced again. That is strictly worse than the decided behaviour.
+ *
+ * D4 decided the opposite: "refuse to go sparse without runtime client-cert material — mirroring
+ * the M14.3 sender's inert-without-certs rule, so BOTH HALVES of poke-mode fail the same way." The
+ * sender going inert is harmless; the scheduler going DEAD is not. So a throw here degrades to
+ * `hasClientCerts: false` — the peer drops back to the FREQUENT cadence and KEEPS BEING PULLED (an
+ * https peer's pull is then refused fail-closed with its own block Decision, exactly as designed;
+ * an http peer's pull still succeeds). Never a dead tick.
+ *
+ * The cause is a real operational fault, so it is surfaced at WARN — but deduped, because this runs
+ * on every tick of every org and an unfixed missing secret would otherwise emit a log line a minute
+ * forever.
+ */
+let lastCertResolveWarning: string | undefined;
+
+function probeRuntimeClientMtls(env: NodeJS.ProcessEnv): {
+  mtls: FederationClientMtls | undefined;
+  usable: boolean;
+} {
+  try {
+    const mtls = resolveFederationClientMtls(env);
+    lastCertResolveWarning = undefined;
+    // No material CONFIGURED at all is not a fault — it is the pre-M8 default (bearer-only http
+    // peers). It is still "no runtime certs" for D4's purposes.
+    return { mtls, usable: Boolean(mtls) };
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    if (detail !== lastCertResolveWarning) {
+      lastCertResolveWarning = detail;
+      console.warn(
+        "[federation-sync] client-cert material is CONFIGURED but unusable — falling back to the " +
+          `FREQUENT poll cadence for every peer (owner decision D4) and continuing to pull: ${detail}`
+      );
+    }
+    return { mtls: undefined, usable: false };
+  }
+}
+
+/** Test seam: forget the deduped warning so a test can assert it is emitted. */
+export function resetFederationCertWarningDedupe(): void {
+  lastCertResolveWarning = undefined;
 }
 
 /** Records a block Decision + hash-chained audit event for a refused/failed pull, in one tx. */
@@ -392,17 +469,30 @@ export async function federationSyncOrgTick(
 ): Promise<FederationSyncOutcome[]> {
   const env = options?.env ?? process.env;
   const bearer = env.SCP_FEDERATION_SYNC_BEARER || undefined;
-  // `mtls: null` in options means "explicitly none" (fail-closed test); undefined means "resolve
-  // from env" (production).
-  const mtls =
-    options?.mtls === null ? undefined : (options?.mtls ?? resolveFederationClientMtls(env));
+  // `mtls: null` in options means "explicitly none" (fail-closed test); an injected value is used
+  // as-is; undefined means "resolve from env" (production) — through the NEVER-THROWING probe, so a
+  // rotated-away secret degrades the cadence instead of killing the tick (see
+  // {@link probeRuntimeClientMtls}, owner decision D4).
+  let mtls: FederationClientMtls | undefined;
+  let certMaterialUsable: boolean;
+  if (options?.mtls === null) {
+    mtls = undefined;
+    certMaterialUsable = federationClientMtlsConfigured(env);
+  } else if (options?.mtls) {
+    mtls = options.mtls;
+    certMaterialUsable = true;
+  } else {
+    const probed = probeRuntimeClientMtls(env);
+    mtls = probed.mtls;
+    certMaterialUsable = probed.usable;
+  }
   // Resolved PER TICK from the live env (never an import-frozen module const).
   const cadence: PeerCadenceInputs = {
     frequent: frequentIntervalSeconds(env),
     sparse: resolveSparseIntervalSeconds(env),
     // D4: the RUNTIME question, not the pair-time one — injected material counts, and so does
-    // configured-on-disk material; neither ⇒ the poke path is dead ⇒ stay on the frequent cadence.
-    hasClientCerts: Boolean(mtls) || federationClientMtlsConfigured(env)
+    // material that actually READ off disk; neither ⇒ the poke path is dead ⇒ frequent cadence.
+    hasClientCerts: certMaterialUsable
   };
   const now = options?.now ?? new Date();
   const force = options?.force === true;
@@ -493,11 +583,37 @@ export async function runFederationSyncSweep(
  * peers.
  */
 export async function wakeFederationSyncNow(boss: PgBoss, orgId?: string): Promise<void> {
-  await boss.send(FEDERATION_SYNC_QUEUE, { reason: "poke", ...(orgId ? { orgId } : {}) });
+  await boss.send(FEDERATION_SYNC_QUEUE, {
+    reason: FEDERATION_SYNC_POKE_REASON,
+    ...(orgId ? { orgId } : {})
+  });
 }
 
-/** The wake payload a poke enqueues (see {@link wakeFederationSyncNow}). An interval tick sends
- *  `{}`, so `reason !== "poke"` is exactly "this is a scheduled tick". */
+/**
+ * The `reason` a tick carries. An INTERVAL tick carries none (the self-reschedule sends `{}`), so
+ * `reason === undefined` is exactly "this is a scheduled tick".
+ *
+ *  - `"poke"` — the contentless poke's wake ({@link wakeFederationSyncNow}): FORCES, does NOT
+ *    re-schedule (it rides alongside the interval chain, which is still pending).
+ *  - `"startup"` — the pull-on-(re)connect tick fired by {@link startFederationSyncLoop}: FORCES
+ *    (see {@link FEDERATION_SYNC_STARTUP_REASON}) and DOES re-schedule (it bootstraps the chain).
+ */
+export const FEDERATION_SYNC_POKE_REASON = "poke";
+
+/**
+ * M14.4 fix — the pull-on-(re)connect tick's `reason`, and why it is not just `{}`.
+ *
+ * The startup tick used to send `{}`, which made it an ordinary NON-forced tick, on the assumption
+ * that "a NULL `last_pull_attempt_at` reads as due, so pull-on-startup survives the due-gate". That
+ * assumption is FALSE after the first ever pull: `last_pull_attempt_at` is a DB column and SURVIVES
+ * the restart. A proven poke-mode peer whose last pull succeeded two minutes before a worker
+ * restart is NOT due, so the startup sweep pulled nothing and the outpost stayed stale for the rest
+ * of the sparse window. `reason: "startup"` forces past the gate — restoring the pull-on-(re)connect
+ * leg of the decided reliability floor, which poke-mode must not weaken.
+ */
+export const FEDERATION_SYNC_STARTUP_REASON = "startup";
+
+/** The wake payload a tick carries (see {@link FEDERATION_SYNC_POKE_REASON}). */
 export interface FederationSyncJobData {
   reason?: string;
   orgId?: string;
@@ -513,8 +629,10 @@ export interface FederationSyncLoopHandle {
  * `SCP_ROLE=all|worker` (wired in `main.ts`) AND only when the operator explicitly enabled it
  * (`SCP_FEDERATION_SYNC_LOOP=1`) — otherwise an inert handle and the queue is never created.
  *
- * The initial `boss.send(FEDERATION_SYNC_QUEUE, {})` is the PULL-ON-STARTUP backstop leg: a fresh
- * (re)connected worker pulls once immediately rather than waiting a full interval.
+ * The initial `boss.send(FEDERATION_SYNC_QUEUE, { reason: "startup" })` is the PULL-ON-(RE)CONNECT
+ * backstop leg: a fresh (re)connected worker pulls once immediately — FORCED past the due-gate,
+ * because the gate's state lives in a DB column that survives the restart (see
+ * {@link FEDERATION_SYNC_STARTUP_REASON}) — rather than waiting a full interval.
  */
 export async function startFederationSyncLoop(
   boss: PgBoss,
@@ -528,25 +646,56 @@ export async function startFederationSyncLoop(
   await boss.createQueue(FEDERATION_SYNC_QUEUE);
   await boss.work(FEDERATION_SYNC_QUEUE, async (jobs: { data?: FederationSyncJobData }[]) => {
     if (stopped) return;
-    // M14.4 (S4): a POKE-woken job is a FORCED tick for that caller's org — it bypasses the
-    // due-gate (otherwise the poke pulls nothing) and, crucially, does NOT re-schedule. pg-boss
-    // hands the handler a BATCH; a batch containing any poke job is treated as a poke.
-    const pokeJobs = (jobs ?? []).filter((job) => job.data?.reason === "poke");
-    const forced = pokeJobs.length > 0;
+    // TWO INDEPENDENT FLAGS — see the module header's table. pg-boss hands the handler a BATCH.
+    //
+    //  FORCE: a POKE job or a STARTUP job bypasses the due-gate (otherwise a poke pulls nothing,
+    //  and a restart pulls nothing for any peer that had already been attempted).
+    //
+    //  RESCHEDULE: owed by every NON-POKE job. A poke rides ALONGSIDE the interval chain (its
+    //  pending interval job is untouched and still fires), so re-scheduling on a poke would insert
+    //  an EXTRA pending tick — pg-boss computes the singleton slot from now() AT INSERT, so a poke
+    //  landing in a different slot is not deduped and poke traffic would make the "sparse" loop
+    //  non-deterministically denser. A STARTUP job, by contrast, is the tick that BOOTSTRAPS the
+    //  chain and MUST re-schedule.
+    //
+    //  Keying the re-schedule on "the batch contains a non-poke job" rather than on "no poke is
+    //  present" is the batchSize>1 hardening: pg-boss 10.4.2 defaults batchSize to 1, so a poke and
+    //  an interval tick cannot arrive together today — but if this queue ever took a larger batch,
+    //  a mixed batch would CONSUME the interval job and skip its re-schedule, permanently killing
+    //  the self-rescheduling chain until process restart.
+    const batch = jobs ?? [];
+    const pokeJobs = batch.filter((job) => job.data?.reason === FEDERATION_SYNC_POKE_REASON);
+    const startupJobs = batch.filter((job) => job.data?.reason === FEDERATION_SYNC_STARTUP_REASON);
+    const intervalJobs = batch.filter(
+      (job) =>
+        job.data?.reason !== FEDERATION_SYNC_POKE_REASON &&
+        job.data?.reason !== FEDERATION_SYNC_STARTUP_REASON
+    );
+    // An empty batch (defensive) is treated as an interval tick so the chain can never stall.
+    const reschedule = batch.length === 0 || startupJobs.length > 0 || intervalJobs.length > 0;
     const orgIds = [...new Set(pokeJobs.map((job) => job.data?.orgId).filter(Boolean))] as string[];
 
     const run = async (): Promise<void> => {
-      if (!forced) {
-        await runFederationSyncSweep(db);
-        return;
-      }
-      // A poke names its own org; a poke with no org (an older/unknown payload) forces every org.
-      if (orgIds.length === 0) {
+      // A startup/reconnect tick FORCES EVERY org: the process just (re)connected and has no idea
+      // which peers went stale while it was down. This subsumes any interval/poke job in the batch.
+      if (startupJobs.length > 0) {
         await runFederationSyncSweep(db, { force: true });
         return;
       }
-      for (const orgId of orgIds) {
-        await runFederationSyncSweep(db, { force: true, orgId });
+      if (pokeJobs.length > 0) {
+        // A poke names its own org; a poke with no org (an older/unknown payload) forces every org.
+        if (orgIds.length === 0) {
+          await runFederationSyncSweep(db, { force: true });
+        } else {
+          for (const orgId of orgIds) {
+            await runFederationSyncSweep(db, { force: true, orgId });
+          }
+        }
+      }
+      // A plain interval tick still runs its own DUE-GATED all-org sweep (and is the only work an
+      // ordinary tick does).
+      if (intervalJobs.length > 0 || batch.length === 0) {
+        await runFederationSyncSweep(db);
       }
     };
     const tick = run();
@@ -557,11 +706,7 @@ export async function startFederationSyncLoop(
       inFlightTick = undefined;
     }
     if (stopped) return;
-    // A POKE NEVER RE-SCHEDULES. pg-boss computes a singleton slot from now() AT INSERT, so a
-    // poke landing in a different slot than the pending interval job would insert an EXTRA pending
-    // tick — poke traffic would make the "sparse" loop non-deterministically denser. The interval
-    // job that woke the loop before this poke is still pending and still fires on schedule.
-    if (forced) return;
+    if (!reschedule) return;
     await boss.send(
       FEDERATION_SYNC_QUEUE,
       {},
@@ -572,8 +717,9 @@ export async function startFederationSyncLoop(
       }
     );
   });
-  // PULL-ON-STARTUP: fire the first tick immediately (the reconnect/startup backstop leg).
-  await boss.send(FEDERATION_SYNC_QUEUE, {});
+  // PULL-ON-(RE)CONNECT: fire the first tick immediately, FORCED (see the constant's doc) — and it
+  // is this tick that bootstraps the self-rescheduling interval chain.
+  await boss.send(FEDERATION_SYNC_QUEUE, { reason: FEDERATION_SYNC_STARTUP_REASON });
   return {
     async stop() {
       stopped = true;

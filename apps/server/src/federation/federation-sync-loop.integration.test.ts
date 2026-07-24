@@ -1,8 +1,10 @@
 import { randomUUID, generateKeyPairSync } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { and, eq } from "drizzle-orm";
 import pg from "pg";
 import type PgBoss from "pg-boss";
 import { withTenantTx } from "../db/tenant-tx.js";
+import { federationPeers } from "../db/schema.js";
 import { startPgBoss } from "../events/pgboss.js";
 import { testPgBossDatabaseUrl } from "../test-support/harness.js";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
@@ -73,6 +75,19 @@ describe("M14.4 federation-sync loop — the poke wake at the pg-boss level", ()
     }
   }
 
+  /** Clears the queue so a restart scenario starts from a known, empty pending set. */
+  async function clearPendingJobs(): Promise<void> {
+    const client = new pg.Client({ connectionString: testPgBossDatabaseUrl() });
+    await client.connect();
+    try {
+      await client.query(`DELETE FROM pgboss.job WHERE name = $1 AND state = 'created'`, [
+        FEDERATION_SYNC_QUEUE
+      ]);
+    } finally {
+      await client.end();
+    }
+  }
+
   beforeAll(async () => {
     previousLoopFlag = process.env.SCP_FEDERATION_SYNC_LOOP;
     process.env.SCP_FEDERATION_SYNC_LOOP = "1"; // the loop is DEFAULT-OFF without this.
@@ -125,5 +140,60 @@ describe("M14.4 federation-sync loop — the poke wake at the pg-boss level", ()
 
     // 3. NO POKE-INDUCED DUPLICATE TICKS — the forced tick did not re-schedule.
     expect(await pendingJobs()).toBeLessThanOrEqual(1);
+  }, 60_000);
+
+  /**
+   * B1 REGRESSION — THE RESTART CASE THE ORIGINAL STARTUP TICK SILENTLY LOST.
+   *
+   * The first test above passes trivially because a brand-new peer has `last_pull_attempt_at =
+   * NULL`, which the due-gate reads as "due now". But that column is DB state: it SURVIVES the
+   * process restart. A peer pulled moments before a rolling upgrade / OOM kill / node drain comes
+   * back NOT due, so a non-forcing startup tick pulled NOTHING and the outpost stayed stale for the
+   * rest of its window — silently disabling the pull-on-(re)connect leg of the decided reliability
+   * floor.
+   *
+   * This pins BOTH halves of the two-flag model at the real pg-boss level:
+   *   - the startup tick FORCES (the peer is attempted despite being deep inside its window), and
+   *   - it still RE-SCHEDULES (exactly ONE pending interval job — the chain is bootstrapped, not
+   *     killed, and not duplicated).
+   */
+  it("RESTART: the startup tick FORCES past the due-gate for an already-attempted peer AND leaves exactly one pending interval job", async () => {
+    // Tear the first loop down COMPLETELY (offWork unsubscribes the worker, not just the flag) so
+    // only the restarted loop can service the queue.
+    await loop.stop();
+    await boss.offWork(FEDERATION_SYNC_QUEUE);
+    await clearPendingJobs();
+
+    // The restart scenario: a proven poke-mode peer whose last pull SUCCEEDED seconds ago. It is
+    // not due under EITHER cadence (2s elapsed < the 60s frequent floor, let alone the 900s sparse
+    // one), so only a forced tick can pull it.
+    const justNow = new Date(Date.now() - 2_000);
+    await withTenantTx(domain.db, domain.orgId, (tx) =>
+      tx
+        .update(federationPeers)
+        .set({
+          pokeMode: true,
+          lastPokeReceivedAt: justNow,
+          lastPullAttemptAt: justNow,
+          lastPullSuccessAt: justNow
+        })
+        .where(and(eq(federationPeers.orgId, domain.orgId), eq(federationPeers.id, peerId)))
+    );
+    expect(await pendingJobs()).toBe(0);
+
+    // THE RESTART.
+    loop = await startFederationSyncLoop(boss, domain.db);
+
+    const restartAttempt = await waitFor(async () => {
+      const value = await lastAttemptMs();
+      return value !== null && value > justNow.getTime() ? value : null;
+    }, 20_000);
+    expect(restartAttempt).toBeGreaterThan(justNow.getTime());
+
+    // …AND the interval chain was bootstrapped: exactly one pending tick, never zero (a dead loop)
+    // and never two (a duplicated one).
+    await waitFor(async () => ((await pendingJobs()) >= 1 ? true : null));
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    expect(await pendingJobs()).toBe(1);
   }, 60_000);
 });

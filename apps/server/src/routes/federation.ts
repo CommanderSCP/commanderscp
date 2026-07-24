@@ -685,7 +685,16 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     schema: {
       // NO body schema — the poke is contentless; any/empty body is accepted and never read.
       response: {
-        202: z.object({ accepted: z.literal(true), woken: z.boolean() }),
+        // `woken` = "this poke woke SOMETHING" — EITHER leg. A pure air-gap outpost runs an inbox
+        // loop and no sync queue, so keying `woken` on the sync wake alone under-reported the very
+        // leg M14.4 added (an accepted poke that successfully woke the air-gap leg read as
+        // `woken:false`). The two per-leg booleans are additive and report which one fired.
+        202: z.object({
+          accepted: z.literal(true),
+          woken: z.boolean(),
+          wokenSync: z.boolean().optional(),
+          wokenInbox: z.boolean().optional()
+        }),
         401: ProblemSchema,
         403: ProblemSchema,
         409: ProblemSchema,
@@ -757,12 +766,12 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       //      a baseUrl; its content arrives as a FILE. Without this, the ADR-0009 §38 "required"
       //      high-side-retrans→outpost poke would wake a sweep that resolves to ZERO peers.
       // Each in its own try/catch so a missing queue on either side still returns accepted:true.
-      let woken = false;
+      let wokenSync = false;
       let wokenInbox = false;
       if (deps.boss) {
         try {
           await wakeFederationSyncNow(deps.boss, auth.orgId);
-          woken = true;
+          wokenSync = true;
         } catch (err) {
           request.log.warn(
             { err: err instanceof Error ? err.message : String(err), peer: peer.name },
@@ -786,8 +795,12 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
           }
         }
       }
-      const stats = recordPokeWake({ wokenSync: woken, wokenInbox });
-      if (!woken && !wokenInbox) {
+      const stats = recordPokeWake({ wokenSync, wokenInbox });
+      // EITHER leg counts as woken. On a pure air-gap outpost the sync queue does not exist at all
+      // (nothing to dial) while the inbox loop is the one that matters — reporting `woken:false`
+      // there would have the response contradict the wake that actually happened.
+      const woken = wokenSync || wokenInbox;
+      if (!woken) {
         // SPLIT-TOPOLOGY HOLE — countable, not a silent one-liner: this poke was accepted and woke
         // NOTHING. One occurrence is benign; a monotonically climbing `notWoken` means poke-mode is
         // effectively off for this instance (pokes are landing on a process with no job queue).
@@ -798,7 +811,7 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
             "climbing value means poke-mode is effectively off and only the sparse safety-net is syncing"
         );
       }
-      reply.status(202).send({ accepted: true as const, woken });
+      reply.status(202).send({ accepted: true as const, woken, wokenSync, wokenInbox });
     }
   });
 

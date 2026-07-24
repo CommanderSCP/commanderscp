@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type PgBoss from "pg-boss";
+import type { Db } from "../db/client.js";
 import type { FederationPeerRow } from "./peers-repo.js";
 import {
   FEDERATION_SYNC_QUEUE,
@@ -10,7 +11,9 @@ import {
   isPeerDue,
   peerSyncCadence,
   resolveSparseIntervalSeconds,
-  wakeFederationSyncNow
+  startFederationSyncLoop,
+  wakeFederationSyncNow,
+  type FederationSyncJobData
 } from "./federation-sync.js";
 
 /**
@@ -97,7 +100,10 @@ describe("M14.4 resolveSparseIntervalSeconds — the D1 knob (env-resolved, clam
 });
 
 describe("M14.4 isPeerDue — the due-gate truth table", () => {
-  it("NEVER ATTEMPTED (null) is always due — pull-on-startup and every pre-0038 row survive the gate", () => {
+  // NOTE: this is NOT what makes pull-on-(re)connect work. `last_pull_attempt_at` SURVIVES a
+  // restart, so a peer that has ever pulled comes back non-NULL; the startup tick FORCES instead
+  // (see FEDERATION_SYNC_STARTUP_REASON). What NULL-is-due buys is drizzle/0038 needing no backfill.
+  it("NEVER ATTEMPTED (null) is always due — every pre-0038 row survives the gate untouched", () => {
     expect(isPeerDue(peer(), T0, inputs)).toBe(true);
     expect(isPeerDue(peer({ pokeMode: true, lastPokeReceivedAt: T0.toISOString() }), T0, inputs)).toBe(
       true
@@ -192,5 +198,121 @@ describe("M14.4 wakeFederationSyncNow — the poke wake is DISTINGUISHABLE and o
     } as unknown as PgBoss;
     await wakeFederationSyncNow(boss);
     expect(sent[0]).toEqual({ reason: "poke" });
+  });
+});
+
+/**
+ * M14.4 fix — FORCE and RESCHEDULE are TWO INDEPENDENT FLAGS, unit-pinned at the handler level.
+ *
+ *  - the STARTUP tick FORCES past the due-gate (its DB-observable half is pinned in
+ *    `federation-sync-loop.integration.test.ts`) but MUST still re-schedule: it is the tick that
+ *    BOOTSTRAPS the interval chain, so collapsing the two flags into one boolean either kills the
+ *    loop ("forced ⇒ no re-schedule") or duplicates interval jobs ("forced ⇒ re-schedule");
+ *  - the re-schedule is keyed on "the batch contains a NON-POKE job", not on "no poke is present".
+ *    pg-boss 10.4.2 defaults `batchSize` to 1 so a poke and an interval tick cannot arrive together
+ *    TODAY — but with a larger batch the old rule would CONSUME the pending interval job and skip
+ *    its re-schedule, permanently killing the self-rescheduling chain until process restart.
+ */
+describe("M14.4 loop handler — force vs. reschedule are two flags", () => {
+  /** A db whose org list is empty, so a sweep is a no-op and only the SCHEDULING is under test. */
+  const emptyDb = { select: () => ({ from: async () => [] }) } as unknown as Db;
+
+  type Sent = { queue: string; data: FederationSyncJobData; options?: unknown };
+
+  async function startLoop() {
+    const previous = process.env.SCP_FEDERATION_SYNC_LOOP;
+    process.env.SCP_FEDERATION_SYNC_LOOP = "1"; // the loop is DEFAULT-OFF without this.
+    try {
+      const sends: Sent[] = [];
+      let handler: ((jobs: { data?: FederationSyncJobData }[]) => Promise<void>) | undefined;
+      const boss = {
+        createQueue: async () => undefined,
+        work: async (
+          _queue: string,
+          h: (jobs: { data?: FederationSyncJobData }[]) => Promise<void>
+        ) => {
+          handler = h;
+          return "worker-id";
+        },
+        send: async (queue: string, data: FederationSyncJobData, options?: unknown) => {
+          sends.push({ queue, data, options });
+          return "job-id";
+        }
+      } as unknown as PgBoss;
+      const handle = await startFederationSyncLoop(boss, emptyDb);
+      return {
+        sends,
+        handle,
+        run: (jobs: { data?: FederationSyncJobData }[]) => handler!(jobs)
+      };
+    } finally {
+      if (previous === undefined) delete process.env.SCP_FEDERATION_SYNC_LOOP;
+      else process.env.SCP_FEDERATION_SYNC_LOOP = previous;
+    }
+  }
+
+  /** Did the handler re-schedule? The re-schedule is the only send carrying a `singletonKey`. */
+  function rescheduled(sends: Sent[]): number {
+    return sends.filter(
+      (s) => (s.options as { singletonKey?: string } | undefined)?.singletonKey === "tick"
+    ).length;
+  }
+
+  it("the PULL-ON-(RE)CONNECT tick carries reason 'startup' — not an anonymous {} the due-gate would swallow", async () => {
+    const { sends, handle } = await startLoop();
+    expect(sends).toHaveLength(1);
+    expect(sends[0]!.queue).toBe(FEDERATION_SYNC_QUEUE);
+    expect(sends[0]!.data).toEqual({ reason: "startup" });
+    // Immediate: no singleton / startAfter, exactly like the poke wake.
+    expect(sends[0]!.options).toBeUndefined();
+    await handle.stop();
+  });
+
+  it("a STARTUP job RE-SCHEDULES (it bootstraps the interval chain)", async () => {
+    const { sends, run, handle } = await startLoop();
+    sends.length = 0;
+    await run([{ data: { reason: "startup" } }]);
+    expect(rescheduled(sends)).toBe(1);
+    await handle.stop();
+  });
+
+  it("a POKE job does NOT re-schedule (it rides alongside the still-pending interval job)", async () => {
+    const { sends, run, handle } = await startLoop();
+    sends.length = 0;
+    await run([{ data: { reason: "poke" } }]);
+    expect(rescheduled(sends)).toBe(0);
+    await handle.stop();
+  });
+
+  it("an INTERVAL job re-schedules", async () => {
+    const { sends, run, handle } = await startLoop();
+    sends.length = 0;
+    await run([{ data: {} }]);
+    expect(rescheduled(sends)).toBe(1);
+    await handle.stop();
+  });
+
+  it("B3: a MIXED batch (interval + poke) still re-schedules — a poke must never consume the chain", async () => {
+    const { sends, run, handle } = await startLoop();
+    sends.length = 0;
+    await run([{ data: {} }, { data: { reason: "poke" } }]);
+    expect(rescheduled(sends)).toBe(1);
+    await handle.stop();
+  });
+
+  it("B3: a MIXED batch (startup + poke) still re-schedules", async () => {
+    const { sends, run, handle } = await startLoop();
+    sends.length = 0;
+    await run([{ data: { reason: "startup" } }, { data: { reason: "poke" } }]);
+    expect(rescheduled(sends)).toBe(1);
+    await handle.stop();
+  });
+
+  it("an EMPTY batch is treated as an interval tick — the chain can never stall", async () => {
+    const { sends, run, handle } = await startLoop();
+    sends.length = 0;
+    await run([]);
+    expect(rescheduled(sends)).toBe(1);
+    await handle.stop();
   });
 });
