@@ -120,9 +120,17 @@ describe.runIf(await dockerAvailable())(
     const plugin = createManagedIacExecutorPlugin();
 
     beforeAll(async () => {
+      // DOCKER_BUILDKIT=0 forces the LEGACY builder. WHY: this runner-image build shares the homelab
+      // DinD with the integration job's `--network none` container operations; modern Docker's default
+      // BuildKit builder opens an embedded gRPC session that deadlocks against net=none container ops
+      // ("session healthcheck failed fatally: Unavailable: ... only one connection allowed"), hanging
+      // the whole integration run. This Dockerfile is a plain single-stage FROM+RUN+COPY build with NO
+      // BuildKit-only features, so the legacy builder yields a functionally identical image. Do NOT
+      // re-enable BuildKit without re-solving the DinD session wedge (docs/BUILD_AND_TEST.md §CI/integration).
       await execFileAsync("docker", ["build", "-t", RUNNER_IMAGE_TAG, RUNNER_IAC_CONTEXT], {
         timeout: 300_000,
-        maxBuffer: 32 * 1024 * 1024
+        maxBuffer: 32 * 1024 * 1024,
+        env: { ...process.env, DOCKER_BUILDKIT: "0" }
       });
     }, 300_000);
 
