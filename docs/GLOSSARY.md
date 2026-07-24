@@ -10,7 +10,7 @@ The rule this glossary follows:
 
 1. **Where a clear industry standard exists, use it** — and cite it, so a new engineer can go read the source.
 2. **Where standards collide or the concept is genuinely ours, the owner decided** — and [ADR-0021](adr/0021-terminology.md) records why, including the alternatives that were considered and rejected.
-3. **Where the glossary's preferred word does not match the code today, this document says so in the entry.** Nothing here describes an aspirational codebase as if it already exists. Three code changes are tracked as follow-on PRs; each is flagged where it bites.
+3. **Where the glossary's preferred word does not match the code today, this document says so in the entry.** Nothing here describes an aspirational codebase as if it already exists. Four code changes are tracked as follow-on PRs — branded domain-id types (i), the `promote` → `accept` rename (ii), and the `stage` cleanup split into a cheap half (iii-a) and a **breaking `/v1`** half (iii-b). Each is flagged where it bites, with its real cost.
 
 Audience: a new engineer trying to read the code, and an operator trying to read the UI. It is not a research dump — the research is in the ADR.
 
@@ -28,8 +28,8 @@ Audience: a new engineer trying to read the code, and an operator trying to read
 | **deploy / deployment** | The push of an artifact into one environment so it runs there | INDUSTRY-STANDARD |
 | **deployment target** | The graph object type an executor acts on (cluster, host, environment, region) — deliberately broad | SCP-SPECIFIC |
 | **environment** | A named operational tier (dev / gamma / prod) within one security domain | INDUSTRY-STANDARD |
-| **stage** | **Reserved:** a named (security domain × environment) place. No such entity exists yet | QUALIFIED-STANDARD |
-| **wave** | One ordered step of a compiled plan — a set of targets that move together | SCP-SPECIFIC |
+| **stage** | **Reserved:** one named deployment **place**, spelled `<domain>-<location>-<env>`. No such entity exists yet | QUALIFIED-STANDARD *(word-sense precedent only; the definition is ours)* |
+| **wave** | One ordered step of a compiled plan — the **set of one-or-more stages** advanced at once | SCP-SPECIFIC |
 | **change** | The coordinated unit of work; a graph object with a lifecycle state machine | SCP-SPECIFIC |
 | **pipeline** | The ordered path a release travels for one executor **Type** | INDUSTRY-STANDARD |
 | **artifact** | The immutable built thing identified by digest (image, rpm, npm, config bundle, plan) | INDUSTRY-STANDARD |
@@ -87,7 +87,7 @@ In GitOps terms — which is what SCP actually coordinates — a promotion is th
 - **Argo Rollouts' "Promote"** — the progressive-delivery sub-step inside a canary analysis. SCP observes it; SCP does not own it (`docs/proposals/coordination-ui-views.md` §2).
 - **`scp federation promote`** — the CLI verb that exports a **Promotion Bundle**. That is a real promotion (the genus), and it is often but not always cross-domain.
 
-**In the code.** `apps/web/src/components/pipeline/PromotionArrow.tsx` renders exactly this sense — a wide arrow between two stacked pipeline cards, coloured by gate state. `apps/server/src/federation/promotion-repo.ts` carries Promotion Bundles. `packages/schemas/src/federation.ts` (`PromotionManifestSchema`, ~:436) carries the signed manifest that authorizes a cross-domain one.
+**In the code.** `apps/web/src/components/pipeline/PromotionArrow.tsx` renders exactly this sense — a wide arrow between two stacked pipeline cards, coloured by gate state. (What it *draws* is right; what it *calls* the things it draws between is not — its own docblock at `:4` says "between two pipeline stages", one of the wave-sense misuses listed in the `stage` entry.) `apps/server/src/federation/promotion-repo.ts` carries Promotion Bundles. `packages/schemas/src/federation.ts` (`PromotionManifestSchema`, ~:436) carries the signed manifest that authorizes a cross-domain one.
 
 ---
 
@@ -102,6 +102,8 @@ In GitOps terms — which is what SCP actually coordinates — a promotion is th
 What crosses is **metadata** — change objects, digests, signatures, SBOM references, the signed manifest. Artifact bytes travel on a separate channel ([ADR-0019](adr/0019-artifact-byte-channel.md)).
 
 **Always qualified.** Write "cross-domain promotion" in full. Bare "promotion" is the genus and carries no boundary implication.
+
+**The gate is per crossing, not per wave.** A single wave may advance stages sitting in *different* security domains — the `wave` entry's Wave 3 advances `commercial-apac-prod` and `govcloud-amer-prod` together. That wave is an ordinary promotion for the first stage and a cross-domain promotion for the second. The CDS supply-chain gate above is therefore evaluated **once per boundary crossing**, on the stage that crosses — never once for the wave as a whole, and never skipped for a wave that "mostly" stays inside one domain.
 
 **Industry-standard?** Qualified. The concept is standard; the *word* is ours. CNSSI-4009 defines a cross-domain solution using two verbs — **access** and **transfer** — of information between different security domains, and NCDSMO's accredited-product taxonomy splits transfer-CDS from access-CDS. By the letter of those standards, the correct verb for this hop is **transfer**. The owner considered renaming it and **rejected** that in favour of keeping the existing federation vocabulary at zero rename cost; [ADR-0021](adr/0021-terminology.md) records the rejection honestly, including that "transfer" is the literal CDS-standard verb.
 
@@ -196,9 +198,9 @@ A change compiles against a release topology into `plan → waves → wave_targe
 
 **Industry-standard?** No — SCP-specific, and honestly the most overloaded object type in the model. That breadth is a deliberate simplicity trade (charter priority 1), not an oversight: rather than three near-identical tables, one object type carries the "place an executor points at" role, and executor bindings disambiguate by Type and scope.
 
-**Not to be confused with:** *environment* (a tier concept a deployment target may or may not represent) and *stage* (a reserved (security domain × environment) place — see below). If you need to know *which* sense a given `deployment-target` row carries, read its bindings; the type alone does not tell you.
+**Not to be confused with:** *environment* (a tier concept a deployment target may or may not represent) and *stage* (a reserved deployment **place** — see below). If you need to know *which* sense a given `deployment-target` row carries, read its bindings; the type alone does not tell you.
 
-**In the code.** Object type `deployment-target`, seeded at `apps/server/drizzle/0002_rls_rbac_seed.sql:159`, with `deployed_to`-style relationship types seeded alongside it (`:186`, `:190`). Per-region deploy-target bindings are what [ADR-0017](adr/0017-ownership-refinement.md) §3's multi-region Argo CD setting builds on.
+**In the code.** Object type `deployment-target`, seeded at `apps/server/drizzle/0002_rls_rbac_seed.sql:159`. The two relationship types that point at it are seeded alongside: `hosted_on` (`:185–186`, from `service`/`component`) and `deploys_to` (`:189–190`, from `service`/`component`/`change`/`campaign`). Per-region deploy-target bindings are what [ADR-0017](adr/0017-ownership-refinement.md) §3's multi-region Argo CD setting builds on.
 
 ---
 
@@ -206,49 +208,114 @@ A change compiles against a release topology into `plan → waves → wave_targe
 
 **Definition.** A named operational tier within one security domain — dev, beta, gamma, prod. Environments are ordered within a domain and a promotion typically advances an artifact from one to the next.
 
-**Industry-standard?** Yes. GitHub Actions environments, Argo CD's app-per-environment convention and Kargo's stage-per-environment model all use it the same way.
+**Industry-standard?** Yes. GitHub Actions environments and Argo CD's app-per-environment convention both use it this way. Kargo models the same node but deliberately spells it **Stage** — its docs avoid "environment" precisely *because* the word is perspective-dependent, and note that a Stage's name denotes an application instance's **purpose** "and not necessarily its location". Kargo is therefore a witness to the ambiguity, not a citation for the word; see the `stage` entry.
 
-**Not to be confused with:** *stage* — under D6 (below), "stage" is reserved for the **(security domain × environment)** pair, so `gamma` is an environment and `gamma-commercial` would be a stage. And *deployment target*, which may happen to model an environment but may equally model a single cluster or host.
+**Not to be confused with:** *stage* — under D6 (below), "stage" is reserved for a named deployment **place** spelled `<domain>-<location>-<env>`, so `gamma` is an environment and `commercial-amer-gamma` is a stage. Environment is one of the three **segments** of a stage name, not a synonym for it. And *deployment target*, which may happen to model an environment but may equally model a single cluster or host.
 
-**In the code — there is no `environment` table.** Environments today are expressed as labels, deployment-target names, and wave structure. That is a real gap, not a hidden feature; see the `stage` entry for what a future entity would need to carry.
+**In the code — there is no `environment` table.** Environments are expressed as labels, deployment-target properties, and wave structure. That is a real gap, not a hidden feature; see the `stage` entry for what a future entity would need to carry.
+
+`environment` is **not** purely informal, though: it is a live `/v1` **path segment**. `GET /api/v1/environments/{environment}/regional-executors` (`apps/server/src/routes/executors.ts:560`, `operationId: getRegionalExecutors`, response `RegionalExecutorViewSchema`; committed at `tools/openapi/openapi.v1.json:57346`) reads one prod environment's per-region Argo CD set. It is backed not by an entity but by deployment-target `properties.environment` / `properties.region` (the M15.6 / [ADR-0017](adr/0017-ownership-refinement.md) §3 comment at `executors.ts:551–556`). So the *concept* has an API surface while the *entity* does not.
 
 ---
 
 ### stage
 
-**Definition — RESERVED VOCABULARY.** In CommanderSCP, **stage** means a named **(security domain × environment)** place: `gamma-commercial`, `production-govcloud`, `prod-il5`. The word is spent on *place*, and on nothing else.
+**Definition — RESERVED VOCABULARY.** In CommanderSCP, **stage** means **one named deployment place**. The word is spent on *place*, and on nothing else. It is **not** spent on ordering, and **not** on pipeline phases.
 
-It is **not** spent on ordering, and **not** on pipeline phases.
+**The canonical naming grammar** (owner-specified, 2026-07-24) is three lowercase hyphen-separated segments:
 
-**Industry-standard?** Split, and we deliberately pick the minority sense.
+```
+<domain>-<location>-<env>
+```
+
+| Segment | Meaning | Examples |
+|---|---|---|
+| **domain** | the **security domain** — the trust tier the place sits in | `commercial`, `govcloud`, `il5`, `airgap` |
+| **location** | the geographic locality or **region** *within* that domain | `amer`, `apac`, `emea` |
+| **env** | the **environment** tier | `dev`, `gamma`, `prod` |
+
+Canonical examples: **`commercial-apac-prod`**, **`govcloud-amer-gamma`**.
+
+The grammar is lowercase and the segment order is fixed. Earlier ad-hoc examples in this project used a different order and mixed case (`commercial-prod-AMER`); **that form is superseded** — write `commercial-amer-prod`.
+
+**A stage is a place; a wave is a step.** These are a **containment** relationship, not two names for one thing: **a wave contains one or more stages.** The apparent "stage vs wave" collision was never a rivalry — "stage" was simply being used *for* the wave sense by mistake. See the `wave` entry, which states the same relationship from the other side.
+
+**Open question — is the `location` segment mandatory?** Earlier examples included location-less stages (`commercial-gamma`, `govcloud-prod`). Under the three-segment grammar those would become `commercial-amer-gamma` / `govcloud-amer-prod`. Whether a stage with **no meaningful geographic split** — a single-region or genuinely global place — must still carry a `location` segment, or may legitimately be two segments, is **not yet decided by the owner**. Everything else about the grammar is settled. This is recorded here as open rather than resolved by inference.
+
+**Industry-standard?** Qualified, and narrowly so — the precedent covers the *word-sense*, not the definition.
 
 - The **majority** CD sense of "stage" is a **pipeline phase** — Jenkins `stage()`, GitLab CI `stages:`, Spinnaker pipeline stages. We do **not** use it that way.
-- The **minority** sense — and ours — is Kargo's `Stage` CRD, which models exactly this environment-like node that freight is promoted into. That precedent makes the reservation standards-defensible rather than idiosyncratic.
+- The **minority** sense — and ours — has a real precedent: **Kargo's `Stage` CRD** spends the word on a **promotion-target node** ("a stage is a promotion target that represents some desired state") rather than on a pipeline phase. That is genuine support for *what we spend the word on*.
+- **It is not support for our definition.** Kargo has no security-domain axis, and its docs state that a Stage's name denotes an application instance's **purpose** "and not necessarily its location" — i.e. Kargo deliberately declines to bind a Stage to a place. The `<domain>-<location>-<env>` place definition is **ours**: SCP-specific, not inherited from Kargo. Do not cite Kargo for it.
 
-**Honest status: no stage entity exists in the schema today.** There is no `stage` table, no `environment` table, and **no (domain × environment) compound name like `gamma-commercial` appears anywhere in the repository**. "Stage" is *reserved vocabulary that a future entity may fill*, not a description of something built.
+**Honest status: no stage entity exists in the schema today.** There is no `stage` table and no `environment` table, and **no stage-grammar compound name such as `commercial-amer-gamma` appears anywhere in the code** (this glossary's and ADR-0021's own illustrative examples aside). "Stage" is *reserved vocabulary that a future entity may fill*, not a description of something built.
 
-**Two in-tree misuses are tracked for cleanup** ([ADR-0021](adr/0021-terminology.md) Consequences, item iii — a cheap UI-and-docs-only change with no API and no schema impact):
+#### The in-tree misuses — a full census
 
-- The **UI calls a wave a "stage"**: `apps/web/src/components/pipeline/StageCard.tsx` takes a `ChangeWave` and renders it with a `stageNumber`; `apps/web/src/routes/change-pipeline.tsx` renders `waves.map(...)` into `data-testid="pipeline-stages"`. Those should say **wave**.
-- **Code comments use "stage" for pipeline phases** — e.g. the execution map in `docs/proposals/promotion-and-execution-model.md` §1 and the surrounding comments. Those should say **phase** or **step**.
+The word is currently used for the **wave** sense in the shipped `/v1` contract, not only in UI labels. The census below is exhaustive over non-test files ([ADR-0021](adr/0021-terminology.md) Consequences, item iii). **Nothing here has been changed yet.**
 
-Neither has been changed yet.
+**(a) The service-board `stage` = wave chain — this is in the `/v1` contract.** `packages/schemas/src/services.ts:25` says it outright: *"One pipeline stage of a component's latest change = one compiled wave"*.
 
-**Not to be confused with:** *wave* (the ordering primitive that actually exists), *environment* (one axis of a stage), *phase*/*step* (what other CD tools call a stage).
+- `packages/schemas/src/services.ts` — `ServiceBoardStageSchema` (`:29`), the exported type (`:37`), and `ServiceBoardRowSchema`'s `currentStage` (`:72`) and `stages` (`:73`)
+- `apps/server/src/routes/services.ts:28` — these ship on `GET /api/v1/services/:idOrUrn/board`; the route summary at `:36` also says "per-stage status"
+- `packages/sdk/src/index.ts:68` re-exports `ServiceBoardStage`; `packages/sdk/src/generated/types.gen.ts:6158–6159`
+- `tools/openapi/openapi.v1.json:23236` (`currentStage`) and `:23246` (`stages`) — both also in the **required** list at `:23393–23394`
+- `apps/server/src/coordination/service-board.ts:6, 110–111, 126, 138, 141, 157–158` — the server-side projection
+- `apps/web/src/routes/service-board.tsx:38–59` — the `StageStrip` component, whose `data-testid`s are `board-stage-strip` (`:45`) / `board-stage-badge` (`:51`) while the badge it renders is captioned from the **wave** index — `Wave ${s.waveIndex}` in the tooltip (`:50`) and `W${s.waveIndex}` in the label (`:53`). The same object is labelled both ways inside one function. Also `:190–191` (`<TableHead>Current stage</TableHead>`, `<TableHead>Stages</TableHead>`), `:248` (`row.currentStage`), `:255` (`row.stages`)
+
+**(b) The change-pipeline UI — labels and test hooks only.**
+
+- `apps/web/src/components/pipeline/StageCard.tsx` — the whole component. Its docblock at `:90` reads *"One pipeline stage = one compiled wave"*; it takes a `ChangeWave` plus a `stageNumber` prop (`:99, :103`), renders the visible label `Stage {stageNumber}` (`:116`), and carries `data-stage` (`:111`) plus nine distinct `data-testid="stage-*"` hooks (ten occurrences)
+- `apps/web/src/routes/change-pipeline.tsx:26, 206, 398, 406` (`data-testid="pipeline-stages"`), `:407, :420`
+- `apps/web/src/components/pipeline/PromotionArrow.tsx:4` — its **own docblock** says *"The gate/approval state of a promotion between two pipeline stages"*, and `:26` says "stage cards". This file is cited in the `promotion` entry as rendering promotion correctly; that is true of what it *draws* and not of what it *calls the things it draws between*
+- `apps/web/src/routes/change-detail.tsx:51`; `apps/web/src/lib/query-client.ts:48, 61`
+
+**(c) "per-stage version" — the same wave sense, spread across comments and schema docblocks.** `packages/schemas/src/changes.ts:164, 168`; `apps/server/src/coordination/plan-service.ts:156`; `apps/server/src/coordination/wave-targets-repo.ts:160`; `apps/server/drizzle/0027_wave_target_observed_state.sql:8–9`; `packages/schemas/src/services.ts:7, 14, 18, 28`; `packages/sdk/src/client.ts:919`; `apps/web/src/routes/service-board.tsx:97, 101, 194, 273`.
+
+**(d) "stage" for a pipeline phase.** `apps/server/src/coordination/change-coordination-lock.ts:6` ("one pipeline stage earlier"), and prose such as the execution map in `docs/proposals/promotion-and-execution-model.md` §1. These should say **phase** or **step**.
+
+**(e) "stage" for a milestone sub-step.** 37 non-test comment sites spell milestone increments `M2 stage 2` / `M2 stage 3` / `M2 stage 4` (`apps/server/src/app.ts`, `apps/server/src/auth/*`, `packages/sdk/src/client.ts`, `packages/schemas/src/auth.ts`, the `0004`/`0005` migrations, and others). A third distinct sense; these should say **part** or **step**.
+
+#### What the cleanup actually costs
+
+**It is not "UI and docs only."** Group (a) is a **shipped `/v1` response shape**. Renaming `currentStage` / `stages` / `ServiceBoardStage` to their wave-sense names is a **breaking `/v1` change**: it alters a response body already in `tools/openapi/openapi.v1.json`, it will **trip the oasdiff additive-only gate**, and it requires `pnpm gen` plus an SDK regeneration. That puts it in the same cost class as the D5 `promote` → `accept` rename, not in the free tier.
+
+The follow-on work is therefore **split in two** ([ADR-0021](adr/0021-terminology.md) Consequences, item iii):
+
+- **(iii-a) the cheap half** — groups (b), (c), (d), (e): UI labels, `data-testid` hooks, comments and docblocks. No API, no schema, no migration. Genuinely cheap.
+- **(iii-b) the breaking half** — group (a): the service-board field and type names in `packages/schemas`, the `/v1` response body, the committed OpenAPI document, the generated SDK, and the server projection. **Breaking, oasdiff-gated, needs `pnpm gen`.** It also confirms D6's premise from the other direction: the `/v1` `stages[]` / `currentStage` / `ServiceBoardStageSchema` fields genuinely *are* the wave sense wearing the wrong name.
+
+**Deliberately *not* misuses — leave them alone.** Docker's own multi-stage-build term (`packages/cosign/src/cosign-bin.ts:5`, `packages/cosign/src/skopeo-bin.ts:5`, `packages/plugin-testkit/src/runner-image.ts:36`); the unrelated verb "staged" in `apps/server/src/governance/scan-db.ts:399, 404, 409`; and `apps/server/src/graph/named-queries.ts:279`, whose hypothetical "stage-domain" is actually *consistent* with the reserved place sense.
+
+**Not to be confused with:** *wave* (the ordering step that **contains** stages), *environment* and *region* (two of the three segments of a stage name), *phase*/*step* (what other CD tools call a stage).
 
 ---
 
 ### wave
 
-**Definition.** One ordered step of a **compiled plan**: a set of targets that move together. Wave order is computed from graph `depends_on` edges (topological sort with cycle rejection) plus explicit coordination rules such as "infrastructure before application". Waves sharing an index run in parallel (fan-out); a fan-in gate requires every target of the previous wave to have succeeded.
+**Definition.** One ordered step of a **compiled plan**: **the set of one-or-more stages advanced at once**, and the targets within them. Wave order is computed from graph `depends_on` edges (topological sort with cycle rejection) plus explicit coordination rules such as "infrastructure before application". Waves sharing an index run in parallel (fan-out); a fan-in gate requires every target of the previous wave to have succeeded.
 
-Waves are the ordering primitive SCP actually has. In a federated release topology, the waves **are** the domains — commercial → FedRAMP → IL5 → air-gapped — and each wave's gate is the target domain's own local gate outcome, reported back via the journal (DESIGN.md §13).
+**A wave contains stages.** This is the load-bearing relationship, and it is **containment, not rivalry** — a wave is a *step*, a stage is a *place*, and one step advances one or more places. The two words were never competing for the same meaning; "stage" was simply being used *for* the wave sense by mistake (see the `stage` entry's census).
+
+The owner's worked example, in the canonical stage grammar:
+
+| Wave | Stages advanced |
+|---|---|
+| Wave 1 | `commercial-amer-gamma` |
+| Wave 2 | `commercial-amer-prod` |
+| Wave 3 | `commercial-apac-prod` **+** `govcloud-amer-prod` |
+
+Wave 3 is the important row: **one wave, two stages, two different security domains.**
+
+**Consequence — the CDS gate applies per crossing, not per wave.** Because a single wave may hold stages in *different* security domains, advancing one wave can be an ordinary promotion for one of its stages and a **cross-domain promotion** for another. In Wave 3 above, `commercial-apac-prod` is an ordinary intra-domain promotion while `govcloud-amer-prod` crosses `commercial → govcloud` and must therefore satisfy the full CDS supply-chain gate (digest-bound scan, cosign-signed promotion manifest, verify at every hop). **The gate is evaluated per boundary crossing, not once for the wave.** A wave is not "cross-domain" or "not cross-domain" as a unit; each stage in it is judged on its own crossing. See `cross-domain promotion`.
+
+Waves are the ordering primitive SCP actually has. In a federated release topology, the waves are commonly aligned with domains — commercial → FedRAMP → IL5 → air-gapped — and each wave's gate is the target domain's own local gate outcome, reported back via the journal (DESIGN.md §13). Note that this alignment is a common *shape*, not a rule: as Wave 3 shows, a wave may straddle domains.
 
 **Industry-standard?** No — SCP-specific, though the shape rhymes with a Spinnaker deployment stage sequence or an Argo Rollouts step list.
 
-**Not to be confused with:** *stage* (reserved for a place, per D6). The UI currently mislabels waves as stages — see the `stage` entry.
+**Not to be confused with:** *stage* (a place, which a wave **contains** — per D6). The UI and the service-board `/v1` response currently mislabel waves as stages — see the `stage` entry's census.
 
-**In the code.** `change_waves` / `change_wave_targets` and `campaign_waves` (`apps/server/src/db/schema.ts`, ~:943); compiled by `apps/server/src/coordination/plan-compiler.ts`; DESIGN.md §9.3.
+**In the code.** `change_waves` (`apps/server/src/db/schema.ts:625`) / `change_wave_targets` (`:643`) and `campaign_waves` (`:941`); compiled by `apps/server/src/coordination/plan-compiler.ts`; DESIGN.md §9.3. There is **no stage table** — a wave's "stages" are implicit in its targets today.
 
 ---
 
@@ -312,7 +379,9 @@ A fourth, unrelated sense exists in the deployment story: the **air-gapped relea
 
 The owner's framing is an AWS **partition**: like `aws` / `aws-us-gov` / `aws-cn`, a partition is ambient — every resource is born in exactly one, nothing silently crosses it, and it is not modelled as a row that groups accounts ([ADR-0016](adr/0016-scoped-scan-requirement-policies.md) §Terminology).
 
-**Industry-standard?** Yes. The definition above is CNSSI-4009-2015's, also carried in NIST SP 800-137. NIST SP 800-53 Rev. 5 gives an equivalent resources/entities/common-policy formulation. NIST SP 800-57 Part 1 Rev. 5 adds **composability** — a security domain is a system or subsystem under a single trusted authority, and security domains may be organised (for example hierarchically) into larger domains. That composability is what makes commander → outpost → retrans a legitimate hierarchy of domains rather than a private invention.
+**Industry-standard?** Yes. The definition above is CNSSI-4009-2015's, also carried in NIST SP 800-137. NIST SP 800-53 Rev. 5 gives an equivalent resources/entities/common-policy formulation. NIST SP 800-57 Part 1 Rev. 5 adds **composability** — a security domain is a system or subsystem under a single trusted authority, and security domains may be organised (for example hierarchically) into larger domains.
+
+**Read that composability narrowly.** SP 800-57's hierarchy is explicitly about domains *each under a single trusted authority* combining into a larger one. SCP's **commander → outpost → retrans** hierarchy is a hierarchy of **instances and roles**, and is *not* a claim that the security domains those instances sit in share a single trusted authority — they do not. The `authorization boundary` entry below depends on exactly the opposite premise: the security domains SCP federates across are **separately authorized systems by construction**, with different authorizing officials and different ATOs. Domains with different AOs are precisely the case SP 800-57 composability does **not** cover. Cite it for what it says (security domains *may* be organised hierarchically), not as a warrant for the federation role hierarchy.
 
 **Terminology adopted 2026-07-24 (D4).** Use **"security domain"** — the NIST/CNSSI term — for the trust tier. Existing docs also say **"trust domain (partition)"**; that phrase remains valid and is not being rewritten, but "security domain" is the preferred term going forward because it is the term an accreditation reader already knows.
 
@@ -327,7 +396,7 @@ Also distinct: **SPIFFE's "trust domain"**, which corresponds to the **trust roo
 
 **Bare "domain" is banned as a tier name** — in prose *and* as a stored value. [ADR-0016](adr/0016-scoped-scan-requirement-policies.md) §Terminology mandates the full forms and specifies that the floor table's tier literal is `trust_domain`, never bare `domain`; DESIGN.md:481 does the same for the policy-resolution chain.
 
-**In the code — the docs solved this; the code did not.** There are roughly **356** non-test `domainId` references across `apps/` and `packages/`. About **51** live in `apps/server/src/federation` and mean the **security/trust** sense (`federation_self.domainId`, `apps/server/src/db/schema.ts:1011`). About **45** live in `apps/server/src/graph` and mean the **containment** sense (`objects.domainId`, `apps/server/src/db/schema.ts:169`). **Both are plain `uuid` with zero type-level separation**, so nothing today stops one being passed where the other is expected.
+**In the code — the docs solved this; the code did not.** Counted on `origin/main` at `da9e92c` (2026-07-24), there are **376** non-test source lines mentioning `domainId` across `apps/` and `packages/`, in 75 files. About **51** live in `apps/server/src/federation` and mean the **security/trust** sense (`federation_self.domainId`, `apps/server/src/db/schema.ts:1011`). About **45** live in `apps/server/src/graph` and mean the **containment** sense (`objects.domainId`, `apps/server/src/db/schema.ts:169`). **Both are plain `uuid` with zero type-level separation**, so nothing today stops one being passed where the other is expected.
 
 **The fix is a tracked follow-on PR, not something already done:** branded TypeScript types `TrustDomainId` vs `ContainmentDomainId`, so the collision becomes **uncompilable** rather than a naming convention ([ADR-0021](adr/0021-terminology.md) Consequences, item i).
 
@@ -339,7 +408,7 @@ Also distinct: **SPIFFE's "trust domain"**, which corresponds to the **trust roo
 
 **Industry-standard?** No — SCP-specific. It is closest to a folder/organizational-unit concept.
 
-**Not to be confused with:** the **security domain** (the trust tier above org). They are never the same thing. `apps/server/src/db/schema.ts` records the distinction explicitly, and [ADR-0016](adr/0016-scoped-scan-requirement-policies.md) §Terminology exists solely to keep them apart.
+**Not to be confused with:** the **security domain** (the trust tier above org). They are never the same thing. `apps/server/src/db/schema.ts:1387–1394` records the distinction explicitly (in the `scan_requirement_floors` header comment: the `tier` literal is spelled `trust_domain`, *never* bare `domain`, "while the `domain` OBJECT TYPE (the containment domain…)" is the below-org grouping), and [ADR-0016](adr/0016-scoped-scan-requirement-policies.md) §Terminology exists solely to keep them apart.
 
 **In the code.** Object type `domain`, seeded at `apps/server/drizzle/0002_rls_rbac_seed.sql:152`; the column is `objects.domain_id` (`apps/server/src/db/schema.ts:169`); the walk is `apps/server/src/graph/containment.ts` (`containmentChain`), which is org-filtered on every join and rooted at the org root — it **structurally cannot** express any tier above org, which is exactly why the security-domain tier needed a separate instance-scoped table.
 
@@ -439,7 +508,14 @@ Outposts remain **fully operational when disconnected** — federation enhances 
 
 **Not to be confused with:** an *instance* (the deployment), a *security domain* (the ambient tier above org), a *containment domain* (the grouping below org).
 
-**In the code.** `orgs` (`apps/server/src/db/schema.ts:35`); `federation_self` (~:1009). Note that `orgs`, `state_transitions` and the nullable-`orgId` rows on `object_types` / `relationship_types` / `roles` are the deliberate exceptions to "every table carries `orgId`".
+**In the code.** `orgs` (`apps/server/src/db/schema.ts:35`); `federation_self` (~:1009). The deliberate exceptions to "every table carries `orgId`" **include**:
+
+- `orgs` itself, and `state_transitions`;
+- the nullable-`orgId` rows on `object_types` / `relationship_types` / `roles` — `NULL` marks a built-in shared across every tenant;
+- **`scan_requirement_floors` (`apps/server/src/db/schema.ts:1403`) has no `org_id` column at all** — it is the single **instance-scoped** floor table carrying the two scan-requirement tiers *above* org (platform and security domain), operator-write / tenant-read. This is the same table the `scan gate` entry and the `containment domain` entry describe; it necessarily sits outside org scoping because the org-rooted `containmentChain` structurally cannot reach above org;
+- **`device_auth_requests.orgId` (`apps/server/src/db/schema.ts:127`) is nullable** — a device-authorization request exists before any org is known and the column is *"set on approval"*. A partial exception rather than a full one.
+
+This list is the set known at time of writing; treat "every table carries `orgId`" as the rule and check the schema before asserting a given table is or is not an exception.
 
 ---
 
@@ -479,7 +555,7 @@ Each executor binding carries a **Type** ([ADR-0007](adr/0007-executor-binding-t
 
 **Not to be confused with:** an **execution system** (the external thing itself — see next entry) and a **control plugin** (which produces gate evidence, not execution).
 
-**In the code.** `packages/plugins/` — `argocd`, `github`, `gitlab`, `gitea`, `terraform`, `managed-iac`, `harbor`, `fake-executor`; bindings in `apps/server/src/coordination/executor-bindings-repo.ts`.
+**In the code.** The executor plugins under `packages/plugins/` include `argocd`, `github`, `gitlab`, `gitea`, `terraform`, `managed-iac`, `managed-scan`, `harbor` and `fake-executor`; `packages/plugins/` also holds non-executor plugins (control, auth and notify plugins such as `scan-result-control`, `webhook-control`, `local-auth`, `oidc`, `smtp-notify`), so read the directory rather than this list. Bindings live in `apps/server/src/coordination/executor-bindings-repo.ts`.
 
 ---
 
@@ -594,18 +670,18 @@ Poke reaches air-gapped domains **via the retrans chain**, hop by hop — the co
 | **"promotion"** unqualified when a security-domain crossing is meant | **"cross-domain promotion"** | Bare promotion is the genus and carries no boundary implication. Dropping the qualifier silently claims a CDS gate ran when it may not have. |
 | **"promote" / "promoted"** for the change approval gate | **"accept" / "accepted"** | It is a human approval and a terminal success state, not an artifact advancing — the collision fights the genus/species model (D5). **The code still spells it `promote`/`promoted`**; the rename is a tracked follow-on PR ([ADR-0021](adr/0021-terminology.md) Consequences ii). |
 | **"release"** meaning a single push into one environment | **"deployment"** | A release is the whole versioned unit moving through its pipeline; a change *is* a release. Also: in DoD/IC usage "release" means a **disclosure determination**, which is the last thing you want an accreditation reader to infer. |
-| **"stage"** meaning a pipeline **phase** | **"phase"** or **"step"** | "Stage" is reserved for a (security domain × environment) place (D6). Code comments currently misuse it; cleanup is tracked ([ADR-0021](adr/0021-terminology.md) Consequences iii). |
-| **"stage"** meaning a **wave** | **"wave"** | Same reservation. The UI currently mislabels waves as stages (`apps/web/src/components/pipeline/StageCard.tsx`, `apps/web/src/routes/change-pipeline.tsx`); cleanup is tracked, not done. |
+| **"stage"** meaning a pipeline **phase** | **"phase"** or **"step"** | "Stage" is reserved for a named deployment place spelled `<domain>-<location>-<env>` (D6). Code comments currently misuse it — including the ~40 `M2 stage 2/3/4` milestone-substep comments; cleanup is tracked ([ADR-0021](adr/0021-terminology.md) Consequences iii-a). |
+| **"stage"** meaning a **wave** | **"wave"** | Same reservation — and a wave *contains* stages, so the two are not interchangeable in either direction. The misuse reaches the shipped `/v1` contract (`ServiceBoardStageSchema`, `currentStage`, `stages[]`), not just UI labels; see the `stage` entry's full census. Cleanup is split into a cheap half (iii-a) and a **breaking, oasdiff-gated** half (iii-b). Not done. |
 | **"bundle"** unqualified | **"promotion bundle"** / **"air-gap federation bundle"** / **"relay tarball"** | Three different things, only one of which carries artifact bytes. |
 | **"parent" / "child"** for federation roles | **"commander" / "outpost" / "retrans"** | Removed outright, not aliased, by [ADR-0004](adr/0004-service-naming-commander-outpost-retrans.md). (The words remain correct for *process* supervision and RBAC containment walks — that is a different concept.) |
 
-**Note on `stage`:** no `stage` entity exists in the schema today, and no `(domain × environment)` compound name such as `gamma-commercial` appears anywhere in the repository. "Stage" is reserved vocabulary a future entity may fill — the reservation is a decision about what the word will mean, not a claim that the thing is built.
+**Note on `stage`:** no `stage` entity exists in the schema today, and no stage-grammar compound name such as `commercial-amer-gamma` appears anywhere in the **code** (this glossary's and ADR-0021's own illustrative examples aside — scope the claim that way so it stays checkable after this branch merges). "Stage" is reserved vocabulary a future entity may fill — the reservation is a decision about what the word will mean, not a claim that the thing is built. The word is, however, *actively in use for the wave sense* in the `/v1` contract today; the `stage` entry enumerates every site.
 
 ---
 
 ## See also
 
-- [ADR-0021 — Terminology](adr/0021-terminology.md) — the six decisions, the rejected alternatives, the cost table, and the three tracked follow-on code PRs.
+- [ADR-0021 — Terminology](adr/0021-terminology.md) — the six decisions, the rejected alternatives, the cost table, and the four tracked follow-on code PRs.
 - [ADR-0016 §Terminology](adr/0016-scoped-scan-requirement-policies.md) — the trust-domain / containment-domain split this glossary generalizes.
 - [ADR-0004](adr/0004-service-naming-commander-outpost-retrans.md) — commander / outpost / retrans, and the precedent for a breaking pre-1.0 enum rename.
 - [docs/proposals/promotion-and-execution-model.md](proposals/promotion-and-execution-model.md) — the authoritative end-to-end workflow these words describe.
