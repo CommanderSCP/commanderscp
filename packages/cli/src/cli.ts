@@ -215,6 +215,9 @@ function peerRow(p: FederationPeer): Record<string, string> {
     // M13.2a (§13.2) — the peer's DeliveryTarget provider, or "env" when none is configured (the
     // instance `SCP_RELAY_OUT_DIR`/`SCP_RELAY_IN_DIR` fallback). Full dirs are in `--output json`.
     delivery: p.deliveryTarget?.provider ?? "env",
+    // M14.1 (ADR-0009) — poke-mode (the commander may send a contentless wake signal) vs poll-mode
+    // (the default frequent interval pull). Absent in an old response reads as poll.
+    poke: p.pokeMode ? "poke" : "poll",
     pairedAt: p.pairedAt
   };
 }
@@ -2546,6 +2549,15 @@ export function buildProgram(): Command {
       "--clear-delivery-target",
       "clear the peer's DeliveryTarget (fall back to the instance env dirs)"
     )
+    // M14.1 (ADR-0009) — per-peer poke-mode. Tri-state on re-pair: omit BOTH flags to preserve the
+    // current setting, --poke-mode sets it on, --no-poke-mode sets it off. Default-off. Setting it on
+    // requires an https/mTLS-capable peer --base-url-of-peer (the server's pair-time guard) — the
+    // poke must authenticate the caller as the enrolled commander (ADR-0001).
+    .option(
+      "--poke-mode",
+      "enable poke-mode for this peer — the commander MAY send it a contentless wake signal; requires an https/mTLS peer base URL"
+    )
+    .option("--no-poke-mode", "disable poke-mode for this peer (poll-mode — the default)")
     .option("--base-url <url>", "this domain's own API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(
@@ -2565,6 +2577,10 @@ export function buildProgram(): Command {
           deliveryS3OutPrefix?: string;
           deliveryS3InPrefix?: string;
           clearDeliveryTarget?: boolean;
+          // M14.1 tri-state: undefined = neither flag = preserve; true = --poke-mode; false =
+          // --no-poke-mode. Commander leaves it undefined when neither flag is present because both
+          // --poke-mode and --no-poke-mode are declared (no default).
+          pokeMode?: boolean;
         }
       ) => {
         const hasFs = Boolean(opts.deliveryOutDir || opts.deliveryInDir);
@@ -2618,7 +2634,9 @@ export function buildProgram(): Command {
           cosignPublicKey: opts.cosignPublicKey,
           baseUrl: opts.baseUrlOfPeer,
           syncScope,
-          deliveryTarget
+          deliveryTarget,
+          // M14.1 tri-state: undefined preserves, true/false sets (see the flag declarations).
+          pokeMode: opts.pokeMode
         });
         printResult(peer, opts.output, (item) => peerRow(item as FederationPeer));
       }

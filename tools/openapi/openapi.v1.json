@@ -50546,6 +50546,9 @@
                         "type": "null"
                       }
                     ]
+                  },
+                  "pokeMode": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -50723,6 +50726,9 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "pokeMode": {
+                      "type": "boolean"
                     },
                     "pairedAt": {
                       "type": "string",
@@ -51049,6 +51055,9 @@
                             "type": "null"
                           }
                         ]
+                      },
+                      "pokeMode": {
+                        "type": "boolean"
                       },
                       "pairedAt": {
                         "type": "string",
@@ -51391,6 +51400,9 @@
                                     "type": "null"
                                   }
                                 ]
+                              },
+                              "pokeMode": {
+                                "type": "boolean"
                               },
                               "pairedAt": {
                                 "type": "string",

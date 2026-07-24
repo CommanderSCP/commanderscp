@@ -1036,6 +1036,12 @@ export const federationPeers = pgTable(
      *  13.2b adds a `provider: 's3-compatible'` member additively — registry-shaped data, not a new
      *  table (charter principle 2). */
     deliveryTarget: jsonb("delivery_target"),
+    /** M14.1 (ADR-0009, drizzle/0037) — per-peer poke-mode. NOT NULL DEFAULT false: default-off, so
+     *  every existing peer migrates as a no-op poll-mode peer. `true` means the commander MAY send
+     *  this peer a contentless wake signal and its frequent poll is disabled (full enforcement is
+     *  M14.4); the M14.1 pair-time guard requires an https/mTLS-capable `baseUrl` before it can be
+     *  set true. Plain boolean column (not jsonb) — a two-state switch, not registry-shaped data. */
+    pokeMode: boolean("poke_mode").notNull().default(false),
     pairedAt: timestamp("paired_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },

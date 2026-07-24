@@ -230,7 +230,15 @@ export const PairPeerRequestSchema = z.object({
    *  `cosignPublicKey`'s additive discipline: ABSENT (undefined) preserves whatever is already
    *  configured (an old client that never knew the field can't strip it); an OBJECT sets/replaces
    *  it; explicit `null` clears it back to the instance-env fallback. */
-  deliveryTarget: DeliveryTargetSchema.nullable().optional()
+  deliveryTarget: DeliveryTargetSchema.nullable().optional(),
+  /** M14.1 (ADR-0009, proposal §Config) — per-peer poke-mode. Tri-state on re-pair, mirroring
+   *  `deliveryTarget`'s additive discipline: ABSENT (undefined) preserves the current setting (an
+   *  old client that never knew the field can't flip it); `true`/`false` SETS it. Default-off: a
+   *  peer paired without ever supplying it stays poll-mode. SETTING it `true` requires an
+   *  https/mTLS-capable `baseUrl` (the M14.1 pair-time guard) — the poke must authenticate the
+   *  caller as the enrolled commander (ADR-0001); full endpoint enforcement is M14.2. Boolean, not
+   *  nullable — there is no "clear to null" state, only poll (false) vs poke (true). */
+  pokeMode: z.boolean().optional()
 });
 export type PairPeerRequest = z.infer<typeof PairPeerRequestSchema>;
 
@@ -250,6 +258,11 @@ export const FederationPeerSchema = z.object({
    *  RESPONSE uses the permissive `DeliveryTargetViewSchema` (superset object, no `oneOf`) so adding
    *  a provider stays oasdiff-additive; the stored strict-union value is a valid instance of it. */
   deliveryTarget: DeliveryTargetViewSchema.nullable().optional(),
+  /** M14.1 (ADR-0009) — whether this peer is configured for poke-mode. `false` (default) is
+   *  poll-mode — the outpost's frequent interval pull, unchanged. `true` means the commander MAY
+   *  send it a contentless wake signal and its frequent poll is disabled (M14.4). Optional/additive
+   *  so an old SDK reading a new response is unaffected; absent is read as `false`. */
+  pokeMode: z.boolean().optional(),
   pairedAt: z.string().datetime()
 });
 export type FederationPeer = z.infer<typeof FederationPeerSchema>;
