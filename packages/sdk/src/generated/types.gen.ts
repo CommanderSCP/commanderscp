@@ -13166,6 +13166,7 @@ export type ListFederationPeersResponses = {
             outPrefix?: string;
             inPrefix?: string;
         } | null;
+        pokeMode?: boolean;
         pairedAt: string;
     }>;
 };
@@ -13205,6 +13206,7 @@ export type PairPeerData = {
             outPrefix?: string;
             inPrefix?: string;
         } | null;
+        pokeMode?: boolean;
     };
     path?: never;
     query?: never;
@@ -13283,6 +13285,7 @@ export type PairPeerResponses = {
             outPrefix?: string;
             inPrefix?: string;
         } | null;
+        pokeMode?: boolean;
         pairedAt: string;
     };
 };
@@ -13366,6 +13369,7 @@ export type GetFederationStatusResponses = {
                     outPrefix?: string;
                     inPrefix?: string;
                 } | null;
+                pokeMode?: boolean;
                 pairedAt: string;
             };
             lastAppliedSequence: number | null;

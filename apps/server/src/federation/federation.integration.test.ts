@@ -4,11 +4,12 @@ import { and, eq, isNull } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { SyncBundle, SyncScope } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
+import { ProblemError } from "../errors.js";
 import { changes, decisions, roleBindings, roles } from "../db/schema.js";
 import { createObject, getObjectByIdOrUrnAnyType, updateObject } from "../graph/objects-repo.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
 import { ensureFederationSelf, type FederationSelf } from "./self-repo.js";
-import { pairPeer } from "./peers-repo.js";
+import { pairPeer, listPeers, getPeerByIdOrName } from "./peers-repo.js";
 import { exportSyncBundle } from "./export-repo.js";
 import { importSyncBundle } from "./import-repo.js";
 import {
@@ -1737,5 +1738,121 @@ describe("M17.4(a) / M15.2 receiver manifest verification (Testcontainers)", () 
     const badSig: PromotionBundle = { ...bundle, manifestSignature: other.manifestSignature };
     const blocked = await expectImportBlocked(outpostWithKey, badSig);
     expect(blocked.decisionId).toBeTruthy();
+  });
+});
+
+// ============================================================================================
+// M14.1 — per-peer poke-mode flag (ADR-0009; proposal docs/proposals/outpost-poke.md §Config).
+// Default-off, tri-state on re-pair (mirrors deliveryTarget), and the pair-time transport-identity
+// guard: setting poke-mode TRUE requires an https/mTLS-capable peer baseUrl (full endpoint
+// enforcement is M14.2 — here we prove the EARLY pair-time refusal).
+// ============================================================================================
+describe("M14.1 Federation: per-peer poke-mode (Testcontainers)", () => {
+  let commander: IsolatedDomain;
+  let peerSelf: FederationSelf;
+  let peerKeyPublic: string;
+
+  beforeAll(async () => {
+    commander = await createIsolatedDomain("m14PokeCommander");
+    // A second domain stands in for the peer being paired — we only need its domainId + a real
+    // Ed25519 public key (the pairing exchange values); no live handshake is performed.
+    const peer = await createIsolatedDomain("m14PokePeer");
+    peerSelf = await withTenantTx(peer.db, peer.orgId, (tx) => ensureFederationSelf(tx, peer.orgId));
+    peerKeyPublic = (await withTenantTx(peer.db, peer.orgId, (tx) => ensureInstanceKey(tx, peer.orgId)))
+      .publicKey;
+    await peer.close();
+  }, 60_000);
+
+  afterAll(async () => {
+    await commander.close();
+  });
+
+  const HTTPS_URL = "https://outpost.example.com";
+  const HTTP_URL = "http://outpost.example.com";
+
+  async function pairWith(input: {
+    baseUrl?: string;
+    pokeMode?: boolean;
+    name?: string;
+    domainId?: string;
+  }) {
+    return withTenantTx(commander.db, commander.orgId, (tx) =>
+      pairPeer(tx, {
+        orgId: commander.orgId,
+        domainId: input.domainId ?? peerSelf.domainId,
+        name: input.name ?? "poke-peer",
+        role: "outpost",
+        publicKey: peerKeyPublic,
+        ...(input.baseUrl !== undefined ? { baseUrl: input.baseUrl } : {}),
+        ...(input.pokeMode !== undefined ? { pokeMode: input.pokeMode } : {})
+      })
+    );
+  }
+
+  // The guard raises a ProblemError whose 400 title is its `.message`; the specific guard text is
+  // the RFC-9457 `.detail`. Assert against `.detail` (not `.message`).
+  async function expectGuardRejection(p: Promise<unknown>): Promise<void> {
+    let caught: unknown;
+    await p.catch((e) => {
+      caught = e;
+    });
+    expect(caught).toBeInstanceOf(ProblemError);
+    const err = caught as ProblemError;
+    expect(err.status).toBe(400);
+    expect(err.detail).toMatch(/poke-mode requires an mTLS\/https peer/);
+  }
+
+  it("default (unset) pairs as poll-mode: pokeMode === false", async () => {
+    const row = await pairWith({ baseUrl: HTTPS_URL });
+    expect(row.pokeMode).toBe(false);
+    // And it is visible false through the read paths (list + get-by-name).
+    const listed = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      listPeers(tx, commander.orgId)
+    );
+    expect(listed.find((p) => p.id === peerSelf.domainId)?.pokeMode).toBe(false);
+  });
+
+  it("pokeMode=true on an https/mTLS peer is persisted and visible", async () => {
+    const row = await pairWith({ baseUrl: HTTPS_URL, pokeMode: true });
+    expect(row.pokeMode).toBe(true);
+    const got = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      getPeerByIdOrName(tx, commander.orgId, peerSelf.domainId)
+    );
+    expect(got.pokeMode).toBe(true);
+  });
+
+  it("re-pair WITHOUT pokeMode PRESERVES the existing value (tri-state absent = preserve)", async () => {
+    await pairWith({ baseUrl: HTTPS_URL, pokeMode: true });
+    // A re-pair supplying neither the field (undefined) must not flip it back to poll.
+    const row = await pairWith({ baseUrl: HTTPS_URL });
+    expect(row.pokeMode).toBe(true);
+  });
+
+  it("re-pair with pokeMode=false explicitly turns it off", async () => {
+    await pairWith({ baseUrl: HTTPS_URL, pokeMode: true });
+    const row = await pairWith({ baseUrl: HTTPS_URL, pokeMode: false });
+    expect(row.pokeMode).toBe(false);
+  });
+
+  it("pokeMode=true on a plain-http peer is REJECTED by the pair-time guard", async () => {
+    // Fresh peer id so the effective baseUrl is exactly the plain-http one supplied here (a re-pair
+    // of an existing https peer would legitimately satisfy the guard from the stored baseUrl).
+    await expectGuardRejection(
+      pairWith({ domainId: randomUUID(), baseUrl: HTTP_URL, pokeMode: true })
+    );
+  });
+
+  it("pokeMode=true with NO baseUrl (null) is REJECTED by the pair-time guard", async () => {
+    // Fresh, never-paired peer → no existing baseUrl to fall back on → effective baseUrl is null.
+    await expectGuardRejection(pairWith({ domainId: randomUUID(), pokeMode: true }));
+  });
+
+  it("the guard honors an EXISTING https baseUrl on re-pair when baseUrl is omitted", async () => {
+    // First establish the peer with an https baseUrl (poll-mode).
+    await pairWith({ baseUrl: HTTPS_URL, pokeMode: false });
+    // Now flip poke-mode on WITHOUT re-supplying baseUrl — the effective (existing) https baseUrl
+    // must satisfy the guard.
+    const row = await pairWith({ pokeMode: true });
+    expect(row.pokeMode).toBe(true);
   });
 });

@@ -6,6 +6,7 @@ import { federationPeers, federationPeerKeys } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
 import { isUuid } from "../graph/objects-repo.js";
 import { maxAppliedSequenceForPeer } from "./cursors-repo.js";
+import { federationPeerRequiresMtls } from "./federation-outbound.js";
 
 /**
  * Peer pairing + the peer public-key registry (DESIGN.md §13). Pairing itself is always initiated
@@ -31,6 +32,10 @@ export interface FederationPeerRow {
    *  key window). `null` for a peer paired before E5 or one that never supplied one. This is the
    *  ONLY value E6/M17.4 trusts to verify that peer's cosign-signed promotion manifests. */
   cosignPublicKey: string | null;
+  /** M14.1 (ADR-0009) — whether this peer is configured for poke-mode. `false` (default, DB-backed
+   *  NOT NULL DEFAULT false) is poll-mode; `true` means the commander MAY send it a contentless
+   *  wake signal and its frequent poll is disabled (full enforcement is M14.4). */
+  pokeMode: boolean;
 }
 
 function toPeerRow(
@@ -46,6 +51,7 @@ function toPeerRow(
     baseUrl: peer.baseUrl,
     syncScope: peer.syncScope as SyncScope,
     deliveryTarget: (peer.deliveryTarget as DeliveryTarget | null) ?? null,
+    pokeMode: peer.pokeMode,
     pairedAt: peer.pairedAt.toISOString(),
     publicKey,
     cosignPublicKey
@@ -169,6 +175,11 @@ export interface PairPeerInput {
    *  (field absent — an old client) PRESERVES whatever is already configured; an object SETS it;
    *  explicit `null` CLEARS it back to the instance-env fallback. */
   deliveryTarget?: DeliveryTarget | null;
+  /** M14.1 (ADR-0009) — per-peer poke-mode. Tri-state on re-pair, mirroring `deliveryTarget`'s
+   *  additive discipline (a boolean has no null state, so: `undefined` = field absent = PRESERVE
+   *  the current value; `true`/`false` = SET). Setting it `true` requires an https/mTLS-capable
+   *  `baseUrl` — the pair-time guard (see `pairPeer`). */
+  pokeMode?: boolean;
 }
 
 /** Idempotent upsert: pairing the same peer again updates its metadata; a public-key CHANGE is
@@ -187,6 +198,21 @@ export async function pairPeer(tx: TenantTx, input: PairPeerInput): Promise<Fede
   // set or rotate). The over-the-wire schema is `.optional()` (not nullable), so absent === undefined.
   const cosignProvided = input.cosignPublicKey !== undefined;
 
+  // M14.1 pair-time guard (ADR-0009; the fail-closed transport-identity invariant). SETTING poke-mode
+  // TRUE requires an https/mTLS-capable peer baseUrl — the poke must authenticate the caller as the
+  // enrolled commander (ADR-0001), which only the mTLS transport does. This is the EARLY guard (the
+  // pair refuses); full enforcement (the outpost's poke endpoint refusing) is M14.2. `pokeMode=false`
+  // and absent (preserve) are always allowed. The effective baseUrl is the one being persisted:
+  // input.baseUrl when supplied, else (on re-pair) the existing peer's baseUrl.
+  if (input.pokeMode === true) {
+    const effectiveBaseUrl = input.baseUrl ?? existing[0]?.baseUrl ?? null;
+    if (!federationPeerRequiresMtls(effectiveBaseUrl)) {
+      throw badRequest(
+        "poke-mode requires an mTLS/https peer — the poke must authenticate the caller as the enrolled commander"
+      );
+    }
+  }
+
   if (!existing[0]) {
     const cosignPublicKey = cosignProvided ? (input.cosignPublicKey ?? null) : null;
     const [row] = await tx
@@ -198,7 +224,9 @@ export async function pairPeer(tx: TenantTx, input: PairPeerInput): Promise<Fede
         role: input.role,
         baseUrl: input.baseUrl ?? null,
         syncScope,
-        deliveryTarget: input.deliveryTarget ?? null
+        deliveryTarget: input.deliveryTarget ?? null,
+        // M14.1: a new peer defaults to poll-mode (false) unless poke-mode is explicitly set.
+        pokeMode: input.pokeMode ?? false
       })
       .returning();
     if (!row) throw new Error("pairPeer: failed to insert peer");
@@ -222,7 +250,11 @@ export async function pairPeer(tx: TenantTx, input: PairPeerInput): Promise<Fede
       // Tri-state (see PairPeerInput): absent preserves, object sets, explicit null clears — a
       // re-pair from an old client that never knew the field can never strip a configured target.
       deliveryTarget:
-        input.deliveryTarget !== undefined ? input.deliveryTarget : existing[0].deliveryTarget
+        input.deliveryTarget !== undefined ? input.deliveryTarget : existing[0].deliveryTarget,
+      // M14.1 tri-state (see PairPeerInput): absent (undefined) preserves the current poke-mode; an
+      // explicit true/false sets it. A re-pair from an old client that never knew the field can never
+      // flip it.
+      pokeMode: input.pokeMode !== undefined ? input.pokeMode : existing[0].pokeMode
     })
     .where(and(eq(federationPeers.orgId, input.orgId), eq(federationPeers.id, input.domainId)))
     .returning();

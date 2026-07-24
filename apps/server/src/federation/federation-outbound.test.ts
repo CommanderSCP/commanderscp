@@ -65,6 +65,30 @@ describe("M14.0 federation outbound mTLS dialer (fail-closed)", () => {
   });
 });
 
+// M14.1 (ADR-0009): the pair-time poke-mode guard's decision table. The guard in `pairPeer`
+// (peers-repo.ts) REFUSES iff poke-mode is being SET TRUE against a non-mTLS effective baseUrl —
+// it reuses `federationPeerRequiresMtls` exactly. This documents the truth table the persist-layer
+// integration tests exercise against a real DB.
+describe("M14.1 pair-time poke-mode guard decision", () => {
+  // Mirrors the inline guard predicate: reject when setting poke-mode true on a non-https peer.
+  const guardRejects = (pokeMode: boolean | undefined, baseUrl: string | null | undefined): boolean =>
+    pokeMode === true && !federationPeerRequiresMtls(baseUrl);
+
+  it("SETTING poke-mode true requires an https/mTLS baseUrl", () => {
+    expect(guardRejects(true, "https://outpost.example.com")).toBe(false); // allowed
+    expect(guardRejects(true, "http://outpost.example.com")).toBe(true); // rejected
+    expect(guardRejects(true, null)).toBe(true); // rejected (no transport identity)
+    expect(guardRejects(true, undefined)).toBe(true); // rejected
+  });
+
+  it("poke-mode false or absent (preserve) is ALWAYS allowed regardless of baseUrl", () => {
+    expect(guardRejects(false, "http://outpost.example.com")).toBe(false);
+    expect(guardRejects(false, null)).toBe(false);
+    expect(guardRejects(undefined, "http://outpost.example.com")).toBe(false);
+    expect(guardRejects(undefined, null)).toBe(false);
+  });
+});
+
 describe("M14.0 federation sync loop (opt-in + interval)", () => {
   it("federationSyncLoopEnabled: DEFAULT-OFF — only SCP_FEDERATION_SYNC_LOOP=1 enables it", () => {
     expect(federationSyncLoopEnabled({})).toBe(false);
