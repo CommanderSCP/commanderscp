@@ -15,6 +15,7 @@ import { startReconcileLoop } from "./coordination/reconcile.js";
 import { startObserveLoop } from "./coordination/observe.js";
 import { startWatchdogLoop } from "./coordination/watchdog.js";
 import { startInboxLoop } from "./federation/inbox-loop.js";
+import { startFederationSyncLoop } from "./federation/federation-sync.js";
 import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
 import {
   DEFAULT_EXECUTOR_INSTANCE_ID,
@@ -137,12 +138,20 @@ async function main(): Promise<void> {
     // the same role guard — but DEFAULT-OFF (explicit `SCP_INBOX_LOOP=1` opt-in; without it this
     // returns an inert handle and never schedules a tick — an unconfigured instance does not spin).
     const inboxLoop = await startInboxLoop(boss, db, config.secretsMasterKey);
+    // M14.0 outpost live-pull scheduler (docs/proposals/outpost-poke.md §"Milestone scope",
+    // ADR-0009): same queue-per-capability pattern under the same role guard — DEFAULT-OFF (explicit
+    // `SCP_FEDERATION_SYNC_LOOP=1` opt-in; without it an inert handle, never a scheduled tick). The
+    // deferred federation-over-HTTP live-sync substrate the poke increments (M14.1–M14.4) optimize;
+    // it pulls+imports commander config over the fail-closed per-peer mTLS outbound dialer
+    // (federation-outbound.ts) and is the sparse-safety-net + pull-on-startup reliability floor.
+    const federationSyncLoop = await startFederationSyncLoop(boss, db);
 
     app.addHook("onClose", async () => {
       await reconcileLoop.stop();
       await watchdogLoop.stop();
       await observeLoop.stop();
       await inboxLoop.stop();
+      await federationSyncLoop.stop();
       await pluginHost.stop();
       await relay.stop();
       await boss.stop({ graceful: false, timeout: 1000 }).catch(() => undefined);
