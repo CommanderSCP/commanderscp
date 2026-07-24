@@ -158,8 +158,15 @@ jobs:
           build_and_push "$SCP_RUNNER_SCAN_IMAGE_REF" apps/runner-scan
           build_and_push "$SCP_RUNNER_IAC_IMAGE_REF" apps/runner-iac
 
-  integration:
-    name: "5. Integration (Testcontainers Postgres + managed-iac real-Docker container)"
+  integration-shard:
+    name: "5. Integration shard ${{ matrix.shard }}/2 (Testcontainers Postgres + real-Docker runners)"
+    # LEVER 2: SHARDED across a 2-way matrix. vitest `--shard=i/2` deterministically splits the
+    # integration test FILES across two independent jobs on two runners, halving wall-clock. The
+    # `integration` aggregation gate below `needs:` this matrix so branch protection references ONE
+    # stable check name instead of the per-shard names. (Combined with LEVER 3's per-worker parallel
+    # forks WITHIN each shard, the two levers compose: files split across shards, then run in
+    # parallel within a shard.)
+    #
     # Needs a real Docker daemon for Testcontainers — the general runner has none
     # (BUILD_AND_TEST.md §8 M1 item 9). M7: `pnpm test:integration` (turbo run test:integration)
     # automatically picks up @scp/plugin-managed-iac's own test:integration script too (turbo
@@ -185,6 +192,12 @@ jobs:
     permissions:
       contents: read
       packages: read
+    strategy:
+      # fail-fast off: a failure in one shard must not cancel the other, so a red run still reports
+      # every failing file across both shards (the aggregation gate fails if EITHER shard failed).
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
@@ -239,11 +252,41 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker pull "$SCP_RUNNER_SCAN_IMAGE_REF"
           docker pull "$SCP_RUNNER_IAC_IMAGE_REF"
-      - run: pnpm test:integration
-      # Explicit, not part of test:integration's task graph (see comment above) — this is the
-      # ONLY place in CI these tool-dependent assertions run for real rather than skip.
+      # LEVER 2: `--shard=i/2` (turbo forwards args after `--` to every test:integration task —
+      # @scp/server AND @scp/plugin-managed-iac; both configs pass `--passWithNoTests`, so the
+      # single-file managed-iac suite runs in whichever shard vitest assigns it and no-ops in the
+      # other). vitest shards at FILE granularity, so shard 1/2 + shard 2/2 together cover every
+      # file exactly once — verified locally (file counts sum to the full suite, none dropped or
+      # doubled).
+      - run: pnpm test:integration -- --shard=${{ matrix.shard }}/2
+      # Explicit, not part of test:integration's task graph (see comment above) — this is the ONLY
+      # place in CI these tool-dependent assertions run for real rather than skip. Runs EXACTLY ONCE
+      # across the matrix (shard 1 only): it is not part of the sharded vitest suite, so running it
+      # per shard would be pure duplication.
       - name: Air-gap install.sh tamper-rejection suite (CRITICAL #1 real gate — cosign/skopeo/helm now on PATH)
+        if: ${{ matrix.shard == 1 }}
         run: pnpm --filter @scp/airgap test
+
+  integration:
+    name: "5z. Integration (aggregation gate)"
+    # LEVER 2: a single, stable status-check name for branch protection to require, standing in for
+    # the per-shard matrix jobs (whose names include the shard index). `if: always()` + an explicit
+    # result check means this gate goes RED whenever any shard failed or was cancelled, rather than
+    # being silently skipped. NOTE FOR THE REPO ADMIN: update the required status check in branch
+    # protection from the old "5. Integration ..." job name to THIS job ("5z. Integration
+    # (aggregation gate)") — see docs/BUILD_AND_TEST.md §6.
+    needs: [integration-shard]
+    if: always()
+    runs-on: homelab-commanderscp-linux-general
+    steps:
+      - name: Require every integration shard to have succeeded
+        run: |
+          result="${{ needs.integration-shard.result }}"
+          echo "integration-shard matrix result: $result"
+          if [ "$result" != "success" ]; then
+            echo "::error::one or more integration shards did not succeed ($result)"
+            exit 1
+          fi
 
   e2e-m0:
     name: "7. E2E (M0 golden path, main only)"
