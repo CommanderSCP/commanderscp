@@ -73,7 +73,7 @@ requests.memory** per pod. That 12Gi limit ÷ 20Gi quota is the "only 1 runner" 
 `homelab-commanderscp-linux-docker-build` scale set — Helm-managed, so a `kubectl patch` is reverted;
 this is a **values change**):
 
-- pod drops to **~8Gi limits.memory** (4Gi runner + 4Gi DinD) → **2 fit in the existing 20Gi quota,
+- pod drops to **10Gi limits.memory** (6Gi runner + 4Gi DinD) → **2 fit in the existing 20Gi quota,
   no quota change, no node oversubscription** (2 pods = 16Gi limits < 22Gi node).
 - to fit **3**, also lower the runner CPU limit (4→2) and the DinD limit (set an explicit ~2Gi, or
   lower the LimitRange default) → ~6Gi/pod → 3 fit; a small quota `limits.cpu` bump may be needed.
@@ -82,7 +82,7 @@ this is a **values change**):
 
 A warm idle runner's real standing cost is its **request (~3Gi node memory)**, not its limit; actual
 idle RSS is a few hundred MB. On the *current* 12Gi-limit pod, a warm `minRunners: 1` would pin 12Gi
-of the 20Gi quota and still block a 2nd runner — so do it **only after** the 4Gi right-size, where a
+of the 20Gi quota and still block a 2nd runner — so do it **only after** the 6Gi right-size, where a
 warm pod costs ~8Gi of quota and still leaves room to burst to 2. Set `minRunners: 1` in the same ARC
 Helm values. Net after both edits: **one always-hot runner (fast starts, ~3Gi idle) bursting to 2,
 inside the unchanged 20Gi quota.**
@@ -92,7 +92,7 @@ inside the unchanged 20Gi quota.**
 | Bottleneck | Caps | Fix | Where |
 |---|---|---|---|
 | Runner **CPU limit** (4) | *within-shard* vitest fork depth (Lever 3) | raise CPU limit + `SCP_TEST_MAX_FORKS` | ARC Helm values (see BUILD_AND_TEST §6) |
-| Namespace **memory quota** (20Gi) ÷ 12Gi/runner | *number of concurrent runners* (breadth) | right-size runner mem 8→4Gi (preferred) or raise quota | Helm values / `kubectl patch` (this runbook) |
+| Namespace **memory quota** (20Gi) ÷ 12Gi/runner | *number of concurrent runners* (breadth) | right-size runner mem 8→6Gi (preferred) or raise quota | Helm values / `kubectl patch` (this runbook) |
 
 ## Verify after applying
 
