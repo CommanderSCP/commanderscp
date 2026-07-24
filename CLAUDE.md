@@ -10,6 +10,7 @@ CommanderSCP is a **Federated Systems Coordination Platform**: a graph-native sy
 | [docs/DESIGN.md](docs/DESIGN.md) | Initial architecture. v0.1 Draft — **proposed, pending review**. |
 | [docs/BUILD_AND_TEST.md](docs/BUILD_AND_TEST.md) | Toolchain, bootstrap, test strategy, milestones M0–M8. v0.1 Draft — **proposed, pending review**. |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Architecture diagrams (commander instance, outpost instance, multi-domain overview) with legends. SVG sources in `docs/diagrams/` — keep them in sync with DESIGN.md. |
+| [docs/GLOSSARY.md](docs/GLOSSARY.md) | **Authoritative for vocabulary.** promotion vs cross-domain promotion, accept, release, security vs containment domain, stage/wave. Decisions and rejected alternatives in [ADR-0021](docs/adr/0021-terminology.md). |
 
 ## Current status
 
