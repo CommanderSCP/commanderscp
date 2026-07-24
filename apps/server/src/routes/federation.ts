@@ -32,10 +32,15 @@ import { initFederationSelf, ensureFederationSelf } from "../federation/self-rep
 import { pairPeer, listPeers, getPeerByIdOrName } from "../federation/peers-repo.js";
 import {
   assertDeliveryTargetRooted,
+  assertOutboundDeliverable,
   dropDeliveryFile,
   requireOutboundDir,
-  resolveDeliveryTarget
+  resolveDeliveryTarget,
+  type DeliveryTargetPeerRef,
+  type ResolvedDeliveryTarget
 } from "../federation/delivery-target.js";
+import type { S3DeliveryCredentials } from "../federation/delivery-s3.js";
+import { getSecretValue } from "../secrets/secrets-repo.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
 import { getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
 import { getFederationStatus } from "../federation/status-repo.js";
@@ -46,7 +51,9 @@ import { createOverlay, getMergedOverlayView } from "../federation/overlay-repo.
 import { handFillObject } from "../federation/handfill-repo.js";
 import {
   buildRelayTarball,
+  deliveryTargetSecretKey,
   importRelayTarball,
+  parseDeliveryS3Credential,
   relayConfigFromEnv,
   resolveUnderDir
 } from "../federation/retrans-relay.js";
@@ -61,6 +68,37 @@ import {
  *  guard does it instead. */
 function isPromotionBundle(body: ImportBundleRequest): body is PromotionBundle {
   return body.header.kind === "promotion";
+}
+
+/**
+ * M13.2b (§13.2) — resolve a peer's OUTBOUND delivery for a `.scpbundle` drop, PROVIDER-AWARE and
+ * fail-closed BEFORE the export does any work:
+ *   - asserts the outbound location resolves (filesystem dir OR allowlisted s3 endpoint), else 400;
+ *   - for an s3 target, ALSO resolves the WRITE-scoped vault credential (`delivery/<peer>/out`) up
+ *     front — a missing/malformed secret refuses here, so a refused delivery never leaves a signed
+ *     bundle with nowhere to go. Credentials are resolved at use and passed to `dropDeliveryFile`;
+ *     never argv/logs/Decisions (ADR-0019 §3).
+ */
+async function resolveOutboundDelivery(
+  deps: AppDeps,
+  orgId: string,
+  peer: DeliveryTargetPeerRef
+): Promise<{ resolved: ResolvedDeliveryTarget; s3Credentials?: S3DeliveryCredentials }> {
+  const resolved = resolveDeliveryTarget(peer);
+  assertOutboundDeliverable(resolved);
+  if (resolved.provider !== "s3-compatible") return { resolved };
+  const raw = await withTenantTx(deps.db, orgId, (tx) =>
+    getSecretValue(tx, orgId, deliveryTargetSecretKey(peer.name, "out"), deps.config.secretsMasterKey)
+  );
+  const s3Credentials = parseDeliveryS3Credential(raw);
+  if (!s3Credentials) {
+    throw badRequest(
+      `peer '${peer.name}' s3-compatible outbound drop needs the vault credential ` +
+        `'${deliveryTargetSecretKey(peer.name, "out")}' (accessKeyId:secretAccessKey), but it is ` +
+        `unset or malformed (fail-closed)`
+    );
+  }
+  return { resolved, s3Credentials };
 }
 
 /**
@@ -299,11 +337,12 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
           scopeObjectId: auth.orgId
         });
         // M13.2a (§13.2): `deliver` resolves the peer row FIRST — a delivery with no resolvable
-        // drop directory refuses fail-closed BEFORE the export does any work.
+        // drop target refuses fail-closed BEFORE the export does any work (provider-agnostic —
+        // filesystem dir OR allowlisted s3 endpoint).
         const deliverPeer = request.body.deliver
           ? await getPeerByIdOrName(tx, auth.orgId, request.body.peer)
           : null;
-        if (deliverPeer) requireOutboundDir(resolveDeliveryTarget(deliverPeer));
+        if (deliverPeer) assertOutboundDeliverable(resolveDeliveryTarget(deliverPeer));
         const bundle = await exportSyncBundle(
           tx,
           auth.orgId,
@@ -314,12 +353,18 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       });
       if (request.body.deliver && deliverPeer) {
         // The server-side leg of the CDS walk (§13.2 write seam): the SAME bytes the CLI's --out
-        // writes (`JSON.stringify(bundle, null, 2)`), dropped through the peer's DeliveryTarget
-        // (per-peer config, else the SCP_RELAY_OUT_DIR instance fallback — today's behavior).
+        // writes (`JSON.stringify(bundle, null, 2)`), dropped through the peer's DeliveryTarget —
+        // PROVIDER-DISPATCHED (filesystem dir or s3 put; s3 creds vault-resolved up front).
+        const { resolved, s3Credentials } = await resolveOutboundDelivery(
+          deps,
+          auth.orgId,
+          deliverPeer
+        );
         await dropDeliveryFile(
-          resolveDeliveryTarget(deliverPeer),
+          resolved,
           `scp-sync-${bundle.header.exporterDomainId}-${bundle.header.throughSequence}.scpbundle`,
-          JSON.stringify(bundle, null, 2)
+          JSON.stringify(bundle, null, 2),
+          s3Credentials
         );
       }
       reply.status(200).send(bundle);
@@ -368,7 +413,7 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
             getPeerByIdOrName(tx, auth.orgId, request.body.peer)
           )
         : null;
-      if (deliverPeer) requireOutboundDir(resolveDeliveryTarget(deliverPeer));
+      if (deliverPeer) assertOutboundDeliverable(resolveDeliveryTarget(deliverPeer));
       const outcome = await exportPromotionBundle(deps.db, {
         orgId: auth.orgId,
         peerIdOrName: request.body.peer,
@@ -383,12 +428,18 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       }
       if (deliverPeer) {
         // The server-side leg of the CDS walk (§13.2 write seam): the SAME bytes the CLI's --out
-        // writes, dropped through the peer's DeliveryTarget (per-peer config, else the
-        // SCP_RELAY_OUT_DIR instance fallback — today's behavior, byte-identical).
+        // writes, dropped through the peer's DeliveryTarget — PROVIDER-DISPATCHED (filesystem dir
+        // or s3 put; s3 creds vault-resolved up front, never argv/logs).
+        const { resolved, s3Credentials } = await resolveOutboundDelivery(
+          deps,
+          auth.orgId,
+          deliverPeer
+        );
         await dropDeliveryFile(
-          resolveDeliveryTarget(deliverPeer),
+          resolved,
           `scp-promotion-${outcome.bundle.header.sourceChangeObjectId}.scpbundle`,
-          JSON.stringify(outcome.bundle, null, 2)
+          JSON.stringify(outcome.bundle, null, 2),
+          s3Credentials
         );
       }
       reply.status(200).send(outcome.bundle);
@@ -503,6 +554,14 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       // when the request names one; absent a peer, through the instance env (`SCP_RELAY_OUT_DIR`)
       // exactly as before — byte-identical. NEITHER resolvable → fail-closed 400 carrying the
       // named per-gap problem (never a silent default path).
+      //
+      // M13.2b scope note: `buildRelayTarball` writes the tarball to a LOCAL directory path, so a
+      // relay destination configured for s3-compatible delivery fails closed here with a clear
+      // provider-mismatch (requireOutboundDir refuses an s3 target). Relaying the multi-GB tarball
+      // DIRECTLY to s3 (build-then-lib-storage-upload) is a follow-on to this increment; the s3
+      // WRITE seam (dropDeliveryFile) and its multipart path already exist and are exercised by the
+      // `.scpbundle` drop + the delivery-target suite. Configure a filesystem SCP_RELAY_OUT_DIR (or
+      // a filesystem peer deliveryTarget) for relay builds.
       const deliverPeer = request.body.peer
         ? await withTenantTx(deps.db, auth.orgId, (tx) =>
             getPeerByIdOrName(tx, auth.orgId, request.body.peer as string)

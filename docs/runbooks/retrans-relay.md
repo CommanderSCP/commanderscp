@@ -55,6 +55,8 @@ commander ──.scpbundle──▶ retrans ──scp-relay-<id>.tar.gz──▶
 | `SCP_RELAY_OUT_DIR` | retrans | Drop directory built tarballs are written into (required for `POST /federation/relay`). The instance-level fallback when a peer configures no per-peer `deliveryTarget.outDir`; operator-owned, so it needs no `SCP_DELIVERY_ROOTS` entry. |
 | `SCP_RELAY_IN_DIR` | outpost | Intake directory tarballs are read from (required for `POST /federation/relay/import`; the API accepts file names inside it only — no traversal). The instance-level fallback for per-peer `deliveryTarget.inDir`; operator-owned, exempt from `SCP_DELIVERY_ROOTS`. |
 | `SCP_DELIVERY_ROOTS` | both | Comma/colon-separated **absolute** roots that bound every **per-peer** `deliveryTarget` directory (the M13.2a residual — same operator-allowlist shape as `SCP_ARTIFACT_OCI_REGISTRY_HOSTS`). A per-peer `outDir`/`inDir` is honored **only** when it sits at or under one of these roots — the check is on resolved path *segments*, so a sibling like `/root-evil` never satisfies the root `/root`. Enforced in both places: refused at pair time (`POST /federation/peers`, never stored) and re-checked fail-closed at resolution (a stored out-of-root dir becomes a named per-gap problem, never a silent env fallback). **UNSET = fail-closed**: on a multi-tenant instance any per-peer delivery dir is refused until the operator declares the roots. The `SCP_RELAY_OUT_DIR`/`SCP_RELAY_IN_DIR` env fallback (no per-peer dir) is **exempt** — single-org deploys need no new config. |
+| `SCP_DELIVERY_S3_ENDPOINTS` | both | **(M13.2b)** The **endpoint/bucket** allowlist for the `s3-compatible` `deliveryTarget` provider — the ADR-0019 §4 symmetry of `SCP_DELIVERY_ROOTS`, but **endpoint-shaped, not path-shaped**. **Comma/newline-separated** entries of `endpoint` or `endpoint+bucket` (e.g. `https://minio.a:9000, https://minio.b:9000+bundles`) — **not** colon-split, because an endpoint URL legitimately contains a `:port`; the endpoint↔bucket separator is `+`. An entry with no bucket allows **any** bucket at that endpoint; `endpoint+bucket` pins the exact pair. Matching is on the normalized **origin** (scheme+host+port, lowercased) by **equality**, never string-prefix — a look-alike host never matches. Enforced in both places: refused at pair time (`POST /federation/peers`, never stored) and re-checked fail-closed at resolution. **UNSET = fail-closed**: any `s3-compatible` delivery target is refused until the operator allowlists its endpoint. A tenant must never steer a delivery drop to an arbitrary S3 endpoint (data-supplied egress). |
+| `SCP_DELIVERY_S3_REGION` | both | **(M13.2b)** The region the S3 put/list/get signs under (default `us-east-1`). MinIO and most S3-compatibles ignore it, but SigV4 requires a value; real AWS S3 needs the bucket's true region. Signing metadata only — it never widens which endpoint/bucket is reachable, so it is **not** allowlisted. |
 | `SCP_RELAY_SOURCE_REPO` | retrans | Fallback source repository (`host[:port]/path`) for OCI artifacts whose bundle carries no `location` (exports record digests only). Pull ref = `<repo>@<digest>`. The host must ALSO be allowlisted in `SCP_ARTIFACT_OCI_REGISTRY_HOSTS`. |
 | `SCP_RELAY_DEST_REPO` | outpost | The destination local Gitea repository (`host[:port]/owner/repo`) images are pushed into by digest. Needs no allowlist — it is the relay's own configuration, never bundle data (ADR-0019 §4). |
 | `SCP_RELAY_BLOB_OUT_DIR` | outpost | Directory blob artifact bytes + origin signatures land in. |
@@ -140,6 +142,20 @@ scp secret put "relay/dest-push/<dest-host[:port]>"      --value "user:password"
 Grant the source credential **read** on the artifact repositories only, and the destination
 credential **push** on the relay repository only — no admin, no delete. Rotation = `scp secret put`
 again; the next relay run resolves the new value. Anonymous registries need no secret.
+
+**(M13.2b) S3 `deliveryTarget` credentials** — same artifact-store class (an S3 bucket is a passive
+shelf), same vault, same resolve-at-use / never-argv-logs-Decisions discipline, scoped **per peer,
+per direction** (the key encodes the peer explicitly, unlike the implicitly-per-peer relay keys):
+
+```
+scp secret put "delivery/<peer-name>/out"  --value "<accessKeyId>:<secretAccessKey>"   # WRITE-scoped drop
+scp secret put "delivery/<peer-name>/in"   --value "<accessKeyId>:<secretAccessKey>"   # READ-scoped inbox
+```
+
+Grant the `out` credential **write** on the drop bucket/prefix only and the `in` credential **read**
+on the inbox bucket/prefix only. The value is `accessKeyId:secretAccessKey` (split on the first `:`;
+the base64-shaped secret key never contains `:`). An `s3-compatible` outbound drop refuses fail-closed
+if the `out` secret is unset or malformed.
 
 ### Scoping (added 2026-07-23)
 

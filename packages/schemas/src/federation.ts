@@ -132,12 +132,84 @@ export const FilesystemDeliveryTargetSchema = z.object({
 });
 export type FilesystemDeliveryTarget = z.infer<typeof FilesystemDeliveryTargetSchema>;
 
-/** Discriminated on `provider` so 13.2b adds `provider: 's3-compatible'` as a new union member —
- *  additive, no shape change to the filesystem member. */
+/** An S3 object-key PREFIX per direction: relative (no leading `/`), traversal-free. The resolver
+ *  normalizes a non-empty prefix to end in `/` before it is joined with the file basename, so a
+ *  prefix `inbox` and a prefix `inbox/` address the same location. Empty/omitted ⇒ bucket root. A
+ *  prefix is NOT an endpoint — it never widens which bucket/endpoint is reachable, so it needs no
+ *  allowlist (unlike `endpoint`/`bucket`); it only scopes keys WITHIN the allowlisted bucket. */
+export const DeliveryPrefixSchema = z
+  .string()
+  .refine((p) => !p.startsWith("/"), {
+    message: "delivery-target S3 prefixes must be relative object-key prefixes (no leading '/')"
+  })
+  .refine((p) => !p.split("/").some((seg) => seg === ".." || seg === "."), {
+    message: "delivery-target S3 prefixes must not contain '.' or '..' traversal segments"
+  });
+
+/** 13.2b — the `s3-compatible` provider (proposal §13.2, owner decision D3: AWS SDK v3). WHERE a
+ *  signed channel artifact is put/listed/got via an S3 API: an `endpoint` + `bucket`, with a
+ *  per-direction key prefix. Driven with the SDK's `endpoint` override + `forcePathStyle` so MinIO
+ *  and other S3-compatibles work, and `@aws-sdk/lib-storage`'s managed MULTIPART upload so a
+ *  multi-GB relay tarball drops without a hand-rolled `PutObject`.
+ *
+ *  ENDPOINT/BUCKET IS OPERATOR CONFIG, NEVER BUNDLE-STEERED (the ADR-0019 §4 symmetry, load-bearing):
+ *  `endpoint`/`bucket` are a data-supplied EGRESS target set by an org admin with `federation:write`,
+ *  the same shape of hazard the filesystem `outDir`/`inDir` are — so they get the SAME operator
+ *  allowlist treatment `SCP_DELIVERY_ROOTS` gives directories: an operator-declared endpoint/bucket
+ *  allowlist (`SCP_DELIVERY_S3_ENDPOINTS`), enforced at BOTH pair-time (never store an out-of-allowlist
+ *  target) and fail-closed at resolution (a stored out-of-allowlist target is a named per-gap problem,
+ *  never used). UNSET allowlist + any s3 target ⇒ FAIL-CLOSED (refuse). A tenant must NEVER steer
+ *  delivery to an arbitrary S3 endpoint. Credentials are NOT here — they live in the vault under
+ *  `delivery/<peer>/<direction>` (ADR-0019 §3 artifact-store class), resolved at use, never in config. */
+export const S3DeliveryTargetSchema = z.object({
+  provider: z.literal("s3-compatible"),
+  /** The S3(-compatible) API endpoint (e.g. `https://minio.example.net:9000`). Must be an absolute
+   *  URL; its origin (scheme+host+port) must be operator-allowlisted (`SCP_DELIVERY_S3_ENDPOINTS`). */
+  endpoint: z.string().url(),
+  /** The bucket channel artifacts are put into / listed from. Must be operator-allowlisted (either
+   *  the endpoint is allowed for ANY bucket, or the exact endpoint+bucket pair is allowed). */
+  bucket: z
+    .string()
+    .min(1)
+    .refine((b) => !b.includes("/"), {
+      message: "delivery-target S3 bucket must be a bare bucket name (no '/')"
+    }),
+  /** Outbound key prefix — where THIS instance PUTs channel artifacts addressed to the peer. */
+  outPrefix: DeliveryPrefixSchema.optional(),
+  /** Inbound key prefix — where channel artifacts FROM the peer arrive (the §13.1a inbox). */
+  inPrefix: DeliveryPrefixSchema.optional()
+});
+export type S3DeliveryTarget = z.infer<typeof S3DeliveryTargetSchema>;
+
+/** Discriminated on `provider` — 13.2b adds `s3-compatible` as a SECOND union member, ADDITIVELY:
+ *  zero shape change to the filesystem member, so an older client/peer that only knows `filesystem`
+ *  still parses every filesystem target byte-identically. */
 export const DeliveryTargetSchema = z.discriminatedUnion("provider", [
-  FilesystemDeliveryTargetSchema
+  FilesystemDeliveryTargetSchema,
+  S3DeliveryTargetSchema
 ]);
 export type DeliveryTarget = z.infer<typeof DeliveryTargetSchema>;
+
+/** PERMISSIVE RESPONSE VIEW of a DeliveryTarget — the shape RESPONSE bodies advertise, deliberately
+ *  NOT a discriminatedUnion. A strict `oneOf` in a RESPONSE is inherently NON-additive: every new
+ *  provider member is an oasdiff `response-property-one-of-added` BREAKING change (a strict client
+ *  generated against the old contract might reject the new variant). We dodge that permanently by
+ *  advertising ONE open object that is a SUPERSET of every provider's fields — `provider` a plain
+ *  string, all fields optional, no `oneOf`/discriminator — so adding the Nth provider only ever adds
+ *  OPTIONAL properties (additive), never a union member. The stored strict-union value serialized on
+ *  the wire is unchanged and is always a valid instance of this superset; this is a TYPE/CONTRACT
+ *  loosening only, no runtime/behavior change. REQUESTS keep the strict `DeliveryTargetSchema` union
+ *  — widening a REQUEST union is permissive-input, NOT oasdiff-breaking. */
+export const DeliveryTargetViewSchema = z.object({
+  provider: z.string(),
+  outDir: z.string().optional(),
+  inDir: z.string().optional(),
+  endpoint: z.string().optional(),
+  bucket: z.string().optional(),
+  outPrefix: z.string().optional(),
+  inPrefix: z.string().optional()
+});
+export type DeliveryTargetView = z.infer<typeof DeliveryTargetViewSchema>;
 
 export const PairPeerRequestSchema = z.object({
   domainId: z.string().uuid(),
@@ -174,8 +246,10 @@ export const FederationPeerSchema = z.object({
    *  verify that peer's cosign-signed promotion manifests. */
   cosignPublicKey: z.string().nullable().optional(),
   /** M13.2a (§13.2) — the peer's configured DeliveryTarget, `null` when none is set (the instance
-   *  env `SCP_RELAY_OUT_DIR`/`SCP_RELAY_IN_DIR` fallback applies — today's behavior, unchanged). */
-  deliveryTarget: DeliveryTargetSchema.nullable().optional(),
+   *  env `SCP_RELAY_OUT_DIR`/`SCP_RELAY_IN_DIR` fallback applies — today's behavior, unchanged).
+   *  RESPONSE uses the permissive `DeliveryTargetViewSchema` (superset object, no `oneOf`) so adding
+   *  a provider stays oasdiff-additive; the stored strict-union value is a valid instance of it. */
+  deliveryTarget: DeliveryTargetViewSchema.nullable().optional(),
   pairedAt: z.string().datetime()
 });
 export type FederationPeer = z.infer<typeof FederationPeerSchema>;

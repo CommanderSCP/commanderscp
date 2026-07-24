@@ -2378,6 +2378,16 @@ export function buildProgram(): Command {
       "--delivery-in-dir <dir>",
       "SERVER-side absolute directory where channel artifacts FROM this peer arrive (the inbox)"
     )
+    // M13.2b (§13.2) — the s3-compatible provider. Requires --delivery-s3-endpoint + --delivery-s3-bucket
+    // together; the endpoint/bucket must be operator-allowlisted (SCP_DELIVERY_S3_ENDPOINTS) or the pair
+    // is refused. Credentials are stored separately in the vault (`delivery/<peer>/out|in`), never here.
+    .option(
+      "--delivery-s3-endpoint <url>",
+      "S3(-compatible) endpoint for the peer's DeliveryTarget (e.g. https://minio:9000) — operator-allowlisted"
+    )
+    .option("--delivery-s3-bucket <bucket>", "S3 bucket channel artifacts are put into / listed from")
+    .option("--delivery-s3-out-prefix <prefix>", "S3 key prefix for outbound drops (default: bucket root)")
+    .option("--delivery-s3-in-prefix <prefix>", "S3 key prefix for the inbound inbox (default: bucket root)")
     .option(
       "--clear-delivery-target",
       "clear the peer's DeliveryTarget (fall back to the instance env dirs)"
@@ -2396,12 +2406,33 @@ export function buildProgram(): Command {
           syncScope: string;
           deliveryOutDir?: string;
           deliveryInDir?: string;
+          deliveryS3Endpoint?: string;
+          deliveryS3Bucket?: string;
+          deliveryS3OutPrefix?: string;
+          deliveryS3InPrefix?: string;
           clearDeliveryTarget?: boolean;
         }
       ) => {
-        if (opts.clearDeliveryTarget && (opts.deliveryOutDir || opts.deliveryInDir)) {
+        const hasFs = Boolean(opts.deliveryOutDir || opts.deliveryInDir);
+        const hasS3 = Boolean(
+          opts.deliveryS3Endpoint ||
+            opts.deliveryS3Bucket ||
+            opts.deliveryS3OutPrefix ||
+            opts.deliveryS3InPrefix
+        );
+        if (opts.clearDeliveryTarget && (hasFs || hasS3)) {
           throw new Error(
-            "--clear-delivery-target cannot be combined with --delivery-out-dir/--delivery-in-dir"
+            "--clear-delivery-target cannot be combined with any --delivery-* flag"
+          );
+        }
+        if (hasFs && hasS3) {
+          throw new Error(
+            "a DeliveryTarget is one provider: use EITHER --delivery-out-dir/--delivery-in-dir (filesystem) OR the --delivery-s3-* flags"
+          );
+        }
+        if (hasS3 && !(opts.deliveryS3Endpoint && opts.deliveryS3Bucket)) {
+          throw new Error(
+            "the s3-compatible DeliveryTarget requires BOTH --delivery-s3-endpoint and --delivery-s3-bucket"
           );
         }
         const client = await clientFromStoredCredentials(opts);
@@ -2410,13 +2441,21 @@ export function buildProgram(): Command {
         // target, an object sets it, explicit null clears it.
         const deliveryTarget: DeliveryTarget | null | undefined = opts.clearDeliveryTarget
           ? null
-          : opts.deliveryOutDir || opts.deliveryInDir
+          : hasS3
             ? {
-                provider: "filesystem",
-                ...(opts.deliveryOutDir ? { outDir: opts.deliveryOutDir } : {}),
-                ...(opts.deliveryInDir ? { inDir: opts.deliveryInDir } : {})
+                provider: "s3-compatible",
+                endpoint: opts.deliveryS3Endpoint as string,
+                bucket: opts.deliveryS3Bucket as string,
+                ...(opts.deliveryS3OutPrefix ? { outPrefix: opts.deliveryS3OutPrefix } : {}),
+                ...(opts.deliveryS3InPrefix ? { inPrefix: opts.deliveryS3InPrefix } : {})
               }
-            : undefined;
+            : hasFs
+              ? {
+                  provider: "filesystem",
+                  ...(opts.deliveryOutDir ? { outDir: opts.deliveryOutDir } : {}),
+                  ...(opts.deliveryInDir ? { inDir: opts.deliveryInDir } : {})
+                }
+              : undefined;
         const peer = await client.federation.pair({
           domainId: opts.domainId,
           name: opts.name,

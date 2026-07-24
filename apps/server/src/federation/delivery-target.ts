@@ -52,14 +52,24 @@
  * names are data, not commands). Consumers hand a name back to the existing import paths, which
  * re-run `resolveUnderDir` themselves.
  *
- * The `filesystem` provider is the only M13.2a provider; 13.2b slots `s3-compatible` in as a new
- * `DeliveryTargetSchema` union member with put/list/get behind these same seams.
+ * ## Providers (13.2b — `s3-compatible` added)
+ *
+ * `filesystem` (default) and `s3-compatible` (proposal §13.2, owner decision D3: AWS SDK v3) both
+ * ride the SAME put/list/get seams (`dropDeliveryFile`/`listInbox`/`getDeliveryFile`), PROVIDER-
+ * DISPATCHED on the resolved target's `provider`: the filesystem path is byte-identical to M13.2a,
+ * the s3 path put/list/gets via `delivery-s3.ts`. The s3 provider is OPERATOR-ALLOWLISTED exactly
+ * as directories are — the `SCP_DELIVERY_S3_ENDPOINTS` endpoint/bucket allowlist is the ADR-0019 §4
+ * symmetry of `SCP_DELIVERY_ROOTS`, enforced at pair-time AND fail-closed at resolution (a tenant
+ * must never steer delivery to an arbitrary S3 endpoint). Its credentials live in the vault under
+ * `delivery/<peer>/<direction>` (ADR-0019 §3), resolved at use and passed to the s3 seams — never in
+ * config, never logged.
  */
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { DeliveryTarget } from "@scp/schemas";
+import type { DeliveryTarget, S3DeliveryTarget } from "@scp/schemas";
 import { badRequest } from "../errors.js";
 import { resolveUnderDir, relayConfigFromEnv } from "./retrans-relay.js";
+import { s3Get, s3List, s3Put, type S3DeliveryCredentials } from "./delivery-s3.js";
 
 /** The slice of a `FederationPeerRow` resolution needs (structural, so tests and the routes can
  *  pass the full row or a stub). `null` peer = "no peer in play" (an env-only resolution — e.g.
@@ -107,24 +117,128 @@ export function isUnderDeliveryRoot(dir: string, roots: readonly string[]): bool
   return roots.some((root) => resolved === root || resolved.startsWith(root + path.sep));
 }
 
-/** One direction of the resolved view. `dir === null` ⇔ `problem !== null` (per-gap, fail-closed:
- *  the problem TEXT is what `requireOutboundDir`/`requireInboundDir` refuse with). */
+// -------------------------------------------------------------------------------------------------
+// S3 endpoint/bucket allowlist (`SCP_DELIVERY_S3_ENDPOINTS`) — the ADR-0019 §4 symmetry of
+// SCP_DELIVERY_ROOTS, but ENDPOINT+BUCKET shaped, NOT path shaped (isUnderDeliveryRoot is a filesystem
+// prefix test and MUST NOT be reused here). An s3 `endpoint`/`bucket` is a data-supplied EGRESS
+// target set by an org admin; without an operator allowlist a tenant could steer the unattended
+// boundary drop to an arbitrary S3 endpoint (data-supplied egress). So — exactly as directories are
+// bounded — an s3 target is honored ONLY when its endpoint (and bucket, when the entry pins one) is
+// operator-allowlisted, enforced at pair-time (never stored) AND fail-closed at resolution.
+// -------------------------------------------------------------------------------------------------
+
+/** One parsed allowlist entry: an endpoint ORIGIN (scheme+host+port, normalized) and an OPTIONAL
+ *  bucket. `bucket === null` ⇒ the entry allows ANY bucket at that endpoint; a bucket pins the entry
+ *  to exactly that endpoint+bucket pair. */
+export interface DeliveryS3AllowEntry {
+  origin: string;
+  bucket: string | null;
+}
+
+/** Normalize an endpoint string to its comparable ORIGIN (`scheme://host[:port]`, lowercased) — the
+ *  segment-safe equality anchor, so a look-alike host never matches by string prefix. Returns null
+ *  for anything not an absolute http(s) URL. */
+export function normalizeS3Origin(endpoint: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(endpoint.trim());
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  return url.origin.toLowerCase();
+}
+
+/**
+ * Parse `SCP_DELIVERY_S3_ENDPOINTS` — a COMMA/newline-separated list of allowed `endpoint` or
+ * `endpoint+bucket` entries (e.g. `https://minio.a:9000, https://minio.b:9000+bundles`). Unlike
+ * {@link parseDeliveryRoots}, entries are NOT colon-split: an S3 endpoint URL legitimately contains
+ * colons (`https://host:9000`), so a colon can never be an entry separator here; the endpoint↔bucket
+ * separator is `+` (per the proposal's `endpoint[+bucket]` notation). Each endpoint is normalized to
+ * its origin; unparseable entries are dropped. UNSET/all-empty ⇒ `[]` ⇒ every s3 target fails closed.
+ * Accepts the raw env string or an already-split array (tests pass an array directly).
+ */
+export function parseDeliveryS3Endpoints(
+  raw: string | readonly string[] | undefined
+): DeliveryS3AllowEntry[] {
+  const entries = typeof raw === "string" ? raw.split(/[,\n]/) : (raw ?? []);
+  const parsed: DeliveryS3AllowEntry[] = [];
+  for (const rawEntry of entries) {
+    const entry = rawEntry.trim();
+    if (entry === "") continue;
+    const plusAt = entry.indexOf("+");
+    const endpointPart = plusAt === -1 ? entry : entry.slice(0, plusAt);
+    const bucketPart = plusAt === -1 ? "" : entry.slice(plusAt + 1).trim();
+    const origin = normalizeS3Origin(endpointPart);
+    if (origin === null) continue;
+    parsed.push({ origin, bucket: bucketPart === "" ? null : bucketPart });
+  }
+  return parsed;
+}
+
+/** The live operator-declared s3 endpoint allowlist (`SCP_DELIVERY_S3_ENDPOINTS`). */
+export function deliveryS3EndpointsFromEnv(): DeliveryS3AllowEntry[] {
+  return parseDeliveryS3Endpoints(process.env.SCP_DELIVERY_S3_ENDPOINTS);
+}
+
+/**
+ * Is `endpoint`+`bucket` allowed by `allow`? Match requires the normalized ORIGINS to be EQUAL (never
+ * a string-prefix compare — so `https://minio.evil:9000` never matches an allowlisted
+ * `https://minio.ev:9000`, and a path suffix on the configured endpoint can't sneak past) AND the
+ * entry's bucket to be either unpinned (any bucket) or exactly `bucket`. An unparseable `endpoint`,
+ * or an empty allowlist, is never allowed (fail-closed).
+ */
+export function isDeliveryS3EndpointAllowed(
+  endpoint: string,
+  bucket: string,
+  allow: readonly DeliveryS3AllowEntry[]
+): boolean {
+  const origin = normalizeS3Origin(endpoint);
+  if (origin === null) return false;
+  return allow.some((e) => e.origin === origin && (e.bucket === null || e.bucket === bucket));
+}
+
+/** A resolved s3-compatible location for one direction (13.2b) — the endpoint (normalized origin),
+ *  bucket, and normalized key prefix (`''` or ends with `/`). Populated only for the `s3-compatible`
+ *  provider; `null` on a filesystem direction. */
+export interface ResolvedS3Location {
+  endpoint: string;
+  bucket: string;
+  /** `''` (bucket root) or a prefix guaranteed to end in `/`, so `prefix + basename` is a valid key. */
+  prefix: string;
+}
+
+/** One direction of the resolved view. `dir` is the resolved FILESYSTEM directory (or `null`); the
+ *  s3 location, when the provider is `s3-compatible`, lives on the parent's `outboundS3`/`inboundS3`
+ *  — this shape is DELIBERATELY unchanged from M13.2a (the filesystem suite asserts it exactly).
+ *  A resolved direction has `problem === null`; an unresolved one has `dir === null` + a `problem`
+ *  (the text the `require*` helpers refuse with). */
 export interface ResolvedDeliveryDirection {
   dir: string | null;
-  /** Where the effective dir came from: the peer's own config or the instance env. */
+  /** Where the effective location came from: the peer's own config or the instance env. */
   source: "peer" | "env" | null;
   problem: string | null;
 }
 
 /** The validated per-peer view (the M15.6 shape: effective config + `valid` + per-gap `problems`). */
 export interface ResolvedDeliveryTarget {
-  provider: "filesystem";
+  /** 13.2b — widened from the literal `'filesystem'`: the effective provider (`'filesystem'` for a
+   *  filesystem target OR the env fallback; `'s3-compatible'` for an s3 target). Every consumer of a
+   *  resolved location DISPATCHES on this (the census — filesystem readers keyed on `dir` still work,
+   *  s3 readers key on `outboundS3`/`inboundS3`). */
+  provider: "filesystem" | "s3-compatible";
   /** The peer in play, or `null` for an env-only resolution. */
   peerName: string | null;
   outbound: ResolvedDeliveryDirection;
   inbound: ResolvedDeliveryDirection;
+  /** 13.2b — the resolved OUTBOUND s3 location when `provider === 's3-compatible'` AND the outbound
+   *  direction resolved (allowlist passed); `null` for a filesystem target or an unresolved s3
+   *  direction (whose gap is on `outbound.problem`). */
+  outboundS3: ResolvedS3Location | null;
+  /** 13.2b — the resolved INBOUND s3 location; same rules as {@link outboundS3}. */
+  inboundS3: ResolvedS3Location | null;
   /** True iff BOTH directions resolved. Consumers needing only one direction gate on that
-   *  direction's own `problem` (via the `require*Dir` helpers), not on `valid`. */
+   *  direction's own `problem` (via the `require*` helpers), not on `valid`. */
   valid: boolean;
   /** Every per-gap problem (both directions), in outbound-then-inbound order. */
   problems: string[];
@@ -139,9 +253,22 @@ function isSafeAbsoluteDir(dir: string): boolean {
   );
 }
 
+/** Normalize an s3 key prefix to `''` (bucket root) or a value ending in `/`, so `prefix + basename`
+ *  is a valid, well-scoped key. Leading `/` is stripped (the schema already refuses it; belt-and-
+ *  braces for a value that bypassed the schema). */
+function normalizeS3Prefix(prefix: string | undefined): string {
+  if (!prefix) return "";
+  const trimmed = prefix.replace(/^\/+/, "");
+  if (trimmed === "") return "";
+  return trimmed.endsWith("/") ? trimmed : `${trimmed}/`;
+}
+
+/** FILESYSTEM direction resolution (unchanged from M13.2a — byte-identical). `peerDir` is the peer's
+ *  own configured dir for this direction (or `undefined` to fall through to the env). */
 function resolveDirection(
   direction: "outbound" | "inbound",
-  peer: DeliveryTargetPeerRef | null,
+  peerName: string | null,
+  peerDir: string | undefined,
   envDir: string | undefined,
   roots: readonly string[]
 ): ResolvedDeliveryDirection {
@@ -149,7 +276,6 @@ function resolveDirection(
   const envVar = direction === "outbound" ? "SCP_RELAY_OUT_DIR" : "SCP_RELAY_IN_DIR";
   const use = direction === "outbound" ? "outbound drops have" : "inbound intake has";
 
-  const peerDir = peer?.deliveryTarget?.[field];
   if (peerDir !== undefined) {
     // A CONFIGURED per-peer value is authoritative for its direction. A hostile value is a
     // fail-closed problem — deliberately NOT an env fallback, which would mask the misconfig.
@@ -158,7 +284,7 @@ function resolveDirection(
         dir: null,
         source: null,
         problem:
-          `peer '${peer?.name}' deliveryTarget ${field} '${peerDir}' is not an absolute, ` +
+          `peer '${peerName}' deliveryTarget ${field} '${peerDir}' is not an absolute, ` +
           `traversal-free server path — refusing to use it (fail-closed; fix the peer's ` +
           `deliveryTarget via \`scp federation pair\`)`
       };
@@ -172,7 +298,7 @@ function resolveDirection(
         dir: null,
         source: null,
         problem:
-          `peer '${peer?.name}' configures a deliveryTarget ${field} '${peerDir}' but no operator ` +
+          `peer '${peerName}' configures a deliveryTarget ${field} '${peerDir}' but no operator ` +
           `delivery roots are declared (SCP_DELIVERY_ROOTS is unset) — refusing to honor any ` +
           `per-peer delivery directory (fail-closed; the operator must set SCP_DELIVERY_ROOTS to ` +
           `the absolute root(s) per-peer dirs may live under before any per-peer dir is used)`
@@ -183,7 +309,7 @@ function resolveDirection(
         dir: null,
         source: null,
         problem:
-          `peer '${peer?.name}' deliveryTarget ${field} '${peerDir}' is outside every ` +
+          `peer '${peerName}' deliveryTarget ${field} '${peerDir}' is outside every ` +
           `operator-declared delivery root (SCP_DELIVERY_ROOTS) — refusing to use it (fail-closed; ` +
           `the directory must be at or under one of the configured roots, or clear the per-peer ` +
           `deliveryTarget to fall back to ${envVar})`
@@ -197,8 +323,8 @@ function resolveDirection(
   return {
     dir: null,
     source: null,
-    problem: peer
-      ? `peer '${peer.name}' configures no deliveryTarget ${field} and the instance env ` +
+    problem: peerName
+      ? `peer '${peerName}' configures no deliveryTarget ${field} and the instance env ` +
         `${envVar} is unset — ${use} nowhere to land (fail-closed; configure the peer's ` +
         `deliveryTarget or set ${envVar})`
       : `no delivery peer in play and the instance env ${envVar} is unset — ${use} nowhere ` +
@@ -206,60 +332,215 @@ function resolveDirection(
   };
 }
 
+/** S3 direction resolution (13.2b). The endpoint/bucket is the SAME for both directions (the target
+ *  carries one `endpoint`+`bucket`); only the per-direction prefix differs. The allowlist gap is
+ *  therefore shared: an out-of-allowlist endpoint/bucket makes BOTH directions a fail-closed problem.
+ *  There is NO env fallback for an s3 target — the whole target is s3 (the env dirs are filesystem).
+ *  Returns the (dir-shaped) direction PLUS the resolved `s3` location (`null` on a gap) — the
+ *  direction shape stays byte-identical to filesystem so consumers keyed on it are unchanged. */
+function resolveS3Direction(
+  direction: "outbound" | "inbound",
+  peerName: string | null,
+  target: S3DeliveryTarget,
+  allow: readonly DeliveryS3AllowEntry[]
+): { direction: ResolvedDeliveryDirection; s3: ResolvedS3Location | null } {
+  // ADR-0019 §4 symmetry: a data-supplied endpoint/bucket is honored ONLY inside the operator
+  // allowlist. UNSET allowlist ⇒ nothing honored (fail-closed default); out-of-allowlist ⇒ a named
+  // per-gap problem, NEVER used — a tenant must never steer delivery to an arbitrary S3 endpoint.
+  if (allow.length === 0) {
+    return {
+      direction: {
+        dir: null,
+        source: null,
+        problem:
+          `peer '${peerName}' configures an s3-compatible deliveryTarget (endpoint ` +
+          `'${target.endpoint}', bucket '${target.bucket}') but no operator s3 delivery endpoints are ` +
+          `declared (SCP_DELIVERY_S3_ENDPOINTS is unset) — refusing to honor any s3 delivery target ` +
+          `(fail-closed; the operator must allowlist the endpoint[+bucket] before it is used)`
+      },
+      s3: null
+    };
+  }
+  if (!isDeliveryS3EndpointAllowed(target.endpoint, target.bucket, allow)) {
+    return {
+      direction: {
+        dir: null,
+        source: null,
+        problem:
+          `peer '${peerName}' deliveryTarget endpoint '${target.endpoint}' / bucket ` +
+          `'${target.bucket}' is not in the operator s3 delivery allowlist (SCP_DELIVERY_S3_ENDPOINTS) ` +
+          `— refusing to use it (fail-closed; allowlist the endpoint[+bucket], or clear the per-peer ` +
+          `deliveryTarget)`
+      },
+      s3: null
+    };
+  }
+  const prefix = normalizeS3Prefix(direction === "outbound" ? target.outPrefix : target.inPrefix);
+  return {
+    direction: { dir: null, source: "peer", problem: null },
+    s3: {
+      endpoint: normalizeS3Origin(target.endpoint) ?? target.endpoint,
+      bucket: target.bucket,
+      prefix
+    }
+  };
+}
+
 /**
  * The effective DeliveryTarget for `peer` (or the env-only target when `peer` is null), with
- * per-gap `problems` — never throws; the `require*Dir` helpers turn a gap into a fail-closed
- * refusal at the point of use. `config` defaults to the live env (`relayConfigFromEnv()`).
+ * per-gap `problems` — never throws; the `require*` helpers turn a gap into a fail-closed refusal at
+ * the point of use. Dispatches on the peer target's provider: an `s3-compatible` target resolves via
+ * the endpoint/bucket allowlist (`s3Allow`), everything else (a filesystem target or the env
+ * fallback) via the directory logic. `config` defaults to the live env (`relayConfigFromEnv()`).
  */
 export function resolveDeliveryTarget(
   peer: DeliveryTargetPeerRef | null,
   config?: DeliveryEnvDirs,
-  roots?: readonly string[]
+  roots?: readonly string[],
+  s3Allow?: readonly DeliveryS3AllowEntry[]
 ): ResolvedDeliveryTarget {
+  const peerName = peer?.name ?? null;
+  const target = peer?.deliveryTarget ?? null;
+
+  if (target && target.provider === "s3-compatible") {
+    const allow = s3Allow ?? deliveryS3EndpointsFromEnv();
+    const outbound = resolveS3Direction("outbound", peerName, target, allow);
+    const inbound = resolveS3Direction("inbound", peerName, target, allow);
+    const problems = [outbound.direction.problem, inbound.direction.problem].filter(
+      (p): p is string => p !== null
+    );
+    return {
+      provider: "s3-compatible",
+      peerName,
+      outbound: outbound.direction,
+      inbound: inbound.direction,
+      outboundS3: outbound.s3,
+      inboundS3: inbound.s3,
+      valid: problems.length === 0,
+      problems
+    };
+  }
+
   const env = config ?? relayConfigFromEnv();
   // Roots are a SEPARATE operator concern from the env-dir fallback: default them from the env
   // independently so callers that pass a `RelayConfig` as `config` (the relay route) still get the
   // operator's declared roots rather than an empty list.
   const activeRoots = roots ?? deliveryRootsFromEnv();
-  const outbound = resolveDirection("outbound", peer, env.outDir, activeRoots);
-  const inbound = resolveDirection("inbound", peer, env.inDir, activeRoots);
+  const outbound = resolveDirection("outbound", peerName, target?.outDir, env.outDir, activeRoots);
+  const inbound = resolveDirection("inbound", peerName, target?.inDir, env.inDir, activeRoots);
   const problems = [outbound.problem, inbound.problem].filter((p): p is string => p !== null);
   return {
     provider: "filesystem",
-    peerName: peer?.name ?? null,
+    peerName,
     outbound,
     inbound,
+    outboundS3: null,
+    inboundS3: null,
     valid: problems.length === 0,
     problems
   };
 }
 
-/** The resolved OUTBOUND drop directory, or a fail-closed 400 carrying the named per-gap problem
- *  — never a silent default path. */
+/** FILESYSTEM-only accessor: the resolved OUTBOUND drop directory, or a fail-closed 400 carrying the
+ *  named per-gap problem. Refuses an `s3-compatible` target with a clear provider-mismatch problem —
+ *  a caller that needs a local directory path (e.g. the relay build, which writes a tarball to disk)
+ *  cannot use an s3 target; that consumer must be s3-aware or the peer must use a filesystem target. */
 export function requireOutboundDir(resolved: ResolvedDeliveryTarget): string {
+  if (resolved.provider === "s3-compatible") {
+    throw badRequest(
+      `peer '${resolved.peerName}' is configured for s3-compatible delivery, but this operation ` +
+        `requires a filesystem outbound directory (SCP_RELAY_OUT_DIR or a filesystem deliveryTarget)`
+    );
+  }
   if (resolved.outbound.dir === null) {
     throw badRequest(resolved.outbound.problem ?? "delivery target outbound directory unresolved");
   }
   return resolved.outbound.dir;
 }
 
-/** The resolved INBOUND intake directory, or a fail-closed 400 carrying the named per-gap problem. */
+/** FILESYSTEM-only accessor: the resolved INBOUND intake directory, or a fail-closed 400. Refuses an
+ *  `s3-compatible` target for the same reason as {@link requireOutboundDir}. */
 export function requireInboundDir(resolved: ResolvedDeliveryTarget): string {
+  if (resolved.provider === "s3-compatible") {
+    throw badRequest(
+      `peer '${resolved.peerName}' is configured for s3-compatible delivery, but this operation ` +
+        `requires a filesystem inbound directory (SCP_RELAY_IN_DIR or a filesystem deliveryTarget)`
+    );
+  }
   if (resolved.inbound.dir === null) {
     throw badRequest(resolved.inbound.problem ?? "delivery target inbound directory unresolved");
   }
   return resolved.inbound.dir;
 }
 
-/** WRITE SEAM (filesystem provider): drop `contents` as `fileName` into the peer's resolved
- *  outbound directory — exactly the PR #112 write behavior (mkdir -p + write), made per-peer.
- *  `fileName` rides the `resolveUnderDir` traversal guard: a hostile name never escapes the drop
- *  directory. Returns the absolute path written. */
+/** The resolved OUTBOUND s3 location, or a fail-closed 400 carrying the named per-gap problem. */
+function requireOutboundS3(resolved: ResolvedDeliveryTarget): ResolvedS3Location {
+  if (resolved.outboundS3 === null) {
+    throw badRequest(resolved.outbound.problem ?? "delivery target outbound s3 location unresolved");
+  }
+  return resolved.outboundS3;
+}
+
+/** The resolved INBOUND s3 location, or a fail-closed 400 carrying the named per-gap problem. */
+function requireInboundS3(resolved: ResolvedDeliveryTarget): ResolvedS3Location {
+  if (resolved.inboundS3 === null) {
+    throw badRequest(resolved.inbound.problem ?? "delivery target inbound s3 location unresolved");
+  }
+  return resolved.inboundS3;
+}
+
+/**
+ * PROVIDER-AGNOSTIC outbound assertion (for route pre-checks): a delivery with NO resolvable outbound
+ * location refuses fail-closed with its named per-gap problem, BEFORE any export work is done —
+ * whether the target is filesystem (no dir) or s3 (no allowlisted endpoint). Never returns a path;
+ * use `dropDeliveryFile` to actually write.
+ */
+export function assertOutboundDeliverable(resolved: ResolvedDeliveryTarget): void {
+  if (resolved.provider === "s3-compatible") {
+    requireOutboundS3(resolved);
+    return;
+  }
+  requireOutboundDir(resolved);
+}
+
+/** Guard a caller-supplied `fileName` down to a single safe basename before it becomes an s3 key —
+ *  the s3 analogue of `resolveUnderDir`'s traversal guard (which is path-shaped and can't apply to a
+ *  key). A name with a `/` or a `.`/`..` segment is refused fail-closed, so a hostile name can never
+ *  escape the configured prefix. Returns the full object key (`prefix + basename`). */
+function deliveryObjectKey(prefix: string, fileName: string): string {
+  if (fileName === "" || fileName === "." || fileName === ".." || fileName.includes("/")) {
+    throw badRequest(
+      `delivery file name '${fileName}' is not a safe basename — refusing to use it as an s3 key ` +
+        `(fail-closed; names must not contain '/' or be a traversal segment)`
+    );
+  }
+  return prefix + fileName;
+}
+
+/** WRITE SEAM — PROVIDER-DISPATCHED: drop `contents` as `fileName` into the peer's resolved outbound
+ *  location. `filesystem` = exactly the PR #112 write (mkdir -p + write, byte-identical), `fileName`
+ *  riding the `resolveUnderDir` traversal guard. `s3-compatible` = a managed multipart put via
+ *  `delivery-s3.ts`, `fileName` riding {@link deliveryObjectKey}; `s3Credentials` (vault-resolved by
+ *  the caller) is REQUIRED for the s3 path — its absence is a fail-closed 400. Returns the absolute
+ *  filesystem path OR the `s3://bucket/key` URI written. */
 export async function dropDeliveryFile(
   resolved: ResolvedDeliveryTarget,
   fileName: string,
-  contents: string | Buffer
+  contents: string | Buffer,
+  s3Credentials?: S3DeliveryCredentials
 ): Promise<string> {
+  if (resolved.provider === "s3-compatible") {
+    const loc = requireOutboundS3(resolved);
+    if (!s3Credentials) {
+      throw badRequest(
+        `peer '${resolved.peerName}' s3-compatible outbound drop needs delivery credentials, but ` +
+          `none were resolved from the vault (fail-closed; set the delivery/<peer>/out secret)`
+      );
+    }
+    const key = deliveryObjectKey(loc.prefix, fileName);
+    await s3Put(loc, s3Credentials, key, contents);
+    return `s3://${loc.bucket}/${key}`;
+  }
   const outDir = requireOutboundDir(resolved);
   const filePath = resolveUnderDir(outDir, fileName);
   await mkdir(outDir, { recursive: true });
@@ -268,25 +549,40 @@ export async function dropDeliveryFile(
 }
 
 /**
- * READ SEAM (the §13.1a inbox surface): the file NAMES currently sitting in the peer's resolved
- * inbound directory — names only, no paths, no traversal:
+ * READ SEAM (the §13.1a inbox surface) — PROVIDER-DISPATCHED: the file NAMES currently sitting in the
+ * peer's resolved inbound location — names only, no paths/keys, no traversal.
  *
+ * `filesystem` (unchanged from M13.2a):
  *   - an unresolvable inbound direction refuses fail-closed with its named problem;
- *   - only regular files are listed (subdirectories and anything else are ignored — the two
- *     channel artifacts are always plain files);
- *   - every returned name must round-trip the `resolveUnderDir` guard (belt-and-braces: readdir
- *     yields basenames, but the guard is the single traversal authority and it survives here);
- *   - a not-yet-created inbox lists as empty (the drop side `mkdir -p`s lazily; an empty inbox
- *     and an absent one are the same "nothing has arrived" answer for a polling loop).
+ *   - only regular files are listed (subdirectories/other are ignored — the two channel artifacts
+ *     are always plain files);
+ *   - every returned name round-trips the `resolveUnderDir` guard (belt-and-braces);
+ *   - a not-yet-created inbox lists as empty (an empty and an absent inbox are the same "nothing
+ *     arrived" answer for a polling loop).
+ *
+ * `s3-compatible` (13.2b): lists object BASENAMES under the inbound prefix via `delivery-s3.ts`
+ *   (`s3Credentials` REQUIRED — its absence is a fail-closed 400); nested keys are skipped, exactly
+ *   as the filesystem path skips subdirectories.
  *
  * Sorted for deterministic consumption order.
  */
 export async function listInbox(
   peer: DeliveryTargetPeerRef | null,
   config?: DeliveryEnvDirs,
-  roots?: readonly string[]
+  roots?: readonly string[],
+  s3Credentials?: S3DeliveryCredentials
 ): Promise<string[]> {
   const resolved = resolveDeliveryTarget(peer, config, roots);
+  if (resolved.provider === "s3-compatible") {
+    const loc = requireInboundS3(resolved);
+    if (!s3Credentials) {
+      throw badRequest(
+        `peer '${resolved.peerName}' s3-compatible inbox needs delivery credentials, but none were ` +
+          `resolved from the vault (fail-closed; set the delivery/<peer>/in secret)`
+      );
+    }
+    return s3List(loc, s3Credentials);
+  }
   const inDir = requireInboundDir(resolved);
   let entries;
   try {
@@ -307,24 +603,68 @@ export async function listInbox(
   return names.sort();
 }
 
+/** READ SEAM (materialize one inbox object) — PROVIDER-DISPATCHED: fetch the BYTES of `fileName` from
+ *  the peer's resolved inbound location, so a consumer can hand it to the existing import paths.
+ *  `filesystem` = readFile under the `resolveUnderDir` guard; `s3-compatible` = a GetObject via
+ *  `delivery-s3.ts` (`s3Credentials` REQUIRED). Returns the object bytes. */
+export async function getDeliveryFile(
+  resolved: ResolvedDeliveryTarget,
+  fileName: string,
+  s3Credentials?: S3DeliveryCredentials
+): Promise<Buffer> {
+  if (resolved.provider === "s3-compatible") {
+    const loc = requireInboundS3(resolved);
+    if (!s3Credentials) {
+      throw badRequest(
+        `peer '${resolved.peerName}' s3-compatible inbox needs delivery credentials to read '${fileName}' ` +
+          `(fail-closed; set the delivery/<peer>/in secret)`
+      );
+    }
+    return s3Get(loc, s3Credentials, deliveryObjectKey(loc.prefix, fileName));
+  }
+  const inDir = requireInboundDir(resolved);
+  return readFile(resolveUnderDir(inDir, fileName));
+}
+
 /**
- * CONFIG-TIME gate (the pair route): refuse a `deliveryTarget` whose directories fall outside the
- * operator-declared roots BEFORE it is ever stored — the pairing half of the #110 allowlist
+ * CONFIG-TIME gate (the pair route): refuse a `deliveryTarget` whose data-supplied ENDPOINT falls
+ * outside the operator allowlist BEFORE it is ever stored — the pairing half of the #110 allowlist
  * (`SCP_ARTIFACT_OCI_REGISTRY_HOSTS`) pattern. Throws a fail-closed 400 `badRequest`; returns
- * cleanly (no roots needed) when there is no per-peer directory to bound:
+ * cleanly when there is nothing to bound. Provider-dispatched:
  *
- *   - `null`/`undefined` target — the tri-state CLEAR/PRESERVE cases: env fallback, no roots gate;
- *   - a target object with a per-direction dir — each dir must sit under a root (schema has already
- *     proven it absolute + traversal-free), else refuse; UNSET roots + any dir ⇒ refuse (the honest
- *     multi-tenant default — the operator declares roots before any per-peer dir is honored).
+ *   - `null`/`undefined` target — the tri-state CLEAR/PRESERVE cases: env fallback, nothing to bound;
+ *   - `filesystem` — each per-direction dir must sit under a `SCP_DELIVERY_ROOTS` root (schema has
+ *     already proven it absolute + traversal-free), else refuse; UNSET roots + any dir ⇒ refuse;
+ *   - `s3-compatible` (13.2b) — the endpoint[+bucket] must be in the `SCP_DELIVERY_S3_ENDPOINTS`
+ *     allowlist, else refuse; UNSET allowlist + s3 target ⇒ refuse (the honest fail-closed default).
  *
- * `roots` defaults to the live `SCP_DELIVERY_ROOTS`.
+ * `roots`/`s3Allow` default to the live `SCP_DELIVERY_ROOTS` / `SCP_DELIVERY_S3_ENDPOINTS`.
  */
 export function assertDeliveryTargetRooted(
   target: DeliveryTarget | null | undefined,
-  roots?: readonly string[]
+  roots?: readonly string[],
+  s3Allow?: readonly DeliveryS3AllowEntry[]
 ): void {
-  if (!target) return; // tri-state clear/preserve — env-fallback, no per-peer dir to bound.
+  if (!target) return; // tri-state clear/preserve — env-fallback, nothing to bound.
+  if (target.provider === "s3-compatible") {
+    const allow = s3Allow ?? deliveryS3EndpointsFromEnv();
+    if (allow.length === 0) {
+      throw badRequest(
+        `deliveryTarget endpoint '${target.endpoint}' / bucket '${target.bucket}' cannot be honored: ` +
+          `no operator s3 delivery endpoints are declared (SCP_DELIVERY_S3_ENDPOINTS is unset) — ` +
+          `refusing to store any s3 delivery target (set SCP_DELIVERY_S3_ENDPOINTS to the allowed ` +
+          `endpoint[+bucket] entries before configuring an s3 deliveryTarget)`
+      );
+    }
+    if (!isDeliveryS3EndpointAllowed(target.endpoint, target.bucket, allow)) {
+      throw badRequest(
+        `deliveryTarget endpoint '${target.endpoint}' / bucket '${target.bucket}' is not in the ` +
+          `operator s3 delivery allowlist (SCP_DELIVERY_S3_ENDPOINTS) — refusing to store it ` +
+          `(allowlist the endpoint[+bucket] first)`
+      );
+    }
+    return;
+  }
   const activeRoots = roots ?? deliveryRootsFromEnv();
   for (const field of ["outDir", "inDir"] as const) {
     const dir = target[field];

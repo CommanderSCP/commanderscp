@@ -187,6 +187,34 @@ export function relayDestPushSecretKey(host: string): string {
   return `relay/dest-push/${host.toLowerCase()}`;
 }
 
+/** 13.2b — vault key holding the S3 DeliveryTarget credential (`accessKeyId:secretAccessKey`) for
+ *  one peer, per DIRECTION: `out` is WRITE-scoped (the outbound CDS drop), `in` is READ-scoped (the
+ *  inbox). Under the ADR-0019 §3 artifact-store credential class (an S3 bucket is a passive shelf) —
+ *  a target WITHIN that class, not a new class. Resolved at use via the SAME {@link getSecretValue}
+ *  as the relay's `relay/source-read/<host>` keys; injected to the SDK client, never argv/logs/
+ *  Decisions. Per-peer scoping is EXPLICIT in the key (a retrans may serve one peer, but an s3
+ *  delivery bucket is genuinely per-peer), unlike the relay registry keys' implicit per-peer scope. */
+export function deliveryTargetSecretKey(peerName: string, direction: "out" | "in"): string {
+  return `delivery/${peerName.toLowerCase()}/${direction}`;
+}
+
+/** Parse the vault value for a {@link deliveryTargetSecretKey} into an S3 credential pair. The value
+ *  is `accessKeyId:secretAccessKey`, split on the FIRST `:` only — an AWS secret access key is
+ *  base64-shaped (`[A-Za-z0-9/+]`) and never contains `:`, so the first colon is unambiguous. A value
+ *  with no colon, or an empty half, is malformed → `null` (the caller fails closed on a missing/bad
+ *  credential). */
+export function parseDeliveryS3Credential(
+  raw: string | undefined
+): { accessKeyId: string; secretAccessKey: string } | null {
+  if (raw === undefined) return null;
+  const idx = raw.indexOf(":");
+  if (idx <= 0) return null;
+  const accessKeyId = raw.slice(0, idx);
+  const secretAccessKey = raw.slice(idx + 1);
+  if (accessKeyId === "" || secretAccessKey === "") return null;
+  return { accessKeyId, secretAccessKey };
+}
+
 // -------------------------------------------------------------------------------------------------
 // The relay tarball format (`scp-relay-<sourceChangeObjectId>.tar.gz`) — the CDS channel artifact.
 // -------------------------------------------------------------------------------------------------
