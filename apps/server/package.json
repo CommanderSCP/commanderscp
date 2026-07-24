@@ -60,6 +60,7 @@
   },
   "devDependencies": {
     "@scp/iac": "workspace:*",
+    "@scp/plugin-testkit": "workspace:*",
     "@testcontainers/postgresql": "^10.14.0",
     "@types/pg": "^8.11.0",
     "@types/uuid": "^10.0.0",

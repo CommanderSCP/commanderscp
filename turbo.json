@@ -7,7 +7,19 @@
     "lint": {},
     "typecheck": { "dependsOn": ["^build"] },
     "test": { "dependsOn": ["build"] },
-    "test:integration": { "dependsOn": ["build"], "cache": false },
+    "test:integration": {
+      "dependsOn": ["build"],
+      "cache": false,
+      "passThroughEnv": [
+        "SCP_RUNNER_SCAN_IMAGE_REF",
+        "SCP_RUNNER_IAC_IMAGE_REF",
+        "SCP_TEST_MAX_FORKS",
+        "DOCKER_HOST",
+        "DOCKER_TLS_VERIFY",
+        "DOCKER_CERT_PATH",
+        "TESTCONTAINERS_*"
+      ]
+    },
     "dev": { "cache": false, "persistent": true }
   }
 }

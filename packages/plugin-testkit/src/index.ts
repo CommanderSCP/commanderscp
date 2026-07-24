@@ -18,6 +18,11 @@
  * it into an air-gap image.
  */
 import { describe, expect, it } from "vitest";
+
+// LEVER 1: the shared runner-image resolver (prebuilt-pull with local-build fallback), re-exported
+// from the package root so both real-Docker integration suites (@scp/server promotion-scan-step,
+// @scp/plugin-managed-iac) import it the same way.
+export { resolveRunnerImage, type ResolveRunnerImageOptions } from "./runner-image.js";
 import type {
   ControlOutcomeStatus,
   ControlPlugin,

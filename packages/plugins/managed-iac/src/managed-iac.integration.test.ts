@@ -6,6 +6,7 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { PluginContext } from "@scp/plugin-api";
+import { resolveRunnerImage } from "@scp/plugin-testkit";
 import { createManagedIacExecutorPlugin } from "./index.js";
 
 /**
@@ -35,6 +36,13 @@ const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUNNER_IAC_CONTEXT = resolve(__dirname, "../../../../apps/runner-iac");
 const RUNNER_IMAGE_TAG = "scp-runner-iac:m7-integration-test";
+/**
+ * LEVER 1: the image the tests actually run. `resolveRunnerImage` (beforeAll) sets this to the
+ * pre-pulled GHCR ref in CI (`SCP_RUNNER_IAC_IMAGE_REF`), or to `RUNNER_IMAGE_TAG` after a local
+ * legacy-builder build when that env is unset (local dev). `buildCtx` injects it as the
+ * server-governed `runnerImage`.
+ */
+let runnerImageRef = RUNNER_IMAGE_TAG;
 const ORG_ID = "test-org";
 const TARGET_REF = "test-workspace";
 
@@ -104,7 +112,7 @@ function buildCtx(workspaceRoot: string, overrides: Record<string, unknown> = {}
     },
     config: {
       // Server-governed fields (the server injects these in production; here we stand in for it).
-      runnerImage: RUNNER_IMAGE_TAG,
+      runnerImage: runnerImageRef,
       workspaceRoot,
       networkMode: "none", // isolation asserted, not assumed
       statePath: join(workspaceRoot, "dedup.json"),
@@ -120,17 +128,14 @@ describe.runIf(await dockerAvailable())(
     const plugin = createManagedIacExecutorPlugin();
 
     beforeAll(async () => {
-      // DOCKER_BUILDKIT=0 forces the LEGACY builder. WHY: this runner-image build shares the homelab
-      // DinD with the integration job's `--network none` container operations; modern Docker's default
-      // BuildKit builder opens an embedded gRPC session that deadlocks against net=none container ops
-      // ("session healthcheck failed fatally: Unavailable: ... only one connection allowed"), hanging
-      // the whole integration run. This Dockerfile is a plain single-stage FROM+RUN+COPY build with NO
-      // BuildKit-only features, so the legacy builder yields a functionally identical image. Do NOT
-      // re-enable BuildKit without re-solving the DinD session wedge (docs/BUILD_AND_TEST.md §CI/integration).
-      await execFileAsync("docker", ["build", "-t", RUNNER_IMAGE_TAG, RUNNER_IAC_CONTEXT], {
-        timeout: 300_000,
-        maxBuffer: 32 * 1024 * 1024,
-        env: { ...process.env, DOCKER_BUILDKIT: "0" }
+      // LEVER 1: PULL the pre-built image in CI (SCP_RUNNER_IAC_IMAGE_REF, set by the integration
+      // job after `docker pull`ing the content-hash-tagged GHCR image), else legacy-builder BUILD it
+      // locally (dev fallback). The DOCKER_BUILDKIT=0 legacy-builder reasoning (the DinD net=none
+      // session wedge, PR #126) lives in resolveRunnerImage — same build, just no longer per-run in CI.
+      runnerImageRef = await resolveRunnerImage({
+        refEnvVar: "SCP_RUNNER_IAC_IMAGE_REF",
+        localTag: RUNNER_IMAGE_TAG,
+        context: RUNNER_IAC_CONTEXT
       });
     }, 300_000);
 
