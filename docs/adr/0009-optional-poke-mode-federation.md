@@ -45,3 +45,7 @@ Poke-mode is **off by default**, set **per outpost** (some outposts poll-mode, o
 
 **Deferred to the milestone (M14)**
 - The safety-net interval default (a tuning value; per-outpost, sensible default at implementation time).
+
+**Grounding finding + build note (2026-07-24, M14.0)**
+- **The frequent poll this ADR assumed did not exist yet.** M6 shipped the `.scpbundle` file transport + the `federation-https` plugin contract, but the **scheduled HTTP live pull** and the **outbound mTLS client-cert injection** were **deferred** (flagged in the M6 PR body + the `federation-https` module header); M8 built only the client-cert *presentation* for the plugin subprocess. Poke-mode therefore had no interval poll to disable.
+- **Owner decision (full-scope M14, 2026-07-24):** build the deferred live-sync **substrate** first — **M14.0**: a fail-closed per-peer mTLS OUTBOUND dialer (reusing the M8 client-cert material — the enrolled `urn:scp:domain:<ownDomainId>` client cert; **no new CA scheme**) + the **outpost live-pull scheduler** (`startFederationSyncLoop`, mirroring `startInboxLoop`), pulling+importing over the dialer through the **unchanged** `importSyncBundle` verification (Ed25519 + hash chain). Both reliability-floor legs land here: **pull-on-startup** and the **sparse safety-net** interval tick — so poke-mode (M14.4) later disables only the *frequent* leg. This is the foundation the poke optimizes; the transport reuse ("the mTLS routes") and the reliability model ("sparse safety-net") decided above are honored by construction.

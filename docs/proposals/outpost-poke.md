@@ -4,9 +4,15 @@
 **Relates to:** DESIGN.md §13 (Federation), [ADR-0004](../adr/0004-service-naming-commander-outpost-retrans.md) (commander/outpost/retrans), [ADR-0009](../adr/0009-optional-poke-mode-federation.md) (this decision)
 **Milestone:** M14 (provisional — post-M11 federation track; see BUILD_AND_TEST.md §8)
 
+## Grounding finding + build note (2026-07-24)
+
+**The "frequent interval poll" this proposal assumed already existed did NOT.** M6 shipped the `.scpbundle` **file** transport (`scp federation export/import`, fully tested) and the `federation-https` **plugin contract** (`packages/plugins/federation-https`), but the actual **scheduled HTTP live pull** (an outpost dialing the commander's `/federation/exports` on an interval to pull+import) and the **outbound mTLS client-cert injection** were **deferred** — flagged in the M6 PR body and in the `federation-https` module header ("wiring the subprocess host to actually inject per-peer mTLS certs … is real remaining work this milestone does not complete"). M8 later built the client-cert *presentation* for the `federation-https` subprocess (env-file material forwarded gated on module identity), but no scheduler ever drove a live pull. So poke-mode had nothing to optimize yet: there was no frequent poll to disable.
+
+**Owner decision (full-scope M14, 2026-07-24):** build the deferred live-sync **substrate** first (M14.0), then the poke increments (M14.1–M14.4) on top. M14.0 delivers (a) a **fail-closed per-peer mTLS outbound dialer** reusing the M8 client-cert material (no new CA scheme) and (b) the **outpost live-pull scheduler** (`startFederationSyncLoop`, mirroring `startInboxLoop`) that pulls+imports over that dialer through the **unchanged** `importSyncBundle` verification, with the two backstop legs this design's reliability model requires — **pull-on-startup** and the **sparse safety-net** interval tick. It adds no new public API (internal loop + dialer; `/v1` untouched). See BUILD_AND_TEST.md §8 M14.0.
+
 ## Problem
 
-Today every federation connection is **outpost-initiated on an interval** (DESIGN.md §13, Transports item 1, review decision 2026-07-08): a connected outpost dials the commander over mTLS HTTPS to *pull* commander-origin config and *push* its own status/audit segments, and **the commander never initiates a connection to an outpost**. The same holds for a retrans instance at a CDS boundary.
+Today every federation connection is **outpost-initiated on an interval** (DESIGN.md §13, Transports item 1, review decision 2026-07-08): a connected outpost dials the commander over mTLS HTTPS to *pull* commander-origin config and *push* its own status/audit segments, and **the commander never initiates a connection to an outpost**. The same holds for a retrans instance at a CDS boundary. *(2026-07-24: "on an interval" is now literally true — M14.0 built the scheduled pull that had been deferred since M6; see the grounding note above.)*
 
 This is exactly right for regulated partitions — but where it *isn't* required, it has two costs:
 
