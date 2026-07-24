@@ -468,16 +468,22 @@ function managedIacServerSettings(): {
  *    no hosts; the SERVER, not the runner, pulls the scan subject's bytes).
  *  - SCP_MANAGED_SCAN_WORKSPACE_ROOT — operator root the promotion scan step derives per-run scratch
  *    directories (pulled OCI layout + evidence sink) under.
+ *  - SCP_MANAGED_SCAN_DB_CACHE — (M13.3b-ii) operator DB cache dir the runner's Trivy DB is
+ *    pre-loaded from (a PVC in Helm). Unset ⇒ the runner uses the image-baked DB (fail-closed
+ *    fallback, as stale as the image), and there is no staleness gate.
  */
 export function managedScanServerSettings(): {
   runnerImage: string | undefined;
   networkMode: string;
   workspaceRoot: string;
+  dbCacheDir: string | undefined;
 } {
+  const dbCacheDir = process.env.SCP_MANAGED_SCAN_DB_CACHE;
   return {
     runnerImage: process.env.SCP_MANAGED_SCAN_RUNNER_IMAGE,
     networkMode: process.env.SCP_MANAGED_SCAN_NETWORK_MODE ?? "none",
-    workspaceRoot: process.env.SCP_MANAGED_SCAN_WORKSPACE_ROOT ?? join(tmpdir(), "scp-managed-scan")
+    workspaceRoot: process.env.SCP_MANAGED_SCAN_WORKSPACE_ROOT ?? join(tmpdir(), "scp-managed-scan"),
+    dbCacheDir: dbCacheDir && dbCacheDir.trim().length > 0 ? dbCacheDir.trim() : undefined
   };
 }
 

@@ -27,10 +27,11 @@
 #                  via parseOscapResult). The container is `rm -f`'d the moment it exits, so the
 #                  ORCHESTRATOR persists the evidence, never this container.
 #
-# OFFLINE AT RUNTIME (charter principle 5): the Trivy DB is baked at BUILD time (Dockerfile) and this
-# script runs Trivy with `--skip-db-update --offline-scan`; oscap evaluates a LOCAL datastream against
-# a LOCALLY-extracted rootfs (OSCAP_PROBE_ROOT) with NO network. (Cross-air-gap TRANSPORT of the baked
-# DB / SCAP content is increment 13.3b part 2; this increment relies on the build-time bake only.)
+# OFFLINE AT RUNTIME (charter principle 5): the Trivy DB is baked at BUILD time (Dockerfile) OR
+# pre-loaded via SCP_SCAN_DB_DIR (M13.3b-ii — the commander's server-maintained cache, `docker cp`'d
+# in), and this script runs Trivy with `--skip-db-update --offline-scan` EITHER WAY; oscap evaluates a
+# LOCAL datastream against a LOCALLY-extracted rootfs (OSCAP_PROBE_ROOT) with NO network. The pre-load
+# seam (below) only changes WHICH already-downloaded DB Trivy reads — never whether it dials out.
 #
 # Methods (proposal §13.3 "Increment order: Trivy first, OpenSCAP second"):
 #   trivy    — scan the local OCI image layout at /work/image, emit Trivy's native JSON result to
@@ -51,12 +52,52 @@ INPUT=/work/image
 OUTDIR=/work/out
 mkdir -p "$OUTDIR"
 
+# ------------------------------------------------------------------------------------------------
+# M13.3b-ii — OFFLINE DB PRE-LOAD SEAM (proposal §13.3b, owner decisions 2026-07-24).
+#
+# The Trivy vulnerability DB is BAKED into this image at build time (the fail-closed fallback, as
+# stale as the image). When the commander maintains a fresher server-side DB cache it `docker cp`s
+# that cache into this container and sets SCP_SCAN_DB_DIR — this shim then points Trivy at the
+# PRE-LOADED DB instead of the baked default. UNCONDITIONALLY offline either way: `--skip-db-update
+# --offline-scan` and `--network none` never change; the ONLY thing the pre-load changes is WHICH
+# already-downloaded DB Trivy reads.
+#
+# FAIL CLOSED (owner 2026-07-24): if SCP_SCAN_DB_DIR is set but the pre-loaded DB is EMPTY/missing
+# (no `<dir>/db/trivy.db`), we exit non-zero WITHOUT scanning — a configured-but-broken cache must
+# never silently fall back to the (possibly very stale) baked DB and masquerade as a fresh scan. The
+# commander already classifies staleness before dispatch; this is the second, in-container barrier.
+if [ -n "${SCP_SCAN_DB_DIR:-}" ]; then
+  if [ ! -f "$SCP_SCAN_DB_DIR/db/trivy.db" ]; then
+    echo "scp-runner-scan: SCP_SCAN_DB_DIR is set ($SCP_SCAN_DB_DIR) but has no db/trivy.db — fail-closed (no scan)" >&2
+    exit 5
+  fi
+  # TRIVY_CACHE_DIR is Trivy's own env for --cache-dir; exporting it points every `trivy` call in
+  # this shim at the pre-loaded DB with no fragile argv construction. Trivy looks for the DB at
+  # $TRIVY_CACHE_DIR/db/trivy.db — exactly the layout we validated above.
+  export TRIVY_CACHE_DIR="$SCP_SCAN_DB_DIR"
+fi
+
+# SSG/OpenSCAP asymmetry (proposal §13.3b): SSG datastreams have NO OCI upstream to skopeo-refresh,
+# so they stay BAKED. We still honor an OPTIONAL operator-supplied SCAP override dir: if
+# SCP_SCAN_SCAP_DIR is set and carries a datastream of the requested basename, evaluate against that
+# instead of the baked copy. Absent the override, the baked datastream (resolved in the openscap case
+# below) is used unchanged.
+if [ -n "${SCP_SCAN_SCAP_DIR:-}" ] && [ "$METHOD" = "openscap" ]; then
+  _ds_base="$(basename "$DATASTREAM")"
+  if [ -f "$SCP_SCAN_SCAP_DIR/$_ds_base" ]; then
+    DATASTREAM="$SCP_SCAN_SCAP_DIR/$_ds_base"
+  fi
+fi
+
 case "$METHOD" in
   trivy)
     # --input scans the LOCAL OCI layout (no registry dial); --skip-db-update + --offline-scan pin
     # the run to the build-time-baked DB (no network). --format json emits the native result the
     # commander parses. --exit-code 0 unconditionally: this runner REPORTS findings, it does not gate
     # — the commander evaluates the counts against the resolved M17.5 threshold.
+    # TRIVY_CACHE_DIR (exported above when SCP_SCAN_DB_DIR is set) points Trivy at the PRE-LOADED DB;
+    # otherwise Trivy uses its baked default ($HOME/.cache/trivy). --skip-db-update + --offline-scan
+    # hold UNCONDITIONALLY in both cases (no network, ever).
     trivy image \
       --input "$INPUT" \
       --format json \

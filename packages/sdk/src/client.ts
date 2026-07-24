@@ -183,6 +183,12 @@ import {
   // M13.3a (ADR-0020) — instance-scoped scanner assignments.
   listScannerAssignments as listScannerAssignmentsRequest,
   putScannerAssignment as putScannerAssignmentRequest,
+  // M13.3b-ii (ADR-0020) — offline scanner-DB cache.
+  getScanDbStatus as getScanDbStatusRequest,
+  getScanDbStalenessPolicy as getScanDbStalenessPolicyRequest,
+  putScanDbStalenessPolicy as putScanDbStalenessPolicyRequest,
+  refreshScanDb as refreshScanDbRequest,
+  loadScanDb as loadScanDbRequest,
   pairPeer as pairPeerRequest,
   getFederationStatus as getFederationStatusRequest,
   exportSyncBundle as exportSyncBundleRequest,
@@ -300,6 +306,13 @@ import type {
   PutInstanceScanFloorRequest,
   ScannerAssignment,
   PutScannerAssignmentRequest,
+  // M13.3b-ii (ADR-0020) — offline scanner-DB cache.
+  ScanDbStatus,
+  ScanDbStalenessPolicy,
+  PutScanDbStalenessPolicyRequest,
+  RefreshScanDbResponse,
+  LoadScanDbRequest,
+  LoadScanDbResponse,
   PairPeerRequest,
   FederationStatusResponse,
   ExportJournalRequest,
@@ -1534,6 +1547,54 @@ export class ScpClient {
       operatorToken: string
     ): Promise<ScannerAssignment> => {
       const result = await putScannerAssignmentRequest({
+        client: this.client,
+        body: req,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result);
+    }
+  };
+
+  // -----------------------------------------------------------------------------------------
+  // M13.3b-ii: the offline scanner-DB cache (ADR-0020, proposal §13.3b). `status`/`stalenessPolicy`
+  // are ordinary authenticated reads (a blocked-for-stale-DB promotion must be explainable). The
+  // WRITES bind every org on the deployment, so each is an OPERATOR action carrying the deployment's
+  // `x-scp-operator-token`: the staleness-policy PUT, the connected `refresh` (skopeo-pull), and the
+  // air-gap `load` of a cosign-signed DB blob (server-local paths, verified before accept).
+  // -----------------------------------------------------------------------------------------
+  readonly scanDb = {
+    status: async (): Promise<ScanDbStatus> => {
+      const result = await getScanDbStatusRequest({ client: this.client });
+      return unwrap(result);
+    },
+    stalenessPolicy: async (): Promise<ScanDbStalenessPolicy> => {
+      const result = await getScanDbStalenessPolicyRequest({ client: this.client });
+      return unwrap(result);
+    },
+    /** Author (upsert) the staleness policy. `null` bounds reset to the built-in default. */
+    setStalenessPolicy: async (
+      req: PutScanDbStalenessPolicyRequest,
+      operatorToken: string
+    ): Promise<ScanDbStalenessPolicy> => {
+      const result = await putScanDbStalenessPolicyRequest({
+        client: this.client,
+        body: req,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result);
+    },
+    /** Connected refresh: skopeo-pull the upstream OCI trivy-db into the cache (atomic swap). */
+    refresh: async (operatorToken: string): Promise<RefreshScanDbResponse> => {
+      const result = await refreshScanDbRequest({
+        client: this.client,
+        body: {},
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result);
+    },
+    /** Air-gap load: verify + install a cosign-signed DB blob from server-local paths. */
+    load: async (req: LoadScanDbRequest, operatorToken: string): Promise<LoadScanDbResponse> => {
+      const result = await loadScanDbRequest({
         client: this.client,
         body: req,
         headers: { "x-scp-operator-token": operatorToken }

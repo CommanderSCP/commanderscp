@@ -170,6 +170,15 @@ since those three differ between the migrations Job and the api/worker Deploymen
 - name: SCP_MANAGED_IAC_WORKSPACE_ROOT
   value: {{ .Values.managedIac.workspaceRoot | quote }}
 {{- end }}
+{{- if .Values.scanDbCache.enabled }}
+{{- /* M13.3b-ii (ADR-0020, proposal §13.3b) — the commander's server-maintained Trivy-DB cache.
+       OPTIONAL and OFF by default, so single-container/dev stays zero-config on the image-baked DB
+       (the fail-closed fallback). When enabled, this mounts a PVC and points the promotion scan step
+       at it (SCP_MANAGED_SCAN_DB_CACHE); the operator keeps it fresh via `scp scan-db refresh`
+       (connected) or `scp scan-db load` (air-gap). RWO single-writer, exactly like objectStorage. */}}
+- name: SCP_MANAGED_SCAN_DB_CACHE
+  value: {{ .Values.scanDbCache.mountPath | quote }}
+{{- end }}
 {{- if .Values.federation.mtls.enabled }}
 - name: SCP_FEDERATION_MTLS_CERT_FILE
   value: /etc/scp/federation-mtls/tls.crt

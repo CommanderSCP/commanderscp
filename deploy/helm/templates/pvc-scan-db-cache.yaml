@@ -1,0 +1,22 @@
+{{/* M13.3b-ii (ADR-0020, proposal §13.3b) — the commander's managed-scan Trivy-DB cache PVC. OPTIONAL
+     (scanDbCache.enabled=false by default → nothing rendered → the runner uses the image-baked DB, the
+     fail-closed fallback). Parallel to pvc-object-storage.yaml: ReadWriteOnce is fine for the
+     single-writer-at-a-time access pattern (the operator refresh/load atomic-swaps; a concurrent scan
+     reads a point-in-time `docker cp` snapshot). Mounted into api AND worker at scanDbCache.mountPath;
+     SCP_MANAGED_SCAN_DB_CACHE points the promotion scan step at it (_helpers.tpl commonEnv). */}}
+{{- if .Values.scanDbCache.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "commanderscp.fullname" . }}-scan-db
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+spec:
+  accessModes: [{{ .Values.scanDbCache.accessMode | quote }}]
+  {{- if .Values.scanDbCache.storageClassName }}
+  storageClassName: {{ .Values.scanDbCache.storageClassName }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.scanDbCache.size }}
+{{- end }}

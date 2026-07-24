@@ -121,6 +121,10 @@ spec:
             - name: managed-iac-workspace
               mountPath: {{ .Values.managedIac.workspaceRoot }}
             {{- end }}
+            {{- if .Values.scanDbCache.enabled }}
+            - name: scan-db
+              mountPath: {{ .Values.scanDbCache.mountPath }}
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
@@ -131,6 +135,11 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        {{- if .Values.scanDbCache.enabled }}
+        - name: scan-db
+          persistentVolumeClaim:
+            claimName: {{ include "commanderscp.fullname" . }}-scan-db
+        {{- end }}
         {{- if .Values.federation.mtls.enabled }}
         - name: federation-mtls
           secret:

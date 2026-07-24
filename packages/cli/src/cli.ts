@@ -2297,6 +2297,160 @@ export function buildProgram(): Command {
       }
     );
 
+  // scan-db (M13.3b-ii — ADR-0020, proposal §13.3b). The commander's managed-scan vulnerability DB:
+  // `status` + `staleness-policy get` are ordinary reads (a promotion blocked for a stale DB must be
+  // explainable); `staleness-policy set`, `refresh` (connected skopeo-pull), and `load` (air-gap
+  // cosign-signed blob) bind every org and are OPERATOR actions gated by SCP_OPERATOR_TOKEN.
+  // -------------------------------------------------------------------------------------
+  const scanDbCmd = program
+    .command("scan-db")
+    .description(
+      "Commander managed-scan vulnerability DB (ADR-0020 §13.3b) — status, staleness policy, connected refresh, air-gap operator-load"
+    );
+
+  scanDbCmd
+    .command("status")
+    .description("Show the DB's presence, age, source (baked|refreshed|operator-loaded), schema compatibility, staleness, and active thresholds")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const status = await client.scanDb.status();
+      printResult(status, opts.output, (raw) => {
+        const s = raw as typeof status;
+        return {
+          present: String(s.present),
+          source: s.source,
+          ageHours: s.ageHours === null ? "(unknown)" : s.ageHours.toFixed(1),
+          schemaCompatible: String(s.schemaCompatible),
+          staleness: s.staleness,
+          thresholdFired: s.thresholdFired,
+          softMaxAgeHours: String(s.activeSoftMaxAgeHours),
+          hardMaxAgeHours: String(s.activeHardMaxAgeHours)
+        };
+      });
+    });
+
+  const stalenessCmd = scanDbCmd
+    .command("staleness-policy")
+    .description("The instance-scoped soft/hard max-age policy (owner decision 2026-07-24 — a company applies its own rules)");
+
+  stalenessCmd
+    .command("get")
+    .description("Show the active staleness policy (built-in defaults when unset)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const policy = await client.scanDb.stalenessPolicy();
+      printResult(policy, opts.output, (raw) => {
+        const p = raw as typeof policy;
+        return {
+          softMaxAgeHours: String(p.effectiveSoftMaxAgeHours),
+          hardMaxAgeHours: String(p.effectiveHardMaxAgeHours),
+          isDefault: String(p.isDefault),
+          updatedAt: p.updatedAt
+        };
+      });
+    });
+
+  stalenessCmd
+    .command("set")
+    .description("Author the staleness policy (OPERATOR ONLY — SCP_OPERATOR_TOKEN; omit a bound to reset it to the built-in default)")
+    .option("--soft-max-age-hours <n>", "soft max age in hours (WARN beyond this); omit to reset to default")
+    .option("--hard-max-age-hours <n>", "hard max age in hours (FAIL CLOSED beyond this); omit to reset to default")
+    .option("--note <text>", "optional note")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & { softMaxAgeHours?: string; hardMaxAgeHours?: string; note?: string }
+      ) => {
+        const operatorToken = process.env.SCP_OPERATOR_TOKEN;
+        if (!operatorToken) {
+          throw new Error(
+            "SCP_OPERATOR_TOKEN is not set — the scan-DB staleness policy binds every org on the deployment, so authoring it requires the deployment operator token, not your tenant login."
+          );
+        }
+        const parseHours = (v: string | undefined, flag: string): number | null => {
+          if (v === undefined) return null;
+          const n = Number(v);
+          if (!Number.isInteger(n) || n <= 0) throw new Error(`${flag} must be a positive integer (got '${v}')`);
+          return n;
+        };
+        const client = await clientFromStoredCredentials(opts);
+        const policy = await client.scanDb.setStalenessPolicy(
+          {
+            softMaxAgeHours: parseHours(opts.softMaxAgeHours, "--soft-max-age-hours"),
+            hardMaxAgeHours: parseHours(opts.hardMaxAgeHours, "--hard-max-age-hours"),
+            ...(opts.note !== undefined ? { note: opts.note } : {})
+          },
+          operatorToken
+        );
+        printResult(policy, opts.output, (raw) => {
+          const p = raw as typeof policy;
+          return {
+            softMaxAgeHours: String(p.effectiveSoftMaxAgeHours),
+            hardMaxAgeHours: String(p.effectiveHardMaxAgeHours),
+            isDefault: String(p.isDefault),
+            updatedAt: p.updatedAt
+          };
+        });
+      }
+    );
+
+  scanDbCmd
+    .command("refresh")
+    .description("Connected refresh — skopeo-pull the upstream OCI trivy-db into the cache (OPERATOR ONLY — SCP_OPERATOR_TOKEN; allowlisted, atomic swap, schema-compat asserted)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const operatorToken = process.env.SCP_OPERATOR_TOKEN;
+      if (!operatorToken) {
+        throw new Error("SCP_OPERATOR_TOKEN is not set — refreshing the deployment's scan DB is an operator action.");
+      }
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.scanDb.refresh(operatorToken);
+      printResult(result, opts.output, (raw) => {
+        const r = raw as typeof result;
+        return { refreshed: String(r.refreshed), source: r.status.source, ageHours: String(r.status.ageHours), detail: r.detail };
+      });
+    });
+
+  scanDbCmd
+    .command("load")
+    .description("Air-gap load — verify + install a cosign-signed DB blob from server-local paths (OPERATOR ONLY — SCP_OPERATOR_TOKEN; digest-bound + detached-signature verify before accept)")
+    .requiredOption("--file <path>", "server-local path to the DB blob (tar of the trivy cache db/ dir)")
+    .requiredOption("--sig <path>", "server-local path to the cosign detached signature")
+    .requiredOption("--pubkey <path>", "server-local path to the operator's cosign public key PEM")
+    .option("--digest <sha256>", "optional sha256:<hex> the blob bytes must hash to")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & { file: string; sig: string; pubkey: string; digest?: string }
+      ) => {
+        const operatorToken = process.env.SCP_OPERATOR_TOKEN;
+        if (!operatorToken) {
+          throw new Error("SCP_OPERATOR_TOKEN is not set — loading a scan DB across the air gap is an operator action.");
+        }
+        const client = await clientFromStoredCredentials(opts);
+        const result = await client.scanDb.load(
+          {
+            blobPath: opts.file,
+            signaturePath: opts.sig,
+            publicKeyPath: opts.pubkey,
+            ...(opts.digest ? { expectedDigest: opts.digest } : {})
+          },
+          operatorToken
+        );
+        printResult(result, opts.output, (raw) => {
+          const r = raw as typeof result;
+          return { loaded: String(r.loaded), source: r.status.source, ageHours: String(r.status.ageHours), detail: r.detail };
+        });
+      }
+    );
+
   // federation (M6 Federation Basics — DESIGN.md §13, BUILD_AND_TEST.md §8 M6). `export`/`import`
   // work on `.scpbundle` files on disk (the built-in file transport — "the air gap is the design
   // center", §13) so they're the ones CI's two-domain E2E drives via a real file-copy across an

@@ -253,6 +253,13 @@
       "when": 1786000000000,
       "tag": "0035_scanner_assignments",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1786100000000,
+      "tag": "0036_scan_db_staleness_policy",
+      "breakpoints": true
     }
   ]
 }
