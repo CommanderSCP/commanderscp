@@ -13978,6 +13978,74 @@ export type ImportRelayTarballResponses = {
 
 export type ImportRelayTarballResponse = ImportRelayTarballResponses[keyof ImportRelayTarballResponses];
 
+export type FederationPokeData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/federation/poke';
+};
+
+export type FederationPokeErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    429: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type FederationPokeError = FederationPokeErrors[keyof FederationPokeErrors];
+
+export type FederationPokeResponses = {
+    /**
+     * Success
+     */
+    202: {
+        accepted: true;
+        woken: boolean;
+    };
+};
+
+export type FederationPokeResponse = FederationPokeResponses[keyof FederationPokeResponses];
+
 export type CreateOverlayData = {
     body: {
         base: string;

@@ -51,6 +51,12 @@ export function unprocessable(detail?: string): ProblemError {
   return new ProblemError(422, "Unprocessable Entity", { detail });
 }
 
+/** A per-caller rate limit was exceeded (e.g. federation/poke-rate-limit.ts's per-peer token
+ *  bucket) — the excess request is dropped with a clean 429 rather than doing the work. */
+export function tooManyRequests(detail?: string): ProblemError {
+  return new ProblemError(429, "Too Many Requests", { detail });
+}
+
 /** A server-imposed execution bound was hit (e.g. graph/query-timeout.ts's statement_timeout
  *  guardrail) — a clean, typed timeout response rather than a hung connection or a raw 500. */
 export function requestTimeout(detail?: string): ProblemError {
