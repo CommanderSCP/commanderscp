@@ -27,7 +27,7 @@ import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
-import { badRequest, conflict } from "../errors.js";
+import { badRequest, conflict, unauthorized, tooManyRequests } from "../errors.js";
 import { initFederationSelf, ensureFederationSelf } from "../federation/self-repo.js";
 import { pairPeer, listPeers, getPeerByIdOrName } from "../federation/peers-repo.js";
 import {
@@ -61,6 +61,8 @@ import {
   enforceFederationMtls,
   recordImportExporterBindingAdvisory
 } from "../federation/mtls-enforcement.js";
+import { wakeFederationSyncNow } from "../federation/federation-sync.js";
+import { pokeRateLimiter } from "../federation/poke-rate-limit.js";
 
 /** `z.union` (unlike `z.discriminatedUnion`, which needs a TOP-LEVEL discriminant key — `kind`
  *  here is nested under `header`) doesn't give TypeScript enough to narrow
@@ -88,7 +90,12 @@ async function resolveOutboundDelivery(
   assertOutboundDeliverable(resolved);
   if (resolved.provider !== "s3-compatible") return { resolved };
   const raw = await withTenantTx(deps.db, orgId, (tx) =>
-    getSecretValue(tx, orgId, deliveryTargetSecretKey(peer.name, "out"), deps.config.secretsMasterKey)
+    getSecretValue(
+      tx,
+      orgId,
+      deliveryTargetSecretKey(peer.name, "out"),
+      deps.config.secretsMasterKey
+    )
   );
   const s3Credentials = parseDeliveryS3Credential(raw);
   if (!s3Credentials) {
@@ -642,6 +649,111 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         throw conflict(outcome.reason, { decisionId: outcome.decisionId });
       }
       reply.status(200).send(outcome);
+    }
+  });
+
+  // M14.2 (ADR-0009, docs/proposals/outpost-poke.md) — the INBOUND CONTENTLESS POKE. A commander/
+  // upstream calls this to wake THIS instance's pull NOW instead of waiting for the interval. It
+  // carries ZERO data (ADR-0009 no-DATA-commander→outpost invariant): the body is IGNORED and no
+  // request schema is declared, so nothing in it can ever drive behavior. Structurally this lives on
+  // the instance's OWN /v1 API (never inside the client-only `federation-https` plugin, which keeps
+  // its "no server half" property) as an mTLS-gated route, exactly like the other transport verbs.
+  //
+  // FAIL-CLOSED on BOTH transport identity AND receiver-side consent (the crux):
+  //   1. `enforceFederationMtls` authenticates the caller by client-cert SAN identity. When
+  //      federation-server-mTLS is UNSET it is a no-op and leaves `mtlsPeerDomainId` undefined — so
+  //      a bearer-only poke does NOT meet "authenticate the caller as the enrolled commander"
+  //      (ADR-0009) and is REFUSED here (401). A poke is honored only from an enrolled client cert.
+  //   2. BOTH-SIDES CONSENT (owner refinement 2026-07-24): the poke is honored only if THIS receiving
+  //      instance has ITS OWN `pokeMode=true` for the calling peer (set on this side via
+  //      `scp federation pair <upstream> --poke-mode`, M14.1). An enrolled peer whose receiver-side
+  //      pokeMode is false is rejected (409) — the receiver never opted into pokes from it. An
+  //      unknown/non-enrolled caller is already rejected (403) by `enforceFederationMtls` itself.
+  // Idempotent + rate-limited: a per-peer token bucket drops excess pokes (429), and the wake is a
+  // plain enqueue, so N pokes in a window → at most one pull. The pull runs on the sync loop's
+  // worker, never inline here (return fast). Sync loop not running on this process → accepted no-op.
+  typed.route({
+    method: "POST",
+    url: "/api/v1/federation/poke",
+    schema: {
+      // NO body schema — the poke is contentless; any/empty body is accepted and never read.
+      response: {
+        202: z.object({ accepted: z.literal(true), woken: z.boolean() }),
+        401: ProblemSchema,
+        403: ProblemSchema,
+        409: ProblemSchema,
+        429: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "federationPoke",
+        summary:
+          "Contentless, mTLS-authenticated wake signal from an enrolled commander/upstream — pull now (poke-mode)",
+        tags: ["federation"]
+      }
+    },
+    handler: async (request, reply) => {
+      // Transport-identity gate FIRST (as in every other federation transport route). This also runs
+      // `requireAuth` internally; it sets `request.mtlsPeerDomainId` ONLY when mTLS is active and the
+      // client cert resolved to an enrolled peer for the bearer's org.
+      await enforceFederationMtls(deps, request);
+      // FAIL-CLOSED transport identity: a poke authenticated by bearer-only (mTLS unset → the gate
+      // above no-op'd) does not prove the caller is the enrolled commander. Refuse it — the poke is
+      // honored only when the caller presented an enrolled client certificate (ADR-0009 §5).
+      if (!request.mtlsPeerDomainId) {
+        throw unauthorized(
+          "federation poke requires mTLS transport identity — refused fail-closed: a poke is honored " +
+            "only from a caller presenting an enrolled federation client certificate, never on bearer alone"
+        );
+      }
+      const auth = await requireAuth(deps, request);
+
+      // BOTH-SIDES CONSENT: resolve the calling peer on THIS instance and require this side's OWN
+      // pokeMode=true for it. (`mtlsPeerDomainId` is the already-resolved peer id from the gate; an
+      // unknown caller never reaches here — the gate 403s it.)
+      const peer = await withTenantTx(deps.db, auth.orgId, (tx) =>
+        getPeerByIdOrName(tx, auth.orgId, request.mtlsPeerDomainId as string)
+      );
+      if (!peer.pokeMode) {
+        throw conflict(
+          `this instance is not configured for poke-mode from peer '${peer.name}' — the receiver has ` +
+            `not consented; opt in with 'scp federation pair ${peer.name} --poke-mode' to honor its pokes`
+        );
+      }
+
+      // Rate limit per peer: excess pokes are dropped (429). The wake is idempotent, so at most one
+      // pull results from any burst — no dedupe ledger needed (see poke-rate-limit.ts).
+      if (!pokeRateLimiter.tryConsume(`${auth.orgId}:${peer.id}`)) {
+        throw tooManyRequests(
+          `poke rate limit exceeded for peer '${peer.name}' — dropped (the wake is idempotent; a burst ` +
+            "of pokes coalesces to at most one pull)"
+        );
+      }
+
+      // WAKE THE PULL — enqueue an immediate federation-sync tick and return fast. The loop's worker
+      // does the actual pull; we never pull inline. No queue on this process (pure role=api, or the
+      // sync loop is disabled) → accepted-but-no-op (the sparse safety-net is the reliability floor).
+      let woken = false;
+      if (deps.boss) {
+        try {
+          await wakeFederationSyncNow(deps.boss);
+          woken = true;
+        } catch (err) {
+          request.log.warn(
+            { err: err instanceof Error ? err.message : String(err), peer: peer.name },
+            "federation poke accepted but could not enqueue a sync tick (sync loop likely not running) " +
+              "— no-op-but-accepted; the sparse safety-net pull remains the reliability floor"
+          );
+        }
+      } else {
+        request.log.info(
+          { peer: peer.name },
+          "federation poke accepted but this process has no job queue (role=api or sync loop disabled) " +
+            "— no-op-but-accepted"
+        );
+      }
+      reply.status(202).send({ accepted: true as const, woken });
     }
   });
 

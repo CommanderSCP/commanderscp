@@ -89,6 +89,10 @@ async function main(): Promise<void> {
   // runs its own schema migrations on the admin/superuser connection).
   if (config.role === "all" || config.role === "worker") {
     const boss = await startPgBoss(config.pgBossDatabaseUrl);
+    // M14.2 (ADR-0009): expose the job queue to request handlers (mirrors `deps.pluginHost` below)
+    // so the inbound federation poke endpoint can enqueue an immediate federation-sync tick — the
+    // contentless wake that pulls NOW instead of at the next interval, without pulling inline.
+    deps.boss = boss;
     // NATS JetStream EventBus backend toggle (DESIGN.md §8 "Scaling insurance", BUILD_AND_TEST.md
     // M3 item 8) — `config.eventBus.backend === "postgres"` (the default) leaves `natsFanout`
     // undefined and the relay's behavior completely unchanged. Connecting is NOT wrapped in

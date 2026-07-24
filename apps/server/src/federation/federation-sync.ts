@@ -206,8 +206,7 @@ export async function pullFromCommanderPeer(
     // carrying its Decision when the path persisted one). Record a block; the sweep continues.
     if (err instanceof ProblemError && err.status === 409) {
       const reason = err.detail ?? err.message;
-      const decisionId =
-        err.decisionId ?? (await recordSyncBlock(db, { orgId, peer, reason }));
+      const decisionId = err.decisionId ?? (await recordSyncBlock(db, { orgId, peer, reason }));
       return { peerDomainId: peer.id, outcome: "refused", detail: reason, decisionId };
     }
     // Any other error (transient DB, unpaired peer 404, etc.) — retried next tick, no block.
@@ -231,9 +230,7 @@ export async function federationSyncOrgTick(
   // `mtls: null` in options means "explicitly none" (fail-closed test); undefined means "resolve
   // from env" (production).
   const mtls =
-    options?.mtls === null
-      ? undefined
-      : (options?.mtls ?? resolveFederationClientMtls(env));
+    options?.mtls === null ? undefined : (options?.mtls ?? resolveFederationClientMtls(env));
 
   const { self, peers } = await withTenantTx(db, orgId, async (tx) => ({
     self: await ensureFederationSelf(tx, orgId),
@@ -244,9 +241,7 @@ export async function federationSyncOrgTick(
   const outcomes: FederationSyncOutcome[] = [];
   for (const peer of commanderPeers) {
     try {
-      outcomes.push(
-        await pullFromCommanderPeer(db, orgId, self.domainId, peer, { bearer, mtls })
-      );
+      outcomes.push(await pullFromCommanderPeer(db, orgId, self.domainId, peer, { bearer, mtls }));
     } catch (err) {
       // ONE BAD PEER NEVER BRICKS THE TICK.
       console.error(`[federation-sync] org ${orgId} peer ${peer.id} failed (will retry):`, err);
@@ -274,6 +269,22 @@ export async function runFederationSyncSweep(
       console.error(`[federation-sync] org ${org.id} tick failed:`, err);
     }
   }
+}
+
+/**
+ * M14.2 (ADR-0009) — enqueue ONE immediate federation-sync tick: the contentless poke's "come pull
+ * NOW" wake. Sent with NO singleton so it always lands as a fresh immediate job (the poke endpoint's
+ * per-peer rate limiter is what bounds it to at most one pull per window — reusing the loop's own
+ * throttling `singletonKey` here would let a queued interval tick SWALLOW the wake, defeating it).
+ * The pull itself runs on the loop's worker, never inline in the request path.
+ *
+ * THROWS when the queue does not exist — i.e. the sync loop was never started on this process
+ * (`SCP_FEDERATION_SYNC_LOOP` unset, or a pure `role=api` process). The caller treats that as
+ * "accepted-but-no-op" (proposal §"Milestone scope"): the poke is still honored, the sparse
+ * safety-net + a worker process are the reliability floor.
+ */
+export async function wakeFederationSyncNow(boss: PgBoss): Promise<void> {
+  await boss.send(FEDERATION_SYNC_QUEUE, {});
 }
 
 export interface FederationSyncLoopHandle {
