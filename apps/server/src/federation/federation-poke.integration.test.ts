@@ -16,9 +16,10 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 import { ensureFederationSelf } from "./self-repo.js";
-import { pairPeer } from "./peers-repo.js";
+import { getPeerByIdOrName, pairPeer } from "./peers-repo.js";
 import { federationPeerSanUri } from "./mtls-enforcement.js";
-import { FEDERATION_SYNC_QUEUE } from "./federation-sync.js";
+import { FEDERATION_SYNC_QUEUE, federationSyncOrgTick } from "./federation-sync.js";
+import { INBOX_QUEUE } from "./inbox-loop.js";
 import { pokeRateLimiter } from "./poke-rate-limit.js";
 import {
   createTestCa,
@@ -261,6 +262,38 @@ describe.skipIf(!opensslAvailable())(
       expect(sends[0]!.queue).toBe(FEDERATION_SYNC_QUEUE);
     });
 
+    it("M14.4 D2: an ACCEPTED poke stamps last_poke_received_at for the calling peer (self-proving sparse)", async () => {
+      // (Earlier accepted cases in this describe may already have stamped it — assert it ADVANCES.)
+      const before = await withTenantTx(db, orgId, (tx) =>
+        getPeerByIdOrName(tx, orgId, pokePeer.domainId)
+      );
+      const beforeMs = before.lastPokeReceivedAt ? Date.parse(before.lastPokeReceivedAt) : 0;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      const res = await httpsPost({
+        path: "/api/v1/federation/poke",
+        cert: pokePeer.leaf.certPem,
+        key: pokePeer.leaf.keyPem,
+        token: adminToken,
+        body: {}
+      });
+      expect(res.status).toBe(202);
+
+      // The stamp is what lets the scheduler drop THIS peer to the sparse cadence. Without a poke
+      // actually arriving it stays on the frequent poll no matter what the local flag says.
+      const after = await withTenantTx(db, orgId, (tx) =>
+        getPeerByIdOrName(tx, orgId, pokePeer.domainId)
+      );
+      expect(after.lastPokeReceivedAt).not.toBeNull();
+      expect(Date.parse(after.lastPokeReceivedAt!)).toBeGreaterThan(beforeMs);
+
+      // A REJECTED poke (receiver-side consent off) never counts as proof.
+      const rejected = await withTenantTx(db, orgId, (tx) =>
+        getPeerByIdOrName(tx, orgId, noPokePeer.domainId)
+      );
+      expect(rejected.lastPokeReceivedAt).toBeNull();
+    });
+
     it("CONTENTLESS: a junk request body never drives behavior — still a plain accepted wake", async () => {
       const res = await httpsPost({
         path: "/api/v1/federation/poke",
@@ -326,5 +359,142 @@ describe("M14.2 inbound federation poke — fail-closed transport identity (mTLS
       await app.close();
       await pool.end();
     }
+  });
+});
+
+/**
+ * M14.4 (S6, test j) — THE AIR-GAP LEG. ADR-0009 §38 makes the high-side-retrans→outpost poke INSIDE
+ * the air gap REQUIRED, not optional. But an air-gapped outpost has NO `role: commander` peer with a
+ * baseUrl to dial — its content arrives as a FILE that the INBOX loop ingests. So a poke that woke
+ * only the federation-sync sweep resolved to ZERO peers and did nothing at all.
+ *
+ * This receiver models exactly that: its only enrolled peer is the high-side RETRANS (role
+ * `retrans`, poke-mode), so the sync sweep has nothing to pull from — the tick returns an EMPTY
+ * outcome list — and the inbox tick is the only thing that can move the chain forward.
+ */
+describe.skipIf(!opensslAvailable())("M14.4 air-gap poke leg — the poke wakes the INBOX loop", () => {
+  let ca: TestCa;
+  let app: FastifyInstance;
+  let db: Db;
+  let pool: ReturnType<typeof createPool>;
+  let port: number;
+  let orgId: string;
+  let adminToken: string;
+  let relay: { domainId: string; leaf: TestLeafCert };
+  let sends: Recorded[] = [];
+  let previousInboxLoop: string | undefined;
+
+  beforeAll(async () => {
+    // The inbox wake is sent only where the deployment actually RUNS an inbox loop — otherwise the
+    // queue does not exist and the send is pure noise (the flag is deployment-wide; the worker
+    // replica that created the queue shares it with the api replica serving this request).
+    previousInboxLoop = process.env.SCP_INBOX_LOOP;
+    process.env.SCP_INBOX_LOOP = "1";
+
+    ca = createTestCa();
+    const serverLeaf = issueLeafCert(ca, { name: `airgap-receiver-${randomUUID()}` });
+    const config = loadConfig({
+      DATABASE_URL: testDatabaseUrl(),
+      SCP_RUNTIME_DATABASE_URL: testRuntimeDatabaseUrl(),
+      SCP_PGBOSS_DATABASE_URL: testPgBossDatabaseUrl(),
+      SCP_COOKIE_SECRET: "test-cookie-secret-value",
+      SCP_FEDERATION_SERVER_MTLS_CA_FILE: ca.caCrtFile,
+      SCP_FEDERATION_SERVER_MTLS_CERT_FILE: serverLeaf.certFile,
+      SCP_FEDERATION_SERVER_MTLS_KEY_FILE: serverLeaf.keyFile
+    });
+    pool = createPool(config.runtimeDatabaseUrl);
+    db = createDb(pool);
+    const deps: AppDeps = { db, config };
+    deps.boss = {
+      send: async (queue: string) => {
+        sends.push({ queue });
+        return "job-id";
+      }
+    } as unknown as PgBoss;
+    app = await buildApp(deps, { logger: false });
+    await app.ready();
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+    port = Number(new URL(address).port);
+
+    const server: TestServer = { app, deps, close: async () => undefined };
+    const org = await createTestOrg(server, "airgappoke");
+    orgId = org.orgId;
+    adminToken = org.adminToken;
+    await withTenantTx(db, orgId, (tx) => ensureFederationSelf(tx, orgId));
+
+    const relayDomainId = randomUUID();
+    relay = {
+      domainId: relayDomainId,
+      leaf: issueLeafCert(ca, {
+        name: "high-side-retrans",
+        sanUri: federationPeerSanUri(relayDomainId)
+      })
+    };
+    const { publicKey } = generateKeyPairSync("ed25519");
+    await withTenantTx(db, orgId, (tx) =>
+      pairPeer(tx, {
+        orgId,
+        domainId: relayDomainId,
+        name: "high-side-retrans",
+        // NOT a `commander` peer: the sync sweep only ever pulls from `commander`-role peers, so
+        // this instance has NOTHING to pull. Its content crosses the CDS as a file.
+        role: "retrans",
+        publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64"),
+        baseUrl: "https://localhost:1",
+        pokeMode: true
+      })
+    );
+  }, 120_000);
+
+  afterAll(async () => {
+    await app?.close();
+    await pool?.end();
+    if (previousInboxLoop === undefined) delete process.env.SCP_INBOX_LOOP;
+    else process.env.SCP_INBOX_LOOP = previousInboxLoop;
+  });
+
+  beforeEach(() => {
+    sends = [];
+    pokeRateLimiter.reset();
+  });
+
+  it("the sync sweep alone would do NOTHING here (no role:commander peer to pull from)", async () => {
+    const outcomes = await federationSyncOrgTick(db, orgId, { env: {}, mtls: null });
+    expect(outcomes).toEqual([]);
+  });
+
+  it("a poke enqueues an INBOX tick as well as the sync tick, and still returns 202", async () => {
+    const res = await new Promise<{ status: number; json: unknown }>((resolve, reject) => {
+      const req = https.request(
+        {
+          hostname: "127.0.0.1",
+          port,
+          path: "/api/v1/federation/poke",
+          method: "POST",
+          ca: ca.caCrtPem,
+          cert: relay.leaf.certPem,
+          key: relay.leaf.keyPem,
+          rejectUnauthorized: false,
+          agent: false,
+          headers: { authorization: `Bearer ${adminToken}` }
+        },
+        (r) => {
+          let raw = "";
+          r.on("data", (chunk: Buffer) => (raw += chunk.toString("utf8")));
+          r.on("end", () =>
+            resolve({ status: r.statusCode ?? 0, json: raw ? JSON.parse(raw) : undefined })
+          );
+        }
+      );
+      req.on("error", reject);
+      req.end();
+    });
+
+    expect(res.status).toBe(202);
+    expect(res.json).toMatchObject({ accepted: true });
+    // BOTH loops woken, each behind its own try/catch — the air-gap leg is the INBOX one.
+    const queues = sends.map((s) => s.queue);
+    expect(queues).toContain(INBOX_QUEUE);
+    expect(queues).toContain(FEDERATION_SYNC_QUEUE);
   });
 });

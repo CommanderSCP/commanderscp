@@ -29,7 +29,12 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { badRequest, conflict, unauthorized, tooManyRequests } from "../errors.js";
 import { initFederationSelf, ensureFederationSelf } from "../federation/self-repo.js";
-import { pairPeer, listPeers, getPeerByIdOrName } from "../federation/peers-repo.js";
+import {
+  pairPeer,
+  listPeers,
+  getPeerByIdOrName,
+  markPokeReceived
+} from "../federation/peers-repo.js";
 import {
   assertDeliveryTargetRooted,
   assertOutboundDeliverable,
@@ -62,7 +67,9 @@ import {
   recordImportExporterBindingAdvisory
 } from "../federation/mtls-enforcement.js";
 import { wakeFederationSyncNow } from "../federation/federation-sync.js";
+import { inboxLoopEnabled, wakeInboxNow } from "../federation/inbox-loop.js";
 import { pokeRateLimiter } from "../federation/poke-rate-limit.js";
+import { recordPokeWake } from "../federation/poke-metrics.js";
 
 /** `z.union` (unlike `z.discriminatedUnion`, which needs a TOP-LEVEL discriminant key — `kind`
  *  here is nested under `header`) doesn't give TypeScript enough to narrow
@@ -731,13 +738,30 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         );
       }
 
-      // WAKE THE PULL — enqueue an immediate federation-sync tick and return fast. The loop's worker
-      // does the actual pull; we never pull inline. No queue on this process (pure role=api, or the
-      // sync loop is disabled) → accepted-but-no-op (the sparse safety-net is the reliability floor).
+      // M14.4 (D2 — SELF-PROVING SPARSE): record that a poke from this peer ACTUALLY ARRIVED. The
+      // scheduler keeps a pokeMode peer on the FREQUENT cadence until this stamp exists, so an
+      // outpost can never go sparse on the strength of its own flag alone (poke-mode is TWO
+      // independent flags on TWO instances; the commander's half may never have been enabled).
+      // Stamped AFTER the consent + rate-limit gates, so only an HONORED poke counts as proof.
+      await withTenantTx(deps.db, auth.orgId, (tx) => markPokeReceived(tx, auth.orgId, peer.id));
+
+      // WAKE — enqueue immediate ticks and return fast. The loops' workers do the actual work; we
+      // never pull inline. No queue on this process (pure role=api, or the loops are disabled) →
+      // accepted-but-no-op (the sparse safety-net is the reliability floor).
+      //
+      // TWO loops, TWO independent try/catches (M14.4 S6):
+      //   1. the federation-sync loop — the CONNECTED leg (an outpost that dials its commander); the
+      //      wake carries `{reason:"poke", orgId}` so the worker runs a FORCED tick that bypasses the
+      //      M14.4 due-gate. The orgId is the CALLER'S OWN AUTHENTICATED org, never a request body.
+      //   2. the inbox loop — the AIR-GAP leg. An air-gapped outpost has NO role:commander peer with
+      //      a baseUrl; its content arrives as a FILE. Without this, the ADR-0009 §38 "required"
+      //      high-side-retrans→outpost poke would wake a sweep that resolves to ZERO peers.
+      // Each in its own try/catch so a missing queue on either side still returns accepted:true.
       let woken = false;
+      let wokenInbox = false;
       if (deps.boss) {
         try {
-          await wakeFederationSyncNow(deps.boss);
+          await wakeFederationSyncNow(deps.boss, auth.orgId);
           woken = true;
         } catch (err) {
           request.log.warn(
@@ -746,11 +770,32 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
               "— no-op-but-accepted; the sparse safety-net pull remains the reliability floor"
           );
         }
-      } else {
-        request.log.info(
-          { peer: peer.name },
-          "federation poke accepted but this process has no job queue (role=api or sync loop disabled) " +
-            "— no-op-but-accepted"
+        // Only when THIS deployment runs an inbox loop: otherwise the queue does not exist and the
+        // send is pure noise. (The flag is a deployment-wide env; the worker replica that created
+        // the queue shares it with the api replica serving this request.)
+        if (inboxLoopEnabled()) {
+          try {
+            await wakeInboxNow(deps.boss);
+            wokenInbox = true;
+          } catch (err) {
+            request.log.warn(
+              { err: err instanceof Error ? err.message : String(err), peer: peer.name },
+              "federation poke accepted but could not enqueue an inbox tick (inbox loop likely not " +
+                "running) — no-op-but-accepted; the air-gap leg falls back to the inbox interval"
+            );
+          }
+        }
+      }
+      const stats = recordPokeWake({ wokenSync: woken, wokenInbox });
+      if (!woken && !wokenInbox) {
+        // SPLIT-TOPOLOGY HOLE — countable, not a silent one-liner: this poke was accepted and woke
+        // NOTHING. One occurrence is benign; a monotonically climbing `notWoken` means poke-mode is
+        // effectively off for this instance (pokes are landing on a process with no job queue).
+        request.log.warn(
+          { peer: peer.name, pokeWakeStats: stats },
+          "federation poke accepted but woke NOTHING on this process (no job queue: role=api, or the " +
+            "sync/inbox loops are disabled) — no-op-but-accepted; watch pokeWakeStats.notWoken, a " +
+            "climbing value means poke-mode is effectively off and only the sparse safety-net is syncing"
         );
       }
       reply.status(202).send({ accepted: true as const, woken });

@@ -27,6 +27,11 @@ function peer(overrides: Partial<FederationPeerRow>): FederationPeerRow {
     deliveryTarget: null,
     cosignPublicKey: null,
     pokeMode: true,
+    // M14.4 scheduler due-state — irrelevant to the SENDER's target gate (it pokes on outbox
+    // activity, not on a schedule), so the fixture leaves all three at "never".
+    lastPullAttemptAt: null,
+    lastPullSuccessAt: null,
+    lastPokeReceivedAt: null,
     pairedAt: new Date().toISOString(),
     publicKey: "pk",
     ...overrides

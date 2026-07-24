@@ -1042,6 +1042,26 @@ export const federationPeers = pgTable(
      *  M14.4); the M14.1 pair-time guard requires an https/mTLS-capable `baseUrl` before it can be
      *  set true. Plain boolean column (not jsonb) — a two-state switch, not registry-shaped data. */
     pokeMode: boolean("poke_mode").notNull().default(false),
+    /** M14.4 (ADR-0009, drizzle/0038) — the live-pull scheduler's PER-PEER due-state. All three are
+     *  NULLABLE with no backfill: NULL = "never" = due now, so every pre-M14.4 row migrates as a
+     *  no-op (its next tick pulls immediately, exactly as before).
+     *
+     *  `lastPullAttemptAt` is stamped by the scheduler's CONDITIONAL claim (one atomic UPDATE …
+     *  WHERE last_pull_attempt_at IS NULL OR < now() - interval), so two worker replicas cannot both
+     *  pull the same peer in one window — an in-memory throttle would multiply the effective poll
+     *  rate by the replica count and defeat sparse mode entirely. `lastPullSuccessAt` is stamped only
+     *  on an `imported` outcome, so `lastPullSuccessAt IS NULL OR < lastPullAttemptAt` IS the
+     *  "last attempt failed" signal that returns a poke-mode peer to the FREQUENT cadence until one
+     *  pull succeeds (the reconnect leg — no counters, replica-safe). `lastPokeReceivedAt` is stamped
+     *  by the M14.2 poke handler when it ACCEPTS a poke from that caller: a peer goes sparse only once
+     *  it has PROVEN pokes actually arrive (D2 self-proving), never merely because its flag is set.
+     *
+     *  NOT derivable from `sync_cursors.updatedAt`: `advanceCursor` early-returns when nothing
+     *  advanced, so an idempotent no-op pull leaves that timestamp untouched — it records applied
+     *  progress, never a pull ATTEMPT. */
+    lastPullAttemptAt: timestamp("last_pull_attempt_at", { withTimezone: true }),
+    lastPullSuccessAt: timestamp("last_pull_success_at", { withTimezone: true }),
+    lastPokeReceivedAt: timestamp("last_poke_received_at", { withTimezone: true }),
     pairedAt: timestamp("paired_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },

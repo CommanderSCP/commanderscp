@@ -13374,6 +13374,10 @@ export type GetFederationStatusResponses = {
             };
             lastAppliedSequence: number | null;
             lastSyncedAt: string | null;
+            lastPullAttemptAt?: string | null;
+            lastPullSuccessAt?: string | null;
+            lastPokeReceivedAt?: string | null;
+            effectiveCadence?: 'poke' | 'poll';
             recentTransfers: Array<{
                 id: string;
                 peerDomainId: string;

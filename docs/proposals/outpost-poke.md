@@ -71,8 +71,29 @@ A retrans instance at a CDS boundary gets the identical model: the commander pok
 1. **Reliability model → poke + sparse safety-net backstop.** Poke-mode disables the *frequent* poll but retains a sparse safety-net reconcile + pull-on-(re)connect, so a dropped poke self-heals; the poke is a latency optimization over a reliable floor, never a single point of failure. *Not* pure poke-only.
 3. **Poke transport → reuse the `federation-https` mTLS routes** with one new contentless verb. A single identity/verification path (ADR-0001) — no dedicated listener.
 
-**Still open (tuning, resolved during the M14 build):**
-2. **Safety-net interval default** — configurable per outpost; large enough to be non-chatty, small enough to bound worst-case staleness (e.g. hourly/daily), with a sensible default chosen at implementation time.
+**Resolved (owner, 2026-07-24 — M14.4 build):**
+2. **Safety-net interval default → 900s (15 min), as an INSTANCE env var — CLOSED.**
+   `SCP_FEDERATION_SYNC_SPARSE_INTERVAL_SECONDS`, default `900`, resolved per tick from the live env
+   and clamped to `[SCP_FEDERATION_SYNC_INTERVAL_SECONDS, 43200]`.
+   - **Not per outpost** (this reverses the "configurable per outpost" phrasing above). A per-peer
+     column lives on the *commander's* row for that outpost, so it would let a commander operator
+     dictate how often a downstream instance polls — a policy inversion. How often THIS instance
+     reconciles is an instance-deployment concern, exactly like `SCP_FEDERATION_SYNC_LOOP` and
+     `SCP_INBOX_LOOP`. It also avoids dragging a pure tuning knob through the whole
+     schema→API→SDK→CLI→UI parity chain for no operator gain.
+   - **15 minutes** because that is the worst-case staleness a *dropped poke* can cause (the poke
+     normally delivers in seconds), while cutting steady-state poll traffic by ~15× versus the 60s
+     frequent default. Non-chatty, and small enough that no one is left wondering for an hour.
+   - **The 43200s (12h) ceiling is REQUIRED, not cosmetic — do not re-propose "daily".** pg-boss
+     asserts `singletonSeconds <= archiveSeconds` (12h by default), so a daily value would throw at
+     runtime the moment it reached pg-boss. The lower clamp exists because a "sparse" interval
+     denser than the frequent one is meaningless.
+   - **Two additional gates on going sparse at all** (owner decisions D2/D4, 2026-07-24): a peer must
+     have **actually received a poke** from that peer before its frequent poll is disabled
+     (self-proving sparse — poke-mode is two independent flags on two instances, and a one-sided
+     enable would otherwise degrade freshness silently), and the instance must have runtime outbound
+     client-cert material (without it the poke path is dead while the flag still says sparse). A
+     failing pull also returns the peer to the frequent cadence until one pull succeeds.
 
 ## Non-goals
 

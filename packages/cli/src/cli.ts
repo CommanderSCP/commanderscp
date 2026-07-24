@@ -255,6 +255,17 @@ function printFederationStatus(status: FederationStatusResponse, output: OutputF
       syncedThrough:
         p.lastAppliedSequence !== null ? `seq ${p.lastAppliedSequence}` : "never synced",
       asOf: p.lastSyncedAt ?? "never",
+      // M14.4 (ADR-0009) — the cadence ACTUALLY in force, next to the raw flag on `federation peers`.
+      // "poke*" flags a divergence worth looking at: the peer is configured for poke-mode but the
+      // scheduler is still polling it — never poked (D2), no client certs (D4), or the last pull
+      // failed (the reconnect leg). Timestamps are in `--output json`.
+      cadence:
+        (p.effectiveCadence ?? (p.peer.pokeMode ? "poke" : "poll")) === "poke"
+          ? "poke"
+          : p.peer.pokeMode
+            ? "poke*"
+            : "poll",
+      lastPull: p.lastPullSuccessAt ?? p.lastPullAttemptAt ?? "never",
       recentTransfers: String(p.recentTransfers.length)
     };
   });

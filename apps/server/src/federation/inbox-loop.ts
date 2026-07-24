@@ -791,6 +791,25 @@ export async function runInboxSweep(
   }
 }
 
+/**
+ * M14.4 (S6, ADR-0009 addendum) — enqueue ONE immediate inbox tick: the AIR-GAP leg of the poke.
+ * Mirrors `wakeFederationSyncNow` exactly (a plain `boss.send`, NO singleton, so a queued interval
+ * tick can never swallow the wake) and, like it, THROWS when the queue does not exist — the caller
+ * treats that as accepted-but-no-op.
+ *
+ * WHY THIS EXISTS. ADR-0009 §38 makes the high-side-retrans→outpost poke inside an air gap
+ * REQUIRED, not optional. But an air-gapped outpost has NO `role: commander` peer with a `baseUrl`
+ * — there is nothing to dial; its content arrives as a FILE that the INBOX loop ingests. So a poke
+ * that woke only the sync sweep resolved to ZERO peers and did nothing at all. Waking the inbox
+ * loop is what makes the last hop of the chain real.
+ *
+ * The wake carries NO data: which files are waiting is discovered by the sweep itself, exactly as
+ * on an interval tick. The poke stays contentless.
+ */
+export async function wakeInboxNow(boss: PgBoss): Promise<void> {
+  await boss.send(INBOX_QUEUE, {});
+}
+
 export interface InboxLoopHandle {
   stop(): Promise<void>;
 }

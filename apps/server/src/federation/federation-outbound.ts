@@ -130,6 +130,10 @@ export async function federationDialJson(opts: {
   bearer?: string;
   mtls?: FederationClientMtls;
   requireMtls: boolean;
+  /** M14.4 (S8) — optional bounded deadline in ms. Omitted keeps undici's default (300s), which is
+   *  right for a PULL (a large signed bundle over a slow link must not be cut off); the POKE passes
+   *  a short one — see {@link sendPokeToPeer}. */
+  timeoutMs?: number;
 }): Promise<FederationDialResult> {
   if (opts.requireMtls && !opts.mtls) {
     throw new FederationDialRefused(
@@ -152,6 +156,7 @@ export async function federationDialJson(opts: {
       headers,
       body: JSON.stringify(opts.body),
       redirect: "error",
+      ...(opts.timeoutMs ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
       ...(dispatcher ? { dispatcher } : {})
     });
     const text = await res.text();
@@ -235,10 +240,24 @@ export async function pullSyncBundleFromCommander(opts: {
  * receiver's sparse safety-net + next poll self-heals, never a retried-to-confirmation delivery and
  * never something that blocks or fails the underlying journal append / transfer.
  */
+/**
+ * M14.4 (S8) — the poke's bounded deadline (ms). `federationDialJson` otherwise inherits undici's
+ * 300s default, and the sender loops its peers SEQUENTIALLY with `await`, so ONE black-holing peer
+ * (a dropped SYN, a hung TLS handshake) could stall an org's entire poke round for five minutes.
+ * That is much worse under M14.4 than before, because the peers behind the stalled one are now on
+ * the SPARSE cadence and are relying on the poke for freshness. A poke is fire-and-forget and
+ * carries no payload, so a few seconds is generous; a timed-out poke is dropped exactly like any
+ * other best-effort failure and the receiver's safety-net heals it. Applied to the POKE dial ONLY —
+ * the pull keeps the long default, since a large signed bundle over a slow link must not be cut off.
+ */
+export const FEDERATION_POKE_TIMEOUT_MS = 5_000;
+
 export async function sendPokeToPeer(opts: {
   baseUrl: string;
   bearer?: string;
   mtls?: FederationClientMtls;
+  /** Test seam / tuning; defaults to {@link FEDERATION_POKE_TIMEOUT_MS}. */
+  timeoutMs?: number;
 }): Promise<{ status: number }> {
   if (!federationPeerRequiresMtls(opts.baseUrl)) {
     throw new FederationDialRefused(
@@ -254,7 +273,9 @@ export async function sendPokeToPeer(opts: {
     bearer: opts.bearer,
     mtls: opts.mtls,
     // CONSTANT true — never scheme-derived (see the fail-closed note above).
-    requireMtls: true
+    requireMtls: true,
+    // BOUNDED: one black-holing peer must never stall the whole sequential poke round.
+    timeoutMs: opts.timeoutMs ?? FEDERATION_POKE_TIMEOUT_MS
   });
   return { status: result.status };
 }
