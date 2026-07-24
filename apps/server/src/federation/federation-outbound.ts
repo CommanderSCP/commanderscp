@@ -201,3 +201,39 @@ export async function pullSyncBundleFromCommander(opts: {
   }
   return result.body as SyncBundle;
 }
+
+/**
+ * M14.3 (ADR-0009, docs/proposals/outpost-poke.md §"Milestone scope") — SEND ONE CONTENTLESS POKE to
+ * a downstream peer's `POST /api/v1/federation/poke`. The commander→outpost/retrans wake signal: it
+ * says only "something is pending — come pull," carrying ZERO data (the no-DATA-commander→outpost
+ * invariant, ADR-0009 §1). All data still flows outpost→commander via the outpost's own pull.
+ *
+ * Dials through {@link federationDialJson}, so it presents THIS instance's enrolled client cert
+ * (SAN `urn:scp:domain:<ownDomainId>`) — which the peer's `enforceFederationMtls` authenticates as
+ * the enrolled commander — and carries the same federation bearer the sync pull uses (the poke
+ * endpoint runs `requireAuth` too). FAIL-CLOSED by construction: an `https://` peer with no
+ * client-cert material configured throws {@link FederationDialRefused} BEFORE any socket is opened —
+ * a poke is NEVER sent plain-HTTP to an mTLS peer. The body is an empty object: the endpoint ignores
+ * it entirely (no request schema), so it is contentless in effect and in intent.
+ *
+ * Returns the peer's HTTP status. Best-effort semantics live in the CALLER (poke-sender.ts): a non-2xx
+ * or a thrown network error is logged and dropped — a failed poke is a missed latency optimization the
+ * receiver's sparse safety-net + next poll self-heals, never a retried-to-confirmation delivery and
+ * never something that blocks or fails the underlying journal append / transfer.
+ */
+export async function sendPokeToPeer(opts: {
+  baseUrl: string;
+  bearer?: string;
+  mtls?: FederationClientMtls;
+}): Promise<{ status: number }> {
+  const url = `${opts.baseUrl.replace(/\/+$/, "")}/api/v1/federation/poke`;
+  const requireMtls = federationPeerRequiresMtls(opts.baseUrl);
+  const result = await federationDialJson({
+    url,
+    body: {}, // CONTENTLESS — carries zero data; the endpoint never reads it (ADR-0009 no-DATA invariant).
+    bearer: opts.bearer,
+    mtls: opts.mtls,
+    requireMtls
+  });
+  return { status: result.status };
+}

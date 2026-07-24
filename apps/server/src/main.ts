@@ -16,6 +16,7 @@ import { startObserveLoop } from "./coordination/observe.js";
 import { startWatchdogLoop } from "./coordination/watchdog.js";
 import { startInboxLoop } from "./federation/inbox-loop.js";
 import { startFederationSyncLoop } from "./federation/federation-sync.js";
+import { createCommanderPokeSender } from "./federation/poke-sender.js";
 import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
 import {
   DEFAULT_EXECUTOR_INSTANCE_ID,
@@ -102,9 +103,15 @@ async function main(): Promise<void> {
       config.eventBus.backend === "nats"
         ? await connectNatsFanout(config.eventBus.natsUrl!)
         : undefined;
+    // M14.3 (ADR-0009): the commander poke SENDER, hung off the outbox relay's post-commit hook (the
+    // "outbox-derived" federation feed, DESIGN §5). INERT unless outbound client-cert material is
+    // present AND a peer is per-peer poke-mode + downstream — otherwise a no-op. Best-effort:
+    // fire-and-forget, coalesced per peer, and never blocks/fails the underlying journal append.
+    const pokeSender = createCommanderPokeSender(db);
     const relay = startOutboxRelay(pool, config.runtimeDatabaseUrl, boss, {
       eventBusBackend: config.eventBus.backend,
-      natsFanout
+      natsFanout,
+      onEventsRelayed: (orgIds) => pokeSender.onEventsRelayed(orgIds)
     });
 
     // M3 coordination engine (BUILD_AND_TEST.md §8 M3, DESIGN.md §9.3/§9.4): the subprocess
@@ -158,6 +165,9 @@ async function main(): Promise<void> {
       await federationSyncLoop.stop();
       await pluginHost.stop();
       await relay.stop();
+      // Stop the poke sender AFTER the relay so no new post-commit hook fires into it; then drain any
+      // in-flight best-effort pokes (unawaited network calls) before tearing the process down.
+      await pokeSender.stop();
       await boss.stop({ graceful: false, timeout: 1000 }).catch(() => undefined);
       await natsFanout?.close().catch(() => undefined);
     });
