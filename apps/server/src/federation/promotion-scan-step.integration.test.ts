@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { GenericContainer, type StartedTestContainer } from "testcontainers";
 import { resolveSkopeo } from "@scp/cosign";
+import { resolveRunnerImage } from "@scp/plugin-testkit";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { createObject } from "../graph/objects-repo.js";
 import { proposeChange } from "../coordination/changes-repo.js";
@@ -99,21 +100,17 @@ describe.runIf(await dockerAvailable())(
       if (resolved.source === "missing") throw new Error("skopeo binary not found (vendored or PATH)");
       skopeoBin = resolved.bin;
 
-      // Build the runner image ONCE, start postgres-domain + a registry:2, in parallel where possible.
-      // DOCKER_BUILDKIT=0 forces the LEGACY builder for this build. WHY: inside the homelab DinD, the
-      // integration job both (a) docker-BUILDS this runner image and (b) has the managed-scan plugin
-      // CREATE `--network none` scan containers. Modern Docker's default BuildKit builder opens an
-      // embedded gRPC "session" that the concurrent/subsequent net=none container operations deadlock
-      // ("session healthcheck failed fatally: Unavailable: ... only one connection allowed"), hanging
-      // every integration run on main and all PRs. This Dockerfile is a plain single-stage
-      // FROM+RUN+COPY build with NO BuildKit-only features (no RUN --mount / --secret / heredocs), so
-      // the legacy builder produces a byte-for-byte functional image. Do NOT re-enable BuildKit here
-      // without re-solving the DinD session wedge (docs/BUILD_AND_TEST.md §CI/integration).
-      [, domain, registry] = await Promise.all([
-        execFileAsync("docker", ["build", "-t", RUNNER_IMAGE_TAG, RUNNER_SCAN_CONTEXT], {
-          timeout: 300_000,
-          maxBuffer: 64 * 1024 * 1024,
-          env: { ...process.env, DOCKER_BUILDKIT: "0" }
+      // LEVER 1: resolve the runner image ONCE (PULL the pre-built content-hash GHCR image in CI via
+      // SCP_RUNNER_SCAN_IMAGE_REF, else legacy-builder BUILD it locally as a dev fallback), and start
+      // the postgres-domain + a registry:2, in parallel. The DOCKER_BUILDKIT=0 legacy-builder
+      // reasoning (the homelab DinD net=none session wedge, PR #126) lives in resolveRunnerImage —
+      // same build path, just no longer paid on every CI run.
+      let scanImageRef: string;
+      [scanImageRef, domain, registry] = await Promise.all([
+        resolveRunnerImage({
+          refEnvVar: "SCP_RUNNER_SCAN_IMAGE_REF",
+          localTag: RUNNER_IMAGE_TAG,
+          context: RUNNER_SCAN_CONTEXT
         }),
         createIsolatedDomain("scanstep"),
         new GenericContainer("registry:2").withExposedPorts(5000).start()
@@ -131,7 +128,7 @@ describe.runIf(await dockerAvailable())(
 
       // Server/operator-governed managed-scan settings + the ADR-0019 §4 OCI-host allowlist. The
       // registry is plain-HTTP, so it must also be listed insecure for the server's skopeo pull.
-      process.env.SCP_MANAGED_SCAN_RUNNER_IMAGE = RUNNER_IMAGE_TAG;
+      process.env.SCP_MANAGED_SCAN_RUNNER_IMAGE = scanImageRef;
       process.env.SCP_MANAGED_SCAN_NETWORK_MODE = "none";
       process.env.SCP_MANAGED_SCAN_WORKSPACE_ROOT = join(scratch, "runner-ws");
       process.env.SCP_ARTIFACT_OCI_REGISTRY_HOSTS = registryHost;

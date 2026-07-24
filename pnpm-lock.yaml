@@ -165,6 +165,9 @@ importers:
       '@scp/iac':
         specifier: workspace:*
         version: link:../../packages/iac
+      '@scp/plugin-testkit':
+        specifier: workspace:*
+        version: link:../../packages/plugin-testkit
       '@testcontainers/postgresql':
         specifier: ^10.14.0
         version: 10.28.0

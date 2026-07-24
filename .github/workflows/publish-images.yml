@@ -1,4 +1,4 @@
-name: Publish product images (scpd + scp-runner-iac)
+name: Publish product images (scpd + scp-runner-iac + scp-runner-scan)
 
 # Publishes the PRODUCT images to GHCR so real deployments (first consumer: the
 # homelab-gitops ArgoCD app for the agentkit coordination trial) can pull them —
@@ -47,6 +47,16 @@ jobs:
           docker build -t "$IMAGE:sha-${{ github.sha }}" -t "$IMAGE:latest" apps/runner-iac
           docker push "$IMAGE:sha-${{ github.sha }}"
           docker push "$IMAGE:latest"
+      - name: Build + push scp-runner-scan (apps/runner-scan)
+        # The managed-scan executor's ephemeral scan runner (Trivy/OpenSCAP). Same release act as
+        # scp-runner-iac: a deploy pins by sha/digest. (ci.yml's `runner-images` job separately
+        # publishes a CONTENT-HASH-tagged copy for the integration tests to pull; this workflow is
+        # the deliberate, human-driven release tag consuming gitops repos pin against.)
+        run: |
+          IMAGE="ghcr.io/commanderscp/scp-runner-scan"
+          docker build -t "$IMAGE:sha-${{ github.sha }}" -t "$IMAGE:latest" apps/runner-scan
+          docker push "$IMAGE:sha-${{ github.sha }}"
+          docker push "$IMAGE:latest"
       - name: Emit pinned refs + digests (paste into the consuming gitops values)
         run: |
           {
@@ -56,5 +66,7 @@ jobs:
             docker inspect --format='  digest: {{index .RepoDigests 0}}' "ghcr.io/commanderscp/scpd:sha-${{ github.sha }}" || true
             echo "scp-runner-iac: ghcr.io/commanderscp/scp-runner-iac:sha-${{ github.sha }}"
             docker inspect --format='  digest: {{index .RepoDigests 0}}' "ghcr.io/commanderscp/scp-runner-iac:sha-${{ github.sha }}" || true
+            echo "scp-runner-scan: ghcr.io/commanderscp/scp-runner-scan:sha-${{ github.sha }}"
+            docker inspect --format='  digest: {{index .RepoDigests 0}}' "ghcr.io/commanderscp/scp-runner-scan:sha-${{ github.sha }}" || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

@@ -120,6 +120,44 @@ jobs:
       - run: pnpm build
       - run: pnpm --filter @scp/helm-verify test
 
+  runner-images:
+    name: "4c. Prebuild + publish runner images to GHCR (content-hash tags)"
+    # LEVER 1: the integration tests need two ephemeral runner images — scp-runner-scan (promotion
+    # scan step) and scp-runner-iac (managed-IaC). They used to `docker build` them in-process on
+    # EVERY integration run (minutes per run). This job builds them ONCE per content change and
+    # publishes them to GHCR by a content-hash tag (scripts/runner-image-tags.sh — the single source
+    # of truth for the tag formula, shared with the integration job's pull step); the integration
+    # job then just `docker pull`s them. Model mirrors the `ci-image` job (9a) exactly: pull the
+    # tag, and only build+push on a cache miss (the build context actually changed). Runs on every
+    # push/PR (no main-only guard) so a PR that touches a runner Dockerfile or a scanner pin rebuilds
+    # + republishes before the integration job pulls it. Needs a real Docker daemon → docker-build
+    # runner. DOCKER_BUILDKIT=0 for consistency with the legacy-builder policy (§6); this is a plain
+    # build+push job, not the DinD net=none path, so it is not strictly required here.
+    runs-on: homelab-commanderscp-linux-docker-build
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute the content-hash runner image tags (shared formula)
+        run: scripts/runner-image-tags.sh >> "$GITHUB_ENV"
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Pull each pre-built runner image, or build+push once on a cache miss
+        run: |
+          build_and_push() {
+            image="$1"; context="$2"
+            if docker pull "$image"; then
+              echo "cache hit: $image already in GHCR — no build needed."
+            else
+              echo "cache miss: building $image from $context and pushing to GHCR."
+              DOCKER_BUILDKIT=0 docker build -t "$image" "$context"
+              docker push "$image"
+            fi
+          }
+          build_and_push "$SCP_RUNNER_SCAN_IMAGE_REF" apps/runner-scan
+          build_and_push "$SCP_RUNNER_IAC_IMAGE_REF" apps/runner-iac
+
   integration:
     name: "5. Integration (Testcontainers Postgres + managed-iac real-Docker container)"
     # Needs a real Docker daemon for Testcontainers — the general runner has none
@@ -143,7 +181,10 @@ jobs:
     # that declare that exact script name) — with all three tools genuinely on PATH, the tamper
     # scenario actually executes here instead of skipping.
     runs-on: homelab-commanderscp-linux-docker-build
-    needs: [static-checks, codegen-drift, unit-tests]
+    needs: [static-checks, codegen-drift, unit-tests, runner-images]
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
@@ -186,6 +227,18 @@ jobs:
         # install.sh suite exercises (probed, never version-asserted — see skopeo-bin.ts).
         run: scripts/install-pinned-skopeo.sh
       - run: pnpm build
+      # LEVER 1: PULL the pre-built runner images (built + pushed by the `runner-images` job) so the
+      # tests never `docker build` in CI. The tag formula is the SAME script the publish job ran, so
+      # these refs resolve to the exact images now in GHCR. Exporting them into $GITHUB_ENV makes them
+      # visible to the test step, where resolveRunnerImage (@scp/plugin-testkit) returns the ref
+      # instead of building. (Local dev, with these env vars unset, still legacy-builds as before.)
+      - name: Compute the content-hash runner image tags (same formula as the publish job)
+        run: scripts/runner-image-tags.sh >> "$GITHUB_ENV"
+      - name: Log in to GHCR and pull the pre-built runner images
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker pull "$SCP_RUNNER_SCAN_IMAGE_REF"
+          docker pull "$SCP_RUNNER_IAC_IMAGE_REF"
       - run: pnpm test:integration
       # Explicit, not part of test:integration's task graph (see comment above) — this is the
       # ONLY place in CI these tool-dependent assertions run for real rather than skip.
