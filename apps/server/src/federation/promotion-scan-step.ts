@@ -97,6 +97,12 @@ export interface ManagedScanRequest {
   digest: string;
   /** The registry reference the SERVER pulls (allowlist-guarded), or `null` when unresolvable. */
   pullRef: string | null;
+  /** OpenSCAP only — the XCCDF profile id to evaluate (server-resolved; see `resolveOscapProfile`).
+   *  Ignored for trivy. */
+  profile?: string;
+  /** OpenSCAP only — the absolute path (inside the runner image) of the SSG datastream to evaluate
+   *  against (server-resolved; see `resolveOscapDatastream`). Ignored for trivy. */
+  datastream?: string;
 }
 
 /** What a runner returns — the distilled counts + the digest it actually scanned. */
@@ -131,6 +137,44 @@ interface ScanSubject {
   digest: string; // sha256:<hex>, normalized
   pullRef: string | null;
   executorType: string;
+  /** OpenSCAP profile+datastream resolved for this artifact (only used when a method is `openscap`). */
+  oscapProfile: string;
+  oscapDatastream: string;
+}
+
+// --- OpenSCAP profile/datastream resolution (M13.3b) ---------------------------------------------
+//
+// OpenSCAP needs TWO selectors trivy does not: which SSG datastream (which OS baseline content) and
+// which XCCDF profile within it. Both are baked into the runner image at `/usr/share/xml/scap/ssg/
+// content/`. Resolution precedence, most-authoritative first:
+//   1. OPERATOR env override (SCP_MANAGED_SCAN_OPENSCAP_PROFILE / _DATASTREAM) — deployment-wide lock.
+//   2. The artifact's own hint on the change `sourceRef` (`scanProfile` / `scanDatastream`) — the
+//      per-artifact OS baseline; inherently artifact-specific (a debian image needs ssg-debian, an
+//      OL image needs ssg-ol8). This only selects WHICH compliance baseline is asserted; it CANNOT
+//      weaken the gate — the high/critical THRESHOLD that authorizes/refuses is operator-governed
+//      (resolveEffectiveScanThreshold) and applied to the counts regardless of profile, and a
+//      nonexistent datastream fails the run CLOSED (run.sh exits non-zero → no passing evidence).
+//   3. Built-in default (the SSG `standard` profile against the fedora datastream).
+// (Registry-carried per-method profiles are a documented additive follow-on — the `scanner_assignments`
+// row could grow a `profiles` map; the default+override path here is the bounded 13.3b-part-1 shape.)
+
+const DEFAULT_OSCAP_PROFILE = "xccdf_org.ssgproject.content_profile_standard";
+const DEFAULT_OSCAP_DATASTREAM = "/usr/share/xml/scap/ssg/content/ssg-fedora-ds.xml";
+
+function resolveOscapProfile(sourceRef: Record<string, unknown>): string {
+  const env = process.env.SCP_MANAGED_SCAN_OPENSCAP_PROFILE;
+  if (env && env.trim().length > 0) return env.trim();
+  const hint = sourceRef.scanProfile;
+  if (typeof hint === "string" && hint.trim().length > 0) return hint.trim();
+  return DEFAULT_OSCAP_PROFILE;
+}
+
+function resolveOscapDatastream(sourceRef: Record<string, unknown>): string {
+  const env = process.env.SCP_MANAGED_SCAN_OPENSCAP_DATASTREAM;
+  if (env && env.trim().length > 0) return env.trim();
+  const hint = sourceRef.scanDatastream;
+  if (typeof hint === "string" && hint.trim().length > 0) return hint.trim();
+  return DEFAULT_OSCAP_DATASTREAM;
 }
 
 /** Extract the OCI artifact digests the change promotes (mirrors promotion-repo.ts's export
@@ -268,7 +312,9 @@ export async function runPromotionScanStep(
         subject: {
           digest,
           pullRef: resolvePullRef(sourceRef as Record<string, unknown>, digest),
-          executorType
+          executorType,
+          oscapProfile: resolveOscapProfile(sourceRef as Record<string, unknown>),
+          oscapDatastream: resolveOscapDatastream(sourceRef as Record<string, unknown>)
         },
         methods
       });
@@ -285,7 +331,14 @@ export async function runPromotionScanStep(
   const deposits: DepositRow[] = [];
   for (const { subject, methods } of plan.planned) {
     for (const method of methods) {
-      const result = await runner.scan({ method, digest: subject.digest, pullRef: subject.pullRef });
+      const result = await runner.scan({
+        method,
+        digest: subject.digest,
+        pullRef: subject.pullRef,
+        ...(method === "openscap"
+          ? { profile: subject.oscapProfile, datastream: subject.oscapDatastream }
+          : {})
+      });
       if (!result.ok) {
         // Runner/dispatch unavailable, or an unresolvable pull ref — produce NO passing evidence
         // (fail-closed). We deposit nothing: E6 then refuses this artifact for lack of a passing,
@@ -395,8 +448,8 @@ export function createServerManagedScanRunner(): ManagedScanRunner {
       if (!settings.runnerImage) {
         return { ok: false, reason: "managed scanning is not enabled (SCP_MANAGED_SCAN_RUNNER_IMAGE unset)" };
       }
-      if (req.method !== "trivy") {
-        return { ok: false, reason: `method '${req.method}' has no runner support in this increment (OpenSCAP is a follow-on)` };
+      if (req.method !== "trivy" && req.method !== "openscap") {
+        return { ok: false, reason: `method '${req.method}' has no runner support` };
       }
       if (!req.pullRef) {
         return { ok: false, reason: "unresolvable pull ref — artifact carries no location and no SCP_MANAGED_SCAN_SOURCE_REPO fallback" };
@@ -432,20 +485,34 @@ export function createServerManagedScanRunner(): ManagedScanRunner {
         const ctx = pluginCtx(settings.runnerImage, settings.networkMode);
         const ref = await plugin.trigger(ctx, {
           kind: "custom",
-          parameters: { method: req.method, inputDir: ociDir, outputDir: outDir }
+          parameters: {
+            method: req.method,
+            inputDir: ociDir,
+            outputDir: outDir,
+            ...(req.method === "openscap"
+              ? { profile: req.profile, datastream: req.datastream }
+              : {})
+          }
         });
         const st = await plugin.status(ctx, ref);
         if (st.phase !== "succeeded") {
           return { ok: false, reason: `runner did not succeed: ${st.detail ?? "(no detail)"}` };
         }
-        const parsed = await parseTrivyResultFile(join(outDir, "result.json"));
-        // THE DIGEST BINDING IS THE PULL, NOT TRIVY'S SELF-REPORT. We already content-addressed the
-        // subject above (`landed === req.digest`) and fed exactly that layout to the networkless
+        // Method-select the parser: trivy emits result.json, openscap emits arf.xml. BOTH distil to
+        // the four ScanSeverityCounts the unchanged M17.5/E6 machinery consumes. A malformed result
+        // throws (caught below) → {ok:false} → no passing evidence → E6 refuses (fail-closed).
+        const parsed =
+          req.method === "openscap"
+            ? await parseOscapResultFile(join(outDir, "arf.xml"))
+            : await parseTrivyResultFile(join(outDir, "result.json"));
+        // THE DIGEST BINDING IS THE PULL, NOT THE SCANNER'S SELF-REPORT. We already content-addressed
+        // the subject above (`landed === req.digest`) and fed exactly that layout to the networkless
         // runner, so the scanned artifact's MANIFEST digest is provably the promoted digest. Trivy's
-        // own identifier for an `--input` OCI-layout scan is `Metadata.ImageID` — the image CONFIG
-        // digest, a DIFFERENT sha256 than the manifest digest — so trusting `parsed.scannedDigest`
-        // here would false-mismatch every clean artifact. Bind to `req.digest` (the verified pull);
-        // `parsed.scannedDigest` is retained only for the malformed-result diagnostic path below.
+        // own identifier for an `--input` OCI-layout scan is `Metadata.ImageID` (the image CONFIG
+        // digest — a DIFFERENT sha256 than the manifest digest), and an oscap ARF carries NO image
+        // digest at all (it scanned an extracted rootfs), so trusting `parsed.scannedDigest` here
+        // would false-mismatch. Bind to `req.digest` (the verified pull) for BOTH methods;
+        // `parsed.scannedDigest` is retained only for the trivy malformed-result diagnostic path.
         return {
           ok: true,
           report: {
@@ -547,4 +614,104 @@ async function parseTrivyResultFile(path: string): Promise<ParsedTrivy> {
     versionText = undefined;
   }
   return parseTrivyResult(raw, versionText);
+}
+
+// --- OpenSCAP result parsing (server-side, M13.3b) -----------------------------------------------
+//
+// Distil an OpenSCAP XCCDF/ARF result into the four ScanSeverityCounts by counting FAILED rule
+// results by their XCCDF severity. The mapping (DECIDED — ADR-0020 §2 / proposal §13.3, recorded
+// here normatively):
+//
+//   XCCDF `high`   -> high
+//   XCCDF `medium` -> medium
+//   XCCDF `low`    -> low
+//   (XCCDF has NO `critical` severity) -> `critical` stays 0, VACUOUSLY. Operators therefore gate
+//     OpenSCAP findings on `high` (the fail-closed default maxHigh=0 refuses any high-severity fail);
+//     a `critical` value is mapped for completeness should a datastream ever emit one, but SSG does not.
+//   `unknown` / `info` / unset / anything else -> FOLDED AWAY (not counted), exactly as trivy's
+//     `UNKNOWN` severity is folded (supply-chain.ts ScanSeverityCounts doc).
+//
+// Only `fail` rule-results count. `pass`/`notapplicable`/`notchecked`/`notselected`/`error`/`fixed`
+// are NOT findings against the artifact (in particular an offline rootfs scan yields many
+// `notchecked`/`notapplicable` for live-system probes — those are not fails and must not inflate counts).
+//
+// FAIL-CLOSED on a malformed/empty document (proposal §13.3): a result that is not recognizably an
+// XCCDF/ARF scan (no TestResult and no rule-result at all) THROWS rather than degrading to all-zero
+// counts — an all-zero count on a broken scan would masquerade as a clean pass. (The runner already
+// fails the run for a broken oscap invocation, so this path normally sees a real ARF; the throw is
+// the belt-and-suspenders second barrier.) The caller maps the throw to {ok:false} → no evidence → E6
+// refuses.
+
+interface ParsedOscap {
+  severityCounts: ScanSeverityCounts;
+  /** An ARF carries no image digest (the runner scanned an extracted rootfs), so always undefined —
+   *  the digest binding is the server-verified PULL, not the scanner's self-report (see the runner). */
+  scannedDigest: undefined;
+  scannerVersion: string;
+}
+
+const XCCDF_SEVERITY_TO_COUNT: Record<string, keyof ScanSeverityCounts | undefined> = {
+  critical: "critical", // XCCDF emits no `critical` in practice; mapped for completeness only.
+  high: "high",
+  medium: "medium",
+  low: "low"
+  // info / unknown / unset / other -> undefined (folded away, like trivy's UNKNOWN).
+};
+
+export function parseOscapResult(rawXml: unknown, versionText?: string): ParsedOscap {
+  const counts = { critical: 0, high: 0, medium: 0, low: 0 };
+  if (typeof rawXml !== "string" || rawXml.trim().length === 0) {
+    throw new Error("parseOscapResult: empty OpenSCAP result (fail-closed)");
+  }
+  // A real oscap scan always emits an XCCDF TestResult with rule-results. If neither element is
+  // present the document is not a scan result — fail closed rather than report zero findings.
+  const looksLikeXccdf =
+    /<[A-Za-z0-9]*:?TestResult[\s>]/.test(rawXml) || /<[A-Za-z0-9]*:?rule-result[\s>]/.test(rawXml);
+  if (!looksLikeXccdf) {
+    throw new Error(
+      "parseOscapResult: not an XCCDF/ARF document (no TestResult/rule-result) — fail-closed"
+    );
+  }
+
+  const ruleResultRe = /<[A-Za-z0-9]*:?rule-result\b([^>]*)>([\s\S]*?)<\/[A-Za-z0-9]*:?rule-result>/g;
+  let seen = 0;
+  let m: RegExpExecArray | null;
+  while ((m = ruleResultRe.exec(rawXml)) !== null) {
+    seen += 1;
+    const attrs = m[1] ?? "";
+    const body = m[2] ?? "";
+    const resM = /<[A-Za-z0-9]*:?result>\s*([A-Za-z]+)\s*<\/[A-Za-z0-9]*:?result>/i.exec(body);
+    if (!resM || resM[1]!.toLowerCase() !== "fail") continue;
+    const sevM = /\bseverity="([^"]*)"/i.exec(attrs);
+    const key = XCCDF_SEVERITY_TO_COUNT[(sevM?.[1] ?? "").toLowerCase()];
+    if (key) counts[key] += 1;
+  }
+  if (seen === 0) {
+    throw new Error(
+      "parseOscapResult: no rule-results in document — fail-closed (malformed/empty scan)"
+    );
+  }
+
+  const version = (() => {
+    if (versionText) {
+      // `oscap --version` header: "OpenSCAP command line tool (oscap) 1.4.2".
+      const m2 = /oscap\)?\s*v?(\d+\.\d+(?:\.\d+)?)/i.exec(versionText) ?? /(\d+\.\d+\.\d+)/.exec(versionText);
+      if (m2?.[1]) return m2[1];
+    }
+    return "unknown";
+  })();
+
+  return { severityCounts: counts, scannedDigest: undefined, scannerVersion: version };
+}
+
+async function parseOscapResultFile(path: string): Promise<ParsedOscap> {
+  const { readFile } = await import("node:fs/promises");
+  const raw = await readFile(path, "utf8");
+  let versionText: string | undefined;
+  try {
+    versionText = await readFile(path.replace(/arf\.xml$/, "scanner-version.txt"), "utf8");
+  } catch {
+    versionText = undefined;
+  }
+  return parseOscapResult(raw, versionText);
 }
