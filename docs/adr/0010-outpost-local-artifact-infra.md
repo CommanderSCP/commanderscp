@@ -1,6 +1,6 @@
 # ADR-0010: Per-outpost local artifact & source infrastructure (Harbor + Gitea)
 
-**Status:** Proposed (2026-07-18)
+**Status:** Accepted (2026-07-18; M15 shipped COMPLETE, status flipped 2026-07-24)
 **Context doc:** [docs/proposals/outpost-local-artifact-infra.md](../proposals/outpost-local-artifact-infra.md)
 **Relates to:** [ADR-0002](0002-execution-strategy.md) (execution strategy / bundled backends); [ADR-0004](0004-service-naming-commander-outpost-retrans.md) (commander/outpost/retrans); [ADR-0012](0012-registry-consolidation.md), [ADR-0013](0013-supply-chain-scan-sbom-manifest.md); DESIGN.md §12/§13/§16
 

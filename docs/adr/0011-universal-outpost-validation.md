@@ -1,6 +1,6 @@
 # ADR-0011: Signature validation at the receiving outpost is a universal pre-deploy gate
 
-**Status:** Proposed (2026-07-18)
+**Status:** Accepted (2026-07-18; M15.2 + M17.4(a) shipped, status flipped 2026-07-24)
 **Context doc:** [docs/proposals/federation-outposts-ui.md](../proposals/federation-outposts-ui.md)
 **Relates to:** [ADR-0010](0010-outpost-local-artifact-infra.md) (trust scan-at-source); [ADR-0004](0004-service-naming-commander-outpost-retrans.md); [ADR-0012](0012-registry-consolidation.md) (outpost = Gitea-only); [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (what is validated); DESIGN.md §13
 
