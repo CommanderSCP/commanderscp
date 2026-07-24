@@ -100,10 +100,20 @@ describe.runIf(await dockerAvailable())(
       skopeoBin = resolved.bin;
 
       // Build the runner image ONCE, start postgres-domain + a registry:2, in parallel where possible.
+      // DOCKER_BUILDKIT=0 forces the LEGACY builder for this build. WHY: inside the homelab DinD, the
+      // integration job both (a) docker-BUILDS this runner image and (b) has the managed-scan plugin
+      // CREATE `--network none` scan containers. Modern Docker's default BuildKit builder opens an
+      // embedded gRPC "session" that the concurrent/subsequent net=none container operations deadlock
+      // ("session healthcheck failed fatally: Unavailable: ... only one connection allowed"), hanging
+      // every integration run on main and all PRs. This Dockerfile is a plain single-stage
+      // FROM+RUN+COPY build with NO BuildKit-only features (no RUN --mount / --secret / heredocs), so
+      // the legacy builder produces a byte-for-byte functional image. Do NOT re-enable BuildKit here
+      // without re-solving the DinD session wedge (docs/BUILD_AND_TEST.md §CI/integration).
       [, domain, registry] = await Promise.all([
         execFileAsync("docker", ["build", "-t", RUNNER_IMAGE_TAG, RUNNER_SCAN_CONTEXT], {
           timeout: 300_000,
-          maxBuffer: 64 * 1024 * 1024
+          maxBuffer: 64 * 1024 * 1024,
+          env: { ...process.env, DOCKER_BUILDKIT: "0" }
         }),
         createIsolatedDomain("scanstep"),
         new GenericContainer("registry:2").withExposedPorts(5000).start()
