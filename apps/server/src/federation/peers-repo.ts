@@ -177,8 +177,10 @@ export interface PairPeerInput {
   deliveryTarget?: DeliveryTarget | null;
   /** M14.1 (ADR-0009) — per-peer poke-mode. Tri-state on re-pair, mirroring `deliveryTarget`'s
    *  additive discipline (a boolean has no null state, so: `undefined` = field absent = PRESERVE
-   *  the current value; `true`/`false` = SET). Setting it `true` requires an https/mTLS-capable
-   *  `baseUrl` — the pair-time guard (see `pairPeer`). */
+   *  the current value; `true`/`false` = SET). An EFFECTIVE (post-write) `true` requires an
+   *  https/mTLS-capable EFFECTIVE `baseUrl` — the pair-time guard (see `pairPeer`) checks the merged
+   *  tuple, so a re-pair can neither set poke-mode true on a non-https peer NOR downgrade the baseUrl
+   *  of a peer whose poke-mode stays true. */
   pokeMode?: boolean;
 }
 
@@ -198,19 +200,29 @@ export async function pairPeer(tx: TenantTx, input: PairPeerInput): Promise<Fede
   // set or rotate). The over-the-wire schema is `.optional()` (not nullable), so absent === undefined.
   const cosignProvided = input.cosignPublicKey !== undefined;
 
-  // M14.1 pair-time guard (ADR-0009; the fail-closed transport-identity invariant). SETTING poke-mode
-  // TRUE requires an https/mTLS-capable peer baseUrl — the poke must authenticate the caller as the
+  // M14.1 pair-time guard (ADR-0009; the fail-closed transport-identity invariant). Poke-mode TRUE
+  // requires an https/mTLS-capable peer baseUrl — the poke must authenticate the caller as the
   // enrolled commander (ADR-0001), which only the mTLS transport does. This is the EARLY guard (the
-  // pair refuses); full enforcement (the outpost's poke endpoint refusing) is M14.2. `pokeMode=false`
-  // and absent (preserve) are always allowed. The effective baseUrl is the one being persisted:
-  // input.baseUrl when supplied, else (on re-pair) the existing peer's baseUrl.
-  if (input.pokeMode === true) {
-    const effectiveBaseUrl = input.baseUrl ?? existing[0]?.baseUrl ?? null;
-    if (!federationPeerRequiresMtls(effectiveBaseUrl)) {
-      throw badRequest(
-        "poke-mode requires an mTLS/https peer — the poke must authenticate the caller as the enrolled commander"
-      );
-    }
+  // pair refuses); full enforcement (the outpost's poke endpoint refusing) is M14.2.
+  //
+  // M14.3 HARDENING — the guard validates the EFFECTIVE POST-WRITE STATE, not the input transition.
+  // The two fields MERGE with OPPOSITE rules below (baseUrl: request wins when present; pokeMode:
+  // tri-state, EXISTING wins when absent), so keying the guard off `input.pokeMode === true` checked a
+  // DIFFERENT tuple than the one actually persisted. The hole: a re-pair that sets
+  // `baseUrl: 'http://…'` while OMITTING pokeMode skipped the guard entirely and left an
+  // `{http baseUrl, pokeMode: true}` row — which the sender would then dial with the federation bearer
+  // in cleartext (scheme-derived `requireMtls` never fires for http). Computing the effective tuple
+  // makes `pokeMode=true` on a non-https baseUrl UNREPRESENTABLE through EVERY path: explicit true on
+  // http, explicit true with no baseUrl, an omitted pokeMode that preserves true while downgrading the
+  // baseUrl, and a re-pair that preserves both. `pokeMode=false` (effective) is always allowed.
+  const effectivePokeMode =
+    input.pokeMode !== undefined ? input.pokeMode : (existing[0]?.pokeMode ?? false);
+  const effectiveBaseUrl =
+    input.baseUrl !== undefined ? input.baseUrl : (existing[0]?.baseUrl ?? null);
+  if (effectivePokeMode && !federationPeerRequiresMtls(effectiveBaseUrl)) {
+    throw badRequest(
+      "poke-mode requires an mTLS/https peer — the poke must authenticate the caller as the enrolled commander"
+    );
   }
 
   if (!existing[0]) {

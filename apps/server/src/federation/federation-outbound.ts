@@ -201,3 +201,60 @@ export async function pullSyncBundleFromCommander(opts: {
   }
   return result.body as SyncBundle;
 }
+
+/**
+ * M14.3 (ADR-0009, docs/proposals/outpost-poke.md §"Milestone scope") — SEND ONE CONTENTLESS POKE to
+ * a downstream peer's `POST /api/v1/federation/poke`. The commander→outpost/retrans wake signal: it
+ * says only "something is pending — come pull," carrying ZERO data (the no-DATA-commander→outpost
+ * invariant, ADR-0009 §1). All data still flows outpost→commander via the outpost's own pull.
+ *
+ * Dials through {@link federationDialJson}, so it presents THIS instance's enrolled client cert
+ * (SAN `urn:scp:domain:<ownDomainId>`) — which the peer's `enforceFederationMtls` authenticates as
+ * the enrolled commander — and carries the same federation bearer the sync pull uses (the poke
+ * endpoint runs `requireAuth` too). The body is an empty object: the endpoint ignores it entirely
+ * (no request schema), so it is contentless in effect and in intent.
+ *
+ * ## FAIL-CLOSED — mTLS is UNCONDITIONAL for a poke (M14.3 hardening)
+ *
+ * Unlike {@link pullSyncBundleFromCommander}, whose `requireMtls` is DERIVED from the peer's own
+ * baseUrl scheme (a plain-http peer keeps the pre-existing bearer-only path working), a poke is
+ * DEFINED as an mTLS-authenticated call (ADR-0009 §5) — it carries no signed payload of its own, so
+ * transport identity is the ONLY thing that authenticates the caller as the enrolled commander. So:
+ *   - a NON-https target is REFUSED outright ({@link FederationDialRefused}) — deriving `requireMtls`
+ *     from the target's own (operator-supplied, possibly downgraded) scheme would let an `http://`
+ *     peer opt ITSELF out of mTLS and receive the federation bearer in CLEARTEXT with no mutual
+ *     authentication; and
+ *   - `requireMtls` is the CONSTANT `true`, so an https target with no client-cert material is
+ *     refused too.
+ * Both refusals happen BEFORE any socket is opened. This is defense in depth behind `pairPeer`'s
+ * effective-state guard and `isPokeTarget`'s https requirement: even if a malformed poke-mode row
+ * somehow exists, the dial itself will not leak the credential.
+ *
+ * Returns the peer's HTTP status. Best-effort semantics live in the CALLER (poke-sender.ts): a non-2xx
+ * or a thrown network error is logged and dropped — a failed poke is a missed latency optimization the
+ * receiver's sparse safety-net + next poll self-heals, never a retried-to-confirmation delivery and
+ * never something that blocks or fails the underlying journal append / transfer.
+ */
+export async function sendPokeToPeer(opts: {
+  baseUrl: string;
+  bearer?: string;
+  mtls?: FederationClientMtls;
+}): Promise<{ status: number }> {
+  if (!federationPeerRequiresMtls(opts.baseUrl)) {
+    throw new FederationDialRefused(
+      `federation poke: '${opts.baseUrl}' is not an https/mTLS endpoint — a poke authenticates the caller ` +
+        "as the enrolled commander via its client certificate, so refusing to poke over an unauthenticated " +
+        "transport (fail-closed)"
+    );
+  }
+  const url = `${opts.baseUrl.replace(/\/+$/, "")}/api/v1/federation/poke`;
+  const result = await federationDialJson({
+    url,
+    body: {}, // CONTENTLESS — carries zero data; the endpoint never reads it (ADR-0009 no-DATA invariant).
+    bearer: opts.bearer,
+    mtls: opts.mtls,
+    // CONSTANT true — never scheme-derived (see the fail-closed note above).
+    requireMtls: true
+  });
+  return { status: result.status };
+}

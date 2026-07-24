@@ -234,9 +234,11 @@ export const PairPeerRequestSchema = z.object({
   /** M14.1 (ADR-0009, proposal §Config) — per-peer poke-mode. Tri-state on re-pair, mirroring
    *  `deliveryTarget`'s additive discipline: ABSENT (undefined) preserves the current setting (an
    *  old client that never knew the field can't flip it); `true`/`false` SETS it. Default-off: a
-   *  peer paired without ever supplying it stays poll-mode. SETTING it `true` requires an
-   *  https/mTLS-capable `baseUrl` (the M14.1 pair-time guard) — the poke must authenticate the
-   *  caller as the enrolled commander (ADR-0001); full endpoint enforcement is M14.2. Boolean, not
+   *  peer paired without ever supplying it stays poll-mode. An EFFECTIVE (post-write) `true`
+   *  requires an https/mTLS-capable EFFECTIVE `baseUrl` (the M14.1 pair-time guard, made total over
+   *  the merged tuple in M14.3) — the poke must authenticate the caller as the enrolled commander
+   *  (ADR-0001); full endpoint enforcement is M14.2. So a re-pair can neither set poke-mode true on
+   *  a non-https peer NOR downgrade `baseUrl` to http while poke-mode stays true. Boolean, not
    *  nullable — there is no "clear to null" state, only poll (false) vs poke (true). */
   pokeMode: z.boolean().optional()
 });

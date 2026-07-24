@@ -76,9 +76,21 @@ export function startOutboxRelay(
   runtimePool: Pool,
   listenConnectionString: string,
   boss: PgBoss,
-  opts: { eventBusBackend: "postgres" | "nats"; natsFanout?: NatsFanoutHandle }
+  opts: {
+    eventBusBackend: "postgres" | "nats";
+    natsFanout?: NatsFanoutHandle;
+    /**
+     * M14.3 (ADR-0009) — post-commit hook handed the DISTINCT org ids a just-committed batch
+     * produced events for. Fire-and-forget: invoked AFTER COMMIT, OUTSIDE the `scp_relay` tx (that
+     * role can read only `outbox`), synchronous up to its own internal scheduling, and wrapped so a
+     * throw can never roll back or wedge the relay. The commander poke sender (federation/
+     * poke-sender.ts) uses it to nudge poke-mode peers to pull — the "outbox-derived" federation
+     * feed of DESIGN §5, reusing this exact machinery rather than inventing a new event source.
+     */
+    onEventsRelayed?: (orgIds: string[]) => void;
+  }
 ): OutboxRelayHandle {
-  const { eventBusBackend, natsFanout } = opts;
+  const { eventBusBackend, natsFanout, onEventsRelayed } = opts;
   if (eventBusBackend === "nats" && !natsFanout) {
     throw new Error(
       "startOutboxRelay: eventBusBackend 'nats' requires a connected natsFanout handle — refusing " +
@@ -114,6 +126,7 @@ export function startOutboxRelay(
       // row(s) are simply left unprocessed and picked up by the next relayOnce() (or, if the
       // process really is shutting down, by the relay after restart).
       const rows = result?.rows ?? [];
+      const relayedOrgIds = new Set<string>();
       for (const row of rows) {
         await boss.send(DOMAIN_EVENTS_QUEUE, {
           id: row.id,
@@ -139,8 +152,19 @@ export function startOutboxRelay(
           await natsFanout!.publish(relayedEvent);
         }
         await client.query(`UPDATE outbox SET processed_at = now() WHERE id = $1`, [row.id]);
+        relayedOrgIds.add(row.org_id);
       }
       await client.query("COMMIT");
+      // POST-COMMIT, fire-and-forget: notify the poke sender which orgs just produced events. Wrapped
+      // so a hook throw can never affect the relay (the batch is already durably committed). Runs
+      // OUTSIDE the `scp_relay` tx above — the hook does its own tenant-scoped peer lookups.
+      if (onEventsRelayed && relayedOrgIds.size > 0) {
+        try {
+          onEventsRelayed([...relayedOrgIds]);
+        } catch (err) {
+          console.error("[outbox-relay] onEventsRelayed hook threw (ignored — batch already committed)", err);
+        }
+      }
     } catch (err) {
       await client.query("ROLLBACK").catch(() => undefined);
       console.error("[outbox-relay] relay batch failed", err);

@@ -65,27 +65,68 @@ describe("M14.0 federation outbound mTLS dialer (fail-closed)", () => {
   });
 });
 
-// M14.1 (ADR-0009): the pair-time poke-mode guard's decision table. The guard in `pairPeer`
-// (peers-repo.ts) REFUSES iff poke-mode is being SET TRUE against a non-mTLS effective baseUrl —
-// it reuses `federationPeerRequiresMtls` exactly. This documents the truth table the persist-layer
-// integration tests exercise against a real DB.
-describe("M14.1 pair-time poke-mode guard decision", () => {
-  // Mirrors the inline guard predicate: reject when setting poke-mode true on a non-https peer.
-  const guardRejects = (pokeMode: boolean | undefined, baseUrl: string | null | undefined): boolean =>
-    pokeMode === true && !federationPeerRequiresMtls(baseUrl);
+// M14.1 (ADR-0009) + M14.3 hardening: the pair-time poke-mode guard's decision table. The guard in
+// `pairPeer` (peers-repo.ts) REFUSES iff the EFFECTIVE POST-WRITE state is poke-mode true against a
+// non-mTLS effective baseUrl — it reuses `federationPeerRequiresMtls` exactly. This documents the
+// truth table the persist-layer integration tests exercise against a real DB.
+//
+// M14.3: the predicate is over the EFFECTIVE tuple, not the input transition. The two fields merge
+// with OPPOSITE rules on re-pair (baseUrl: request wins when present; pokeMode: tri-state, EXISTING
+// wins when absent), so the old `input.pokeMode === true` form validated a DIFFERENT tuple than the
+// one persisted — a re-pair that downgraded baseUrl to http while OMITTING pokeMode skipped the
+// guard and left a poke-mode peer on an unauthenticated transport.
+describe("M14.1/M14.3 pair-time poke-mode guard decision (EFFECTIVE post-write state)", () => {
+  // Mirrors the inline guard predicate exactly, including the effective-state merge.
+  const guardRejects = (
+    input: { pokeMode?: boolean; baseUrl?: string },
+    existing?: { pokeMode: boolean; baseUrl: string | null }
+  ): boolean => {
+    const effectivePokeMode =
+      input.pokeMode !== undefined ? input.pokeMode : (existing?.pokeMode ?? false);
+    const effectiveBaseUrl =
+      input.baseUrl !== undefined ? input.baseUrl : (existing?.baseUrl ?? null);
+    return effectivePokeMode && !federationPeerRequiresMtls(effectiveBaseUrl);
+  };
 
   it("SETTING poke-mode true requires an https/mTLS baseUrl", () => {
-    expect(guardRejects(true, "https://outpost.example.com")).toBe(false); // allowed
-    expect(guardRejects(true, "http://outpost.example.com")).toBe(true); // rejected
-    expect(guardRejects(true, null)).toBe(true); // rejected (no transport identity)
-    expect(guardRejects(true, undefined)).toBe(true); // rejected
+    expect(guardRejects({ pokeMode: true, baseUrl: "https://outpost.example.com" })).toBe(false);
+    expect(guardRejects({ pokeMode: true, baseUrl: "http://outpost.example.com" })).toBe(true);
+    expect(guardRejects({ pokeMode: true })).toBe(true); // no baseUrl at all — no transport identity
   });
 
-  it("poke-mode false or absent (preserve) is ALWAYS allowed regardless of baseUrl", () => {
-    expect(guardRejects(false, "http://outpost.example.com")).toBe(false);
-    expect(guardRejects(false, null)).toBe(false);
-    expect(guardRejects(undefined, "http://outpost.example.com")).toBe(false);
-    expect(guardRejects(undefined, null)).toBe(false);
+  it("poke-mode false (effective) is ALWAYS allowed regardless of baseUrl", () => {
+    expect(guardRejects({ pokeMode: false, baseUrl: "http://outpost.example.com" })).toBe(false);
+    expect(guardRejects({ pokeMode: false })).toBe(false);
+    // Absent on a NEW peer defaults to false — allowed on any baseUrl.
+    expect(guardRejects({ baseUrl: "http://outpost.example.com" })).toBe(false);
+    expect(guardRejects({})).toBe(false);
+    // Absent on an EXISTING poll-mode peer preserves false — allowed on any baseUrl.
+    expect(
+      guardRejects({ baseUrl: "http://outpost.example.com" }, { pokeMode: false, baseUrl: null })
+    ).toBe(false);
+  });
+
+  it("M14.3 REGRESSION: an OMITTED pokeMode that PRESERVES true is checked against the new baseUrl", () => {
+    const pokePeer = { pokeMode: true, baseUrl: "https://outpost.example.com" };
+    // THE BUG: pokeMode omitted, baseUrl downgraded to http → effective tuple is (true, http).
+    expect(guardRejects({ baseUrl: "http://outpost.example.com" }, pokePeer)).toBe(true);
+    // https → https move with pokeMode omitted stays allowed (no over-refusal).
+    expect(guardRejects({ baseUrl: "https://outpost-2.example.com" }, pokePeer)).toBe(false);
+    // Pure no-op re-pair (both omitted) on an https poke peer stays allowed.
+    expect(guardRejects({}, pokePeer)).toBe(false);
+    // Downgrading to http is fine when poke-mode is explicitly turned OFF in the same request.
+    expect(guardRejects({ baseUrl: "http://outpost.example.com", pokeMode: false }, pokePeer)).toBe(
+      false
+    );
+  });
+
+  it("M14.3: preserving true on a peer whose STORED baseUrl is already non-https is REFUSED", () => {
+    // Belt-and-braces for a legacy/hand-edited row: the guard is TOTAL over the effective state, so
+    // any re-pair of such a row is refused until the operator fixes the baseUrl or clears poke-mode.
+    const legacyBad = { pokeMode: true, baseUrl: "http://outpost.example.com" };
+    expect(guardRejects({}, legacyBad)).toBe(true);
+    expect(guardRejects({ pokeMode: false }, legacyBad)).toBe(false);
+    expect(guardRejects({ baseUrl: "https://outpost.example.com" }, legacyBad)).toBe(false);
   });
 });
 
