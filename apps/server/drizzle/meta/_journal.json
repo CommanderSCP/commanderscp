@@ -267,6 +267,13 @@
       "when": 1786200000000,
       "tag": "0037_federation_peer_poke_mode",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1786300000000,
+      "tag": "0038_federation_peer_pull_state",
+      "breakpoints": true
     }
   ]
 }

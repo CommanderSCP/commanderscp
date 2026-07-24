@@ -122,9 +122,62 @@ for this org's (single) `role: retrans` peer (`scp federation pair --role retran
 material is ever read from the inbox. No (or ambiguous) retrans peer → tarballs stay unprocessed
 with a logged config gap.
 
-Out of scope in M13.1a (deliberately): the poke-chain trigger (M14) and the retrans auto-relay
-build after a promotion import (13.1b) — a retrans still runs `scp federation relay` to *build*
-tarballs; the loop automates the receiving/forwarding ends.
+Out of scope in M13.1a (deliberately): the retrans auto-relay build after a promotion import
+(13.1b) — a retrans still runs `scp federation relay` to *build* tarballs; the loop automates the
+receiving/forwarding ends. **Still true after M14.4** (owner decision D3, 2026-07-24): the poke
+chain is now wired, but **hop 2 — the retrans packaging a tarball for the CDS — remains
+operator-gated.** A poke arriving at a retrans wakes its ingest, not a build.
+
+## Poke-mode across the relay chain (M14.4, ADR-0009)
+
+**Poke-mode is TWO INDEPENDENT FLAGS ON TWO INSTANCES, not one setting.** On each instance,
+`pokeMode` on a peer row means *"I accept pokes from this peer"* when the peer is upstream
+(`role: commander`/`retrans`), and *"I may poke this peer"* when it is downstream
+(`role: outpost`/`retrans`). Both sides must be set for a hop to work; the receiver refuses an
+unconsented poke with **409**.
+
+```
+commander ──poke──▶ low-side retrans ──(CDS, operator-gated)──▶ high-side retrans ──poke──▶ outpost
+   ▲ pair the retrans   ▲ pair the commander    ▲ pair the outpost   ▲ pair the retrans
+     --poke-mode          --poke-mode             --poke-mode          --poke-mode
+```
+
+Every poke-mode peer needs an **https/mTLS-capable `baseUrl`** — the pair command refuses otherwise
+(the poke carries no signed payload, so the client certificate is the only thing authenticating the
+caller).
+
+**Enable order — receiver first, always.** Enable `--poke-mode` on the *receiving* instance before
+the *sending* one. The reverse order only means pokes are refused 409 until you finish; it is never
+harmful, because a receiver stays on the frequent poll until a poke has **actually arrived** (the
+self-proving rule below).
+
+**Disable order — sender first.** Turn the sender off, then the receiver. Turning only the receiver
+off leaves the sender poking an endpoint that 409s: harmless, but noisy in the sender's debug log.
+
+**You cannot accidentally strand an instance on a 15-minute cadence.** An instance drops the
+frequent poll for a peer only once **all** of these hold: its own `pokeMode` is set for that peer, it
+has actually received a poke from that peer, this instance has outbound client-cert material, and its
+last pull succeeded. Set the flag on one side only and nothing changes — it keeps polling every 60s.
+
+**Reading the new freshness fields** (`scp federation status`; full timestamps in `--output json`):
+
+| Field | Meaning |
+|---|---|
+| `cadence: poll` | The frequent interval poll (`SCP_FEDERATION_SYNC_INTERVAL_SECONDS`, default 60s). |
+| `cadence: poke` | The frequent poll is disabled; freshness comes from pokes, backed by the sparse safety-net (`SCP_FEDERATION_SYNC_SPARSE_INTERVAL_SECONDS`, default 900s). |
+| `cadence: poke*` | **Configured for poke-mode but still polling.** Look at `lastPokeReceivedAt` (null ⇒ the other side never pokes — its half is not enabled, or it cannot reach you), at whether this instance has `SCP_FEDERATION_MTLS_CERT_FILE`/`_KEY_FILE`, and at `lastPullSuccessAt` vs `lastPullAttemptAt`. |
+| `lastPullAttemptAt` | Last time the scheduler *tried* to pull this peer (stamped even when the pull failed). |
+| `lastPullSuccessAt` | Last time a pull actually imported. **Older than `lastPullAttemptAt` ⇒ the last attempt failed**, and the peer is back on the frequent cadence until one succeeds. |
+| `lastPokeReceivedAt` | Last poke accepted from this peer. `null` on a poke-mode peer is the one-sided-enable case. |
+
+Distinct from `asOf`/`lastSyncedAt`, which is the last confirmed **bundle transfer** (the file /
+air-gap channel) — an air-gapped outpost has fresh transfers and no pulls at all.
+
+**If pokes are accepted but nothing happens:** look for the `federation poke accepted but woke
+NOTHING on this process` warning and its `pokeWakeStats.notWoken` counter. It means the poke landed
+on a process with no job queue (a pure `role=api` replica, or the sync/inbox loops disabled there).
+The poke is still honored and the sparse safety-net still syncs, but poke-mode is effectively off
+until a worker-capable process serves that endpoint.
 
 ## Credentials (ADR-0019 §3 — the artifact-store class)
 

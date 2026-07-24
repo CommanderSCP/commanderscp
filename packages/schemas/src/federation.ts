@@ -292,6 +292,23 @@ export const FederationPeerStatusSchema = z.object({
   peer: FederationPeerSchema,
   lastAppliedSequence: z.number().int().nullable(),
   lastSyncedAt: z.string().datetime().nullable(),
+  /** M14.4 (ADR-0009) — LIVE-PULL FRESHNESS. All optional/additive (an old SDK is unaffected) and
+   *  nullable ("never"). `lastPullAttemptAt` is stamped on EVERY attempt, `lastPullSuccessAt` only
+   *  on a successful import — so an attempt with no later success is a peer in the RECONNECT LEG
+   *  (back on the frequent cadence until one pull succeeds). Distinct from `lastSyncedAt`, which is
+   *  the last confirmed BUNDLE TRANSFER (the file/air-gap channel), and from `lastAppliedSequence`,
+   *  which is applied progress — neither records that a pull was ATTEMPTED. */
+  lastPullAttemptAt: z.string().datetime().nullable().optional(),
+  lastPullSuccessAt: z.string().datetime().nullable().optional(),
+  /** M14.4 (owner decision D2) — when a poke from this peer was last ACCEPTED. `null` on a
+   *  `pokeMode` peer is the UNILATERAL-SPARSE misconfiguration made visible: this side opted into
+   *  poke-mode but the other side has never actually poked, so the scheduler keeps polling. */
+  lastPokeReceivedAt: z.string().datetime().nullable().optional(),
+  /** M14.4 — the cadence the scheduler is ACTUALLY using for this peer right now, as opposed to the
+   *  raw `peer.pokeMode` flag: `"poke"` (sparse safety-net only) or `"poll"` (the frequent interval).
+   *  Reports `"poll"` for a pokeMode peer that has never been poked (D2), when this instance has no
+   *  outbound client-cert material (D4), and while the peer's last pull failed (the reconnect leg). */
+  effectiveCadence: z.enum(["poke", "poll"]).optional(),
   recentTransfers: z.array(BundleTransferSchema)
 });
 export type FederationPeerStatus = z.infer<typeof FederationPeerStatusSchema>;

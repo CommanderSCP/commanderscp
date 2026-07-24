@@ -13374,6 +13374,10 @@ export type GetFederationStatusResponses = {
             };
             lastAppliedSequence: number | null;
             lastSyncedAt: string | null;
+            lastPullAttemptAt?: string | null;
+            lastPullSuccessAt?: string | null;
+            lastPokeReceivedAt?: string | null;
+            effectiveCadence?: 'poke' | 'poll';
             recentTransfers: Array<{
                 id: string;
                 peerDomainId: string;
@@ -14041,6 +14045,8 @@ export type FederationPokeResponses = {
     202: {
         accepted: true;
         woken: boolean;
+        wokenSync?: boolean;
+        wokenInbox?: boolean;
     };
 };
 

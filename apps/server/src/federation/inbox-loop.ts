@@ -66,9 +66,14 @@
  * material ever comes from the inbox itself. No / ambiguous retrans peers → tarballs are left
  * unprocessed with a log (config gap, retried next tick), never a guessed key.
  *
- * OUT OF SCOPE here (owner-decided M14 / 13.1b): the poke-chain trigger (this tick loop is the
- * reliable floor a poke later optimizes) and the retrans auto-relay build after a promotion
- * import.
+ * The poke-chain trigger IS in this file now: {@link wakeInboxNow} (M14.4 S6) is the AIR-GAP leg of
+ * the contentless poke — an air-gapped outpost has no `role: commander` peer to dial, so waking
+ * THIS loop is what makes the last hop real. The interval tick remains the reliable floor that wake
+ * merely optimizes.
+ *
+ * STILL OUT OF SCOPE here (owner-decided M14 / 13.1b): only the retrans AUTO-RELAY BUILD after a
+ * promotion import — i.e. an import on the retrans automatically building + emitting the onward
+ * tarball. That hop stays operator-gated (ADR-0009 D3).
  */
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -791,6 +796,35 @@ export async function runInboxSweep(
   }
 }
 
+/**
+ * M14.4 (S6, ADR-0009 addendum) — enqueue ONE immediate inbox tick: the AIR-GAP leg of the poke.
+ * Mirrors `wakeFederationSyncNow` exactly (a plain `boss.send`, NO singleton, so a queued interval
+ * tick can never swallow the wake) and, like it, THROWS when the queue does not exist — the caller
+ * treats that as accepted-but-no-op.
+ *
+ * WHY THIS EXISTS. ADR-0009 §38 makes the high-side-retrans→outpost poke inside an air gap
+ * REQUIRED, not optional. But an air-gapped outpost has NO `role: commander` peer with a `baseUrl`
+ * — there is nothing to dial; its content arrives as a FILE that the INBOX loop ingests. So a poke
+ * that woke only the sync sweep resolved to ZERO peers and did nothing at all. Waking the inbox
+ * loop is what makes the last hop of the chain real.
+ *
+ * The wake carries no CONTENT: which files are waiting is discovered by the sweep itself, exactly as
+ * on an interval tick, so the poke stays contentless. It does carry `reason: "poke"` — a routing
+ * marker, not content — so the handler can tell a wake from an interval tick and, mirroring the sync
+ * loop, NOT re-schedule (see {@link INBOX_POKE_REASON}).
+ */
+export const INBOX_POKE_REASON = "poke";
+
+/** The payload an inbox tick carries. An interval tick sends `{}`, so `reason === undefined` is
+ *  exactly "this is a scheduled tick". */
+export interface InboxJobData {
+  reason?: string;
+}
+
+export async function wakeInboxNow(boss: PgBoss): Promise<void> {
+  await boss.send(INBOX_QUEUE, { reason: INBOX_POKE_REASON });
+}
+
 export interface InboxLoopHandle {
   stop(): Promise<void>;
 }
@@ -813,8 +847,18 @@ export async function startInboxLoop(
   let stopped = false;
   let inFlightTick: Promise<void> | undefined;
   await boss.createQueue(INBOX_QUEUE);
-  await boss.work(INBOX_QUEUE, async () => {
+  await boss.work(INBOX_QUEUE, async (jobs: { data?: InboxJobData }[]) => {
     if (stopped) return;
+    // A POKE WAKE DOES NOT RE-SCHEDULE — mirroring the federation-sync loop, and for the same
+    // reason: pg-boss computes a singleton slot from now() AT INSERT, so a wake landing in a
+    // different slot than the already-pending interval tick is not deduped and leaves TWO pending
+    // ticks. The interval job that was pending before the wake still fires on schedule, so the
+    // (deliberately NOT sparse) inbox cadence is unaffected. Keyed on "the batch contains a
+    // non-poke job" rather than "no poke present" so a batchSize>1 queue could never consume the
+    // interval job and skip its re-schedule.
+    const batch = jobs ?? [];
+    const reschedule =
+      batch.length === 0 || batch.some((job) => job.data?.reason !== INBOX_POKE_REASON);
     const tick = runInboxSweep(db, masterKey);
     inFlightTick = tick;
     try {
@@ -823,6 +867,7 @@ export async function startInboxLoop(
       inFlightTick = undefined;
     }
     if (stopped) return;
+    if (!reschedule) return;
     await boss.send(
       INBOX_QUEUE,
       {},

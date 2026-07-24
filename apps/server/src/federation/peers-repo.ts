@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull, or } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, lte, or } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { DeliveryTarget, SyncScope } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -36,6 +36,14 @@ export interface FederationPeerRow {
    *  NOT NULL DEFAULT false) is poll-mode; `true` means the commander MAY send it a contentless
    *  wake signal and its frequent poll is disabled (full enforcement is M14.4). */
   pokeMode: boolean;
+  /** M14.4 (ADR-0009, drizzle/0038) — the scheduler's per-peer due-state, ISO-8601 or `null`
+   *  ("never"). `lastPullAttemptAt` is stamped by the conditional claim (every attempt, success or
+   *  not); `lastPullSuccessAt` only by an `imported` outcome; `lastPokeReceivedAt` by the M14.2 poke
+   *  handler when it ACCEPTS a poke from this peer. See {@link isPeerDue} for how the three combine
+   *  into the frequent/sparse decision, and drizzle/0038 for why NULL is deliberately "due now". */
+  lastPullAttemptAt: string | null;
+  lastPullSuccessAt: string | null;
+  lastPokeReceivedAt: string | null;
 }
 
 function toPeerRow(
@@ -52,6 +60,9 @@ function toPeerRow(
     syncScope: peer.syncScope as SyncScope,
     deliveryTarget: (peer.deliveryTarget as DeliveryTarget | null) ?? null,
     pokeMode: peer.pokeMode,
+    lastPullAttemptAt: peer.lastPullAttemptAt?.toISOString() ?? null,
+    lastPullSuccessAt: peer.lastPullSuccessAt?.toISOString() ?? null,
+    lastPokeReceivedAt: peer.lastPokeReceivedAt?.toISOString() ?? null,
     pairedAt: peer.pairedAt.toISOString(),
     publicKey,
     cosignPublicKey
@@ -354,4 +365,82 @@ export async function getPeerByIdOrName(
     );
   const key = await currentPeerKeyRow(tx, orgId, rows[0].id);
   return toPeerRow(rows[0], key?.publicKey ?? "", key?.cosignPublicKey ?? null);
+}
+
+/**
+ * M14.4 (ADR-0009) — CLAIM one peer's pull slot for the current window, ATOMICALLY.
+ *
+ * A single conditional `UPDATE … RETURNING`: the row's `last_pull_attempt_at` is advanced to `now`
+ * ONLY if it is NULL (never attempted — deliberately "due now", drizzle/0038) or older than
+ * `now - intervalSeconds`. Returns `true` when THIS caller won the slot, `false` when the peer was
+ * already claimed inside the window.
+ *
+ * WHY A CONDITIONAL UPDATE AND NOT AN IN-MEMORY MAP (load-bearing): the scheduler runs on every
+ * worker replica. An in-process throttle would let N replicas each pull the same peer per window,
+ * multiplying the effective poll rate by the replica count and defeating "sparse" exactly where it
+ * matters most. Postgres row-locking during the UPDATE makes the claim mutually exclusive across
+ * replicas, processes, and restarts, with no new coordination primitive (charter principle 4).
+ *
+ * `force` (the poke path, S4) SKIPS the window predicate but still stamps the attempt — a poke-woken
+ * tick must never be swallowed by the very due-gate the poke complements.
+ *
+ * The threshold is computed from the CALLER's `now` rather than the database's `now()` purely so the
+ * scheduler can be driven by a deterministic test clock; the mutual exclusion comes from the atomic
+ * UPDATE, not from the clock source (two replicas with slightly skewed clocks still cannot both win
+ * the same row).
+ */
+export async function claimPeerPull(
+  tx: TenantTx,
+  orgId: string,
+  peerDomainId: string,
+  opts: { now: Date; intervalSeconds: number; force?: boolean }
+): Promise<boolean> {
+  const threshold = new Date(opts.now.getTime() - opts.intervalSeconds * 1000);
+  const dueCondition = or(
+    isNull(federationPeers.lastPullAttemptAt),
+    lte(federationPeers.lastPullAttemptAt, threshold)
+  );
+  const rows = await tx
+    .update(federationPeers)
+    .set({ lastPullAttemptAt: opts.now })
+    .where(
+      opts.force
+        ? and(eq(federationPeers.orgId, orgId), eq(federationPeers.id, peerDomainId))
+        : and(eq(federationPeers.orgId, orgId), eq(federationPeers.id, peerDomainId), dueCondition)
+    )
+    .returning({ id: federationPeers.id });
+  return rows.length > 0;
+}
+
+/** M14.4 — stamp a SUCCESSFUL pull (the `imported` outcome only). Leaving this untouched on a
+ *  failure is what keeps `lastPullSuccessAt < lastPullAttemptAt` meaning "the last attempt failed",
+ *  which returns a poke-mode peer to the frequent cadence until one pull succeeds (the reconnect
+ *  leg — a pure timestamp pair, no counters, replica-safe). */
+export async function markPeerPullSuccess(
+  tx: TenantTx,
+  orgId: string,
+  peerDomainId: string,
+  now: Date = new Date()
+): Promise<void> {
+  await tx
+    .update(federationPeers)
+    .set({ lastPullSuccessAt: now })
+    .where(and(eq(federationPeers.orgId, orgId), eq(federationPeers.id, peerDomainId)));
+}
+
+/** M14.4 (owner decision D2 — SELF-PROVING SPARSE) — stamp that this peer's poke was ACCEPTED. The
+ *  M14.2 poke handler calls this after its consent + rate-limit gates pass. Until a peer has stamped
+ *  at least once, the scheduler keeps it on the FREQUENT cadence no matter what the local
+ *  `poke_mode` flag says: an outpost must never go sparse on the strength of its own flag alone
+ *  (the commander's half may never have been enabled — silent staleness with no error anywhere). */
+export async function markPokeReceived(
+  tx: TenantTx,
+  orgId: string,
+  peerDomainId: string,
+  now: Date = new Date()
+): Promise<void> {
+  await tx
+    .update(federationPeers)
+    .set({ lastPokeReceivedAt: now })
+    .where(and(eq(federationPeers.orgId, orgId), eq(federationPeers.id, peerDomainId)));
 }

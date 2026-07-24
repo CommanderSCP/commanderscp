@@ -46,6 +46,37 @@ Poke-mode is **off by default**, set **per outpost** (some outposts poll-mode, o
 **Deferred to the milestone (M14)**
 - The safety-net interval default (a tuning value; per-outpost, sensible default at implementation time).
 
+**Addendum (2026-07-24, M14.4 — scheduler mode + the retrans hop chain)**
+
+Two things this ADR left implicit turned out to be load-bearing once the chain was built end to end.
+
+**(a) Inside an air gap, the poke wakes the INBOX loop — not the sync loop.** §"Costs / constraints"
+above makes the high-side-retrans→outpost poke **required**, not optional. But an air-gapped outpost
+has **no `role: commander` peer with a `baseUrl`** — there is nothing for it to dial; its content
+arrives as a **file** that the inbox loop ingests. A poke that woke only the federation-sync sweep
+therefore resolved to **zero peers** and did nothing at all: the last hop of the chain was a no-op.
+The poke endpoint now wakes **both** loops, each behind its own try/catch (a missing queue on either
+side still returns `accepted: true`), and the inbox wake is sent only where the deployment actually
+runs an inbox loop. The wake stays contentless in both cases — *which* files or peers are pending is
+discovered by the sweep itself, exactly as on an interval tick.
+
+**(b) The onward poke is OUTBOX-DERIVED and causally gated — NOT a poke-in→poke-out relay, which is
+what makes the chain loop-safe without a TTL.** A retrans does not forward the poke it received. It
+imports; the import writes outbox rows in the *same transaction* as the applied change; the sender
+hangs off the outbox relay. So hop *n+1* fires **only if hop *n* actually applied something new**. A
+replayed, byte-identical import applies zero entries, writes zero outbox rows, and produces no
+onward poke: the chain terminates by construction. The alternative — relaying the signal with a hop
+counter or TTL — would have put a **byte of content inside a signal that is contentless by
+definition** (§Decision, the no-DATA invariant). The causal gate gives the same termination
+guarantee for free and cannot be forged by a caller, since the gate is this instance's own
+committed state rather than anything the poke carried.
+
+**Honest scope note (owner decision D3, 2026-07-24).** The *poke* chain above is unattended end to
+end, but on the air-gap path the **bytes** are not: the retrans's relay-tarball build
+(`buildRelayTarball`) is still invoked only from its HTTP route — `inbox-loop.ts` explicitly defers
+the auto-build (M13.1b). Hop 2 therefore remains **operator-gated**, and a green three-hop poke test
+must not be read as "the air-gap chain runs unattended end to end."
+
 **Grounding finding + build note (2026-07-24, M14.0)**
 - **The frequent poll this ADR assumed did not exist yet.** M6 shipped the `.scpbundle` file transport + the `federation-https` plugin contract, but the **scheduled HTTP live pull** and the **outbound mTLS client-cert injection** were **deferred** (flagged in the M6 PR body + the `federation-https` module header); M8 built only the client-cert *presentation* for the plugin subprocess. Poke-mode therefore had no interval poll to disable.
 - **Owner decision (full-scope M14, 2026-07-24):** build the deferred live-sync **substrate** first — **M14.0**: a fail-closed per-peer mTLS OUTBOUND dialer (reusing the M8 client-cert material — the enrolled `urn:scp:domain:<ownDomainId>` client cert; **no new CA scheme**) + the **outpost live-pull scheduler** (`startFederationSyncLoop`, mirroring `startInboxLoop`), pulling+importing over the dialer through the **unchanged** `importSyncBundle` verification (Ed25519 + hash chain). Both reliability-floor legs land here: **pull-on-startup** and the **sparse safety-net** interval tick — so poke-mode (M14.4) later disables only the *frequent* leg. This is the foundation the poke optimizes; the transport reuse ("the mTLS routes") and the reliability model ("sparse safety-net") decided above are honored by construction.

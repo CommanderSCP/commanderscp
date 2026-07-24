@@ -5,6 +5,7 @@ import { ensureInstanceKey } from "../governance/attestation.js";
 import { listPeers } from "./peers-repo.js";
 import { getCursor } from "./cursors-repo.js";
 import { listRecentTransfers } from "./bundle-transfers-repo.js";
+import { federationClientCertsUsable, peerSyncCadence } from "./federation-sync.js";
 
 /**
  * `GET /federation/status` — the commander cross-domain status view (DESIGN.md §13): every known
@@ -21,6 +22,13 @@ export async function getFederationStatus(
   const selfRow = await ensureFederationSelf(tx, orgId);
   const key = await ensureInstanceKey(tx, orgId);
   const peers = await listPeers(tx, orgId);
+  // D4 is a RUNTIME property of this instance, so the reported cadence must consult it here rather
+  // than assume the pair-time check still holds. It uses the SCHEDULER'S OWN never-throwing probe —
+  // not the cheap presence check — because the presence check answers "are the paths set?" while the
+  // scheduler asks "did the material actually READ?". Those diverge in exactly the case D4 exists
+  // for (paths set, secret rotated away), and this endpoint's whole job is to make cadence
+  // divergence VISIBLE, so it must not be the thing that hides it.
+  const hasClientCerts = federationClientCertsUsable();
 
   const peerStatuses = await Promise.all(
     peers.map(async (peer) => {
@@ -33,6 +41,21 @@ export async function getFederationStatus(
         peer,
         lastAppliedSequence: cursor.sequence > 0 ? cursor.sequence : null,
         lastSyncedAt: lastConfirmed?.confirmedAt ?? null,
+        // M14.4 (S7, ADR-0009) — the live-pull FRESHNESS + the cadence actually in force. These are
+        // what an operator needs to answer "is this peer sparse, and is that intentional?":
+        //   * lastPullAttemptAt / lastPullSuccessAt — an attempt WITHOUT a later success is a peer in
+        //     the reconnect leg (it is back on the frequent cadence until one pull succeeds);
+        //   * lastPokeReceivedAt — `null` on a pokeMode peer is the UNILATERAL-SPARSE misconfiguration
+        //     (this side opted in, the other side never pokes). D2 keeps it polling, and this field is
+        //     how you SEE that;
+        //   * effectiveCadence — the cadence the scheduler would use RIGHT NOW, not the raw flag. It
+        //     reports "poll" for a pokeMode peer that has never been poked (D2), when this instance has
+        //     no outbound client-cert material (D4), and while the peer's last pull failed. The raw
+        //     flag stays visible as `peer.pokeMode`, so a divergence between the two is legible.
+        lastPullAttemptAt: peer.lastPullAttemptAt,
+        lastPullSuccessAt: peer.lastPullSuccessAt,
+        lastPokeReceivedAt: peer.lastPokeReceivedAt,
+        effectiveCadence: peerSyncCadence(peer, { hasClientCerts }),
         recentTransfers: transfers
       };
     })
