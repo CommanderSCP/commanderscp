@@ -279,8 +279,8 @@ The word is currently used for the **wave** sense in the shipped `/v1` contract,
 
 **(b) The change-pipeline UI — labels and test hooks only.**
 
-- `apps/web/src/components/pipeline/StageCard.tsx` — **the whole component**, 28 occurrences; it is not enumerated line-by-line because the file is the misuse. Its docblock at `:90` reads *"One pipeline stage = one compiled wave"*; it takes a `ChangeWave` plus a `stageNumber` prop (`:99, :103`), renders the visible label `Stage {stageNumber}` (`:116`), and carries `data-stage` (`:111`) plus nine distinct `data-testid="stage-*"` hooks (ten occurrences)
-- `apps/web/src/routes/change-pipeline.tsx:26, 206, 208, 237, 310, 314, 398, 406` (`data-testid="pipeline-stages"`), `:407, :420` — all ten wave-sense occurrences in the file
+- `apps/web/src/components/pipeline/StageCard.tsx` — **the whole component**, 28 matching lines (30 occurrences) — the largest concentration in the census; it is not enumerated line-by-line because the file is the misuse. Its docblock at `:90` reads *"One pipeline stage = one compiled wave"*; it takes a `ChangeWave` plus a `stageNumber` prop (`:99, :103`), renders the visible label `Stage {stageNumber}` (`:116`), and carries `data-stage` (`:111`) plus nine distinct `data-testid="stage-*"` hooks (ten occurrences)
+- `apps/web/src/routes/change-pipeline.tsx:26, 206, 208, 237, 310, 314, 398, 406` (`data-testid="pipeline-stages"`), `:407, :420` — all ten wave-sense lines in the file (13 occurrences)
 - `apps/web/src/components/pipeline/PromotionArrow.tsx:4` — its **own docblock** says *"The gate/approval state of a promotion between two pipeline stages"*, and `:26` says "stage cards". The `promotion` entry cites this file for what it *draws*; what it *calls* the cards it draws between is this misuse
 - `apps/web/src/routes/change-detail.tsx:51`; `apps/web/src/lib/query-client.ts:48, 61`
 
@@ -306,7 +306,7 @@ The follow-on work is therefore **split in two** ([ADR-0021](adr/0021-terminolog
 
 **Deliberately *not* misuses — leave them alone.** Anyone re-running the grep hits these first, so they are listed in full:
 
-- **Docker's own multi-stage-build term.** `apps/runner-scan/Dockerfile` — **eight occurrences, the largest single concentration in the tree**, and a genuine two-stage build (`STAGE 1 — Trivy`, `STAGE 2 (FINAL) — OpenSCAP`); `apps/runner-scan/README.md:19` describes that same build (*"`COPY --from` a digest-pinned Trivy stage"*); `packages/cosign/src/cosign-bin.ts:5`; `packages/cosign/src/skopeo-bin.ts:5`; `packages/plugin-testkit/src/runner-image.ts:36`.
+- **Docker's own multi-stage-build term.** `apps/runner-scan/Dockerfile` — **eight matching lines (ten occurrences), the largest concentration among the non-misuses** (it is joint-seventh in the census as a whole; `StageCard.tsx`'s 28 lines lead it) — and a genuine two-stage build (`STAGE 1 — Trivy`, `STAGE 2 (FINAL) — OpenSCAP`); `apps/runner-scan/README.md:19` describes that same build (*"`COPY --from` a digest-pinned Trivy stage"*); `packages/cosign/src/cosign-bin.ts:5`; `packages/cosign/src/skopeo-bin.ts:5`; `packages/plugin-testkit/src/runner-image.ts:36`.
 - **The unrelated verb "staged"** — `apps/server/src/governance/scan-db.ts:399, 404, 409` ("staged payload", "staged metadata").
 - **`apps/server/src/graph/named-queries.ts:279`**, whose hypothetical "stage-domain" is actually *consistent* with the reserved place sense.
 - **The vendored `tools/openapi/bin/oasdiff-*` binaries**, which match on byte content only.
@@ -420,7 +420,7 @@ Also distinct: **SPIFFE's "trust domain"**, which corresponds to the **trust roo
 
 **Bare "domain" is banned as a tier name** — in prose *and* as a stored value. [ADR-0016](adr/0016-scoped-scan-requirement-policies.md) §Terminology mandates the full forms and specifies that the floor table's tier literal is `trust_domain`, never bare `domain`; DESIGN.md does the same for the policy-resolution chain.
 
-**In the code — the docs solved this; the code did not.** Counted on `origin/main` at **`da9e92c`** (2026-07-24), there are **367** non-test source lines mentioning `domainId` across `apps/` and `packages/`, in **75** files. About **51** live in `apps/server/src/federation` and mean the **security/trust** sense (`federation_self.domainId` in `apps/server/src/db/schema.ts`). About **45** live in `apps/server/src/graph` and mean the **containment** sense (`objects.domainId`, same file). **Both are plain `uuid` with zero type-level separation**, so nothing today stops one being passed where the other is expected.
+**In the code — the docs solved this; the code did not.** Counted on `origin/main` at **`da9e92c`** (2026-07-24), with the same test exclusions as the `stage` census, there are **365** non-test source lines mentioning `domainId` across `apps/` and `packages/`, in **75** files. About **51** live in `apps/server/src/federation` and mean the **security/trust** sense (`federation_self.domainId` in `apps/server/src/db/schema.ts`). About **45** live in `apps/server/src/graph` and mean the **containment** sense (`objects.domainId`, same file). **Both are plain `uuid` with zero type-level separation**, so nothing today stops one being passed where the other is expected.
 
 Re-run it with `git grep -n domainId origin/main -- 'apps/**' 'packages/**' | grep -v -E '\.test\.|__tests__|\.spec\.'`, and update the commit stamp above along with the number.
 
