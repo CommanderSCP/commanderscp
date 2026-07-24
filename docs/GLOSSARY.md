@@ -14,6 +14,8 @@ The rule this glossary follows:
 
 Audience: a new engineer trying to read the code, and an operator trying to read the UI. It is not a research dump — the research is in the ADR.
 
+**How code is cited here (read this before adding a citation).** Line numbers rot the moment `main` moves; file paths and symbol names do not. So this document cites a **line number only where the exact line *is* the evidence** — a verbatim quoted comment, a specific enum value, a schema field definition, or an entry in the `stage` census below, which is a census *of lines*. Everywhere else — the "In the code" pointers at the end of each entry, file rosters, "see also" links — it cites the **file path alone**, and names the symbol so `grep` can finish the job. Every **count** in this document states the commit it was measured at, inline, so a future reader can tell a stale number from a wrong one. Keep both conventions when editing.
+
 ---
 
 ## Quick reference
@@ -28,7 +30,7 @@ Audience: a new engineer trying to read the code, and an operator trying to read
 | **deploy / deployment** | The push of an artifact into one environment so it runs there | INDUSTRY-STANDARD |
 | **deployment target** | The graph object type an executor acts on (cluster, host, environment, region) — deliberately broad | SCP-SPECIFIC |
 | **environment** | A named operational tier (dev / gamma / prod) within one security domain | INDUSTRY-STANDARD |
-| **stage** | **Reserved:** one named deployment **place**, spelled `<domain>-<location>-<env>`. No such entity exists yet | QUALIFIED-STANDARD *(word-sense precedent only; the definition is ours)* |
+| **stage** | **Reserved:** one named deployment **place**, spelled `<domain>[-<location>]-<env>`. No such entity exists yet | QUALIFIED-STANDARD *(word-sense precedent only; the definition is ours)* |
 | **wave** | One ordered step of a compiled plan — the **set of one-or-more stages** advanced at once | SCP-SPECIFIC |
 | **change** | The coordinated unit of work; a graph object with a lifecycle state machine | SCP-SPECIFIC |
 | **pipeline** | The ordered path a release travels for one executor **Type** | INDUSTRY-STANDARD |
@@ -87,7 +89,12 @@ In GitOps terms — which is what SCP actually coordinates — a promotion is th
 - **Argo Rollouts' "Promote"** — the progressive-delivery sub-step inside a canary analysis. SCP observes it; SCP does not own it (`docs/proposals/coordination-ui-views.md` §2).
 - **`scp federation promote`** — the CLI verb that exports a **Promotion Bundle**. That is a real promotion (the genus), and it is often but not always cross-domain.
 
-**In the code.** `apps/web/src/components/pipeline/PromotionArrow.tsx` renders exactly this sense — a wide arrow between two stacked pipeline cards, coloured by gate state. (What it *draws* is right; what it *calls* the things it draws between is not — its own docblock at `:4` says "between two pipeline stages", one of the wave-sense misuses listed in the `stage` entry.) `apps/server/src/federation/promotion-repo.ts` carries Promotion Bundles. `packages/schemas/src/federation.ts` (`PromotionManifestSchema`, ~:436) carries the signed manifest that authorizes a cross-domain one.
+**In the code.** `apps/web/src/components/pipeline/PromotionArrow.tsx` is the UI expression of this sense: a wide top-to-bottom arrow drawn between two vertically-stacked cards, painted from a `PromotionState` (`open` / `blocked` / `approval` / `pending`). Read its own docblock before citing it, because two things about it are commonly overstated:
+
+- **It is "purely presentational"** (its words) — *"the parent computes `state`/`label`/`detail`/`why` from real change data … this component only paints it"*. It decides nothing and evaluates no gate.
+- **It draws between compiled *waves*, not between named environments.** The cards on either side are `StageCard`s, one per compiled wave. There is no `environment` table and no `stage` entity, so it cannot be drawing "Gamma → Prod" — there is no Gamma and no Prod for it to draw between. Its docblock's own phrase *"between two pipeline stages"* is itself one of the wave-sense misuses catalogued in the `stage` entry's census.
+
+`apps/server/src/federation/promotion-repo.ts` carries Promotion Bundles; `PromotionManifestSchema` in `packages/schemas/src/federation.ts` carries the signed manifest that authorizes a cross-domain one.
 
 ---
 
@@ -130,14 +137,14 @@ It is **not** an artifact promotion (the genus) and **not** a cross-domain promo
 
 - `apps/server/src/coordination/transitions.ts` — the edge is `{ from: "validating", to: "promoted", trigger: "promote" }`
 - `packages/schemas/src/changes.ts:22` — `"promoted"` is a `ChangeState` enum value, returned on every change response
-- `apps/server/src/routes/changes.ts:344` — `POST /api/v1/changes/:id/promote` (`operationId: promoteChange`)
-- `packages/cli/src/cli.ts:1664` — `scp change promote <id>`
+- `apps/server/src/routes/changes.ts` — `POST /api/v1/changes/:id/promote` (`operationId: promoteChange`)
+- `packages/cli/src/cli.ts` — `scp change promote <id>`
 - `apps/server/drizzle/0007_change_coordination.sql` seeds the `state_transitions` rows
 
 The rename is a **tracked follow-on PR** ([ADR-0021](adr/0021-terminology.md) Consequences, item ii). It is genuinely breaking: a `/v1` path change, a data migration over `changes.state`, the seeded `state_transitions` rows, the CLI verb, and the enum in every change response. It is judged payable now because the project is pre-1.0 with a single deployment, and because [ADR-0004](adr/0004-service-naming-commander-outpost-retrans.md) set the direct precedent — it removed `parent`/`child` outright in favour of `commander`/`outpost`/`retrans`, a breaking federation-role enum rename taken for exactly this class of reason.
 
 **Not to be confused with:**
-- **`scp federation promote`** (`packages/cli/src/cli.ts:2707`) — the Promotion Bundle export verb. That one is a real promotion and keeps its name.
+- **`scp federation promote`** (`packages/cli/src/cli.ts`) — the Promotion Bundle export verb. That one is a real promotion and keeps its name.
 - **an approval** — `requireApprovals` is a *policy effect* producing approval tasks and `approves` relationships (DESIGN.md §10.2). An approval is evidence a gate consumes; `accept` is the lifecycle transition the gate guards. A change can require several approvals and still be accepted once.
 
 ---
@@ -162,7 +169,7 @@ Note that DORA measures **deployment** frequency, not release frequency — furt
 
 **Not to be confused with:** a Helm release; a deployment; a GitHub Release object; a releasability determination.
 
-**In the code.** There is **no** release table, entity, or API resource — "release" is a gloss on `change`. It is stated most directly at `apps/server/src/coordination/changes-repo.ts` (~:74): *"a change IS a release, and a release comes from ONE source per pipeline, so one change drives one pipeline. A release needing both is two releases."* The one place the word is load-bearing in an identifier is **`release-topology`** (below), whose slug leaks into URNs.
+**In the code.** There is **no** release table, entity, or API resource — "release" is a gloss on `change`. It is stated most directly in the docblock on the change-input `type?: ExecutorType` field in `apps/server/src/coordination/changes-repo.ts`: *"a change IS a release, and a release comes from ONE source per pipeline, so one change drives one pipeline. A release needing both is two releases."* The one place the word is load-bearing in an identifier is **`release-topology`** (below), whose slug leaks into URNs.
 
 ---
 
@@ -176,7 +183,7 @@ A change compiles against a release topology into `plan → waves → wave_targe
 
 **Not to be confused with:** the *graph* topology (`depends_on` / `consumes` edges between services and components), which is a different structure entirely and is what the two-layer graph explorer renders.
 
-**In the code.** Object type `release-topology`, seeded in `apps/server/drizzle/0002_rls_rbac_seed.sql`; resolved in `apps/server/src/coordination/plan-service.ts:77` and `apps/server/src/coordination/campaign-repo.ts:104`. **Its slug leaks into URNs** (`urn:scp:{org}:release-topology:{slug}`), so unlike the rest of "release" this identifier is not free to redefine.
+**In the code.** Object type `release-topology`, seeded in `apps/server/drizzle/0002_rls_rbac_seed.sql`; resolved in `apps/server/src/coordination/plan-service.ts` and `apps/server/src/coordination/campaign-repo.ts`. **Its slug leaks into URNs** (`urn:scp:{org}:release-topology:{slug}`), so unlike the rest of "release" this identifier is not free to redefine.
 
 ---
 
@@ -200,7 +207,7 @@ A change compiles against a release topology into `plan → waves → wave_targe
 
 **Not to be confused with:** *environment* (a tier concept a deployment target may or may not represent) and *stage* (a reserved deployment **place** — see below). If you need to know *which* sense a given `deployment-target` row carries, read its bindings; the type alone does not tell you.
 
-**In the code.** Object type `deployment-target`, seeded at `apps/server/drizzle/0002_rls_rbac_seed.sql:159`. The two relationship types that point at it are seeded alongside: `hosted_on` (`:185–186`, from `service`/`component`) and `deploys_to` (`:189–190`, from `service`/`component`/`change`/`campaign`). Per-region deploy-target bindings are what [ADR-0017](adr/0017-ownership-refinement.md) §3's multi-region Argo CD setting builds on.
+**In the code.** Object type `deployment-target`, seeded in `apps/server/drizzle/0002_rls_rbac_seed.sql`. The two relationship types that point at it are seeded alongside in the same file: `hosted_on` (from `service`/`component`) and `deploys_to` (from `service`/`component`/`change`/`campaign`). Per-region deploy-target bindings are what [ADR-0017](adr/0017-ownership-refinement.md) §3's multi-region Argo CD setting builds on.
 
 ---
 
@@ -210,11 +217,11 @@ A change compiles against a release topology into `plan → waves → wave_targe
 
 **Industry-standard?** Yes. GitHub Actions environments and Argo CD's app-per-environment convention both use it this way. Kargo models the same node but deliberately spells it **Stage** — its docs avoid "environment" precisely *because* the word is perspective-dependent, and note that a Stage's name denotes an application instance's **purpose** "and not necessarily its location". Kargo is therefore a witness to the ambiguity, not a citation for the word; see the `stage` entry.
 
-**Not to be confused with:** *stage* — under D6 (below), "stage" is reserved for a named deployment **place** spelled `<domain>-<location>-<env>`, so `gamma` is an environment and `commercial-amer-gamma` is a stage. Environment is one of the three **segments** of a stage name, not a synonym for it. And *deployment target*, which may happen to model an environment but may equally model a single cluster or host.
+**Not to be confused with:** *stage* — under D6 (below), "stage" is reserved for a named deployment **place** spelled `<domain>[-<location>]-<env>`, so `gamma` is an environment while `commercial-amer-gamma` and `commercial-gamma` are both stages. Environment is the **last segment** of a stage name — the one segment that is always present — not a synonym for the name. And *deployment target*, which may happen to model an environment but may equally model a single cluster or host.
 
 **In the code — there is no `environment` table.** Environments are expressed as labels, deployment-target properties, and wave structure. That is a real gap, not a hidden feature; see the `stage` entry for what a future entity would need to carry.
 
-`environment` is **not** purely informal, though: it is a live `/v1` **path segment**. `GET /api/v1/environments/{environment}/regional-executors` (`apps/server/src/routes/executors.ts:560`, `operationId: getRegionalExecutors`, response `RegionalExecutorViewSchema`; committed at `tools/openapi/openapi.v1.json:57346`) reads one prod environment's per-region Argo CD set. It is backed not by an entity but by deployment-target `properties.environment` / `properties.region` (the M15.6 / [ADR-0017](adr/0017-ownership-refinement.md) §3 comment at `executors.ts:551–556`). So the *concept* has an API surface while the *entity* does not.
+`environment` is **not** purely informal, though: it is a live `/v1` **path segment**. `GET /api/v1/environments/{environment}/regional-executors` (`operationId: getRegionalExecutors`, response `RegionalExecutorViewSchema`, registered in `apps/server/src/routes/executors.ts` and committed to `tools/openapi/openapi.v1.json`) reads one prod environment's per-region Argo CD set. It is backed not by an entity but by deployment-target `properties.environment` / `properties.region` (the M15.6 / [ADR-0017](adr/0017-ownership-refinement.md) §3 comment above that route). So the *concept* has an API surface while the *entity* does not.
 
 ---
 
@@ -222,59 +229,71 @@ A change compiles against a release topology into `plan → waves → wave_targe
 
 **Definition — RESERVED VOCABULARY.** In CommanderSCP, **stage** means **one named deployment place**. The word is spent on *place*, and on nothing else. It is **not** spent on ordering, and **not** on pipeline phases.
 
-**The canonical naming grammar** (owner-specified, 2026-07-24) is three lowercase hyphen-separated segments:
+**The canonical naming grammar** (owner-specified 2026-07-24, completed by the owner's optional-location decision of the same date) is lowercase hyphen-separated segments in a fixed order, with the **middle segment optional**:
 
 ```
-<domain>-<location>-<env>
+<domain>[-<location>]-<env>
 ```
 
-| Segment | Meaning | Examples |
-|---|---|---|
-| **domain** | the **security domain** — the trust tier the place sits in | `commercial`, `govcloud`, `il5`, `airgap` |
-| **location** | the geographic locality or **region** *within* that domain | `amer`, `apac`, `emea` |
-| **env** | the **environment** tier | `dev`, `gamma`, `prod` |
+| Segment | Required? | Meaning | Examples |
+|---|---|---|---|
+| **domain** | always | the **security domain** — the trust tier the place sits in | `commercial`, `govcloud`, `il5`, `airgap` |
+| **location** | **optional** | the geographic locality or **region** *within* that domain | `amer`, `apac`, `emea` |
+| **env** | always | the **environment** tier | `dev`, `gamma`, `prod` |
 
-Canonical examples: **`commercial-apac-prod`**, **`govcloud-amer-gamma`**.
+**Both forms are canonical.** `commercial-apac-prod` (three segments, with location) and `commercial-gamma` (two segments, no location) are equally correct stage names. So are `govcloud-amer-gamma` and `govcloud-prod`.
 
-The grammar is lowercase and the segment order is fixed. Earlier ad-hoc examples in this project used a different order and mixed case (`commercial-prod-AMER`); **that form is superseded** — write `commercial-amer-prod`.
+**When to include a location.** Include it when the place is **one of several geographic peers that must be told apart** — `commercial-amer-prod` versus `commercial-apac-prod`. Omit it when the place has **no meaningful geographic split**: a single-region stage, or a genuinely global one. The segment exists to disambiguate; where there is nothing to disambiguate, adding it is noise.
+
+**Naming rule — segment values must be hyphen-free.** This is the practical consequence of making the middle segment optional, and it is a rule, not a footnote. With an optional middle segment, a name is disambiguated **by segment count**:
+
+- **2 segments** → `<domain>-<env>`
+- **3 segments** → `<domain>-<location>-<env>`
+
+That only works if **no segment value itself contains a hyphen**. `us-east` is therefore **not a valid location value**: `govcloud-us-east-prod` is four tokens and cannot be parsed — is `us` the location and `east-prod` the env, or is it a three-segment name at all? Use a single hyphen-free token instead: `useast`, `use1`, `usgovwest1`. The same applies to every segment — no `il-5`, no `pre-prod`; write `il5` and `preprod`.
+
+The grammar is lowercase and the segment **order** is fixed. Earlier ad-hoc examples in this project used a different order and mixed case (`commercial-prod-AMER`); **that form is superseded** — write `commercial-amer-prod`.
 
 **A stage is a place; a wave is a step.** These are a **containment** relationship, not two names for one thing: **a wave contains one or more stages.** The apparent "stage vs wave" collision was never a rivalry — "stage" was simply being used *for* the wave sense by mistake. See the `wave` entry, which states the same relationship from the other side.
-
-**Open question — is the `location` segment mandatory?** Earlier examples included location-less stages (`commercial-gamma`, `govcloud-prod`). Under the three-segment grammar those would become `commercial-amer-gamma` / `govcloud-amer-prod`. Whether a stage with **no meaningful geographic split** — a single-region or genuinely global place — must still carry a `location` segment, or may legitimately be two segments, is **not yet decided by the owner**. Everything else about the grammar is settled. This is recorded here as open rather than resolved by inference.
 
 **Industry-standard?** Qualified, and narrowly so — the precedent covers the *word-sense*, not the definition.
 
 - The **majority** CD sense of "stage" is a **pipeline phase** — Jenkins `stage()`, GitLab CI `stages:`, Spinnaker pipeline stages. We do **not** use it that way.
 - The **minority** sense — and ours — has a real precedent: **Kargo's `Stage` CRD** spends the word on a **promotion-target node** ("a stage is a promotion target that represents some desired state") rather than on a pipeline phase. That is genuine support for *what we spend the word on*.
-- **It is not support for our definition.** Kargo has no security-domain axis, and its docs state that a Stage's name denotes an application instance's **purpose** "and not necessarily its location" — i.e. Kargo deliberately declines to bind a Stage to a place. The `<domain>-<location>-<env>` place definition is **ours**: SCP-specific, not inherited from Kargo. Do not cite Kargo for it.
+- **It is not support for our definition.** Kargo has no security-domain axis, and its docs state that a Stage's name denotes an application instance's **purpose** "and not necessarily its location" — i.e. Kargo deliberately declines to bind a Stage to a place. The `<domain>[-<location>]-<env>` place definition is **ours**: SCP-specific, not inherited from Kargo. Do not cite Kargo for it.
 
 **Honest status: no stage entity exists in the schema today.** There is no `stage` table and no `environment` table, and **no stage-grammar compound name such as `commercial-amer-gamma` appears anywhere in the code** (this glossary's and ADR-0021's own illustrative examples aside). "Stage" is *reserved vocabulary that a future entity may fill*, not a description of something built.
 
 #### The in-tree misuses — a full census
 
-The word is currently used for the **wave** sense in the shipped `/v1` contract, not only in UI labels. The census below is exhaustive over non-test files ([ADR-0021](adr/0021-terminology.md) Consequences, item iii). **Nothing here has been changed yet.**
+The word is currently used for the **wave** sense in the shipped `/v1` contract, not only in UI labels. **Scope and method, stated so the census is re-runnable:** case-insensitive `stage` across `apps/`, `packages/` and `tools/openapi`, excluding `*.test.*`, `*.spec.*` and `__tests__`, measured on `origin/main` at **`da9e92c`** (2026-07-24). This is the *whole* of that grep, sorted into five senses plus an out-of-scope set; where a group cannot practically be enumerated line-by-line it says so rather than implying completeness ([ADR-0021](adr/0021-terminology.md) Consequences, item iii). **Nothing here has been changed yet.**
 
 **(a) The service-board `stage` = wave chain — this is in the `/v1` contract.** `packages/schemas/src/services.ts:25` says it outright: *"One pipeline stage of a component's latest change = one compiled wave"*.
 
-- `packages/schemas/src/services.ts` — `ServiceBoardStageSchema` (`:29`), the exported type (`:37`), and `ServiceBoardRowSchema`'s `currentStage` (`:72`) and `stages` (`:73`)
-- `apps/server/src/routes/services.ts:28` — these ship on `GET /api/v1/services/:idOrUrn/board`; the route summary at `:36` also says "per-stage status"
-- `packages/sdk/src/index.ts:68` re-exports `ServiceBoardStage`; `packages/sdk/src/generated/types.gen.ts:6158–6159`
-- `tools/openapi/openapi.v1.json:23236` (`currentStage`) and `:23246` (`stages`) — both also in the **required** list at `:23393–23394`
+- `packages/schemas/src/services.ts` — `ServiceBoardStageSchema` (`:29`), the exported type (`:37`), `ServiceBoardRowSchema`'s `currentStage` (`:72`) and `stages` (`:73`), and the row docblock defining `currentStage` as *"the running (or last non-pending) wave's display name"* (`:62`)
+- `apps/server/src/routes/services.ts` — these ship on `GET /api/v1/services/:idOrUrn/board`; the route's leading comment says "per-stage status" (`:25`) and so does its OpenAPI `summary` (`:36`)
+- `packages/sdk/src/index.ts:68` re-exports `ServiceBoardStage`; `packages/sdk/src/generated/types.gen.ts:6158–6159` carries the generated field pair, and `packages/sdk/src/generated/sdk.gen.ts:876` carries the same route summary as the generated operation docstring — both regenerate from the contract, so both are part of the (iii-b) surface
+- `tools/openapi/openapi.v1.json:23130` (the route `summary`), `:23236` (`currentStage`) and `:23246` (`stages`) — the latter two also in the **required** list at `:23393–23394`
 - `apps/server/src/coordination/service-board.ts:6, 110–111, 126, 138, 141, 157–158` — the server-side projection
-- `apps/web/src/routes/service-board.tsx:38–59` — the `StageStrip` component, whose `data-testid`s are `board-stage-strip` (`:45`) / `board-stage-badge` (`:51`) while the badge it renders is captioned from the **wave** index — `Wave ${s.waveIndex}` in the tooltip (`:50`) and `W${s.waveIndex}` in the label (`:53`). The same object is labelled both ways inside one function. Also `:190–191` (`<TableHead>Current stage</TableHead>`, `<TableHead>Stages</TableHead>`), `:248` (`row.currentStage`), `:255` (`row.stages`)
+- `apps/web/src/routes/service-board.tsx:3` (`import type { ServiceBoardRow, ServiceBoardStage } from "@scp/sdk"` — the line the (iii-b) rename breaks) and `:38–59`, the `StageStrip` component, whose `data-testid`s are `board-stage-strip` (`:45`) / `board-stage-badge` (`:51`) while the badge it renders is captioned from the **wave** index — `Wave ${s.waveIndex}` in the tooltip (`:50`) and `W${s.waveIndex}` in the label (`:53`). The same object is labelled both ways inside one function. Also `:190–191` (`<TableHead>Current stage</TableHead>`, `<TableHead>Stages</TableHead>`), `:248–249` (`row.currentStage`), `:255` (`row.stages`)
 
 **(b) The change-pipeline UI — labels and test hooks only.**
 
-- `apps/web/src/components/pipeline/StageCard.tsx` — the whole component. Its docblock at `:90` reads *"One pipeline stage = one compiled wave"*; it takes a `ChangeWave` plus a `stageNumber` prop (`:99, :103`), renders the visible label `Stage {stageNumber}` (`:116`), and carries `data-stage` (`:111`) plus nine distinct `data-testid="stage-*"` hooks (ten occurrences)
-- `apps/web/src/routes/change-pipeline.tsx:26, 206, 398, 406` (`data-testid="pipeline-stages"`), `:407, :420`
-- `apps/web/src/components/pipeline/PromotionArrow.tsx:4` — its **own docblock** says *"The gate/approval state of a promotion between two pipeline stages"*, and `:26` says "stage cards". This file is cited in the `promotion` entry as rendering promotion correctly; that is true of what it *draws* and not of what it *calls the things it draws between*
+- `apps/web/src/components/pipeline/StageCard.tsx` — **the whole component**, 28 occurrences; it is not enumerated line-by-line because the file is the misuse. Its docblock at `:90` reads *"One pipeline stage = one compiled wave"*; it takes a `ChangeWave` plus a `stageNumber` prop (`:99, :103`), renders the visible label `Stage {stageNumber}` (`:116`), and carries `data-stage` (`:111`) plus nine distinct `data-testid="stage-*"` hooks (ten occurrences)
+- `apps/web/src/routes/change-pipeline.tsx:26, 206, 208, 237, 310, 314, 398, 406` (`data-testid="pipeline-stages"`), `:407, :420` — all ten wave-sense occurrences in the file
+- `apps/web/src/components/pipeline/PromotionArrow.tsx:4` — its **own docblock** says *"The gate/approval state of a promotion between two pipeline stages"*, and `:26` says "stage cards". The `promotion` entry cites this file for what it *draws*; what it *calls* the cards it draws between is this misuse
 - `apps/web/src/routes/change-detail.tsx:51`; `apps/web/src/lib/query-client.ts:48, 61`
 
 **(c) "per-stage version" — the same wave sense, spread across comments and schema docblocks.** `packages/schemas/src/changes.ts:164, 168`; `apps/server/src/coordination/plan-service.ts:156`; `apps/server/src/coordination/wave-targets-repo.ts:160`; `apps/server/drizzle/0027_wave_target_observed_state.sql:8–9`; `packages/schemas/src/services.ts:7, 14, 18, 28`; `packages/sdk/src/client.ts:919`; `apps/web/src/routes/service-board.tsx:97, 101, 194, 273`.
 
-**(d) "stage" for a pipeline phase.** `apps/server/src/coordination/change-coordination-lock.ts:6` ("one pipeline stage earlier"), and prose such as the execution map in `docs/proposals/promotion-and-execution-model.md` §1. These should say **phase** or **step**.
+**(d) "stage" for a pipeline phase.** `apps/server/src/coordination/change-coordination-lock.ts:6` ("one pipeline stage earlier"); `tools/openapi/check.sh:3, 10` and `tools/openapi/README.md:9`, which cite "BUILD_AND_TEST.md §6 stage 3" — the CI-pipeline sense, and note that fixing those means renaming the section in BUILD_AND_TEST.md too, so they are not free the way a comment is; and prose such as the execution map in `docs/proposals/promotion-and-execution-model.md` §1. These should say **phase** or **step**.
 
-**(e) "stage" for a milestone sub-step.** 37 non-test comment sites spell milestone increments `M2 stage 2` / `M2 stage 3` / `M2 stage 4` (`apps/server/src/app.ts`, `apps/server/src/auth/*`, `packages/sdk/src/client.ts`, `packages/schemas/src/auth.ts`, the `0004`/`0005` migrations, and others). A third distinct sense; these should say **part** or **step**.
+**(e) "stage" for a milestone sub-step.** Two variants, counted separately because they need different greps:
+
+- **`M<n> stage` form — 37 sites in 18 files**, spelling milestone increments `M2 stage 1` … `M2 stage 4`. The complete file roster: `apps/server/drizzle/0004_auth_expansion.sql`, `apps/server/drizzle/0005_plans.sql`, `apps/server/src/app.ts`, `apps/server/src/auth/device-flow.ts`, `apps/server/src/auth/local-auth.ts`, `apps/server/src/auth/oidc.ts`, `apps/server/src/auth/pat.ts`, `apps/server/src/config.ts`, `apps/server/src/db/schema.ts`, `apps/server/src/routes/auth.ts`, `apps/server/src/routes/device-flow.ts`, `apps/server/src/routes/oidc.ts`, `apps/server/src/routes/pats.ts`, `apps/web/vite.config.ts`, `packages/schemas/src/auth.ts`, `packages/schemas/src/graph.ts`, `packages/sdk/src/client.ts`, `packages/sdk/src/index.ts`.
+- **Prefix-less variants — same sense, three sites** that an `M<n> stage` grep misses: `apps/web/src/routes/device.tsx:12` ("stage 2's server-side integration test"), `apps/web/src/routes/pats.tsx:26` ("stage 2's PAT API"), `apps/web/vitest.config.ts:14` ("before this stage's changes").
+
+A third distinct sense; all forty should say **part** or **step**.
 
 #### What the cleanup actually costs
 
@@ -285,9 +304,14 @@ The follow-on work is therefore **split in two** ([ADR-0021](adr/0021-terminolog
 - **(iii-a) the cheap half** — groups (b), (c), (d), (e): UI labels, `data-testid` hooks, comments and docblocks. No API, no schema, no migration. Genuinely cheap.
 - **(iii-b) the breaking half** — group (a): the service-board field and type names in `packages/schemas`, the `/v1` response body, the committed OpenAPI document, the generated SDK, and the server projection. **Breaking, oasdiff-gated, needs `pnpm gen`.** It also confirms D6's premise from the other direction: the `/v1` `stages[]` / `currentStage` / `ServiceBoardStageSchema` fields genuinely *are* the wave sense wearing the wrong name.
 
-**Deliberately *not* misuses — leave them alone.** Docker's own multi-stage-build term (`packages/cosign/src/cosign-bin.ts:5`, `packages/cosign/src/skopeo-bin.ts:5`, `packages/plugin-testkit/src/runner-image.ts:36`); the unrelated verb "staged" in `apps/server/src/governance/scan-db.ts:399, 404, 409`; and `apps/server/src/graph/named-queries.ts:279`, whose hypothetical "stage-domain" is actually *consistent* with the reserved place sense.
+**Deliberately *not* misuses — leave them alone.** Anyone re-running the grep hits these first, so they are listed in full:
 
-**Not to be confused with:** *wave* (the ordering step that **contains** stages), *environment* and *region* (two of the three segments of a stage name), *phase*/*step* (what other CD tools call a stage).
+- **Docker's own multi-stage-build term.** `apps/runner-scan/Dockerfile` — **eight occurrences, the largest single concentration in the tree**, and a genuine two-stage build (`STAGE 1 — Trivy`, `STAGE 2 (FINAL) — OpenSCAP`); `apps/runner-scan/README.md:19` describes that same build (*"`COPY --from` a digest-pinned Trivy stage"*); `packages/cosign/src/cosign-bin.ts:5`; `packages/cosign/src/skopeo-bin.ts:5`; `packages/plugin-testkit/src/runner-image.ts:36`.
+- **The unrelated verb "staged"** — `apps/server/src/governance/scan-db.ts:399, 404, 409` ("staged payload", "staged metadata").
+- **`apps/server/src/graph/named-queries.ts:279`**, whose hypothetical "stage-domain" is actually *consistent* with the reserved place sense.
+- **The vendored `tools/openapi/bin/oasdiff-*` binaries**, which match on byte content only.
+
+**Not to be confused with:** *wave* (the ordering step that **contains** stages), *environment* and *region* (the env and location segments of a stage name), *phase*/*step* (what other CD tools call a stage).
 
 ---
 
@@ -315,7 +339,7 @@ Waves are the ordering primitive SCP actually has. In a federated release topolo
 
 **Not to be confused with:** *stage* (a place, which a wave **contains** — per D6). The UI and the service-board `/v1` response currently mislabel waves as stages — see the `stage` entry's census.
 
-**In the code.** `change_waves` (`apps/server/src/db/schema.ts:625`) / `change_wave_targets` (`:643`) and `campaign_waves` (`:941`); compiled by `apps/server/src/coordination/plan-compiler.ts`; DESIGN.md §9.3. There is **no stage table** — a wave's "stages" are implicit in its targets today.
+**In the code.** The `change_waves`, `change_wave_targets` and `campaign_waves` tables in `apps/server/src/db/schema.ts`; compiled by `apps/server/src/coordination/plan-compiler.ts`; DESIGN.md §9.3. There is **no stage table** — a wave's "stages" are implicit in its targets today.
 
 ---
 
@@ -394,9 +418,11 @@ The owner's framing is an AWS **partition**: like `aws` / `aws-us-gov` / `aws-cn
 
 Also distinct: **SPIFFE's "trust domain"**, which corresponds to the **trust root** of a system — i.e. it is defined by a shared PKI root, whereas a *security* domain is defined by common security **policy** under one administering authority. These are different concepts and they cross-cut: two security domains can share a trust root, and one security domain can contain several. SCP deliberately does **not** use `spiffe://` identifiers; it uses `urn:scp:domain:<domainId>` in the certificate SAN URI (RFC 8141 URN, `apps/server/src/federation/mtls-enforcement.ts`), precisely to avoid taking a SPIFFE dependency. That was a deliberate choice, not an oversight.
 
-**Bare "domain" is banned as a tier name** — in prose *and* as a stored value. [ADR-0016](adr/0016-scoped-scan-requirement-policies.md) §Terminology mandates the full forms and specifies that the floor table's tier literal is `trust_domain`, never bare `domain`; DESIGN.md:481 does the same for the policy-resolution chain.
+**Bare "domain" is banned as a tier name** — in prose *and* as a stored value. [ADR-0016](adr/0016-scoped-scan-requirement-policies.md) §Terminology mandates the full forms and specifies that the floor table's tier literal is `trust_domain`, never bare `domain`; DESIGN.md does the same for the policy-resolution chain.
 
-**In the code — the docs solved this; the code did not.** Counted on `origin/main` at `da9e92c` (2026-07-24), there are **376** non-test source lines mentioning `domainId` across `apps/` and `packages/`, in 75 files. About **51** live in `apps/server/src/federation` and mean the **security/trust** sense (`federation_self.domainId`, `apps/server/src/db/schema.ts:1011`). About **45** live in `apps/server/src/graph` and mean the **containment** sense (`objects.domainId`, `apps/server/src/db/schema.ts:169`). **Both are plain `uuid` with zero type-level separation**, so nothing today stops one being passed where the other is expected.
+**In the code — the docs solved this; the code did not.** Counted on `origin/main` at **`da9e92c`** (2026-07-24), there are **367** non-test source lines mentioning `domainId` across `apps/` and `packages/`, in **75** files. About **51** live in `apps/server/src/federation` and mean the **security/trust** sense (`federation_self.domainId` in `apps/server/src/db/schema.ts`). About **45** live in `apps/server/src/graph` and mean the **containment** sense (`objects.domainId`, same file). **Both are plain `uuid` with zero type-level separation**, so nothing today stops one being passed where the other is expected.
+
+Re-run it with `git grep -n domainId origin/main -- 'apps/**' 'packages/**' | grep -v -E '\.test\.|__tests__|\.spec\.'`, and update the commit stamp above along with the number.
 
 **The fix is a tracked follow-on PR, not something already done:** branded TypeScript types `TrustDomainId` vs `ContainmentDomainId`, so the collision becomes **uncompilable** rather than a naming convention ([ADR-0021](adr/0021-terminology.md) Consequences, item i).
 
@@ -408,9 +434,9 @@ Also distinct: **SPIFFE's "trust domain"**, which corresponds to the **trust roo
 
 **Industry-standard?** No — SCP-specific. It is closest to a folder/organizational-unit concept.
 
-**Not to be confused with:** the **security domain** (the trust tier above org). They are never the same thing. `apps/server/src/db/schema.ts:1387–1394` records the distinction explicitly (in the `scan_requirement_floors` header comment: the `tier` literal is spelled `trust_domain`, *never* bare `domain`, "while the `domain` OBJECT TYPE (the containment domain…)" is the below-org grouping), and [ADR-0016](adr/0016-scoped-scan-requirement-policies.md) §Terminology exists solely to keep them apart.
+**Not to be confused with:** the **security domain** (the trust tier above org). They are never the same thing. The `scan_requirement_floors` header comment in `apps/server/src/db/schema.ts` records the distinction explicitly — the `tier` literal is spelled `trust_domain`, *never* bare `domain`, "while the `domain` OBJECT TYPE (the containment domain…)" is the below-org grouping — and [ADR-0016](adr/0016-scoped-scan-requirement-policies.md) §Terminology exists solely to keep them apart.
 
-**In the code.** Object type `domain`, seeded at `apps/server/drizzle/0002_rls_rbac_seed.sql:152`; the column is `objects.domain_id` (`apps/server/src/db/schema.ts:169`); the walk is `apps/server/src/graph/containment.ts` (`containmentChain`), which is org-filtered on every join and rooted at the org root — it **structurally cannot** express any tier above org, which is exactly why the security-domain tier needed a separate instance-scoped table.
+**In the code.** Object type `domain`, seeded in `apps/server/drizzle/0002_rls_rbac_seed.sql`; the column is `objects.domain_id` (`apps/server/src/db/schema.ts`); the walk is `apps/server/src/graph/containment.ts` (`containmentChain`), which is org-filtered on every join and rooted at the org root — it **structurally cannot** express any tier above org, which is exactly why the security-domain tier needed a separate instance-scoped table.
 
 **Same branded-types caveat as above:** `objects.domainId` and `federation_self.domainId` are both bare `uuid` today.
 
@@ -452,7 +478,7 @@ Also distinct: **SPIFFE's "trust domain"**, which corresponds to the **trust roo
 
 **Not to be confused with:** an **outpost** (which does hold local authoritative objects and does terminate promotions), and the **CDS itself** (the customer's accredited guard — the retrans is SCP's counterpart beside it, not the guard).
 
-**In the code.** `FederationRoleSchema` in `packages/schemas/src/federation.ts` (~:17–28); `apps/server/src/federation/retrans-relay.ts`; migration `apps/server/drizzle/0020_commander_outpost_retrans.sql`.
+**In the code.** `FederationRoleSchema` in `packages/schemas/src/federation.ts`; `apps/server/src/federation/retrans-relay.ts`; migration `apps/server/drizzle/0020_commander_outpost_retrans.sql`.
 
 ---
 
@@ -466,7 +492,7 @@ The commander **never runs build** ([ADR-0017](adr/0017-ownership-refinement.md)
 
 **Not to be confused with:** an "instance" (a commander is a *role* a running instance is configured into — same binary, same image, same chart) and a "control plane" in the Kubernetes sense.
 
-**In the code.** `federation_self.role = 'commander'` (`apps/server/src/db/schema.ts` ~:1009); set explicitly by `scp federation init --role commander`, never inferred.
+**In the code.** `federation_self.role = 'commander'` (the `federationSelf` table in `apps/server/src/db/schema.ts`); set explicitly by `scp federation init --role commander`, never inferred.
 
 ---
 
@@ -480,7 +506,7 @@ Outposts remain **fully operational when disconnected** — federation enhances 
 
 **Not to be confused with:** a **region** (an outpost may serve several) and a **containment domain** (an intra-org grouping, nothing to do with deployment topology).
 
-**In the code.** `packages/schemas/src/federation.ts` (~:17–18); `federation_self.role = 'outpost'`.
+**In the code.** `FederationRoleSchema` in `packages/schemas/src/federation.ts`; `federation_self.role = 'outpost'`.
 
 ---
 
@@ -508,12 +534,12 @@ Outposts remain **fully operational when disconnected** — federation enhances 
 
 **Not to be confused with:** an *instance* (the deployment), a *security domain* (the ambient tier above org), a *containment domain* (the grouping below org).
 
-**In the code.** `orgs` (`apps/server/src/db/schema.ts:35`); `federation_self` (~:1009). The deliberate exceptions to "every table carries `orgId`" **include**:
+**In the code.** The `orgs` and `federation_self` tables in `apps/server/src/db/schema.ts`. The deliberate exceptions to "every table carries `orgId`" **include**:
 
 - `orgs` itself, and `state_transitions`;
 - the nullable-`orgId` rows on `object_types` / `relationship_types` / `roles` — `NULL` marks a built-in shared across every tenant;
-- **`scan_requirement_floors` (`apps/server/src/db/schema.ts:1403`) has no `org_id` column at all** — it is the single **instance-scoped** floor table carrying the two scan-requirement tiers *above* org (platform and security domain), operator-write / tenant-read. This is the same table the `scan gate` entry and the `containment domain` entry describe; it necessarily sits outside org scoping because the org-rooted `containmentChain` structurally cannot reach above org;
-- **`device_auth_requests.orgId` (`apps/server/src/db/schema.ts:127`) is nullable** — a device-authorization request exists before any org is known and the column is *"set on approval"*. A partial exception rather than a full one.
+- **`scan_requirement_floors` (`apps/server/src/db/schema.ts`) has no `org_id` column at all** — it is the single **instance-scoped** floor table carrying the two scan-requirement tiers *above* org (platform and security domain), operator-write / tenant-read. This is the same table the `scan gate` entry and the `containment domain` entry describe; it necessarily sits outside org scoping because the org-rooted `containmentChain` structurally cannot reach above org;
+- **`device_auth_requests.orgId` (`apps/server/src/db/schema.ts`) is nullable** — a device-authorization request exists before any org is known and the column is *"set on approval"*. A partial exception rather than a full one.
 
 This list is the set known at time of writing; treat "every table carries `orgId`" as the rule and check the schema before asserting a given table is or is not an exception.
 
@@ -555,7 +581,9 @@ Each executor binding carries a **Type** ([ADR-0007](adr/0007-executor-binding-t
 
 **Not to be confused with:** an **execution system** (the external thing itself — see next entry) and a **control plugin** (which produces gate evidence, not execution).
 
-**In the code.** The executor plugins under `packages/plugins/` include `argocd`, `github`, `gitlab`, `gitea`, `terraform`, `managed-iac`, `managed-scan`, `harbor` and `fake-executor`; `packages/plugins/` also holds non-executor plugins (control, auth and notify plugins such as `scan-result-control`, `webhook-control`, `local-auth`, `oidc`, `smtp-notify`), so read the directory rather than this list. Bindings live in `apps/server/src/coordination/executor-bindings-repo.ts`.
+**In the code — read the allowlist, not the directory listing.** The authoritative set is `KNOWN_EXECUTOR_MODULES` in `apps/server/src/coordination/executor-bindings-repo.ts`, which is exactly `fake-executor`, `github`, `gitea`, `gitlab`, `argocd`, `terraform`, `managed-iac`, `managed-scan` — eight modules, and a wave target may not be bound to anything outside it. Bindings live in the same file.
+
+`packages/plugins/` is **not** that list: it also holds control, auth, notify, discovery and change-source plugins (`scan-result-control`, `webhook-control`, `local-auth`, `oidc`, `smtp-notify`, `webhook-notify`, `federation-https`, the shared `git-provider-core`). **`harbor` is one of these non-executors, not an executor** — its own header says so: a container registry is a passive artifact **store** SCP observes, so `@scp/plugin-harbor` is a webhook **change-source** with *"no `ExecutorPlugin`, no `GitProviderAdapter` (no trigger/observe/status/abort/verify), no manifest, no `KNOWN_EXECUTOR_MODULES` entry."* It has none of the four verbs, which is the definition above, so it cannot be an executor.
 
 ---
 
@@ -567,7 +595,7 @@ Each executor binding carries a **Type** ([ADR-0007](adr/0007-executor-binding-t
 
 **Not to be confused with:** the **executor** (SCP's plugin *for* that system) and the **deployment target** (the place inside that system an executor acts on).
 
-**In the code.** Object type `execution-system`, seeded at `apps/server/drizzle/0019_execution_system.sql:9`; its `serverUrl` is the deep-link base the UI uses (`apps/web/src/components/pipeline/StageCard.tsx`).
+**In the code.** Object type `execution-system`, seeded in `apps/server/drizzle/0019_execution_system.sql`; its `serverUrl` is the deep-link base the UI uses (`apps/web/src/components/pipeline/StageCard.tsx`).
 
 ---
 
@@ -612,7 +640,7 @@ The commander cosign-signs **only** this manifest. The executor cosign-signs the
 
 **Not to be confused with:** an **OCI image manifest** (the registry's own descriptor document — a real collision, since SCP handles both), a Kubernetes manifest (a YAML resource file), or an **SBOM** (a component inventory, not an authorization).
 
-**In the code.** `PromotionManifestSchema` in `packages/schemas/src/federation.ts:436`.
+**In the code.** `PromotionManifestSchema` in `packages/schemas/src/federation.ts`.
 
 ---
 
@@ -666,16 +694,16 @@ Poke reaches air-gapped domains **via the retrans chain**, hop by hop — the co
 
 | Don't say | Say instead | Why |
 |---|---|---|
-| bare **"domain"** as a tier name | **"security domain"** (the trust tier) or **"containment domain"** (the intra-org object type) | Five live rival senses — DNS, Windows/AD, DDD bounded context, identity realm, and our own object type. Banned in prose *and* as a stored value: the floor table's tier literal is `trust_domain`, never `domain` ([ADR-0016](adr/0016-scoped-scan-requirement-policies.md) §Terminology; DESIGN.md:481). |
+| bare **"domain"** as a tier name | **"security domain"** (the trust tier) or **"containment domain"** (the intra-org object type) | Five live rival senses — DNS, Windows/AD, DDD bounded context, identity realm, and our own object type. Banned in prose *and* as a stored value: the floor table's tier literal is `trust_domain`, never `domain` ([ADR-0016](adr/0016-scoped-scan-requirement-policies.md) §Terminology; DESIGN.md's policy-resolution chain). |
 | **"promotion"** unqualified when a security-domain crossing is meant | **"cross-domain promotion"** | Bare promotion is the genus and carries no boundary implication. Dropping the qualifier silently claims a CDS gate ran when it may not have. |
 | **"promote" / "promoted"** for the change approval gate | **"accept" / "accepted"** | It is a human approval and a terminal success state, not an artifact advancing — the collision fights the genus/species model (D5). **The code still spells it `promote`/`promoted`**; the rename is a tracked follow-on PR ([ADR-0021](adr/0021-terminology.md) Consequences ii). |
 | **"release"** meaning a single push into one environment | **"deployment"** | A release is the whole versioned unit moving through its pipeline; a change *is* a release. Also: in DoD/IC usage "release" means a **disclosure determination**, which is the last thing you want an accreditation reader to infer. |
-| **"stage"** meaning a pipeline **phase** | **"phase"** or **"step"** | "Stage" is reserved for a named deployment place spelled `<domain>-<location>-<env>` (D6). Code comments currently misuse it — including the ~40 `M2 stage 2/3/4` milestone-substep comments; cleanup is tracked ([ADR-0021](adr/0021-terminology.md) Consequences iii-a). |
+| **"stage"** meaning a pipeline **phase** | **"phase"** or **"step"** | "Stage" is reserved for a named deployment place spelled `<domain>[-<location>]-<env>` (D6). Code comments currently misuse it — including 37 `M<n> stage N` milestone-substep comments plus 3 prefix-less variants (`da9e92c`); cleanup is tracked ([ADR-0021](adr/0021-terminology.md) Consequences iii-a). |
 | **"stage"** meaning a **wave** | **"wave"** | Same reservation — and a wave *contains* stages, so the two are not interchangeable in either direction. The misuse reaches the shipped `/v1` contract (`ServiceBoardStageSchema`, `currentStage`, `stages[]`), not just UI labels; see the `stage` entry's full census. Cleanup is split into a cheap half (iii-a) and a **breaking, oasdiff-gated** half (iii-b). Not done. |
 | **"bundle"** unqualified | **"promotion bundle"** / **"air-gap federation bundle"** / **"relay tarball"** | Three different things, only one of which carries artifact bytes. |
 | **"parent" / "child"** for federation roles | **"commander" / "outpost" / "retrans"** | Removed outright, not aliased, by [ADR-0004](adr/0004-service-naming-commander-outpost-retrans.md). (The words remain correct for *process* supervision and RBAC containment walks — that is a different concept.) |
 
-**Note on `stage`:** no `stage` entity exists in the schema today, and no stage-grammar compound name such as `commercial-amer-gamma` appears anywhere in the **code** (this glossary's and ADR-0021's own illustrative examples aside — scope the claim that way so it stays checkable after this branch merges). "Stage" is reserved vocabulary a future entity may fill — the reservation is a decision about what the word will mean, not a claim that the thing is built. The word is, however, *actively in use for the wave sense* in the `/v1` contract today; the `stage` entry enumerates every site.
+**Note on `stage`:** no `stage` entity exists in the schema today, and no stage-grammar compound name such as `commercial-amer-gamma` appears anywhere in the **code** (this glossary's and ADR-0021's own illustrative examples aside — scope the claim that way so it stays checkable after this branch merges). "Stage" is reserved vocabulary a future entity may fill — the reservation is a decision about what the word will mean, not a claim that the thing is built. The word is, however, *actively in use for the wave sense* in the `/v1` contract today; the `stage` entry enumerates every site as of `da9e92c`. The grammar's **location segment is optional** (owner decision, 2026-07-24), which makes segment count the disambiguator and therefore makes **hyphen-free segment values** a naming rule — see the `stage` entry.
 
 ---
 
