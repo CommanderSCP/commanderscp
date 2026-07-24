@@ -1855,4 +1855,62 @@ describe("M14.1 Federation: per-peer poke-mode (Testcontainers)", () => {
     const row = await pairWith({ pokeMode: true });
     expect(row.pokeMode).toBe(true);
   });
+
+  // ------------------------------------------------------------------------------------------
+  // M14.3 HARDENING — the guard must validate the EFFECTIVE POST-WRITE state, not the input
+  // transition. baseUrl and pokeMode MERGE with OPPOSITE rules on re-pair (baseUrl: request wins
+  // when present; pokeMode: tri-state, EXISTING wins when absent), so a guard keyed off
+  // `input.pokeMode === true` checked a DIFFERENT tuple than the one actually persisted.
+  // ------------------------------------------------------------------------------------------
+
+  it("REGRESSION: re-pair downgrading baseUrl to plain-http with pokeMode OMITTED is REJECTED", async () => {
+    // THE BUG: pokeMode omitted -> `input.pokeMode === true` was false -> the guard was skipped
+    // entirely -> the row was persisted as {baseUrl: 'http://…', pokeMode: true}. The sender would
+    // then have dialed it and put the federation bearer on the wire in cleartext. The effective
+    // post-write tuple is (pokeMode: true [preserved], baseUrl: http) — it MUST be refused.
+    const domainId = randomUUID();
+    await pairWith({ domainId, baseUrl: HTTPS_URL, pokeMode: true });
+    await expectGuardRejection(pairWith({ domainId, baseUrl: HTTP_URL }));
+    // And the stored row is UNCHANGED — the rejected re-pair never downgraded it.
+    const got = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      getPeerByIdOrName(tx, commander.orgId, domainId)
+    );
+    expect(got.baseUrl).toBe(HTTPS_URL);
+    expect(got.pokeMode).toBe(true);
+  });
+
+  it("re-pair to a NEW https baseUrl with pokeMode omitted is ALLOWED and preserves pokeMode=true", async () => {
+    // The guard must not over-refuse: an https→https move keeps the invariant, so the tri-state
+    // preserve semantics still hold.
+    const domainId = randomUUID();
+    await pairWith({ domainId, baseUrl: HTTPS_URL, pokeMode: true });
+    const row = await pairWith({ domainId, baseUrl: "https://outpost-2.example.com" });
+    expect(row.baseUrl).toBe("https://outpost-2.example.com");
+    expect(row.pokeMode).toBe(true);
+  });
+
+  it("re-pair downgrading to plain-http is ALLOWED when pokeMode is explicitly turned OFF", async () => {
+    // The effective tuple is (pokeMode: false, baseUrl: http) — no invariant to violate, so the
+    // downgrade is a legitimate operator action.
+    const domainId = randomUUID();
+    await pairWith({ domainId, baseUrl: HTTPS_URL, pokeMode: true });
+    const row = await pairWith({ domainId, baseUrl: HTTP_URL, pokeMode: false });
+    expect(row.baseUrl).toBe(HTTP_URL);
+    expect(row.pokeMode).toBe(false);
+  });
+
+  it("re-pair preserving BOTH (pokeMode omitted, baseUrl omitted) on an https peer stays allowed", async () => {
+    // The pure no-op re-pair (an old client that knows neither field) must not start failing.
+    const domainId = randomUUID();
+    await pairWith({ domainId, baseUrl: HTTPS_URL, pokeMode: true });
+    const row = await pairWith({ domainId });
+    expect(row.baseUrl).toBe(HTTPS_URL);
+    expect(row.pokeMode).toBe(true);
+  });
+
+  it("explicit pokeMode=true on a plain-http baseUrl is still REJECTED (unchanged)", async () => {
+    const domainId = randomUUID();
+    await pairWith({ domainId, baseUrl: HTTPS_URL, pokeMode: true });
+    await expectGuardRejection(pairWith({ domainId, baseUrl: HTTP_URL, pokeMode: true }));
+  });
 });

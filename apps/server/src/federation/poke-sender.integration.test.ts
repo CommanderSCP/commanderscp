@@ -15,7 +15,9 @@ import {
   provisionRuntimeRole,
   runtimeCredentials
 } from "../db/provision.js";
+import { and, eq } from "drizzle-orm";
 import { withTenantTx } from "../db/tenant-tx.js";
+import { federationPeers } from "../db/schema.js";
 import type { AppDeps } from "../types.js";
 import { testDatabaseUrl, createTestOrg, type TestServer } from "../test-support/harness.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
@@ -308,6 +310,68 @@ describe.skipIf(!opensslAvailable())("M14.3 commander poke sender (mTLS, two-dom
     } finally {
       await sender.stop();
     }
+  });
+
+  it("FAIL-CLOSED: a poke-mode peer with a plain-HTTP baseUrl is NEVER dialed (defense in depth)", async () => {
+    // `pairPeer`'s effective-state guard makes {pokeMode: true, http baseUrl} unrepresentable, so the
+    // only way to get such a row is to bypass the repo entirely (a hand-edited DB, or a row predating
+    // the guard). The SENDER must not depend on the row being well-formed: dialing it would put
+    // `Authorization: Bearer <federation bearer>` on the wire in CLEARTEXT with no mutual auth
+    // (scheme-derived requireMtls never fires for http). Write the bad row by raw UPDATE and prove the
+    // sender skips it entirely — it is not even in the outcome set, and NOTHING is dialed.
+    const badDomainId = randomUUID();
+    const outpostKeyPub = (
+      await withTenantTx(outpost.db, outpost.orgId, (tx) => ensureInstanceKey(tx, outpost.orgId))
+    ).publicKey;
+    // Pair it legitimately (https) so the guard is satisfied...
+    await withTenantTx(commander.db, commander.orgId, (tx) =>
+      pairPeer(tx, {
+        orgId: commander.orgId,
+        domainId: badDomainId,
+        name: "downgraded-outpost",
+        role: "outpost",
+        publicKey: outpostKeyPub,
+        baseUrl: "https://127.0.0.1:1",
+        pokeMode: true
+      })
+    );
+    // ...then downgrade it BEHIND the repo's back, exactly as a malformed/legacy row would look.
+    const httpBaseUrl = `http://localhost:${outpost.port}`;
+    await withTenantTx(commander.db, commander.orgId, (tx) =>
+      tx
+        .update(federationPeers)
+        .set({ baseUrl: httpBaseUrl })
+        .where(
+          and(eq(federationPeers.orgId, commander.orgId), eq(federationPeers.id, badDomainId))
+        )
+    );
+
+    const skipped: string[] = [];
+    const outcomes = await pokeDownstreamPeersForOrg(commander.db, commander.orgId, {
+      bearer: outpost.adminToken,
+      mtls: commanderClientMtls,
+      log: (msg) => skipped.push(msg)
+    });
+
+    // Not a target at all: no "sent", no "refused", no "error" — it never entered the dial loop.
+    expect(outcomes.map((o) => o.peerDomainId)).not.toContain(badDomainId);
+    // The skip is observable at debug so an operator can tell it apart from a poll-mode peer.
+    expect(skipped.some((m) => m.includes("non-mTLS baseUrl") && m.includes("downgraded-outpost"))).toBe(
+      true
+    );
+    // The healthy https peer is still poked — the fail-closed skip is per-peer, not a round abort.
+    expect(bySent(outcomes)).toContain(outpost.self.domainId);
+
+    // Park the bad row poll-mode so it is inert for any later case (scp_app has no DELETE grant on
+    // federation_peers — the tables are append/update-only by design).
+    await withTenantTx(commander.db, commander.orgId, (tx) =>
+      tx
+        .update(federationPeers)
+        .set({ pokeMode: false })
+        .where(
+          and(eq(federationPeers.orgId, commander.orgId), eq(federationPeers.id, badDomainId))
+        )
+    );
   });
 
   it("INERT: with no outbound client-cert material the sender no-ops (SCOPE 5, opt-in/default-off)", async () => {

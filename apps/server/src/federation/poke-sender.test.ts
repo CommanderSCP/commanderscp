@@ -1,6 +1,12 @@
+import { createServer, type Server } from "node:http";
+import { AddressInfo } from "node:net";
 import { describe, it, expect } from "vitest";
 import type { FederationPeerRow } from "./peers-repo.js";
-import { FederationDialRefused, sendPokeToPeer } from "./federation-outbound.js";
+import {
+  FederationDialRefused,
+  sendPokeToPeer,
+  type FederationClientMtls
+} from "./federation-outbound.js";
 import { isPokeTarget } from "./poke-sender.js";
 import { PokeRateLimiter } from "./poke-rate-limit.js";
 
@@ -49,6 +55,22 @@ describe("M14.3 isPokeTarget — the pokeMode gate + downstream-role filter (SCO
   it("a poke-mode peer with no baseUrl is NOT a target (nothing to dial)", () => {
     expect(isPokeTarget(peer({ baseUrl: null }))).toBe(false);
   });
+
+  // ---- M14.3 fail-closed hardening: pokeMode=true IMPLIES an https/mTLS-capable baseUrl -------
+  // `pairPeer`'s effective-state guard makes such a row unrepresentable, but the SENDER must not
+  // depend on that: a malformed row (hand-edited DB / predating the guard) must be SKIPPED, not
+  // dialed — dialing it would put the federation bearer on the wire in cleartext, unauthenticated.
+
+  it("a poke-mode peer with a plain-HTTP baseUrl is NOT a target (fail-closed, never dialed)", () => {
+    expect(isPokeTarget(peer({ baseUrl: "http://outpost.example:8080" }))).toBe(false);
+  });
+
+  it("the https requirement is case-insensitive and rejects other schemes outright", () => {
+    expect(isPokeTarget(peer({ baseUrl: "HTTPS://outpost.example:8443" }))).toBe(true);
+    expect(isPokeTarget(peer({ baseUrl: "HTTP://outpost.example:8080" }))).toBe(false);
+    expect(isPokeTarget(peer({ baseUrl: "file:///etc/passwd" }))).toBe(false);
+    expect(isPokeTarget(peer({ baseUrl: "ftp://outpost.example" }))).toBe(false);
+  });
 });
 
 describe("M14.3 sendPokeToPeer — contentless + fail-closed (SCOPE 2/5)", () => {
@@ -58,6 +80,31 @@ describe("M14.3 sendPokeToPeer — contentless + fail-closed (SCOPE 2/5)", () =>
     await expect(
       sendPokeToPeer({ baseUrl: "https://outpost.example:8443", bearer: "t", mtls: undefined })
     ).rejects.toBeInstanceOf(FederationDialRefused);
+  });
+
+  it("REFUSES a NON-https target even WITH client-cert material — and sends ZERO pokes", async () => {
+    // The credential-leak regression: `requireMtls` used to be DERIVED from the target's own scheme,
+    // so a plain-http poke target opted ITSELF out of mTLS and would have received
+    // `Authorization: Bearer <federation bearer>` in CLEARTEXT with no mutual authentication. It is
+    // now the CONSTANT true plus an outright non-https refusal. Proven against a REAL http listener:
+    // it must never see a single request.
+    let requests = 0;
+    const server: Server = createServer((_req, res) => {
+      requests += 1;
+      res.writeHead(204).end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    const mtls: FederationClientMtls = { cert: "unused-cert-pem", key: "unused-key-pem" };
+    try {
+      await expect(
+        sendPokeToPeer({ baseUrl: `http://127.0.0.1:${port}`, bearer: "leak-me", mtls })
+      ).rejects.toBeInstanceOf(FederationDialRefused);
+      // ZERO pokes sent: refused before any socket was opened, so the bearer never hit the wire.
+      expect(requests).toBe(0);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
 

@@ -29,13 +29,25 @@
  *
  * ## Opt-in / default-off (SCOPE 5)
  *
- * Inert unless BOTH hold: (a) the peer is `pokeMode=true` AND a downstream role (outpost/retrans) —
- * see {@link isPokeTarget}; a poll-mode peer is never poked, and a `commander`-role (UPSTREAM) peer
- * is never poked (the shared `pokeMode` column means "I accept pokes from it" on that side, not "I
- * poke it" — filtering by role keeps an outpost from poking its own commander). And (b) this
- * instance has outbound client-cert material (`SCP_FEDERATION_MTLS_CERT_FILE`/`_KEY_FILE`); without
- * it the whole sender is inert and the fail-closed dialer would refuse anyway — a poke is never sent
- * plain-HTTP to an https peer.
+ * Inert unless BOTH hold: (a) the peer is `pokeMode=true` AND a downstream role (outpost/retrans)
+ * AND its `baseUrl` is an https/mTLS-capable endpoint — see {@link isPokeTarget}; a poll-mode peer is
+ * never poked, and a `commander`-role (UPSTREAM) peer is never poked (the shared `pokeMode` column
+ * means "I accept pokes from it" on that side, not "I poke it" — filtering by role keeps an outpost
+ * from poking its own commander). And (b) this instance has outbound client-cert material
+ * (`SCP_FEDERATION_MTLS_CERT_FILE`/`_KEY_FILE`); without it the whole sender is inert and the
+ * fail-closed dialer would refuse anyway.
+ *
+ * ## Fail-closed at THREE layers (M14.3 hardening) — the poke is always mutually authenticated
+ *
+ * A poke carries no signed payload of its own, so the mTLS transport is the ONLY thing proving the
+ * caller is the enrolled commander (ADR-0009 §5). Three independent layers enforce that, so no single
+ * bad row or wrong merge can put the federation bearer on the wire in cleartext:
+ *   1. `pairPeer`'s pair-time guard checks the EFFECTIVE post-write `(pokeMode, baseUrl)` tuple, making
+ *      `pokeMode=true` on a non-https baseUrl unrepresentable through every write path;
+ *   2. {@link isPokeTarget} independently requires an https baseUrl, so a malformed row is SKIPPED
+ *      rather than dialed; and
+ *   3. `sendPokeToPeer` refuses a non-https target outright and passes `requireMtls: true` as a
+ *      CONSTANT (never scheme-derived), so the dial refuses before any socket is opened.
  *
  * ## Coalesce / rate-limit (SCOPE 4 — be a good citizen)
  *
@@ -66,15 +78,28 @@ export const POKE_SEND_COALESCE_SECONDS = Math.max(
 
 /**
  * Is this peer a poke TARGET for the sender? True iff it is a DOWNSTREAM peer (outpost/retrans) that
- * has opted into pokes (`pokeMode`) and has a `baseUrl` to dial. A `commander`-role peer is UPSTREAM
- * and is never poked (see the module header on the shared `pokeMode` column's per-side meaning).
+ * has opted into pokes (`pokeMode`), has a `baseUrl` to dial, AND that baseUrl is an https/mTLS-capable
+ * endpoint. A `commander`-role peer is UPSTREAM and is never poked (see the module header on the
+ * shared `pokeMode` column's per-side meaning).
+ *
+ * ## Why the https requirement is part of the TARGET TEST (fail-closed, defense in depth)
+ *
+ * `pokeMode=true` MEANS "mTLS-capable peer": the poke has to authenticate the caller as the enrolled
+ * commander (ADR-0009 §5), and only the mTLS transport carries that identity. `pairPeer`'s
+ * effective-state guard makes `pokeMode=true` on a non-https baseUrl UNREPRESENTABLE, but the sender
+ * must not DEPEND on the row being well-formed: a non-https poke-mode row (a hand-edited DB, a row
+ * predating the guard) must be SKIPPED like a poll-mode peer rather than dialed. Dialing it would put
+ * the federation bearer on the wire in CLEARTEXT with no mutual authentication — the scheme-derived
+ * `requireMtls` never fires for an `http://` URL, so nothing downstream would have refused it.
  */
 export function isPokeTarget(peer: FederationPeerRow): boolean {
   return (
     (peer.role === "outpost" || peer.role === "retrans") &&
     peer.pokeMode &&
     typeof peer.baseUrl === "string" &&
-    peer.baseUrl.length > 0
+    peer.baseUrl.length > 0 &&
+    // Fail-closed: a poke-mode peer whose baseUrl is not https is NOT a target — never dialed.
+    federationPeerRequiresMtls(peer.baseUrl)
   );
 }
 
@@ -108,6 +133,18 @@ export async function pokeDownstreamPeersForOrg(
   const log = ctx.log ?? ((msg: string) => console.debug?.(`[poke-sender] ${msg}`));
   const peers = await withTenantTx(db, orgId, (tx) => listPeers(tx, orgId));
   const targets = peers.filter(isPokeTarget);
+  // Observability for the fail-closed skip: a peer that WANTS pokes but cannot receive one over an
+  // authenticated transport is silently dropped by `isPokeTarget`; say so at debug so an operator can
+  // tell "no poke because poll-mode" apart from "no poke because the baseUrl is not mTLS-capable".
+  for (const peer of peers) {
+    if (
+      (peer.role === "outpost" || peer.role === "retrans") &&
+      peer.pokeMode &&
+      !isPokeTarget(peer)
+    ) {
+      log(`skipping poke: non-mTLS baseUrl on poke-mode peer '${peer.name}' (fail-closed)`);
+    }
+  }
   const outcomes: PokeSendOutcome[] = [];
   for (const peer of targets) {
     if (ctx.limiter && !ctx.limiter.tryConsume(`${orgId}:${peer.id}`)) {
