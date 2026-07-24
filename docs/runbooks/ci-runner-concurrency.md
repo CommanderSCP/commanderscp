@@ -69,7 +69,7 @@ builds the heavy `scp-runner-scan` image in-suite — it only *pulls* it — so 
 `github-runners-default-limits`**, `requests 1Gi / 500m`) = **12Gi limits.memory, 6 limits.cpu, 3Gi
 requests.memory** per pod. That 12Gi limit ÷ 20Gi quota is the "only 1 runner" cap.
 
-**Right-size the runner memory limit 8Gi → 4Gi** (ARC Helm values for the
+**Right-size the runner memory limit 8Gi → 6Gi** (ARC Helm values for the
 `homelab-commanderscp-linux-docker-build` scale set — Helm-managed, so a `kubectl patch` is reverted;
 this is a **values change**):
 
