@@ -90,6 +90,10 @@ spec:
               mountPath: /tmp
             - name: storage
               mountPath: /var/lib/scp/storage
+            {{- if .Values.scanDbCache.enabled }}
+            - name: scan-db
+              mountPath: {{ .Values.scanDbCache.mountPath }}
+            {{- end }}
             {{- if .Values.federation.mtls.enabled }}
             - name: federation-mtls
               mountPath: /etc/scp/federation-mtls
@@ -115,6 +119,11 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        {{- if .Values.scanDbCache.enabled }}
+        - name: scan-db
+          persistentVolumeClaim:
+            claimName: {{ include "commanderscp.fullname" . }}-scan-db
+        {{- end }}
         {{- if .Values.federation.mtls.enabled }}
         - name: federation-mtls
           secret:

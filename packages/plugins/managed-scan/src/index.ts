@@ -102,6 +102,16 @@ export interface ManagedScanIntentParameters {
   /** OpenSCAP only — the ABSOLUTE path (inside the runner image) of the SSG datastream to evaluate
    *  against (e.g. `/usr/share/xml/scap/ssg/content/ssg-debian11-ds.xml`). Ignored by trivy. */
   datastream?: string;
+  /** M13.3b-ii — SERVER-provided HOST path to a pre-loaded Trivy DB cache dir (a Trivy `--cache-dir`
+   *  layout: `<dir>/db/{trivy.db,metadata.json}`). When set, it is `docker cp`'d into the runner at
+   *  `/work/db` and `SCP_SCAN_DB_DIR=/work/db` is set, so run.sh points Trivy at the pre-loaded DB
+   *  INSTEAD of the image-baked default. Unset ⇒ the runner uses the baked DB (fail-closed fallback).
+   *  Server-governed like inputDir; a tenant cannot supply it (the promotion scan step resolves it). */
+  scanDbDir?: string;
+  /** M13.3b-ii — OPTIONAL SERVER-provided HOST path to a pre-loaded SSG/SCAP content dir, copied to
+   *  `/work/scap` with `SCP_SCAN_SCAP_DIR=/work/scap`. Rarely used: SSG has no OCI upstream to
+   *  skopeo-refresh, so datastreams stay baked (the documented trivy-db/SSG asymmetry, §13.3b). */
+  scanScapDir?: string;
 }
 
 interface RunResult {
@@ -120,7 +130,8 @@ async function runScanContainer(
   method: string,
   inputDir: string,
   outputDir: string,
-  scanArgs: string[]
+  scanArgs: string[],
+  preload: { scanDbDir?: string; scanScapDir?: string }
 ): Promise<RunResult> {
   const docker = config.dockerBinary ?? "docker";
   const timeout = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -129,10 +140,15 @@ async function runScanContainer(
   // 1. CREATE (not run) — no `-v` host bind mount, no docker.sock, server-fixed --network. The
   //    container exists but hasn't started; `docker cp` (step 2) requires exactly that state. The
   //    method + any method-specific run.sh args (openscap: profile, datastream) are the ENTRYPOINT
-  //    argv — server-resolved, never a mount or a network toggle.
+  //    argv — server-resolved, never a mount or a network toggle. When the server provides a
+  //    pre-loaded DB / SCAP dir (M13.3b-ii), we set the env that steers run.sh to it (still --network
+  //    none, still copied IN not mounted — a host-path escape stays structurally impossible).
+  const envArgs: string[] = [];
+  if (preload.scanDbDir) envArgs.push("-e", "SCP_SCAN_DB_DIR=/work/db");
+  if (preload.scanScapDir) envArgs.push("-e", "SCP_SCAN_SCAP_DIR=/work/scap");
   const { stdout: createOut } = await execFileAsync(
     docker,
-    ["create", "--network", config.networkMode, config.runnerImage, method, ...scanArgs],
+    ["create", "--network", config.networkMode, ...envArgs, config.runnerImage, method, ...scanArgs],
     { timeout, maxBuffer }
   );
   const containerId = createOut.trim();
@@ -143,6 +159,22 @@ async function runScanContainer(
       timeout,
       maxBuffer
     });
+
+    // 2b. COPY the SERVER-provided pre-loaded DB / SCAP content IN (M13.3b-ii). A SECOND `docker cp`
+    //     of an operator-governed, server-maintained cache dir — same copy-in seam as the subject,
+    //     never a mount, so the runner still reaches no host path and no network.
+    if (preload.scanDbDir) {
+      await execFileAsync(docker, ["cp", `${preload.scanDbDir}/.`, `${containerId}:/work/db`], {
+        timeout,
+        maxBuffer
+      });
+    }
+    if (preload.scanScapDir) {
+      await execFileAsync(docker, ["cp", `${preload.scanScapDir}/.`, `${containerId}:/work/scap`], {
+        timeout,
+        maxBuffer
+      });
+    }
 
     // 3. START attached — blocks until the container exits and propagates its exit code. A non-zero
     //    scanner run (a broken/failed scan) rejects here and is captured as succeeded:false, so a
@@ -219,7 +251,10 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
     method === "openscap" ? [params.profile ?? "", params.datastream ?? ""] : [];
 
   await mkdir(params.outputDir, { recursive: true });
-  const result = await runScanContainer(config, method, params.inputDir, params.outputDir, scanArgs);
+  const result = await runScanContainer(config, method, params.inputDir, params.outputDir, scanArgs, {
+    scanDbDir: params.scanDbDir,
+    scanScapDir: params.scanScapDir
+  });
   outcomes.set(externalId, {
     succeeded: result.succeeded,
     detail: result.succeeded

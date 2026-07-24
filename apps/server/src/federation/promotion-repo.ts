@@ -203,7 +203,7 @@ export async function exportPromotionBundle(
   // scanning is not enabled — so a boundary export then still refuses fail-closed). Runs OUTSIDE any
   // tx (it pulls bytes + launches containers — the subprocess invariant this function already honors).
   if (input.scanRunner !== null) {
-    const runner: ManagedScanRunner = input.scanRunner ?? createServerManagedScanRunner();
+    const runner: ManagedScanRunner = input.scanRunner ?? createServerManagedScanRunner(db);
     await runPromotionScanStep(
       db,
       { orgId: input.orgId, changeIdOrUrn: input.changeIdOrUrn, actorObjectId },

@@ -11976,6 +11976,323 @@ export type PutScannerAssignmentResponses = {
 
 export type PutScannerAssignmentResponse = PutScannerAssignmentResponses[keyof PutScannerAssignmentResponses];
 
+export type GetScanDbStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/instance/scan-db';
+};
+
+export type GetScanDbStatusErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetScanDbStatusError = GetScanDbStatusErrors[keyof GetScanDbStatusErrors];
+
+export type GetScanDbStatusResponses = {
+    /**
+     * Success
+     */
+    200: {
+        cacheConfigured: boolean;
+        present: boolean;
+        source: 'baked' | 'refreshed' | 'operator-loaded' | 'absent';
+        ageHours: number | null;
+        updatedAt: string | null;
+        nextUpdate: string | null;
+        schemaVersion: number | null;
+        expectedSchemaVersion: number;
+        schemaCompatible: boolean;
+        staleness: 'fresh' | 'warn' | 'hard-fail' | 'missing' | 'corrupt';
+        thresholdFired: 'none' | 'soft' | 'hard';
+        activeSoftMaxAgeHours: number;
+        activeHardMaxAgeHours: number;
+        detail: string;
+    };
+};
+
+export type GetScanDbStatusResponse = GetScanDbStatusResponses[keyof GetScanDbStatusResponses];
+
+export type GetScanDbStalenessPolicyData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/instance/scan-db/staleness-policy';
+};
+
+export type GetScanDbStalenessPolicyErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetScanDbStalenessPolicyError = GetScanDbStalenessPolicyErrors[keyof GetScanDbStalenessPolicyErrors];
+
+export type GetScanDbStalenessPolicyResponses = {
+    /**
+     * Success
+     */
+    200: {
+        softMaxAgeHours: number | null;
+        hardMaxAgeHours: number | null;
+        note: string | null;
+        updatedAt: string;
+        isDefault: boolean;
+        effectiveSoftMaxAgeHours: number;
+        effectiveHardMaxAgeHours: number;
+    };
+};
+
+export type GetScanDbStalenessPolicyResponse = GetScanDbStalenessPolicyResponses[keyof GetScanDbStalenessPolicyResponses];
+
+export type PutScanDbStalenessPolicyData = {
+    body: {
+        softMaxAgeHours?: number | null;
+        hardMaxAgeHours?: number | null;
+        note?: string | null;
+    };
+    path?: never;
+    query?: never;
+    url: '/instance/scan-db/staleness-policy';
+};
+
+export type PutScanDbStalenessPolicyErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutScanDbStalenessPolicyError = PutScanDbStalenessPolicyErrors[keyof PutScanDbStalenessPolicyErrors];
+
+export type PutScanDbStalenessPolicyResponses = {
+    /**
+     * Success
+     */
+    200: {
+        softMaxAgeHours: number | null;
+        hardMaxAgeHours: number | null;
+        note: string | null;
+        updatedAt: string;
+        isDefault: boolean;
+        effectiveSoftMaxAgeHours: number;
+        effectiveHardMaxAgeHours: number;
+    };
+};
+
+export type PutScanDbStalenessPolicyResponse = PutScanDbStalenessPolicyResponses[keyof PutScanDbStalenessPolicyResponses];
+
+export type RefreshScanDbData = {
+    body: {
+        [key: string]: never;
+    };
+    path?: never;
+    query?: never;
+    url: '/instance/scan-db/refresh';
+};
+
+export type RefreshScanDbErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RefreshScanDbError = RefreshScanDbErrors[keyof RefreshScanDbErrors];
+
+export type RefreshScanDbResponses = {
+    /**
+     * Success
+     */
+    200: {
+        refreshed: boolean;
+        status: {
+            cacheConfigured: boolean;
+            present: boolean;
+            source: 'baked' | 'refreshed' | 'operator-loaded' | 'absent';
+            ageHours: number | null;
+            updatedAt: string | null;
+            nextUpdate: string | null;
+            schemaVersion: number | null;
+            expectedSchemaVersion: number;
+            schemaCompatible: boolean;
+            staleness: 'fresh' | 'warn' | 'hard-fail' | 'missing' | 'corrupt';
+            thresholdFired: 'none' | 'soft' | 'hard';
+            activeSoftMaxAgeHours: number;
+            activeHardMaxAgeHours: number;
+            detail: string;
+        };
+        detail: string;
+    };
+};
+
+export type RefreshScanDbResponse = RefreshScanDbResponses[keyof RefreshScanDbResponses];
+
+export type LoadScanDbData = {
+    body: {
+        blobPath: string;
+        signaturePath: string;
+        publicKeyPath: string;
+        expectedDigest?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/instance/scan-db/load';
+};
+
+export type LoadScanDbErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type LoadScanDbError = LoadScanDbErrors[keyof LoadScanDbErrors];
+
+export type LoadScanDbResponses = {
+    /**
+     * Success
+     */
+    200: {
+        loaded: boolean;
+        status: {
+            cacheConfigured: boolean;
+            present: boolean;
+            source: 'baked' | 'refreshed' | 'operator-loaded' | 'absent';
+            ageHours: number | null;
+            updatedAt: string | null;
+            nextUpdate: string | null;
+            schemaVersion: number | null;
+            expectedSchemaVersion: number;
+            schemaCompatible: boolean;
+            staleness: 'fresh' | 'warn' | 'hard-fail' | 'missing' | 'corrupt';
+            thresholdFired: 'none' | 'soft' | 'hard';
+            activeSoftMaxAgeHours: number;
+            activeHardMaxAgeHours: number;
+            detail: string;
+        };
+        detail: string;
+    };
+};
+
+export type LoadScanDbResponse = LoadScanDbResponses[keyof LoadScanDbResponses];
+
 export type ListCampaignsData = {
     body?: never;
     path?: never;

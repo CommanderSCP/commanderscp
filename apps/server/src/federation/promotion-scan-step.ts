@@ -10,7 +10,10 @@ import {
   type ScanMethod,
   type ScanSeverityCounts,
   type ScanThreshold,
-  type EffectiveScanThreshold
+  type EffectiveScanThreshold,
+  type ScanDbSource,
+  type ScanDbStalenessClass,
+  type ScanDbThresholdFired
 } from "@scp/schemas";
 import { resolveSkopeo } from "@scp/cosign";
 import { ociLayout as airgapOciLayout } from "@scp/airgap";
@@ -26,6 +29,7 @@ import {
 } from "../governance/controls-repo.js";
 import { resolveScannersForType } from "../governance/scanner-registry.js";
 import { resolveEffectiveScanThreshold } from "../governance/scan-requirements.js";
+import { readScanDbStatus } from "../governance/scan-db.js";
 import { managedScanServerSettings } from "../coordination/executor-bindings-repo.js";
 import {
   bindOciRefToAuthorizedDigest,
@@ -110,6 +114,16 @@ export interface ManagedScanReport {
   scannedDigest: string;
   scannerVersion: string;
   severityCounts: ScanSeverityCounts;
+  /** M13.3b-ii — the scanner DB this verdict was produced against (trivy only; OpenSCAP uses baked
+   *  SSG). Surfaced into the ScanEvidence so a Decision can explain the DB's provenance + freshness.
+   *  Only a scannable DB (`fresh`/`warn`) yields a report at all — a hard-fail/missing/corrupt DB
+   *  fails the scan closed upstream. */
+  scanDb?: {
+    source: ScanDbSource;
+    ageHours?: number;
+    staleness: ScanDbStalenessClass;
+    thresholdFired: ScanDbThresholdFired;
+  };
 }
 
 export type ManagedScanResult =
@@ -361,14 +375,28 @@ export async function runPromotionScanStep(
         severityCounts,
         threshold,
         thresholdSource: source,
-        ...(plan.effective ? { thresholdContributors: plan.effective.contributors } : {})
+        ...(plan.effective ? { thresholdContributors: plan.effective.contributors } : {}),
+        ...(report.scanDb
+          ? {
+              scanDbSource: report.scanDb.source,
+              ...(report.scanDb.ageHours !== undefined ? { scanDbAgeHours: report.scanDb.ageHours } : {}),
+              scanDbStaleness: report.scanDb.staleness,
+              scanDbThresholdFired: report.scanDb.thresholdFired
+            }
+          : {})
       });
 
+      // Surface a soft-stale (WARN) DB in the deposited detail so the Decision reads it (owner
+      // 2026-07-24: a warn scans but is never silent).
+      const dbWarn =
+        report.scanDb && report.scanDb.staleness === "warn"
+          ? ` [scan DB WARN: ${report.scanDb.source}, ${report.scanDb.ageHours?.toFixed(1) ?? "?"}h old, past soft max]`
+          : "";
       const detail = !digestMatch
-        ? `managed-scan (${method}): digest mismatch — scanned ${scannedDigest}, promoting ${subject.digest}`
+        ? `managed-scan (${method}): digest mismatch — scanned ${scannedDigest}, promoting ${subject.digest}${dbWarn}`
         : overThreshold
-          ? `managed-scan (${method}): verdict exceeds threshold — critical=${severityCounts.critical}, high=${severityCounts.high}, medium=${severityCounts.medium}, low=${severityCounts.low}`
-          : `managed-scan (${method}): within threshold for ${scannedDigest} (critical=${severityCounts.critical}, high=${severityCounts.high})`;
+          ? `managed-scan (${method}): verdict exceeds threshold — critical=${severityCounts.critical}, high=${severityCounts.high}, medium=${severityCounts.medium}, low=${severityCounts.low}${dbWarn}`
+          : `managed-scan (${method}): within threshold for ${scannedDigest} (critical=${severityCounts.critical}, high=${severityCounts.high})${dbWarn}`;
 
       deposits.push({
         changeObjectId: plan.changeId,
@@ -439,7 +467,7 @@ function insecureHosts(): Set<string> {
  * (sufficient for the image-only M13 scope and the local-registry integration test); the relay's
  * per-registry vault-credential machinery (retrans-relay.ts) is the model to wire in later.
  */
-export function createServerManagedScanRunner(): ManagedScanRunner {
+export function createServerManagedScanRunner(db?: Db): ManagedScanRunner {
   const plugin = createManagedScanExecutorPlugin();
   const settings = managedScanServerSettings();
 
@@ -453,6 +481,34 @@ export function createServerManagedScanRunner(): ManagedScanRunner {
       }
       if (!req.pullRef) {
         return { ok: false, reason: "unresolvable pull ref — artifact carries no location and no SCP_MANAGED_SCAN_SOURCE_REPO fallback" };
+      }
+
+      // M13.3b-ii — OFFLINE DB PRE-LOAD + STALENESS GATE (trivy only; OpenSCAP uses the baked SSG,
+      // which has no OCI upstream to refresh — the documented asymmetry). When a DB cache is
+      // configured, classify it against the operator's instance staleness policy BEFORE dispatch:
+      // missing/corrupt/hard-stale FAIL CLOSED (no scan → no evidence → E6 refuses); fresh/warn scan
+      // (a warn is surfaced in the evidence). The classified cache dir is `docker cp`'d into the
+      // runner (SCP_SCAN_DB_DIR). Unset cache ⇒ the runner uses the image-baked DB (fail-closed
+      // fallback), reported as source `baked` with no staleness gate.
+      let scanDbDir: string | undefined;
+      let scanDbInfo: ManagedScanReport["scanDb"];
+      if (req.method === "trivy") {
+        if (settings.dbCacheDir) {
+          const status = await readScanDbStatus(db, settings.dbCacheDir);
+          const scannable = status.staleness === "fresh" || status.staleness === "warn";
+          if (!scannable) {
+            return { ok: false, reason: status.detail };
+          }
+          scanDbDir = settings.dbCacheDir;
+          scanDbInfo = {
+            source: status.source,
+            ...(status.ageHours !== null ? { ageHours: status.ageHours } : {}),
+            staleness: status.staleness,
+            thresholdFired: status.thresholdFired
+          };
+        } else {
+          scanDbInfo = { source: "baked", staleness: "fresh", thresholdFired: "none" };
+        }
       }
       // Bind the pull ref to the authorized digest + enforce the OCI-host allowlist (ADR-0019 §4) —
       // nothing in tenant data steers where bytes are pulled from.
@@ -489,6 +545,7 @@ export function createServerManagedScanRunner(): ManagedScanRunner {
             method: req.method,
             inputDir: ociDir,
             outputDir: outDir,
+            ...(scanDbDir ? { scanDbDir } : {}),
             ...(req.method === "openscap"
               ? { profile: req.profile, datastream: req.datastream }
               : {})
@@ -518,7 +575,8 @@ export function createServerManagedScanRunner(): ManagedScanRunner {
           report: {
             scannedDigest: req.digest,
             scannerVersion: parsed.scannerVersion,
-            severityCounts: parsed.severityCounts
+            severityCounts: parsed.severityCounts,
+            ...(scanDbInfo ? { scanDb: scanDbInfo } : {})
           }
         };
       } catch (err) {

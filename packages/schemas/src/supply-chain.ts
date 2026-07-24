@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ScanDbSourceSchema, ScanDbStalenessClassSchema, ScanDbThresholdFiredSchema } from "./scan-db.js";
 
 /**
  * Supply-chain governance evidence (DESIGN §10, ADR-0013 "scan as a boundary-authorization gate",
@@ -225,7 +226,16 @@ export const ScanEvidenceSchema = z.object({
   thresholdSource: z.enum(["config", "scoped", "mixed", "default"]).optional(),
   /** M17.5 — every tier that contributed a ceiling to the merged threshold, so a blocked promotion's
    *  Decision can explain WHICH tier set the binding severity floor (charter principle 6). */
-  thresholdContributors: z.array(ScanThresholdContributionSchema).optional()
+  thresholdContributors: z.array(ScanThresholdContributionSchema).optional(),
+  /** M13.3b-ii — provenance + freshness of the scanner DB this verdict was produced against, so a
+   *  Decision (and the status read) can explain "scanned with a stale/refreshed/operator-loaded DB".
+   *  Only `fresh`/`warn` ever reach evidence (a `hard-fail`/`missing`/`corrupt` DB produces NO scan →
+   *  no evidence → E6 refuses). All optional — a scan run before this increment, or with the baked
+   *  fallback and no cache, simply omits them and still parses. Trivy-only (OpenSCAP uses SSG). */
+  scanDbSource: ScanDbSourceSchema.optional(),
+  scanDbAgeHours: z.number().nonnegative().optional(),
+  scanDbStaleness: ScanDbStalenessClassSchema.optional(),
+  scanDbThresholdFired: ScanDbThresholdFiredSchema.optional()
 });
 export type ScanEvidence = z.infer<typeof ScanEvidenceSchema>;
 

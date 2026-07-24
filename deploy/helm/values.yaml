@@ -166,6 +166,22 @@ managedIac:
   workspaceRoot: /var/lib/scp/managed-iac
 
 # -------------------------------------------------------------------------------------------
+# Managed-scan vulnerability-DB cache (M13.3b-ii — ADR-0020, proposal §13.3b). OPTIONAL, OFF BY
+# DEFAULT: with it off the promotion scan step's runner uses the DB baked into the scp-runner-scan
+# image (the fail-closed fallback, as stale as the image), so single-container/dev stays zero-config.
+# When enabled, a PVC is mounted at `mountPath` and SCP_MANAGED_SCAN_DB_CACHE points the commander at
+# it; the operator keeps it fresh at RUNTIME via `scp scan-db refresh` (connected skopeo-pull) or
+# `scp scan-db load` (air-gap, a cosign-signed DB blob walked across the CDS). RWO single-writer,
+# exactly like objectStorage — the refresh/load atomic-swap tolerates a concurrent scan's snapshot cp.
+# -------------------------------------------------------------------------------------------
+scanDbCache:
+  enabled: false
+  size: 5Gi
+  storageClassName: ""
+  accessMode: ReadWriteOnce
+  mountPath: /var/lib/scp/scan-db
+
+# -------------------------------------------------------------------------------------------
 # Bundled executor backends (Mode B — DESIGN §12, ADR-0002, docs/proposals/bundled-executor-
 # backends.md). OPT-IN, OFF BY DEFAULT. When enabled, SCP DISTRIBUTES + deploys an UNMODIFIED
 # upstream execution backend a domain lacks, and coordinates it through the SAME executor plugin a
