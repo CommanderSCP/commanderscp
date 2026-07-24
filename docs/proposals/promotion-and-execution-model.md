@@ -1,6 +1,6 @@
 # Proposal: End-to-End Promotion & Execution Model
 
-**Status:** Proposed — pending review (2026-07-18)
+**Status:** Accepted — implemented (2026-07-18 design; M15 + M17, which this capstone governs, shipped COMPLETE — see BUILD_AND_TEST.md §8; status flipped 2026-07-24)
 **Role:** Master synthesis of the change→build→supply-chain→promotion→validation→deploy flow settled with the owner on 2026-07-18. It ties together and is authoritative over the per-topic ADRs it references.
 **Relates to:** [ADR-0009](../adr/0009-optional-poke-mode-federation.md) (poke), [ADR-0010](../adr/0010-outpost-local-artifact-infra.md) (outpost local infra), [ADR-0011](../adr/0011-universal-outpost-validation.md) (validation), [ADR-0012](../adr/0012-registry-consolidation.md) (registry), [ADR-0013](../adr/0013-supply-chain-scan-sbom-manifest.md) (supply chain), [ADR-0015](../adr/0015-cosign-cross-boundary-signing.md) (cosign end-to-end signing), [ADR-0016](../adr/0016-scoped-scan-requirement-policies.md) (scoped scan policies), [ADR-0017](../adr/0017-ownership-refinement.md) (**build devolves to the originating outpost; the commander owns only the cross-boundary gate — this §2/§3 is rewritten to match, 2026-07-20**), [ADR-0018](../adr/0018-domain-local-dev-pipelines.md) (domain-local dev/beta pipelines are scan-exempt by path); proposals `bundled-executor-backends.md`, `outpost-local-artifact-infra.md`, `federation-outposts-ui.md`, `managed-execution-tier.md`, `execution-strategy.md`; DESIGN.md §12–§13.
 

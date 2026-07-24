@@ -1,6 +1,6 @@
 # Proposal: Per-Outpost Local Artifact & Source Infrastructure (Harbor + Gitea)
 
-**Status:** Proposed — pending review (2026-07-18)
+**Status:** Accepted — implemented (2026-07-18 design; M15 shipped COMPLETE — see BUILD_AND_TEST.md §8; status flipped 2026-07-24)
 **Relates to:** DESIGN.md §12 (execution), §13 (federation), §16 (bundling); [ADR-0002](../adr/0002-execution-strategy.md) (execution strategy / bundled backends); [ADR-0004](../adr/0004-service-naming-commander-outpost-retrans.md) (commander/outpost/retrans); [ADR-0010](../adr/0010-outpost-local-artifact-infra.md) (this decision); proposals `bundled-executor-backends.md`, `import-existing-executors.md`
 **Milestone:** M15 (provisional — post-M11 federation track; follows M14 poke-mode)
 
