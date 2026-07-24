@@ -302,11 +302,18 @@ export interface FederationSyncOptions {
  * https peer's pull is then refused fail-closed with its own block Decision, exactly as designed;
  * an http peer's pull still succeeds). Never a dead tick.
  *
- * The cause is a real operational fault, so it is surfaced at WARN — but deduped, because this runs
- * on every tick of every org and an unfixed missing secret would otherwise emit a log line a minute
- * forever.
+ * The cause is a real operational fault, so it is surfaced at WARN — but RATE-LIMITED, because this
+ * runs on every tick of every org and an unfixed missing secret would otherwise emit a log line a
+ * minute forever. Rate-limited is NOT once-ever: a long-lived worker that emitted its single line
+ * hours ago would leave an operator investigating a sparse-vs-frequent divergence today with nothing
+ * to find in the log window they are actually looking at. So the same message re-fires once per
+ * {@link FEDERATION_CERT_WARNING_REWARN_INTERVAL_MS} for as long as the fault persists, and a
+ * successful resolve clears the suppression so a recurrence warns immediately.
  */
+export const FEDERATION_CERT_WARNING_REWARN_INTERVAL_MS = 60 * 60 * 1000; // once an hour
+
 let lastCertResolveWarning: string | undefined;
+let lastCertResolveWarningAt = 0;
 
 function probeRuntimeClientMtls(env: NodeJS.ProcessEnv): {
   mtls: FederationClientMtls | undefined;
@@ -315,13 +322,18 @@ function probeRuntimeClientMtls(env: NodeJS.ProcessEnv): {
   try {
     const mtls = resolveFederationClientMtls(env);
     lastCertResolveWarning = undefined;
+    lastCertResolveWarningAt = 0;
     // No material CONFIGURED at all is not a fault — it is the pre-M8 default (bearer-only http
     // peers). It is still "no runtime certs" for D4's purposes.
     return { mtls, usable: Boolean(mtls) };
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    if (detail !== lastCertResolveWarning) {
+    const now = Date.now();
+    const isNewFault = detail !== lastCertResolveWarning;
+    const isStale = now - lastCertResolveWarningAt >= FEDERATION_CERT_WARNING_REWARN_INTERVAL_MS;
+    if (isNewFault || isStale) {
       lastCertResolveWarning = detail;
+      lastCertResolveWarningAt = now;
       console.warn(
         "[federation-sync] client-cert material is CONFIGURED but unusable — falling back to the " +
           `FREQUENT poll cadence for every peer (owner decision D4) and continuing to pull: ${detail}`
@@ -331,9 +343,31 @@ function probeRuntimeClientMtls(env: NodeJS.ProcessEnv): {
   }
 }
 
-/** Test seam: forget the deduped warning so a test can assert it is emitted. */
+/**
+ * M14.4 fix (N5) — the SAME runtime probe, exposed as the single answer to "does this instance have
+ * usable outbound client-cert material RIGHT NOW?".
+ *
+ * `GET /federation/status` reports `effectiveCadence` — the cadence the scheduler is ACTUALLY
+ * running each peer at — and that endpoint exists precisely so an operator can SEE a
+ * sparse-vs-frequent divergence. Computing it from the cheap presence check
+ * ({@link federationClientMtlsConfigured}, paths set?) made status and scheduler disagree in exactly
+ * the case D4 exists for: paths still set, the mounted secret rotated away. The scheduler falls back
+ * to the frequent cadence (and warns); the presence check says "configured", so status would have
+ * reported `poke` for a peer being polled every minute. Both sides now call THIS, so they agree by
+ * construction rather than by coincidence.
+ *
+ * Never throws (see above), and the file reads are two small secrets — cheap enough for a per-request
+ * status call, and deliberately NOT cached, since the whole point is that the answer changes when the
+ * file underneath changes.
+ */
+export function federationClientCertsUsable(env: NodeJS.ProcessEnv = process.env): boolean {
+  return probeRuntimeClientMtls(env).usable;
+}
+
+/** Test seam: forget the rate-limited warning so a test can assert it is emitted. */
 export function resetFederationCertWarningDedupe(): void {
   lastCertResolveWarning = undefined;
+  lastCertResolveWarningAt = 0;
 }
 
 /** Records a block Decision + hash-chained audit event for a refused/failed pull, in one tx. */

@@ -1,8 +1,13 @@
-import { describe, it, expect } from "vitest";
+import path from "node:path";
+import { tmpdir } from "node:os";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import type PgBoss from "pg-boss";
 import type { Db } from "../db/client.js";
 import type { FederationPeerRow } from "./peers-repo.js";
 import {
+  FEDERATION_CERT_WARNING_REWARN_INTERVAL_MS,
+  federationClientCertsUsable,
+  resetFederationCertWarningDedupe,
   FEDERATION_SYNC_QUEUE,
   FEDERATION_SYNC_SPARSE_INTERVAL_DEFAULT_SECONDS,
   FEDERATION_SYNC_SPARSE_INTERVAL_MAX_SECONDS,
@@ -167,6 +172,89 @@ describe("M14.4 isPeerDue — the due-gate truth table", () => {
     // One success re-arms sparse.
     expect(peerSyncCadence(pulledOk(120, proven), inputs)).toBe("poke");
     expect(isPeerDue(pulledOk(120, proven), T0, inputs)).toBe(false);
+  });
+});
+
+/**
+ * M14.4 fix (N6) — the D4 cert warning is RATE-LIMITED, not once-per-process.
+ *
+ * The warning is the ONLY operator-visible signal that this instance is silently running every
+ * poke-mode peer at the frequent cadence because its client-cert material stopped resolving. Deduped
+ * with no time window, a worker that emitted its single line at boot leaves someone debugging the
+ * divergence six hours later with nothing in the log window they are looking at. It must recur — just
+ * not once a minute per org.
+ */
+describe("M14.4 D4 cert probe — never throws, warns, and RE-WARNS on an interval", () => {
+  const MISSING = {
+    SCP_FEDERATION_MTLS_CERT_FILE: path.join(tmpdir(), "scp-cadence-nope.crt"),
+    SCP_FEDERATION_MTLS_KEY_FILE: path.join(tmpdir(), "scp-cadence-nope.key")
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    resetFederationCertWarningDedupe();
+  });
+
+  it("configured-but-missing files: usable=false (never throws) and the warn REPEATS hourly, not once", () => {
+    resetFederationCertWarningDedupe();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let clock = Date.parse("2026-07-24T12:00:00.000Z");
+    vi.spyOn(Date, "now").mockImplementation(() => clock);
+
+    // The fault itself: the paths are set (so the CHEAP presence check would say "configured"), the
+    // files are gone, and the probe degrades instead of throwing.
+    expect(federationClientCertsUsable(MISSING)).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toContain("owner decision D4");
+
+    // Every tick of every org inside the window is still suppressed — that is what the dedupe buys.
+    clock += 60_000;
+    expect(federationClientCertsUsable(MISSING)).toBe(false);
+    clock += FEDERATION_CERT_WARNING_REWARN_INTERVAL_MS - 60_000 - 1;
+    expect(federationClientCertsUsable(MISSING)).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    // …but once the window elapses the UNFIXED fault says so again, so it is present in whatever log
+    // window the operator is actually reading.
+    clock += 1;
+    expect(federationClientCertsUsable(MISSING)).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(2);
+
+    // And it keeps recurring for as long as the fault does.
+    clock += FEDERATION_CERT_WARNING_REWARN_INTERVAL_MS;
+    expect(federationClientCertsUsable(MISSING)).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(3);
+  });
+
+  it("a HALF-configured pair also degrades (no throw) and warns", () => {
+    resetFederationCertWarningDedupe();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    expect(federationClientCertsUsable({ SCP_FEDERATION_MTLS_CERT_FILE: "/c" })).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("NO material configured at all is not a fault: usable=false, and it does NOT warn", () => {
+    resetFederationCertWarningDedupe();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    expect(federationClientCertsUsable({})).toBe(false);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("a successful resolve CLEARS the suppression — a recurrence warns immediately", () => {
+    resetFederationCertWarningDedupe();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let clock = Date.parse("2026-07-24T12:00:00.000Z");
+    vi.spyOn(Date, "now").mockImplementation(() => clock);
+
+    expect(federationClientCertsUsable(MISSING)).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+    // The operator remounts the secret (here: the deployment simply has no mTLS configured, which
+    // resolves cleanly) — the suppression is dropped…
+    expect(federationClientCertsUsable({})).toBe(false);
+    // …so the very next recurrence is reported, without waiting out the interval.
+    clock += 1000;
+    expect(federationClientCertsUsable(MISSING)).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(2);
   });
 });
 

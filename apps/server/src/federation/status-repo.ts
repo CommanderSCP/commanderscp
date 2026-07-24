@@ -5,8 +5,7 @@ import { ensureInstanceKey } from "../governance/attestation.js";
 import { listPeers } from "./peers-repo.js";
 import { getCursor } from "./cursors-repo.js";
 import { listRecentTransfers } from "./bundle-transfers-repo.js";
-import { peerSyncCadence } from "./federation-sync.js";
-import { federationClientMtlsConfigured } from "./federation-outbound.js";
+import { federationClientCertsUsable, peerSyncCadence } from "./federation-sync.js";
 
 /**
  * `GET /federation/status` — the commander cross-domain status view (DESIGN.md §13): every known
@@ -24,8 +23,12 @@ export async function getFederationStatus(
   const key = await ensureInstanceKey(tx, orgId);
   const peers = await listPeers(tx, orgId);
   // D4 is a RUNTIME property of this instance, so the reported cadence must consult it here rather
-  // than assume the pair-time check still holds (cheap env presence check, no file reads).
-  const hasClientCerts = federationClientMtlsConfigured();
+  // than assume the pair-time check still holds. It uses the SCHEDULER'S OWN never-throwing probe —
+  // not the cheap presence check — because the presence check answers "are the paths set?" while the
+  // scheduler asks "did the material actually READ?". Those diverge in exactly the case D4 exists
+  // for (paths set, secret rotated away), and this endpoint's whole job is to make cadence
+  // divergence VISIBLE, so it must not be the thing that hides it.
+  const hasClientCerts = federationClientCertsUsable();
 
   const peerStatuses = await Promise.all(
     peers.map(async (peer) => {

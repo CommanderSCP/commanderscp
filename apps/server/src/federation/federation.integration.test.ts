@@ -1,3 +1,6 @@
+import path from "node:path";
+import { tmpdir } from "node:os";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { randomUUID, generateKeyPairSync } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, isNull } from "drizzle-orm";
@@ -9,7 +12,9 @@ import { changes, decisions, roleBindings, roles } from "../db/schema.js";
 import { createObject, getObjectByIdOrUrnAnyType, updateObject } from "../graph/objects-repo.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
 import { ensureFederationSelf, type FederationSelf } from "./self-repo.js";
-import { pairPeer, listPeers, getPeerByIdOrName } from "./peers-repo.js";
+import { pairPeer, listPeers, getPeerByIdOrName, markPokeReceived } from "./peers-repo.js";
+import { getFederationStatus } from "./status-repo.js";
+import { peerSyncCadence } from "./federation-sync.js";
 import { exportSyncBundle } from "./export-repo.js";
 import { importSyncBundle } from "./import-repo.js";
 import {
@@ -1912,5 +1917,136 @@ describe("M14.1 Federation: per-peer poke-mode (Testcontainers)", () => {
     const domainId = randomUUID();
     await pairWith({ domainId, baseUrl: HTTPS_URL, pokeMode: true });
     await expectGuardRejection(pairWith({ domainId, baseUrl: HTTP_URL, pokeMode: true }));
+  });
+});
+
+/**
+ * M14.4 fix (N5) — `GET /federation/status` must report the cadence the SCHEDULER is actually
+ * running, in the one case where the two used to disagree.
+ *
+ * The status endpoint was added in M14.4 precisely so an operator could SEE cadence divergence, but
+ * it derived `hasClientCerts` from the CHEAP PRESENCE CHECK (`federationClientMtlsConfigured` — are
+ * the env paths set?) while the scheduler derives it from the never-throwing RUNTIME PROBE (did the
+ * material actually READ off disk?). Those answers differ in exactly the situation owner decision D4
+ * exists for: `SCP_FEDERATION_MTLS_CERT_FILE`/`_KEY_FILE` still set, the mounted secret rotated away.
+ * The scheduler correctly falls back to the FREQUENT cadence and warns; the endpoint reported
+ * `effectiveCadence: 'poke'` — the operator-facing view saying the exact opposite of what the process
+ * was doing. Both now call the same probe, so they agree by construction.
+ */
+describe("M14.4 GET /federation/status effectiveCadence — agrees with the scheduler's D4 probe", () => {
+  let domain: IsolatedDomain;
+  let peerDomainId: string;
+  let certDir: string;
+  let realCert: string;
+  let realKey: string;
+  const savedEnv: Record<string, string | undefined> = {};
+
+  beforeAll(async () => {
+    domain = await createIsolatedDomain("m144StatusCadence");
+    // A proven poke-mode peer: pokeMode set (operator opted in), https baseUrl (the pair-time
+    // guard's requirement), a poke ACTUALLY received (D2 satisfied), and never pulled yet — so the
+    // ONLY remaining input to the cadence decision is D4's client-cert question.
+    const other = await createIsolatedDomain("m144StatusCadencePeer");
+    const otherSelf = await withTenantTx(other.db, other.orgId, (tx) =>
+      ensureFederationSelf(tx, other.orgId)
+    );
+    const otherKey = await withTenantTx(other.db, other.orgId, (tx) =>
+      ensureInstanceKey(tx, other.orgId)
+    );
+    peerDomainId = otherSelf.domainId;
+    await withTenantTx(domain.db, domain.orgId, async (tx) => {
+      await pairPeer(tx, {
+        orgId: domain.orgId,
+        domainId: peerDomainId,
+        name: "proven-poke-peer",
+        role: "outpost",
+        publicKey: otherKey.publicKey,
+        baseUrl: "https://outpost.example.com",
+        pokeMode: true
+      });
+      await markPokeReceived(tx, domain.orgId, peerDomainId);
+    });
+    await other.close();
+
+    // Real, readable files — the content is irrelevant, only that `readFileSync` SUCCEEDS.
+    certDir = await mkdtemp(path.join(tmpdir(), "scp-m144-status-certs-"));
+    realCert = path.join(certDir, "client.crt");
+    realKey = path.join(certDir, "client.key");
+    await writeFile(realCert, "-----BEGIN CERTIFICATE-----\nnot-a-real-cert\n-----END CERTIFICATE-----\n");
+    await writeFile(realKey, "-----BEGIN PRIVATE KEY-----\nnot-a-real-key\n-----END PRIVATE KEY-----\n");
+
+    for (const k of [
+      "SCP_FEDERATION_MTLS_CERT_FILE",
+      "SCP_FEDERATION_MTLS_KEY_FILE",
+      "SCP_FEDERATION_MTLS_CA_FILE"
+    ]) {
+      savedEnv[k] = process.env[k];
+    }
+  }, 60_000);
+
+  afterAll(async () => {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    await rm(certDir, { recursive: true, force: true });
+    await domain.close();
+  });
+
+  async function statusPeer() {
+    const status = await withTenantTx(domain.db, domain.orgId, (tx) =>
+      getFederationStatus(tx, domain.orgId)
+    );
+    const entry = status.peers.find((p) => p.peer.id === peerDomainId);
+    expect(entry).toBeDefined();
+    return entry!;
+  }
+
+  /** The cadence inputs the SCHEDULER sees, reassembled from what the endpoint reported — so the
+   *  "status agrees with the scheduler" assertions compare the same peer state, not a second query. */
+  function cadenceInputsFrom(entry: Awaited<ReturnType<typeof statusPeer>>) {
+    return {
+      pokeMode: entry.peer.pokeMode ?? false,
+      lastPokeReceivedAt: entry.lastPokeReceivedAt ?? null,
+      lastPullAttemptAt: entry.lastPullAttemptAt ?? null,
+      lastPullSuccessAt: entry.lastPullSuccessAt ?? null
+    };
+  }
+
+  it("READABLE cert material: the proven poke-mode peer reports effectiveCadence 'poke'", async () => {
+    process.env.SCP_FEDERATION_MTLS_CERT_FILE = realCert;
+    process.env.SCP_FEDERATION_MTLS_KEY_FILE = realKey;
+    delete process.env.SCP_FEDERATION_MTLS_CA_FILE;
+
+    const entry = await statusPeer();
+    expect(entry.peer.pokeMode).toBe(true);
+    expect(entry.lastPokeReceivedAt).not.toBeNull();
+    expect(entry.effectiveCadence).toBe("poke");
+    // The baseline the regression below is measured against: with usable material the SCHEDULER
+    // says the same thing.
+    expect(peerSyncCadence(cadenceInputsFrom(entry), { hasClientCerts: true })).toBe("poke");
+  });
+
+  it("REGRESSION: cert PATHS SET but the FILE IS GONE -> status reports 'poll', matching the scheduler", async () => {
+    // THE BUG: the presence check answers "configured" here (both paths are set), so the endpoint
+    // reported 'poke' for a peer the scheduler had already dropped back to the frequent cadence.
+    process.env.SCP_FEDERATION_MTLS_CERT_FILE = path.join(certDir, "rotated-away.crt");
+    process.env.SCP_FEDERATION_MTLS_KEY_FILE = path.join(certDir, "rotated-away.key");
+
+    const entry = await statusPeer();
+    // The raw flag is UNCHANGED — poke-mode is still what the operator configured…
+    expect(entry.peer.pokeMode).toBe(true);
+    // …but the EFFECTIVE cadence is the frequent poll, which is what the process is really doing
+    // (D4: both halves of poke-mode fail the same way).
+    expect(entry.effectiveCadence).toBe("poll");
+    expect(peerSyncCadence(cadenceInputsFrom(entry), { hasClientCerts: false })).toBe("poll");
+  });
+
+  it("a HALF-CONFIGURED pair (cert path only) also reports 'poll' — the probe never throws out of status", async () => {
+    process.env.SCP_FEDERATION_MTLS_CERT_FILE = realCert;
+    delete process.env.SCP_FEDERATION_MTLS_KEY_FILE;
+
+    const entry = await statusPeer();
+    expect(entry.effectiveCadence).toBe("poll");
   });
 });
