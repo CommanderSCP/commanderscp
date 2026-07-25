@@ -50,7 +50,14 @@ Every container this chart renders (api, worker, migrations Job) gets, by defaul
   only) — see `templates/networkpolicy.yaml`'s own doc comment for exactly what's allowed and why.
   Coordinating an existing execution system (Mode A / BYO-coordinate — an existing Argo CD,
   GitHub, …) needs its own egress allow too: opt in per-executor via `networkPolicy.executorEgress`
-  (empty by default — no behavior change until you list one).
+  (empty by default — no behavior change until you list one). Enabling a BUNDLED executor
+  (`bundledExecutor.argocd|gitea.enabled`) additionally renders `-allow-kube-api-autowire`: egress to
+  the Kubernetes API server for the short-lived auto-wire **hook pods only** (they must read the
+  backend's generated admin Secret before they can mint SCP's scoped token). It is scoped by the
+  `commanderscp.io/autowire-hook` marker label, so `api`/`worker`/`postgres-eval` are untouched, and
+  it defaults to the RFC1918 private ranges on 443/6443 — never "any destination". Control-plane
+  endpoint on a public IP or a non-standard port? Set `networkPolicy.kubeApi.cidrs` / `.ports`
+  (`kubectl get endpoints kubernetes` gives you the exact address to pin).
 
 **Least privilege for database credentials** (`SCP_SKIP_MIGRATIONS`, `apps/server/src/config.ts`):
 only the migrations Job ever holds the admin/superuser-capable `DATABASE_URL`. `api`/`worker` pods

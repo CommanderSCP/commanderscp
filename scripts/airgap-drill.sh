@@ -53,6 +53,31 @@ cleanup() {
   if [ "$status" -ne 0 ]; then
     echo "--- airgap-drill.sh FAILED -- cluster state ---" >&2
     kubectl get pods -A 2>&1 | tail -40 >&2 || true
+    # The single most common failure mode is a bundled-executor AUTO-WIRE HOOK Job that never
+    # completes (it is the last thing install.sh does, and `helm upgrade --wait` blocks on it). Bare
+    # `get pods -A` shows a Job pod in Error and NOTHING about why -- which is exactly why 12
+    # consecutive nightly failures produced zero diagnostic detail. Dump each hook Job's describe
+    # (events: DeadlineExceeded/BackoffLimitExceeded) and EVERY attempt pod's describe + logs (the
+    # bin's own error, e.g. the `waitFor ... timed out` a missing kube-API egress allow produces).
+    # Helm's hook-delete-policy is before-hook-creation,hook-succeeded, so FAILED hook Jobs and their
+    # pods are still present here.
+    for comp in argocd-autowire gitea-autowire; do
+      HOOK_OBJS="$(kubectl get jobs,pods -A -l "app.kubernetes.io/component=${comp}" -o name 2>/dev/null || true)"
+      [ -n "$HOOK_OBJS" ] || continue
+      echo "--- auto-wire hook diagnostics: ${comp} ---" >&2
+      kubectl get jobs,pods -A -l "app.kubernetes.io/component=${comp}" >&2 2>&1 || true
+      kubectl describe jobs -A -l "app.kubernetes.io/component=${comp}" >&2 2>&1 || true
+      kubectl describe pods -A -l "app.kubernetes.io/component=${comp}" >&2 2>&1 || true
+      while read -r ns name; do
+        [ -n "$name" ] || continue
+        echo "--- logs ${ns}/${name} ---" >&2
+        kubectl logs -n "$ns" "$name" --tail=-1 >&2 2>&1 || true
+      done <<<"$(kubectl get pods -A -l "app.kubernetes.io/component=${comp}" \
+                   --sort-by=.metadata.creationTimestamp \
+                   -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+    done
+    echo "--- NetworkPolicies in ${HELM_NAMESPACE:-default} (the enforced default-deny + its allows) ---" >&2
+    kubectl get networkpolicies -A >&2 2>&1 || true
   fi
   helm uninstall "$RELEASE_NAME" >/dev/null 2>&1 || true
   kind delete cluster --name "$CLUSTER_NAME" >/dev/null 2>&1 || true
@@ -259,6 +284,49 @@ for port in 443 5432 4222; do
   }
 done
 log "PASS: deliberate egress attempts on ports 443, 5432 (Postgres), and 4222 (NATS) were ALL BLOCKED by the enforced default-deny NetworkPolicy"
+
+# ---- THE AUTO-WIRE HOOK'S kube-API ALLOW MUST NOT BE AN INTERNET HOLE ------------------------
+# The chart grants the bundled-executor auto-wire HOOK pods egress to the Kubernetes API server
+# (`allow-kube-api-autowire`) — without it the hook cannot read the backend's admin secret and
+# `helm upgrade --wait` dies on the hook, which is the failure this drill exists to catch. That
+# allow is deliberately scoped to the RFC1918 private ranges on 443/6443, NOT "any destination":
+# a public-internet hole granted to a pod running with the chart's own image would be a strictly
+# worse posture than the bug it fixes. Prove it: the SAME probe, but carrying the hook's marker
+# label (so `allow-kube-api-autowire` genuinely selects it), must STILL be blocked to a public IP
+# on 443. The hook's POSITIVE path (it really does reach the kube API) is proven by install.sh
+# above having succeeded at all — `helm upgrade --wait` blocks on that hook.
+log "SECURITY: launching an egress probe carrying the auto-wire HOOK marker label (allow-kube-api-autowire selects it)"
+cat > "${SCRATCH}/egress-probe-hook.yaml" <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: egress-probe-hook
+  labels:
+    app.kubernetes.io/name: commanderscp
+    app.kubernetes.io/instance: ${RELEASE_NAME}
+    commanderscp.io/autowire-hook: "true"
+spec:
+  restartPolicy: Never
+  containers:
+    - name: probe
+      image: ${REG_IN_CLUSTER}/scp/scpd:${BUNDLE_VERSION}
+      command: ["node", "-e", "const net=require('node:net');const s=net.createConnection({host:'1.1.1.1',port:443,timeout:8000},()=>{console.log('EGRESS_REACHED:443');s.destroy();process.exit(0)});s.on('timeout',()=>{console.log('EGRESS_BLOCKED_TIMEOUT:443');s.destroy();process.exit(0)});s.on('error',e=>{console.log('EGRESS_BLOCKED_'+e.code+':443')})"]
+EOF
+kubectl apply -f "${SCRATCH}/egress-probe-hook.yaml"
+kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/egress-probe-hook --timeout=30s 2>/dev/null \
+  || kubectl wait --for=jsonpath='{.status.phase}'=Failed pod/egress-probe-hook --timeout=30s 2>/dev/null || true
+HOOK_PROBE_OUT="$(kubectl logs egress-probe-hook 2>/dev/null || true)"
+log "hook-labelled egress-probe result: ${HOOK_PROBE_OUT:-<no output>}"
+if printf '%s' "$HOOK_PROBE_OUT" | grep -q "EGRESS_REACHED"; then
+  echo "FAIL: a pod carrying the auto-wire hook marker REACHED the public internet (1.1.1.1) -- the kube-API allow (networkPolicy.kubeApi) is not private-range-scoped:" >&2
+  printf '%s\n' "$HOOK_PROBE_OUT" | grep "EGRESS_REACHED" >&2
+  exit 1
+fi
+printf '%s' "$HOOK_PROBE_OUT" | grep -q "EGRESS_BLOCKED.*:443$" || {
+  echo "FAIL: hook-labelled egress-probe produced no conclusive BLOCKED result for port 443: ${HOOK_PROBE_OUT}" >&2
+  exit 1
+}
+log "PASS: the auto-wire hook's kube-API egress allow does NOT open the public internet (1.1.1.1:443 still blocked)"
 
 # ---- GOLDEN PATH under the same enforced policy ----------------------------------------------
 log "golden path (register a service) -- must still work with only the chart's explicit in-cluster allows"

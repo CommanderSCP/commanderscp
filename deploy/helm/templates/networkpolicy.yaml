@@ -89,9 +89,10 @@ spec:
 {{- if .Values.bundledExecutor.argocd.enabled }}
 # Egress: bundled Argo CD (Mode B) — api/worker AND the post-install auto-wire hook reach the
 # in-cluster Argo CD API (http on 80, server.insecure) in its own namespace. In-cluster destination,
-# so a precise namespaceSelector (not the RFC1918 ipBlock) is the correct allow. NOTE: when
-# networkPolicy is enabled, the auto-wire hook ALSO needs egress to the kube API + DNS to read Argo
-# CD's admin secret — add those to your cluster's baseline egress (a documented follow-up).
+# so a precise namespaceSelector (not the RFC1918 ipBlock) is the correct allow. The auto-wire hook's
+# OTHER two egress needs are already covered: DNS by allow-dns above, and the kube API (its
+# cross-namespace read of Argo CD's initial-admin secret) by allow-kube-api-autowire below — which
+# used to be missing and is exactly what broke the air-gap drill for 12 consecutive nightly runs.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -119,9 +120,8 @@ spec:
 # scoped API token and, at runtime, coordinate it (push/observe). In-cluster destination, so a
 # precise namespaceSelector (not the RFC1918 ipBlock) is the correct allow. Gitea's http Service
 # listens on 3000; 80/443 are covered too for installs that front it with a Service/ingress on the
-# standard web ports. NOTE: as with allow-argocd, when networkPolicy is enabled the auto-wire hook
-# ALSO needs egress to the kube API + DNS to read Gitea's admin secret — add those to your cluster's
-# baseline egress (a documented follow-up).
+# standard web ports. As with allow-argocd, the hook's DNS + kube-API egress come from allow-dns
+# above and allow-kube-api-autowire below.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -142,6 +142,75 @@ spec:
         - { protocol: TCP, port: 3000 }
         - { protocol: TCP, port: 80 }
         - { protocol: TCP, port: 443 }
+---
+{{- end }}
+{{- if and .Values.networkPolicy.kubeApi.enabled (or .Values.bundledExecutor.argocd.enabled .Values.bundledExecutor.gitea.enabled) }}
+{{/*
+Egress: the Kubernetes API server — for the bundled-executor AUTO-WIRE HOOK PODS ONLY.
+
+THE BUG THIS FIXES (air-gap drill, red every scheduled run from 2026-07-13): the auto-wire hook's
+first action is a cross-namespace Secret read against `https://kubernetes.default.svc` (it must read
+the backend's generated admin secret before it can log in and mint SCP's scoped token). The hook pod
+carries this chart's selector labels, so `-default-deny` selected it — and the chart rendered NO
+allow for the API server. Calico dropped the connection, the bin's 300s `waitFor` expired, the Job
+burned its `activeDeadlineSeconds`, and `helm upgrade --wait` failed with "post-upgrade hooks failed
+... Job in progress". Both hooks (argocd AND gitea) had it; only argocd was ever reached.
+
+WHY AN ipBlock AND NOT A namespaceSelector: kube-apiserver is a HOST-NETWORKED static pod, not a
+workload endpoint, so no pod/namespace selector can ever match it. Worse, Calico evaluates egress
+policy against the POST-DNAT destination — kube-proxy has already rewritten the `kubernetes.default`
+ClusterIP (10.96.0.1:443) to the real endpoint (<node-ip>:6443) by the time policy is applied — so
+even an ipBlock naming the service CIDR is not sufficient on its own. The destination that must be
+allowed is the NODE/endpoint IP on the apiserver's endpoint port.
+
+THE DEFAULT: unset `cidrs` renders the RFC1918 private ranges — the SAME already-reviewed default
+this chart uses for allow-postgres/allow-nats (`commanderscp.egressToBlock`, adversarial review
+MAJOR #2), and for the same reason: it must never silently mean "any destination, including the
+public internet". Node IPs are RFC1918 on kind (172.18.0.0/16), k3s, and essentially every on-prem /
+private-endpoint managed cluster, and the service CIDR (10.96.0.0/12) falls inside it too, so this
+covers BOTH the post-DNAT node IP and the pre-DNAT ClusterIP without configuration. Ports default to
+443 + 6443 (the ClusterIP port and the near-universal apiserver endpoint port). An operator whose
+control plane has a PUBLIC endpoint (e.g. an EKS public API endpoint) or a non-standard port sets
+`networkPolicy.kubeApi.cidrs` / `.ports` explicitly — and an operator who wants this scoped to the
+exact endpoint reads it off `kubectl get endpoints kubernetes` and sets a /32.
+
+BLAST RADIUS: this policy's podSelector is `commanderscp.autowireHookSelectorLabels` — selector
+labels PLUS the `commanderscp.io/autowire-hook` marker, which ONLY the two short-lived install-time
+hook Job pods carry. api / worker / migrations / postgres-eval are NOT selected and their
+default-deny posture is byte-for-byte unchanged. The air-gap drill asserts both halves: an ordinary
+chart-labelled pod stays blocked, AND a pod carrying the hook marker still cannot reach the public
+internet (this allow is private-range-scoped, not "any destination").
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "commanderscp.fullname" . }}-allow-kube-api-autowire
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "commanderscp.autowireHookSelectorLabels" . | nindent 6 }}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        {{- if .Values.networkPolicy.kubeApi.cidrs }}
+        {{- range .Values.networkPolicy.kubeApi.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+        {{- else }}
+        - ipBlock:
+            cidr: 10.0.0.0/8
+        - ipBlock:
+            cidr: 172.16.0.0/12
+        - ipBlock:
+            cidr: 192.168.0.0/16
+        {{- end }}
+      ports:
+        {{- range .Values.networkPolicy.kubeApi.ports }}
+        - { protocol: TCP, port: {{ . }} }
+        {{- end }}
 ---
 {{- end }}
 {{- range .Values.networkPolicy.executorEgress }}

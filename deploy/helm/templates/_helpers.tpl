@@ -49,6 +49,29 @@ app.kubernetes.io/component: api
 app.kubernetes.io/component: worker
 {{- end -}}
 
+{{/*
+The label set carried by EVERY bundled-executor auto-wire HOOK pod (argocd, gitea, and any future
+one) — the chart's selector labels PLUS the `commanderscp.io/autowire-hook` marker.
+
+Why the marker exists (M11/M15.1 air-gap-drill regression): an auto-wire hook pod's FIRST action is
+a cross-namespace Secret read against the in-cluster Kubernetes API (`https://kubernetes.default.svc`
+— see apps/server/src/bundled-{argocd,gitea}-autowire-bin.ts). It carries this chart's selector
+labels, so the chart's OWN `-default-deny` NetworkPolicy selects it, and nothing in the chart allowed
+egress to the API server: the hook hung on its 300s `waitFor`, the Job burned its
+`activeDeadlineSeconds`, and `helm upgrade --wait` died with "post-upgrade hooks failed ... Job in
+progress". The fix is the `-allow-kube-api-autowire` policy in networkpolicy.yaml, which selects
+EXACTLY this label set — so the API-server allow reaches the short-lived install-time hook pods and
+NOTHING else (api/worker/postgres keep the unmodified default-deny posture).
+
+Defined ONCE here, and consumed in exactly two places (the hook Job pod templates and that policy's
+podSelector), so a future auto-wire hook opts in by using this helper rather than by a reviewer
+remembering to extend a hardcoded list of component names.
+*/}}
+{{- define "commanderscp.autowireHookSelectorLabels" -}}
+{{ include "commanderscp.selectorLabels" . }}
+commanderscp.io/autowire-hook: "true"
+{{- end -}}
+
 {{- define "commanderscp.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create -}}
 {{- default (include "commanderscp.fullname" .) .Values.serviceAccount.name -}}

@@ -198,6 +198,151 @@ function podSpecOf(doc: K8sDoc): PodSpec | undefined {
   return undefined;
 }
 
+function podTemplateLabelsOf(doc: K8sDoc): Record<string, string> {
+  const spec = doc.spec as { template?: { metadata?: { labels?: Record<string, string> } } } | undefined;
+  return spec?.template?.metadata?.labels ?? {};
+}
+
+interface LabelSelector {
+  matchLabels?: Record<string, string>;
+  matchExpressions?: { key: string; operator: string; values?: string[] }[];
+}
+
+interface NpEgressRule {
+  to?: { ipBlock?: { cidr?: string }; namespaceSelector?: unknown; podSelector?: unknown }[];
+  ports?: { protocol?: string; port?: number }[];
+}
+
+/** Full Kubernetes LabelSelector semantics (matchLabels AND matchExpressions) against a concrete
+ *  label set. Used to answer the question a name-based grep cannot: "does THIS policy actually
+ *  select THAT pod?" — the exact question the air-gap regression turned on. */
+function selectorSelects(sel: LabelSelector | undefined, labels: Record<string, string>): boolean {
+  if (!sel) return false;
+  for (const [k, v] of Object.entries(sel.matchLabels ?? {})) {
+    if (String(labels[k]) !== String(v)) return false;
+  }
+  for (const expr of sel.matchExpressions ?? []) {
+    const val = labels[expr.key];
+    const present = val !== undefined;
+    const values = (expr.values ?? []).map(String);
+    switch (expr.operator) {
+      case "In":
+        if (!present || !values.includes(String(val))) return false;
+        break;
+      case "NotIn":
+        if (present && values.includes(String(val))) return false;
+        break;
+      case "Exists":
+        if (!present) return false;
+        break;
+      case "DoesNotExist":
+        if (present) return false;
+        break;
+      default:
+        return false; // unknown operator — refuse to claim a match
+    }
+  }
+  return true;
+}
+
+/** Ports a Kubernetes API server is plausibly reachable on: 443 (the `kubernetes.default` ClusterIP
+ *  port) and 6443 (the near-universal apiserver endpoint port that ClusterIP DNATs to). */
+const KUBE_API_PORTS = new Set([443, 6443]);
+
+/**
+ * THE AIR-GAP REGRESSION GUARD (nightly deploy-drills.yml has no `pull_request` trigger; THIS job
+ * runs on every PR).
+ *
+ * Every bundled-executor auto-wire hook Job (`*-autowire-*`) begins by reading the backend's admin
+ * Secret from `https://kubernetes.default.svc`. Its pod carries the chart's selector labels, so the
+ * chart's own `-default-deny` NetworkPolicy selects it — and for 12 consecutive nightly air-gap runs
+ * NOTHING in the chart allowed egress to the API server, so Calico dropped that read, the bin's
+ * `waitFor` timed out, and `helm upgrade --wait` failed with the uninformative "post-upgrade hooks
+ * failed ... Job in progress".
+ *
+ * Pure detector (returns violations; empty ⇒ clean) so the standing gate and the explicit NEGATIVE
+ * case below share ONE decision function.
+ *
+ * The check is deliberately structural, and deliberately demands an **ipBlock**: a `namespaceSelector`
+ * can NEVER reach the API server (kube-apiserver is a host-networked static pod, not a workload
+ * endpoint, and CNIs such as Calico evaluate egress policy against the POST-DNAT destination — the
+ * node IP:6443, not the ClusterIP). Without that requirement the pre-existing `allow-argocd` rule
+ * (namespaceSelector, ports 80+443) would satisfy a naive "port 443 is allowed" check and this guard
+ * would have passed on the very render that was broken in production.
+ */
+function autowireHookKubeApiViolations(label: string, docs: K8sDoc[]): string[] {
+  const violations: string[] = [];
+  const policies = docs.filter((d) => d.kind === "NetworkPolicy");
+  // Identify hooks by their COMPONENT LABEL, never by name substring: the rendered Job name embeds
+  // the Helm release name, so a release called e.g. `verify-autowire-argocd` would drag the
+  // unrelated migrations Job into this check.
+  const hookJobs = docs.filter(
+    (d) =>
+      d.kind === "Job" && /-autowire$/.test(String(d.metadata?.labels?.["app.kubernetes.io/component"] ?? ""))
+  );
+  if (hookJobs.length === 0) {
+    return [`[${label}] expected at least one *-autowire hook Job in this render, found none`];
+  }
+  // If NOTHING enforces default-deny on these pods there is no problem to solve; but this chart
+  // always renders it when networkPolicy.enabled, so require it and then require the allow.
+  const defaultDeny = policies.find((np) => {
+    const spec = np.spec as { policyTypes?: string[]; ingress?: unknown; egress?: unknown } | undefined;
+    return (
+      spec?.policyTypes?.includes("Egress") && spec.ingress === undefined && spec.egress === undefined
+    );
+  });
+
+  for (const job of hookJobs) {
+    const jobName = String(job.metadata?.name ?? "<unnamed>");
+    const podLabels = podTemplateLabelsOf(job);
+    const denied =
+      defaultDeny !== undefined &&
+      selectorSelects((defaultDeny.spec as { podSelector?: LabelSelector }).podSelector, podLabels);
+    if (!denied) continue; // not under default-deny egress ⇒ nothing blocks its kube-API call
+
+    const granting = policies.filter((np) => {
+      const spec = np.spec as { podSelector?: LabelSelector; egress?: NpEgressRule[] } | undefined;
+      if (!selectorSelects(spec?.podSelector, podLabels)) return false;
+      return (spec?.egress ?? []).some(
+        (rule) =>
+          Array.isArray(rule.to) &&
+          rule.to.some((t) => typeof t.ipBlock?.cidr === "string") &&
+          (rule.ports ?? []).some((p) => typeof p.port === "number" && KUBE_API_PORTS.has(p.port))
+      );
+    });
+    if (granting.length === 0) {
+      violations.push(
+        `[${label}] hook Job '${jobName}' is selected by the default-deny egress NetworkPolicy but NO ` +
+          `NetworkPolicy grants its pod (${JSON.stringify(podLabels)}) egress to the Kubernetes API ` +
+          `server (an ipBlock 'to' on port ${[...KUBE_API_PORTS].join("/")}). Its first action is a ` +
+          `cross-namespace Secret read against https://kubernetes.default.svc — under an enforced ` +
+          `default-deny (the air-gap drill) that read is DROPPED and 'helm upgrade --wait' dies on the ` +
+          `hook. Re-enable networkPolicy.kubeApi (deploy/helm/templates/networkpolicy.yaml, ` +
+          `-allow-kube-api-autowire).`
+      );
+      continue;
+    }
+    // Blast radius: the granting policy must NOT also cover the ordinary workloads. api/worker keep
+    // the unmodified default-deny posture — the kube-API allow is for the short-lived hook pods only.
+    for (const np of granting) {
+      const sel = (np.spec as { podSelector?: LabelSelector }).podSelector;
+      for (const kind of ["api", "worker"]) {
+        const deploy = docs.find(
+          (d) => d.kind === "Deployment" && d.metadata?.labels?.["app.kubernetes.io/component"] === kind
+        );
+        if (deploy && selectorSelects(sel, podTemplateLabelsOf(deploy))) {
+          violations.push(
+            `[${label}] NetworkPolicy/${np.metadata?.name} grants kube-API egress but ALSO selects the ` +
+              `'${kind}' Deployment's pods — the API-server allow must be scoped to the auto-wire hook ` +
+              `pods only, never the long-running workloads`
+          );
+        }
+      }
+    }
+  }
+  return violations;
+}
+
 function assertHardenedContainer(scope: string, container: Container): void {
   const sc = container.securityContext;
   assert(sc, `${scope} container '${container.name}' has no securityContext at all`);
@@ -402,6 +547,9 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
         `[${label}] bundledExecutor.${be}.enabled but no allow-${be} NetworkPolicy egress in the main chart`
       );
     }
+    // ...and the third thing the main chart must keep for them: a path from the hook pods to the
+    // Kubernetes API server under the chart's own default-deny. See autowireHookKubeApiViolations.
+    for (const v of autowireHookKubeApiViolations(label, docs)) fail(v);
   }
 
   // NetworkPolicy — default-deny AND at least one explicit allow, both present.
@@ -644,6 +792,49 @@ function main(): void {
       "--set-json", 'internalEgressHosts=["argocd-server.argocd.svc.cluster.local"]'
     ])
   );
+
+  // AIR-GAP REGRESSION GUARD — the bundled-executor auto-wire hooks' path to the Kubernetes API
+  // server under the chart's own enforced default-deny. This is what broke the nightly air-gap drill
+  // on every scheduled run from 2026-07-13, and `deploy-drills.yml` has NO `pull_request` trigger —
+  // so this PR-time job is the only thing that can catch a regression before a nightly does.
+  //
+  // Checked PER BACKEND, each enabled ALONE, not just together in the kitchen sink: the gitea hook
+  // makes the identical `https://kubernetes.default.svc` call and had the identical latent failure,
+  // reached only because argocd is enabled first and died first. A fix that happened to work only
+  // when both flags are on would be exactly the "fixed the instance, not the class" bug.
+  console.log("helm-verify: checking the bundled auto-wire hooks' kube-API egress under default-deny...");
+  for (const be of ["argocd", "gitea"]) {
+    const docs = renderChart(`verify-autowire-${be}`, ["--set", `bundledExecutor.${be}.enabled=true`]);
+    const violations = autowireHookKubeApiViolations(`autowire-${be}-only`, docs);
+    for (const v of violations) fail(v);
+    if (violations.length === 0) console.log(`  ${be}-only render: hook pods have an ipBlock-backed kube-API egress path — OK`);
+  }
+
+  // NEGATIVE case — PROVE the guard above actually fires. Rendering with networkPolicy.kubeApi
+  // disabled reproduces the exact pre-fix manifest set (default-deny selects the hook pod; the only
+  // other policies covering it are DNS, the RFC1918 DB-port allow, and the backend's
+  // namespaceSelector allow — none of which can reach a host-networked apiserver). The detector MUST
+  // report a violation for each hook; if a future change made it permissive, THIS assert goes red.
+  {
+    const guardLabel = "autowire-kube-api-guard";
+    const preFix = renderChart("verify-autowire-prefix", [
+      "--set", "bundledExecutor.argocd.enabled=true",
+      "--set", "bundledExecutor.gitea.enabled=true",
+      "--set", "networkPolicy.kubeApi.enabled=false"
+    ]);
+    const preFixViolations = autowireHookKubeApiViolations(guardLabel, preFix);
+    assert(
+      preFixViolations.length >= 2,
+      `[${guardLabel}] with networkPolicy.kubeApi disabled BOTH auto-wire hooks must be flagged as having no kube-API egress path (that is the shipped-broken state); got ${preFixViolations.length} violation(s)`
+    );
+    for (const be of ["argocd", "gitea"]) {
+      assert(
+        preFixViolations.some((v) => v.includes(`${be}-autowire`)),
+        `[${guardLabel}] the negative case must name the ${be}-autowire hook Job; got: ${preFixViolations.join("; ")}`
+      );
+    }
+    console.log(`  negative case (networkPolicy.kubeApi disabled) correctly flagged both hooks`);
+  }
 
   // Size-regression guard: the MAIN chart's Helm release Secret must stay under Kubernetes' 1 MB
   // limit. Helm stores base64(gzip(whole chart)) in the release — a vendored backend manifest

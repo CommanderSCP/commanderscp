@@ -82,7 +82,12 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "commanderscp.selectorLabels" . | nindent 8 }}
+        {{/* selectorLabels + the commanderscp.io/autowire-hook marker: the marker is what the
+             `-allow-kube-api-autowire` NetworkPolicy selects, so this pod can make its
+             cross-namespace Secret read against https://kubernetes.default.svc under the chart's
+             enforced default-deny. Identical failure mode to the argocd hook — same fix, same
+             helper. See _helpers.tpl. */}}
+        {{- include "commanderscp.autowireHookSelectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: gitea-autowire
     spec:
       restartPolicy: Never
