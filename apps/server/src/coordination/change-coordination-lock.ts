@@ -3,7 +3,7 @@ import { tryAcquireAdvisoryLock, type AdvisoryLock } from "./advisory-lock.js";
 
 /**
  * M8 hardening (BUILD_AND_TEST.md §8 M8 item 6, "Multi-replica coordination trigger
- * concurrency") — the SAME class of bug as `trigger-claim-lock.ts`, one pipeline stage earlier,
+ * concurrency") — the SAME class of bug as `trigger-claim-lock.ts`, one pipeline phase earlier,
  * found while proving the trigger-claim fix under genuine multi-replica concurrency: two worker
  * REPLICAS' overlapping ticks can both reach `reconcile.ts`'s `advanceEvaluatedChanges` for the
  * SAME freshly-`evaluated` change before either commits.

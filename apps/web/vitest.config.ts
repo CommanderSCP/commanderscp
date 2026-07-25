@@ -11,7 +11,7 @@ import { configDefaults, defineConfig } from "vitest/config";
  * `pnpm --filter @scp/web test:e2e` / playwright.config.ts) from Vitest's default
  * `**\/*.{test,spec}.*` include glob, which would otherwise also match `e2e/*.spec.ts` and crash
  * trying to run Playwright specs under the wrong test runner ("Playwright Test did not expect
- * test() to be called here") — a pre-existing bug (present before this stage's changes, on every
+ * test() to be called here") — a pre-existing bug (present before this step's changes, on every
  * prior `e2e/*.spec.ts` file already on this branch), not something newly introduced here.
  */
 export default defineConfig({

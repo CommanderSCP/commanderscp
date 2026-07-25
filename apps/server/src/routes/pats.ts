@@ -27,7 +27,7 @@ function serializePat(pat: PatMetadata) {
 }
 
 /**
- * Personal Access Tokens (M2 stage 2 Part A, BUILD_AND_TEST.md §8 M2 item 3) — create/list/revoke
+ * Personal Access Tokens (M2 step 2 Part A, BUILD_AND_TEST.md §8 M2 item 3) — create/list/revoke
  * for the CALLING user's own tokens only; used as a bearer token via `auth/require-auth.ts`.
  *
  * PATs are auth-substrate (no RLS — see db/schema.ts, matching orgs/users/sessions), so their own

@@ -36,7 +36,7 @@ function WhyLink({ changeId, decisionId }: { changeId: string; decisionId: strin
 }
 
 /** The per-stage status badges for a row — one badge per compiled wave, colored by wave status
- *  (reusing the Phase-1 mapping). A partial-failure stage (some targets failed) shows the count. */
+ *  (reusing the Phase-1 mapping). A partial-failure wave (some targets failed) shows the count. */
 function StageStrip({ stages }: { stages: ServiceBoardStage[] }): React.JSX.Element {
   if (stages.length === 0) {
     return <span className="text-xs text-slate-400">no plan compiled</span>;
@@ -98,7 +98,7 @@ function AttentionCell({ row }: { row: ServiceBoardRow }): React.JSX.Element {
  * BLOCKED component surfaced in red with a decision_id "Why?" link), and opens the Phase-1 component
  * pipeline. A summary strip counts releasing / blocked / stable.
  *
- * Strictly Layer A — real data only. Per-stage image versions/digests and component health are Layer
+ * Strictly Layer A — real data only. Per-wave image versions/digests and component health are Layer
  * B (not modeled yet); they are shown as an explicit placeholder, never fabricated. Freezes are
  * READ-ONLY status here; declaring/lifting one is a controls-phase concern (Phase 5), so the
  * "Freeze service" affordance is present but disabled.
@@ -191,7 +191,7 @@ export function ServiceBoardPage(): React.JSX.Element {
                   <TableHead>Stages</TableHead>
                   <TableHead>Attention</TableHead>
                   {/* Layer B — not modeled today; explicit placeholder header. */}
-                  <TableHead title="Per-stage image version/digest and health are not captured yet (Layer B)">
+                  <TableHead title="Per-wave image version/digest and health are not captured yet (Layer B)">
                     Version / Health
                   </TableHead>
                 </TableRow>
@@ -270,7 +270,7 @@ export function ServiceBoardPage(): React.JSX.Element {
       </Card>
 
       <p className="text-xs text-slate-400">
-        Per-stage image version/digest and component health are not modeled yet (Layer B) and are shown
+        Per-wave image version/digest and component health are not modeled yet (Layer B) and are shown
         as &quot;—&quot;. Freezes are read-only here; declaring or lifting one lands in a later controls
         phase.
       </p>

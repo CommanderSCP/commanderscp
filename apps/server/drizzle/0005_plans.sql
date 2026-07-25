@@ -1,9 +1,9 @@
--- M2 stage 3: `@scp/iac` + server-side plan/apply (BUILD_AND_TEST.md §8 M2 item 4, DESIGN.md §15).
+-- M2 step 3: `@scp/iac` + server-side plan/apply (BUILD_AND_TEST.md §8 M2 item 4, DESIGN.md §15).
 -- Hand-authored, structurally identical to src/db/schema.ts (same reason as 0001_graph_core.sql:
 -- drizzle-kit's interactive column-provenance prompt can't run non-interactively in this
 -- environment, and no per-migration snapshots have been committed since 0000 — see that file's
 -- header) plus a hand-authored RLS block for the new `plans` table (same pattern as
--- 0002_rls_rbac_seed.sql §1-§2: `plans` is TENANT data, unlike the M2 stage 2 auth-substrate
+-- 0002_rls_rbac_seed.sql §1-§2: `plans` is TENANT data, unlike the M2 step 2 auth-substrate
 -- tables in 0004_auth_expansion.sql, so it needs `FORCE ROW LEVEL SECURITY` + `org_isolation` +
 -- grants, not the "no RLS" auth-substrate treatment).
 
@@ -22,7 +22,7 @@ CREATE INDEX IF NOT EXISTS "rel_labels" ON "relationships" USING gin ("labels" j
 -- ===========================================================================================
 -- 2. `plans` — a projection table for hot lifecycle state (DESIGN.md §4.1's "projection tables
 --    for hot lifecycle state" paragraph): a plan's lifecycle (pending -> applied, or stale) needs
---    real columns/constraints, unlike M2 stage 1's typed registries (domains/services/teams/...)
+--    real columns/constraints, unlike M2 step 1's typed registries (domains/services/teams/...)
 --    which deliberately reused the generic objects/relationships substrate. `manifest`/`diff` are
 --    kept verbatim (URN-keyed, per @scp/schemas' DesiredStateManifest/PlanDiff) rather than a
 --    graph `object_id` FK, because a single plan touches many objects across many scopes, not one.

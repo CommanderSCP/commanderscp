@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 /**
- * The gate/approval state of a promotion between two pipeline stages (coordination-ui-views.md §2,
+ * The gate/approval state of a promotion between two consecutive waves (coordination-ui-views.md §2,
  * Layer A). Deliberately a small closed set the *existing* model can already answer honestly:
  *
  *   open     — the promotion proceeded / the gate evaluates to allow (green)
@@ -23,7 +23,7 @@ const STATE_STYLES: Record<PromotionState, { bar: string; triangle: string; text
 };
 
 /**
- * A wide, top-to-bottom promotion arrow drawn between two vertically-stacked stage cards. Purely
+ * A wide, top-to-bottom promotion arrow drawn between two vertically-stacked wave cards. Purely
  * presentational: the parent computes `state`/`label`/`detail`/`why` from real change data (wave
  * status, gate reasonTree, control-run evidence, freeze window, approval quorum) — this component
  * only paints it. `detail` is an optional one-line "why" the parent assembles from that real data

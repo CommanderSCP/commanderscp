@@ -57,7 +57,7 @@ export interface ServerConfig {
    */
   seedDemo: boolean;
   /**
-   * Generic OIDC (Authorization Code + PKCE via `openid-client`) — DESIGN.md §7, M2 stage 2 Part
+   * Generic OIDC (Authorization Code + PKCE via `openid-client`) — DESIGN.md §7, M2 step 2 Part
    * B. `undefined` (the default — unset `SCP_OIDC_ISSUER`) means OIDC is DISABLED: the
    * `/auth/oidc/*` routes 404 rather than crash, and local-auth keeps working unmodified
    * (CLAUDE.md: air-gap/self-hosting is first-class — OIDC must be optional, never required).

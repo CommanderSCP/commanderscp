@@ -9,7 +9,7 @@ import { resolveAuthContext, type AuthContext } from "./local-auth.js";
 const PAT_PREFIX = "scp_pat_";
 
 /**
- * Personal Access Tokens (M2 stage 2 Part A, BUILD_AND_TEST.md §8 M2 item 3) — hashed at rest
+ * Personal Access Tokens (M2 step 2 Part A, BUILD_AND_TEST.md §8 M2 item 3) — hashed at rest
  * (argon2, like local-auth passwords), never stored or returned in plaintext after creation.
  *
  * Token shape: `scp_pat_<tokenId>.<secret>`. `tokenId` (16 random URL-safe base64 chars) is a

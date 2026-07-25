@@ -23,7 +23,7 @@ import { Badge } from "../components/ui/badge";
 import { stateBadgeVariant } from "./change-list";
 import { formatDate } from "./change-detail";
 import { PromotionArrow, type PromotionState } from "../components/pipeline/PromotionArrow";
-import { StageCard, type StageTargetLinks } from "../components/pipeline/StageCard";
+import { PipelineWaveCard, type PipelineWaveTargetLinks } from "../components/pipeline/PipelineWaveCard";
 
 interface PromotionVerdict {
   state: PromotionState;
@@ -203,9 +203,9 @@ function WhyLink({ changeId, decisionId }: { changeId: string; decisionId: strin
 
 /**
  * `/changes/{id}/pipeline` — the component pipeline view (coordination-ui-views.md view 2, phase 1,
- * Layer A). Renders the change's compiled plan as top-to-bottom stages (one per wave) with wide
+ * Layer A). Renders the change's compiled plan as top-to-bottom wave cards with wide
  * promotion arrows between them colored by real gate/approval state. Layer A plus the first Layer B
- * signal: the per-stage version now renders the REAL synced revision reconcile observed from status()
+ * signal: the per-wave version now renders the REAL synced revision reconcile observed from status()
  * (ADR-0008 decision 1), or an explicit placeholder until observed — never a fabricated version. Other
  * Layer B signals (canary %, scan verdicts, health) remain explicit placeholders. Reuses the same
  * `explain()` cache key as change-detail so the two views stay in sync.
@@ -234,7 +234,7 @@ export function ChangePipelinePage(): React.JSX.Element {
     : [];
   const sourceKind = change?.sourceKind ?? undefined;
 
-  // Stage source/executor links: bindings per target (externalRef = Argo app), execution-system
+  // Wave source/executor links: bindings per target (externalRef = Argo app), execution-system
   // serverUrls (deep-link base), and source-mapping repoPatterns. All best-effort — a missing
   // binding/mapping just omits that link, it never blocks the view.
   const linksQuery = useQuery({
@@ -307,11 +307,11 @@ export function ChangePipelinePage(): React.JSX.Element {
   const { decisions, controlRuns, waitStatus } = explainQuery.data;
   const approvals = approvalsQuery.data?.items ?? [];
 
-  function linksFor(target: ChangeWaveTarget): StageTargetLinks {
+  function linksFor(target: ChangeWaveTarget): PipelineWaveTargetLinks {
     const data = linksQuery.data;
     if (!data) return {};
     const bindings = data.bindingsByTarget[target.targetObjectId] ?? [];
-    // A target holds at most one binding per Type (ADR-0007) — pick the one matching this stage's
+    // A target holds at most one binding per Type (ADR-0007) — pick the one matching this wave's
     // Type; fall back to the first binding so a legacy single-binding target still links.
     const binding = bindings.find((b) => b.type === target.type) ?? bindings[0];
     const executorSystemUrl = binding?.executionSystemId
@@ -395,7 +395,7 @@ export function ChangePipelinePage(): React.JSX.Element {
 
       {!plan && (
         <p className="text-sm text-slate-500" data-testid="pipeline-no-plan">
-          No plan compiled yet — nothing to render as pipeline stages.
+          No plan compiled yet — nothing to render as pipeline waves.
         </p>
       )}
       {plan && waves.length === 0 && (
@@ -403,8 +403,8 @@ export function ChangePipelinePage(): React.JSX.Element {
       )}
 
       {waves.length > 0 && (
-        <div className="flex flex-col items-center gap-1" data-testid="pipeline-stages">
-          {/* Arrow into the first stage: colored by upstream prerequisite satisfaction. */}
+        <div className="flex flex-col items-center gap-1" data-testid="pipeline-waves">
+          {/* Arrow into the first wave: colored by upstream prerequisite satisfaction. */}
           {waitStatus && waitStatus.requirements.length > 0 && (
             <PromotionArrow
               state={waitStatus.waiting ? "pending" : "open"}
@@ -417,7 +417,7 @@ export function ChangePipelinePage(): React.JSX.Element {
             const promo = next ? wavePromotion(wave, next) : undefined;
             return (
               <div key={wave.id} className="flex w-full flex-col items-center gap-1">
-                <StageCard wave={wave} stageNumber={index + 1} linksFor={linksFor} />
+                <PipelineWaveCard wave={wave} waveNumber={index + 1} linksFor={linksFor} />
                 {promo && <PromotionArrow state={promo.state} label={promo.label} />}
                 {isLast && (
                   <PromotionArrow

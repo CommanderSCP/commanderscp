@@ -30,7 +30,7 @@ interface TokenOkBody {
 }
 
 /**
- * SCP's own RFC 8628-shaped device-authorization flow for the CLI (M2 stage 2 Part C) —
+ * SCP's own RFC 8628-shaped device-authorization flow for the CLI (M2 step 2 Part C) —
  * start → approve (by an authenticated browser session) → poll (single-use) end to end, entirely
  * via `app.inject` (no real network round trip through an external IdP needed — this flow is
  * SCP-hosted, not a proxy to one).

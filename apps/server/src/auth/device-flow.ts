@@ -7,7 +7,7 @@ import { isUniqueViolation } from "../db/pg-errors.js";
 import { createSession } from "./local-auth.js";
 
 /**
- * SCP's OWN RFC 8628-shaped device-authorization flow (M2 stage 2 Part C, DESIGN.md §7's
+ * SCP's OWN RFC 8628-shaped device-authorization flow (M2 step 2 Part C, DESIGN.md §7's
  * "OIDC device flow... grafted — headless jump boxes can't do browser redirects") — a decision
  * made deliberately, flagged here as security-sensitive: this is NOT a proxy to the upstream
  * IdP's device grant. It's hosted entirely by SCP, so it works identically whether the org is

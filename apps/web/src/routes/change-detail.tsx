@@ -48,7 +48,7 @@ export function formatDate(iso: string | null | undefined): string {
 /** Wave/wave-target `status` -> Badge variant. Values are free-form strings server-side
  *  (ChangeWaveSchema/ChangeWaveTargetSchema), but the reconciliation loop only ever writes
  *  pending/running/succeeded/failed (DESIGN.md §9.3) — anything else falls back to `secondary`.
- *  Exported so the component-pipeline view (routes/change-pipeline.tsx) colors stage status the
+ *  Exported so the component-pipeline view (routes/change-pipeline.tsx) colors wave status the
  *  same way as the wave-progression strip here — single source of truth for the mapping. */
 export function waveStatusVariant(status: string): BadgeProps["variant"] {
   switch (status) {
