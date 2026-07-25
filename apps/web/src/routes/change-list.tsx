@@ -38,7 +38,7 @@ const CHANGE_STATES: ChangeState[] = [
   "waiting",
   "executing",
   "validating",
-  "promoted",
+  "accepted",
   "cancelled",
   "rolled_back"
 ];
@@ -60,7 +60,7 @@ export function stateBadgeVariant(state: ChangeState): BadgeProps["variant"] {
     case "executing":
     case "validating":
       return "info";
-    case "promoted":
+    case "accepted":
       return "success";
     case "cancelled":
     case "rolled_back":

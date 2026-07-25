@@ -18,7 +18,7 @@ import { compileAndPersistPlan } from "../coordination/plan-service.js";
  * Phase 2 coordination UI: the Service release board projection (GET /services/:idOrUrn/board,
  * docs/proposals/coordination-ui-views.md § "Service release board"). Pins the contract of the ONE
  * net-new server capability — "the latest change that targeted this component" — plus the Layer-A
- * projection around it: per-component latest-change stages, the releasing/blocked/stable summary, the
+ * projection around it: per-component latest-change waves, the releasing/blocked/stable summary, the
  * emergency + blocked attention signals (with the block Decision's id), and authz.
  *
  * Plans are compiled directly via the engine (`compileAndPersistPlan`), the same shortcut
@@ -52,7 +52,7 @@ describe("services: release board (Phase 2, Layer A)", () => {
       })
     );
 
-  it("lists every component; a targeted component shows its latest change + stages, an untargeted one shows none", async () => {
+  it("lists every component; a targeted component shows its latest change + waves, an untargeted one shows none", async () => {
     const svc = await admin.services.create({ name: `svc-${randomUUID().slice(0, 8)}` });
     const compA = await createTestComponent(admin, { name: "checkout-api", service: svc.id });
     const compB = await createTestComponent(admin, { name: "billing-worker", service: svc.id });
@@ -68,16 +68,16 @@ describe("services: release board (Phase 2, Layer A)", () => {
     const rowA = board.rows.find((r) => r.component.id === compA.id)!;
     const rowB = board.rows.find((r) => r.component.id === compB.id)!;
 
-    // The targeted component links to its change and carries the compiled stages.
+    // The targeted component links to its change and carries the compiled waves.
     expect(rowA.latestChangeId).toBe(change.id);
     expect(rowA.changeState).toBe("proposed");
-    expect(rowA.stages.length).toBeGreaterThan(0);
-    expect(rowA.stages[0]!.targetCount).toBeGreaterThan(0);
+    expect(rowA.waves.length).toBeGreaterThan(0);
+    expect(rowA.waves[0]!.targetCount).toBeGreaterThan(0);
 
-    // The untargeted component has no active change and no stages.
+    // The untargeted component has no active change and no waves.
     expect(rowB.latestChangeId).toBeNull();
     expect(rowB.changeState).toBeNull();
-    expect(rowB.stages).toHaveLength(0);
+    expect(rowB.waves).toHaveLength(0);
 
     // Summary: A is in-flight (proposed) and unblocked → releasing; B → stable; nothing blocked.
     expect(board.summary).toEqual({ releasing: 1, blocked: 0, stable: 1 });

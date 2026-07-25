@@ -237,7 +237,7 @@ CREATE TABLE audit_events (
   org_id       uuid NOT NULL,
   domain_id    uuid,
   actor_id     uuid NOT NULL,                 -- user or service account object
-  action       text NOT NULL,                 -- e.g. 'change.promote', 'policy.update', 'freeze.override'
+  action       text NOT NULL,                 -- e.g. 'change.accept', 'policy.update', 'freeze.override'
   subject_id   uuid,                          -- object acted upon
   before_hash  bytea,                         -- digest of prior state (not full copy)
   after_hash   bytea,
@@ -310,7 +310,7 @@ Plus a generic bounded `/graph/traverse` (direction, relationship-type set, max 
   teams/  groups/  users/  service-accounts/
   relationships/      type-registry/{object-types,relationship-types}
   objects/{type}/     objects/{type}/{id}          # generic endpoint for ANY registry type (grafted)
-  changes/            changes/{id}:promote|:cancel|:rollback
+  changes/            changes/{id}:accept|:cancel|:rollback
   campaigns/          initiatives/        release-topologies/
   policies/           controls/           approvals/          freezes/
   decisions/{id}      audit-events/
@@ -353,7 +353,7 @@ Key contract rules:
 CREATE TABLE roles (
   id uuid PRIMARY KEY, org_id uuid,                 -- NULL org = built-in
   name text NOT NULL,                               -- Viewer|Operator|Approver|Administrator|Owner|custom
-  permissions text[] NOT NULL                       -- e.g. '{change:promote, policy:write, freeze:override}'
+  permissions text[] NOT NULL                       -- e.g. '{change:accept, policy:write, freeze:override}'
 );
 CREATE TABLE role_bindings (
   id uuid PRIMARY KEY, org_id uuid NOT NULL,
@@ -396,7 +396,7 @@ CREATE TABLE role_bindings (
 The charter lifecycle is an **explicit, table-driven, DB-persisted state machine** — not an embedded workflow engine:
 
 ```
- proposed ──▶ evaluated ──▶ coordinated ──▶ executing ──▶ validating ──▶ promoted
+ proposed ──▶ evaluated ──▶ coordinated ──▶ executing ──▶ validating ──▶ accepted
      │             │              │              │              │
      └─────────────┴──────┬───────┴──────────────┴──────┬───────┘
                           ▼                             ▼
@@ -424,7 +424,7 @@ CREATE TABLE changes (                    -- projection table; each row referenc
 
 **Correlation (source → component).** Multiple repos → one component; multiple components → one service. An inbound executor/webhook event is matched against `source_mappings` rows (sourceKind + repo/path glob → component) by `coordination/correlation.ts`. The matcher uses `{sourceKind, repo, path}` only — commit SHA / artifact digest / labels are *not* correlation inputs today (the GitHub mapper extracts `commitSha` and drops it). A `CoordinatedChange` group object + `correlates` relationship type are seeded and a group is written on webhook/observe ingress, but **nothing reads them** — the group is not a coupling mechanism, and a design should not build on it (it has no time window, no state filter, and only one of the propose origins populates it).
 
-**Coupled pipelines (change → change, M12 P4B).** The "app repo + infra repo → coordinated release" property is delivered NOT by the correlation group but by explicit, operator-declared coupling on the change itself (`docs/proposals/coupled-pipelines.md`): a change carries `properties.provides: string[]` (keys it makes true at its targets) and `properties.requires: [{key, at}]` (prerequisites). A change with unsatisfied `requires` parks in the `waiting` lifecycle state and is released to `executing` when some other change reaches `validating`/`promoted` with a matching `provides` at `at`. The predicate lives in `coordination/coupling.ts`; the wait is visible via `GET /changes/{id}/explain`'s `waitStatus`. These couplings are declared per release (both pipelines emit their key) rather than inferred, because ingress cannot pair two repos.
+**Coupled pipelines (change → change, M12 P4B).** The "app repo + infra repo → coordinated release" property is delivered NOT by the correlation group but by explicit, operator-declared coupling on the change itself (`docs/proposals/coupled-pipelines.md`): a change carries `properties.provides: string[]` (keys it makes true at its targets) and `properties.requires: [{key, at}]` (prerequisites). A change with unsatisfied `requires` parks in the `waiting` lifecycle state and is released to `executing` when some other change reaches `validating`/`accepted` with a matching `provides` at `at`. The predicate lives in `coordination/coupling.ts`; the wait is visible via `GET /changes/{id}/explain`'s `waitStatus`. These couplings are declared per release (both pipelines emit their key) rather than inferred, because ingress cannot pair two repos.
 
 ### 9.3 Plans, topologies, waves, gates
 
@@ -701,7 +701,7 @@ Zod schemas ──▶ OpenAPI 3.1 (committed, oasdiff-gated)
                         └─▶ @scp/iac  CDK-style constructs → pure synth → manifest JSON
 ```
 
-- **CLI:** `scp service register`, `scp change promote`, `scp change explain`, `scp policy evaluate`, `scp federation export/import`, `scp audit verify`, `scp plan` / `scp apply`. `--output json|table` everywhere; auth via PAT or OIDC device flow.
+- **CLI:** `scp service register`, `scp change accept`, `scp change explain`, `scp policy evaluate`, `scp federation export/import`, `scp audit verify`, `scp plan` / `scp apply`. `--output json|table` everywhere; auth via PAT or OIDC device flow.
 - **IaC:** `new Service(scope, 'billing', {...})`, `new Policy(...)`, `new ReleaseTopology(...)`, `new Campaign(...)` — constructs synthesize a **deterministic desired-state manifest** (URN-keyed objects + relationships). **Synthesis is pure — no API calls** — so IaC works in CI and across air gaps: synthesize connected, apply disconnected.
 - **Server-side reconciliation:** `scp apply` POSTs the manifest to `/plans`; the server diffs desired vs. actual graph and returns a typed, **explained** plan (create/update/delete/no-op with reasons — itself a Decision); `/plans/{id}:apply` executes transactionally. IaC-managed objects carry a `managed-by` marker + stack label so pruning is scoped and safe; `scp plan` is the dry-run. The same diff engine powers drift detection as a worker reconciliation loop.
 
@@ -774,7 +774,7 @@ Kubernetes installs upgrade with `helm upgrade` (pre-upgrade migrations Job). Fo
 1. **Unit (Vitest):** state-machine transitions, CEL evaluation, wave ordering/toposort, permission resolution, correlation matchers — pure functions, table-driven, exhaustive.
 2. **Integration (Testcontainers Postgres):** graph traversals, **adversarial RLS cross-org probes**, outbox delivery, pg-boss retry/poison behavior, transition atomicity, audit-chain integrity, migration up-paths; executor plugins against recorded HTTP fixtures (nock) + a fake-executor plugin for full-loop tests.
 3. **Contract:** committed OpenAPI + **oasdiff breaking-change gate**; generated SDK exercised against a live server; **fast-check property-based idempotency fuzzing** of write endpoints (grafted) — directly verifying the convergence guarantee federation import depends on.
-4. **E2E (docker compose in CI):** scripted golden path (register service → connect fake executor → propose change → gate blocks → approve → promote → explain → audit verify) via CLI; Playwright UI smoke; and the **definitive two-domain federation round-trip on every merge** (grafted): create in A → export → import into isolated B → assert graph equivalence → promote a change through B's *local* gates → export status back → verify convergence **and audit-chain integrity on both sides**.
+4. **E2E (docker compose in CI):** scripted golden path (register service → connect fake executor → propose change → gate blocks → approve → accept → explain → audit verify) via CLI; Playwright UI smoke; and the **definitive two-domain federation round-trip on every merge** (grafted): create in A → export → import into isolated B → assert graph equivalence → accept a change through B's *local* gates → export status back → verify convergence **and audit-chain integrity on both sides**.
 
 ---
 

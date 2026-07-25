@@ -30,7 +30,7 @@ import {
 
 /** Non-terminal change states — a binding must not be re-pointed while a change actively resolves it
  *  (reconcile resolves bindings fresh at trigger AND status-poll, so a mid-flight move silently
- *  no-ops or drives the wrong target). Terminal states (promoted/cancelled/rolled_back) are settled. */
+ *  no-ops or drives the wrong target). Terminal states (accepted/cancelled/rolled_back) are settled. */
 const IN_FLIGHT_CHANGE_STATES = [
   "proposed",
   "evaluated",

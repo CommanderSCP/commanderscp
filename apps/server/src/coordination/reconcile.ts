@@ -421,10 +421,10 @@ async function advanceWaitingChanges(db: Db, orgId: string, gateDeps: GateDeps):
 // -------------------------------------------------------------------------------------------
 // validating: no state transition happens here automatically (that edge is human-only —
 // coordination/gates.ts's module doc) — but a required control referenced by a policy bound to
-// the `validating->promoted` edge needs to actually RUN somewhere, and the promote route itself
+// the `validating->accepted` edge needs to actually RUN somewhere, and the accept route itself
 // is host-less (DESIGN §16's api/worker split). This is that "somewhere": every tick, ensure
 // every fired policy's required controls have a fresh outcome and every requireApprovals effect
-// has a materialized approval_requests row, so a human's `scp change promote` — and `GET
+// has a materialized approval_requests row, so a human's `scp change accept` — and `GET
 // /approvals` — see up-to-date state without ever needing this process to hold a live PluginHost.
 // -------------------------------------------------------------------------------------------
 
@@ -521,7 +521,7 @@ async function reconcileExecutingChange(
     //
     // A ROLLBACK change's OWN wave failing is deliberately EXEMPT from this — the same "no
     // automatic caller could ever satisfy it" reasoning coordination/gates.ts's `isRollback`
-    // check documents for the validating->promoted edge applies here too, just for a different
+    // check documents for the validating->accepted edge applies here too, just for a different
     // failure mode: an `autoRollbackOnFailure` policy scoped to a target whose rollback ALSO
     // fails (a target broken enough that even restoring prior state doesn't work) would otherwise
     // recurse — trigger a rollback-of-the-rollback, whose own wave targets the SAME broken
@@ -1079,10 +1079,10 @@ async function ensureExecutorInstanceStarted(
 }
 
 /** All waves of `change`'s plan have succeeded — advance past `executing`. Forward changes stop
- *  at `validating` for a human `scp change promote` (DESIGN's chain is a deliberate human gate
- *  before promotion); a ROLLBACK change (its own `rollbackOfObjectId` is set) has no equivalent
+ *  at `validating` for a human `scp change accept` (DESIGN's chain is a deliberate human gate
+ *  before acceptance); a ROLLBACK change (its own `rollbackOfObjectId` is set) has no equivalent
  *  human-review step to wait for — restoring known-good state doesn't need approval the way
- *  rolling new state out does — so it auto-promotes itself and then, per DESIGN §9.4 / this
+ *  rolling new state out does — so it auto-accepts itself and then, per DESIGN §9.4 / this
  *  module's rollback.ts sibling, transitions the ORIGINAL change to `rolled_back` in the same
  *  transaction. */
 async function completeExecution(
@@ -1105,21 +1105,21 @@ async function completeExecution(
   );
   if (validated.verdict !== "allow") return;
 
-  if (!change.rollbackOfObjectId) return; // forward change — waits for a human `scp change promote`.
+  if (!change.rollbackOfObjectId) return; // forward change — waits for a human `scp change accept`.
 
-  const promoted = await transitionChange(
+  const accepted = await transitionChange(
     tx,
     {
       orgId,
       changeObjectId: change.objectId,
-      toState: "promoted",
+      toState: "accepted",
       actorObjectId: SYSTEM_ACTOR_ID,
       requestId: "reconcile",
-      reason: "auto: rollback changes need no human promotion gate"
+      reason: "auto: rollback changes need no human acceptance gate"
     },
     gateDeps
   );
-  if (promoted.verdict !== "allow") return;
+  if (accepted.verdict !== "allow") return;
 
   await transitionChange(
     tx,
@@ -1129,7 +1129,7 @@ async function completeExecution(
       toState: "rolled_back",
       actorObjectId: SYSTEM_ACTOR_ID,
       requestId: "reconcile",
-      reason: `rollback change ${change.objectId} promoted`,
+      reason: `rollback change ${change.objectId} accepted`,
       extraInputContext: { rollbackChangeObjectId: change.objectId }
     },
     gateDeps

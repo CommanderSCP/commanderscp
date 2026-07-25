@@ -1485,7 +1485,7 @@ Validating
 
 ↓
 
-Promoted
+Accepted
 
 or
 
@@ -3045,7 +3045,7 @@ Register Service
 
 Create Campaign
 
-Promote Change
+Accept Change
 
 Evaluate Policy
 

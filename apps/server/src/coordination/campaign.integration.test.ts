@@ -110,7 +110,7 @@ describe("campaigns & initiatives (M5)", () => {
     await server.close();
   });
 
-  it("compiles per-target member changes with correct wave ordering; wave 1 promotes while wave 2 is blocked by a failing required control; status aggregates; rollback reverts the promoted target", async () => {
+  it("compiles per-target member changes with correct wave ordering; wave 1 accepts while wave 2 is blocked by a failing required control; status aggregates; rollback reverts the accepted target", async () => {
     const infra = await createTestComponent(admin, { name: "camp-infra" });
     const app = await createTestComponent(admin, { name: "camp-app" });
     await admin.components.addDependsOn(app.id, infra.id); // app depends_on infra -> infra first
@@ -155,13 +155,13 @@ describe("campaigns & initiatives (M5)", () => {
     });
     expect(coordinatesEdges.items.some((e) => e.toId === wave0MemberChangeId)).toBe(true);
 
-    // --- wave 0 (infra, no policy) reaches 'validating', gets promoted by a human ------------
+    // --- wave 0 (infra, no policy) reaches 'validating', gets accepted by a human ------------
     await waitUntil(async () => (await admin.changes.get(wave0MemberChangeId)).state === "validating" || undefined, {
       describe: `member change ${wave0MemberChangeId} reaches 'validating'`,
       timeoutMs: 20_000
     });
-    const promoted = await admin.changes.promote(wave0MemberChangeId);
-    expect(promoted.state).toBe("promoted");
+    const accepted = await admin.changes.accept(wave0MemberChangeId);
+    expect(accepted.state).toBe("accepted");
 
     // --- wave 0 succeeds; wave 1 (app) is blocked by the required-but-failing control ---------
     await waitUntil(
@@ -192,11 +192,11 @@ describe("campaigns & initiatives (M5)", () => {
     const campaignStatus = await admin.campaigns.get(campaign.id);
     expect(campaignStatus.status).toBe("blocked");
 
-    // --- campaign-scoped rollback reverts the PROMOTED target only, each producing a Decision --
+    // --- campaign-scoped rollback reverts the ACCEPTED target only, each producing a Decision --
     const rollbackResult = await admin.campaigns.rollback(campaign.id, "test: revert wave 0 while wave 1 is blocked");
     expect(rollbackResult.rolledBack).toHaveLength(1);
     expect(rollbackResult.rolledBack[0]!.originalChangeObjectId).toBe(wave0MemberChangeId);
-    // app's member change was never promoted (never even proposed) — not eligible, correctly skipped.
+    // app's member change was never accepted (never even proposed) — not eligible, correctly skipped.
     expect(rollbackResult.skipped.some((s) => s.originalChangeObjectId === app.id)).toBe(false);
 
     await waitUntil(async () => (await admin.changes.get(wave0MemberChangeId)).state === "rolled_back" || undefined, {
@@ -301,7 +301,7 @@ describe("campaigns & initiatives (M5)", () => {
     // (a) NOTHING SHIPPED. Wave 1's member Change was never proposed — the owner's requirement
     // ("the software doesn't get deployed out until the infra gets deployed out") made concrete:
     // infra's wave failed, so app's change must not exist at all. A non-null id here means a real
-    // Change for `app` was created and handed to the ordinary change loop to drive to `promoted`.
+    // Change for `app` was created and handed to the ordinary change loop to drive to `accepted`.
     expect(after.plan!.waves[1]!.targets[0]!.memberChangeObjectId).toBeNull();
     expect(after.plan!.waves[1]!.status).toBe("pending"); // never even gated, let alone running
     // (b) The plan is NOT completed — it parks `active` (campaign_plans.status has no "parked"
@@ -354,7 +354,7 @@ describe("campaigns & initiatives (M5)", () => {
   }, 60_000);
 
   it("initiative roll-up traversal aggregates MULTIPLE campaigns with MIXED statuses (real graph query), via both propose-with-campaigns and add-campaign, and is org-scoped", async () => {
-    // Campaign 1 -> completed (its member change promoted).
+    // Campaign 1 -> completed (its member change accepted).
     const t1 = await createTestComponent(admin, { name: "camp-rollup-completed-target" });
     const completedCampaign = await admin.campaigns.propose({ name: "rollup-completed campaign", targets: [t1.id] });
     const memberChangeId = await waitUntil(
@@ -368,7 +368,7 @@ describe("campaigns & initiatives (M5)", () => {
       describe: `member change ${memberChangeId} reaches 'validating'`,
       timeoutMs: 20_000
     });
-    await admin.changes.promote(memberChangeId);
+    await admin.changes.accept(memberChangeId);
     await waitUntil(
       async () => (await admin.campaigns.get(completedCampaign.id)).status === "completed" || undefined,
       { describe: `campaign ${completedCampaign.id} reaches 'completed'`, timeoutMs: 20_000 }
@@ -627,7 +627,7 @@ describe("campaigns & initiatives (M5)", () => {
   });
 
   it("SECURITY: campaign rollback IGNORES a stray/injected `coordinates` edge — only true plan-compiled members are reverted", async () => {
-    // The TRUE member: a campaign targeting its own object, promoted (a real, plan-compiled,
+    // The TRUE member: a campaign targeting its own object, accepted (a real, plan-compiled,
     // rollback-eligible member).
     const trueTarget = await createTestComponent(admin, { name: "camp-stray-true-target" });
     const campaign = await admin.campaigns.propose({ name: "stray-edge campaign", targets: [trueTarget.id] });
@@ -642,7 +642,7 @@ describe("campaigns & initiatives (M5)", () => {
       describe: `true member ${trueMemberChangeId} reaches 'validating'`,
       timeoutMs: 20_000
     });
-    await admin.changes.promote(trueMemberChangeId);
+    await admin.changes.accept(trueMemberChangeId);
 
     // The INJECTED member: a completely unrelated Change, driven to a rollback-eligible state
     // ('validating'), then linked to the victim campaign by a stray `coordinates` edge written

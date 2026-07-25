@@ -24,8 +24,8 @@ import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
  * **Design decision (documented deviation from "never change this function's signature" — see
  * PR body): real governance evaluation is wired to exactly two points, not every edge:**
  *
- *  - **`validating -> promoted`** (the one human-callable, already-a-review-gate edge — DESIGN
- *    §9.1's chain deliberately stops here for a human `scp change promote`). This is where a
+ *  - **`validating -> accepted`** (the one human-callable, already-a-review-gate edge — DESIGN
+ *    §9.1's chain deliberately stops here for a human `scp change accept`). This is where a
  *    required policy's unmet effect actually surfaces as a blocked 4xx with `decision_id`
  *    (BUILD_AND_TEST.md §8 M4's flagship E2E).
  *  - **every wave boundary** (`evaluateWaveGate`, unchanged scope from M3's seam).
@@ -73,8 +73,8 @@ export interface EvaluateLifecycleGateContext {
   actorObjectId: string;
   emergency: boolean;
   /** True when this Change IS a rollback (`changes.rollback_of_object_id` set) — DESIGN §9.4:
-   *  rollback has no human-review step to wait for, so its `validating->promoted` edge is exempt
-   *  from governance the same way M3 already auto-promotes it (coordination/reconcile.ts's
+   *  rollback has no human-review step to wait for, so its `validating->accepted` edge is exempt
+   *  from governance the same way M3 already auto-accepts it (coordination/reconcile.ts's
    *  `completeExecution`). Without this exemption a required-approval policy on the target would
    *  deadlock every rollback forever — no automatic caller could ever satisfy it. */
   isRollback: boolean;
@@ -83,12 +83,12 @@ export interface EvaluateLifecycleGateContext {
 
 export interface GateDeps {
   sandbox: CelSandbox;
-  /** `null` on the API tier (routes/changes.ts's promote handler) — see this file's module doc
+  /** `null` on the API tier (routes/changes.ts's accept handler) — see this file's module doc
    *  and `governance/control-runner.ts` for why the lifecycle-edge gate never needs a live host. */
   host: PluginHost | null;
 }
 
-const GOVERNED_LIFECYCLE_EDGES = new Set(["validating->promoted"]);
+const GOVERNED_LIFECYCLE_EDGES = new Set(["validating->accepted"]);
 
 export async function evaluateLifecycleGate(
   tx: TenantTx,
@@ -116,7 +116,7 @@ export async function evaluateLifecycleGate(
   }
 
   if (ctx.isRollback) {
-    return allowVerdict("rollback changes are exempt from governance at validating->promoted (DESIGN §9.4 — no human-review step to wait for)");
+    return allowVerdict("rollback changes are exempt from governance at validating->accepted (DESIGN §9.4 — no human-review step to wait for)");
   }
 
   const changeObject = await getObjectByIdOrUrnAnyType(tx, ctx.orgId, ctx.changeObjectId);

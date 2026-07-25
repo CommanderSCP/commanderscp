@@ -20,7 +20,7 @@ import {
 /**
  * Coupled pipelines (M12 P4B — docs/proposals/coupled-pipelines.md). A change declaring
  * `requires: [{key, at}]` parks in `waiting` and is released to `executing` only once ANOTHER change
- * reaches `validating`/`promoted` and `provides` that key at that object. Real reconcile loop, real
+ * reaches `validating`/`accepted` and `provides` that key at that object. Real reconcile loop, real
  * Postgres, real (default fake-executor) execution — a change with no binding still drives to
  * `validating` via the shared default instance, so no executor wiring is needed here.
  *
@@ -501,14 +501,14 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     await reaches(coupled.id, "validating");
 
     // Kill the prerequisite: cancel the provider. If the rollback below INHERITED the original's
-    // `requires`, no provider in {validating, promoted} would exist any more and it would park in
+    // `requires`, no provider in {validating, accepted} would exist any more and it would park in
     // `waiting` forever — so it completing is the load-bearing assertion, not just a state check.
     await admin.changes.cancel(provider.id, "test: remove the satisfier before rolling back");
 
     const rollback = await admin.changes.rollback(coupled.id, "test: roll back the coupled change");
     expect(rollback.rollbackOfObjectId).toBe(coupled.id);
-    // A rollback change auto-promotes once its waves succeed (reconcile's completeExecution).
-    await reaches(rollback.id, "promoted");
+    // A rollback change auto-accepts once its waves succeed (reconcile's completeExecution).
+    await reaches(rollback.id, "accepted");
 
     // Inherited NEITHER half of the coupling.
     const rolled = await admin.changes.get(rollback.id);

@@ -19,8 +19,8 @@ export const CampaignStatusSchema = z.enum([
   "blocked", // the active wave's boundary gate returned "block" (a policy/control did not pass)
   "failed", // a wave's member changes failed/were cancelled without recovering
   "completed", // every wave succeeded
-  "partially_rolled_back", // some — but not all — promoted member changes have been rolled back
-  "rolled_back" // every promoted member change has been rolled back
+  "partially_rolled_back", // some — but not all — accepted member changes have been rolled back
+  "rolled_back" // every accepted member change has been rolled back
 ]);
 export type CampaignStatus = z.infer<typeof CampaignStatusSchema>;
 
@@ -76,10 +76,10 @@ export const RollbackCampaignRequestSchema = z.object({
 });
 export type RollbackCampaignRequest = z.infer<typeof RollbackCampaignRequestSchema>;
 
-/** `POST /campaigns/{id}/rollback` response — DESIGN §9.5: "reverts its promoted member targets
+/** `POST /campaigns/{id}/rollback` response — DESIGN §9.5: "reverts its accepted member targets
  *  through the same wave/rollback machinery, each producing a Decision." One `rolledBack` entry
  *  per member Change actually rolled back (each `rollbackChange` is a real, independent Change);
- *  `skipped` names every member Change that was NOT eligible (never promoted, already rolled
+ *  `skipped` names every member Change that was NOT eligible (never accepted, already rolled
  *  back, etc.) and why — never silently dropped. */
 export const RollbackCampaignResponseSchema = z.object({
   rolledBack: z.array(z.object({ originalChangeObjectId: z.string().uuid(), rollbackChange: ChangeSchema })),

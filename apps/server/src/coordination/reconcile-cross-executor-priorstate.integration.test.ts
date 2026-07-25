@@ -56,13 +56,13 @@ describe("reconcile: prior-state snapshot is scoped to the current executor inst
     await server?.close();
   });
 
-  async function proposeAndPromote(name: string, targetId: string): Promise<void> {
+  async function proposeAndAccept(name: string, targetId: string): Promise<void> {
     const change = await admin.changes.propose({ name, targets: [targetId] });
     await waitUntil(async () => (await admin.changes.get(change.id)).state === "validating" || undefined, {
       describe: `change ${change.id} (${name}) reaches 'validating'`,
       timeoutMs: 20_000
     });
-    await admin.changes.promote(change.id);
+    await admin.changes.accept(change.id);
   }
 
   it("snapshots prior state from the SAME-executor succeeded run, not a newer FOREIGN-executor one", async () => {
@@ -71,7 +71,7 @@ describe("reconcile: prior-state snapshot is scoped to the current executor inst
 
     // change #1: the target's first trigger on the shared fake-executor — brings it to version v0
     // and records a SUCCEEDED wave target under executor_plugin_id = "fake-executor".
-    await proposeAndPromote("change 1", comp.id);
+    await proposeAndAccept("change 1", comp.id);
 
     const change1Target = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
@@ -119,7 +119,7 @@ describe("reconcile: prior-state snapshot is scoped to the current executor inst
 
     // change #2: a second trigger of the SAME component on the shared fake-executor. Its snapshot
     // must come from change #1's SAME-executor run (stateRef "v0"), NOT the newer foreign row.
-    await proposeAndPromote("change 2", comp.id);
+    await proposeAndAccept("change 2", comp.id);
 
     const change2Target = await waitUntil(
       async () => {
@@ -155,7 +155,7 @@ describe("reconcile: prior-state snapshot is scoped to the current executor inst
 
     // Borrow an existing real wave/plan so the injected foreign row satisfies the repo joins.
     const anchor = await createTestComponent(admin, { name: `xexec-anchor-${uuidv7().slice(0, 8)}` });
-    await proposeAndPromote("anchor change", anchor.id);
+    await proposeAndAccept("anchor change", anchor.id);
     const anchorTarget = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
         .select()

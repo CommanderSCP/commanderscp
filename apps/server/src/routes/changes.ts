@@ -42,11 +42,11 @@ import { conflict } from "../errors.js";
  *
  * `evaluate`/`coordinate`/`execute`/`validate` have NO route: those edges are entirely
  * engine-automatic in M3 (coordination/reconcile.ts) — there is no policy/control gate for a
- * human to satisfy before them yet (M4). `cancel`/`promote`/`rollback` are the only
+ * human to satisfy before them yet (M4). `cancel`/`accept`/`rollback` are the only
  * human-triggerable edges, plus `propose` (the entry point) — matching
- * BUILD_AND_TEST.md's `scp change propose/promote/rollback/explain` CLI surface exactly, with
+ * BUILD_AND_TEST.md's `scp change propose/accept/rollback/explain` CLI surface exactly, with
  * `cancel`/`list`/`get` alongside for completeness (the guarded transition function already
- * supports `cancel` from every pre-promotion state; leaving it unreachable via the API would be
+ * supports `cancel` from every pre-acceptance state; leaving it unreachable via the API would be
  * an arbitrary gap, not a deliberate one).
  */
 /**
@@ -105,7 +105,7 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
   const typed = app.withTypeProvider<ZodTypeProvider>();
   // `host: null` — this route runs on the request-serving (`role=api`) tier, which has no
   // `PluginHost` (coordination/gates.ts's module doc, DESIGN §16's api/worker split). The only
-  // lifecycle edge this file ever governance-evaluates (`validating->promoted`) only ever READS
+  // lifecycle edge this file ever governance-evaluates (`validating->accepted`) only ever READS
   // already-persisted control_runs — never triggers one inline — so this is safe by construction.
   const gateDeps: GateDeps = { sandbox: deps.celSandbox!, host: null };
 
@@ -343,7 +343,7 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
 
   typed.route({
     method: "POST",
-    url: "/api/v1/changes/:id/promote",
+    url: "/api/v1/changes/:id/accept",
     schema: {
       params: ChangeIdParamSchema,
       body: ChangeTransitionRequestSchema,
@@ -357,8 +357,8 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
     },
     config: {
       openapi: {
-        operationId: "promoteChange",
-        summary: "Promote a change out of `validating` — the human approval gate before `promoted`",
+        operationId: "acceptChange",
+        summary: "Accept a change out of `validating` — the human approval gate before `accepted`",
         tags: ["changes"]
       }
     },
@@ -376,7 +376,7 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
           {
             orgId: auth.orgId,
             changeObjectId: request.params.id,
-            toState: "promoted",
+            toState: "accepted",
             actorObjectId: auth.subjectObjectId,
             requestId: request.id,
             reason: request.body.reason ?? null,

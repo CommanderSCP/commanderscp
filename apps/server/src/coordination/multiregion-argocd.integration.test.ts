@@ -178,7 +178,7 @@ describe("M15.6: multi-region Argo CD — config surface + per-region fan-out", 
       async () => (await admin.changes.get(change.id)).state === "validating" || undefined,
       { describe: `change ${change.id} reaches 'validating'`, timeoutMs: 20_000 }
     );
-    await admin.changes.promote(change.id);
+    await admin.changes.accept(change.id);
 
     // Each region's wave target must be triggered against its OWN regional execution-system instance.
     async function triggeredInstanceFor(targetId: string): Promise<string | undefined> {

@@ -99,7 +99,7 @@ describe("coordination engine: full fake-executor loop", () => {
     await server.close();
   });
 
-  it("propose -> evaluate -> coordinate -> execute -> validate -> promote, waves ordered by depends_on, every transition has a Decision", async () => {
+  it("propose -> evaluate -> coordinate -> execute -> validate -> accept, waves ordered by depends_on, every transition has a Decision", async () => {
     const infra = await createTestComponent(admin, { name: "coord-infra" });
     const app = await createTestComponent(admin, { name: "coord-app" });
     await admin.components.addDependsOn(app.id, infra.id); // app depends_on infra
@@ -139,8 +139,8 @@ describe("coordination engine: full fake-executor loop", () => {
     const gateDecisions = explained.decisions.filter((d) => d.kind === "gate");
     expect(gateDecisions.length).toBeGreaterThanOrEqual(2); // one per wave boundary
 
-    const promoted = await admin.changes.promote(change.id);
-    expect(promoted.state).toBe("promoted");
+    const accepted = await admin.changes.accept(change.id);
+    expect(accepted.state).toBe("accepted");
 
     const finalExplain = await admin.changes.explain(change.id);
     expect(
@@ -276,7 +276,7 @@ describe("coordination engine: full fake-executor loop", () => {
         describe: `change1 ${change1.id} reaches 'validating'`
       }
     );
-    await admin.changes.promote(change1.id);
+    await admin.changes.accept(change1.id);
 
     // Change #2: a second change against the SAME target — bumps the fake executor to v1. Its
     // wave target captures `priorStateRef` = "v0" (what change1 left behind) BEFORE triggering.
@@ -287,13 +287,13 @@ describe("coordination engine: full fake-executor loop", () => {
         describe: `change2 ${change2.id} reaches 'validating'`
       }
     );
-    await admin.changes.promote(change2.id);
+    await admin.changes.accept(change2.id);
 
     const decision = await admin.changes.rollback(change2.id, "integration test: undo change 2");
     expect(decision.rollbackOfObjectId).toBe(change2.id);
     expect(decision.state).toBe("proposed");
 
-    // Rollback changes auto-promote (no human validation gate — coordination/reconcile.ts's
+    // Rollback changes auto-accept (no human validation gate — coordination/reconcile.ts's
     // `completeExecution` doc comment) and, on their own promotion, transition the ORIGINAL back
     // to `rolled_back` in the same transaction.
     const rolledBack = await waitUntil(
@@ -308,9 +308,9 @@ describe("coordination engine: full fake-executor loop", () => {
     const rollbackExplain = await waitUntil(
       async () => {
         const e = await admin.changes.explain(decision.id);
-        return e.change.state === "promoted" ? e : undefined;
+        return e.change.state === "accepted" ? e : undefined;
       },
-      { describe: `rollback change ${decision.id} reaches 'promoted'`, timeoutMs: 20_000 }
+      { describe: `rollback change ${decision.id} reaches 'accepted'`, timeoutMs: 20_000 }
     );
     const rollbackTarget = rollbackExplain.plan!.waves[0]!.targets[0]!;
     expect(rollbackTarget.status).toBe("succeeded");
@@ -412,7 +412,7 @@ describe("coordination engine: crash resumption", () => {
    * tick ever reaches its own result-commit — the target is left durably `triggering`, mid-flight,
    * not post-commit. Worker #1 is torn down at EXACTLY that moment (no further ticks get a chance
    * to self-heal it), and a brand new worker #2 — sharing nothing in memory — must resume it: same
-   * `externalId` (no duplicate trigger), wave completes, change promotes. This also directly
+   * `externalId` (no duplicate trigger), wave completes, change accepts. This also directly
    * guards CRITICAL #2 (duplicate/lost trigger calls): if `reconcile.ts` regressed to its old
    * single-big-transaction design (or dropped the `triggering`-status resume path), worker #2
    * would either never notice the stuck target (this test times out) or fire a genuinely SECOND
@@ -579,14 +579,14 @@ describe("coordination engine: crash resumption", () => {
         const liveStatus = await host2.executor(DEFAULT_EXECUTOR_INSTANCE_ID).status(resumedRef);
         expect(liveStatus.stateRef).toBe("v0"); // NOT v1 — would be v1 if a second real run fired.
 
-        const promote = await server.app.inject({
+        const accept = await server.app.inject({
           method: "POST",
-          url: `/api/v1/changes/${changeId}/promote`,
+          url: `/api/v1/changes/${changeId}/accept`,
           headers: { authorization: `Bearer ${org.adminToken}` },
           payload: {}
         });
-        expect(promote.statusCode).toBe(200);
-        expect(promote.json().state).toBe("promoted");
+        expect(accept.statusCode).toBe(200);
+        expect(accept.json().state).toBe("accepted");
       } finally {
         await loop2.stop();
         await host2.stop();
@@ -677,7 +677,7 @@ describe("coordination engine: crash resumption", () => {
       // before the kill — never stopped, never replaced — driving the change the rest of the way.
       // "The wave resumes": the target's in-flight run (its statePath-backed state survived the
       // crash — fake-executor's own module doc) still completes and the change reaches
-      // 'validating' with no operator intervention beyond the eventual human promote below.
+      // 'validating' with no operator intervention beyond the eventual human accept below.
       await waitUntil(
         async () => {
           const get = await server.app.inject({
@@ -693,14 +693,14 @@ describe("coordination engine: crash resumption", () => {
         }
       );
 
-      const promote = await server.app.inject({
+      const accept = await server.app.inject({
         method: "POST",
-        url: `/api/v1/changes/${changeId}/promote`,
+        url: `/api/v1/changes/${changeId}/accept`,
         headers: { authorization: `Bearer ${org.adminToken}` },
         payload: {}
       });
-      expect(promote.statusCode).toBe(200);
-      expect(promote.json().state).toBe("promoted");
+      expect(accept.statusCode).toBe(200);
+      expect(accept.json().state).toBe("accepted");
     } finally {
       await loop.stop();
       await host.stop();
@@ -978,7 +978,7 @@ describe("coordination engine: watchdog scheduled on the running worker (CRITICA
     try {
       // A normal change, let the ACTIVE reconcile loop (also running on this "worker") drive it
       // all the way to `validating` — a stable resting state the loop never advances past on its
-      // own (a human `scp change promote` is required). That's what makes this different from
+      // own (a human `scp change accept` is required). That's what makes this different from
       // just backdating a freshly-proposed change: with the reconcile loop genuinely running
       // alongside the watchdog, a change left in `proposed` would just get advanced normally
       // before the watchdog ever got a look at it. `validating` is where a real, actively-managed
@@ -1358,7 +1358,7 @@ describe("coordination engine: evaluated->coordinated plan compilation is single
  * `FOR UPDATE SKIP LOCKED` on its batch read, two concurrent ticks (two worker replicas) could
  * both `SELECT` the SAME unprocessed row before either committed, and both call `proposeChange`
  * for it — two separate Change objects for one real-world webhook delivery, each independently
- * eligible to gate/approve/promote/execute as if they were unrelated.
+ * eligible to gate/approve/accept/execute as if they were unrelated.
  */
 describe("coordination engine: webhook-event processing is single-flight across concurrent ticks (M8 hardening)", () => {
   let server: TestServer;
@@ -1749,7 +1749,7 @@ describe("coordination engine: observed deployed-image threading (P4C)", () => {
 // dropped by the merge. Uses the same boot-time `fakeExecutorConfig` seam (`rolloutByTarget`, a
 // mirror of `imagesByTarget`) so the fake-executor reports a REAL, test-known rollout snapshot for a
 // pre-created target id — no live Argo Rollouts needed. The threading is OBSERVE-ONLY: SCP never
-// drives the rollout; this asserts persistence of an observed read, not any promote/pause verb.
+// drives the rollout; this asserts persistence of an observed read, not any accept/pause verb.
 // -----------------------------------------------------------------------------------------
 describe("coordination engine: observed rollout threading (P4D)", () => {
   let server: ListeningTestServer;

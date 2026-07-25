@@ -218,7 +218,7 @@ export function canonicalizeSourceRef(
  * about a bare `SELECT ... WHERE processed_at IS NULL` prevents a second transaction from reading
  * the identical "still unprocessed" snapshot). Each would then call `proposeChange` for that SAME
  * webhook delivery — creating TWO SEPARATE Change objects for one real-world event, which could
- * go on to independently gate/approve/promote/execute as if they were unrelated changes. `FOR
+ * go on to independently gate/approve/accept/execute as if they were unrelated changes. `FOR
  * UPDATE SKIP LOCKED` is the standard job-queue claim pattern: a row already locked by another
  * in-flight transaction is silently EXCLUDED from this transaction's result set (not waited on),
  * so two concurrent ticks always get disjoint row sets — provably no double-processing, and no

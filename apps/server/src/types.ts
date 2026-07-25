@@ -16,7 +16,7 @@ export interface AppDeps {
    * is a no-op-but-accepted (the sparse safety-net + a worker process are the reliability floor). */
   boss?: PgBoss;
   /** The sandboxed CEL evaluator (governance/cel-sandbox.ts) — every request-serving process
-   *  needs one for gate evaluation (routes/changes.ts's promote handler), regardless of whether
+   *  needs one for gate evaluation (routes/changes.ts's accept handler), regardless of whether
    *  it also runs the `PluginHost`-requiring reconciliation loop (DESIGN §16's api/worker split;
    *  see coordination/gates.ts's module doc). Lazily defaulted to the process-wide shared
    *  instance (`getSharedCelSandbox()`) by `buildApp` when the caller doesn't supply one, so

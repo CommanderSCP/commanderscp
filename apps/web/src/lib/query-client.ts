@@ -58,7 +58,7 @@ export function changePipelineGateKey(changeId: string): unknown[] {
 }
 
 /** Query key for the Service release board (coordination-ui-views.md Phase 2) — a service's
- *  components + each's latest change per-stage status, projected by `GET /services/{id}/board`. */
+ *  components + each's latest change per-wave status, projected by `GET /services/{id}/board`. */
 export function serviceBoardKey(id: string): unknown[] {
   return ["service", "board", id];
 }

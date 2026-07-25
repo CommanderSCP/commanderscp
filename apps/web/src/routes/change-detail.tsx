@@ -31,15 +31,15 @@ const CANCELLABLE_STATES: ChangeState[] = [
   "proposed",
   "evaluated",
   "coordinated",
-  // M12 P4B: a change parked in `waiting` on a cross-change prerequisite is pre-promotion and so is
+  // M12 P4B: a change parked in `waiting` on a cross-change prerequisite is pre-acceptance and so is
   // cancellable (transitions.ts allows waiting->cancelled) — an operator must be able to abort a
   // waiter whose prerequisite will never arrive.
   "waiting",
   "executing",
   "validating"
 ];
-const PROMOTABLE_STATES: ChangeState[] = ["validating"];
-const ROLLBACKABLE_STATES: ChangeState[] = ["executing", "validating", "promoted"];
+const ACCEPTABLE_STATES: ChangeState[] = ["validating"];
+const ROLLBACKABLE_STATES: ChangeState[] = ["executing", "validating", "accepted"];
 
 export function formatDate(iso: string | null | undefined): string {
   return iso ? new Date(iso).toLocaleString() : "—";
@@ -129,7 +129,7 @@ function decisionSummary(decision: Decision): string {
 
 /** Every gate/policy block surfaces as a 4xx carrying `decision_id` (DESIGN §6/§10.4) — this is
  *  the UI's one "Why?" plumbing point: pull it back out of a thrown `ScpApiError` so a failed
- *  promote/cancel/rollback can link straight to the Decision record that explains it, instead of
+ *  accept/cancel/rollback can link straight to the Decision record that explains it, instead of
  *  just showing an opaque error string. */
 function decisionIdOf(error: unknown): string | undefined {
   return error instanceof ScpApiError ? error.problem?.decision_id : undefined;
@@ -291,8 +291,8 @@ export function ChangeDetailPage(): React.JSX.Element {
     onError: () => invalidate()
   });
 
-  const promoteMutation = useMutation({
-    mutationFn: () => client.changes.promote(id!),
+  const acceptMutation = useMutation({
+    mutationFn: () => client.changes.accept(id!),
     onSuccess: async () => {
       await invalidate();
     },
@@ -351,7 +351,7 @@ export function ChangeDetailPage(): React.JSX.Element {
 
   const { change, plan, decisions, controlRuns, waitStatus } = explainQuery.data;
   const canCancel = CANCELLABLE_STATES.includes(change.state);
-  const canPromote = PROMOTABLE_STATES.includes(change.state);
+  const canAccept = ACCEPTABLE_STATES.includes(change.state);
   const canRollback = ROLLBACKABLE_STATES.includes(change.state);
 
   return (
@@ -393,13 +393,13 @@ export function ChangeDetailPage(): React.JSX.Element {
           >
             Pipeline view →
           </Link>
-          {canPromote && (
+          {canAccept && (
             <Button
-              onClick={() => promoteMutation.mutate()}
-              disabled={promoteMutation.isPending}
-              data-testid="promote-change-button"
+              onClick={() => acceptMutation.mutate()}
+              disabled={acceptMutation.isPending}
+              data-testid="accept-change-button"
             >
-              {promoteMutation.isPending ? "Promoting…" : "Promote"}
+              {acceptMutation.isPending ? "Accepting…" : "Accept"}
             </Button>
           )}
           {canRollback && (
@@ -423,13 +423,13 @@ export function ChangeDetailPage(): React.JSX.Element {
         </div>
       </div>
 
-      {promoteMutation.isError && (
-        <p className="text-sm text-red-600" data-testid="promote-error">
-          {promoteMutation.error instanceof Error ? promoteMutation.error.message : "Failed to promote"}
-          {decisionIdOf(promoteMutation.error) && (
+      {acceptMutation.isError && (
+        <p className="text-sm text-red-600" data-testid="accept-error">
+          {acceptMutation.error instanceof Error ? acceptMutation.error.message : "Failed to accept"}
+          {decisionIdOf(acceptMutation.error) && (
             <>
               {" "}
-              <WhyLink decisionId={decisionIdOf(promoteMutation.error)!} />
+              <WhyLink decisionId={decisionIdOf(acceptMutation.error)!} />
             </>
           )}
         </p>
@@ -523,7 +523,7 @@ export function ChangeDetailPage(): React.JSX.Element {
                 // points here — highlighted so following the link visibly lands on its target,
                 // not just scrolls the page with no feedback.
                 const isLinkedFromError =
-                  decision.id === decisionIdOf(promoteMutation.error) ||
+                  decision.id === decisionIdOf(acceptMutation.error) ||
                   decision.id === decisionIdOf(cancelMutation.error) ||
                   decision.id === decisionIdOf(rollbackMutation.error);
                 return (
@@ -637,7 +637,7 @@ export function ChangeDetailPage(): React.JSX.Element {
       <TransitionReasonDialog
         open={cancelOpen}
         title="Cancel change"
-        description="Cancelling stops this change before it promotes. This cannot be undone."
+        description="Cancelling stops this change before it is accepted. This cannot be undone."
         reasonRequired={false}
         pending={cancelMutation.isPending}
         errorMessage={

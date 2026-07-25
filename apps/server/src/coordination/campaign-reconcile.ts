@@ -42,10 +42,10 @@ import {
  *    wave boundary uses, just called with the campaign's object id instead of a change's. This is
  *    the "campaign wave gate is ADDITIONAL, never a substitute" requirement made concrete: a
  *    member Change proposed here still runs through its OWN, completely separate
- *    `validating->promoted` gate via the ordinary `coordination/reconcile.ts` loop once proposed.
+ *    `validating->accepted` gate via the ordinary `coordination/reconcile.ts` loop once proposed.
  *  - `coordination/changes-repo.ts`'s `proposeChange` — a campaign wave target's "unit of work" IS
  *    a real M3 Change, created exactly the way `POST /changes` creates one, then left to the
- *    ordinary (unmodified) change reconciliation loop to drive to `promoted`.
+ *    ordinary (unmodified) change reconciliation loop to drive to `accepted`.
  *
  * One campaign wave is "active" at a time (mirrors `reconcile.ts`'s `advanceExecutingChanges`):
  * the first wave not yet `succeeded`/`skipped`. A `blocked` wave is retried every tick — exactly
@@ -193,7 +193,7 @@ async function reconcileOneCampaign(
     // already derives `failed` from this wave's own status (campaign-status.ts), and campaign
     // rollback stays available regardless of forward state (campaign-rollback.ts). Leaving the plan
     // `active` (rather than closing it out) is also what keeps a later human-driven rollback of the
-    // already-promoted earlier waves reconciling normally.
+    // already-accepted earlier waves reconciling normally.
     return;
   }
 
@@ -290,7 +290,7 @@ async function reconcileOneCampaign(
         });
         return row?.state ?? null;
       });
-      if (state === "promoted") {
+      if (state === "accepted") {
         await withTenantTx(db, orgId, (tx) => markCampaignWaveTargetTerminal(tx, orgId, target.id, "succeeded"));
       } else if (state === "cancelled" || state === "rolled_back") {
         anyFailed = true;

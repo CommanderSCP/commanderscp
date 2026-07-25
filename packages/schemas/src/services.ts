@@ -4,7 +4,7 @@ import { ExecutorTypeSchema, ExecutorCategorySchema } from "./executors.js";
 /**
  * Service release board (docs/proposals/coordination-ui-views.md § "Service release board", Phase 2,
  * Layer A). A server-side projection: a service's components in one scannable table, each row carrying
- * that component's LATEST change's per-stage wave summary + attention signals, plus a releasing /
+ * that component's LATEST change's per-wave summary + attention signals, plus a releasing /
  * blocked / stable summary strip.
  *
  * Why a projection and not client-aggregation: there is no target-filtered changes list, so a browser
@@ -15,18 +15,21 @@ import { ExecutorTypeSchema, ExecutorCategorySchema } from "./executors.js";
  * Layer B and are surfaced by the UI as explicit placeholders, never fabricated here.
  */
 
-/** A distinct pipeline-kind pair on a stage (ADR-0007): the Category of the wave-target's Type. */
+/** A distinct pipeline-kind pair on a wave (ADR-0007): the Category of the wave-target's Type. */
 export const ServiceBoardKindSchema = z.object({
   category: ExecutorCategorySchema,
   type: ExecutorTypeSchema
 });
 export type ServiceBoardKind = z.infer<typeof ServiceBoardKindSchema>;
 
-/** One pipeline stage of a component's latest change = one compiled wave, summarized. `status` is the
- *  raw wave status (pending|running|succeeded|failed|skipped); `kinds` are the distinct Category·Type
- *  pairs across the wave's targets; `failedTargets` counts targets in a terminal-failure status so the
- *  UI can surface a partial-failure stage without re-deriving it. */
-export const ServiceBoardStageSchema = z.object({
+/** One WAVE of a component's latest change, summarized (ADR-0021 D6 — this field was called a
+ *  "stage" until 2026-07-25; under the glossary a **wave** IS the compiled step of a plan, while a
+ *  **stage** is a named deployment *place* (`<domain>[-<location>]-<env>`) that has no entity in the
+ *  code yet. What the board renders has always been the compiled wave, so `wave` is what it is now
+ *  called). `status` is the raw wave status (pending|running|succeeded|failed|skipped); `kinds` are
+ *  the distinct Category·Type pairs across the wave's targets; `failedTargets` counts targets in a
+ *  terminal-failure status so the UI can surface a partial-failure wave without re-deriving it. */
+export const ServiceBoardWaveSchema = z.object({
   waveIndex: z.number().int(),
   name: z.string().nullable(),
   status: z.string(),
@@ -34,7 +37,7 @@ export const ServiceBoardStageSchema = z.object({
   targetCount: z.number().int(),
   failedTargets: z.number().int()
 });
-export type ServiceBoardStage = z.infer<typeof ServiceBoardStageSchema>;
+export type ServiceBoardWave = z.infer<typeof ServiceBoardWaveSchema>;
 
 /** The attention signals for a row's latest change (all real, Layer A). `blocked` is derived from a
  *  failed wave/target OR a persisted block `Decision`; `decisionId` is that block Decision's id (charter
@@ -59,7 +62,7 @@ export type ServiceBoardFreeze = z.infer<typeof ServiceBoardFreezeSchema>;
 
 /** One board row = one component of the service. `latestChangeId` links the row to that component's
  *  active/most-recent change pipeline (`/changes/{id}/pipeline`); null when the component has never
- *  been a change target. `currentStage` is the running (or last non-pending) wave's display name. */
+ *  been a change target. `currentWave` is the running (or last non-pending) wave's display name. */
 export const ServiceBoardRowSchema = z.object({
   component: z.object({
     id: z.string().uuid(),
@@ -69,8 +72,8 @@ export const ServiceBoardRowSchema = z.object({
   latestChangeId: z.string().uuid().nullable(),
   changeState: z.string().nullable(),
   changeName: z.string().nullable(),
-  currentStage: z.string().nullable(),
-  stages: z.array(ServiceBoardStageSchema),
+  currentWave: z.string().nullable(),
+  waves: z.array(ServiceBoardWaveSchema),
   attention: ServiceBoardAttentionSchema,
   /** An active freeze scoped to THIS component (read-only). Null when none covers it directly. */
   activeFreeze: ServiceBoardFreezeSchema.nullable()
@@ -79,7 +82,7 @@ export type ServiceBoardRow = z.infer<typeof ServiceBoardRowSchema>;
 
 /** The releasing / blocked / stable summary strip. `blocked` counts rows whose latest change is blocked
  *  (failed wave/target or block Decision); `releasing` counts rows whose latest change is in-flight and
- *  not blocked; `stable` is every remaining row (promoted / settled / no active change). The three are
+ *  not blocked; `stable` is every remaining row (accepted / settled / no active change). The three are
  *  mutually exclusive and sum to `rows.length`. */
 export const ServiceBoardSummarySchema = z.object({
   releasing: z.number().int(),

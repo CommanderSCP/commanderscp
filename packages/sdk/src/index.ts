@@ -65,7 +65,7 @@ export type {
 export type {
   ServiceBoardResponse,
   ServiceBoardRow,
-  ServiceBoardStage,
+  ServiceBoardWave,
   ServiceBoardKind,
   ServiceBoardAttention,
   ServiceBoardFreeze,

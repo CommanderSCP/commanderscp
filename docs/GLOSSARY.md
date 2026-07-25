@@ -10,7 +10,7 @@ The rule this glossary follows:
 
 1. **Where a clear industry standard exists, use it** — and cite it, so a new engineer can go read the source.
 2. **Where standards collide or the concept is genuinely ours, the owner decided** — and [ADR-0021](adr/0021-terminology.md) records why, including the alternatives that were considered and rejected.
-3. **Where the glossary's preferred word does not match the code today, this document says so in the entry.** Nothing here describes an aspirational codebase as if it already exists. Four code changes are tracked as follow-on PRs — branded domain-id types (i), the `promote` → `accept` rename (ii), and the `stage` cleanup split into a cheap half (iii-a) and a **breaking `/v1`** half (iii-b). Each is flagged where it bites, with its real cost.
+3. **Where the glossary's preferred word does not match the code today, this document says so in the entry.** Nothing here describes an aspirational codebase as if it already exists. Four code changes were tracked as follow-on PRs — branded domain-id types (i), the `promote` → `accept` rename (ii), and the `stage` cleanup split into a cheap half (iii-a) and a **breaking `/v1`** half (iii-b). **All four have landed**, so the entries below describe the code as it is, not as it was promised.
 
 Audience: a new engineer trying to read the code, and an operator trying to read the UI. It is not a research dump — the research is in the ADR.
 
@@ -87,7 +87,7 @@ In GitOps terms — which is what SCP actually coordinates — a promotion is th
 
 **Not to be confused with:**
 - **cross-domain promotion** — the species below, which additionally crosses a security domain. Never say bare "promotion" when you mean that.
-- **`accept` / `accepted`** — the change-lifecycle approval gate. That is a human decision about a change, not an artifact advancing. It used to be spelled `promote`, which is exactly why it is being renamed (see the `accept` entry).
+- **`accept` / `accepted`** — the change-lifecycle approval gate. That is a human decision about a change, not an artifact advancing. It used to be spelled `promote`, which is exactly why it was renamed (see the `accept` entry).
 - **Argo Rollouts' "Promote"** — the progressive-delivery sub-step inside a canary analysis. SCP observes it; SCP does not own it (`docs/proposals/coordination-ui-views.md` §2).
 - **`scp federation promote`** — the CLI verb that exports a **Promotion Bundle**. That is a real promotion (the genus), and it is often but not always cross-domain.
 
@@ -135,15 +135,15 @@ What crosses is **metadata** — change objects, digests, signatures, SBOM refer
 
 It is **not** an artifact promotion (the genus) and **not** a cross-domain promotion (the species). It is a third thing that happened to share a word.
 
-**In the code — the code still spells it `promote`/`promoted`.** As of this document the rename has not landed:
+**In the code — LANDED.** The rename shipped as follow-on PR (ii); the code and the vocabulary now agree:
 
-- `apps/server/src/coordination/transitions.ts` — the edge is `{ from: "validating", to: "promoted", trigger: "promote" }`
-- `packages/schemas/src/changes.ts:22` — `"promoted"` is a `ChangeState` enum value, returned on every change response
-- `apps/server/src/routes/changes.ts` — `POST /api/v1/changes/:id/promote` (`operationId: promoteChange`)
-- `packages/cli/src/cli.ts` — `scp change promote <id>`
-- `apps/server/drizzle/0007_change_coordination.sql` seeds the `state_transitions` rows
+- `apps/server/src/coordination/transitions.ts` — the edge is `{ from: "validating", to: "accepted", trigger: "accept" }`
+- `packages/schemas/src/changes.ts` — `"accepted"` is the `ChangeState` enum value, returned on every change response
+- `apps/server/src/routes/changes.ts` — `POST /api/v1/changes/:id/accept` (`operationId: acceptChange`)
+- `packages/cli/src/cli.ts` — `scp change accept <id>`
+- `apps/server/drizzle/0039_change_state_accepted.sql` migrates `changes.state`, the `state_transitions` seed rows, operator gate bindings, and the Decision/control-run explainability records. `audit_events` (hash-chained) and `federation_journal` payloads (signed) are deliberately **not** rewritten — that migration's header says why.
 
-The rename is a **tracked follow-on PR** ([ADR-0021](adr/0021-terminology.md) Consequences, item ii). It is genuinely breaking: a `/v1` path change, a data migration over `changes.state`, the seeded `state_transitions` rows, the CLI verb, and the enum in every change response. It is judged payable now because the project is pre-1.0 with a single deployment, and because [ADR-0004](adr/0004-service-naming-commander-outpost-retrans.md) set the direct precedent — it removed `parent`/`child` outright in favour of `commander`/`outpost`/`retrans`, a breaking federation-role enum rename taken for exactly this class of reason.
+It was genuinely breaking — a `/v1` path change, a data migration over `changes.state`, the seeded `state_transitions` rows, the CLI verb, and the enum in every change response — and was taken as an authorized oasdiff exception recorded in [`tools/openapi/OASDIFF-EXCEPTIONS.md`](../tools/openapi/OASDIFF-EXCEPTIONS.md). It was judged payable because the project is pre-1.0 with a single deployment, and because [ADR-0004](adr/0004-service-naming-commander-outpost-retrans.md) set the direct precedent — it removed `parent`/`child` outright in favour of `commander`/`outpost`/`retrans`, a breaking federation-role enum rename taken for exactly this class of reason.
 
 **Not to be confused with:**
 - **`scp federation promote`** (`packages/cli/src/cli.ts`) — the Promotion Bundle export verb. That one is a real promotion and keeps its name.
@@ -282,12 +282,12 @@ The word is currently used for the **wave** sense in the shipped `/v1` contract,
 
 #### What the cleanup actually costs
 
-**It is not "UI and docs only."** Group (a) is a **shipped `/v1` response shape**. Renaming `currentStage` / `stages` / `ServiceBoardStage` to their wave-sense names is a **breaking `/v1` change**: it alters a response body already in `tools/openapi/openapi.v1.json`, it will **trip the oasdiff additive-only gate**, and it requires `pnpm gen` plus an SDK regeneration. That puts it in the same cost class as the D5 `promote` → `accept` rename, not in the free tier.
+**It was not "UI and docs only."** Group (a) is a **shipped `/v1` response shape**. Renaming `currentStage` / `stages` / `ServiceBoardStage` to their wave-sense names was a **breaking `/v1` change**: it altered a response body already in `tools/openapi/openapi.v1.json`, it **tripped the oasdiff additive-only gate**, and it required `pnpm gen` plus an SDK regeneration. That put it in the same cost class as the D5 `promote` → `accept` rename, not in the free tier — which is why the two were batched into one PR and one authorized exception.
 
 The follow-on work is therefore **split in two** ([ADR-0021](adr/0021-terminology.md) Consequences, item iii):
 
 - **(iii-a) the cheap half — LANDED** — groups (b), (c), (e) and the non-CI part of (d): UI labels, `data-testid` hooks, comments and docblocks. No API, no schema, no migration; `pnpm gen` showed no drift, which is the machine proof the contract was not touched. Genuinely cheap, as priced.
-- **(iii-b) the breaking half** — group (a): the service-board field and type names in `packages/schemas`, the `/v1` response body, the committed OpenAPI document, the generated SDK, and the server projection. **Breaking, oasdiff-gated, needs `pnpm gen`.** It also confirms D6's premise from the other direction: the `/v1` `stages[]` / `currentStage` / `ServiceBoardStageSchema` fields genuinely *are* the wave sense wearing the wrong name.
+- **(iii-b) the breaking half — LANDED** — group (a): the service-board field and type names in `packages/schemas`, the `/v1` response body, the committed OpenAPI document, the generated SDK, and the server projection. `currentStage` → `currentWave`, `stages` → `waves`, `ServiceBoardStageSchema` → `ServiceBoardWaveSchema`. Breaking and oasdiff-gated, taken as an authorized exception recorded in [`tools/openapi/OASDIFF-EXCEPTIONS.md`](../tools/openapi/OASDIFF-EXCEPTIONS.md), batched with the D5 rename so one vocabulary decision cost one exception rather than two. It also confirmed D6's premise from the other direction: those fields genuinely *were* the wave sense wearing the wrong name.
 
 **Deliberately *not* misuses — leave them alone.** Anyone re-running the grep hits these first, so they are listed in full:
 
@@ -334,7 +334,7 @@ Waves are the ordering primitive SCP actually has. In a federated release topolo
 
 **A change is also a release** (see `release`) — same thing, two vocabularies for two audiences: *change* is what the engine calls it, *release* is what a delivery engineer calls it.
 
-**Lifecycle.** `proposed → evaluated → coordinated → executing → validating → accepted`, with an optional `coordinated → waiting → executing` detour when cross-change prerequisites are outstanding, `cancel` legal from every pre-acceptance state, and `rollback` legal once something has actually executed. **In the code the terminal state is still spelled `promoted`** — see the `accept` entry.
+**Lifecycle.** `proposed → evaluated → coordinated → executing → validating → accepted`, with an optional `coordinated → waiting → executing` detour when cross-change prerequisites are outstanding, `cancel` legal from every pre-acceptance state, and `rollback` legal once something has actually executed. The code spells the terminal state `accepted` — see the `accept` entry.
 
 Every transition goes through **one guarded transition function** that atomically checks the gates bound to that edge, writes the audit event, and writes the Decision record. That single funnel is what makes explainability cheap rather than aspirational (DESIGN.md §9.1).
 
@@ -685,7 +685,7 @@ Poke reaches air-gapped domains **via the retrans chain**, hop by hop — the co
 |---|---|---|
 | bare **"domain"** as a tier name | **"security domain"** (the trust tier) or **"containment domain"** (the intra-org object type) | Six live senses: four industry ones — DNS, Windows/AD, DDD bounded context, identity realm — plus SCP's own two, the security-domain trust tier and the `domain` object type. Banned in prose *and* as a stored value: the floor table's tier literal is `trust_domain`, never `domain` ([ADR-0016](adr/0016-scoped-scan-requirement-policies.md) §Terminology; DESIGN.md's policy-resolution chain). |
 | **"promotion"** unqualified when a security-domain crossing is meant | **"cross-domain promotion"** | Bare promotion is the genus and carries no boundary implication. Dropping the qualifier silently claims a CDS gate ran when it may not have. |
-| **"promote" / "promoted"** for the change approval gate | **"accept" / "accepted"** | It is a human approval and a terminal success state, not an artifact advancing — the collision fights the genus/species model (D5). **The code still spells it `promote`/`promoted`**; the rename is a tracked follow-on PR ([ADR-0021](adr/0021-terminology.md) Consequences ii). |
+| **"promote" / "promoted"** for the change approval gate | **"accept" / "accepted"** | It is a human approval and a terminal success state, not an artifact advancing — the collision fights the genus/species model (D5). The code spells it `accept`/`accepted`; follow-on PR (ii) has landed ([ADR-0021](adr/0021-terminology.md) Consequences ii). |
 | **"release"** meaning a single push into one environment | **"deployment"** | A release is the whole versioned unit moving through its pipeline; a change *is* a release. Also: in DoD/IC usage "release" means a **disclosure determination**, which is the last thing you want an accreditation reader to infer. |
 | **"stage"** meaning a pipeline **phase** | **"phase"** or **"step"** | "Stage" is reserved for a named deployment place spelled `<domain>[-<location>]-<env>` (D6). Code comments currently misuse it, including the `M<n> stage N` milestone-substep comments and their prefix-less variants; the full roster and the cleanup are tracked in [ADR-0021](adr/0021-terminology.md) Consequences iii-a. |
 | **"stage"** meaning a **wave** | **"wave"** | Same reservation — and a wave *contains* stages, so the two are not interchangeable in either direction. The misuse reaches the shipped `/v1` contract (`ServiceBoardStageSchema`, `currentStage`, `stages[]`), not just UI labels; see the `stage` entry's sense breakdown. Cleanup is split into a cheap half (iii-a) and a **breaking, oasdiff-gated** half (iii-b). Not done. |

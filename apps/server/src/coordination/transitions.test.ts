@@ -32,7 +32,7 @@ import {
  *
  * DESIGN.md §9.1 diagram:
  * ```
- *  proposed ──▶ evaluated ──▶ coordinated ──▶ executing ──▶ validating ──▶ promoted
+ *  proposed ──▶ evaluated ──▶ coordinated ──▶ executing ──▶ validating ──▶ accepted
  *      │             │              │              │              │
  *      └─────────────┴──────┬───────┴──────────────┴──────┬───────┘
  *                           ▼                             ▼
@@ -46,15 +46,15 @@ const EXPECTED_LEGAL_EDGES: ReadonlySet<string> = new Set([
   "evaluated->coordinated",
   "coordinated->executing",
   "executing->validating",
-  "validating->promoted",
+  "validating->accepted",
 
   // M12 P4B: the optional `waiting` detour on the coordinated->executing step (a change with
   // unsatisfied cross-change `requires` parks in `waiting`, then releases to `executing`).
   "coordinated->waiting",
   "waiting->executing",
 
-  // cancel: "legal from every pre-promotion state" (transitions.ts's own edge-rationale comment,
-  // matching the diagram's left fan-in to `cancelled`) — every state before `promoted`, now
+  // cancel: "legal from every pre-acceptance state" (transitions.ts's own edge-rationale comment,
+  // matching the diagram's left fan-in to `cancelled`) — every state before `accepted`, now
   // including `waiting`.
   "proposed->cancelled",
   "evaluated->cancelled",
@@ -64,12 +64,12 @@ const EXPECTED_LEGAL_EDGES: ReadonlySet<string> = new Set([
   "validating->cancelled",
 
   // rollback: "legal once the change has actually done something an external system needs
-  // reverting" — executing/validating/promoted (the diagram's right fan-in to `rolled_back`,
-  // including `promoted -> rolled_back`, the one edge out of an otherwise-terminal state). Never
+  // reverting" — executing/validating/accepted (the diagram's right fan-in to `rolled_back`,
+  // including `accepted -> rolled_back`, the one edge out of an otherwise-terminal state). Never
   // legal from proposed/evaluated/coordinated, where nothing has executed yet.
   "executing->rolled_back",
   "validating->rolled_back",
-  "promoted->rolled_back"
+  "accepted->rolled_back"
 ]);
 
 describe("coordination/transitions — exhaustive legal/illegal transition table (hardcoded from DESIGN.md §9.1)", () => {
@@ -105,19 +105,19 @@ describe("coordination/transitions — exhaustive legal/illegal transition table
     }
   });
 
-  it("terminal states (cancelled, rolled_back) have no outgoing edges except promoted->rolled_back's source", () => {
+  it("terminal states (cancelled, rolled_back) have no outgoing edges except accepted->rolled_back's source", () => {
     expect(TERMINAL_STATES.has("cancelled")).toBe(true);
     expect(TERMINAL_STATES.has("rolled_back")).toBe(true);
     expect(legalNextStates("cancelled")).toEqual([]);
     expect(legalNextStates("rolled_back")).toEqual([]);
   });
 
-  it("promoted is not fully terminal — rollback remains legal", () => {
-    expect(TERMINAL_STATES.has("promoted" as ChangeState)).toBe(false);
-    expect(legalNextStates("promoted")).toEqual(["rolled_back"]);
+  it("accepted is not fully terminal — rollback remains legal", () => {
+    expect(TERMINAL_STATES.has("accepted" as ChangeState)).toBe(false);
+    expect(legalNextStates("accepted")).toEqual(["rolled_back"]);
   });
 
-  it("cancel is legal from every pre-promotion state (including P4B's waiting)", () => {
+  it("cancel is legal from every pre-acceptance state (including P4B's waiting)", () => {
     for (const state of [
       "proposed",
       "evaluated",
@@ -130,23 +130,23 @@ describe("coordination/transitions — exhaustive legal/illegal transition table
     }
   });
 
-  it("rollback is legal only from executing/validating/promoted (never from waiting — nothing executed yet)", () => {
+  it("rollback is legal only from executing/validating/accepted (never from waiting — nothing executed yet)", () => {
     for (const state of ["proposed", "evaluated", "coordinated", "waiting"] as const) {
       expect(isLegalTransition(state, "rolled_back")).toBe(false);
     }
-    for (const state of ["executing", "validating", "promoted"] as const) {
+    for (const state of ["executing", "validating", "accepted"] as const) {
       expect(isLegalTransition(state, "rolled_back")).toBe(true);
     }
   });
 
-  it("the happy path is exactly proposed->evaluated->coordinated->executing->validating->promoted", () => {
+  it("the happy path is exactly proposed->evaluated->coordinated->executing->validating->accepted", () => {
     const chain: ChangeState[] = [
       "proposed",
       "evaluated",
       "coordinated",
       "executing",
       "validating",
-      "promoted"
+      "accepted"
     ];
     for (let i = 0; i < chain.length - 1; i++) {
       expect(isLegalTransition(chain[i]!, chain[i + 1]!)).toBe(true);
