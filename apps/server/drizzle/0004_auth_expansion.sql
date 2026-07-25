@@ -1,4 +1,4 @@
--- M2 step 2: AuthN expansion (BUILD_AND_TEST.md §8 M2 item 3) — Personal Access Tokens, generic
+-- M2 stage 2: AuthN expansion (BUILD_AND_TEST.md §8 M2 item 3) — Personal Access Tokens, generic
 -- OIDC JIT-provisioned users, and SCP's own device-authorization flow. Hand-authored (like
 -- 0002/0003): the two new tables need the same "auth substrate, no RLS" GRANT treatment as
 -- orgs/users/sessions (0002 §1), which drizzle-kit's schema diffing cannot express.
