@@ -28,7 +28,7 @@
 --     the TRUE record of what the system did at the time. That is the correct outcome, not a
 --     gap: an audit log that can be retroactively re-worded is not an audit log.
 --
---   * `federation_journal` payloads — each entry carries a `contentHash` and a detached
+--   * `sync_journal` payloads — each entry carries a `contentHash` and a detached
 --     signature computed over the payload bytes. Any edit invalidates both, so every peer that
 --     re-verifies the journal (which is the entire point of signed federation exchange) would
 --     reject the rewritten entries. Bundles already exported to peers cannot be recalled and
@@ -136,13 +136,18 @@ UPDATE "decisions"
  WHERE "input_context" -> 'gate' ->> 'fromState' = 'promoted';
 --> statement-breakpoint
 
--- 6. `decisions.reason_tree.summary` — the human-readable half of the same Decision record.
---    These summaries are ENGINE-GENERATED templates, never operator- or tenant-supplied text
---    (`transition.ts`: "transition '<from>' -> '<to>' allowed|blocked by gate" and "illegal
---    transition: ..."; `gates.ts`: "...exempt from governance at validating->promoted..."), so
---    replacing the two exact tokens below cannot corrupt authored prose. Scoped by a LIKE guard
---    so a summary that merely mentions a promotion BUNDLE (the keep-sense of the word) is never
---    matched — the tokens require the quoted state literal or the edge arrow.
+-- 6. `decisions.reason_tree` summaries. CAREFUL: these two nodes do NOT have the same safety.
+--    * `reason_tree.summary` (top level) IS engine-generated: transition.ts:146-149 writes exactly
+--      "transition '<from>' -> '<to>' allowed" / "... blocked by gate". Matching the literal
+--      template PREFIX (not a bare token) makes a false positive impossible.
+--    * `reason_tree.gate.summary` is `gate.reasonTree` and CAN CONTAIN OPERATOR-AUTHORED TEXT —
+--      gate-orchestrator.ts:98 builds "active freeze '<name>' (<reason>)" from a freeze's
+--      operator-chosen name and free-text reason, and evaluate.ts:314,316 interpolate
+--      operator-authored POLICY NAMES. An earlier revision of this header claimed these summaries
+--      were "never operator- or tenant-supplied text" and guarded on the bare token '<quoted>
+--      promoted'; that claim was FALSE and the guard would have rewritten a freeze literally named
+--      or reasoned "promoted". It is now matched ONLY on the engine edge-arrow form
+--      `validating->promoted`, which no operator prose realistically contains.
 UPDATE "decisions"
    SET "reason_tree" = jsonb_set(
          "reason_tree",
@@ -151,7 +156,8 @@ UPDATE "decisions"
                           'validating->promoted', 'validating->accepted')),
          false)
  WHERE "reason_tree" ->> 'summary' IS NOT NULL
-   AND ("reason_tree" ->> 'summary' LIKE '%''promoted''%'
+   AND ("reason_tree" ->> 'summary' LIKE 'transition %->% ''promoted''%'
+        OR "reason_tree" ->> 'summary' LIKE 'transition ''promoted''%'
         OR "reason_tree" ->> 'summary' LIKE '%validating->promoted%');
 --> statement-breakpoint
 
@@ -159,9 +165,8 @@ UPDATE "decisions"
    SET "reason_tree" = jsonb_set(
          "reason_tree",
          '{gate,summary}',
-         to_jsonb(replace(replace("reason_tree" -> 'gate' ->> 'summary', '''promoted''', '''accepted'''),
+         to_jsonb(replace("reason_tree" -> 'gate' ->> 'summary',
                           'validating->promoted', 'validating->accepted')),
          false)
  WHERE "reason_tree" -> 'gate' ->> 'summary' IS NOT NULL
-   AND ("reason_tree" -> 'gate' ->> 'summary' LIKE '%''promoted''%'
-        OR "reason_tree" -> 'gate' ->> 'summary' LIKE '%validating->promoted%');
+   AND "reason_tree" -> 'gate' ->> 'summary' LIKE '%validating->promoted%';

@@ -88,6 +88,6 @@ this will ever be. As with ADR-0007, this is **not** a precedent for post-GA `/v
 **How the gate is satisfied:** the PR carries the **`api-v2-exception`** label; reviewers approve
 the break against this record. CI job **3b (oasdiff)** reports the breaking change and goes red —
 that is the designed, approved outcome, not a failure to fix. `check.sh` is not suppressed,
-bypassed, or edited; the label is the branch-protection override. Job **3 (codegen drift)** must
+bypassed, or edited; the label plus this entry are the record of owner approval. Job 3b is deliberately NOT a required status check on `main`, so there is no protection for a label to override (see `check.sh`'s header and BUILD_AND_TEST.md §6); since PR #144, job 3b READS the label, so an approved break carrying an entry here reports green-with-warning instead of red. Job **3 (codegen drift)** must
 still be **green** — the regenerated `tools/openapi/openapi.v1.json` and `packages/sdk/src/generated/*`
 are committed in this PR.

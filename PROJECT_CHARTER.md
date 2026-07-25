@@ -2250,7 +2250,7 @@ Deploy
 
 Validate
 
-Promote
+Accept
 
 ---
 
@@ -2266,7 +2266,7 @@ Deploy
 
 Validate
 
-Promote
+Accept
 
 ---
 

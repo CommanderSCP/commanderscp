@@ -13,7 +13,7 @@ import {
  * (docs/proposals/coordination-ui-views.md § "Service release board", Phase 2, Layer A).
  *
  * The board is a Layer-A projection: it aggregates a service's contained components and each
- * component's LATEST change's per-wave wave summary. This suite pins the honest-empty baseline —
+ * component's LATEST change's per-wave summary. This suite pins the honest-empty baseline —
  * a service whose components have never been a change target must project real rows with NULL
  * latest-change and EMPTY waves (never a fabricated version/status) — plus auth/404 behaviour. The
  * with-a-change wave projection rides the broader coordination suites that already seed plans/waves.
