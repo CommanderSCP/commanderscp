@@ -58,6 +58,9 @@ describe("federation sync_scope asymmetry: refused fail-closed, diagnosed accura
   let cursorAfterRealign: SyncCursor;
   let resumedResult: ImportSyncBundleResult;
   let receiverNarrowedResult: ImportSyncBundleResult;
+  let rewidenOutcome:
+    | { ok: true; result: ImportSyncBundleResult }
+    | { ok: false; refusal: ProblemError };
 
   const exportToOutpost = (): Promise<SyncBundle> =>
     withTenantTx(commander.db, commander.orgId, (tx) =>
@@ -195,6 +198,23 @@ describe("federation sync_scope asymmetry: refused fail-closed, diagnosed accura
     await setOutpostScopeForCommander({ mode: "status_only" });
     await proposeOnCommander("scope-asym-change-4", "payments rollout four");
     receiverNarrowedResult = await importAtOutpost(await exportToOutpost());
+
+    // ── PHASE 5. THE OPERATOR UNDOES PHASE 4: both sides go back to `full`. Nothing is
+    // misconfigured now — the two rows agree, and the commander's next bundle is contiguous,
+    // gap-free and authentic. It is refused anyway, because the cursor this side is holding was
+    // anchored under the SPARSE regime and the contiguous run does not link to it. The product
+    // produced this state; the diagnostic must not send the operator hunting for an asymmetry that
+    // no longer exists, nor for tampering.
+    await setCommanderScopeForOutpost({ mode: "full" });
+    await setOutpostScopeForCommander({ mode: "full" });
+    await proposeOnCommander("scope-asym-change-5", "payments rollout five");
+    rewidenOutcome = await importAtOutpost(await exportToOutpost()).then(
+      (result) => ({ ok: true as const, result }),
+      (err: unknown) => {
+        if (!(err instanceof ProblemError)) throw err;
+        return { ok: false as const, refusal: err };
+      }
+    );
   }, 180_000);
 
   afterAll(async () => {
@@ -264,6 +284,33 @@ describe("federation sync_scope asymmetry: refused fail-closed, diagnosed accura
     // longer claiming a gap-free guarantee it was never going to get. Nothing about the bytes
     // changed — which is the whole point: the refusal was about configuration, not content.
     expect(receiverNarrowedResult.appliedEntries).toBeGreaterThan(0);
+  });
+
+  it("RE-WIDENED BOTH SIDES: a contiguous, authentic run is still refused — the anchor, not a gap", () => {
+    // Not a bug being blessed: the verdict stays fail-closed (a re-signed thinned run is these same
+    // bytes). What is pinned is that the operator is told the TRUTH about why.
+    expect(rewidenOutcome.ok).toBe(false);
+    if (rewidenOutcome.ok) return;
+    const message = rewidenOutcome.refusal.detail ?? rewidenOutcome.refusal.message;
+
+    // (a) THE OPENING CLAUSE MATCHES THE CODE. This run has no holes in it, so the message must not
+    // open by declaring the peer's chain "not gap-free" — the old wording did exactly that.
+    expect(message).toMatch(/does not link to this side's last known-good anchor/);
+    expect(message).not.toMatch(/^journal chain from peer .* is not gap-free/);
+
+    // (b) THE RE-ALIGNMENT CAUSE IS NAMED. The asymmetry the operator would otherwise be sent to
+    // hunt for no longer exists — both rows say `full` — so re-widening/re-narrowing has to appear
+    // as a cause in its own right, not merely as an afterthought to the asymmetry story.
+    expect(message).toMatch(/RE-ALIGNMENT/);
+    expect(message).toMatch(/re-widening or re-narrowing/);
+    expect(message).toMatch(/cursor/);
+
+    // (c) AND IT DOES NOT SEND THEM AFTER TAMPERING for a state the product itself produced. The
+    // withheld-after-signing clause is still there and still honest, but it is now gated on "and
+    // neither scope has changed", which is false here.
+    expect(message.toLowerCase()).not.toContain("tamper");
+    expect(message).toMatch(/AND neither scope has changed since that import/);
+    expect(message).toMatch(/check whether either side's scope changed/);
   });
 
   it("CONTROL: the earlier full↔full sync verified strictly and was never diagnosed", () => {

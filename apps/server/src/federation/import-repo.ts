@@ -11,7 +11,8 @@ import {
   computeBundleChecksum,
   verifyBundleSignature,
   verifyJournalChain,
-  JOURNAL_CONTIGUITY_BREAK_CODES
+  JOURNAL_CONTIGUITY_BREAK_CODES,
+  type JournalChainBreakCode
 } from "@scp/schemas/federation-journal";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { conflict, ProblemError } from "../errors.js";
@@ -406,9 +407,12 @@ export interface ImportSyncBundleResult {
  * in the operator's hands, with a message that tells them exactly what to fix.
  *
  * THE MESSAGE IS THE FEATURE. A contiguity break (`sequence_gap` / `prev_hash_mismatch` —
- * `JOURNAL_CONTIGUITY_BREAK_CODES`) gets {@link describeContiguityBreak}: the peer, THIS side's
- * `sync_scope` verbatim, why a gap-free chain was expected, that a narrower sender legitimately
- * ships a sparse one, and the two commands to compare. It never says "tampered" — that would be a
+ * `JOURNAL_CONTIGUITY_BREAK_CODES`) gets {@link describeContiguityBreak}: an opening clause that
+ * states what the CODE actually means (the two do not mean the same thing — see
+ * {@link describeBreakShape}), the peer, THIS side's `sync_scope` verbatim, why a gap-free chain
+ * was expected, BOTH ways a scope change legitimately produces this (a narrower sender shipping a
+ * sparse chain; a re-widened/re-narrowed side left on a stale cursor anchor), and the commands to
+ * compare. It never says "tampered" — that would be a
  * verdict, and the likeliest cause is config. It also never says the opposite: a broken chain IS
  * what withheld or removed entries look like, and the message says so too. Every OTHER break code
  * (`row_hash_mismatch`, `signature_invalid`, `no_public_key`, `sequence_not_increasing`,
@@ -448,7 +452,7 @@ function verifySegment(input: {
   const code = verification.brokenAt?.code;
   const reason = verification.brokenAt?.reason ?? "unknown";
   if (code && JOURNAL_CONTIGUITY_BREAK_CODES.includes(code)) {
-    throw conflict(describeContiguityBreak(input, reason));
+    throw conflict(describeContiguityBreak(input, code, reason));
   }
   throw conflict(`tampered or broken journal segment (rejected, fail-closed): ${reason}`);
 }
@@ -462,10 +466,34 @@ function describeScope(scope: SyncScope): string {
 }
 
 /**
- * THE DIAGNOSTIC for a contiguity break. Two things the operator cannot see from one side: that
- * the arriving chain is not gap-free, and what THIS side is configured to expect. Deliberately
- * NOT a verdict in either direction — the likely cause plus what to check, and an explicit note
+ * THE OPENING CLAUSE MUST MATCH THE CODE. The two contiguity codes do not mean the same thing, and
+ * saying "not gap-free" for both is false half the time:
+ *  - `sequence_gap` really is "the run I was shown has holes in it" — sequences are missing.
+ *  - `prev_hash_mismatch` is "this run does not link to the anchor I am holding". The run can be
+ *    perfectly contiguous, gap-free and authentic and still fail this, because the anchor is THIS
+ *    side's state, not the peer's. Telling that operator their peer shipped a chain with gaps
+ *    sends them hunting for something that is not there.
+ */
+function describeBreakShape(code: JournalChainBreakCode, peerLabel: string): string {
+  return code === "sequence_gap"
+    ? `journal chain from peer ${peerLabel} is not gap-free — sequences are missing from the run`
+    : `journal run from peer ${peerLabel} does not link to this side's last known-good anchor ` +
+        `(prev_hash) — the arriving run may itself be perfectly contiguous`;
+}
+
+/**
+ * THE DIAGNOSTIC for a contiguity break. Two things the operator cannot see from one side: what
+ * shape the arriving run actually has, and what THIS side is configured to expect. Deliberately
+ * NOT a verdict in either direction — the likely causes plus what to check, and an explicit note
  * that a genuine break looks identical, because this check is exactly where that is caught.
+ *
+ * BOTH DIRECTIONS OF A SCOPE CHANGE ARE NAMED, because the product itself produces both. A sender
+ * narrower than this side ships a sparse chain (`sequence_gap`). But re-widening or re-narrowing
+ * EITHER side leaves this side's cursor anchored under the previous scope regime, so the peer's
+ * next run — contiguous, gap-free, authentic — does not link to that stale anchor
+ * (`prev_hash_mismatch`). Leading the operator to a tampering investigation for a state the
+ * product just created is exactly the failure this message exists to avoid, so the withheld-after-
+ * signing clause is kept but gated on "and no scope changed since the last accepted import".
  */
 function describeContiguityBreak(
   input: {
@@ -473,21 +501,29 @@ function describeContiguityBreak(
     peerName: string;
     exporterDomainId: TrustDomainId;
   },
+  code: JournalChainBreakCode,
   reason: string
 ): string {
   const { receiverScope, peerName, exporterDomainId } = input;
   return (
-    `journal chain from peer '${peerName}' (${exporterDomainId}) is not gap-free — import ` +
-    `rejected, fail-closed (${reason}). ` +
+    `${describeBreakShape(code, `'${peerName}' (${exporterDomainId})`)} — import rejected, ` +
+    `fail-closed (${reason}). ` +
     `This side's sync_scope for that peer is ${describeScope(receiverScope)}, which expects a ` +
-    `contiguous, prev_hash-linked chain with no missing sequences. A peer whose OWN sync_scope for ` +
-    `this domain is narrower (status_only / changes_only / policies_only / custom) legitimately ` +
-    `ships a SPARSE chain, and that is the most likely cause here: sync_scope is per-side LOCAL ` +
-    `config, never carried on the wire and never reconciled, so neither operator can see the ` +
-    `mismatch from their own side. Run \`scp federation peers\` on BOTH domains and align the two ` +
-    `sync_scope values, then re-export. ` +
-    `If the two sides already agree, this is an unexplained break in the peer's journal — entries ` +
-    `withheld or removed after signing look exactly like this — and should be investigated as such.`
+    `contiguous, gap-free, prev_hash-linked chain with no missing sequences. sync_scope is ` +
+    `per-side LOCAL config: never carried on the wire and never reconciled, so neither operator ` +
+    `can see the other side's value from their own — which makes a scope change on EITHER side ` +
+    `the most likely cause here, in either of two shapes. ` +
+    `(1) ASYMMETRY: a peer whose OWN sync_scope for this domain is narrower (status_only / ` +
+    `changes_only / policies_only / custom) legitimately ships a SPARSE chain, which a side at ` +
+    `'full' refuses. ` +
+    `(2) RE-ALIGNMENT: re-widening or re-narrowing either side back does not rewrite this side's ` +
+    `cursor, which is still anchored to the previous scope regime — so the peer's next run, ` +
+    `contiguous and authentic though it is, links to an anchor this side no longer expects. ` +
+    `Run \`scp federation peers\` on BOTH domains, align the two sync_scope values, and check ` +
+    `whether either side's scope changed since the last accepted import; then re-export. ` +
+    `If the two sides already agree AND neither scope has changed since that import, this is an ` +
+    `unexplained break in the peer's journal — entries withheld or removed after signing look ` +
+    `exactly like this — and should be investigated as such.`
   );
 }
 
