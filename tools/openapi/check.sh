@@ -24,7 +24,8 @@
 # and, when it is present AND this PR adds an entry to OASDIFF-EXCEPTIONS.md, downgrades the failure
 # to a warning. Both conditions are required, so the label cannot become a rubber stamp with no
 # durable record of what broke. Labels are read from the event payload at run start — label first,
-# then re-run job 3b.
+# then trigger a FRESH run (push a commit, or close+reopen the PR). A re-run does NOT pick up a label
+# added after the run started — GitHub replays the original event payload.
 #
 # 3b is deliberately NOT a required status check on `main` (that is what lets an approved break land
 # without an admin override), and it sits in no `needs:` chain. `main` DOES require

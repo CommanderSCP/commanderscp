@@ -88,7 +88,8 @@ jobs:
       # added by this same PR. That is already the documented process (§6, check.sh's header); this
       # makes it mechanical, so the label cannot become a rubber stamp that leaves no durable record
       # of what broke and why. Labels are read from the event payload, which is fixed when the run
-      # starts — LABEL FIRST, THEN RE-RUN THIS JOB (or push) if you labelled after CI began.
+      # starts — LABEL FIRST, THEN TRIGGER A FRESH RUN (push a commit, or close+reopen the PR). A re-run does
+      # NOT suffice: it replays the original payload, so a label added afterwards stays invisible to it.
       #
       # Only users with write access can label, so a fork PR cannot self-approve its own break.
       - name: oasdiff /v1 additive-only gate
@@ -102,7 +103,7 @@ jobs:
             exit 0
           fi
           if [ "${APPROVED}" != "true" ]; then
-            echo "::error::Breaking change within /v1. If this is intentional and owner-approved, add the 'api-v2-exception' label AND an entry in tools/openapi/OASDIFF-EXCEPTIONS.md, then re-run this job (BUILD_AND_TEST.md §6)."
+            echo "::error::Breaking change within /v1. If this is intentional and owner-approved, add the 'api-v2-exception' label AND an entry in tools/openapi/OASDIFF-EXCEPTIONS.md, then trigger a FRESH run (push a commit, or close+reopen the PR) — a re-run replays the original event payload and will NOT see a newly-added label (BUILD_AND_TEST.md §6)."
             exit 1
           fi
           if ! git diff --name-only "${BASE_SHA}" HEAD -- tools/openapi/OASDIFF-EXCEPTIONS.md | grep -q .; then
