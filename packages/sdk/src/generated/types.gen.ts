@@ -6199,7 +6199,7 @@ export type GetServiceBoardResponses = {
             peerDomainId: string;
             peerName: string;
             at: string | null;
-            via: 'live-pull' | 'bundle' | 'never';
+            via: 'live-pull' | 'bundle' | 'never' | 'unknown';
             ageSeconds: number;
             expectedWithinSeconds: number | null;
             stale: boolean | null;
@@ -13811,6 +13811,7 @@ export type ImportBundleResponses = {
         appliedEntries: number;
         skippedEntries: number;
         lastAppliedSequence: number;
+        scopeAsymmetry?: string | null;
         kind: 'sync';
     } | {
         localChangeObjectId: string;

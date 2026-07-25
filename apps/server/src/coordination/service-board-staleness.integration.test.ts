@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { ServiceBoardResponse, TrustDomainId } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
@@ -99,6 +99,25 @@ describe("service board staleness: an upstream is labelled, and an overdue one i
     await server.close();
   });
 
+  it("the freshness anchor has an index that matches it — this runs per peer on every render", async () => {
+    // `lastConfirmedSyncImportAt` orders by `confirmed_at DESC LIMIT 1` on a ledger that only ever
+    // grows (no pruning, by design). The pre-existing `(org_id, peer_domain_id, created_at)` index
+    // cannot serve that ordering. Asserted against the catalog rather than an EXPLAIN because a
+    // planner on a near-empty test table will pick a seq scan regardless — what is checkable, and
+    // what actually regressed, is whether drizzle/0041's index is there and matches the predicate.
+    const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.execute(
+        sql`select indexdef from pg_indexes where tablename = 'bundle_transfers' and indexname = 'bundle_transfers_org_peer_confirmed'`
+      )
+    );
+    const def = String((rows.rows[0] as { indexdef?: string } | undefined)?.indexdef ?? "");
+    expect(def, "drizzle/0041's partial index must exist").not.toBe("");
+    expect(def).toMatch(/confirmed_at DESC/);
+    expect(def).toMatch(/WHERE .*direction = 'import'/);
+    expect(def).toMatch(/kind = 'sync'/);
+    expect(def).toMatch(/status = 'confirmed'/);
+  });
+
   it("a SINGLE-DOMAIN org claims no as-of at all — its board is a complete local observation", async () => {
     const result = await board();
     expect(result.asOf).toBeNull();
@@ -124,7 +143,8 @@ describe("service board staleness: an upstream is labelled, and an overdue one i
         kind: "sync",
         status: "confirmed",
         sinceSequence: 0,
-        throughSequence: 4
+        throughSequence: 4,
+        transport: "bundle"
       })
     );
     await setLastImportAge(5);
@@ -134,8 +154,8 @@ describe("service board staleness: an upstream is labelled, and an overdue one i
     expect(result.asOf!.peerDomainId).toBe(peerDomainId);
     expect(result.asOf!.peerName).toBe("commander-1");
     expect(result.asOf!.at).not.toBeNull();
-    // No live pull ever stamped `lastPullSuccessAt`, so this bundle is correctly attributed to the
-    // file/push/inbox path rather than to a pull that never happened.
+    // The transport is READ off the transfer row (drizzle/0041), never inferred from the pull
+    // timestamps — that inference reported every real live pull as a bundle import.
     expect(result.asOf!.via).toBe("bundle");
     expect(result.asOf!.expectedWithinSeconds).toBe(60);
     expect(result.asOf!.stale).toBe(false);
@@ -146,6 +166,41 @@ describe("service board staleness: an upstream is labelled, and an overdue one i
     expect(result.unknownFields).not.toContain("summary.stable");
     expect(result.unknownFields).not.toContain("rows[].latestChangeId");
     expect(result.unknownFields).toContain("rows[].activeFreeze");
+  });
+
+  it("GRACE: past the raw interval but inside one missed cycle is NOT stale — no per-cycle shouting", async () => {
+    // 90s on a 60s cadence. The due-gate only admits the next pull once a full interval has elapsed
+    // since the last ATTEMPT, and the anchor is stamped when the import CONFIRMS, so a perfectly
+    // healthy peer crosses 60s of age on EVERY cycle. Using the cadence verbatim made this board
+    // caveat itself once a minute, forever, on a working system.
+    await setLastImportAge(90);
+    const result = await board();
+    expect(result.asOf!.ageSeconds).toBeGreaterThanOrEqual(90);
+    expect(result.asOf!.expectedWithinSeconds).toBe(60);
+    expect(result.asOf!.stale).toBe(false);
+    expect(result.unknownFields).not.toContain("summary.stable");
+  });
+
+  it("a transfer recorded before the transport column reads `unknown` — never a guessed transport", async () => {
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(bundleTransfers)
+        .set({ transport: null })
+        .where(
+          and(eq(bundleTransfers.orgId, org.orgId), eq(bundleTransfers.peerDomainId, peerDomainId))
+        )
+    );
+    expect((await board()).asOf!.via).toBe("unknown");
+
+    // Restore — the cases below assert the bundle attribution.
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(bundleTransfers)
+        .set({ transport: "bundle" })
+        .where(
+          and(eq(bundleTransfers.orgId, org.orgId), eq(bundleTransfers.peerDomainId, peerDomainId))
+        )
+    );
   });
 
   it("OVERDUE by its own cadence: the board stops presenting the count as an observation", async () => {
@@ -194,5 +249,35 @@ describe("service board staleness: an upstream is labelled, and an overdue one i
     // `null` is NOT "fresh", and it is not "stale" either — so it must not drive the change-visibility
     // caveat. The label itself is the whole guarantee §13 grants here, and it is present above.
     expect(result.unknownFields).not.toContain("summary.stable");
+  });
+
+  it("a scheduled peer that has NEVER delivered anything is not `stale: false`, even brand new", async () => {
+    // Restore the dialled shape and un-confirm every transfer: a peer this instance polls, from
+    // which nothing has ever landed. Un-confirmed rather than deleted because the transfer ledger is
+    // append-only for the runtime role (no DELETE grant) — and `lastConfirmedSyncImportAt` keys on
+    // `status = 'confirmed'`, so this is the same state a peer that never delivered would be in.
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(federationPeers)
+        .set({ baseUrl: "https://commander.example", pairedAt: new Date() })
+        .where(and(eq(federationPeers.orgId, org.orgId), eq(federationPeers.id, peerDomainId)))
+    );
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(bundleTransfers)
+        .set({ status: "created", confirmedAt: null })
+        .where(
+          and(eq(bundleTransfers.orgId, org.orgId), eq(bundleTransfers.peerDomainId, peerDomainId))
+        )
+    );
+
+    const result = await board();
+    expect(result.asOf!.via).toBe("never");
+    expect(result.asOf!.at).toBeNull();
+    // Paired seconds ago, so nothing is overdue BY THE CLOCK — which is exactly how this used to
+    // report `stale: false`. Freshness is a claim about DELIVERED data, and none has been delivered.
+    expect(result.asOf!.ageSeconds).toBeLessThan(60);
+    expect(result.asOf!.stale).toBe(true);
+    expect(result.unknownFields).toContain("summary.stable");
   });
 });

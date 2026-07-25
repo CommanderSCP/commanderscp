@@ -287,8 +287,15 @@ export function freezeVisibilityUnknownOf(board: { unknownFields: string[] }): b
 export function BoardAsOfLabel({ asOf }: { asOf: ServiceBoardAsOf | null }): React.JSX.Element | null {
   if (!asOf) return null;
   const when = asOf.at ? formatDate(asOf.at) : "never";
-  const arrival =
-    asOf.via === "live-pull" ? "live pull" : asOf.via === "bundle" ? "bundle import" : "nothing received";
+  // Exhaustive on purpose: "unknown" is a transfer recorded before the transport was stored, and it
+  // must read as "we do not know" rather than fall through to "nothing received" (a different, and
+  // false, statement).
+  const arrival: string = {
+    "live-pull": "live pull",
+    bundle: "bundle import",
+    never: "nothing received",
+    unknown: "transport not recorded"
+  }[asOf.via];
   return (
     <p
       className={`mt-1 text-xs ${asOf.stale === true ? "font-medium text-amber-700" : "text-slate-500"}`}

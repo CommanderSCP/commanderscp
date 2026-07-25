@@ -288,6 +288,13 @@
       "when": 1786500000000,
       "tag": "0040_federation_unattached_change_status",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1786600000000,
+      "tag": "0041_bundle_transfer_transport",
+      "breakpoints": true
     }
   ]
 }

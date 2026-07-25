@@ -359,7 +359,14 @@ export const ImportBundleResponseSchema = z.object({
   peerDomainId: z.string().uuid(),
   appliedEntries: z.number().int(),
   skippedEntries: z.number().int(),
-  lastAppliedSequence: z.number().int()
+  lastAppliedSequence: z.number().int(),
+  /** SET only when this side's `sync_scope` for the peer is `full` (so it expected a gap-free
+   *  chain) but the sender delivered a SPARSE, scope-filtered one. The two sides' `sync_scope`
+   *  values are independent local config that is never reconciled on the wire, so this asymmetry
+   *  is invisible from either side alone — the string names BOTH scopes and what to compare. The
+   *  bundle was still ACCEPTED (every rowHash + signature verified); see `import-repo.ts`'s
+   *  `verifySegment`. Optional and nullable: absent/null on every ordinary import. */
+  scopeAsymmetry: z.string().nullable().optional()
 });
 export type ImportBundleResponse = z.infer<typeof ImportBundleResponseSchema>;
 

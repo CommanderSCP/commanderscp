@@ -1205,11 +1205,26 @@ export const bundleTransfers = pgTable(
     sinceSequence: bigint("since_sequence", { mode: "number" }),
     throughSequence: bigint("through_sequence", { mode: "number" }),
     checksum: text("checksum"),
+    /** drizzle/0041 — HOW this transfer travelled: 'live-pull' (the federation-sync scheduler
+     *  dialled the peer) or 'bundle' (a file/pushed/inbox handoff). NULL on rows written before
+     *  0041, which surfaces as `via: "unknown"` rather than a guess. Recorded at import time
+     *  because that is the only moment the transport is known — no pair of stored timestamps can
+     *  reconstruct it (see the migration header). */
+    transport: text("transport"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     confirmedAt: timestamp("confirmed_at", { withTimezone: true })
   },
   (table) => [
-    index("bundle_transfers_org_peer").on(table.orgId, table.peerDomainId, table.createdAt)
+    index("bundle_transfers_org_peer").on(table.orgId, table.peerDomainId, table.createdAt),
+    // drizzle/0041 — serves `lastConfirmedSyncImportAt`, which runs per peer on every service-board
+    // render. Declared here for schema fidelity; the migration creates it PARTIAL + INCLUDE
+    // (`direction='import' AND kind='sync' AND status='confirmed'`, INCLUDE (transport)), which
+    // drizzle-kit cannot express — see 0041's header.
+    index("bundle_transfers_org_peer_confirmed").on(
+      table.orgId,
+      table.peerDomainId,
+      table.confirmedAt
+    )
   ]
 );
 

@@ -460,11 +460,19 @@ export async function pullFromCommanderPeer(
   }
 
   try {
-    const result = await withTenantTx(db, orgId, (tx) => importSyncBundle(tx, orgId, bundle));
+    // THE one caller that is a live pull — the sole writer of `transport: 'live-pull'`.
+    const result = await withTenantTx(db, orgId, (tx) =>
+      importSyncBundle(tx, orgId, bundle, "live-pull")
+    );
     return {
       peerDomainId: peer.id,
       outcome: "imported",
-      detail: `applied ${result.appliedEntries}, skipped ${result.skippedEntries}, cursor at ${result.lastAppliedSequence}`,
+      // The sender-narrower-than-receiver sync_scope asymmetry rides out on the outcome too: the
+      // pull path has no other operator-visible surface, and a silent "applied N" would read as a
+      // clean sync while the completeness proof is quietly gone (import-repo.ts `verifySegment`).
+      detail:
+        `applied ${result.appliedEntries}, skipped ${result.skippedEntries}, cursor at ${result.lastAppliedSequence}` +
+        (result.scopeAsymmetry ? ` — SCOPE ASYMMETRY: ${result.scopeAsymmetry}` : ""),
       decisionId: null,
       appliedEntries: result.appliedEntries
     };

@@ -23527,7 +23527,8 @@
                               "enum": [
                                 "live-pull",
                                 "bundle",
-                                "never"
+                                "never",
+                                "unknown"
                               ]
                             },
                             "ageSeconds": {
@@ -53317,6 +53318,16 @@
                           "type": "integer",
                           "minimum": -9007199254740991,
                           "maximum": 9007199254740991
+                        },
+                        "scopeAsymmetry": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "kind": {
                           "type": "string",

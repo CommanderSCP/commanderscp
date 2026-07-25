@@ -147,15 +147,27 @@ export type ServiceBoardSummary = z.infer<typeof ServiceBoardSummarySchema>;
  *    none has ever landed. Deliberately derived from bundle-transfer history rather than the live-pull
  *    timestamps, so it is equally true on a connected instance and an air-gapped one (the pull columns
  *    are NULL forever on an instance that never dials).
- *  - `via` — `"live-pull"` (the scheduler pulled it), `"bundle"` (a file/pushed/inbox import — the
- *    air-gap case §13 names), or `"never"` (nothing has arrived).
+ *  - `via` — `"live-pull"` (the scheduler dialled the peer), `"bundle"` (a file/pushed/inbox import —
+ *    the air-gap case §13 names), `"never"` (nothing has arrived), or `"unknown"` (the transfer
+ *    predates the column that records this and is not guessed at). Read from the transfer row, never
+ *    inferred from timestamps — "as of 3 days ago via bundle" is a healthy air-gapped domain and "as
+ *    of 3 days ago via a wedged poller" is an incident, so a wrong attribution is worse than none.
  *  - `ageSeconds` — seconds since `at`, or since the peer was paired when nothing has ever arrived.
  *  - `expectedWithinSeconds` — the peer's OWN effective pull cadence (frequent poll vs proven sparse
  *    poke), or null when this instance schedules no pulls for that peer at all.
- *  - `stale` — `true`/`false` against that cadence; **`null` when `expectedWithinSeconds` is null**.
- *    Null is not "fresh": it means no schedule exists for the data to be late against (an air-gapped
- *    peer, or an outpost seen from the commander), so the label itself is the whole guarantee. A
- *    client must render null as "as of &lt;at&gt;", never as an all-clear.
+ *  - `stale` — `true`/`false` against that cadence **plus a grace factor** (a peer's age necessarily
+ *    exceeds its interval once per cycle; only a MISSED cycle is late — see
+ *    `federation/upstream-freshness.ts`'s `FRESHNESS_GRACE_FACTOR`). **`null` when
+ *    `expectedWithinSeconds` is null**: null is not "fresh", it means no schedule exists for the data
+ *    to be late against (an air-gapped peer, or an outpost seen from the commander), so the label
+ *    itself is the whole guarantee. A client must render null as "as of &lt;at&gt;", never as an
+ *    all-clear. A scheduled peer that has never delivered anything reads `true`, never `false` —
+ *    freshness is a claim about delivered data.
+ *
+ *  The peer reported is the one with the greatest `ageSeconds`, which is the board's actual freshness
+ *  BOUND. `stale` is a per-peer verdict against that peer's own schedule and is never used to order
+ *  peers against each other — doing so would let a barely-late connected peer mask an ancient
+ *  air-gapped one.
  *
  *  When `stale` is `true` the response's `unknownFields` additionally names `"summary.stable"` and
  *  `"rows[].latestChangeId"`, for the same reason change-object blindness does: a newer change may
@@ -164,7 +176,7 @@ export const ServiceBoardAsOfSchema = z.object({
   peerDomainId: z.string(),
   peerName: z.string(),
   at: z.string().datetime().nullable(),
-  via: z.enum(["live-pull", "bundle", "never"]),
+  via: z.enum(["live-pull", "bundle", "never", "unknown"]),
   ageSeconds: z.number().int(),
   expectedWithinSeconds: z.number().int().nullable(),
   stale: z.boolean().nullable()
