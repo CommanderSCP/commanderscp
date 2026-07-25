@@ -13,6 +13,8 @@ This ADR uses two tiers whose names collide in the codebase. They are **never** 
 
 Wherever this document (or any doc it touches) needs one of them, it says **"trust domain (partition)"** or **"containment domain"** in full. Bare "domain" is not used for a tier — in prose *or* as a stored value: the floor table's tier literal is `trust_domain` (§3), never bare `domain`.
 
+> **Generalized 2026-07-24:** this split is now project-wide vocabulary — see [docs/GLOSSARY.md](../GLOSSARY.md) and [ADR-0021](0021-terminology.md), which adopt **"security domain"** (CNSSI-4009) as the preferred name for this trust tier ("trust domain (partition)" remains valid) and track branded `TrustDomainId`/`ContainmentDomainId` types as a follow-on.
+
 ## Context
 
 ADR-0013 made scanning a **boundary-crossing authorization gate**. But the pass-criteria is fixed too coarsely today: the scan control reads a **flat per-binding** `config.threshold` (`scan-result-control/src/index.ts` `resolveThreshold`; `ScanThresholdSchema` = `maxCritical`/`maxHigh`/`maxMedium`/`maxLow` in `supply-chain.ts`). One threshold per binding cannot express "the platform floor is *maxCritical: 0*, this org tightens *maxHigh* to 0, and this component tightens *maxMedium* to 5."
