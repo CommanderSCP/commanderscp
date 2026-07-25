@@ -74,7 +74,7 @@ git grep -I -il stage da9e92c -- 'apps/**' 'packages/**' 'tools/openapi/**' \
 ```
 
 - **156** non-test matching lines, in **47** files. Every one is accounted for in Consequences (iii) below — under (iii-a), under (iii-b), or in the explicitly-out-of-scope list.
-- `-I` also excludes the vendored `tools/openapi/bin/oasdiff-*` binaries, which match on byte content only and are not source; without `-I` the file figure is 48 for that reason alone.
+- `-I` also excludes the vendored `tools/openapi/bin/oasdiff-linux-amd64` binary, which matches on byte content only and is not source; without `-I` the file figure is 48 for that reason alone.
 - The `M<n> stage` milestone-sub-step form is **37** lines in **18** files — `git grep -I -inE "M[0-9]+(\.[0-9]+)? stage"` over the same paths and filter — plus **3** prefix-less variants that regex misses. Both rosters are in (iii-a).
 
 **Refreshing this block.** Re-run the commands against a newer commit and update the figures **and the commit stamp together**. Change nothing elsewhere: the rest of this ADR and the whole glossary point here rather than carrying their own copies, which is the property that keeps them from disagreeing.
@@ -267,7 +267,7 @@ Not started.
 
 An earlier draft of this ADR named only two misuse sites (`StageCard.tsx`, `change-pipeline.tsx`) and priced the whole cleanup as "cheap — UI and docs only, no API, no schema, no migration". **That census was incomplete and that cost claim was false.** Successive review passes each found further misses, so the census is now stated with its **method** attached — the re-runnable command and its figures are in the [census snapshot §B](#b-stage--the-whole-word-census) — rather than merely asserted to be complete.
 
-**How the sites below are cited.** They are the scoping input for two real PRs, so the rosters are **file paths**, deliberately: line numbers move with every rebase and these lists must survive one. A line number appears only where the exact line *is* the evidence — a verbatim quoted comment, a named symbol definition, a specific enum value. For everything else, the path plus the symbol or hook name is what you grep for. [docs/GLOSSARY.md](../GLOSSARY.md)'s `stage` entry describes the same five senses in prose; the roster and the figures live **here only**, so there is one copy to correct.
+**How the sites below are cited.** They are the scoping input for two real PRs, so the rosters are **file paths**, deliberately: line numbers move with every rebase and these lists must survive one. A line number appears only where the exact line *is* the evidence — a verbatim quoted comment, a named symbol definition, a specific enum value. For everything else, the path plus the symbol or hook name is what you grep for. [docs/GLOSSARY.md](../GLOSSARY.md)'s `stage` entry describes the same misuses in prose, as five groups spanning three senses — (a), (b) and (c) are three surfaces of the one **wave** sense, and (d) and (e) are two further senses. This ADR is authoritative for the roster and the figures; where the glossary mirrors a roster, correct it here first.
 
 **(iii-a) The cheap half — UI labels, test hooks, comments and prose. No API, no schema, no migration. Not started.**
 
@@ -299,7 +299,7 @@ Renaming these is a **breaking `/v1` response-shape change**: it will **trip the
 - Docker's own multi-stage-build term: `apps/runner-scan/Dockerfile` — a genuine multi-stage Docker build (`STAGE 1 — Trivy`, `STAGE 2 (FINAL) — OpenSCAP`), not a misuse; `apps/runner-scan/README.md`, which describes that build (*"`COPY --from` a digest-pinned Trivy stage"*); `packages/cosign/src/cosign-bin.ts`; `packages/cosign/src/skopeo-bin.ts`; `packages/plugin-testkit/src/runner-image.ts`.
 - The unrelated verb "staged": `apps/server/src/governance/scan-db.ts` ("staged payload", "staged metadata").
 - `apps/server/src/graph/named-queries.ts`, whose hypothetical "stage-domain" is consistent with the reserved place sense.
-- The vendored `tools/openapi/bin/oasdiff-*` binaries, which match on byte content only.
+- The vendored `tools/openapi/bin/oasdiff-linux-amd64` binary, which matches on byte content only.
 
 ### Ongoing
 
@@ -307,7 +307,7 @@ Renaming these is a **breaking `/v1` response-shape change**: it will **trip the
 - "Stage" stays reserved. If a stage entity is later built, it must mean one named deployment place under the `<domain>[-<location>]-<env>` grammar — contained by a wave, never a synonym for one — or supersede this ADR explicitly. Its name parser must key on **segment count** (2 or 3) and must reject any segment value containing a hyphen, per the naming rule in D6.
 - The per-org-vs-per-deployment federation identity question flagged in ADR-0016 remains **open** and is not resolved here.
 - **Citation discipline, adopted after four review passes found roughly thirty defects in these two documents — and not one of them was a wrong idea.** Every single one was a number, a ranking, a superlative, a line reference or a provenance claim. The model, the definitions, the standards citations and the cost analysis survived every pass unchanged. That is not bad luck; it is a signal about which parts of a glossary carry risk. The three rules that follow from it, binding on this ADR and on [docs/GLOSSARY.md](../GLOSSARY.md):
-  1. **No per-file rankings and no superlatives.** Not "the largest concentration", not "joint-Nth", not "the most". A glossary fixes vocabulary; vocabulary does not need occurrence rankings to be authoritative, and every ranking is a claim that silently goes wrong the next time anyone edits a file.
+  1. **No per-file rankings and no measured superlatives.** Not "the largest concentration", not "joint-Nth", not "N occurrences". The target is any claim a reader would have to *re-measure* to trust — not ordinary comparative English ("the most prevalent sense" of a word), which is judgement the surrounding text supports. A glossary fixes vocabulary; vocabulary does not need occurrence rankings to be authoritative, and every ranking is a claim that silently goes wrong the next time anyone edits a file.
   2. **Measurements live in exactly one place** — the [census snapshot](#census-snapshot) — with the command, the commit, and the figure that command actually returns. Everything else points at that block. If a figure cannot be reproduced by running the command printed beside it, it does not go in; a number a reader cannot check is worse than no number.
   3. **A line number appears only where the exact line *is* the evidence** — a verbatim quoted comment, a named symbol definition, a specific enum value. Every other reference cites the **file path alone** and names the symbol, because paths and symbols survive a rebase and line numbers do not.
 - **Never assert history that is not in the repository.** An earlier draft of D6 claimed the project had previously used a different stage-name segment order and cited example strings for it; no such string had ever been committed. If a form was only ever discussed, it was never superseded — state the rule going forward and leave the history out.
