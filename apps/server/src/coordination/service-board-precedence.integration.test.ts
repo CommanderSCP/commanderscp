@@ -54,6 +54,13 @@ describe("service board precedence: an observation outranks a replica (Testconta
   let sharedComponentId: string;
   /** Targeted ONLY by a commander change — the not-driven-here control. */
   let commanderOnlyComponentId: string;
+  /**
+   * Targeted by a PLAN-LESS local change AND (later, newer by import time) a commander replica.
+   * Neither side compiled a plan, so arm 1 is silent and arm 2 alone decides — the case where the
+   * fabricated ordering key still applied after the arm-1/arm-2 fallback landed.
+   */
+  let contestedComponentId: string;
+  let contestedLocalChangeId: string;
   let localChangeId: string;
   let replicaChangeId: string;
 
@@ -131,7 +138,15 @@ describe("service board precedence: an observation outranks a replica (Testconta
         requestId: "board-prec-commander-only",
         name: "checkout-worker"
       });
-      for (const [i, component] of [shared, commanderOnly].entries()) {
+      const contested = await createObject(tx, {
+        orgId: commander.orgId,
+        domainId: null,
+        typeId: "component",
+        actorObjectId: commander.orgId,
+        requestId: "board-prec-contested",
+        name: "checkout-cache"
+      });
+      for (const [i, component] of [shared, commanderOnly, contested].entries()) {
         await createRelationship(tx, {
           orgId: commander.orgId,
           actorObjectId: commander.orgId,
@@ -141,11 +156,17 @@ describe("service board precedence: an observation outranks a replica (Testconta
           toId: component.id
         });
       }
-      return { serviceId: service.id, sharedId: shared.id, commanderOnlyId: commanderOnly.id };
+      return {
+        serviceId: service.id,
+        sharedId: shared.id,
+        commanderOnlyId: commanderOnly.id,
+        contestedId: contested.id
+      };
     });
     serviceId = seeded.serviceId;
     sharedComponentId = seeded.sharedId;
     commanderOnlyComponentId = seeded.commanderOnlyId;
+    contestedComponentId = seeded.contestedId;
     await syncToOutpost();
 
     // 2. The OUTPOST drives its own change against the shared component, compiles a plan, and a wave
@@ -172,6 +193,20 @@ describe("service board precedence: an observation outranks a replica (Testconta
       return change.id;
     });
 
+    // 2b. The outpost also proposes a PLAN-LESS change against the contested component. No plan is
+    //     compiled, so arm 1 never sees it and arm 2 alone decides that component — but it is still
+    //     a change this domain drives, with a real propose-time createdAt.
+    contestedLocalChangeId = await withTenantTx(outpost.db, outpost.orgId, async (tx) => {
+      const { change } = await proposeChange(tx, {
+        orgId: outpost.orgId,
+        actorObjectId: outpost.orgId,
+        requestId: "board-prec-contested-local",
+        name: "outpost cache tweak",
+        targets: [contestedComponentId]
+      });
+      return change.id;
+    });
+
     // 3. THEN the commander proposes changes of its own — one against the SAME component (the
     //    displacer), one against the commander-only component — and replicates both down. Both land
     //    on the outpost with an import-time `objects.created_at`, i.e. NEWER than the local change.
@@ -189,6 +224,13 @@ describe("service board precedence: an observation outranks a replica (Testconta
         requestId: "board-prec-commander-only-change",
         name: "worker rollout",
         targets: [commanderOnlyComponentId]
+      });
+      await proposeChange(tx, {
+        orgId: commander.orgId,
+        actorObjectId: commander.orgId,
+        requestId: "board-prec-contested-commander",
+        name: "commander cache rollout",
+        targets: [contestedComponentId]
       });
       return change.id;
     });
@@ -261,14 +303,34 @@ describe("service board precedence: an observation outranks a replica (Testconta
     expect(row!.unknownFields).toContain("attention.blocked");
 
     // Both behaviours in ONE board: one real local observation, one honest unknown, nothing stable.
+    // Three components, three distinct honest outcomes in ONE response:
+    //   shared     -> blocked        (a real local observation, arm 1)
+    //   contested  -> releasing      (a real local observation, arm 2, driver class beat import time)
+    //   commanderOnly -> notDrivenHere (an honest unknown)
+    // Nothing is `stable`: not one component is genuinely settled, and none is claimed to be.
     expect(outpostBoard.summary).toEqual({
-      releasing: 0,
+      releasing: 1,
       blocked: 1,
       stable: 0,
       notDrivenHere: 1
     });
     const s = outpostBoard.summary;
     expect(s.releasing + s.blocked + s.stable + s.notDrivenHere).toBe(outpostBoard.rows.length);
+  });
+
+  it("ARM 2: a plan-less LOCAL change outranks a newer replica — driver class beats import time", () => {
+    // Neither domain compiled a plan for this component, so the authoritative arm-1 lookup is silent
+    // and arm 2 alone decides. Both candidates sit in the SAME table, ordered by `objects.created_at`
+    // — but the replica's is its IMPORT time, so it is always "newer" than a local change proposed
+    // before the bundle arrived. Ranking by driver class first makes the surviving createdAt
+    // comparison same-clock, so the change this domain actually drives wins.
+    const row = outpostBoard.rows.find((r) => r.component.id === contestedComponentId);
+    expect(row).toBeDefined();
+    expect(row!.latestChangeId).toBe(contestedLocalChangeId);
+    expect(row!.changeName).toBe("outpost cache tweak");
+    expect(row!.driver?.drivenHere).toBe(true);
+    // A driven-here row is a real observation: its state is known, so it is NOT an unknown row.
+    expect(row!.unknownFields ?? []).not.toContain("changeState");
   });
 
   it("freeze visibility is declared board-level on a federated instance (freezes never ride the journal)", () => {

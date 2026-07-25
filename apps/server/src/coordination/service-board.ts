@@ -64,7 +64,6 @@ const FAILED_STATUSES = new Set(["failed", "aborted", "no_executor"]);
 interface LatestChangeRef {
   changeId: string;
   changeName: string;
-  createdAt: Date;
   drivenHere: boolean;
   originDomainId: string | null;
   federationState: string | null;
@@ -84,7 +83,6 @@ function toRef(row: ChangeCandidateRow, selfDomainId: string): LatestChangeRef {
   return {
     changeId: row.change_id,
     changeName: row.change_name,
-    createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
     drivenHere: row.origin_domain_id === null || row.origin_domain_id === selfDomainId,
     originDomainId: row.origin_domain_id === selfDomainId ? null : row.origin_domain_id,
     federationState: typeof state === "string" ? state : null
@@ -189,7 +187,14 @@ async function latestChangeByComponent(
         AND ch.type_id = 'change'
         AND ch.deleted_at IS NULL
         AND ch.properties @> jsonb_build_object('targets', jsonb_build_array(comp.id))
-      ORDER BY ch.created_at DESC, ch.id DESC
+      -- Driver class FIRST, createdAt only WITHIN a class. A locally-driven change carries a
+      -- real propose-time createdAt and is a genuine local observation; a replica's created_at
+      -- is its IMPORT time (the object_upsert payload ships none), so comparing the two is a
+      -- fabricated ordering. Ranking driver-class first means an unknown replica can never
+      -- outrank a change this domain actually drives, and the surviving createdAt comparison
+      -- is always same-clock. Same principle as the arm-1/arm-2 fallback, one level down.
+      ORDER BY (ch.origin_domain_id IS NOT DISTINCT FROM ${selfDomainId}::uuid) DESC,
+               ch.created_at DESC, ch.id DESC
       LIMIT 1
     ) o
   `);

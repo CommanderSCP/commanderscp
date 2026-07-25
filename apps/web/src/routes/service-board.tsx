@@ -247,7 +247,13 @@ export function ServiceBoardPage(): React.JSX.Element {
                   <TableRow
                     key={row.component.id}
                     data-testid="board-row"
-                    data-blocked={row.attention.blocked}
+                    /* "unknown" — not "false" — when blocked is unobservable here. A bare
+                       data-blocked="false" is a machine-readable NOT-BLOCKED assertion over a
+                       field this row lists in unknownFields, which reintroduces in the DOM the
+                       exact confusion the response shape removes on the wire. */
+                    data-blocked={
+                      row.unknownFields?.includes("blocked") ? "unknown" : String(row.attention.blocked)
+                    }
                     data-driven-here={row.driver ? row.driver.drivenHere : true}
                   >
                     <TableCell>
