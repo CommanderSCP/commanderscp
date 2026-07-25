@@ -17,6 +17,7 @@ Helm's own default of `before-hook-creation`) is what stops `helm upgrade` from 
 recreating this PVC — and therefore the whole eval database — on every single upgrade.
 */}}
 {{- if .Values.postgres.evalInCluster.enabled }}
+{{- if not .Values.postgres.evalInCluster.existingClaim }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -37,6 +38,7 @@ spec:
     requests:
       storage: {{ .Values.postgres.evalInCluster.storage }}
 ---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -117,7 +119,7 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: {{ include "commanderscp.fullname" . }}-postgres-eval
+            claimName: {{ .Values.postgres.evalInCluster.existingClaim | default (printf "%s-postgres-eval" (include "commanderscp.fullname" .)) }}
         - name: tmp
           emptyDir: {}
         - name: run

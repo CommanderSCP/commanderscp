@@ -131,14 +131,14 @@ spec:
         - name: storage
           {{- if eq .Values.objectStorage.provider "filesystem" }}
           persistentVolumeClaim:
-            claimName: {{ include "commanderscp.fullname" . }}-storage
+            claimName: {{ .Values.objectStorage.filesystem.existingClaim | default (printf "%s-storage" (include "commanderscp.fullname" .)) }}
           {{- else }}
           emptyDir: {}
           {{- end }}
         {{- if .Values.scanDbCache.enabled }}
         - name: scan-db
           persistentVolumeClaim:
-            claimName: {{ include "commanderscp.fullname" . }}-scan-db
+            claimName: {{ .Values.scanDbCache.existingClaim | default (printf "%s-scan-db" (include "commanderscp.fullname" .)) }}
         {{- end }}
         {{- if .Values.federation.mtls.enabled }}
         - name: federation-mtls

@@ -107,6 +107,10 @@ postgres:
     enabled: false
     storage: 8Gi
     storageClassName: ""
+    # Use a pre-provisioned PVC instead of creating one (e.g. migrating storage classes/backends
+    # out-of-band). When set, this chart does NOT create the postgres-eval PVC — the named claim
+    # must already exist. Leave empty (default) for today's behavior: chart creates and owns it.
+    existingClaim: ""
 
 # -------------------------------------------------------------------------------------------
 # Object storage — filesystem/PVC provider default (DESIGN §16); S3-compatible configurable.
@@ -117,6 +121,10 @@ objectStorage:
     size: 10Gi
     storageClassName: ""
     accessMode: ReadWriteOnce
+    # Use a pre-provisioned PVC instead of creating one (e.g. migrating storage classes/backends
+    # out-of-band). When set, this chart does NOT create the storage PVC — the named claim must
+    # already exist. Leave empty (default) for today's behavior: chart creates and owns it.
+    existingClaim: ""
   s3:
     bucket: ""
     region: ""
@@ -180,6 +188,10 @@ scanDbCache:
   storageClassName: ""
   accessMode: ReadWriteOnce
   mountPath: /var/lib/scp/scan-db
+  # Use a pre-provisioned PVC instead of creating one (e.g. migrating storage classes/backends
+  # out-of-band). When set, this chart does NOT create the scan-db PVC — the named claim must
+  # already exist. Leave empty (default) for today's behavior: chart creates and owns it.
+  existingClaim: ""
 
 # -------------------------------------------------------------------------------------------
 # Bundled executor backends (Mode B — DESIGN §12, ADR-0002, docs/proposals/bundled-executor-

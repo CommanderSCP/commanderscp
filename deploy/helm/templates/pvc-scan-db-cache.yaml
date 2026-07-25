@@ -5,6 +5,7 @@
      reads a point-in-time `docker cp` snapshot). Mounted into api AND worker at scanDbCache.mountPath;
      SCP_MANAGED_SCAN_DB_CACHE points the promotion scan step at it (_helpers.tpl commonEnv). */}}
 {{- if .Values.scanDbCache.enabled }}
+{{- if not .Values.scanDbCache.existingClaim }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -19,4 +20,5 @@ spec:
   resources:
     requests:
       storage: {{ .Values.scanDbCache.size }}
+{{- end }}
 {{- end }}

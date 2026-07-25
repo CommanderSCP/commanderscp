@@ -3,6 +3,7 @@
      operators needing multi-writer set accessMode: ReadWriteMany with a storage class that
      supports it, or switch to the S3 provider). */}}
 {{- if eq .Values.objectStorage.provider "filesystem" }}
+{{- if not .Values.objectStorage.filesystem.existingClaim }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -17,4 +18,5 @@ spec:
   resources:
     requests:
       storage: {{ .Values.objectStorage.filesystem.size }}
+{{- end }}
 {{- end }}
