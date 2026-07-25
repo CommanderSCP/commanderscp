@@ -41,7 +41,7 @@ export async function dispatchNotification(
           id: binding.pluginInstanceId,
           module: binding.pluginModule,
           orgId,
-          domainId: "default",
+          scopeKey: "default",
           config: binding.config,
           secrets: resolvedSecrets,
           allowedHosts: binding.allowedHosts

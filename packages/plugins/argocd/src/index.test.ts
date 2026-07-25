@@ -28,7 +28,7 @@ const SERVER_URL = "http://argocd.test";
 function testCtx(config: unknown, secrets?: SecretsAccessor): PluginContext {
   return {
     orgId: "org-1",
-    domainId: "domain-1",
+    scopeKey: "domain-1",
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     secrets: secrets ?? { get: async () => undefined },
     http: createNodeHttpTestClient(),

@@ -591,7 +591,7 @@ export function createServerManagedScanRunner(db?: Db): ManagedScanRunner {
 function pluginCtx(runnerImage: string, networkMode: string): PluginContext {
   return {
     orgId: "commander",
-    domainId: "commander",
+    scopeKey: "commander",
     logger: {
       debug() {},
       info() {},

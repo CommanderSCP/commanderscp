@@ -525,7 +525,9 @@ Every engine verdict persists one. Exposed at `/decisions/{id}`, linked from eve
 // injected scoped context, host-enforced timeouts, standardized error mapping.
 interface PluginContext {
   orgId: string;
-  domainId: string;
+  scopeKey: string;                // opaque host-supplied partition label for this plugin
+                                   // instance — NOT a security- or containment-domain id
+                                   // (ADR-0021 D4); renamed from `domainId` 2026-07-24
   logger: Logger;
   secrets: SecretsAccessor;        // read-only, scoped to this plugin's configured secrets
   http: ScopedHttpClient;          // egress-controlled, instrumented

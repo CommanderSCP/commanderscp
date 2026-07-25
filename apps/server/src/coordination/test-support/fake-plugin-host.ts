@@ -22,7 +22,7 @@ export function createInMemoryFakeHost(config?: unknown): PluginHost {
   const plugin = createFakeExecutorPlugin();
   const ctx: PluginContext = {
     orgId: "test",
-    domainId: "test",
+    scopeKey: "test",
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     secrets: { get: async () => undefined },
     http: {

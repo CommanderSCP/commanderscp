@@ -9,7 +9,7 @@ const URL_BASE = "http://notify.test";
 function testCtx(config: unknown): PluginContext {
   return {
     orgId: "org-1",
-    domainId: "domain-1",
+    scopeKey: "domain-1",
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     secrets: { get: async () => undefined },
     http: createNodeHttpTestClient(),

@@ -17,13 +17,14 @@
  * plain `uuid`, so passing one where the other was expected compiled cleanly. Branding makes that
  * collision **uncompilable** rather than a naming convention someone has to remember.
  *
- * ## A third sense exists, and is deliberately NOT branded
+ * ## A third thing wore the name — it was renamed, not branded
  *
- * `PluginContext.domainId` (`packages/plugin-api/src/index.ts`) is neither of the above: it is an
- * opaque **plugin-host scope key**, populated in-tree with non-UUID literals (`"default"`,
- * `"commander"`, `"domain-1"`). It is not an id, so it carries no brand and stays plain `string`.
- * It is also a **public plugin contract** — renaming it is a separate owner decision. See the
- * comment on that declaration.
+ * `PluginContext` (`packages/plugin-api/src/index.ts`) used to carry a `domainId` that was neither
+ * of the above: an opaque **plugin-host scope key**, populated in-tree with non-UUID literals
+ * (`"default"`, `"commander"`, `"shared"`, `"domain-1"`). Branding it was impossible — it is not
+ * an id — so on **2026-07-24** the owner decided to rename it instead: `PluginContext.domainId` is
+ * now **`PluginContext.scopeKey`** (ADR-0021 D4), a deliberately unbranded plain `string`. Only
+ * two senses of `domainId` remain in the tree, and both are branded here.
  *
  * ## Where the brand stops
  *

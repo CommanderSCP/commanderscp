@@ -830,7 +830,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
             id: request.body.pluginInstanceId,
             module: request.body.pluginModule as PluginModule,
             orgId: auth.orgId,
-            domainId: "default",
+            scopeKey: "default",
             config: effectiveConfig,
             secrets: resolvedSecrets,
             allowedHosts: effectiveAllowedHosts,

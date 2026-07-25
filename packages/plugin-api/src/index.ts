@@ -52,21 +52,30 @@ export interface ScopedHttpClient {
 export interface PluginContext {
   orgId: string;
   /**
-   * A THIRD `domainId` sense — deliberately NOT one of ADR-0021 D4's branded domain ids, and
-   * deliberately left as a plain `string`.
+   * An opaque, host-supplied **scope key** for plugin-instance isolation: the label the host
+   * stamps on a plugin invocation so logs, secret lookups and egress accounting can be
+   * partitioned per plugin instance. Treat it as a partition label, never as an identifier you
+   * can resolve, join on, or dereference.
    *
-   * This is an opaque **plugin-host scope key**: a label the host stamps on a plugin invocation so
-   * logs, secret lookups and egress accounting can be partitioned. It is neither a
-   * `TrustDomainId` (a federation identity) nor a `ContainmentDomainId` (a `domain` graph object),
-   * and in practice it is not a uuid at all — every in-tree host populates it with a literal
-   * (`"default"`, `"commander"`, `"domain-1"`). Branding it would either force a bogus brand onto
-   * `"default"` or fail to compile against values that were never ids.
+   * **This is not a domain id in either SCP sense.** It is neither a `TrustDomainId` (the
+   * federation/security-domain identity of a deployment) nor a `ContainmentDomainId` (the id of a
+   * `domain` graph object) — see `@scp/schemas`'s `domain-ids.ts` and
+   * [ADR-0021](../../../docs/adr/0021-terminology.md) D4, which brands those two so they can never
+   * be confused. In practice this value is not a uuid at all: every in-tree host populates it with
+   * a literal (`"default"`, `"commander"`, `"shared"`, `"domain-1"`).
    *
-   * ADR-0021 §Context 1 accounts for two SCP senses of "domain"; this scope key is a third that
-   * the ADR's premise does not cover. Renaming it is a **breaking change to a public plugin
-   * contract** and needs its own owner decision — out of scope for the branded-types work.
+   * It stays a plain, deliberately **unbranded** `string` for exactly that reason — branding it
+   * would either force a bogus brand onto `"default"` or fail to compile against values that were
+   * never ids.
+   *
+   * Until 2026-07-24 this field was named `domainId`, which made it look like a third sense of
+   * "domain id". ADR-0021 D4 records the owner decision to rename it to `scopeKey` — a **breaking
+   * change to a public plugin contract**: an out-of-tree plugin reading `ctx.domainId` must be
+   * updated. The wire form crossing the host/subprocess seam changed with it (the plugin host's
+   * `SCP_PLUGIN_DOMAIN_ID` env var is now `SCP_PLUGIN_SCOPE_KEY`), so host and plugin runtime move
+   * together.
    */
-  domainId: string;
+  scopeKey: string;
   logger: Logger;
   secrets: SecretsAccessor;
   http: ScopedHttpClient;

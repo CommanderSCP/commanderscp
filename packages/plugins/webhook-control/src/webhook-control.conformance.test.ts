@@ -13,7 +13,7 @@ runControlConformanceSuite("webhook-control", async () => {
   const plugin = createWebhookControlPlugin();
   const ctx: PluginContext = {
     orgId: "conformance-org",
-    domainId: "conformance-domain",
+    scopeKey: "conformance-domain",
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     secrets: { get: async () => undefined },
     http: {

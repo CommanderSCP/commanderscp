@@ -122,7 +122,7 @@ describe("federation-https mTLS client certificate (M8 hardening)", () => {
         id: "federation-mtls-good",
         module: "federation-https",
         orgId: "org-1",
-        domainId: "domain-1",
+        scopeKey: "domain-1",
         config: { commanderBaseUrl: testServer.baseUrl, selfPeerName: "outpost-domain-test" }
       }
     ]);
@@ -149,7 +149,7 @@ describe("federation-https mTLS client certificate (M8 hardening)", () => {
         id: "federation-mtls-none",
         module: "federation-https",
         orgId: "org-1",
-        domainId: "domain-1",
+        scopeKey: "domain-1",
         config: { commanderBaseUrl: testServer.baseUrl, selfPeerName: "outpost-domain-test" }
       }
     ]);
@@ -174,7 +174,7 @@ describe("federation-https mTLS client certificate (M8 hardening)", () => {
         id: "federation-mtls-bad",
         module: "federation-https",
         orgId: "org-1",
-        domainId: "domain-1",
+        scopeKey: "domain-1",
         config: { commanderBaseUrl: testServer.baseUrl, selfPeerName: "outpost-domain-test" }
       }
     ]);
@@ -195,7 +195,7 @@ describe("federation-https mTLS client certificate (M8 hardening)", () => {
 
     host = new SubprocessPluginHost({ callTimeoutMs: 10_000 });
     await host.start([
-      { id: "not-federation", module: "fake-executor", orgId: "org-1", domainId: "domain-1" }
+      { id: "not-federation", module: "fake-executor", orgId: "org-1", scopeKey: "domain-1" }
     ]);
 
     const spawnCall = spawnSpy.mock.calls.find(

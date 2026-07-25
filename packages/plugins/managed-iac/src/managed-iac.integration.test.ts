@@ -102,7 +102,7 @@ async function listStateHistory(workspaceRoot: string): Promise<string[]> {
 function buildCtx(workspaceRoot: string, overrides: Record<string, unknown> = {}): PluginContext {
   return {
     orgId: ORG_ID,
-    domainId: "test-domain",
+    scopeKey: "test-domain",
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     secrets: { get: async () => undefined }, // fixture needs no infra creds — terraform_data is local-only
     http: {

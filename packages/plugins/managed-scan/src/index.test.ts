@@ -64,7 +64,7 @@ afterEach(async () => {
 function ctx(overrides: Record<string, unknown> = {}): PluginContext {
   return {
     orgId: "org-1",
-    domainId: "domain-1",
+    scopeKey: "domain-1",
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     secrets: { get: async () => undefined },
     http: {

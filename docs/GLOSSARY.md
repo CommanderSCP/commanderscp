@@ -407,11 +407,13 @@ Also distinct: **SPIFFE's "trust domain"**, which corresponds to the **trust roo
 
 **Bare "domain" is banned as a tier name** — in prose *and* as a stored value. [ADR-0016](adr/0016-scoped-scan-requirement-policies.md) §Terminology mandates the full forms and specifies that the floor table's tier literal is `trust_domain`, never bare `domain`; DESIGN.md does the same for the policy-resolution chain.
 
-**In the code — the docs solved this; the code did not.** `domainId` carries **both** senses with **zero type-level separation**. The **security/trust** sense is `federation_self.domainId`, and its uses concentrate in `apps/server/src/federation/`; the **containment** sense is `objects.domainId`, and its uses concentrate in `apps/server/src/graph/`. Both columns are declared in `apps/server/src/db/schema.ts` and **both are plain `uuid`**, so nothing today stops one being passed where the other is expected.
+**In the code.** `domainId` carries **both** senses, historically with zero type-level separation. The **security/trust** sense is `federation_self.domainId`, and its uses concentrate in `apps/server/src/federation/`; the **containment** sense is `objects.domainId`, and its uses concentrate in `apps/server/src/graph/`. Both columns are declared in `apps/server/src/db/schema.ts` and both are stored as plain `uuid`.
 
 How wide that is — how many non-test source lines and files, with the exact command and the commit it was measured at — is in [ADR-0021's census snapshot §A](adr/0021-terminology.md#a-domainid--the-two-senses-undifferentiated). It is stated there once rather than repeated here, so there is a single number to refresh.
 
-**The fix is a tracked follow-on PR, not something already done:** branded TypeScript types `TrustDomainId` vs `ContainmentDomainId`, so the collision becomes **uncompilable** rather than a naming convention ([ADR-0021](adr/0021-terminology.md) Consequences, item i).
+**The fix has landed:** branded TypeScript types `TrustDomainId` vs `ContainmentDomainId` (`packages/schemas/src/domain-ids.ts`), so the collision is **uncompilable** rather than a naming convention ([ADR-0021](adr/0021-terminology.md) Consequences, item i). Brands are erased at runtime and stop at the API edge, so `/v1` and the generated SDK are unaffected.
+
+**A third thing wore the name, and was renamed rather than branded.** `PluginContext.domainId` in the public plugin contract (`packages/plugin-api`) was neither of the two senses above — it is an opaque **plugin-host scope key**, a partition label for a plugin instance's logs, secrets and egress accounting, populated with non-uuid literals (`"default"`, `"commander"`, `"shared"`). Since it is not an id, no brand could apply; by owner decision (2026-07-24) it is now **`PluginContext.scopeKey`**, along with `PluginHostInstanceConfig.scopeKey` and the spawn env var `SCP_PLUGIN_SCOPE_KEY`. A breaking plugin-contract change, recorded in [ADR-0021](adr/0021-terminology.md) D4 and Consequences (i-b). If you see `scopeKey`, it has nothing to do with domains.
 
 ---
 
