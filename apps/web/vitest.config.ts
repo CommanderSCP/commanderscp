@@ -3,9 +3,16 @@ import { configDefaults, defineConfig } from "vitest/config";
 /**
  * Standalone from vite.config.ts (see that file's doc comment for why) — Vitest picks up a
  * same-directory `vitest.config.ts` in preference to `vite.config.ts` automatically, so this is
- * the whole of apps/web's Vitest configuration. No unit tests exist under apps/web/src yet
- * (`pnpm test` runs with `--passWithNoTests`), so there's no plugin (react/tailwind) transform
- * need to replicate from vite.config.ts here — when real component tests are added, revisit.
+ * the whole of apps/web's Vitest configuration.
+ *
+ * DELIBERATELY still no plugins and no `environment` (the default Node one). The component tests
+ * that do exist under `src/` (`routes/service-board-honesty.test.tsx`) render through
+ * `react-dom/server`'s `renderToStaticMarkup` — a string, no DOM — so they need neither jsdom nor
+ * `@vitejs/plugin-react`: `.tsx` is transformed by Vite's own esbuild honouring tsconfig's
+ * `"jsx": "react-jsx"`. That keeps them inside the existing "4. Unit tests" CI job with zero new
+ * dependencies and zero new jobs. Anything needing real DOM APIs (events, layout, refs) would need
+ * a DOM environment added here first — no such test exists, and adding one is a deliberate choice,
+ * not an accident.
  *
  * Its one real job: exclude `e2e/**` (apps/web/e2e, Playwright specs run only via
  * `pnpm --filter @scp/web test:e2e` / playwright.config.ts) from Vitest's default

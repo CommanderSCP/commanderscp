@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import type { ServiceBoardRow, ServiceBoardWave } from "@scp/sdk";
+import type { ServiceBoardRow, ServiceBoardSummary, ServiceBoardWave } from "@scp/sdk";
 import { client } from "../lib/client";
 import { serviceBoardKey } from "../lib/query-client";
 import { useIdParam } from "../lib/use-route-params";
@@ -35,6 +35,28 @@ function WhyLink({ changeId, decisionId }: { changeId: string; decisionId: strin
   );
 }
 
+/** True when the server explicitly told us this field is NOT observable in this domain (see
+ *  `ServiceBoardRow.unknownFields`) — as opposed to observed-and-empty. The two must never render
+ *  the same way: an unobservable field is an honest UNKNOWN, not a clean bill of health. */
+function isUnknown(row: ServiceBoardRow, field: string): boolean {
+  return row.unknownFields.includes(field);
+}
+
+/** The honest-unknown marker. Deliberately NOT the muted dash used for observed-and-empty, and
+ *  deliberately not a success colour — an operator must be able to tell "nothing to report" from
+ *  "this instance cannot see". */
+function UnknownHere({ title }: { title: string }): React.JSX.Element {
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded border border-dashed border-amber-400 bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-800"
+      title={title}
+      data-testid="board-unknown"
+    >
+      unknown here
+    </span>
+  );
+}
+
 /** The per-wave status badges for a row — one badge per compiled wave, colored by wave status
  *  (reusing the Phase-1 mapping). A partial-failure wave (some targets failed) shows the count. */
 function WaveStrip({ waves }: { waves: ServiceBoardWave[] }): React.JSX.Element {
@@ -62,6 +84,14 @@ function WaveStrip({ waves }: { waves: ServiceBoardWave[] }): React.JSX.Element 
  *  present), plus awaiting-approval and emergency chips. Stable/clean rows read as a muted dash. */
 function AttentionCell({ row }: { row: ServiceBoardRow }): React.JSX.Element {
   const { attention, latestChangeId } = row;
+  // Never render "nothing needs you" from data this instance does not hold: blocked-ness and
+  // pending approvals live in local-only tables that never replicate, so on a read-only replica
+  // the false/null zeros below are placeholders, not observations.
+  if (isUnknown(row, "attention.blocked")) {
+    return (
+      <UnknownHere title="Blocked / awaiting-approval state is not observable in this domain — the block Decisions and approval requests behind it stay in the driving domain and never replicate." />
+    );
+  }
   const clean = !attention.blocked && !attention.awaitingApproval && !attention.emergency;
   if (clean) return <span className="text-slate-400">—</span>;
   return (
@@ -92,14 +122,189 @@ function AttentionCell({ row }: { row: ServiceBoardRow }): React.JSX.Element {
 }
 
 /**
+ * One component's row. EXPORTED for `service-board-honesty.test.tsx`, which renders it directly:
+ * the unknown-vs-observed distinction below is the whole point of this view, and it must be pinned
+ * by a check that runs on every PR — not only by the Playwright suite, which is main-only.
+ */
+export function BoardRow({ row }: { row: ServiceBoardRow }): React.JSX.Element {
+  // "No change here" is only an observation when this deployment can actually see the changes its
+  // peers drive. When the server names `latestChangeId` unobservable (a peer's sync scope withholds
+  // change objects), the empty cell must read as UNKNOWN, not as "no active change" — the row would
+  // otherwise be the board's most confident all-clear built on the least evidence.
+  const changeUnknown = isUnknown(row, "latestChangeId");
+  return (
+    <TableRow
+      data-testid="board-row"
+      /* "unknown" — not "false" — when blocked is unobservable here. A bare
+         data-blocked="false" is a machine-readable NOT-BLOCKED assertion over a
+         field this row lists in unknownFields, which reintroduces in the DOM the
+         exact confusion the response shape removes on the wire. */
+      data-blocked={isUnknown(row, "attention.blocked") ? "unknown" : String(row.attention.blocked)}
+      data-driven-here={row.driver ? row.driver.drivenHere : true}
+    >
+      <TableCell>
+        <Link
+          to="/$basePath/$idOrUrn"
+          params={{ basePath: "components", idOrUrn: row.component.id }}
+          className="font-medium text-slate-900 hover:underline"
+          data-testid="board-component-link"
+        >
+          {row.component.name}
+        </Link>
+        {row.activeFreeze && (
+          <Badge
+            variant="secondary"
+            className="ml-2"
+            title={`Frozen until ${formatDate(row.activeFreeze.endsAt)}: ${row.activeFreeze.reason}`}
+            data-testid="board-component-freeze"
+          >
+            Frozen
+          </Badge>
+        )}
+      </TableCell>
+      <TableCell>
+        {row.latestChangeId ? (
+          <div className="flex flex-col gap-0.5">
+            <Link
+              to="/changes/$id/pipeline"
+              params={{ id: row.latestChangeId }}
+              className="font-medium text-slate-700 underline hover:text-slate-900"
+              data-testid="board-pipeline-link"
+            >
+              {row.changeName ?? "Open pipeline"} →
+            </Link>
+            {isUnknown(row, "changeState") ? (
+              // The driving domain has not reported a lifecycle state for this
+              // replica yet (the `object_upsert` normally lands before the first
+              // `change_status`). Rendering nothing would be indistinguishable from a
+              // row with no change at all — the exact confusion this board refuses.
+              <span>
+                <UnknownHere title="The domain that drives this change has not reported a lifecycle state for it here yet — its state is unknown from this instance, not absent." />
+              </span>
+            ) : (
+              row.changeState && (
+                <span>
+                  <Badge variant={stateBadgeVariant(row.changeState as ChangeState)}>
+                    {row.changeState}
+                  </Badge>
+                </span>
+              )
+            )}
+            {row.driver && !row.driver.drivenHere && (
+              <span
+                className="inline-flex w-fit items-center rounded border border-dashed border-amber-400 bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-800"
+                title={`This change is driven by domain ${row.driver.originDomainId ?? "(unknown)"} and replicated here read-only. Its state above is what that domain last reported; its waves, blocked state, approvals${isUnknown(row, "activeFreeze") ? " and any freeze it declared" : ""} are not observable from this instance.`}
+                data-testid="board-not-driven-here"
+              >
+                Not driven here
+              </span>
+            )}
+          </div>
+        ) : changeUnknown ? (
+          <UnknownHere title="Whether a change is rolling through this component is not observable here: a federation peer's sync scope does not carry change objects, so this instance receives that peer's change STATUS without the change itself. An empty cell means 'none was sent to me', not 'none exists'." />
+        ) : (
+          <span className="text-sm text-slate-400" data-testid="board-no-change">
+            no active change
+          </span>
+        )}
+      </TableCell>
+      <TableCell>
+        {isUnknown(row, "currentWave") ? (
+          <UnknownHere title="The driving domain's wave progress is not replicated here." />
+        ) : row.currentWave ? (
+          <span className="text-sm text-slate-700">{row.currentWave}</span>
+        ) : (
+          <span className="text-slate-400">—</span>
+        )}
+      </TableCell>
+      <TableCell>
+        {isUnknown(row, "waves") ? (
+          <UnknownHere title="Plans and waves are local to the domain that drives the change — they never replicate, so an empty strip here would not mean 'no plan compiled'." />
+        ) : (
+          <WaveStrip waves={row.waves} />
+        )}
+      </TableCell>
+      <TableCell>
+        <AttentionCell row={row} />
+      </TableCell>
+      <TableCell>
+        {/* Layer B — never a fabricated version/health. */}
+        <span className="text-slate-400" title="Not captured yet (Layer B)">
+          —
+        </span>
+      </TableCell>
+    </TableRow>
+  );
+}
+
+/**
+ * The releasing / blocked / stable / not-driven-here strip. EXPORTED for the same reason
+ * {@link BoardRow} is: `Not driven here` must never be dressed as a success, and `Stable` must stop
+ * being dressed as one the moment the server declares it unobservable.
+ */
+/**
+ * The two BOARD-LEVEL unknowns, exported so the WIRING is gated and not just the components it
+ * feeds. Reading a literal field name out of `unknownFields` inline is exactly the kind of line a
+ * later edit silently changes: nothing would fail, and the caveat would just stop appearing.
+ */
+export function changeVisibilityUnknownOf(board: { unknownFields: string[] }): boolean {
+  // A peer paired at a scope that does not carry change objects (`status_only` sends change STATUS
+  // without the change; `policies_only` sends neither) leaves this instance unable to tell "nothing
+  // is rolling through this component" from "the change rolling through it was never sent to me".
+  return board.unknownFields.includes("summary.stable");
+}
+
+export function freezeVisibilityUnknownOf(board: { unknownFields: string[] }): boolean {
+  return board.unknownFields.includes("rows[].activeFreeze");
+}
+
+export function BoardSummary({
+  summary,
+  stableUnknown
+}: {
+  summary: ServiceBoardSummary;
+  stableUnknown: boolean;
+}): React.JSX.Element {
+  return (
+    <div className="flex flex-wrap gap-3" data-testid="board-summary">
+      <SummaryStat label="Releasing" value={summary.releasing} variant="info" />
+      <SummaryStat label="Blocked" value={summary.blocked} variant="destructive" />
+      {/* `success` ONLY while the count is a real observation. When a peer's sync scope withholds
+          change objects, this number mixes settled components with components whose change simply
+          never arrived — a green badge over it is the fabricated all-clear in its purest form. */}
+      <SummaryStat
+        label="Stable"
+        value={summary.stable}
+        variant={stableUnknown ? "outline" : "success"}
+        title={
+          stableUnknown
+            ? "NOT an all-clear on this deployment: a federation peer's sync scope does not carry change objects, so components with no change here may simply be ones whose change was never sent. Counted for shape, not asserted as fact."
+            : undefined
+        }
+      />
+      <SummaryStat
+        label="Not driven here"
+        value={summary.notDrivenHere}
+        variant="outline"
+        title="Rows whose latest change is another domain's — replicated here read-only. Their waves, blocked state and approvals are NOT observable from this instance; they are deliberately not counted as stable."
+      />
+    </div>
+  );
+}
+
+/**
  * `/services/{id}/board` — the Service release board (coordination-ui-views.md § "Service release
  * board", Phase 2, Layer A). One scannable table of the service's components: each row shows that
  * component's latest change per-wave status, its current wave, and any attention signal (the
  * BLOCKED component surfaced in red with a decision_id "Why?" link), and opens the Phase-1 component
- * pipeline. A summary strip counts releasing / blocked / stable.
+ * pipeline. A summary strip counts releasing / blocked / stable / not-driven-here.
  *
  * Strictly Layer A — real data only. Per-wave image versions/digests and component health are Layer
- * B (not modeled yet); they are shown as an explicit placeholder, never fabricated. Freezes are
+ * B (not modeled yet); they are shown as an explicit placeholder, never fabricated. The same rule
+ * governs federation: a change this instance does not DRIVE (`row.driver.drivenHere === false`)
+ * arrives as a read-only replica WITHOUT its plan, Decisions, approvals or freezes, so every field
+ * the server named in `row.unknownFields` renders as an explicit "unknown here" marker — visually
+ * distinct from both a clean row and the stable count, never a fourth flavour of fine. Freezes are
  * READ-ONLY status here; declaring/lifting one is a controls-phase concern (Phase 5), so the
  * "Freeze service" affordance is present but disabled.
  */
@@ -125,6 +330,15 @@ export function ServiceBoardPage(): React.JSX.Element {
 
   const board = boardQuery.data;
   const { service, rows, summary, serviceFreeze } = board;
+  // BOARD-LEVEL unknowns (as opposed to a row's own): today, freeze visibility on a federated
+  // deployment. Freezes never ride the sync journal in either direction, so on an instance with a
+  // federation peer NO row's "not frozen" — driven here or not — can be read as "no freeze applies".
+  const freezeVisibilityUnknown = freezeVisibilityUnknownOf(board);
+  // The other board-level unknown: a peer paired at a sync scope that does not carry change objects
+  // (`status_only` sends change STATUS without the change; `policies_only` sends neither) leaves this
+  // instance unable to tell "nothing is rolling through this component" from "the change rolling
+  // through it was never sent to me". The stable COUNT is then not an all-clear, and says so.
+  const changeVisibilityUnknown = changeVisibilityUnknownOf(board);
 
   return (
     <div className="flex flex-col gap-6">
@@ -165,12 +379,10 @@ export function ServiceBoardPage(): React.JSX.Element {
         </div>
       </div>
 
-      {/* Summary strip: releasing / blocked / stable. */}
-      <div className="flex flex-wrap gap-3" data-testid="board-summary">
-        <SummaryStat label="Releasing" value={summary.releasing} variant="info" />
-        <SummaryStat label="Blocked" value={summary.blocked} variant="destructive" />
-        <SummaryStat label="Stable" value={summary.stable} variant="success" />
-      </div>
+      {/* Summary strip: releasing / blocked / stable / not driven here. The fourth is NOT a fourth
+          flavour of fine — it is the count of rows whose latest change this instance does not drive
+          and therefore cannot assess, so it carries a warning (never `success`) treatment. */}
+      <BoardSummary summary={summary} stableUnknown={changeVisibilityUnknown} />
 
       <Card>
         <CardHeader>
@@ -198,70 +410,7 @@ export function ServiceBoardPage(): React.JSX.Element {
               </TableHeader>
               <TableBody>
                 {rows.map((row) => (
-                  <TableRow key={row.component.id} data-testid="board-row" data-blocked={row.attention.blocked}>
-                    <TableCell>
-                      <Link
-                        to="/$basePath/$idOrUrn"
-                        params={{ basePath: "components", idOrUrn: row.component.id }}
-                        className="font-medium text-slate-900 hover:underline"
-                        data-testid="board-component-link"
-                      >
-                        {row.component.name}
-                      </Link>
-                      {row.activeFreeze && (
-                        <Badge
-                          variant="secondary"
-                          className="ml-2"
-                          title={`Frozen until ${formatDate(row.activeFreeze.endsAt)}: ${row.activeFreeze.reason}`}
-                          data-testid="board-component-freeze"
-                        >
-                          Frozen
-                        </Badge>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {row.latestChangeId ? (
-                        <div className="flex flex-col gap-0.5">
-                          <Link
-                            to="/changes/$id/pipeline"
-                            params={{ id: row.latestChangeId }}
-                            className="font-medium text-slate-700 underline hover:text-slate-900"
-                            data-testid="board-pipeline-link"
-                          >
-                            {row.changeName ?? "Open pipeline"} →
-                          </Link>
-                          {row.changeState && (
-                            <span>
-                              <Badge variant={stateBadgeVariant(row.changeState as ChangeState)}>
-                                {row.changeState}
-                              </Badge>
-                            </span>
-                          )}
-                        </div>
-                      ) : (
-                        <span className="text-sm text-slate-400" data-testid="board-no-change">
-                          no active change
-                        </span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {row.currentWave ? (
-                        <span className="text-sm text-slate-700">{row.currentWave}</span>
-                      ) : (
-                        <span className="text-slate-400">—</span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <WaveStrip waves={row.waves} />
-                    </TableCell>
-                    <TableCell>
-                      <AttentionCell row={row} />
-                    </TableCell>
-                    <TableCell>
-                      {/* Layer B — never a fabricated version/health. */}
-                      <span className="text-slate-400" title="Not captured yet (Layer B)">—</span>
-                    </TableCell>
-                  </TableRow>
+                  <BoardRow key={row.component.id} row={row} />
                 ))}
               </TableBody>
             </Table>
@@ -269,10 +418,34 @@ export function ServiceBoardPage(): React.JSX.Element {
         </CardContent>
       </Card>
 
+      {changeVisibilityUnknown && (
+        <p
+          className="w-fit rounded border border-dashed border-amber-400 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800"
+          data-testid="board-change-visibility-unknown"
+        >
+          Change visibility is limited on this instance: a federation peer&apos;s sync scope does not
+          carry change objects, so a component with no change here may simply be one whose change was
+          never sent. The Stable count is not an all-clear.
+        </p>
+      )}
+
+      {freezeVisibilityUnknown && (
+        <p
+          className="w-fit rounded border border-dashed border-amber-400 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800"
+          data-testid="board-freeze-visibility-unknown"
+        >
+          Freeze visibility is limited to this domain: freezes are never replicated between federated
+          instances, so an unfrozen row means &quot;no freeze declared here&quot; — not &quot;no freeze
+          applies&quot;.
+        </p>
+      )}
+
       <p className="text-xs text-slate-400">
         Per-wave image version/digest and component health are not modeled yet (Layer B) and are shown
         as &quot;—&quot;. Freezes are read-only here; declaring or lifting one lands in a later controls
-        phase.
+        phase. A change driven by another domain is replicated here read-only: this instance can show
+        the state that domain last reported, but its waves, blocked state and approvals are marked
+        &quot;unknown here&quot; rather than rendered as clear.
       </p>
     </div>
   );
@@ -281,16 +454,19 @@ export function ServiceBoardPage(): React.JSX.Element {
 function SummaryStat({
   label,
   value,
-  variant
+  variant,
+  title
 }: {
   label: string;
   value: number;
-  variant: "info" | "destructive" | "success";
+  variant: "info" | "destructive" | "success" | "outline";
+  title?: string;
 }): React.JSX.Element {
   return (
     <div
       className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2"
-      data-testid={`board-summary-${label.toLowerCase()}`}
+      data-testid={`board-summary-${label.toLowerCase().replace(/\s+/g, "-")}`}
+      title={title}
     >
       <span className="text-2xl font-semibold text-slate-900">{value}</span>
       <Badge variant={variant}>{label}</Badge>

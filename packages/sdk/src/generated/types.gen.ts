@@ -6178,17 +6178,24 @@ export type GetServiceBoardResponses = {
                 reason: string;
                 endsAt: string;
             } | null;
+            driver: {
+                drivenHere: boolean;
+                originDomainId: string | null;
+            } | null;
+            unknownFields: Array<string>;
         }>;
         summary: {
             releasing: number;
             blocked: number;
             stable: number;
+            notDrivenHere: number;
         };
         serviceFreeze: {
             id: string;
             reason: string;
             endsAt: string;
         } | null;
+        unknownFields: Array<string>;
     };
 };
 
