@@ -157,7 +157,7 @@ export async function markWaveTargetTriggered(
  * The observed-state payload persisted on `observed_state` (ADR-0008 decisions 1-2): the last-observed
  * snapshot a status() poll reported. `revision` is the synced revision (`ExecutionStatus.stateRef`, a
  * string revision today); `images` is the deployed image refs (`ExecutionStatus.observed.images`, e.g.
- * `ghcr.io/x/y:1.2.3` or `...@sha256:...`). Surfaced as the per-stage version. `rollout` (P4D
+ * `ghcr.io/x/y:1.2.3` or `...@sha256:...`). Surfaced as the per-wave version. `rollout` (P4D
  * increment 4) is the OBSERVE-ONLY progressive-delivery snapshot (`ExecutionStatus.observed.rollout`
  * — an Argo Rollout's phase/step/weight/message as the executor reports it); it is display-only and
  * carries NO drive verb (ADR-0008: rollout state is OBSERVED, NOT DRIVEN).

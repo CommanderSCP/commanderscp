@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
 /**
- * Web UI v1 (M2 stage 4, BUILD_AND_TEST.md §8 M2 item 2, DESIGN.md §14). Builds to static
+ * Web UI v1 (M2 step 4, BUILD_AND_TEST.md §8 M2 item 2, DESIGN.md §14). Builds to static
  * assets served BY the Fastify server (apps/server/src/app.ts) — no dev-time proxy is needed
  * for `pnpm --filter @scp/web dev` against a local `pnpm --filter @scp/server dev` because both
  * halves speak the same-origin `/api/v1` path in production; for local dev-server iteration

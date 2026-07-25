@@ -4,7 +4,7 @@ import { baseUrl, loginAsAdmin } from "./fixtures.js";
 /**
  * Smoke test 5 (BUILD_AND_TEST.md §8 M2 item 2 TESTS section): navigate to
  * `/device?user_code=XXXX-XXXX` while logged in, assert the form is pre-filled. The full
- * approve round-trip against a real polling CLI is covered by stage 2's server-side integration
+ * approve round-trip against a real polling CLI is covered by M2 step 2's server-side integration
  * test (auth/device-flow.integration.test.ts) — this just proves the page renders and the field
  * is populated from the query param.
  */

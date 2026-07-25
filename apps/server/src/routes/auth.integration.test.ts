@@ -14,7 +14,7 @@ interface CurrentUserBody {
 }
 
 /**
- * `/auth/me`, `/auth/logout`, `/auth/config` (M2 stage 4 Part A, BUILD_AND_TEST.md §8 M2 item
+ * `/auth/me`, `/auth/logout`, `/auth/config` (M2 step 4 Part A, BUILD_AND_TEST.md §8 M2 item
  * 2) — the Web UI's session-discovery surface. `/auth/config` is public; the other two require
  * auth like everything else (auth/require-auth.ts).
  */

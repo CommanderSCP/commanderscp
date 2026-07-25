@@ -15,7 +15,7 @@ const PKCE_COOKIE_TTL_SECONDS = 600; // ~10 min — short-lived CSRF/replay wind
 const PKCE_COOKIE_PATH = "/api/v1/auth/oidc";
 
 /**
- * Generic OIDC login (M2 stage 2 Part B, DESIGN.md §7) — `GET /login` redirects to the IdP,
+ * Generic OIDC login (M2 step 2 Part B, DESIGN.md §7) — `GET /login` redirects to the IdP,
  * `GET /callback` completes the exchange, JIT-provisions the user, and sets the same session
  * cookie `routes/auth.ts` sets for local-auth. Like `routes/events.ts` (SSE), these are plain
  * browser-redirect routes, not JSON request/response pairs the Zod/OpenAPI contract pipeline

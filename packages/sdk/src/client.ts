@@ -2,7 +2,7 @@ import { createClient, createConfig } from "./generated/client/index.js";
 import type { Client } from "./generated/client/index.js";
 import {
   login as loginRequest,
-  // M2 stage 4 (BUILD_AND_TEST.md §8 M2 item 2) — how the Web UI discovers/ends its httpOnly
+  // M2 step 4 (BUILD_AND_TEST.md §8 M2 item 2) — how the Web UI discovers/ends its httpOnly
   // cookie session, and whether to offer "Continue with SSO" (routes/auth.ts Part A additions).
   getCurrentUser as getCurrentUserRequest,
   logout as logoutRequest,
@@ -111,7 +111,7 @@ import {
   addComponentDependsOn as addComponentDependsOnRequest,
   listComponentDependsOn as listComponentDependsOnRequest,
   removeComponentDependsOn as removeComponentDependsOnRequest,
-  // M2 stage 2: AuthN expansion (BUILD_AND_TEST.md §8 M2 item 3) — PATs + device authorization
+  // M2 step 2: AuthN expansion (BUILD_AND_TEST.md §8 M2 item 3) — PATs + device authorization
   // flow. Generic OIDC has no SDK surface — it's a browser-redirect flow (routes/oidc.ts).
   createPat as createPatRequest,
   listPats as listPatsRequest,
@@ -119,7 +119,7 @@ import {
   startDeviceAuth as startDeviceAuthRequest,
   approveDeviceAuth as approveDeviceAuthRequest,
   pollDeviceAuthToken as pollDeviceAuthTokenRequest,
-  // M2 stage 3: `@scp/iac` server-side plan/apply (BUILD_AND_TEST.md §8 M2 item 4).
+  // M2 step 3: `@scp/iac` server-side plan/apply (BUILD_AND_TEST.md §8 M2 item 4).
   createPlan as createPlanRequest,
   getPlan as getPlanRequest,
   applyPlan as applyPlanRequest,
@@ -556,7 +556,7 @@ export class ScpClient {
   }
 
   // -----------------------------------------------------------------------------------------
-  // Web UI v1 session discovery (M2 stage 4, BUILD_AND_TEST.md §8 M2 item 2) — `login()` above
+  // Web UI v1 session discovery (M2 step 4, BUILD_AND_TEST.md §8 M2 item 2) — `login()` above
   // stays where every existing caller (CLI, tests) already expects it; these three are new and
   // namespaced so they read as a group at call sites (`client.auth.me()`, etc).
   // -----------------------------------------------------------------------------------------
@@ -1133,7 +1133,7 @@ export class ScpClient {
   }
 
   // -----------------------------------------------------------------------------------------
-  // Personal Access Tokens (M2 stage 2 Part A, BUILD_AND_TEST.md §8 M2 item 3)
+  // Personal Access Tokens (M2 step 2 Part A, BUILD_AND_TEST.md §8 M2 item 3)
   // -----------------------------------------------------------------------------------------
 
   readonly pats = {
@@ -1160,7 +1160,7 @@ export class ScpClient {
   };
 
   // -----------------------------------------------------------------------------------------
-  // OIDC device authorization flow (M2 stage 2 Part C) — `.poll()` is a SINGLE poll; callers own
+  // OIDC device authorization flow (M2 step 2 Part C) — `.poll()` is a SINGLE poll; callers own
   // the retry/backoff loop (and can cancel it) rather than the SDK hiding it.
   // -----------------------------------------------------------------------------------------
 
@@ -1183,7 +1183,7 @@ export class ScpClient {
   };
 
   // -----------------------------------------------------------------------------------------
-  // `@scp/iac` server-side plan/apply (M2 stage 3, BUILD_AND_TEST.md §8 M2 item 4) — the diff
+  // `@scp/iac` server-side plan/apply (M2 step 3, BUILD_AND_TEST.md §8 M2 item 4) — the diff
   // engine lives once on the server (routes/plans.ts); `scp plan`/`scp apply` (packages/cli) are
   // thin callers of `.create()`/`.apply()` here, same layering as every other resource.
   // -----------------------------------------------------------------------------------------

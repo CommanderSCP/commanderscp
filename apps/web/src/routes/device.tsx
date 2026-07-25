@@ -9,7 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 /**
  * `/device` (BUILD_AND_TEST.md §8 M2 item 2) — browser approval page for the CLI's device-
  * authorization flow (routes/device-flow.ts `POST /auth/device/approve`). `?user_code=` pre-fills
- * the field; the full CLI polling round-trip is covered by stage 2's server-side integration test
+ * the field; the full CLI polling round-trip is covered by M2 step 2's server-side integration test
  * (auth/device-flow.ts) — this page just needs to render and submit correctly.
  */
 export function DevicePage(): React.JSX.Element {

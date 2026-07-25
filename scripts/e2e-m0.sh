@@ -6,7 +6,7 @@
 # authenticated GET against the public API (not the CLI that created it).
 #
 # This used to curl the M0 `/ui` server-rendered stub page and grep the raw HTML for the object's
-# name. Stage 4 retired that stub in favor of the real Web UI SPA served at `/` (apps/server/src/
+# name. Step 4 retired that stub in favor of the real Web UI SPA served at `/` (apps/server/src/
 # app.ts) — a client-rendered React app, so there's no server-rendered HTML to grep for dynamic
 # content anymore. `GET /api/v1/objects/service` is the direct API-level equivalent assertion.
 #

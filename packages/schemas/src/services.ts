@@ -11,7 +11,7 @@ import { ExecutorTypeSchema, ExecutorCategorySchema } from "./executors.js";
  * would have to page every change and `explain()` each to find "the latest change for this component"
  * — an O(all-changes) fan-out per board render. This endpoint collapses that to one HTTP call with the
  * fan-out contained in a single server transaction (the `latest-change-per-target` join is the sole
- * net-new capability). Strictly Layer A: no invented per-stage image versions or health — those are
+ * net-new capability). Strictly Layer A: no invented per-wave image versions or health — those are
  * Layer B and are surfaced by the UI as explicit placeholders, never fabricated here.
  */
 

@@ -4,8 +4,9 @@ import { Badge } from "../ui/badge";
 import { formatDate, waveStatusVariant } from "../../routes/change-detail";
 
 /**
- * The real-data source/executor links for one wave target (coordination-ui-views.md Layer A "stage
- * source/executor links"). Every field is optional because it comes from a *separate* lookup that
+ * The real-data source/executor links for one wave target (coordination-ui-views.md Layer A, where
+ * they are called "Stage source/executor links" — the wave sense of that word, ADR-0021 D6).
+ * Every field is optional because it comes from a *separate* lookup that
  * may legitimately be absent:
  *   executorRef       — the binding's `externalRef` (e.g. the Argo CD Application name). NB this is
  *                       sourced from the executor BINDING, never the wave-target's `executorRef`
@@ -13,14 +14,14 @@ import { formatDate, waveStatusVariant } from "../../routes/change-detail";
  *   executorSystemUrl — the registered `execution-system` object's `serverUrl` (deep-link base).
  *   repoPattern       — the source-mapping `repoPattern` (the git source/config repo).
  */
-export interface StageTargetLinks {
+export interface PipelineWaveTargetLinks {
   executorRef?: string | undefined;
   executorSystemUrl?: string | undefined;
   repoPattern?: string | undefined;
 }
 
-/** `border-t-transparent`-style highlight for the whole stage, mirroring waveCardClass semantics. */
-function stageBorderClass(status: string): string {
+/** `border-t-transparent`-style highlight for the whole wave, mirroring waveCardClass semantics. */
+function pipelineWaveBorderClass(status: string): string {
   switch (status) {
     case "running":
       return "border-blue-500 ring-1 ring-blue-500";
@@ -54,7 +55,7 @@ function hostOf(url: string): string {
 }
 
 /**
- * A short, human-facing label for a deployed image ref (ADR-0008 signal 1) — the per-stage version.
+ * A short, human-facing label for a deployed image ref (ADR-0008 signal 1) — the per-wave version.
  * Prefers the tag (`ghcr.io/x/y:1.2.3` → `1.2.3`); falls back to a git-style short digest
  * (`...@sha256:abcdef0…` → `sha256:abcdef0`); then to the image name. NEVER fabricates — the input
  * is the REAL ref reconcile observed from the executor. The `:`-that-is-a-tag is the last colon
@@ -87,42 +88,43 @@ export function imageVersionLabel(image: string): string {
 }
 
 /**
- * One pipeline stage = one compiled wave, rendered top-to-bottom (coordination-ui-views.md view 2,
- * Layer A). Shows the stage's status, its Category/Type pipeline-kind badges, and per-target rows
- * with their status, per-stage version (the observed deployed image tag/digest, revision as
+ * One compiled wave — one ordered step of the plan, the set of stages advanced at once (ADR-0021 D6)
+ * — rendered top-to-bottom (coordination-ui-views.md view 2,
+ * Layer A). Shows the wave's status, its Category/Type pipeline-kind badges, and per-target rows
+ * with their status, per-wave version (the observed deployed image tag/digest, revision as
  * secondary detail — ADR-0008 signal 1), and source/executor links. The version is the REAL snapshot
  * reconcile observed from status(); when nothing is observed yet it renders an explicit "—"
  * placeholder, never invented.
  */
-export function StageCard({
+export function PipelineWaveCard({
   wave,
-  stageNumber,
+  waveNumber,
   linksFor
 }: {
   wave: ChangeWave;
-  stageNumber: number;
-  linksFor: (target: ChangeWaveTarget) => StageTargetLinks;
+  waveNumber: number;
+  linksFor: (target: ChangeWaveTarget) => PipelineWaveTargetLinks;
 }): React.JSX.Element {
   const kinds = pipelineKinds(wave);
   return (
     <Card
-      className={`w-full max-w-2xl ${stageBorderClass(wave.status)}`}
-      data-testid="stage-card"
-      data-stage={stageNumber}
+      className={`w-full max-w-2xl ${pipelineWaveBorderClass(wave.status)}`}
+      data-testid="pipeline-wave-card"
+      data-wave={waveNumber}
     >
       <CardHeader>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle className="text-base">
-            Stage {stageNumber}
-            {wave.name ? `: ${wave.name}` : ` — Wave ${wave.waveIndex}`}
+            Wave {waveNumber}
+            {wave.name ? `: ${wave.name}` : ` (index ${wave.waveIndex})`}
           </CardTitle>
-          <Badge variant={waveStatusVariant(wave.status)} data-testid="stage-status-badge">
+          <Badge variant={waveStatusVariant(wave.status)} data-testid="pipeline-wave-status-badge">
             {wave.status}
           </Badge>
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-1.5">
           {kinds.map((k) => (
-            <Badge key={`${k.category}::${k.type}`} variant="secondary" data-testid="stage-kind-badge">
+            <Badge key={`${k.category}::${k.type}`} variant="secondary" data-testid="pipeline-wave-kind-badge">
               {k.category} · {k.type}
             </Badge>
           ))}
@@ -140,7 +142,7 @@ export function StageCard({
             <div
               key={target.id}
               className="rounded border border-slate-200 p-2 text-xs"
-              data-testid="stage-target-row"
+              data-testid="pipeline-wave-target-row"
             >
               <div className="flex items-center justify-between gap-2">
                 <span className="font-medium text-slate-900">
@@ -150,7 +152,7 @@ export function StageCard({
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-500">
                 <span>{target.category} · {target.type}</span>
-                {/* Per-stage version: the REAL snapshot reconcile observed from status(), never
+                {/* Per-wave version: the REAL snapshot reconcile observed from status(), never
                     fabricated. Prefer the deployed image tag/digest (ADR-0008 signal 1) — a better
                     human version than the git SHA — and demote the synced git revision (decision 1)
                     to a secondary detail. When neither is observed yet, keep the explicit
@@ -164,14 +166,14 @@ export function StageCard({
                         version{" "}
                         <span
                           className="font-mono text-slate-700"
-                          data-testid="stage-observed-image"
+                          data-testid="pipeline-wave-observed-image"
                         >
                           {imageVersionLabel(image)}
                         </span>
                         {revision && (
                           <span
                             className="ml-1 text-slate-400"
-                            data-testid="stage-observed-revision"
+                            data-testid="pipeline-wave-observed-revision"
                           >
                             (rev {revision.slice(0, 7)})
                           </span>
@@ -185,7 +187,7 @@ export function StageCard({
                         version{" "}
                         <span
                           className="font-mono text-slate-700"
-                          data-testid="stage-observed-revision"
+                          data-testid="pipeline-wave-observed-revision"
                         >
                           {revision.slice(0, 7)}
                         </span>
@@ -193,7 +195,7 @@ export function StageCard({
                     );
                   }
                   return (
-                    <span title="per-stage version/digest not observed yet">
+                    <span title="per-wave version/digest not observed yet">
                       version <span className="text-slate-400">—</span>
                     </span>
                   );
@@ -214,7 +216,7 @@ export function StageCard({
                   return (
                     <span
                       className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-600"
-                      data-testid="stage-observed-rollout"
+                      data-testid="pipeline-wave-observed-rollout"
                       title={rollout.message ? `rollout: ${rollout.message}` : "observed rollout state (read-only)"}
                     >
                       rollout {parts.join(" · ")}
@@ -222,7 +224,7 @@ export function StageCard({
                   );
                 })()}
                 {links.executorRef && (
-                  <span data-testid="stage-executor-link">
+                  <span data-testid="pipeline-wave-executor-link">
                     executor:{" "}
                     {links.executorSystemUrl ? (
                       <a
@@ -240,7 +242,7 @@ export function StageCard({
                   </span>
                 )}
                 {links.repoPattern && (
-                  <span className="font-mono text-slate-700" data-testid="stage-repo-link">
+                  <span className="font-mono text-slate-700" data-testid="pipeline-wave-repo-link">
                     repo: {links.repoPattern}
                   </span>
                 )}
@@ -248,7 +250,7 @@ export function StageCard({
             </div>
           );
         })}
-        {wave.targets.length === 0 && <p className="text-slate-500">No targets in this stage.</p>}
+        {wave.targets.length === 0 && <p className="text-slate-500">No targets in this wave.</p>}
       </CardContent>
     </Card>
   );

@@ -47,7 +47,7 @@ export const users = pgTable(
       .notNull()
       .references(() => orgs.id),
     username: text("username").notNull(),
-    // NULL for OIDC-provisioned accounts (M2 stage 2, drizzle/0004_auth_expansion.sql) — those
+    // NULL for OIDC-provisioned accounts (M2 step 2, drizzle/0004_auth_expansion.sql) — those
     // authenticate exclusively via the IdP, never a local password (auth/local-auth.ts `login()`
     // treats NULL the same as a wrong password).
     passwordHash: text("password_hash"),
@@ -77,7 +77,7 @@ export const sessions = pgTable("sessions", {
 });
 
 /**
- * Personal Access Tokens (M2 stage 2, BUILD_AND_TEST.md §8 M2 item 3) — auth substrate like
+ * Personal Access Tokens (M2 step 2, BUILD_AND_TEST.md §8 M2 item 3) — auth substrate like
  * orgs/users/sessions above (no RLS, see drizzle/0004_auth_expansion.sql). `tokenId` is an
  * indexable CLEARTEXT lookup key: argon2's output is salted/non-comparable, so — unlike
  * `sessions.tokenHash`'s SHA-256 equality lookup — a PAT can't be found by hashing the presented
@@ -107,7 +107,7 @@ export const personalAccessTokens = pgTable(
 );
 
 /**
- * SCP's own RFC 8628-shaped device-authorization flow (M2 stage 2 Part C) — hosted by SCP itself,
+ * SCP's own RFC 8628-shaped device-authorization flow (M2 step 2 Part C) — hosted by SCP itself,
  * not a proxy to the upstream IdP's device grant, so it works identically for local-auth-only
  * air-gapped orgs and OIDC-configured orgs alike (DESIGN.md §7 "headless jump boxes can't do
  * browser redirects"). Auth substrate, no RLS — same treatment as orgs/users/sessions.
@@ -220,7 +220,7 @@ export const relationships = pgTable(
       .notNull()
       .references(() => objects.id),
     properties: jsonb("properties").notNull().default({}),
-    // M2 stage 3 addition (BUILD_AND_TEST.md §8 M2 item 4, drizzle/0005_plans.sql) — mirrors
+    // M2 step 3 addition (BUILD_AND_TEST.md §8 M2 item 4, drizzle/0005_plans.sql) — mirrors
     // `objects.labels` so the `scp:managed-by`/`scp:stack` IaC pruning convention
     // (apps/server/src/iac/plan-diff.ts) applies uniformly to relationships, not just objects.
     labels: jsonb("labels").notNull().default({}),
@@ -338,7 +338,7 @@ export const outbox = pgTable(
 
 // -------------------------------------------------------------------------------------------
 // IaC plans (BUILD_AND_TEST.md §8 M2 item 4, DESIGN.md §15) — a `plans` table is a "projection
-// table for hot lifecycle state" (DESIGN.md §4.1): unlike M2 stage 1's typed registries (which
+// table for hot lifecycle state" (DESIGN.md §4.1): unlike M2 step 1's typed registries (which
 // deliberately reused objects/relationships), a plan has its own lifecycle (pending -> applied,
 // or stale) and needs real columns for that, so it's a dedicated table referencing the graph only
 // loosely (via URNs inside `manifest`/`diff`, not a `object_id` FK — a single plan touches many

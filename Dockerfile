@@ -8,7 +8,7 @@
 #
 # Simplification (recorded deviation): copies the whole pruned workspace into the runtime stage
 # rather than selectively copying per-package dist/ output. `pnpm build` (turbo) builds every
-# workspace package including apps/web (`vite build` -> apps/web/dist, M2 stage 4), and the
+# workspace package including apps/web (`vite build` -> apps/web/dist, M2 step 4), and the
 # `COPY --from=build /app /app` below picks that up along with every other package's dist/ —
 # apps/server's static mount (app.ts) then serves it directly from the copied
 # apps/web/dist. Slimming this further (pnpm deploy / per-package dist copies) is good follow-up

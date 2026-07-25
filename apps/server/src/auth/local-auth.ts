@@ -229,7 +229,7 @@ export async function verifyToken(db: Db, token: string): Promise<AuthContext | 
 }
 
 /**
- * `POST /auth/logout` (routes/auth.ts, M2 stage 4) — invalidates the session row a local-auth/
+ * `POST /auth/logout` (routes/auth.ts, M2 step 4) — invalidates the session row a local-auth/
  * OIDC session token resolves to, so it's rejected by `verifyToken` immediately, even if the
  * client kept a copy. Expires it (UPDATE) rather than deleting the row: the runtime `scp_app`
  * login role is only granted SELECT/INSERT/UPDATE on auth-substrate tables, never DELETE (PR #4

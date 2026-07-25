@@ -184,7 +184,7 @@ export async function buildApp(
   });
 
   registerAuthRoutes(app, deps);
-  // M2 stage 2: AuthN expansion (BUILD_AND_TEST.md §8 M2 item 3) — PATs, generic OIDC, and the
+  // M2 step 2: AuthN expansion (BUILD_AND_TEST.md §8 M2 item 3) — PATs, generic OIDC, and the
   // CLI device-authorization flow, alongside local-auth (unchanged) above.
   registerPatRoutes(app, deps);
   registerOidcRoutes(app, deps);
@@ -210,7 +210,7 @@ export async function buildApp(
   registerGraphRoutes(app, deps);
   registerAuditEventRoutes(app, deps);
   registerEventStreamRoute(app, deps);
-  // M2 stage 3: `@scp/iac` server-side plan/apply (BUILD_AND_TEST.md §8 M2 item 4).
+  // M2 step 3: `@scp/iac` server-side plan/apply (BUILD_AND_TEST.md §8 M2 item 4).
   registerPlanRoutes(app, deps);
   // M3: the Change lifecycle + Decision records (BUILD_AND_TEST.md §8 M3) — propose/list/get/
   // cancel/promote/rollback/explain, plus the standalone `/decisions` sub-resource.
@@ -244,7 +244,7 @@ export async function buildApp(
 
   app.get("/healthz", async () => ({ status: "ok" }));
 
-  // M2 stage 4 (BUILD_AND_TEST.md §8 M2 item 2, DESIGN.md §14): the built Web UI v1 SPA
+  // M2 step 4 (BUILD_AND_TEST.md §8 M2 item 2, DESIGN.md §14): the built Web UI v1 SPA
   // (apps/web/dist) — superseding the M0 `/ui` server-rendered stub, which is deleted (see
   // routes/typed-registries.ts and friends for the real API this now talks to via @scp/sdk).
   // `wildcard: false` makes this registration glob `apps/web/dist` once at boot and register one

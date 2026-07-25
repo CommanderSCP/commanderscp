@@ -22,7 +22,7 @@ interface PatBody {
 }
 
 /**
- * Personal Access Tokens (M2 stage 2 Part A, BUILD_AND_TEST.md §8 M2 item 3) — create/use/list/
+ * Personal Access Tokens (M2 step 2 Part A, BUILD_AND_TEST.md §8 M2 item 3) — create/use/list/
  * revoke, expiry, and the load-bearing RBAC-parity property: a PAT must resolve to EXACTLY the
  * same permission scope as the owning user's own session, never more.
  */

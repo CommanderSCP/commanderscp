@@ -1187,7 +1187,7 @@ describe("coordination engine: multi-replica trigger claim is single-flight (M8 
     // with a compiled plan and one `pending` wave target BEFORE either "replica" ever ticks. This
     // scopes the race to exactly the property this test exists to prove — single-flight around
     // the wave-target TRIGGER CLAIM under genuine multi-replica concurrency — without also
-    // exercising the earlier proposed/evaluated/coordinated pipeline stages concurrently (a
+    // exercising the earlier proposed/evaluated/coordinated pipeline phases concurrently (a
     // change's very first `evaluated -> coordinated` plan-compilation racing across two ticks is
     // a real, but SEPARATE, pre-existing concern this test deliberately does not conflate with the
     // trigger-claim guarantee it's here to verify).
@@ -1255,7 +1255,7 @@ describe("coordination engine: multi-replica trigger claim is single-flight (M8 
 });
 
 /**
- * M8 hardening — one pipeline stage EARLIER than the trigger-claim race above, found while
+ * M8 hardening — one pipeline phase EARLIER than the trigger-claim race above, found while
  * proving that fix under genuine multi-replica concurrency (coordinator follow-up on top of
  * BUILD_AND_TEST.md §8 M8 item 6): `reconcile.ts`'s `advanceEvaluatedChanges` compiles a change's
  * plan and transitions `evaluated -> coordinated`. Confirmed via direct DB inspection (before the
@@ -1426,7 +1426,7 @@ describe("coordination engine: webhook-event processing is single-flight across 
 
 /**
  * M8 hardening follow-up (adversarial review MINOR #5, disclosed as "undisclosed" in the M8 PR's
- * own "all three coordination races" claim — this is the 4th): one pipeline stage further than
+ * own "all three coordination races" claim — this is the 4th): one pipeline phase further than
  * the plan-compilation race above — `reconcile.ts`'s `reconcileExecutingChange` PENDING-wave
  * branch (`evaluateWaveGate` + `insertDecision` + `markWaveRunning`) had no per-change advisory
  * lock, so two concurrent replica ticks that both read the SAME wave as "pending" (the batch read
@@ -1455,7 +1455,7 @@ describe("coordination engine: wave-gate evaluation is single-flight (M8 hardeni
    *  `reconcileOrgTick` — same technique as the trigger-claim describe block's own
    *  `createExecutingChangeWithPendingTarget` above, scoped here to the WAVE-GATE race (one stage
    *  earlier: the gate has never been evaluated for this wave at all) rather than the
-   *  trigger-claim race (a different, already-proven-single-flight lock one stage later). */
+   *  trigger-claim race (a different, already-proven-single-flight lock one phase later). */
   async function createExecutingChangeWithPendingWave(
     name: string
   ): Promise<{ changeObjectId: string; targetObjectId: string }> {

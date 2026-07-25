@@ -23,7 +23,7 @@ import {
 
 const patsKey = ["pats"];
 
-/** `/pats` (BUILD_AND_TEST.md §8 M2 item 2, stage 2's PAT API) — list/create/revoke. */
+/** `/pats` (BUILD_AND_TEST.md §8 M2 item 2, M2 step 2's PAT API) — list/create/revoke. */
 export function PatsPage(): React.JSX.Element {
   const queryClient = useQueryClient();
   const [name, setName] = useState("");

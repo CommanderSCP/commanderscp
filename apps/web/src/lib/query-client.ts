@@ -45,7 +45,7 @@ export function changeApprovalsKey(changeId: string): unknown[] {
 }
 
 /** Query key for the component-pipeline view's per-target executor-binding + execution-system
- *  lookups (coordination-ui-views.md phase 1 — the stage source/executor links). Keyed by change
+ *  lookups (coordination-ui-views.md phase 1 — the per-wave source/executor links). Keyed by change
  *  id: the set of targets is fixed by that change's compiled plan. */
 export function changePipelineLinksKey(changeId: string): unknown[] {
   return ["change", "pipeline-links", changeId];

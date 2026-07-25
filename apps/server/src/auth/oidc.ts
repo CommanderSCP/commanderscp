@@ -15,7 +15,7 @@ import { unauthorized } from "../errors.js";
 type OidcConfig = NonNullable<ServerConfig["oidc"]>;
 
 /**
- * Generic OIDC (Authorization Code + PKCE via `openid-client`) — DESIGN.md §7, M2 stage 2 Part B.
+ * Generic OIDC (Authorization Code + PKCE via `openid-client`) — DESIGN.md §7, M2 step 2 Part B.
  * One config (issuer discovery) covers Okta/Entra/Keycloak/Ping with no per-provider special
  * casing. Written as a self-contained module with a clear `authorize()`/`handleCallback()` seam
  * (the "IdentityPlugin seam" the M2 task describes) so it's easy to lift into a real
@@ -145,7 +145,7 @@ async function uniqueUsername(tx: TenantTx, orgId: string, desired: string): Pro
  * tenant transaction, the `users` row inserted afterward via a plain `db` call — orgs/users/
  * sessions/PATs are pre-tenant-resolution auth substrate with no RLS, DESIGN.md §4.2).
  *
- * Least privilege (security-sensitive, flagged in the M2 stage 2 report): JIT-provisioned
+ * Least privilege (security-sensitive, flagged in the M2 step 2 report): JIT-provisioned
  * accounts get the built-in Viewer role at the org root, never Owner/Administrator — an admin can
  * grant more afterward. Race note: if two concurrent first-logins for the same (org, sub) land at
  * once, the loser's graph object/role binding is orphaned (harmless, unreferenced) and this

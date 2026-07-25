@@ -54,7 +54,7 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
   });
 
   // -------------------------------------------------------------------------------------------
-  // Web UI v1 (M2 stage 4, BUILD_AND_TEST.md §8 M2 item 2) — the SPA has no way to read the
+  // Web UI v1 (M2 step 4, BUILD_AND_TEST.md §8 M2 item 2) — the SPA has no way to read the
   // httpOnly `scp_session` cookie itself, so it discovers "am I logged in" via `/auth/me` and
   // ends its session via `/auth/logout`. `/auth/config` is public so the login page can decide
   // whether to render "Continue with SSO" before the visitor has any credentials.
