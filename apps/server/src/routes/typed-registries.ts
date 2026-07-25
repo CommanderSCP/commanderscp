@@ -26,6 +26,10 @@ import {
   updateObject,
   upsertObjectByUrn
 } from "../graph/objects-repo.js";
+import {
+  containmentDomainIdFromWire,
+  listObjectsQueryFromWire
+} from "../domain-id-edge.js";
 import { assertPolicyScopeWithinAuthority } from "../governance/policy-scope-authz.js";
 
 function idempotencyKey(request: FastifyRequest): string | undefined {
@@ -146,7 +150,8 @@ export function registerTypedRegistryRoutes(
         const scopeObjectId = await resolveDomainId(
           tx,
           auth.orgId,
-          request.body.domainId ?? undefined
+          // WIRE BOUNDARY (ADR-0021 D4) — see src/domain-id-edge.ts.
+          containmentDomainIdFromWire(request.body.domainId) ?? undefined
         );
         await authorize(tx, {
           orgId: auth.orgId,
@@ -177,7 +182,7 @@ export function registerTypedRegistryRoutes(
               id: request.body.id,
               urn: request.body.urn,
               name: request.body.name,
-              domainId: request.body.domainId ?? undefined,
+              domainId: containmentDomainIdFromWire(request.body.domainId) ?? undefined,
               properties: request.body.properties,
               labels: request.body.labels
             })
@@ -213,7 +218,7 @@ export function registerTypedRegistryRoutes(
           permission: readPermission,
           scopeObjectId: auth.orgId
         });
-        return listObjects(tx, auth.orgId, typeId, request.query);
+        return listObjects(tx, auth.orgId, typeId, listObjectsQueryFromWire(request.query));
       });
       reply.status(200).send(page);
     }
@@ -304,7 +309,7 @@ export function registerTypedRegistryRoutes(
           requestId: request.id,
           idOrUrn,
           name: request.body.name,
-          domainId: request.body.domainId,
+          domainId: containmentDomainIdFromWire(request.body.domainId),
           properties: request.body.properties,
           labels: request.body.labels,
           expectedVersion: request.body.version
@@ -387,7 +392,11 @@ export function registerTypedRegistryRoutes(
         });
         const scopeObjectId = existing
           ? existing.id
-          : ((await resolveDomainId(tx, auth.orgId, request.body.domainId ?? undefined)) ??
+          : ((await resolveDomainId(
+              tx,
+              auth.orgId,
+              containmentDomainIdFromWire(request.body.domainId) ?? undefined
+            )) ??
             auth.orgId);
         await authorize(tx, {
           orgId: auth.orgId,
@@ -408,7 +417,7 @@ export function registerTypedRegistryRoutes(
           urn,
           id: request.body.id,
           name: request.body.name,
-          domainId: request.body.domainId,
+          domainId: containmentDomainIdFromWire(request.body.domainId),
           properties: request.body.properties,
           labels: request.body.labels
         });

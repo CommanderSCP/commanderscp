@@ -1,5 +1,10 @@
 import { and, asc, eq, sql } from "drizzle-orm";
-import type { CampaignStatus, Initiative, InitiativeMemberCampaign } from "@scp/schemas";
+import type {
+  CampaignStatus,
+  ContainmentDomainId,
+  Initiative,
+  InitiativeMemberCampaign
+} from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects, relationships } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
@@ -90,7 +95,8 @@ export interface ProposeInitiativeInput {
   requestId: string;
   id?: string;
   urn?: string;
-  domainId?: string | null;
+  /** CONTAINMENT sense (ADR-0021 D4). */
+  domainId?: ContainmentDomainId | null;
   name: string;
   description?: string;
   labels?: Record<string, unknown>;

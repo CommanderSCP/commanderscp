@@ -10,6 +10,8 @@ import { ensureFederationSelf, type FederationSelf } from "./self-repo.js";
 import { pairPeer, currentPeerKeyRow, getPeerByIdOrName, listPeers } from "./peers-repo.js";
 import { getFederationStatus } from "./status-repo.js";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
+import { asTrustDomainId } from "@scp/schemas";
+import { TrustDomainId } from "@scp/schemas";
 
 /**
  * M17.3 E5 — DISTRIBUTION of SCP's cosign VERIFICATION public key to peers so they can LATER (E6 /
@@ -63,7 +65,7 @@ async function statusWithCosign(domain: IsolatedDomain, gen: CosignKeyGenerator)
   return { cosign, status };
 }
 
-async function peerKeyRowsBySequence(domain: IsolatedDomain, peerDomainId: string) {
+async function peerKeyRowsBySequence(domain: IsolatedDomain, peerDomainId: TrustDomainId) {
   return withTenantTx(domain.db, domain.orgId, (tx) =>
     tx
       .select()
@@ -183,7 +185,7 @@ describe("M17.3 E5: cosign public-key distribution (Testcontainers)", () => {
   it("a changed cosign pubkey rotates via the existing supersede window (old key retained)", async () => {
     const domain = await createIsolatedDomain("e5-rotate");
     try {
-      const peerDomainId = randomUUID();
+      const peerDomainId = asTrustDomainId(randomUUID());
       const ed = ed25519KeypairB64();
       const cosign1 = "-----BEGIN PUBLIC KEY-----\nROTATE-COSIGN-V1\n-----END PUBLIC KEY-----\n";
       const cosign2 = "-----BEGIN PUBLIC KEY-----\nROTATE-COSIGN-V2\n-----END PUBLIC KEY-----\n";
@@ -273,7 +275,7 @@ describe("M17.3 E5: cosign public-key distribution (Testcontainers)", () => {
   it("an old pair request without a cosign pubkey still pairs, and never strips an existing one", async () => {
     const domain = await createIsolatedDomain("e5-additive");
     try {
-      const peerDomainId = randomUUID();
+      const peerDomainId = asTrustDomainId(randomUUID());
       const ed = ed25519KeypairB64();
 
       // Pre-E5-style pairing: no cosign field at all → registered as null, still pairs.

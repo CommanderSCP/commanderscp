@@ -28,6 +28,7 @@ import {
   type TestCa,
   type TestLeafCert
 } from "./test-support/mtls-pki.js";
+import { asTrustDomainId } from "@scp/schemas";
 
 /**
  * M14.2 (ADR-0009, docs/proposals/outpost-poke.md) — the INBOUND CONTENTLESS POKE endpoint, driven
@@ -152,8 +153,8 @@ describe.skipIf(!opensslAvailable())(
 
       // Enroll two commander peers on the RECEIVER side: one this instance has opted into pokes from
       // (pokeMode=true), one it has not (pokeMode=false). Each carries its own enrolled client cert.
-      const pokeDomainId = randomUUID();
-      const noPokeDomainId = randomUUID();
+      const pokeDomainId = asTrustDomainId(randomUUID());
+      const noPokeDomainId = asTrustDomainId(randomUUID());
       pokePeer = {
         domainId: pokeDomainId,
         leaf: issueLeafCert(ca, { name: "cmd-poke", sanUri: federationPeerSanUri(pokeDomainId) })
@@ -428,7 +429,7 @@ describe.skipIf(!opensslAvailable())("M14.4 air-gap poke leg — the poke wakes 
     adminToken = org.adminToken;
     await withTenantTx(db, orgId, (tx) => ensureFederationSelf(tx, orgId));
 
-    const relayDomainId = randomUUID();
+    const relayDomainId = asTrustDomainId(randomUUID());
     relay = {
       domainId: relayDomainId,
       leaf: issueLeafCert(ca, {

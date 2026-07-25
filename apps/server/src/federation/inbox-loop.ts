@@ -80,7 +80,12 @@ import { readFile } from "node:fs/promises";
 import { and, eq, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type PgBoss from "pg-boss";
-import { ImportBundleRequestSchema, type ImportBundleRequest, type PromotionBundle } from "@scp/schemas";
+import {
+  ImportBundleRequestSchema,
+  type ImportBundleRequest,
+  type PromotionBundle,
+  type TrustDomainId
+} from "@scp/schemas";
 import type { Db } from "../db/client.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { changes, federationInboxFiles, orgs } from "../db/schema.js";
@@ -367,7 +372,7 @@ function upstreamRelayCosignKey(peers: FederationPeerRow[]): string | null {
 function resolveOnwardOutDir(
   peers: FederationPeerRow[],
   config: RelayConfig
-): { dir: string; peerDomainId?: string } | { problem: string } {
+): { dir: string; peerDomainId?: TrustDomainId } | { problem: string } {
   const peerOut = peers
     .map((peer) => ({ peer, resolved: resolveDeliveryTarget(peer, config) }))
     // Filesystem onward dirs only — an s3-compatible peer has `outbound.dir === null` (location is

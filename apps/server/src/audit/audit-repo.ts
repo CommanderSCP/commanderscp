@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
-import type { AuditEvent } from "@scp/schemas";
+import type { AuditEvent, ContainmentDomainId } from "@scp/schemas";
 // Node-only hashing (`node:crypto`) — deliberately a separate subpath from `@scp/schemas`'
 // default entry, which `apps/web` also imports (browser build) — see audit-chain.ts's module doc.
 import { AUDIT_GENESIS_HASH, computeRowHash } from "@scp/schemas/audit-chain";
@@ -10,7 +10,8 @@ import { appendJournalEntry } from "../federation/journal-repo.js";
 
 export interface AppendAuditEventInput {
   orgId: string;
-  domainId?: string | null;
+  /** CONTAINMENT sense (ADR-0021 D4) — the containing `domain` object, never a federation id. */
+  domainId?: ContainmentDomainId | null;
   actorId: string;
   action: string;
   subjectId?: string | null;

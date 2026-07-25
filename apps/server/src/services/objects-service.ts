@@ -6,6 +6,7 @@ import type {
 import type { AppDeps } from "../types.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { createObject, listObjects, resolveDomainId } from "../graph/objects-repo.js";
+import { containmentDomainIdFromWire } from "../domain-id-edge.js";
 import { authorize } from "../authz/resolve.js";
 import { withIdempotency } from "../idempotency.js";
 import type { GraphObject } from "@scp/schemas";
@@ -46,7 +47,12 @@ export async function createServiceObject(
   idempotencyKey: string | undefined
 ): Promise<ServiceObject> {
   const created = await withTenantTx(deps.db, orgId, async (tx) => {
-    const scopeObjectId = await resolveDomainId(tx, orgId, body.domainId ?? undefined);
+    // WIRE BOUNDARY (ADR-0021 D4) — see src/domain-id-edge.ts.
+    const scopeObjectId = await resolveDomainId(
+      tx,
+      orgId,
+      containmentDomainIdFromWire(body.domainId) ?? undefined
+    );
     await authorize(tx, {
       orgId,
       subjectObjectId: actorObjectId,
@@ -66,7 +72,7 @@ export async function createServiceObject(
           id: body.id,
           urn: body.urn,
           name: body.name,
-          domainId: body.domainId,
+          domainId: containmentDomainIdFromWire(body.domainId),
           properties: body.properties,
           labels: body.labels
         })

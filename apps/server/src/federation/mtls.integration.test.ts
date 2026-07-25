@@ -32,6 +32,7 @@ import {
   type TestCa,
   type TestLeafCert
 } from "./test-support/mtls-pki.js";
+import { asTrustDomainId } from "@scp/schemas";
 
 /**
  * M9.3 (ADR-0001, `docs/adr/0001-in-app-federation-mtls.md`) — the attack-matrix integration
@@ -267,7 +268,7 @@ describe.skipIf(!opensslAvailable())("in-app federation mTLS (M9.3, ADR-0001)", 
       { domainId: string; leaf: TestLeafCert; keys: { publicKey: string; privateKey: string } }
     > = {};
     for (const spec of peerSpecs) {
-      const domainId = randomUUID();
+      const domainId = asTrustDomainId(randomUUID());
       const leaf = issueLeafCert(ca, { name: spec.key, sanUri: federationPeerSanUri(domainId) });
       const keys = generateEd25519KeypairB64();
       await withTenantTx(setup.deps.db, org.orgId, (tx) =>
@@ -514,7 +515,7 @@ describe.skipIf(!opensslAvailable())("in-app federation mTLS (M9.3, ADR-0001)", 
     await withTenantTx(setup.deps.db, org.orgId, (tx) =>
       pairPeer(tx, {
         orgId: org.orgId,
-        domainId: randomUUID(),
+        domainId: asTrustDomainId(randomUUID()),
         name: "plain-child",
         role: "outpost",
         publicKey: generateEd25519KeypairB64().publicKey

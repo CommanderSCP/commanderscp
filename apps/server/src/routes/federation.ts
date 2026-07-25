@@ -23,6 +23,7 @@ import {
   SyncBundleSchema
 } from "@scp/schemas";
 import type { ImportBundleRequest, PromotionBundle } from "@scp/schemas";
+import { trustDomainIdFromWire } from "../domain-id-edge.js";
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
@@ -241,7 +242,13 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         // operator-declared SCP_DELIVERY_ROOTS — refuse an out-of-root (or unrooted) dir here so it
         // is NEVER stored (the resolution side re-checks fail-closed for anything already in the DB).
         assertDeliveryTargetRooted(request.body.deliveryTarget);
-        return pairPeer(tx, { orgId: auth.orgId, ...request.body });
+        return pairPeer(tx, {
+          orgId: auth.orgId,
+          ...request.body,
+          // WIRE BOUNDARY (ADR-0021 D4) — see src/domain-id-edge.ts: `PairPeerRequestSchema`
+          // declares the peer's own federation identity, i.e. the TRUST sense.
+          domainId: trustDomainIdFromWire(request.body.domainId)
+        });
       });
       reply.status(201).send(peer);
     }

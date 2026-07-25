@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
-import { ExecutorTypeSchema, type Change, type ChangeState, type ExecutorType } from "@scp/schemas";
+import {
+  ExecutorTypeSchema,
+  type Change,
+  type ChangeState,
+  type ContainmentDomainId,
+  type ExecutorType,
+  type TrustDomainId
+} from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changes, objects } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
@@ -55,7 +62,8 @@ export interface ProposeChangeInput {
   requestId: string;
   id?: string;
   urn?: string;
-  domainId?: string | null;
+  /** CONTAINMENT sense (ADR-0021 D4). */
+  domainId?: ContainmentDomainId | null;
   name: string;
   properties?: Record<string, unknown>;
   labels?: Record<string, unknown>;
@@ -92,7 +100,7 @@ export interface ProposeChangeInput {
    *  originates at THIS domain) that must still pass every local policy/control/approval gate —
    *  approvals carried in the bundle are evidence attached separately (imported_approval_evidence),
    *  never a bypass of local governance. */
-  importedFromDomain?: string;
+  importedFromDomain?: TrustDomainId;
 }
 
 /**

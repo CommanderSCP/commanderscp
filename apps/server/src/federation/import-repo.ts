@@ -1,4 +1,11 @@
-import type { SyncBundle, SyncJournalEntry } from "@scp/schemas";
+import {
+  asContainmentDomainId,
+  asTrustDomainId,
+  type ContainmentDomainId,
+  type SyncBundle,
+  type SyncJournalEntry,
+  type TrustDomainId
+} from "@scp/schemas";
 import {
   computeBundleChecksum,
   verifyBundleSignature,
@@ -123,21 +130,23 @@ async function resolveImportDomainId(
   tx: TenantTx,
   orgId: string,
   rawDomainId: unknown
-): Promise<string | null | undefined> {
+): Promise<ContainmentDomainId | null | undefined> {
   if (rawDomainId === null) return undefined; // never re-parent a replica onto THIS domain's own root
   if (typeof rawDomainId !== "string") return undefined;
   const parent = await tx.query.objects.findFirst({
     where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
       andOp(eqOp(t.id, rawDomainId), eqOp(t.orgId, orgId), isNullOp(t.deletedAt))
   });
-  return parent ? rawDomainId : undefined;
+  // BOUNDARY (ADR-0021 D4): `rawDomainId` is untyped bundle-payload JSON. It becomes a
+  // containment domain id only once it has been shown to name a live object in THIS org.
+  return parent ? asContainmentDomainId(rawDomainId) : undefined;
 }
 
 async function applyEntry(
   tx: TenantTx,
   orgId: string,
   entry: SyncJournalEntry,
-  exporterDomainId: string
+  exporterDomainId: TrustDomainId
 ): Promise<void> {
   const payload = entry.payload;
   const requestId = `federation-import:${entry.id}`;
@@ -290,7 +299,12 @@ export async function importSyncBundle(
       `bundle is addressed to domain '${bundle.header.peerDomainId}', not this domain ('${self.domainId}')`
     );
   }
-  const peer = await getPeerByIdOrName(tx, orgId, bundle.header.exporterDomainId);
+  // BOUNDARY (ADR-0021 D4): the exporter identity arrives as a plain string on the wire. It is
+  // the bundle's claimed AUTHORITY, and every use below (cursor key, single-writer stamp) is the
+  // trust sense — never a containment parent. Asserted once here, after the addressed-to-us check
+  // and immediately before the peer lookup that pins it to a paired peer.
+  const exporterDomainId = asTrustDomainId(bundle.header.exporterDomainId);
+  const peer = await getPeerByIdOrName(tx, orgId, exporterDomainId);
   const keyWindows = await listPeerKeyWindows(tx, orgId, peer.id);
   const currentPeerKey = keyWindows.find((k) => k.supersededAtSequence === null)?.publicKey ?? null;
 
@@ -336,7 +350,7 @@ export async function importSyncBundle(
   // in-scope entries becomes undetectable, inherent to scoping). A `full` peer keeps the strict
   // contiguous, cursor-continuous verification with trust-on-first-sync.
   const isFullScope = peer.syncScope.mode === "full";
-  const cursor = await getCursor(tx, orgId, peer.id, bundle.header.exporterDomainId);
+  const cursor = await getCursor(tx, orgId, peer.id, exporterDomainId);
   const toApply = bundle.entries.filter((entry) => entry.sequence > cursor.sequence);
 
   // Single-writer authority: every entry about to be applied must be authored by the verified
@@ -344,7 +358,7 @@ export async function importSyncBundle(
   // assertEntryAuthoredBySigner). Runs before verification/apply so forged-authorship is caught
   // fail-closed regardless of scope.
   for (const entry of toApply) {
-    assertEntryAuthoredBySigner(entry, bundle.header.exporterDomainId);
+    assertEntryAuthoredBySigner(entry, exporterDomainId);
   }
 
   if (toApply.length > 0) {
@@ -375,20 +389,13 @@ export async function importSyncBundle(
     // export). All toApply entries in a scoped bundle are in-scope; this only ever skips if an
     // exporter shipped something out-of-scope.
     if (entryMatchesScope(entry, peer.syncScope)) {
-      await applyEntry(tx, orgId, entry, bundle.header.exporterDomainId);
+      await applyEntry(tx, orgId, entry, exporterDomainId);
       applied += 1;
     }
     lastSequence = entry.sequence;
     // Full scope: advance per applied entry, carrying the rowHash for next sync's continuity check.
     if (isFullScope) {
-      await advanceCursor(
-        tx,
-        orgId,
-        peer.id,
-        bundle.header.exporterDomainId,
-        entry.sequence,
-        entry.rowHash
-      );
+      await advanceCursor(tx, orgId, peer.id, exporterDomainId, entry.sequence, entry.rowHash);
     }
   }
 
@@ -398,7 +405,7 @@ export async function importSyncBundle(
   if (!isFullScope) {
     const advanceTo = Math.max(cursor.sequence, bundle.header.throughSequence, lastSequence);
     if (advanceTo > cursor.sequence) {
-      await advanceCursor(tx, orgId, peer.id, bundle.header.exporterDomainId, advanceTo, null);
+      await advanceCursor(tx, orgId, peer.id, exporterDomainId, advanceTo, null);
     }
   }
 

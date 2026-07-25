@@ -1,6 +1,11 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
-import type { GraphObject } from "@scp/schemas";
+import {
+  asContainmentDomainId,
+  type ContainmentDomainId,
+  type GraphObject,
+  type TrustDomainId
+} from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects } from "../db/schema.js";
 import { badRequest, conflict, notFound, preconditionFailed } from "../errors.js";
@@ -29,7 +34,8 @@ import { canonicalJson } from "../util/canonical-json.js";
  * can never be forged into pointing at a domain that didn't cryptographically sign for it.
  */
 export interface FederationImportContext {
-  originDomainId: string;
+  /** TRUST sense (ADR-0021 D4) — the security domain that authored the imported row. */
+  originDomainId: TrustDomainId;
   revision: number;
   provenance?: "manual" | null;
 }
@@ -104,8 +110,9 @@ export interface CreateObjectInput {
   id?: string;
   urn?: string;
   name: string;
-  /** `undefined` = default to the org root object; `null` = this IS the org root (bootstrap only). */
-  domainId?: string | null;
+  /** CONTAINMENT sense (ADR-0021 D4). `undefined` = default to the org root object; `null` = this
+   *  IS the org root (bootstrap only). */
+  domainId?: ContainmentDomainId | null;
   properties?: Record<string, unknown>;
   labels?: Record<string, unknown>;
   /** M6: set ONLY by `federation/import-repo.ts` after signature/chain verification — see
@@ -124,9 +131,12 @@ export interface CreateObjectInput {
 export async function resolveDomainId(
   tx: TenantTx,
   orgId: string,
-  domainId: string | null | undefined
-): Promise<string | null> {
-  if (domainId === undefined) return getOrgRootObjectId(tx, orgId);
+  domainId: ContainmentDomainId | null | undefined
+): Promise<ContainmentDomainId | null> {
+  // BOUNDARY (ADR-0021 D4): the org root is an ordinary object id being promoted into the
+  // containment-parent role — `getOrgRootObjectId` returns a plain object id, and this is the
+  // one place that answer becomes a containment domain id.
+  if (domainId === undefined) return asContainmentDomainId(await getOrgRootObjectId(tx, orgId));
   if (domainId === null) return null;
   const parent = await tx.query.objects.findFirst({
     where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.id, domainId), eqOp(t.orgId, orgId))
@@ -296,7 +306,8 @@ export async function getObjectByIdOrUrnAnyType(
 export interface ListObjectsQuery {
   cursor?: string | undefined;
   limit: number;
-  domainId?: string | undefined;
+  /** CONTAINMENT sense (ADR-0021 D4). */
+  domainId?: ContainmentDomainId | undefined;
   includeDeleted?: boolean;
 }
 
@@ -341,7 +352,8 @@ export interface UpdateObjectInput {
   requestId: string;
   idOrUrn: string;
   name?: string;
-  domainId?: string | null;
+  /** CONTAINMENT sense (ADR-0021 D4). */
+  domainId?: ContainmentDomainId | null;
   properties?: Record<string, unknown>;
   labels?: Record<string, unknown>;
   /** Optimistic concurrency (DESIGN.md §4.1) — required when set, mismatch is a 412. */
@@ -509,7 +521,8 @@ export interface UpsertObjectByUrnInput {
   urn: string;
   id?: string;
   name: string;
-  domainId?: string | null;
+  /** CONTAINMENT sense (ADR-0021 D4). */
+  domainId?: ContainmentDomainId | null;
   properties?: Record<string, unknown>;
   labels?: Record<string, unknown>;
   /** M6: see `FederationImportContext`'s doc comment above `createObject`. */

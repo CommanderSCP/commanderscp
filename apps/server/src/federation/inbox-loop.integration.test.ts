@@ -40,6 +40,7 @@ import {
   processInboxFile,
   type InboxFileOutcome
 } from "./inbox-loop.js";
+import { asTrustDomainId, type TrustDomainId } from "@scp/schemas";
 
 /**
  * M13.1a — the staging-node INBOX INGEST LOOP, end to end: THE 13.1a DoD suite (proposal §13.1,
@@ -94,9 +95,9 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
   let destBlobDir: string;
 
   let scratch: string;
-  let commanderDomainId: string;
-  let retransDomainId: string;
-  let outpostDomainId: string;
+  let commanderDomainId: TrustDomainId;
+  let retransDomainId: TrustDomainId;
+  let outpostDomainId: TrustDomainId;
   let commanderKeyPath: string;
   let retransCosignPub: string;
   let cosignBin: string;
@@ -276,7 +277,7 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
       // double-retrans crossing pairs.
       await pairPeer(tx, {
         orgId: retrans.orgId,
-        domainId: randomUUID(),
+        domainId: asTrustDomainId(randomUUID()),
         name: "retrans-low",
         role: "retrans",
         publicKey: retransEd.publicKey,

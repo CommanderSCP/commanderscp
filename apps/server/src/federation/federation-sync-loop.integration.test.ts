@@ -15,6 +15,8 @@ import {
   wakeFederationSyncNow,
   type FederationSyncLoopHandle
 } from "./federation-sync.js";
+import { TrustDomainId } from "@scp/schemas";
+import { asTrustDomainId } from "@scp/schemas";
 
 /**
  * M14.4 (test g) — THE WAKE AT THE REAL pg-boss LEVEL. Everything else in this milestone drives
@@ -38,7 +40,7 @@ describe("M14.4 federation-sync loop — the poke wake at the pg-boss level", ()
   let boss: PgBoss;
   let domain: IsolatedDomain;
   let loop: FederationSyncLoopHandle;
-  let peerId: string;
+  let peerId: TrustDomainId;
   let previousLoopFlag: string | undefined;
 
   async function lastAttemptMs(): Promise<number | null> {
@@ -94,7 +96,7 @@ describe("M14.4 federation-sync loop — the poke wake at the pg-boss level", ()
     boss = await startPgBoss(testPgBossDatabaseUrl());
     domain = await createIsolatedDomain("syncloop");
 
-    peerId = randomUUID();
+    peerId = asTrustDomainId(randomUUID());
     const { publicKey } = generateKeyPairSync("ed25519");
     await withTenantTx(domain.db, domain.orgId, (tx) =>
       pairPeer(tx, {

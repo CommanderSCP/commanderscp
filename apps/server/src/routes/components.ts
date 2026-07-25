@@ -27,6 +27,10 @@ import {
   updateObject,
   upsertObjectByUrn
 } from "../graph/objects-repo.js";
+import {
+  containmentDomainIdFromWire,
+  listObjectsQueryFromWire
+} from "../domain-id-edge.js";
 import { createComponentInService, setComponentService } from "../graph/components-repo.js";
 import { mergeComponents } from "../coordination/component-merge-repo.js";
 
@@ -94,7 +98,7 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
               id: request.body.id,
               urn: request.body.urn,
               name: request.body.name,
-              domainId: request.body.domainId,
+              domainId: containmentDomainIdFromWire(request.body.domainId),
               properties: request.body.properties,
               labels: request.body.labels,
               serviceIdOrUrn: request.body.service
@@ -115,7 +119,7 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
       const auth = await requireAuth(deps, request);
       const page = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "object:read", scopeObjectId: auth.orgId });
-        return listObjects(tx, auth.orgId, "component", request.query);
+        return listObjects(tx, auth.orgId, "component", listObjectsQueryFromWire(request.query));
       });
       reply.status(200).send(page);
     }
@@ -154,7 +158,7 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
           requestId: request.id,
           idOrUrn: request.params.idOrUrn,
           name: request.body.name,
-          domainId: request.body.domainId,
+          domainId: containmentDomainIdFromWire(request.body.domainId),
           properties: request.body.properties,
           labels: request.body.labels,
           expectedVersion: request.body.version
@@ -209,7 +213,7 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
             urn,
             id: request.body.id,
             name: request.body.name,
-            domainId: request.body.domainId,
+            domainId: containmentDomainIdFromWire(request.body.domainId),
             properties: request.body.properties,
             labels: request.body.labels,
             serviceIdOrUrn: request.body.service
@@ -226,7 +230,7 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
           urn,
           id: request.body.id,
           name: request.body.name,
-          domainId: request.body.domainId,
+          domainId: containmentDomainIdFromWire(request.body.domainId),
           properties: request.body.properties,
           labels: request.body.labels
         });

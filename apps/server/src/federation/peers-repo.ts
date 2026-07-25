@@ -1,6 +1,11 @@
 import { and, asc, desc, eq, isNull, lte, or } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
-import type { DeliveryTarget, SyncScope } from "@scp/schemas";
+import {
+  asTrustDomainId,
+  type DeliveryTarget,
+  type SyncScope,
+  type TrustDomainId
+} from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { federationPeers, federationPeerKeys } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
@@ -17,7 +22,8 @@ import { federationPeerRequiresMtls } from "./federation-outbound.js";
  */
 
 export interface FederationPeerRow {
-  id: string; // = peer's own federation domain id
+  /** TRUST sense (ADR-0021 D4) — = the peer's own `federation_self.domainId`. */
+  id: TrustDomainId;
   orgId: string;
   name: string;
   role: "commander" | "outpost" | "retrans";
@@ -74,7 +80,7 @@ function toPeerRow(
 export async function currentPeerKeyRow(
   tx: TenantTx,
   orgId: string,
-  peerDomainId: string
+  peerDomainId: TrustDomainId
 ): Promise<{ publicKey: string; cosignPublicKey: string | null } | null> {
   const rows = await tx
     .select()
@@ -96,7 +102,7 @@ export async function currentPeerKeyRow(
 export async function currentPeerPublicKey(
   tx: TenantTx,
   orgId: string,
-  peerDomainId: string
+  peerDomainId: TrustDomainId
 ): Promise<string | null> {
   const row = await currentPeerKeyRow(tx, orgId, peerDomainId);
   return row?.publicKey ?? null;
@@ -112,7 +118,7 @@ export async function currentPeerPublicKey(
 export async function currentPeerCosignPublicKey(
   tx: TenantTx,
   orgId: string,
-  peerDomainId: string
+  peerDomainId: TrustDomainId
 ): Promise<string | null> {
   const row = await currentPeerKeyRow(tx, orgId, peerDomainId);
   return row?.cosignPublicKey ?? null;
@@ -129,7 +135,7 @@ export interface PeerKeyWindow {
 export async function listPeerKeyWindows(
   tx: TenantTx,
   orgId: string,
-  peerDomainId: string
+  peerDomainId: TrustDomainId
 ): Promise<PeerKeyWindow[]> {
   const rows = await tx
     .select()
@@ -172,7 +178,8 @@ export function verificationKeyForSequence(
 
 export interface PairPeerInput {
   orgId: string;
-  domainId: string;
+  /** TRUST sense (ADR-0021 D4) — the peer's own federation identity. */
+  domainId: TrustDomainId;
   name: string;
   role: "commander" | "outpost" | "retrans";
   publicKey: string;
@@ -351,8 +358,11 @@ export async function getPeerByIdOrName(
   // peer NAME) is a Postgres type error, not merely a non-match, so the id branch of the OR is
   // only included when `idOrName` actually parses as a UUID (mirrors `graph/objects-repo.ts`'s
   // `idOrUrnCondition` convention for the identical id-or-friendly-name ergonomic).
+  // BOUNDARY (ADR-0021 D4): `idOrName` is an operator-supplied identifier that may be either a
+  // trust-domain id or a human peer name. The `isUuid` branch is exactly where it has been
+  // established to be the former, so that is where the brand is asserted.
   const condition = isUuid(idOrName)
-    ? or(eq(federationPeers.id, idOrName), eq(federationPeers.name, idOrName))
+    ? or(eq(federationPeers.id, asTrustDomainId(idOrName)), eq(federationPeers.name, idOrName))
     : eq(federationPeers.name, idOrName);
   const rows = await tx
     .select()
@@ -392,7 +402,7 @@ export async function getPeerByIdOrName(
 export async function claimPeerPull(
   tx: TenantTx,
   orgId: string,
-  peerDomainId: string,
+  peerDomainId: TrustDomainId,
   opts: { now: Date; intervalSeconds: number; force?: boolean }
 ): Promise<boolean> {
   const threshold = new Date(opts.now.getTime() - opts.intervalSeconds * 1000);
@@ -419,7 +429,7 @@ export async function claimPeerPull(
 export async function markPeerPullSuccess(
   tx: TenantTx,
   orgId: string,
-  peerDomainId: string,
+  peerDomainId: TrustDomainId,
   now: Date = new Date()
 ): Promise<void> {
   await tx
@@ -436,7 +446,7 @@ export async function markPeerPullSuccess(
 export async function markPokeReceived(
   tx: TenantTx,
   orgId: string,
-  peerDomainId: string,
+  peerDomainId: TrustDomainId,
   now: Date = new Date()
 ): Promise<void> {
   await tx

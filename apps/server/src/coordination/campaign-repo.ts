@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
-import type { Campaign, CampaignStatus, ExecutorType } from "@scp/schemas";
+import type { Campaign, CampaignStatus, ContainmentDomainId, ExecutorType } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { campaignPlans, campaignWaves, campaignWaveTargets, changes, objects } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
@@ -51,7 +51,8 @@ export interface ProposeCampaignInput {
   requestId: string;
   id?: string;
   urn?: string;
-  domainId?: string | null;
+  /** CONTAINMENT sense (ADR-0021 D4). */
+  domainId?: ContainmentDomainId | null;
   name: string;
   description?: string;
   labels?: Record<string, unknown>;

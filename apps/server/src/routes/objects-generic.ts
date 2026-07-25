@@ -27,6 +27,7 @@ import {
   updateObject,
   upsertObjectByUrn
 } from "../graph/objects-repo.js";
+import { containmentDomainIdFromWire, listObjectsQueryFromWire } from "../domain-id-edge.js";
 import { isGovernanceManagedObjectType } from "../governance/governance-managed-types.js";
 import { isCoordinationTargetScopedObjectType } from "../coordination/campaign-scope-authz.js";
 import { isServiceMemberObjectType } from "../graph/service-member-types.js";
@@ -150,7 +151,8 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
         const scopeObjectId = await resolveDomainId(
           tx,
           auth.orgId,
-          request.body.domainId ?? undefined
+          // WIRE BOUNDARY (ADR-0021 D4) — see src/domain-id-edge.ts.
+          containmentDomainIdFromWire(request.body.domainId) ?? undefined
         );
         await authorize(tx, {
           orgId: auth.orgId,
@@ -176,7 +178,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
               id: request.body.id,
               urn: request.body.urn,
               name: request.body.name,
-              domainId: request.body.domainId ?? undefined,
+              domainId: containmentDomainIdFromWire(request.body.domainId) ?? undefined,
               properties: request.body.properties,
               labels: request.body.labels
             })
@@ -214,7 +216,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
           permission: "object:read",
           scopeObjectId: auth.orgId
         });
-        return listObjects(tx, auth.orgId, type, request.query);
+        return listObjects(tx, auth.orgId, type, listObjectsQueryFromWire(request.query));
       });
       reply.status(200).send(page);
     }
@@ -298,7 +300,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
           requestId: request.id,
           idOrUrn,
           name: request.body.name,
-          domainId: request.body.domainId,
+          domainId: containmentDomainIdFromWire(request.body.domainId),
           properties: request.body.properties,
           labels: request.body.labels,
           expectedVersion: request.body.version
@@ -387,8 +389,11 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
         });
         const scopeObjectId = existing
           ? existing.id
-          : ((await resolveDomainId(tx, auth.orgId, request.body.domainId ?? undefined)) ??
-            auth.orgId);
+          : ((await resolveDomainId(
+              tx,
+              auth.orgId,
+              containmentDomainIdFromWire(request.body.domainId) ?? undefined
+            )) ?? auth.orgId);
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
@@ -403,7 +408,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
           urn,
           id: request.body.id,
           name: request.body.name,
-          domainId: request.body.domainId,
+          domainId: containmentDomainIdFromWire(request.body.domainId),
           properties: request.body.properties,
           labels: request.body.labels
         });

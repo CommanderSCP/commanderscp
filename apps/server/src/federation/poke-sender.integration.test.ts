@@ -33,6 +33,7 @@ import {
   type PokeSendOutcome
 } from "./poke-sender.js";
 import { createTestCa, issueLeafCert, opensslAvailable, type TestCa } from "./test-support/mtls-pki.js";
+import { asTrustDomainId, type TrustDomainId } from "@scp/schemas";
 
 /**
  * M14.3 — the COMMANDER POKE SENDER, end-to-end against real Postgres + a real mTLS listener
@@ -135,8 +136,8 @@ describe.skipIf(!opensslAvailable())("M14.3 commander poke sender (mTLS, two-dom
   let outpost: Domain; // the RECEIVER (real mTLS listener + poke endpoint)
   let commanderClientMtls: FederationClientMtls;
   let outpostUrl: string;
-  let deadOutpostDomainId: string;
-  let pollOutpostDomainId: string;
+  let deadOutpostDomainId: TrustDomainId;
+  let pollOutpostDomainId: TrustDomainId;
 
   // The outpost's recording pg-boss: every accepted poke's wake (boss.send) lands here.
   let sends: string[] = [];
@@ -194,7 +195,7 @@ describe.skipIf(!opensslAvailable())("M14.3 commander poke sender (mTLS, two-dom
       })
     );
     // A poll-mode downstream peer (pokeMode default false) — must NEVER be poked (SCOPE 1/5).
-    pollOutpostDomainId = randomUUID();
+    pollOutpostDomainId = asTrustDomainId(randomUUID());
     await withTenantTx(commander.db, commander.orgId, (tx) =>
       pairPeer(tx, {
         orgId: commander.orgId,
@@ -263,7 +264,7 @@ describe.skipIf(!opensslAvailable())("M14.3 commander poke sender (mTLS, two-dom
   it("BEST-EFFORT: an unreachable poke-mode peer errors WITHOUT throwing or blocking the live peer", async () => {
     // Add an unreachable poke-mode outpost (dead port). One bad peer must never brick the round nor
     // escalate — the live peer is still poked, and the call resolves normally (no throw).
-    deadOutpostDomainId = randomUUID();
+    deadOutpostDomainId = asTrustDomainId(randomUUID());
     const outpostKeyPub = (
       await withTenantTx(outpost.db, outpost.orgId, (tx) => ensureInstanceKey(tx, outpost.orgId))
     ).publicKey;
@@ -319,7 +320,7 @@ describe.skipIf(!opensslAvailable())("M14.3 commander poke sender (mTLS, two-dom
     // `Authorization: Bearer <federation bearer>` on the wire in CLEARTEXT with no mutual auth
     // (scheme-derived requireMtls never fires for http). Write the bad row by raw UPDATE and prove the
     // sender skips it entirely — it is not even in the outcome set, and NOTHING is dialed.
-    const badDomainId = randomUUID();
+    const badDomainId = asTrustDomainId(randomUUID());
     const outpostKeyPub = (
       await withTenantTx(outpost.db, outpost.orgId, (tx) => ensureInstanceKey(tx, outpost.orgId))
     ).publicKey;
