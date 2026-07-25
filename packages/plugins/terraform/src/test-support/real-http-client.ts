@@ -88,7 +88,7 @@ export function realHttpPluginContext(
 ): PluginContext {
   return {
     orgId: "org-1",
-    domainId: "domain-1",
+    scopeKey: "domain-1",
     logger: noopLogger,
     secrets: { get: secretsGet ?? (async () => undefined) },
     http: realHttpClient(),

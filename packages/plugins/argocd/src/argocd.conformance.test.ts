@@ -78,7 +78,7 @@ runExecutorConformanceSuite("argocd", async () => {
     plugin: createArgoCdExecutorPlugin(),
     ctx: {
       orgId: "conformance-org",
-      domainId: "conformance-domain",
+      scopeKey: "conformance-domain",
       logger: { debug() {}, info() {}, warn() {}, error() {} },
       secrets: { get: async () => undefined },
       http: createNodeHttpTestClient(),

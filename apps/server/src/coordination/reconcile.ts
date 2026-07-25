@@ -1071,7 +1071,7 @@ async function ensureExecutorInstanceStarted(
       id: DEFAULT_EXECUTOR_INSTANCE_ID,
       module: DEFAULT_EXECUTOR_MODULE,
       orgId,
-      domainId: "default",
+      scopeKey: "default",
       config: {}
     }
   ]);

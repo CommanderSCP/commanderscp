@@ -103,7 +103,7 @@ export async function ensureControlRun(
         id: binding.pluginInstanceId,
         module: binding.pluginModule,
         orgId: input.orgId,
-        domainId: "default",
+        scopeKey: "default",
         config: binding.config
       }
     ]);

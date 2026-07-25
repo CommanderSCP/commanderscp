@@ -5,7 +5,7 @@ import { createWebhookControlPlugin } from "./index.js";
 function testCtx(config: unknown, requestImpl?: (req: ScopedHttpRequest) => Promise<ScopedHttpResponse>): PluginContext {
   return {
     orgId: "org-1",
-    domainId: "domain-1",
+    scopeKey: "domain-1",
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     secrets: { get: async () => undefined },
     http: {

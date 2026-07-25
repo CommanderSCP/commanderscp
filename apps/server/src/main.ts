@@ -21,7 +21,7 @@ import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
 import {
   DEFAULT_EXECUTOR_INSTANCE_ID,
   DEFAULT_EXECUTOR_MODULE,
-  SHARED_PLUGIN_INSTANCE_DOMAIN_ID,
+  SHARED_PLUGIN_INSTANCE_SCOPE_KEY,
   SHARED_PLUGIN_INSTANCE_ORG_ID
 } from "./coordination/executor-config.js";
 import type { AppDeps } from "./types.js";
@@ -127,7 +127,7 @@ async function main(): Promise<void> {
         id: DEFAULT_EXECUTOR_INSTANCE_ID,
         module: DEFAULT_EXECUTOR_MODULE,
         orgId: SHARED_PLUGIN_INSTANCE_ORG_ID,
-        domainId: SHARED_PLUGIN_INSTANCE_DOMAIN_ID,
+        scopeKey: SHARED_PLUGIN_INSTANCE_SCOPE_KEY,
         config: { statePath: path.join(os.tmpdir(), "scpd-fake-executor-state.json") }
       }
     ]);

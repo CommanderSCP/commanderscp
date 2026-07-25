@@ -57,7 +57,7 @@ describe("SubprocessPluginHost: child environment (CRITICAL #3)", () => {
 
     host = new SubprocessPluginHost({ callTimeoutMs: 10_000 });
     await host.start([
-      { id: "env-probe", module: "fake-executor", orgId: "org-1", domainId: "domain-1" }
+      { id: "env-probe", module: "fake-executor", orgId: "org-1", scopeKey: "domain-1" }
     ]);
 
     expect(spawnSpy).toHaveBeenCalled();
@@ -81,7 +81,7 @@ describe("SubprocessPluginHost: child environment (CRITICAL #3)", () => {
       SCP_PLUGIN_MODULE: "fake-executor",
       SCP_PLUGIN_INSTANCE_ID: "env-probe",
       SCP_PLUGIN_ORG_ID: "org-1",
-      SCP_PLUGIN_DOMAIN_ID: "domain-1"
+      SCP_PLUGIN_SCOPE_KEY: "domain-1"
     });
 
     // The instance is genuinely alive and answering RPCs (not just "spawn was called with a
@@ -101,7 +101,7 @@ describe("SubprocessPluginHost: child environment (CRITICAL #3)", () => {
         id: "secrets-probe",
         module: "fake-executor",
         orgId: "org-1",
-        domainId: "domain-1",
+        scopeKey: "domain-1",
         secrets: { "github-app-private-key": "-----BEGIN PRIVATE KEY-----fake-for-test-----" },
         allowedHosts: ["api.github.com"],
         allowInternalEgress: true
@@ -125,7 +125,7 @@ describe("SubprocessPluginHost: child environment (CRITICAL #3)", () => {
 
     host = new SubprocessPluginHost({ callTimeoutMs: 10_000 });
     await host.start([
-      { id: "no-flag", module: "fake-executor", orgId: "org-1", domainId: "domain-1" }
+      { id: "no-flag", module: "fake-executor", orgId: "org-1", scopeKey: "domain-1" }
     ]);
 
     const spawnCall = spawnSpy.mock.calls[0]!;
@@ -166,7 +166,7 @@ describe("SubprocessPluginHost: egress guard enforcement (M7 SSRF mitigation)", 
           id: "tenant-notify-allowlisted",
           module: "webhook-notify", // TENANT plugin — loopback blocked regardless of allowlist
           orgId: "org-1",
-          domainId: "domain-1",
+          scopeKey: "domain-1",
           config: { url: `${base}/hook` },
           allowedHosts: ["127.0.0.1"]
         },
@@ -174,7 +174,7 @@ describe("SubprocessPluginHost: egress guard enforcement (M7 SSRF mitigation)", 
           id: "tenant-notify-empty-allowlist",
           module: "webhook-notify", // the exact regression: empty allowedHosts (tenant default)
           orgId: "org-1",
-          domainId: "domain-1",
+          scopeKey: "domain-1",
           config: { url: `${base}/hook` },
           allowedHosts: []
         },
@@ -182,7 +182,7 @@ describe("SubprocessPluginHost: egress guard enforcement (M7 SSRF mitigation)", 
           id: "operator-control",
           module: "webhook-control", // OPERATOR-PLANE escape hatch — MAY reach its loopback control server
           orgId: "org-1",
-          domainId: "domain-1",
+          scopeKey: "domain-1",
           config: { url: `${base}/control` }
         }
       ]);
@@ -244,7 +244,7 @@ describe("SubprocessPluginHost: egress guard enforcement (M7 SSRF mitigation)", 
           id: "es-granted",
           module: "webhook-notify", // tenant module, but its execution-system granted internal egress
           orgId: "org-1",
-          domainId: "domain-1",
+          scopeKey: "domain-1",
           config: { url: `${base}/hook` },
           allowInternalEgress: true
         },
@@ -252,7 +252,7 @@ describe("SubprocessPluginHost: egress guard enforcement (M7 SSRF mitigation)", 
           id: "es-ungranted",
           module: "webhook-notify", // same module, NO grant → loopback stays blocked (default-deny)
           orgId: "org-1",
-          domainId: "domain-1",
+          scopeKey: "domain-1",
           config: { url: `${base}/hook` }
         }
       ]);
@@ -280,7 +280,7 @@ describe("SubprocessPluginHost: ControlPlugin instances (M4)", () => {
         id: "control-probe",
         module: "webhook-control",
         orgId: "org-1",
-        domainId: "domain-1",
+        scopeKey: "domain-1",
         // No 'url' configured — the plugin fails closed rather than throwing (index.test.ts covers
         // the full HTTP-mapping matrix in-process); this test's job is only to prove the SUBPROCESS
         // boundary (spawn, module resolution, JSON-RPC round trip) works end to end for a
@@ -318,7 +318,7 @@ describe("SubprocessPluginHost: unbounded stdout line guard (CRITICAL #4)", () =
     });
 
     await host.start([
-      { id: "flood", module: "fake-executor", orgId: "org-1", domainId: "domain-1" }
+      { id: "flood", module: "fake-executor", orgId: "org-1", scopeKey: "domain-1" }
     ]);
 
     const baselineRss = process.memoryUsage().rss;

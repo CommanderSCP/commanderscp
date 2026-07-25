@@ -5,7 +5,7 @@ import { federationHttpsPlugin } from "./index.js";
 function mockContext(handler: (req: ScopedHttpRequest) => ScopedHttpResponse): PluginContext {
   return {
     orgId: "org-1",
-    domainId: "domain-1",
+    scopeKey: "domain-1",
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     secrets: { get: vi.fn().mockResolvedValue(undefined) },
     http: { request: vi.fn(async (req) => handler(req)) },

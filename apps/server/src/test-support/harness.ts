@@ -27,7 +27,7 @@ import { startWatchdogLoop, type WatchdogLoopHandle } from "../coordination/watc
 import {
   DEFAULT_EXECUTOR_INSTANCE_ID,
   DEFAULT_EXECUTOR_MODULE,
-  SHARED_PLUGIN_INSTANCE_DOMAIN_ID,
+  SHARED_PLUGIN_INSTANCE_SCOPE_KEY,
   SHARED_PLUGIN_INSTANCE_ORG_ID
 } from "../coordination/executor-config.js";
 
@@ -199,7 +199,7 @@ export async function listenTestServer(
           id: DEFAULT_EXECUTOR_INSTANCE_ID,
           module: DEFAULT_EXECUTOR_MODULE,
           orgId: SHARED_PLUGIN_INSTANCE_ORG_ID,
-          domainId: SHARED_PLUGIN_INSTANCE_DOMAIN_ID,
+          scopeKey: SHARED_PLUGIN_INSTANCE_SCOPE_KEY,
           config: {
             statePath: join(stateDir, "fake-executor-state.json"),
             autoSucceedAfterMs: 50,

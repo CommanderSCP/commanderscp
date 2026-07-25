@@ -463,7 +463,7 @@ describe("coordination engine: crash resumption", () => {
           id: DEFAULT_EXECUTOR_INSTANCE_ID,
           module: DEFAULT_EXECUTOR_MODULE,
           orgId: "shared",
-          domainId: "shared",
+          scopeKey: "shared",
           config: { statePath, autoSucceedAfterMs: 2_000 }
         }
       ]);
@@ -536,7 +536,7 @@ describe("coordination engine: crash resumption", () => {
           id: DEFAULT_EXECUTOR_INSTANCE_ID,
           module: DEFAULT_EXECUTOR_MODULE,
           orgId: "shared",
-          domainId: "shared",
+          scopeKey: "shared",
           config: { statePath, autoSucceedAfterMs: 50 }
         }
       ]);
@@ -617,7 +617,7 @@ describe("coordination engine: crash resumption", () => {
         id: DEFAULT_EXECUTOR_INSTANCE_ID,
         module: DEFAULT_EXECUTOR_MODULE,
         orgId: "shared",
-        domainId: "shared",
+        scopeKey: "shared",
         config: { statePath, autoSucceedAfterMs: 3_000 }
       }
     ]);

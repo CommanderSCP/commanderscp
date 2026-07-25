@@ -372,7 +372,7 @@ export class SubprocessPluginHost implements PluginHost {
       SCP_PLUGIN_MODULE: instance.config.module,
       SCP_PLUGIN_INSTANCE_ID: instance.config.id,
       SCP_PLUGIN_ORG_ID: instance.config.orgId,
-      SCP_PLUGIN_DOMAIN_ID: instance.config.domainId,
+      SCP_PLUGIN_SCOPE_KEY: instance.config.scopeKey,
       SCP_PLUGIN_CONFIG_JSON: JSON.stringify(instance.config.config ?? {}),
       // M7: resolved (plaintext) secret values and the egress allowlist for this instance — see
       // contract.ts's `PluginHostInstanceConfig.secrets`/`allowedHosts` doc comments. Never

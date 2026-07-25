@@ -24,7 +24,7 @@ runExecutorConformanceSuite("fake-executor", async () => {
     plugin: createFakeExecutorPlugin(),
     ctx: {
       orgId: "conformance-org",
-      domainId: "conformance-domain",
+      scopeKey: "conformance-domain",
       logger: { debug() {}, info() {}, warn() {}, error() {} },
       secrets: { get: async () => undefined },
       http: {

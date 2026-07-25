@@ -13,7 +13,7 @@
  *
  * Config surface (documented framing choice, mirrors host.ts's `spawnChild`): the module to load
  * and the instance's identity/config arrive as env vars — `SCP_PLUGIN_MODULE`,
- * `SCP_PLUGIN_INSTANCE_ID`, `SCP_PLUGIN_ORG_ID`, `SCP_PLUGIN_DOMAIN_ID`, `SCP_PLUGIN_CONFIG_JSON`,
+ * `SCP_PLUGIN_INSTANCE_ID`, `SCP_PLUGIN_ORG_ID`, `SCP_PLUGIN_SCOPE_KEY`, `SCP_PLUGIN_CONFIG_JSON`,
  * and (M7) `SCP_PLUGIN_SECRETS_JSON` (resolved, already-decrypted secret values —
  * `envSecretsAccessor()` below) and `SCP_PLUGIN_ALLOWED_HOSTS_JSON` (the egress allowlist —
  * `scopedFetchHttpClient()` below) — rather than argv, because they're simple strings the host
@@ -406,7 +406,7 @@ async function main(): Promise<void> {
   const moduleName = requireEnv("SCP_PLUGIN_MODULE");
   const instanceId = requireEnv("SCP_PLUGIN_INSTANCE_ID");
   const orgId = requireEnv("SCP_PLUGIN_ORG_ID");
-  const domainId = requireEnv("SCP_PLUGIN_DOMAIN_ID");
+  const scopeKey = requireEnv("SCP_PLUGIN_SCOPE_KEY");
   const config: unknown = JSON.parse(process.env.SCP_PLUGIN_CONFIG_JSON ?? "{}");
   const allowedHosts = JSON.parse(process.env.SCP_PLUGIN_ALLOWED_HOSTS_JSON ?? "[]") as string[];
   // Loopback/private egress permitted for (a) operator-plane escape hatches by MODULE identity, or
@@ -426,7 +426,7 @@ async function main(): Promise<void> {
   const plugin = await loadPlugin(moduleName);
   const ctx: PluginContext = {
     orgId,
-    domainId,
+    scopeKey,
     logger: stderrLogger(instanceId),
     secrets: envSecretsAccessor(),
     http: scopedFetchHttpClient(allowedHosts, allowInternalPrivate, mtls),

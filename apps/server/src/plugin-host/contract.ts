@@ -116,7 +116,9 @@ export interface PluginHostInstanceConfig {
   id: string;
   module: PluginModule;
   orgId: string;
-  domainId: string;
+  /** Opaque plugin-host scope key injected as `PluginContext.scopeKey` — a partition label for
+   *  logs/secrets/egress accounting, NOT a trust- or containment-domain id (ADR-0021 D4). */
+  scopeKey: string;
   config?: unknown;
   /** Resolved (plaintext, already-decrypted) secret values for this instance — M7's
    *  `executor_bindings`/`notification_bindings` `secretRefs` resolved via

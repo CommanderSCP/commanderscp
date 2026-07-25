@@ -19,7 +19,7 @@ afterEach(async () => {
 function testCtx(config: unknown, secretValue?: string): PluginContext {
   return {
     orgId: "org-1",
-    domainId: "domain-1",
+    scopeKey: "domain-1",
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     secrets: { get: async (key) => (key === "smtp-password" ? secretValue : undefined) },
     http: {

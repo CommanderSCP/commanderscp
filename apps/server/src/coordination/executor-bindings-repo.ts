@@ -516,7 +516,7 @@ export async function resolveExecutorPluginInstance(
     orgId: string;
     targetObjectId: string;
     masterKey: Buffer;
-    domainId?: string;
+    scopeKey?: string;
     /** Which pipeline to resolve — the routing Type (ADR-0007). Defaults to 'configuration'. P4A
      *  supplies this from the wave target, so reconcile starts the instance for the pipeline it is
      *  about to trigger. */
@@ -629,7 +629,7 @@ export async function resolveExecutorPluginInstance(
       id: pluginInstanceId,
       module: pluginModule as PluginModule,
       orgId: input.orgId,
-      domainId: input.domainId ?? "default",
+      scopeKey: input.scopeKey ?? "default",
       // Tenant config first, server-governed fields LAST (they win — CRITICAL #1 / MAJOR #4).
       config: { ...tenantConfig, ...serverInjected },
       secrets: resolvedSecrets,
