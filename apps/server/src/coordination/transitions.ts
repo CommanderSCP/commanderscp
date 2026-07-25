@@ -28,7 +28,7 @@ import { ChangeStateSchema } from "@scp/schemas";
  *  - `rollback` is legal once the change has actually done something an external system needs
  *    reverting (executing/validating/accepted) — never from proposed/evaluated/coordinated, where
  *    nothing has executed yet and `cancel` is the correct verb.
- *  - `cancelled` and `rolled_back` are terminal EXCEPT `accepted -> rolled_back` (a accepted
+ *  - `cancelled` and `rolled_back` are terminal EXCEPT `accepted -> rolled_back` (an accepted
  *    change can still be rolled back later) — every other state has no outgoing edges once
  *    reached.
  */
