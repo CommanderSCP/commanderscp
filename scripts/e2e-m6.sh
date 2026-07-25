@@ -11,7 +11,7 @@
 #      touches both domains' published ports, exactly like an operator carrying a USB drive).
 #   3. `scp federation import` on B -> assert graph equivalence (B has A's object, as a read-only
 #      replica, same id/urn/content, origin_domain_id pointing at A).
-#   4. Propose + promote a Change in B through B's OWN LOCAL gates (no gate configured here, so
+#   4. Propose + accept a Change in B through B's OWN LOCAL gates (no gate configured here, so
 #      the reconciliation loop + shared fake-executor carry it to 'validating' automatically —
 #      the SAME mechanism e2e-m4.sh's flagship golden path proves; this script proves it composes
 #      with a change whose TARGET is a federated read-only replica object).
@@ -193,14 +193,14 @@ for i in $(seq 1 60); do
   sleep 1
 done
 
-echo "==> promote through domain B's LOCAL gates: scp change promote"
-PROMOTED_JSON="$(SCP_CONFIG_DIR="$CONFIG_DIR_B" SCP_API_URL="$API_URL_B" "${CLI_BIN[@]}" change promote "$CHANGE_ID" --output json)"
-PROMOTED_STATE="$(echo "$PROMOTED_JSON" | json_field state)"
-if [ "$PROMOTED_STATE" != "promoted" ]; then
-  echo "FAIL: expected state 'promoted' after promote, got '$PROMOTED_STATE'" >&2
+echo "==> accept through domain B's LOCAL gates: scp change accept"
+ACCEPTED_JSON="$(SCP_CONFIG_DIR="$CONFIG_DIR_B" SCP_API_URL="$API_URL_B" "${CLI_BIN[@]}" change accept "$CHANGE_ID" --output json)"
+ACCEPTED_STATE="$(echo "$ACCEPTED_JSON" | json_field state)"
+if [ "$ACCEPTED_STATE" != "accepted" ]; then
+  echo "FAIL: expected state 'accepted' after accept, got '$ACCEPTED_STATE'" >&2
   exit 1
 fi
-echo "PASS: change promoted through domain B's own local gates"
+echo "PASS: change accepted through domain B's own local gates"
 
 echo "==> scp federation export --peer domainA (domain B) — exporting status back across the gap"
 SCP_CONFIG_DIR="$CONFIG_DIR_B" SCP_API_URL="$API_URL_B" "${CLI_BIN[@]}" federation export --peer domainA --out "$BUNDLE_B_TO_A"

@@ -19,7 +19,11 @@ export const ChangeStateSchema = z.enum([
   "waiting",
   "executing",
   "validating",
-  "promoted",
+  // ADR-0021 D5: this value was spelled `promoted` before 2026-07-25. The change-lifecycle
+  // APPROVAL GATE is an `accept` — a human decision ABOUT A CHANGE, not an artifact advancing.
+  // "Promotion" keeps its genus meaning everywhere else (Promotion Bundle, the `scp federation
+  // promote` export verb, cross-domain promotion); see docs/GLOSSARY.md.
+  "accepted",
   "cancelled",
   "rolled_back"
 ]);
@@ -83,7 +87,7 @@ export const CreateChangeRequestSchema = z.object({
    *  requires. Omitted/empty ⇒ this release is a prerequisite for nothing. */
   provides: z.array(z.string().min(1)).optional(),
   /** Cross-change prerequisites (M12 P4B): this release WAITS until, for each entry, some other
-   *  change with state validating|promoted `provides` that `key` at that `at` object. `at` is an id
+   *  change with state validating|accepted `provides` that `key` at that `at` object. `at` is an id
    *  or URN resolved at propose time (a bad ref is a 404, never a silent forever-wait). Omitted/empty
    *  ⇒ no wait; the change goes coordinated→executing as before. */
   requires: z.array(ChangeRequirementSchema).optional(),
@@ -232,7 +236,7 @@ export const ChangeRequirementStatusSchema = z.object({
   /** The object's display name, for a readable "Waiting on …" surface (null if it can't be resolved). */
   atName: z.string().nullable(),
   satisfied: z.boolean(),
-  /** The change (validating|promoted) currently providing this key at `at`, or null while outstanding. */
+  /** The change (validating|accepted) currently providing this key at `at`, or null while outstanding. */
   satisfiedByChangeId: z.string().uuid().nullable(),
   /** M12 P4B Phase 4 "did you mean" (coupled-pipelines.md §3.7): while UNSATISFIED, the `provides`
    *  keys some change has actually declared at this `at` object — an exact, scoped diagnosis (not a

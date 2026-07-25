@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import type { ServiceBoardRow, ServiceBoardStage } from "@scp/sdk";
+import type { ServiceBoardRow, ServiceBoardWave } from "@scp/sdk";
 import { client } from "../lib/client";
 import { serviceBoardKey } from "../lib/query-client";
 import { useIdParam } from "../lib/use-route-params";
@@ -35,20 +35,20 @@ function WhyLink({ changeId, decisionId }: { changeId: string; decisionId: strin
   );
 }
 
-/** The per-stage status badges for a row — one badge per compiled wave, colored by wave status
+/** The per-wave status badges for a row — one badge per compiled wave, colored by wave status
  *  (reusing the Phase-1 mapping). A partial-failure wave (some targets failed) shows the count. */
-function StageStrip({ stages }: { stages: ServiceBoardStage[] }): React.JSX.Element {
-  if (stages.length === 0) {
+function WaveStrip({ waves }: { waves: ServiceBoardWave[] }): React.JSX.Element {
+  if (waves.length === 0) {
     return <span className="text-xs text-slate-400">no plan compiled</span>;
   }
   return (
-    <div className="flex flex-wrap items-center gap-1" data-testid="board-stage-strip">
-      {stages.map((s) => (
+    <div className="flex flex-wrap items-center gap-1" data-testid="board-wave-strip">
+      {waves.map((s) => (
         <Badge
           key={s.waveIndex}
           variant={waveStatusVariant(s.status)}
           title={`${s.name ?? `Wave ${s.waveIndex}`} — ${s.status} (${s.targetCount} target${s.targetCount === 1 ? "" : "s"}${s.failedTargets > 0 ? `, ${s.failedTargets} failed` : ""})`}
-          data-testid="board-stage-badge"
+          data-testid="board-wave-badge"
         >
           {s.name ?? `W${s.waveIndex}`}: {s.status}
           {s.failedTargets > 0 ? ` (${s.failedTargets}✗)` : ""}
@@ -94,7 +94,7 @@ function AttentionCell({ row }: { row: ServiceBoardRow }): React.JSX.Element {
 /**
  * `/services/{id}/board` — the Service release board (coordination-ui-views.md § "Service release
  * board", Phase 2, Layer A). One scannable table of the service's components: each row shows that
- * component's latest change per-stage status, its current stage, and any attention signal (the
+ * component's latest change per-wave status, its current wave, and any attention signal (the
  * BLOCKED component surfaced in red with a decision_id "Why?" link), and opens the Phase-1 component
  * pipeline. A summary strip counts releasing / blocked / stable.
  *
@@ -187,8 +187,8 @@ export function ServiceBoardPage(): React.JSX.Element {
                 <TableRow>
                   <TableHead>Component</TableHead>
                   <TableHead>Latest change</TableHead>
-                  <TableHead>Current stage</TableHead>
-                  <TableHead>Stages</TableHead>
+                  <TableHead>Current wave</TableHead>
+                  <TableHead>Waves</TableHead>
                   <TableHead>Attention</TableHead>
                   {/* Layer B — not modeled today; explicit placeholder header. */}
                   <TableHead title="Per-wave image version/digest and health are not captured yet (Layer B)">
@@ -245,14 +245,14 @@ export function ServiceBoardPage(): React.JSX.Element {
                       )}
                     </TableCell>
                     <TableCell>
-                      {row.currentStage ? (
-                        <span className="text-sm text-slate-700">{row.currentStage}</span>
+                      {row.currentWave ? (
+                        <span className="text-sm text-slate-700">{row.currentWave}</span>
                       ) : (
                         <span className="text-slate-400">—</span>
                       )}
                     </TableCell>
                     <TableCell>
-                      <StageStrip stages={row.stages} />
+                      <WaveStrip waves={row.waves} />
                     </TableCell>
                     <TableCell>
                       <AttentionCell row={row} />

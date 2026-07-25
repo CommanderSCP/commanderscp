@@ -13,10 +13,10 @@ import {
  * (docs/proposals/coordination-ui-views.md § "Service release board", Phase 2, Layer A).
  *
  * The board is a Layer-A projection: it aggregates a service's contained components and each
- * component's LATEST change's per-stage wave summary. This suite pins the honest-empty baseline —
+ * component's LATEST change's per-wave summary. This suite pins the honest-empty baseline —
  * a service whose components have never been a change target must project real rows with NULL
- * latest-change and EMPTY stages (never a fabricated version/status) — plus auth/404 behaviour. The
- * with-a-change stage projection rides the broader coordination suites that already seed plans/waves.
+ * latest-change and EMPTY waves (never a fabricated version/status) — plus auth/404 behaviour. The
+ * with-a-change wave projection rides the broader coordination suites that already seed plans/waves.
  */
 describe("service board: GET /services/:idOrUrn/board (Phase 2, Layer A)", () => {
   let server: ListeningTestServer;
@@ -53,8 +53,8 @@ describe("service board: GET /services/:idOrUrn/board (Phase 2, Layer A)", () =>
     for (const row of board.rows) {
       expect(row.latestChangeId).toBeNull();
       expect(row.changeState).toBeNull();
-      expect(row.currentStage).toBeNull();
-      expect(row.stages).toEqual([]);
+      expect(row.currentWave).toBeNull();
+      expect(row.waves).toEqual([]);
       expect(row.attention.blocked).toBe(false);
       expect(row.attention.awaitingApproval).toBe(false);
       expect(row.attention.emergency).toBe(false);

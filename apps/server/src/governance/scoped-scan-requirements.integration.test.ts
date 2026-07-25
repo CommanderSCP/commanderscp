@@ -275,7 +275,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     await scanFloorPolicy(admin, "floor-component", component.id, { maxHigh: 4 });
 
     // A verdict comfortably inside the merged ceiling, so the outcome is `pass` and the evidence is
-    // recorded on a change that also PROMOTES (i.e. this is the real gate, not a parked one).
+    // recorded on a change that also ACCEPTS (i.e. this is the real gate, not a parked one).
     const control = await scanControl(admin, org, { suffix: "six-tier", severities: ["MEDIUM", "LOW"] });
     await requireScanControl(admin, "scan-gate", component.id, control.id);
 
@@ -308,7 +308,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
   it("(b) a COMPONENT floor tighter than its org's blocks a promotion the org floor alone would have passed — proven with both arms at the real gate", async () => {
     await setInstanceFloors({}); // no instance floors — this test is purely about org vs component
 
-    // ARM 1 — org floor ONLY (maxHigh: 5). Two HIGHs are inside it: the change PROMOTES.
+    // ARM 1 — org floor ONLY (maxHigh: 5). Two HIGHs are inside it: the change ACCEPTS.
     const orgA = await createTestOrg(server, "org-floor-only");
     const adminA = new ScpClient({ baseUrl: server.baseUrl, token: orgA.adminToken });
     const chainA = await buildChain(adminA, "arm1");
@@ -323,7 +323,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
       describe: `change ${changeA.id} reaches 'validating'`,
       timeoutMs: 25_000
     });
-    expect((await adminA.changes.promote(changeA.id)).state).toBe("promoted");
+    expect((await adminA.changes.accept(changeA.id)).state).toBe("accepted");
 
     // ARM 2 — the SAME org floor, plus a COMPONENT floor that TIGHTENS maxHigh to 0. Identical
     // verdict, identical everything else: the component tier is the only difference.
@@ -479,7 +479,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
       describe: `change ${change.id} reaches 'validating'`,
       timeoutMs: 25_000
     });
-    expect((await admin.changes.promote(change.id)).state).toBe("promoted");
+    expect((await admin.changes.accept(change.id)).state).toBe("accepted");
   });
 
   // -----------------------------------------------------------------------------------------

@@ -120,6 +120,8 @@ function blockDetail(
 function wavePromotion(upstream: ChangeWave, downstream: ChangeWave): PromotionVerdict {
   if (upstream.status === "failed") return { state: "blocked", label: "upstream wave failed" };
   if (downstream.status === "failed") return { state: "blocked", label: "wave failed" };
+  // KEEP-SENSE (ADR-0021 D2): this is an artifact advancing wave-to-wave — a *promotion*, the
+  // genus. It is NOT the change-lifecycle `accept` gate (that is `finalGate` below).
   if (downstream.status === "running" || downstream.status === "succeeded")
     return { state: "open", label: "promoted" };
   if (downstream.status === "skipped") return { state: "pending", label: "skipped" };
@@ -135,7 +137,8 @@ function approvalQuorum(approval: ApprovalRequest): string {
 }
 
 /**
- * The change-level (final) promotion gate — validating → promoted. Colored from REAL state the
+ * The change-level (final) ACCEPTANCE gate — validating → accepted (ADR-0021 D5; this is the one
+ * gate that is NOT a promotion — it is a human decision about a change). Colored from REAL state the
  * change-detail page already loads: a pending ApprovalRequest (amber), a block Decision or a live
  * side-effect-free policyEvaluate `block` verdict (red, with the Decision's `decision_id` when one
  * exists — charter principle 6), else open/pending by change state. The `detail` "why" is assembled
@@ -150,7 +153,7 @@ function finalGate(
   controlRuns: ControlRun[]
 ): PromotionVerdict {
   const pendingApproval = approvals.find((a) => a.status !== "satisfied");
-  if (change.state === "promoted") return { state: "open", label: "promoted" };
+  if (change.state === "accepted") return { state: "open", label: "accepted" };
   if (change.state === "validating") {
     if (pendingApproval)
       return {
@@ -174,7 +177,7 @@ function finalGate(
         decisionId: block?.id
       };
     }
-    return { state: "open", label: gate?.verdict === "allow" ? "gate open" : "ready to promote" };
+    return { state: "open", label: gate?.verdict === "allow" ? "gate open" : "ready to accept" };
   }
   if (pendingApproval)
     return {
@@ -432,12 +435,12 @@ export function ChangePipelinePage(): React.JSX.Element {
               </div>
             );
           })}
-          {/* Terminal marker so the final gate arrow reads as "→ Promoted". */}
+          {/* Terminal marker so the final gate arrow reads as "→ Accepted". */}
           <Badge
-            variant={change.state === "promoted" ? "success" : "outline"}
+            variant={change.state === "accepted" ? "success" : "outline"}
             data-testid="pipeline-terminal"
           >
-            {change.state === "promoted" ? "Promoted" : "Promotion target"}
+            {change.state === "accepted" ? "Accepted" : "Acceptance target"}
           </Badge>
         </div>
       )}

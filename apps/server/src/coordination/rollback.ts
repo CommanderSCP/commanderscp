@@ -12,7 +12,7 @@ import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
  *
  * This function creates the rollback Change and writes the trigger Decision immediately (DESIGN
  * §9.4: "every rollback writes a Decision record naming its trigger") — BEFORE the rollback
- * change has done any work. The rollback then progresses through proposed -> ... -> promoted via
+ * change has done any work. The rollback then progresses through proposed -> ... -> accepted via
  * the exact same reconciliation loop as any other change (coordination/reconcile.ts), and once
  * ITS wave targets have been triggered with `TriggerIntent.kind: "rollback"` carrying each
  * target's captured `prior_state_ref`, the ORIGINAL change is transitioned to `rolled_back`
@@ -42,9 +42,9 @@ export async function triggerRollback(
   input: TriggerRollbackInput
 ): Promise<{ rollbackChange: Change }> {
   const original = await getChangeRow(tx, input.orgId, input.originalChangeObjectId);
-  if (!["executing", "validating", "promoted"].includes(original.state)) {
+  if (!["executing", "validating", "accepted"].includes(original.state)) {
     throw badRequest(
-      `cannot roll back a change in state '${original.state}' — rollback is only meaningful once a change has executed something (executing/validating/promoted)`
+      `cannot roll back a change in state '${original.state}' — rollback is only meaningful once a change has executed something (executing/validating/accepted)`
     );
   }
 

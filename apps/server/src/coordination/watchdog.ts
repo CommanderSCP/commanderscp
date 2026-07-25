@@ -19,11 +19,11 @@ import { dispatchNotification } from "../notify/dispatch.js";
  *
  * Per-state SLA — how long a change may sit in a non-terminal state with no progress
  * (`state_entered_at` unchanged) before the sweep flags it. `validating` gets a much longer SLA
- * because it is often waiting on a HUMAN `scp change promote` call, not engine work — that's an
+ * because it is often waiting on a HUMAN `scp change accept` call, not engine work — that's an
  * expected wait, not a stall.
  */
 export const WATCHDOG_SLA_MS: Record<
-  Exclude<ChangeState, "cancelled" | "rolled_back" | "promoted">,
+  Exclude<ChangeState, "cancelled" | "rolled_back" | "accepted">,
   number
 > = {
   proposed: 5 * 60_000,
@@ -31,7 +31,7 @@ export const WATCHDOG_SLA_MS: Record<
   coordinated: 5 * 60_000,
   // M12 P4B: a change WAITING on a cross-change prerequisite is an expected long wait (the owner's
   // rule is "wait forever, warn at a threshold"), not a stall — so it gets the same 24h SLA as
-  // `validating` (which waits on a human `promote`), NOT `executing`'s 30-min stall SLA. The watchdog
+  // `validating` (which waits on a human `accept`), NOT `executing`'s 30-min stall SLA. The watchdog
   // only WARNS (it never transitions), and notification bindings are off by default, so past 24h this
   // costs a Decision row + a log line, never an auto-cancel of a still-legitimately-waiting change.
   waiting: 24 * 60 * 60_000,
@@ -152,7 +152,7 @@ export async function runWatchdogSweep(
               : state === "executing"
                 ? "wave target executor status to report success/failure, or an operator to cancel/rollback"
                 : state === "validating"
-                  ? "an operator to run `scp change promote` (or cancel/rollback)"
+                  ? "an operator to run `scp change accept` (or cancel/rollback)"
                   : "the reconciliation loop's next tick to advance this change, or an operator to investigate"
         }
       });

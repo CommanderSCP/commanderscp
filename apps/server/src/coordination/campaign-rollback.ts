@@ -10,14 +10,14 @@ import { authoritativeCampaignMembers } from "./campaign-repo.js";
 
 /**
  * Campaign-scoped rollback (DESIGN.md §9.4/§9.5, BUILD_AND_TEST.md §8 M5) — "rolling back a
- * campaign reverts its promoted member targets through the same wave/rollback machinery, each
+ * campaign reverts its accepted member targets through the same wave/rollback machinery, each
  * producing a Decision." Deliberately does NOT introduce a campaign-level rollback lifecycle: it
- * finds every member Change currently eligible for rollback (`executing`/`validating`/`promoted` —
+ * finds every member Change currently eligible for rollback (`executing`/`validating`/`accepted` —
  * the exact same eligibility `coordination/rollback.ts`'s `triggerRollback` itself enforces) and
  * calls that SAME, completely unmodified function once per member — never a new rollback code path.
  * Available regardless of the campaign's own overall (derived) status: DESIGN §9.4 rollback is
  * "always available", and the flagship scenario is rolling back a campaign that is ITSELF still
- * `blocked` on a later wave (its earlier, promoted wave(s) are exactly what this reverts).
+ * `blocked` on a later wave (its earlier, accepted wave(s) are exactly what this reverts).
  *
  * SECURITY (M5 CRITICAL, adversarial review — the headline campaign coordinates-authz invariant):
  * membership is sourced from the AUTHORITATIVE plan-compiled `campaign_wave_targets`
@@ -36,7 +36,7 @@ import { authoritativeCampaignMembers } from "./campaign-repo.js";
  * `object:write` before reverting) — a member whose target the rolling-back actor lacks authority
  * over is skipped with a reason, never reverted.
  *
- * One member's rollback failing (never promoted, rollback already in flight, or now unauthorized)
+ * One member's rollback failing (never accepted, rollback already in flight, or now unauthorized)
  * never aborts the rest of the batch — mirrors every other per-item loop in this milestone's
  * reconciler and M3's own `coordination/reconcile.ts`.
  */
@@ -53,7 +53,7 @@ export interface CampaignRollbackResult {
   skipped: { originalChangeObjectId: string; reason: string }[];
 }
 
-const ROLLBACK_ELIGIBLE_STATES = new Set(["executing", "validating", "promoted"]);
+const ROLLBACK_ELIGIBLE_STATES = new Set(["executing", "validating", "accepted"]);
 
 export async function triggerCampaignRollback(
   tx: TenantTx,

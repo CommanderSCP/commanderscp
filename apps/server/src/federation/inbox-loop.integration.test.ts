@@ -476,7 +476,7 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
         controlObjectId: randomUUID(),
         changeObjectId: change.id,
         gateKind: "lifecycle_edge",
-        gateRef: { fromState: "validating", toState: "promoted" },
+        gateRef: { fromState: "validating", toState: "accepted" },
         status: "pass",
         evidence: {
           scanner: "trivy",

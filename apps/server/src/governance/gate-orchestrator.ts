@@ -254,7 +254,7 @@ function buildControlContext(input: {
 /**
  * Runs (never blocks, never writes a Decision) every required control a change's targets'
  * effective policies reference, and materializes every requireApprovals effect's approval
- * request — so that by the time a HUMAN calls `POST /changes/{id}/promote` (the host-less
+ * request — so that by the time a HUMAN calls `POST /changes/{id}/accept` (the host-less
  * lifecycle-edge gate, `coordination/gates.ts`'s module doc), the outcomes it needs to READ
  * already exist. Called by `coordination/reconcile.ts` once per tick for every change sitting in
  * `validating` (the only state a required-control-bearing policy could otherwise starve forever,
@@ -282,7 +282,7 @@ export async function prewarmGovernanceForChange(
   // `resolveFiredPolicies`), then pre-run/materialize only what firing policies actually require.
   // Uses the SAME subject + graph facts the real gate does (graphFactsFor) so prewarm and the
   // eventual host-less lifecycle gate agree on which conditions fired — otherwise a control the
-  // real gate needs but prewarm never ran would starve the promote gate (which only READS).
+  // real gate needs but prewarm never ran would starve the accept gate (which only READS).
   const primaryTarget = input.targetObjectIds[0];
   const subjectObject = primaryTarget ? await getObjectByIdOrUrnAnyType(tx, input.orgId, primaryTarget).catch(() => null) : null;
   const graphFacts = primaryTarget
@@ -321,7 +321,7 @@ export async function prewarmGovernanceForChange(
       changeObjectId: input.changeObjectId,
       controlObjectIds: allControlIds,
       gateKind: "lifecycle_edge",
-      gateRef: { fromState: "validating", toState: "promoted" },
+      gateRef: { fromState: "validating", toState: "accepted" },
       context: buildControlContext({
         changeId: input.changeObjectId,
         targetObjectIds: input.targetObjectIds,

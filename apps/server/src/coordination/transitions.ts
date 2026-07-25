@@ -16,19 +16,19 @@ import { ChangeStateSchema } from "@scp/schemas";
  *
  * Edge rationale (DESIGN §9.1's diagram + prose):
  *  - The "happy path" states form a chain: proposed -> evaluated -> coordinated -> executing ->
- *    validating -> promoted. Each step corresponds to the engine's own observe/compare/decide/
+ *    validating -> accepted. Each step corresponds to the engine's own observe/compare/decide/
  *    coordinate progression (coordination/reconcile.ts).
  *  - `waiting` (M12 P4B) is an OPTIONAL detour on the coordinated->executing step: a change with
  *    unsatisfied `properties.requires` goes coordinated -> waiting and is held there until every
  *    cross-change prerequisite is satisfied, then waiting -> executing. A change with no `requires`
  *    takes coordinated -> executing directly, exactly as before — both edges are legal. `cancel` is
- *    legal from `waiting` too (it is pre-promotion); `rollback` is not (nothing has executed yet).
- *  - `cancel` is legal from every pre-promotion state (proposed/evaluated/coordinated/executing/
- *    validating) — an operator can always abort a change that hasn't been promoted yet.
+ *    legal from `waiting` too (it is pre-acceptance); `rollback` is not (nothing has executed yet).
+ *  - `cancel` is legal from every pre-acceptance state (proposed/evaluated/coordinated/executing/
+ *    validating) — an operator can always abort a change that hasn't been accepted yet.
  *  - `rollback` is legal once the change has actually done something an external system needs
- *    reverting (executing/validating/promoted) — never from proposed/evaluated/coordinated, where
+ *    reverting (executing/validating/accepted) — never from proposed/evaluated/coordinated, where
  *    nothing has executed yet and `cancel` is the correct verb.
- *  - `cancelled` and `rolled_back` are terminal EXCEPT `promoted -> rolled_back` (a promoted
+ *  - `cancelled` and `rolled_back` are terminal EXCEPT `accepted -> rolled_back` (an accepted
  *    change can still be rolled back later) — every other state has no outgoing edges once
  *    reached.
  */
@@ -53,10 +53,10 @@ export const LEGAL_TRANSITIONS: readonly StateTransitionEdge[] = [
   { from: "executing", to: "validating", trigger: "validate" },
   { from: "executing", to: "cancelled", trigger: "cancel" },
   { from: "executing", to: "rolled_back", trigger: "rollback" },
-  { from: "validating", to: "promoted", trigger: "promote" },
+  { from: "validating", to: "accepted", trigger: "accept" },
   { from: "validating", to: "cancelled", trigger: "cancel" },
   { from: "validating", to: "rolled_back", trigger: "rollback" },
-  { from: "promoted", to: "rolled_back", trigger: "rollback" }
+  { from: "accepted", to: "rolled_back", trigger: "rollback" }
 ];
 
 const LEGAL_EDGE_SET: ReadonlySet<string> = new Set(

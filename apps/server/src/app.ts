@@ -213,7 +213,7 @@ export async function buildApp(
   // M2 step 3: `@scp/iac` server-side plan/apply (BUILD_AND_TEST.md §8 M2 item 4).
   registerPlanRoutes(app, deps);
   // M3: the Change lifecycle + Decision records (BUILD_AND_TEST.md §8 M3) — propose/list/get/
-  // cancel/promote/rollback/explain, plus the standalone `/decisions` sub-resource.
+  // cancel/accept/rollback/explain, plus the standalone `/decisions` sub-resource.
   registerChangeRoutes(app, deps);
   // M3: webhook ingress (persist-then-process) + source_mappings correlation config.
   registerChangeSourceRoutes(app, deps);

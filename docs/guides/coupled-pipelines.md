@@ -95,7 +95,7 @@ a change-source report — same syntax, same semantics.
 
 A change with an unsatisfied `requires` enters a `waiting` state (visible in `scp change list
 --state waiting` and the UI) instead of executing. It releases the moment every requirement is
-satisfied — some *other* change reaching `validating` or `promoted` while providing that key at
+satisfied — some *other* change reaching `validating` or `accepted` while providing that key at
 that scope. Three ways to see the live status of a waiting (or already-released) change:
 
 **CLI, focused view** — `scp change wait-status <id>` prints only the coupling status, nothing

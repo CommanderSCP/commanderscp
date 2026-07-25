@@ -25,7 +25,7 @@ import { triggerCampaignRollback } from "../coordination/campaign-rollback.js";
  * `/campaigns` (DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5) — the campaign-scoped sibling of
  * `routes/changes.ts`. Deliberately thin: every write here is a graph-object create (`campaign`,
  * pre-seeded built-in type) plus a Decision, exactly like `POST /changes`; there is no
- * transition-guarded verb surface (`:cancel`/`:promote`) because a campaign has no transition-
+ * transition-guarded verb surface (`:cancel`/`:accept`) because a campaign has no transition-
  * guarded state machine to drive — see `coordination/campaign-status.ts`'s module doc. The one
  * verb a campaign DOES support beyond propose/list/get/explain is `:rollback`
  * (`coordination/campaign-rollback.ts`), mirroring `POST /changes/{id}/rollback` exactly.
@@ -181,7 +181,7 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
       openapi: {
         operationId: "rollbackCampaign",
         summary:
-          "Roll back every currently-eligible (executing/validating/promoted) member Change of a campaign — each becomes its own new rollback Change",
+          "Roll back every currently-eligible (executing/validating/accepted) member Change of a campaign — each becomes its own new rollback Change",
         tags: ["campaigns"]
       }
     },

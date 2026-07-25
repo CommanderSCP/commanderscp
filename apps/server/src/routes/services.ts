@@ -22,7 +22,7 @@ export function registerServiceRoutes(app: FastifyInstance, deps: AppDeps): void
   const typed = app.withTypeProvider<ZodTypeProvider>();
 
   // GET /services/:idOrUrn/board — the service release board (Layer A). One server-side projection of
-  // every component's latest change's per-stage status + attention (see coordination/service-board.ts).
+  // every component's latest change's per-wave status + attention (see coordination/service-board.ts).
   typed.route({
     method: "GET",
     url: "/api/v1/services/:idOrUrn/board",
@@ -33,7 +33,7 @@ export function registerServiceRoutes(app: FastifyInstance, deps: AppDeps): void
     config: {
       openapi: {
         operationId: "getServiceBoard",
-        summary: "The service release board — its components, each's latest change per-stage status, and a releasing/blocked/stable summary",
+        summary: "The service release board — its components, each's latest change per-wave status, and a releasing/blocked/stable summary",
         tags: ["services"]
       }
     },

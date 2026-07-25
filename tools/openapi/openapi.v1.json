@@ -23127,7 +23127,7 @@
     "/services/{idOrUrn}/board": {
       "get": {
         "operationId": "getServiceBoard",
-        "summary": "The service release board — its components, each's latest change per-stage status, and a releasing/blocked/stable summary",
+        "summary": "The service release board — its components, each's latest change per-wave status, and a releasing/blocked/stable summary",
         "tags": [
           "services"
         ],
@@ -23233,7 +23233,7 @@
                               }
                             ]
                           },
-                          "currentStage": {
+                          "currentWave": {
                             "anyOf": [
                               {
                                 "type": "string"
@@ -23243,7 +23243,7 @@
                               }
                             ]
                           },
-                          "stages": {
+                          "waves": {
                             "type": "array",
                             "items": {
                               "type": "object",
@@ -23390,8 +23390,8 @@
                           "latestChangeId",
                           "changeState",
                           "changeName",
-                          "currentStage",
-                          "stages",
+                          "currentWave",
+                          "waves",
                           "attention",
                           "activeFreeze"
                         ],
@@ -33919,7 +33919,7 @@
                         "waiting",
                         "executing",
                         "validating",
-                        "promoted",
+                        "accepted",
                         "cancelled",
                         "rolled_back"
                       ]
@@ -34261,7 +34261,7 @@
                 "waiting",
                 "executing",
                 "validating",
-                "promoted",
+                "accepted",
                 "cancelled",
                 "rolled_back"
               ]
@@ -34307,7 +34307,7 @@
                               "waiting",
                               "executing",
                               "validating",
-                              "promoted",
+                              "accepted",
                               "cancelled",
                               "rolled_back"
                             ]
@@ -34638,7 +34638,7 @@
                         "waiting",
                         "executing",
                         "validating",
-                        "promoted",
+                        "accepted",
                         "cancelled",
                         "rolled_back"
                       ]
@@ -34996,7 +34996,7 @@
                             "waiting",
                             "executing",
                             "validating",
-                            "promoted",
+                            "accepted",
                             "cancelled",
                             "rolled_back"
                           ]
@@ -35900,7 +35900,7 @@
                         "waiting",
                         "executing",
                         "validating",
-                        "promoted",
+                        "accepted",
                         "cancelled",
                         "rolled_back"
                       ]
@@ -36243,10 +36243,10 @@
         ]
       }
     },
-    "/changes/{id}/promote": {
+    "/changes/{id}/accept": {
       "post": {
-        "operationId": "promoteChange",
-        "summary": "Promote a change out of `validating` — the human approval gate before `promoted`",
+        "operationId": "acceptChange",
+        "summary": "Accept a change out of `validating` — the human approval gate before `accepted`",
         "tags": [
           "changes"
         ],
@@ -36317,7 +36317,7 @@
                         "waiting",
                         "executing",
                         "validating",
-                        "promoted",
+                        "accepted",
                         "cancelled",
                         "rolled_back"
                       ]
@@ -36735,7 +36735,7 @@
                         "waiting",
                         "executing",
                         "validating",
-                        "promoted",
+                        "accepted",
                         "cancelled",
                         "rolled_back"
                       ]
@@ -48535,7 +48535,7 @@
     "/campaigns/{id}/rollback": {
       "post": {
         "operationId": "rollbackCampaign",
-        "summary": "Roll back every currently-eligible (executing/validating/promoted) member Change of a campaign — each becomes its own new rollback Change",
+        "summary": "Roll back every currently-eligible (executing/validating/accepted) member Change of a campaign — each becomes its own new rollback Change",
         "tags": [
           "campaigns"
         ],
@@ -48620,7 +48620,7 @@
                                   "waiting",
                                   "executing",
                                   "validating",
-                                  "promoted",
+                                  "accepted",
                                   "cancelled",
                                   "rolled_back"
                                 ]

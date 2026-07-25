@@ -4,17 +4,17 @@ import type { TenantTx } from "../db/tenant-tx.js";
 /**
  * Coupled-pipeline prerequisites (M12 P4B — docs/proposals/coupled-pipelines.md). A change declares
  * `properties.requires: {key, at}[]`; it may not execute until, for EACH requirement, some OTHER
- * change is in `validating` or `promoted` and `provides` that `key` at that `at` object.
+ * change is in `validating` or `accepted` and `provides` that `key` at that `at` object.
  *
  * The predicate is EXISTENTIAL over a CONDITION, not a pointer to a specific prerequisite row: a
- * failed/cancelled prerequisite is simply not in {validating, promoted}, so the waiter keeps
+ * failed/cancelled prerequisite is simply not in {validating, accepted}, so the waiter keeps
  * waiting; the operator fixes it and re-pushes, a NEW change reaches `validating` with the same
  * key, and the waiter releases — nothing to re-point. That is what makes "wait forever" (the owner's
  * choice) coherent rather than stubborn.
  *
- * State choice `validating|promoted`, NOT `promoted` alone (owner ruling: "run successfully, not a
- * human gate"): a forward change never auto-promotes (`reconcile.ts` completeExecution returns for
- * non-rollback changes — promotion is a human `scp change promote`), so a `promoted` predicate would
+ * State choice `validating|accepted`, NOT `accepted` alone (owner ruling: "run successfully, not a
+ * human gate"): a forward change never auto-accepts (`reconcile.ts` completeExecution returns for
+ * non-rollback changes — promotion is a human `scp change accept`), so a `accepted` predicate would
  * deadlock every automated coupled release. `validating` is the state the engine writes once every
  * wave succeeded — the executor ran, the bucket exists.
  */
@@ -27,7 +27,7 @@ export interface Requirement {
 /** A requirement plus WHETHER it is currently satisfied, and by which change if so. */
 export interface RequirementStatus extends Requirement {
   satisfied: boolean;
-  /** The object id of the change that satisfies this requirement (in validating|promoted), or null. */
+  /** The object id of the change that satisfies this requirement (in validating|accepted), or null. */
   satisfiedByChangeObjectId: string | null;
 }
 
@@ -53,7 +53,7 @@ export async function requirementStatuses(
       FROM changes c
       JOIN objects o ON o.id = c.object_id AND o.org_id = c.org_id
       WHERE c.org_id = ${orgId}::uuid
-        AND c.state IN ('validating', 'promoted')
+        AND c.state IN ('validating', 'accepted')
         AND o.id <> ${selfChangeObjectId}::uuid
         AND o.deleted_at IS NULL
         AND o.properties @> ${probe}::jsonb
@@ -106,7 +106,7 @@ const DIAGNOSTIC_LIMIT = 20;
  * org-scoped. Because `at` is a resolved object id (not a substring embedded in the key), this is
  * exact rather than a prefix guess — "no change has ever provided `feture-a` at `us-east-1`; keys
  * provided there: `feature-a`, `feature-b`." Every change ever proposed at that scope counts
- * (not just currently-`validating`/`promoted` ones) — a typo diagnosis cares what pipelines
+ * (not just currently-`validating`/`accepted` ones) — a typo diagnosis cares what pipelines
  * DECLARE, not what is live right now. Served by the same `obj_props` GIN index as
  * `requirementStatuses` (`jsonb_path_ops` covers `@>`, not the `jsonb_array_elements_text` unnest
  * itself, but the `@>` prefilter is what keeps this cheap).
@@ -138,7 +138,7 @@ export async function listProvidedKeysAtScope(tx: TenantTx, orgId: string, at: s
   return result.rows.map((r) => r.key);
 }
 
-/** One requirement key satisfied by MORE THAN ONE currently-{validating,promoted} change at the
+/** One requirement key satisfied by MORE THAN ONE currently-{validating,accepted} change at the
  *  same `at` — the release-time ambiguity a reused `provides` key produces (coupled-pipelines.md
  *  §6#8: "key reuse fails open"). `providerChangeObjectIds` is capped at `DIAGNOSTIC_LIMIT` — this
  *  is a diagnostic record, not an exhaustive audit. */
@@ -175,7 +175,7 @@ export async function ambiguousProvidersFor(
       FROM changes c
       JOIN objects o ON o.id = c.object_id AND o.org_id = c.org_id
       WHERE c.org_id = ${orgId}::uuid
-        AND c.state IN ('validating', 'promoted')
+        AND c.state IN ('validating', 'accepted')
         AND o.id <> ${selfChangeObjectId}::uuid
         AND o.deleted_at IS NULL
         AND o.properties @> ${probe}::jsonb

@@ -541,7 +541,7 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
         controlObjectId: randomUUID(),
         changeObjectId: change.id,
         gateKind: "lifecycle_edge",
-        gateRef: { fromState: "validating", toState: "promoted" },
+        gateRef: { fromState: "validating", toState: "accepted" },
         status: "pass",
         evidence: {
           scanner: "trivy",

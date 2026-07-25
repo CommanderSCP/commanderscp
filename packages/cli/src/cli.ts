@@ -131,7 +131,7 @@ function changeRow(c: Change): Record<string, string> {
   };
 }
 
-/** Fuller row for single-Change commands (propose/get/cancel/promote/rollback). */
+/** Fuller row for single-Change commands (propose/get/cancel/accept/rollback). */
 function changeDetailRow(c: Change): Record<string, string> {
   return {
     id: c.id,
@@ -159,7 +159,7 @@ function decisionRow(d: Decision): Record<string, string> {
 
 // -------------------------------------------------------------------------------------
 // M5 Campaigns & Initiatives (BUILD_AND_TEST.md §8 M5, DESIGN.md §9.5) — row formatters.
-// Campaign `status` is a pure derived field (no promote/cancel verbs), so it's surfaced
+// Campaign `status` is a pure derived field (no accept/cancel verbs), so it's surfaced
 // prominently in both the compact and detail rows.
 // -------------------------------------------------------------------------------------
 
@@ -414,7 +414,7 @@ function printWaitStatusBody(waitStatus: ChangeWaitStatus | null, standalone: bo
   const outstanding = waitStatus.requirements.filter((r) => !r.satisfied).length;
   // Derived from `outstanding`, not `waitStatus.waiting` alone: `waiting` reflects the change's
   // STATE (`state === "waiting"`), which is false for a change read before it ever parked (still
-  // `coordinated`/`proposed`) or after it released (`executing`/`validating`/`promoted`) — either
+  // `coordinated`/`proposed`) or after it released (`executing`/`validating`/`accepted`) — either
   // of which can still have an outstanding row (a not-yet-evaluated requirement, or a provider
   // that was cancelled after release). Heading off `waiting` alone would print "all satisfied"
   // over a row printing OUTSTANDING.
@@ -1604,7 +1604,7 @@ export function buildProgram(): Command {
     .description("List Changes")
     .option(
       "--state <state>",
-      "filter by state (proposed|evaluated|coordinated|waiting|executing|validating|promoted|cancelled|rolled_back)"
+      "filter by state (proposed|evaluated|coordinated|waiting|executing|validating|accepted|cancelled|rolled_back)"
     )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
@@ -1672,11 +1672,11 @@ export function buildProgram(): Command {
     });
 
   changeCmd
-    .command("promote <id>")
-    .description("Promote a Change out of `validating` — the human approval gate before `promoted`")
+    .command("accept <id>")
+    .description("Accept a Change out of `validating` — the human approval gate before `accepted`")
     .option(
       "--reason <text>",
-      "reason for promoting (also the mandatory reason for --override-freeze)"
+      "reason for accepting (also the mandatory reason for --override-freeze)"
     )
     .option(
       "--override-freeze",
@@ -1687,8 +1687,8 @@ export function buildProgram(): Command {
     .action(
       async (id: string, opts: BaseCliOpts & { reason?: string; overrideFreeze?: boolean }) => {
         const client = await clientFromStoredCredentials(opts);
-        const promoted = await client.changes.promote(id, opts.reason, opts.overrideFreeze);
-        printResult(promoted, opts.output, (item) => changeDetailRow(item as Change));
+        const accepted = await client.changes.accept(id, opts.reason, opts.overrideFreeze);
+        printResult(accepted, opts.output, (item) => changeDetailRow(item as Change));
       }
     );
 
@@ -1919,7 +1919,7 @@ export function buildProgram(): Command {
   // -------------------------------------------------------------------------------------
   // campaign / initiative (M5 Campaigns & Initiatives — DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5).
   // A Campaign coordinates many Changes across targets, wave by wave, over the SAME plan compiler
-  // a Change uses; unlike Change, it has no promote/cancel verbs — `status` is always a pure
+  // a Change uses; unlike Change, it has no accept/cancel verbs — `status` is always a pure
   // derived field, so `campaign status <id>` (its `get`) IS the CLI's window into that field. An
   // Initiative groups Campaigns and exposes a derived roll-up status over its members.
   // -------------------------------------------------------------------------------------
@@ -2471,6 +2471,11 @@ export function buildProgram(): Command {
   // isolated compose network. `promote` is the Promotion Bundle's own export verb — kept distinct
   // from `export` (which only ever produces sync bundles) so the CLI surface mirrors the two
   // distinct bundle kinds `packages/schemas/src/federation.ts` defines.
+  //
+  // `scp federation promote` KEEPS its name (ADR-0021 D1/D2/D5 scope note): it is a genuine
+  // promotion — an already-built artifact advancing to the next step. The change-lifecycle
+  // approval gate that used to share the word is now `scp change accept` (D5). The two verbs are
+  // deliberately different words for deliberately different things; do not unify them.
   // -------------------------------------------------------------------------------------
   const federationCmd = program
     .command("federation")

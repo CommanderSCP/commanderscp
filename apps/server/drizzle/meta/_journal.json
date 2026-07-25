@@ -274,6 +274,13 @@
       "when": 1786300000000,
       "tag": "0038_federation_peer_pull_state",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1786400000000,
+      "tag": "0039_change_state_accepted",
+      "breakpoints": true
     }
   ]
 }

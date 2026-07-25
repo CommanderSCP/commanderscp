@@ -373,7 +373,7 @@ describe.runIf(await dockerAvailable())(
           controlObjectId: randomUUID(),
           changeObjectId: changeId,
           gateKind: "lifecycle_edge",
-          gateRef: { fromState: "validating", toState: "promoted" },
+          gateRef: { fromState: "validating", toState: "accepted" },
           status: "pass",
           evidence: {
             scanner: "trivy",

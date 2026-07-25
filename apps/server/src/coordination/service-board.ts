@@ -3,7 +3,7 @@ import type {
   GraphObject,
   ServiceBoardResponse,
   ServiceBoardRow,
-  ServiceBoardStage,
+  ServiceBoardWave,
   ServiceBoardFreeze
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -107,8 +107,8 @@ export async function buildServiceBoard(
         latestChangeId: null,
         changeState: null,
         changeName: null,
-        currentStage: null,
-        stages: [],
+        currentWave: null,
+        waves: [],
         attention: { blocked: false, decisionId: null, awaitingApproval: false, emergency: false },
         activeFreeze: componentFreeze ? toFreeze(componentFreeze) : null
       });
@@ -123,7 +123,7 @@ export async function buildServiceBoard(
     ]);
 
     const waves = plan?.waves ?? [];
-    const stages: ServiceBoardStage[] = waves.map((w) => {
+    const boardWaves: ServiceBoardWave[] = waves.map((w) => {
       const kinds = [...new Map(w.targets.map((t) => [`${t.category}::${t.type}`, { category: t.category, type: t.type }])).values()];
       return {
         waveIndex: w.waveIndex,
@@ -135,10 +135,10 @@ export async function buildServiceBoard(
       };
     });
 
-    // Current stage: the running wave if any, else the last non-pending wave (what's most-recently acted).
+    // Current wave: the running wave if any, else the last non-pending wave (what's most-recently acted).
     const runningWave = waves.find((w) => w.status === "running");
     const lastActed = [...waves].reverse().find((w) => w.status !== "pending");
-    const currentStage = (runningWave ?? lastActed)?.name ?? null;
+    const currentWave = (runningWave ?? lastActed)?.name ?? null;
 
     // Attention (all real). Blocked = a failed wave/target OR a persisted block Decision; the decisionId
     // is that block Decision (charter principle 6). awaitingApproval = a pending ApprovalRequest.
@@ -154,8 +154,8 @@ export async function buildServiceBoard(
       latestChangeId: changeId,
       changeState: change.state,
       changeName: change.name,
-      currentStage,
-      stages,
+      currentWave,
+      waves: boardWaves,
       attention: {
         blocked: isBlocked,
         decisionId: isBlocked ? blockDecision?.id ?? null : null,

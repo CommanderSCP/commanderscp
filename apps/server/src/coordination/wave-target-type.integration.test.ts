@@ -489,7 +489,7 @@ describe("wave target type: a release triggers the matching-Type pipeline", () =
     expect(noExecEvent!.decisionId).toBe(blockDecision!.id);
     expect(noExecEvent!.rowHash).toEqual(expect.any(String)); // linked into the org's hash chain.
 
-    // 4. The change is PARKED: still `executing` (never succeeded/promoted), reconcile_blocked_at set.
+    // 4. The change is PARKED: still `executing` (never succeeded/accepted), reconcile_blocked_at set.
     const row = await changeRow(change.id);
     expect(row.state).toBe("executing");
     expect(row.reconcileBlockedAt).not.toBeNull();

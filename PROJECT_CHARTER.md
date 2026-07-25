@@ -1485,7 +1485,7 @@ Validating
 
 ↓
 
-Promoted
+Accepted
 
 or
 
@@ -2250,7 +2250,7 @@ Deploy
 
 Validate
 
-Promote
+Accept
 
 ---
 
@@ -2266,7 +2266,7 @@ Deploy
 
 Validate
 
-Promote
+Accept
 
 ---
 
@@ -3045,7 +3045,7 @@ Register Service
 
 Create Campaign
 
-Promote Change
+Accept Change
 
 Evaluate Policy
 

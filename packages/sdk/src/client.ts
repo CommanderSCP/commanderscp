@@ -129,7 +129,7 @@ import {
   getChange as getChangeRequest,
   explainChange as explainChangeRequest,
   cancelChange as cancelChangeRequest,
-  promoteChange as promoteChangeRequest,
+  acceptChange as acceptChangeRequest,
   rollbackChange as rollbackChangeRequest,
   listDecisions as listDecisionsRequest,
   getDecision as getDecisionRequest,
@@ -1205,7 +1205,7 @@ export class ScpClient {
 
   // -----------------------------------------------------------------------------------------
   // M3 Change Coordination Engine (BUILD_AND_TEST.md §8 M3, DESIGN §9/§10.4) —
-  // `scp change propose/promote/rollback/explain` (packages/cli) are thin callers of these,
+  // `scp change propose/accept/rollback/explain` (packages/cli) are thin callers of these,
   // same layering as every other resource.
   // -----------------------------------------------------------------------------------------
 
@@ -1241,12 +1241,12 @@ export class ScpClient {
       });
       return unwrap(result);
     },
-    /** Promotes a change out of `validating` — the human approval gate before `promoted`.
+    /** Accepts a change out of `validating` — the human approval gate before `accepted`.
      *  `overrideFreeze` (DESIGN §10.3, M4) attempts to override an active freeze blocking this
      *  transition — requires `freeze:override` permission AND `reason` to be set (the same
      *  field doubles as the freeze override's mandatory reason). */
-    promote: async (id: string, reason?: string, overrideFreeze?: boolean): Promise<Change> => {
-      const result = await promoteChangeRequest({
+    accept: async (id: string, reason?: string, overrideFreeze?: boolean): Promise<Change> => {
+      const result = await acceptChangeRequest({
         client: this.client,
         path: { id },
         body: { reason, overrideFreeze }
@@ -1436,7 +1436,7 @@ export class ScpClient {
   // -----------------------------------------------------------------------------------------
   // M5 Campaigns & Initiatives (BUILD_AND_TEST.md §8 M5, DESIGN §9.5) — `scp campaign
   // create/status` (packages/cli) are thin callers of these, same layering as `changes` above.
-  // No `promote`/`cancel` verbs: a campaign has no transition-guarded state machine of its own
+  // No `accept`/`cancel` verbs: a campaign has no transition-guarded state machine of its own
   // (coordination/campaign-status.ts's module doc) — `status` is always derived live by `get`.
   // -----------------------------------------------------------------------------------------
 

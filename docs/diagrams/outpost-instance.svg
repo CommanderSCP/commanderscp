@@ -113,7 +113,7 @@
     <rect x="690" y="384" width="106" height="26" rx="6" fill="#fee2e2" stroke="#b91c1c"/>
     <text x="743" y="401" text-anchor="middle" fill="#b91c1c">rolled_back</text>
     <rect x="842" y="384" width="94" height="26" rx="6" fill="#dcfce7" stroke="#15803d"/>
-    <text x="889" y="401" text-anchor="middle" fill="#15803d">promoted</text>
+    <text x="889" y="401" text-anchor="middle" fill="#15803d">accepted</text>
     <line x1="889" y1="356" x2="889" y2="384" stroke="#15803d" stroke-width="1.4" marker-end="url(#arr)"/>
     <line x1="800" y1="356" x2="752" y2="384" stroke="#b91c1c" stroke-width="1.4" marker-end="url(#arrRed)"/>
     <line x1="620" y1="356" x2="572" y2="384" stroke="#9ca3af" stroke-width="1.4" marker-end="url(#arr)"/>

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # M4 Governance Engine golden path (BUILD_AND_TEST.md §8 M4 definition of done — "the full golden
 # path becomes CI's flagship E2E"): register -> propose a change -> a REQUIRED gate BLOCKS (a real
-# HTTP 4xx carrying decision_id) -> approve via the real `scp` CLI -> promote -> `scp change
+# HTTP 4xx carrying decision_id) -> approve via the real `scp` CLI -> accept -> `scp change
 # explain` reconstructs the policy version consulted -> `scp audit verify` passes.
 #
 # Builds the image, brings up the same two-container compose stack e2e-m0.sh uses, then drives it
@@ -24,11 +24,11 @@
 # real CLI binary, not re-proving individual mechanisms already covered at the integration layer.
 #
 # A policy scoped directly to a change's own (single) target governs that target's WAVE boundary
-# too, not just the validating->promoted lifecycle edge (coordination/gates.ts: every wave
+# too, not just the validating->accepted lifecycle edge (coordination/gates.ts: every wave
 # boundary is real-governance-evaluated in M4) — so this change parks in 'executing' (wave
 # blocked, pending the same approval) before it ever reaches 'validating'. That's the genuine,
 # correct system behavior for a single-wave change, not a workaround — `scp change explain` shows
-# the wave's own blocked gate Decision, and the direct `curl` promote attempt made while still
+# the wave's own blocked gate Decision, and the direct `curl` accept attempt made while still
 # parked in 'executing' is what demonstrates the "4xx carries decision_id" contract (DESIGN
 # §6/§10.4 promises this even for the underlying "illegal transition" — decisions.ts's guarded
 # transition function writes exactly one Decision for every attempted transition, blocked or not).
@@ -167,23 +167,23 @@ for i in $(seq 1 60); do
 done
 
 echo "==> asserting the blocked 4xx carries decision_id (direct API call, bypassing the CLI's own terse error formatting)"
-PROMOTE_HTTP_CODE_AND_BODY="$(curl -sS -w '\n%{http_code}' -X POST \
+ACCEPT_HTTP_CODE_AND_BODY="$(curl -sS -w '\n%{http_code}' -X POST \
   -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
-  -d '{}' "$API_URL/changes/$CHANGE_ID/promote")"
-PROMOTE_HTTP_CODE="$(echo "$PROMOTE_HTTP_CODE_AND_BODY" | tail -n1)"
-PROMOTE_BODY="$(echo "$PROMOTE_HTTP_CODE_AND_BODY" | sed '$d')"
-if [ "$PROMOTE_HTTP_CODE" -lt 400 ] || [ "$PROMOTE_HTTP_CODE" -ge 500 ]; then
-  echo "FAIL: expected a 4xx from the blocked promote attempt, got $PROMOTE_HTTP_CODE" >&2
-  echo "$PROMOTE_BODY" >&2
+  -d '{}' "$API_URL/changes/$CHANGE_ID/accept")"
+ACCEPT_HTTP_CODE="$(echo "$ACCEPT_HTTP_CODE_AND_BODY" | tail -n1)"
+ACCEPT_BODY="$(echo "$ACCEPT_HTTP_CODE_AND_BODY" | sed '$d')"
+if [ "$ACCEPT_HTTP_CODE" -lt 400 ] || [ "$ACCEPT_HTTP_CODE" -ge 500 ]; then
+  echo "FAIL: expected a 4xx from the blocked accept attempt, got $ACCEPT_HTTP_CODE" >&2
+  echo "$ACCEPT_BODY" >&2
   exit 1
 fi
-PROMOTE_DECISION_ID="$(echo "$PROMOTE_BODY" | json_field decision_id || true)"
-if [ -z "$PROMOTE_DECISION_ID" ]; then
-  echo "FAIL: blocked promote response (HTTP $PROMOTE_HTTP_CODE) carries no decision_id" >&2
-  echo "$PROMOTE_BODY" >&2
+ACCEPT_DECISION_ID="$(echo "$ACCEPT_BODY" | json_field decision_id || true)"
+if [ -z "$ACCEPT_DECISION_ID" ]; then
+  echo "FAIL: blocked accept response (HTTP $ACCEPT_HTTP_CODE) carries no decision_id" >&2
+  echo "$ACCEPT_BODY" >&2
   exit 1
 fi
-echo "PASS: blocked promote returned HTTP $PROMOTE_HTTP_CODE with decision_id $PROMOTE_DECISION_ID"
+echo "PASS: blocked accept returned HTTP $ACCEPT_HTTP_CODE with decision_id $ACCEPT_DECISION_ID"
 
 echo "==> approve via the real scp CLI: scp approval list / scp approval approve"
 APPROVALS_JSON="$("${CLI_BIN[@]}" approval list --change-id "$CHANGE_ID" --output json)"
@@ -217,14 +217,14 @@ for i in $(seq 1 60); do
   sleep 1
 done
 
-echo "==> promote: scp change promote \$CHANGE_ID"
-PROMOTED_JSON="$("${CLI_BIN[@]}" change promote "$CHANGE_ID" --output json)"
-PROMOTED_STATE="$(echo "$PROMOTED_JSON" | json_field state)"
-if [ "$PROMOTED_STATE" != "promoted" ]; then
-  echo "FAIL: expected state 'promoted' after promote, got '$PROMOTED_STATE'" >&2
+echo "==> accept: scp change accept \$CHANGE_ID"
+ACCEPTED_JSON="$("${CLI_BIN[@]}" change accept "$CHANGE_ID" --output json)"
+ACCEPTED_STATE="$(echo "$ACCEPTED_JSON" | json_field state)"
+if [ "$ACCEPTED_STATE" != "accepted" ]; then
+  echo "FAIL: expected state 'accepted' after accept, got '$ACCEPTED_STATE'" >&2
   exit 1
 fi
-echo "PASS: change promoted"
+echo "PASS: change accepted"
 
 echo "==> scp change explain: reconstructing the policy version consulted"
 FINAL_EXPLAIN_JSON="$("${CLI_BIN[@]}" change explain "$CHANGE_ID" --output json)"

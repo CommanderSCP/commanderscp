@@ -966,7 +966,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
         controlObjectId: randomUUID(),
         changeObjectId: changeId,
         gateKind: "lifecycle_edge",
-        gateRef: { fromState: "validating", toState: "promoted" },
+        gateRef: { fromState: "validating", toState: "accepted" },
         status: over.status ?? "pass",
         evidence: {
           scanner: "trivy",
@@ -1565,7 +1565,7 @@ describe("M17.4(a) / M15.2 receiver manifest verification (Testcontainers)", () 
         controlObjectId: randomUUID(),
         changeObjectId: changeId,
         gateKind: "lifecycle_edge",
-        gateRef: { fromState: "validating", toState: "promoted" },
+        gateRef: { fromState: "validating", toState: "accepted" },
         status: "pass",
         evidence: {
           scanner: "trivy",

@@ -18,7 +18,7 @@ export interface RelayedEvent {
 const OBJECT_EVENT_TYPES = ["scp.object.created", "scp.object.updated", "scp.object.deleted"];
 
 // M3: `scp.change.transitioned` (coordination/transition.ts) fires on every guarded state change
-// (propose/evaluate/coordinate/execute/validate/promote/cancel/rollback). It does NOT fire for
+// (propose/evaluate/coordinate/execute/validate/accept/cancel/rollback). It does NOT fire for
 // intra-wave/target progress within a state (the reconciliation loop updates those rows directly,
 // no outbox event) — change-detail.tsx additionally polls via `refetchInterval` to catch that.
 const CHANGE_EVENT_TYPES = ["scp.change.transitioned"];

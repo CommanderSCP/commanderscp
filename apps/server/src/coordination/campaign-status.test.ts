@@ -49,7 +49,7 @@ describe("computeCampaignStatus (pure, table-driven — BUILD_AND_TEST.md §4.1/
   it("wave 1 succeeded, wave 2 blocked by its boundary gate -> blocked (flagship DoD scenario)", () => {
     const status = computeCampaignStatus({
       hasPlan: true,
-      waves: [wave(0, "succeeded", ["promoted", "promoted"]), wave(1, "blocked", [null])]
+      waves: [wave(0, "succeeded", ["accepted", "accepted"]), wave(1, "blocked", [null])]
     });
     expect(status).toBe("blocked");
   });
@@ -57,7 +57,7 @@ describe("computeCampaignStatus (pure, table-driven — BUILD_AND_TEST.md §4.1/
   it("a wave's member changes failed/cancelled without recovering -> failed", () => {
     const status = computeCampaignStatus({
       hasPlan: true,
-      waves: [wave(0, "failed", ["cancelled", "promoted"])]
+      waves: [wave(0, "failed", ["cancelled", "accepted"])]
     });
     expect(status).toBe("failed");
   });
@@ -73,7 +73,7 @@ describe("computeCampaignStatus (pure, table-driven — BUILD_AND_TEST.md §4.1/
   it("every wave succeeded -> completed", () => {
     const status = computeCampaignStatus({
       hasPlan: true,
-      waves: [wave(0, "succeeded", ["promoted"]), wave(1, "succeeded", ["promoted", "promoted"])]
+      waves: [wave(0, "succeeded", ["accepted"]), wave(1, "succeeded", ["accepted", "accepted"])]
     });
     expect(status).toBe("completed");
   });
@@ -81,12 +81,12 @@ describe("computeCampaignStatus (pure, table-driven — BUILD_AND_TEST.md §4.1/
   it("skipped waves count toward completion (empty/no-op wave)", () => {
     const status = computeCampaignStatus({
       hasPlan: true,
-      waves: [wave(0, "succeeded", ["promoted"]), wave(1, "skipped", [])]
+      waves: [wave(0, "succeeded", ["accepted"]), wave(1, "skipped", [])]
     });
     expect(status).toBe("completed");
   });
 
-  it("every promoted target later rolled back -> rolled_back", () => {
+  it("every accepted target later rolled back -> rolled_back", () => {
     const status = computeCampaignStatus({
       hasPlan: true,
       waves: [wave(0, "succeeded", ["rolled_back", "rolled_back"])]
@@ -94,10 +94,10 @@ describe("computeCampaignStatus (pure, table-driven — BUILD_AND_TEST.md §4.1/
     expect(status).toBe("rolled_back");
   });
 
-  it("some promoted targets rolled back, others still promoted -> partially_rolled_back", () => {
+  it("some accepted targets rolled back, others still accepted -> partially_rolled_back", () => {
     const status = computeCampaignStatus({
       hasPlan: true,
-      waves: [wave(0, "succeeded", ["rolled_back", "promoted"])]
+      waves: [wave(0, "succeeded", ["rolled_back", "accepted"])]
     });
     expect(status).toBe("partially_rolled_back");
   });

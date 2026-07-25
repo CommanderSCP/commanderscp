@@ -29,7 +29,7 @@ import {
  * client-side Terraform semantics" (DESIGN.md §15).
  *
  * **Routing note (documented deviation):** DESIGN.md's `{id}:verb` syntax (e.g.
- * `/changes/{id}:promote`) does NOT survive Fastify's router (find-my-way) the way it reads —
+ * `/changes/{id}:accept`) does NOT survive Fastify's router (find-my-way) the way it reads —
  * verified empirically: registering `/plans/:id:apply` does not parse as param `id` + literal
  * suffix `:apply`; find-my-way instead treats the whole `id:apply` token as ONE parameter name
  * (`request.params["id:apply"]`), so `/plans/abc` and `/plans/abc:apply` collapse onto the same

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # M5 Campaigns & Initiatives golden path (BUILD_AND_TEST.md §8 M5 definition of done — flagship
 # E2E): a "patch 3 services" campaign compiles to per-target member changes with correct wave
-# ordering -> wave 1 promotes -> wave 2 is blocked by a required gate on one of its targets
+# ordering -> wave 1 accepts -> wave 2 is blocked by a required gate on one of its targets
 # (fan-in/fan-out semantics reused from M3, gate reused from M4) -> campaign status aggregates
 # correctly -> an initiative grouping the campaign reflects the roll-up -> campaign-level rollback
-# reverts the promoted target, each rollback producing a Decision -> `scp audit verify` passes.
+# reverts the accepted target, each rollback producing a Decision -> `scp audit verify` passes.
 #
 # Builds the image, brings up the same two-container compose stack e2e-m0.sh/e2e-m4.sh use, then
 # drives it with the REAL `scp` CLI binary exactly the way an operator would.
@@ -200,7 +200,7 @@ for i in $(seq 1 60); do
   sleep 1
 done
 
-echo "==> waiting for the member change to reach 'validating', then promoting it via scp change promote"
+echo "==> waiting for the member change to reach 'validating', then accepting it via scp change accept"
 for i in $(seq 1 60); do
   STATE="$("${CLI_BIN[@]}" change get "$WAVE0_CHANGE_ID" --output json | json_field state)"
   if [ "$STATE" = "validating" ]; then
@@ -213,8 +213,8 @@ for i in $(seq 1 60); do
   fi
   sleep 1
 done
-"${CLI_BIN[@]}" change promote "$WAVE0_CHANGE_ID" >/dev/null
-echo "PASS: wave 0's member change promoted"
+"${CLI_BIN[@]}" change accept "$WAVE0_CHANGE_ID" >/dev/null
+echo "PASS: wave 0's member change accepted"
 
 echo "==> waiting for the campaign to aggregate to status 'blocked' (wave 0 succeeded, wave 1 blocked by svc-b's required approval)"
 GATE_BLOCK_DECISION_ID=""
@@ -272,7 +272,7 @@ if [ "$ROLLUP_STATUS" != "blocked" ]; then
 fi
 echo "PASS: initiative roll-up reflects the campaign's 'blocked' status"
 
-echo "==> scp campaign rollback \$CAMPAIGN_ID — reverts only the promoted target (svc-a)"
+echo "==> scp campaign rollback \$CAMPAIGN_ID — reverts only the accepted target (svc-a)"
 ROLLBACK_JSON="$("${CLI_BIN[@]}" campaign rollback "$CAMPAIGN_ID" --reason "M5 flagship e2e: revert wave 0 while wave 1 is blocked" --output json)"
 ROLLED_BACK_COUNT="$(node -e '
   const data = JSON.parse(require("fs").readFileSync(0, "utf8"));
@@ -291,7 +291,7 @@ if [ "$ROLLED_BACK_ORIGINAL" != "$WAVE0_CHANGE_ID" ]; then
   echo "FAIL: rolled back the wrong change — expected $WAVE0_CHANGE_ID, got $ROLLED_BACK_ORIGINAL" >&2
   exit 1
 fi
-echo "PASS: campaign rollback reverted exactly svc-a's promoted member change ($WAVE0_CHANGE_ID)"
+echo "PASS: campaign rollback reverted exactly svc-a's accepted member change ($WAVE0_CHANGE_ID)"
 
 echo "==> waiting for the rollback to complete (\$WAVE0_CHANGE_ID reaches 'rolled_back')"
 for i in $(seq 1 60); do

@@ -165,7 +165,7 @@ async function waitForValidating(admin: ScpClient, changeId: string, timeoutMs =
 }
 
 /** A required policy scoped directly to a change's own (single) target ALSO gates that target's
- *  wave boundary, not just the `validating->promoted` lifecycle edge (coordination/gates.ts's
+ *  wave boundary, not just the `validating->accepted` lifecycle edge (coordination/gates.ts's
  *  module doc: every wave boundary is real-governance-evaluated in M4, unlike most other
  *  lifecycle edges) — so `requireControls`/`requireApprovals` effects on such a policy resolve
  *  (control runs for real; approval requests materialize) from wave 0's FIRST gate check, well
@@ -369,8 +369,8 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     // returns pass, so it eventually clears.
     await waitForControlRun(admin, change.id, realControl.id, "pass");
     await waitForValidating(admin, change.id);
-    const promoted = await admin.changes.promote(change.id);
-    expect(promoted.state).toBe("promoted");
+    const accepted = await admin.changes.accept(change.id);
+    expect(accepted.state).toBe("accepted");
   });
 
   // -----------------------------------------------------------------------------------------
@@ -605,7 +605,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
   });
 
   // -----------------------------------------------------------------------------------------
-  // Required control blocks promote; hybrid gate (scan AND approval — either missing blocks);
+  // Required control blocks accept; hybrid gate (scan AND approval — either missing blocks);
   // control outcomes + evidence persisted and referenced by the Decision (joined by
   // controlObjectId — see routes/changes.ts's explain handler / control_runs.decision_id's own
   // doc comment for why there's no raw FK).
@@ -646,7 +646,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       await waitForControlRun(admin, change.id, control.id, "fail");
 
       // Approval satisfied, control failing -> hybrid still blocks: the wave can never start, so
-      // the change can never even reach 'validating' for a 'promote' call to be a meaningful
+      // the change can never even reach 'validating' for a 'accept' call to be a meaningful
       // re-test of this same gate — the wave's own blocked gate Decision is the real assertion.
       await assertStaysExecuting(admin, change.id);
 
@@ -664,7 +664,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       expect(controlEffect?.detail.outcome).toBe("fail");
     });
 
-    it("hybrid: the control passing is not enough on its own — approval still gates promote; once both are satisfied promote succeeds and evidence is explainable", async () => {
+    it("hybrid: the control passing is not enough on its own — approval still gates accept; once both are satisfied accept succeeds and evidence is explainable", async () => {
       const org = await createTestOrg(server, "hybrid-approval-gates");
       const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
       const approver = await createTestUser(server, org, [{ role: "Approver", scope: org.orgId }]);
@@ -699,8 +699,8 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       await approverClient.approvals.vote(approvalRequest.id);
       await waitForValidating(admin, change.id);
 
-      const promoted = await admin.changes.promote(change.id);
-      expect(promoted.state).toBe("promoted");
+      const accepted = await admin.changes.accept(change.id);
+      expect(accepted.state).toBe("accepted");
 
       // "scp change explain reconstructs policy version + control outcome + evidence" (flagship
       // E2E's own phrasing, BUILD_AND_TEST.md §8 M4): the allow Decision's reasonTree carries the
@@ -708,7 +708,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       // by controlObjectId.
       const explained = await admin.changes.explain(change.id);
       const allowDecision = explained.decisions.find(
-        (d) => d.kind === "transition" && d.verdict === "allow" && (d.inputContext.toState as string) === "promoted"
+        (d) => d.kind === "transition" && d.verdict === "allow" && (d.inputContext.toState as string) === "accepted"
       );
       expect(allowDecision).toBeDefined();
       // transition.ts: `decision.reasonTree = { summary, gate: gate.reasonTree }` — the per-policy
@@ -782,8 +782,8 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     // Quorum reached -> the wave unblocks on its next gate check, executes, and the change
     // naturally reaches 'validating'.
     await waitForValidating(admin, change.id);
-    const promoted = await admin.changes.promote(change.id);
-    expect(promoted.state).toBe("promoted");
+    const accepted = await admin.changes.accept(change.id);
+    expect(accepted.state).toBe("accepted");
 
     // Every accepted vote carries a verifiable Ed25519 attestation (DESIGN §10.2).
     const votes = await admin.approvals.listVotes(approvalRequest.id);
@@ -885,11 +885,11 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const satisfied = await admin.approvals.get(approvalRequest.id);
     expect(satisfied.status).toBe("satisfied");
 
-    // The change proceeds all the way to promoted — proving the whole path (materialize with
+    // The change proceeds all the way to accepted — proving the whole path (materialize with
     // resolved scope → eligible vote → quorum) worked, and never crashed a gate tick.
     await waitForValidating(admin, change.id);
-    const promoted = await admin.changes.promote(change.id);
-    expect(promoted.state).toBe("promoted");
+    const accepted = await admin.changes.accept(change.id);
+    expect(accepted.state).toBe("accepted");
   });
 
   // -----------------------------------------------------------------------------------------
@@ -936,10 +936,10 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const satisfied = await admin.approvals.get(approvalRequest.id);
     expect(satisfied.status).toBe("satisfied");
 
-    // The change reaches promoted — the required approval was satisfiable, not a permanent wedge.
+    // The change reaches accepted — the required approval was satisfiable, not a permanent wedge.
     await waitForValidating(admin, change.id);
-    const promoted = await admin.changes.promote(change.id);
-    expect(promoted.state).toBe("promoted");
+    const accepted = await admin.changes.accept(change.id);
+    expect(accepted.state).toBe("accepted");
   });
 
   // -----------------------------------------------------------------------------------------
@@ -949,7 +949,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
   // audits with the reason. SECURITY-SENSITIVE surface.
   // -----------------------------------------------------------------------------------------
 
-  it("freeze blocks promote; a rejected override (unauthorized / no-reason) carries decision_id + is audited (MAJOR #6); authorized override with a reason succeeds and writes an audited, Decision-linked freeze.override event", async () => {
+  it("freeze blocks accept; a rejected override (unauthorized / no-reason) carries decision_id + is audited (MAJOR #6); authorized override with a reason succeeds and writes an audited, Decision-linked freeze.override event", async () => {
     const org = await createTestOrg(server, "freeze");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
@@ -966,7 +966,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       reason: "holiday code freeze"
     });
 
-    const blocked = await expectApiError(() => admin.changes.promote(change.id));
+    const blocked = await expectApiError(() => admin.changes.accept(change.id));
     expect(blocked.status).toBe(409);
     expect(blocked.problem?.decision_id).toBeTruthy();
 
@@ -977,7 +977,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const administrator = await createTestUser(server, org, [{ role: "Administrator", scope: org.orgId }]);
     const administratorClient = new ScpClient({ baseUrl: server.baseUrl, token: administrator.token });
     const unauthorizedOverride = await expectApiError(() =>
-      administratorClient.changes.promote(change.id, "let me through please", true)
+      administratorClient.changes.accept(change.id, "let me through please", true)
     );
     expect(unauthorizedOverride.status).toBe(409);
     expect(unauthorizedOverride.problem?.decision_id).toBeTruthy();
@@ -987,13 +987,13 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     expect(JSON.stringify(rejectDecision.reasonTree)).toMatch(/override rejected/i);
 
     // Owner HAS 'freeze:override' but omits the mandatory reason — also a rejected-override 409.
-    const missingReason = await expectApiError(() => admin.changes.promote(change.id, undefined, true));
+    const missingReason = await expectApiError(() => admin.changes.accept(change.id, undefined, true));
     expect(missingReason.status).toBe(409);
     expect(missingReason.problem?.decision_id).toBeTruthy();
 
     // Owner, with a reason, succeeds.
-    const promoted = await admin.changes.promote(change.id, "hotfix approved by incident commander", true);
-    expect(promoted.state).toBe("promoted");
+    const accepted = await admin.changes.accept(change.id, "hotfix approved by incident commander", true);
+    expect(accepted.state).toBe("accepted");
 
     const auditPage = await admin.auditEvents.list({ limit: 100 });
     const overrideEvent = auditPage.items.find((e) => e.action === "freeze.override");
@@ -1044,9 +1044,9 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       reason: "service-wide freeze"
     });
 
-    // THE BUG: without the `contains` route this promote SUCCEEDS — the freeze is active, covers the
+    // THE BUG: without the `contains` route this accept SUCCEEDS — the freeze is active, covers the
     // component's service, and blocks nothing.
-    const blocked = await expectApiError(() => admin.changes.promote(frozenChange.id));
+    const blocked = await expectApiError(() => admin.changes.accept(frozenChange.id));
     expect(blocked.status).toBe(409);
     expect(blocked.problem?.decision_id).toBeTruthy();
     // Blocked BY THIS FREEZE specifically — not by some unrelated policy that happens to 409.
@@ -1055,8 +1055,8 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     expect(JSON.stringify(decision.reasonTree)).toMatch(/sf-service-freeze/);
 
     // The unrelated component is untouched: containment confers the freeze, proximity does not.
-    const promoted = await admin.changes.promote(freeChange.id);
-    expect(promoted.state).toBe("promoted");
+    const accepted = await admin.changes.accept(freeChange.id);
+    expect(accepted.state).toBe("accepted");
   });
 
   // -----------------------------------------------------------------------------------------
@@ -1082,8 +1082,8 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     await admin.freezes.create({ scopeObjectId: component.id, name: "component-freeze", startsAt, endsAt, reason: "narrow" });
     await admin.freezes.create({ scopeObjectId: org.orgId, name: "org-freeze", startsAt, endsAt, reason: "broad org-wide freeze" });
 
-    // An actor who can PROMOTE (Administrator at org root grants object:write, the route-level
-    // permission the promote endpoint checks — but NOT freeze:override, which is Owner-only) AND
+    // An actor who can ACCEPT (Administrator at org root grants object:write, the route-level
+    // permission the accept endpoint checks — but NOT freeze:override, which is Owner-only) AND
     // holds freeze:override ONLY at the component (Owner bound there). So they can override the
     // component freeze but have no authority over the broader org-root freeze.
     const narrowOverrider = await createTestUser(server, org, [
@@ -1093,17 +1093,17 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const narrowClient = new ScpClient({ baseUrl: server.baseUrl, token: narrowOverrider.token });
 
     // Their override covers the component freeze but NOT the org-root freeze → still blocked.
-    // (Also needs object:write to attempt the promote transition at all — Owner grants it.)
+    // (Also needs object:write to attempt the accept transition at all — Owner grants it.)
     const stillBlocked = await expectApiError(() =>
-      narrowClient.changes.promote(change.id, "I can only override the component freeze", true)
+      narrowClient.changes.accept(change.id, "I can only override the component freeze", true)
     );
     expect(stillBlocked.status).toBe(409);
     expect(stillBlocked.problem?.decision_id).toBeTruthy();
 
     // The org-root Owner (admin) holds freeze:override at org root, which covers BOTH freezes via
     // containment → the override succeeds and BOTH freezes are individually audited.
-    const promoted = await admin.changes.promote(change.id, "incident: overriding both freezes", true);
-    expect(promoted.state).toBe("promoted");
+    const accepted = await admin.changes.accept(change.id, "incident: overriding both freezes", true);
+    expect(accepted.state).toBe("accepted");
 
     const auditPage = await admin.auditEvents.list({ limit: 200 });
     const overrideEvents = auditPage.items.filter((e) => e.action === "freeze.override");
@@ -1138,13 +1138,13 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
 
     const changeAsMember = await memberClient.changes.propose({ name: "as-member", targets: [target.id] });
     await waitForValidating(memberClient, changeAsMember.id);
-    const memberBlocked = await expectApiError(() => memberClient.changes.promote(changeAsMember.id));
+    const memberBlocked = await expectApiError(() => memberClient.changes.accept(changeAsMember.id));
     expect(memberBlocked.status).toBe(409);
 
     const changeAsNonMember = await nonMemberClient.changes.propose({ name: "as-non-member", targets: [target.id] });
     await waitForValidating(nonMemberClient, changeAsNonMember.id);
-    const promoted = await nonMemberClient.changes.promote(changeAsNonMember.id);
-    expect(promoted.state).toBe("promoted");
+    const accepted = await nonMemberClient.changes.accept(changeAsNonMember.id);
+    expect(accepted.state).toBe("accepted");
   });
 
   // -----------------------------------------------------------------------------------------
@@ -1190,15 +1190,15 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       // Emergency change, proposed by a permitted actor (the bootstrap admin holds Owner, which
       // has change:emergency per the M4 migration) -> gate-orchestrator.ts swaps in ONLY the
       // configured emergencyPolicy set -> proceeds cleanly through both the wave boundary and the
-      // validating->promoted lifecycle edge.
+      // validating->accepted lifecycle edge.
       const emergencyChange = await admin.changes.propose({
         name: "emergency-change",
         targets: [target.id],
         emergency: true
       });
       await waitForValidating(admin, emergencyChange.id);
-      const promoted = await admin.changes.promote(emergencyChange.id);
-      expect(promoted.state).toBe("promoted");
+      const accepted = await admin.changes.accept(emergencyChange.id);
+      expect(accepted.state).toBe("accepted");
 
       // Fully audited: the bypass is a NAMED fact in the Decision trail, not a silent allow — a
       // retrospective reader can tell this change went through the emergency path.
@@ -1363,7 +1363,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       expect(controlEffect?.detail.outcome).toBe("fail");
     });
 
-    it("a CLEAN Trivy verdict whose scanned digest MATCHES the change's artifact PROMOTES — and the pass evidence is explainable", async () => {
+    it("a CLEAN Trivy verdict whose scanned digest MATCHES the change's artifact ACCEPTS — and the pass evidence is explainable", async () => {
       const org = await createTestOrg(server, "scan-pass");
       const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
@@ -1386,8 +1386,8 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
 
       await waitForControlRun(admin, change.id, control.id, "pass");
       await waitForValidating(admin, change.id);
-      const promoted = await admin.changes.promote(change.id);
-      expect(promoted.state).toBe("promoted");
+      const accepted = await admin.changes.accept(change.id);
+      expect(accepted.state).toBe("accepted");
 
       const explained = await admin.changes.explain(change.id);
       const controlRun = explained.controlRuns.find((r) => r.controlObjectId === control.id);
@@ -1405,7 +1405,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
       const target = await createTestComponent(admin, { name: "scan-mismatch-target" });
-      // ZERO vulnerabilities, but the scan is of OTHER_DIGEST while the change promotes MATCH_DIGEST.
+      // ZERO vulnerabilities, but the scan is of OTHER_DIGEST while the change accepts MATCH_DIGEST.
       const control = await createScanControl(admin, org, {
         urnSuffix: "scan-mismatch",
         digest: OTHER_DIGEST,
@@ -1458,7 +1458,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
         requireControlIds: [control.id]
       });
 
-      // The change PROMOTES MATCH_DIGEST — carried in its own tracked sourceRef.artifact_digest.
+      // The change ACCEPTS MATCH_DIGEST — carried in its own tracked sourceRef.artifact_digest.
       const change = await admin.changes.propose({
         name: "scan-real-mismatch-change",
         targets: [target.id],
@@ -1474,7 +1474,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       });
       expect(run.detail).toMatch(/digest mismatch/i);
 
-      // Clean but bound to a DIFFERENT artifact than the change is promoting -> blocked, audited.
+      // Clean but bound to a DIFFERENT artifact than the change is accepting -> blocked, audited.
       await assertStaysExecuting(admin, change.id);
       const explained = await admin.changes.explain(change.id);
       const gateBlock = explained.decisions.find((d) => d.kind === "gate" && d.verdict === "block");
@@ -1482,7 +1482,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       expect(gateBlock!.id).toBeTruthy(); // a resolvable decision_id (charter principle 6)
     });
 
-    it("binds to the change's REAL tracked artifact digest: a CLEAN scan whose scanned digest MATCHES the change's sourceRef.artifact_digest PROMOTES — again with NO config.expectedDigest", async () => {
+    it("binds to the change's REAL tracked artifact digest: a CLEAN scan whose scanned digest MATCHES the change's sourceRef.artifact_digest ACCEPTS — again with NO config.expectedDigest", async () => {
       const org = await createTestOrg(server, "scan-real-match");
       const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
@@ -1509,8 +1509,8 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
 
       await waitForControlRun(admin, change.id, control.id, "pass");
       await waitForValidating(admin, change.id);
-      const promoted = await admin.changes.promote(change.id);
-      expect(promoted.state).toBe("promoted");
+      const accepted = await admin.changes.accept(change.id);
+      expect(accepted.state).toBe("accepted");
 
       const explained = await admin.changes.explain(change.id);
       const controlRun = explained.controlRuns.find((r) => r.controlObjectId === control.id);
@@ -1535,7 +1535,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     // it properly — and this test proves the fix HELPS rather than breaks M17.1's shipped binding:
     // the scan gate must still bind the Trivy verdict to a report-route change's real digest.
     // -------------------------------------------------------------------------------------------
-    it("M17.2 regression: a change created via the TYPED REPORT route (flat artifactDigest, now canonicalized) still binds the M17.1 scan gate to its real artifact — clean+matching scan promotes, and the SBOM reference rode along on the same report", async () => {
+    it("M17.2 regression: a change created via the TYPED REPORT route (flat artifactDigest, now canonicalized) still binds the M17.1 scan gate to its real artifact — clean+matching scan accepts, and the SBOM reference rode along on the same report", async () => {
       const org = await createTestOrg(server, "scan-report-route");
       const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
@@ -1606,11 +1606,11 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       });
 
       // ...and M17.1's binding STILL WORKS off it: the gate threads the change's digest into the
-      // control context, the clean matching verdict passes, and the change promotes.
+      // control context, the clean matching verdict passes, and the change accepts.
       await waitForControlRun(admin, changeObjectId, control.id, "pass");
       await waitForValidating(admin, changeObjectId);
-      const promoted = await admin.changes.promote(changeObjectId);
-      expect(promoted.state).toBe("promoted");
+      const accepted = await admin.changes.accept(changeObjectId);
+      expect(accepted.state).toBe("accepted");
 
       const explained = await admin.changes.explain(changeObjectId);
       const controlRun = explained.controlRuns.find((r) => r.controlObjectId === control.id);
@@ -1656,7 +1656,7 @@ describe("governance integration: automatic rollback on wave failure", () => {
     await createPolicy(admin, org, {
       name: "auto-rollback-policy",
       urnSuffix: "auto-rollback",
-      enforcement: "advisory", // enforcement gates promote; autoRollbackOnFailure is independent of it
+      enforcement: "advisory", // enforcement gates accept; autoRollbackOnFailure is independent of it
       scopeObjectId: target.id,
       autoRollbackOnFailure: true
     });
@@ -1665,7 +1665,7 @@ describe("governance integration: automatic rollback on wave failure", () => {
 
     // `forcePhase` has no trigger-kind distinction (this file's module doc) — `autoRollbackTargetId`
     // fails EVERY trigger, sync or rollback alike, so the auto-triggered rollback change's own wave
-    // fails too and never reaches 'promoted'. That's deliberately exercised by the SECOND
+    // fails too and never reaches 'accepted'. That's deliberately exercised by the SECOND
     // assertion below (no infinite rollback-of-a-rollback regress), not a test gap — this test's
     // real subject is the TRIGGER itself, not the rollback's own eventual success (already proven
     // by coordination.integration.test.ts's "rollback restores prior known-good state" case).

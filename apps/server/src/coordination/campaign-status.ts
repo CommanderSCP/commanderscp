@@ -42,7 +42,7 @@ export interface ComputeCampaignStatusInput {
  * rollback is deliberately visible in status even while an earlier wave is still `blocked` or
  * `failed` — DESIGN §9.4: rollback is "always available", independent of the campaign's own
  * forward state). Otherwise: `failed` > `blocked` > `completed` > `active`, in that priority —
- * matching the DoD's own scenario ("wave 1 promotes while wave 2 is blocked" — the campaign as a
+ * matching the DoD's own scenario ("wave 1 accepts while wave 2 is blocked" — the campaign as a
  * whole reads `blocked`, the actionable fact, not `active`).
  */
 export function computeCampaignStatus(input: ComputeCampaignStatusInput): CampaignStatus {
@@ -50,9 +50,9 @@ export function computeCampaignStatus(input: ComputeCampaignStatusInput): Campai
 
   const allTargets = input.waves.flatMap((w) => w.targets);
   const rolledBackCount = allTargets.filter((t) => t.memberChangeState === "rolled_back").length;
-  const stillPromotedCount = allTargets.filter((t) => t.memberChangeState === "promoted").length;
+  const stillAcceptedCount = allTargets.filter((t) => t.memberChangeState === "accepted").length;
   if (rolledBackCount > 0) {
-    return stillPromotedCount > 0 ? "partially_rolled_back" : "rolled_back";
+    return stillAcceptedCount > 0 ? "partially_rolled_back" : "rolled_back";
   }
 
   if (input.waves.some((w) => w.waveStatus === "failed")) return "failed";
