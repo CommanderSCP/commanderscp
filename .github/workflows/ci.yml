@@ -152,16 +152,18 @@ jobs:
     # + republishes before the integration job pulls it. Needs a real Docker daemon, which
     # `ubuntu-latest` provides natively.
     #
-    # DROPPED (runner swap): this job used to force `DOCKER_BUILDKIT=0`. That legacy-builder policy
-    # (§6) had exactly ONE recorded justification — inside the homelab DinD sidecar, BuildKit's
-    # persistent embedded gRPC session deadlocked against `--network none` container operations in
-    # the same daemon ("session healthcheck failed fatally … only one connection allowed", PR #126).
-    # Two independent reasons it cannot apply here: (a) `ubuntu-latest` runs a NATIVE daemon, not
-    # DinD, so there is no sidecar session to wedge; (b) this job only builds and pushes — it never
-    # creates a net=none container — so even the original comment recorded it as "not strictly
-    # required here." Both runner Dockerfiles are plain single-stage FROM/RUN/COPY with no
-    # BuildKit-only features, so either builder produces a functionally identical image; BuildKit is
-    # simply the faster default. The constraint IS retained where it still has a live justification:
+    # RETAINED: `DOCKER_BUILDKIT=0` stays, for a reason that is NOT the DinD wedge. Both runner
+    # Dockerfiles begin `# syntax=docker/dockerfile:1.7` — a BuildKit-ONLY frontend directive. The
+    # legacy builder treats that line as a comment (inert); BuildKit treats it as live and, on a
+    # cache miss, PULLS `docker/dockerfile:1.7` from Docker Hub — an unauthenticated, rate-limitable
+    # external dependency, against CLAUDE.md #5 (vendored tooling, no outside calls). Keeping the
+    # legacy builder keeps the build hermetic. (`apps/runner-scan/Dockerfile` is also MULTI-stage —
+    # `FROM ... AS trivy` + `COPY --from=trivy` — which the legacy builder handles fine; multi-stage
+    # long predates BuildKit. An earlier revision of this comment claimed both Dockerfiles were
+    # "plain single-stage ... with no BuildKit-only features": both halves were false.)
+    # The ORIGINAL DinD justification (PR #126: BuildKit's embedded gRPC session deadlocking against
+    # `--network none` container ops in one daemon) no longer applies on a native daemon — but the
+    # flag was load-bearing for the frontend-pull reason nobody had recorded. Also retained in
     # `resolveRunnerImage`'s local-dev fallback, which does build and run net=none containers in one
     # daemon (packages/plugin-testkit/src/runner-image.ts).
     runs-on: ubuntu-latest
@@ -182,7 +184,7 @@ jobs:
               echo "cache hit: $image already in GHCR — no build needed."
             else
               echo "cache miss: building $image from $context and pushing to GHCR."
-              docker build -t "$image" "$context"
+              DOCKER_BUILDKIT=0 docker build -t "$image" "$context"
               docker push "$image"
             fi
           }

@@ -43,9 +43,15 @@ export interface ResolveRunnerImageOptions {
  * occur there. It is kept HERE because the local-dev shape is unchanged and untested against
  * BuildKit; this is a deliberate retention, not leftover cargo cult.
  *
- * These Dockerfiles are plain single-stage FROM+RUN+COPY builds with no BuildKit-only features, so
- * the legacy builder yields a functionally identical image. Do NOT re-enable BuildKit here without
- * re-solving the single-daemon session wedge (docs/BUILD_AND_TEST.md §6).
+ * A SECOND, independent reason to keep the legacy builder: both runner Dockerfiles begin
+ * `# syntax=docker/dockerfile:1.7`, a BuildKit-ONLY frontend directive. The legacy builder treats
+ * it as an inert comment; BuildKit treats it as live and pulls that frontend image from Docker Hub
+ * on a cache miss — an unauthenticated external dependency (charter principle 5). Note
+ * apps/runner-scan/Dockerfile is also MULTI-stage (`FROM ... AS trivy` + `COPY --from=trivy`),
+ * which the legacy builder handles fine. (An earlier revision of this comment claimed these were
+ * "plain single-stage ... with no BuildKit-only features" — both halves were false.) Do NOT
+ * re-enable BuildKit here without re-solving the single-daemon session wedge AND vendoring or
+ * pinning the frontend image (docs/BUILD_AND_TEST.md §6).
  */
 export async function resolveRunnerImage(opts: ResolveRunnerImageOptions): Promise<string> {
   const preBuilt = process.env[opts.refEnvVar];

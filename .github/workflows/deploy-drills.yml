@@ -58,11 +58,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - name: Reclaim disk (see the "DISK" note in this file's header)
-        run: bash .github/scripts/free-disk.sh
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # kind-drill.sh builds an "old" image from an earlier commit on this branch
+      - name: Reclaim disk (see the "DISK" note in this file's header)
+        run: bash .github/scripts/free-disk.sh
       - uses: ./.github/actions/setup
       - run: pnpm build
       # Drill prerequisites (kind/kubectl/helm). Installed in-workflow via the same setup-action
@@ -106,9 +106,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
+      - uses: actions/checkout@v4
       - name: Reclaim disk (see the "DISK" note in this file's header)
         run: bash .github/scripts/free-disk.sh
-      - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - run: pnpm build
       # Drill prerequisites installed in-workflow (same pattern as the integration CI job) —
@@ -137,9 +137,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 50
     steps:
+      - uses: actions/checkout@v4
       - name: Reclaim disk (see the "DISK" note in this file's header)
         run: bash .github/scripts/free-disk.sh
-      - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - run: pnpm build
       # Drill prerequisites installed in-workflow (same pattern as the integration CI job) —
@@ -183,9 +183,9 @@ jobs:
     # re-run. The job ceiling must comfortably exceed the drill's own patience.
     timeout-minutes: 55
     steps:
+      - uses: actions/checkout@v4
       - name: Reclaim disk (see the "DISK" note in this file's header)
         run: bash .github/scripts/free-disk.sh
-      - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - run: pnpm build
       # Drill prerequisites installed in-workflow (same pattern as kind-drill / the integration CI
