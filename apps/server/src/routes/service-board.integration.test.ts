@@ -60,10 +60,14 @@ describe("service board: GET /services/:idOrUrn/board (Phase 2, Layer A)", () =>
       expect(row.attention.emergency).toBe(false);
       expect(row.attention.decisionId).toBeNull();
       expect(row.activeFreeze).toBeNull();
+      // No change at all ⇒ no authority to name, and — critically — the empties above ARE real
+      // observations in this single-domain org, so nothing is declared unobservable.
+      expect(row.driver).toBeNull();
+      expect(row.unknownFields).toEqual([]);
     }
 
-    // summary strip: all stable, none releasing/blocked; the three sum to rows.length
-    expect(board.summary).toEqual({ releasing: 0, blocked: 0, stable: 2 });
+    // summary strip: all stable, none releasing/blocked/not-driven-here; the four sum to rows.length
+    expect(board.summary).toEqual({ releasing: 0, blocked: 0, stable: 2, notDrivenHere: 0 });
   });
 
   it("returns 404 for an unknown / non-service id", async () => {

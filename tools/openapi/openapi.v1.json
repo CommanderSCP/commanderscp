@@ -23383,6 +23383,42 @@
                                 "type": "null"
                               }
                             ]
+                          },
+                          "driver": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "drivenHere": {
+                                    "type": "boolean"
+                                  },
+                                  "originDomainId": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "drivenHere",
+                                  "originDomainId"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "unknownFields": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
                           }
                         },
                         "required": [
@@ -23393,7 +23429,9 @@
                           "currentWave",
                           "waves",
                           "attention",
-                          "activeFreeze"
+                          "activeFreeze",
+                          "driver",
+                          "unknownFields"
                         ],
                         "additionalProperties": false
                       }
@@ -23415,12 +23453,18 @@
                           "type": "integer",
                           "minimum": -9007199254740991,
                           "maximum": 9007199254740991
+                        },
+                        "notDrivenHere": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
                         }
                       },
                       "required": [
                         "releasing",
                         "blocked",
-                        "stable"
+                        "stable",
+                        "notDrivenHere"
                       ],
                       "additionalProperties": false
                     },

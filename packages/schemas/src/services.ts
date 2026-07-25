@@ -60,6 +60,23 @@ export const ServiceBoardFreezeSchema = z.object({
 });
 export type ServiceBoardFreeze = z.infer<typeof ServiceBoardFreezeSchema>;
 
+/** WHICH DOMAIN DRIVES this row's latest change (federation honesty — see `unknownFields`).
+ *
+ *  A change's graph OBJECT replicates across a federation link; its plan/waves, block Decisions,
+ *  approval requests and freezes do NOT (they are local projection tables that never ride the sync
+ *  journal). So a domain holding a change as a read-only REPLICA can see that the change exists and
+ *  what lifecycle state its origin last reported, but genuinely cannot see whether it is blocked,
+ *  awaiting approval, or how far its waves have rolled.
+ *
+ *  `drivenHere` is false exactly when the change object's authoritative origin is another domain
+ *  (`objects.origin_domain_id !== this instance's federation domain id`). `originDomainId` names
+ *  that authoritative domain (null when this domain is the origin). */
+export const ServiceBoardDriverSchema = z.object({
+  drivenHere: z.boolean(),
+  originDomainId: z.string().nullable()
+});
+export type ServiceBoardDriver = z.infer<typeof ServiceBoardDriverSchema>;
+
 /** One board row = one component of the service. `latestChangeId` links the row to that component's
  *  active/most-recent change pipeline (`/changes/{id}/pipeline`); null when the component has never
  *  been a change target. `currentWave` is the running (or last non-pending) wave's display name. */
@@ -76,18 +93,37 @@ export const ServiceBoardRowSchema = z.object({
   waves: z.array(ServiceBoardWaveSchema),
   attention: ServiceBoardAttentionSchema,
   /** An active freeze scoped to THIS component (read-only). Null when none covers it directly. */
-  activeFreeze: ServiceBoardFreezeSchema.nullable()
+  activeFreeze: ServiceBoardFreezeSchema.nullable(),
+  /** Which domain drives `latestChangeId`. Null exactly when `latestChangeId` is null (there is no
+   *  change whose authority could be named). */
+  driver: ServiceBoardDriverSchema.nullable(),
+  /** The row fields whose values this domain CANNOT OBSERVE, named by dotted path (e.g. `"waves"`,
+   *  `"attention.blocked"`). Every listed field still carries its zero value on the wire for shape
+   *  stability — but that zero is NOT an observation and a client must not render it as one.
+   *
+   *  Empty for a change this domain drives (there, `waves: []` / `blocked: false` really do mean
+   *  "no waves compiled" / "not blocked"). Non-empty on a read-only replica, where the underlying
+   *  plan/Decision/approval/freeze rows were never replicated. This is the same rule the graph
+   *  health surfaces already follow — absent health renders `unknown`, never `healthy`. */
+  unknownFields: z.array(z.string())
 });
 export type ServiceBoardRow = z.infer<typeof ServiceBoardRowSchema>;
 
-/** The releasing / blocked / stable summary strip. `blocked` counts rows whose latest change is blocked
- *  (failed wave/target or block Decision); `releasing` counts rows whose latest change is in-flight and
- *  not blocked; `stable` is every remaining row (accepted / settled / no active change). The three are
- *  mutually exclusive and sum to `rows.length`. */
+/** The releasing / blocked / stable / not-driven-here summary strip. `blocked` counts rows whose latest
+ *  change is blocked (failed wave/target or block Decision); `releasing` counts rows whose latest change
+ *  is in-flight and not blocked; `notDrivenHere` counts rows whose latest change is a read-only replica
+ *  of another domain's change, where blocked/releasing are not observable at all (see
+ *  {@link ServiceBoardDriverSchema}); `stable` is every remaining row (accepted / settled / no active
+ *  change). The four are mutually exclusive and sum to `rows.length`.
+ *
+ *  `notDrivenHere` is deliberately its OWN bucket rather than folded into `stable`: a replica's release
+ *  may well be in flight, and counting it as stable is a fabricated all-clear — an operator on an
+ *  outpost would read green while the commander drives a release through their components. */
 export const ServiceBoardSummarySchema = z.object({
   releasing: z.number().int(),
   blocked: z.number().int(),
-  stable: z.number().int()
+  stable: z.number().int(),
+  notDrivenHere: z.number().int()
 });
 export type ServiceBoardSummary = z.infer<typeof ServiceBoardSummarySchema>;
 

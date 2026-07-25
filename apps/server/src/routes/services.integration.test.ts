@@ -80,7 +80,11 @@ describe("services: release board (Phase 2, Layer A)", () => {
     expect(rowB.waves).toHaveLength(0);
 
     // Summary: A is in-flight (proposed) and unblocked → releasing; B → stable; nothing blocked.
-    expect(board.summary).toEqual({ releasing: 1, blocked: 0, stable: 1 });
+    // Both changes are driven HERE (single-domain org), so nothing is unobservable.
+    expect(board.summary).toEqual({ releasing: 1, blocked: 0, stable: 1, notDrivenHere: 0 });
+    expect(rowA.driver).toEqual({ drivenHere: true, originDomainId: null });
+    expect(rowA.unknownFields).toEqual([]);
+    expect(rowB.driver).toBeNull();
   });
 
   it("resolves the service by URN as well as by id", async () => {
