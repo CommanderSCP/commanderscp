@@ -275,14 +275,20 @@ export function freezeVisibilityUnknownOf(board: { unknownFields: string[] }): b
  * screen distinguishes a live view from a snapshot taken last quarter.
  *
  * THREE READINGS, THREE TREATMENTS — and `null` is deliberately not one of the other two:
- *  - `stale === true`  → the upstream is overdue by its OWN effective cadence. Warned, and the
- *    server has additionally named `summary.stable` unobservable, so the Stable badge drops its
+ *  - `stale === true`  → the upstream is past the age at which a cycle counts as missed. Warned, and
+ *    the server has additionally named `summary.stable` unobservable, so the Stable badge drops its
  *    green in the same render.
- *  - `stale === false` → within cadence. A plain, quiet timestamp.
+ *  - `stale === false` → not overdue. A plain, quiet timestamp.
  *  - `stale === null`  → this instance schedules no pulls for that peer at all (an air-gapped peer;
  *    an outpost seen from the commander). There is no schedule for the data to be late against, so
  *    rendering it as "fresh" would assert something nobody measured. It renders as the bare as-of
  *    label, which is exactly the bounded guarantee §13 grants for an air-gapped domain.
+ *
+ * THE THRESHOLD IS `staleAfterSeconds`, NEVER `expectedWithinSeconds`. The two differ by the
+ * server's grace factor, and this tooltip used to quote the cadence as if it were the bound —
+ * telling an operator that 90-second-old data was "within" a 60-second cadence, which is false and
+ * is exactly the kind of number a reader checks against a clock. Both are shown, each named for
+ * what it is; the factor between them is never recomputed here.
  */
 export function BoardAsOfLabel({ asOf }: { asOf: ServiceBoardAsOf | null }): React.JSX.Element | null {
   if (!asOf) return null;
@@ -302,10 +308,10 @@ export function BoardAsOfLabel({ asOf }: { asOf: ServiceBoardAsOf | null }): Rea
       data-testid="board-as-of"
       title={
         asOf.stale === true
-          ? `Overdue: nothing has arrived from ${asOf.peerName} for ${asOf.ageSeconds}s, and its own effective sync cadence is ${asOf.expectedWithinSeconds}s. This board may not reflect changes already in flight upstream.`
+          ? `Overdue: nothing has arrived from ${asOf.peerName} for ${asOf.ageSeconds}s, past the ${asOf.staleAfterSeconds}s after which a sync cycle counts as missed (its effective sync cadence is ${asOf.expectedWithinSeconds}s, plus the grace a healthy peer needs — data is always at least one cadence old by the time the next import lands). This board may not reflect changes already in flight upstream.`
           : asOf.stale === null
             ? `This instance runs no pull schedule for ${asOf.peerName}, so there is no cadence for this data to be late against. It is last-known state as of the bundle named here — not live status (DESIGN §13).`
-            : `Within ${asOf.peerName}'s effective sync cadence of ${asOf.expectedWithinSeconds}s.`
+            : `Not overdue: this data is ${asOf.ageSeconds}s old and ${asOf.peerName} is not counted late until ${asOf.staleAfterSeconds}s (its effective sync cadence is ${asOf.expectedWithinSeconds}s, plus the grace a healthy peer needs — data is always at least one cadence old by the time the next import lands).`
       }
     >
       {asOf.stale === true ? "STALE — as of " : "As of "}

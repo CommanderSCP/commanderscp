@@ -11,17 +11,12 @@ import {
   computeBundleChecksum,
   verifyBundleSignature,
   verifyJournalChain,
-  JOURNAL_CONTIGUITY_BREAK_CODES,
-  type JournalChainVerification
+  JOURNAL_CONTIGUITY_BREAK_CODES
 } from "@scp/schemas/federation-journal";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { conflict, ProblemError } from "../errors.js";
 import { ensureFederationSelf } from "./self-repo.js";
-import {
-  getPeerByIdOrName,
-  listPeerKeyWindows,
-  verificationKeyForSequence
-} from "./peers-repo.js";
+import { getPeerByIdOrName, listPeerKeyWindows, verificationKeyForSequence } from "./peers-repo.js";
 import { getCursor, advanceCursor, type SyncCursor } from "./cursors-repo.js";
 import { recordBundleTransfer, type BundleTransport } from "./bundle-transfers-repo.js";
 import { entryMatchesScope } from "./scope-filter.js";
@@ -388,160 +383,111 @@ export interface ImportSyncBundleResult {
   appliedEntries: number;
   skippedEntries: number;
   lastAppliedSequence: number;
-  /** Present ONLY when this side is configured `full` but the sender shipped a sparse (scope-
-   *  filtered) segment — the sync_scope asymmetry, spelled out. `null` on every ordinary import.
-   *  See {@link verifySegment}. */
-  scopeAsymmetry?: string | null;
-}
-
-interface VerifiedSegment {
-  /** True when the run was accepted WITHOUT the gap-free guarantee (a scope-filtered chain). */
-  sparse: boolean;
-  /** Operator-facing description of a sender-narrower-than-receiver asymmetry; null otherwise. */
-  scopeAsymmetry: string | null;
 }
 
 /**
- * SEGMENT VERIFICATION — and the one judgement call in this file worth stating outright.
+ * SEGMENT VERIFICATION — strict, fail-closed, one path; only the DIAGNOSTIC is smart.
  *
- * THE DEFECT THIS REPLACES. `contiguous` used to be chosen from the RECEIVER's `peer.syncScope`.
- * But `federation_peers.sync_scope` is purely LOCAL config, set independently by the operator on
- * each side and never reconciled or carried on the wire; the receiver's default is `full`
- * (peers-repo.ts). So the single most likely field misconfiguration — a commander narrowed to
- * `status_only`/`changes_only`/`policies_only` sending to an outpost paired without `--sync-scope`
- * — made a full receiver demand a gap-free chain from a sender that legitimately ships a sparse
- * one. The first entry tripped `sequence_gap`, the import threw "tampered or broken journal
- * segment", and sync halted with a TAMPERING alarm for a config asymmetry. Fail-closed, so not a
- * safety hole — but it blames the wrong thing and gives the operator nothing to act on.
+ * WHAT THIS DOES. `contiguous` is chosen from the RECEIVER's `peer.syncScope` and from nothing
+ * else. A `full` receiver demands an exactly gap-free, prev_hash-linked, cursor-continuous run
+ * (with trust-on-first-sync for the very first segment ever seen from an origin); a receiver
+ * configured narrow verifies the sparse shape it asked for. A run that does not verify is
+ * REJECTED — there is no fallback, no laxer retry, and no path by which a chain with a hole in it
+ * is applied.
  *
- * WHY A SPARSE SEGMENT IS DISTINGUISHABLE FROM A TAMPERED ONE. Everything reachable here has
- * already passed the bundle-level gate in `importSyncBundle` step 1: `checksum` recomputed over
- * `{header, entries}` AND `bundleSignature` verified against the peer's Ed25519 key for the
- * bundle's authenticated `throughSequence`. No party in transit can add, drop, reorder or edit an
- * entry — or rewrite `sinceSequence`/`throughSequence` — without breaking that signature. Each
- * entry is then independently rowHash-recomputed and Ed25519-verified below, in BOTH modes.
- * Contiguity therefore is not, and never was, the tamper check: its only residual power is to
- * detect the SENDER declining to ship some of its own entries — which is precisely and
- * indistinguishably what a legitimately narrowed sender does.
+ * WHY NOT "ACCEPT A SPARSE CHAIN FROM A NARROWER SENDER" (owner decision). It is true that a
+ * sender narrowed to `status_only`/`changes_only`/`policies_only` legitimately ships a chain full
+ * of holes, and that a `full` receiver meeting one is almost certainly looking at a config
+ * asymmetry rather than an attack. It is ALSO true that a sparse run and a maliciously thinned run
+ * are the same bytes: the bundle checksum/signature only prove the SENDER produced what arrived,
+ * so a signer (or anyone holding its key) can delete a middle entry, re-sign, and a receiver that
+ * tolerates holes will take it. Contiguity is the ONLY check that catches that, and this is the
+ * one place it is caught. So it stays absolute. The misconfiguration is fixed where it belongs —
+ * in the operator's hands, with a message that tells them exactly what to fix.
  *
- * SO: ACCEPT, with the downgrade fenced. (The alternative — fail closed with a better message —
- * was rejected: it leaves sync permanently halted on a misconfiguration that both operators
- * believe they configured correctly, which is the landmine, not the wording.) The fences:
- *
- *  1. STRICT FIRST. A `full` receiver with a continuity anchor is still held to the exact
- *     contiguous, cursor-continuous check. A genuinely contiguous chain never reaches the
- *     fallback, so a full↔full pair's behaviour is unchanged, bit for bit.
- *  2. ONLY A CONTIGUITY BREAK IS RETRIED. `row_hash_mismatch`, `signature_invalid` and
- *     `no_public_key` throw immediately — tamper detection is not what gets relaxed. Only
- *     `sequence_gap` / `prev_hash_mismatch` (`JOURNAL_CONTIGUITY_BREAK_CODES`) reach phase two.
- *  3. THE SPARSE RE-CHECK IS THE FULL SPARSE CHECK. Every rowHash, every signature, strictly
- *     increasing sequences, first sequence at or above `cursor + 1`.
- *  4. A COMPENSATING BOUND THE CONFIGURED-SPARSE PATH DOES NOT NEED. Every accepted entry must lie
- *     inside the SIGNED header window `[sinceSequence, throughSequence]`. The receiver did not
- *     configure this downgrade, so the sender does not also get to widen the range it applies to
- *     beyond what it signed.
- *  5. NEVER SILENT. Acceptance always carries `scopeAsymmetry` — logged, and returned to the
- *     caller — naming BOTH scopes and what to check.
+ * THE MESSAGE IS THE FEATURE. A contiguity break (`sequence_gap` / `prev_hash_mismatch` —
+ * `JOURNAL_CONTIGUITY_BREAK_CODES`) gets {@link describeContiguityBreak}: the peer, THIS side's
+ * `sync_scope` verbatim, why a gap-free chain was expected, that a narrower sender legitimately
+ * ships a sparse one, and the two commands to compare. It never says "tampered" — that would be a
+ * verdict, and the likeliest cause is config. It also never says the opposite: a broken chain IS
+ * what withheld or removed entries look like, and the message says so too. Every OTHER break code
+ * (`row_hash_mismatch`, `signature_invalid`, `no_public_key`, `sequence_not_increasing`,
+ * `sequence_before_start`) is a content-integrity failure and keeps the security-toned wording.
  */
 function verifySegment(input: {
   entries: SyncJournalEntry[];
   cursor: SyncCursor;
-  header: SyncBundle["header"];
   receiverExpectsContiguity: boolean;
   receiverScope: SyncScope;
   peerName: string;
   exporterDomainId: TrustDomainId;
   resolvePublicKey: (entry: SyncJournalEntry) => string | null;
-}): VerifiedSegment {
-  const { entries, cursor, header, receiverExpectsContiguity, resolvePublicKey } = input;
-  if (entries.length === 0) return { sparse: !receiverExpectsContiguity, scopeAsymmetry: null };
-
-  const reject = (verification: JournalChainVerification): never => {
-    throw conflict(
-      `tampered or broken journal segment (rejected, fail-closed): ${verification.brokenAt?.reason ?? "unknown"}`
-    );
-  };
-  const verifySparse = (): JournalChainVerification =>
-    verifyJournalChain(entries, {
-      contiguous: false,
-      expectedStartSequence: cursor.sequence + 1,
-      resolvePublicKey
-    });
-
-  // The receiver's own scope already excludes gap-free delivery: verify sparse, as before, and say
-  // nothing — this is the configured, expected shape, not an asymmetry.
-  if (!receiverExpectsContiguity) {
-    const sparse = verifySparse();
-    if (!sparse.valid) reject(sparse);
-    return { sparse: true, scopeAsymmetry: null };
-  }
+}): void {
+  const { entries, cursor, receiverExpectsContiguity, resolvePublicKey } = input;
+  if (entries.length === 0) return;
 
   const isFirstSyncFromThisOrigin = cursor.sequence === 0 && cursor.rowHash === null;
-  // No anchor exists when a PREVIOUS segment from this origin was accepted as sparse (the cursor
-  // then advances with `rowHash: null`). Demanding contiguity against a genesis hash there would
-  // manufacture a `prev_hash_mismatch` on every subsequent sync; go straight to phase two.
-  const hasContiguityAnchor = isFirstSyncFromThisOrigin || cursor.rowHash !== null;
+  const verification = verifyJournalChain(entries, {
+    contiguous: receiverExpectsContiguity,
+    expectedPrevHash:
+      receiverExpectsContiguity && !isFirstSyncFromThisOrigin
+        ? (cursor.rowHash ?? undefined)
+        : undefined,
+    // Full first-sync: anchor to the bundle's own first entry (trust-on-first-sync). Otherwise a
+    // lower bound of cursor+1 (exact for contiguous; minimum for sparse).
+    expectedStartSequence:
+      receiverExpectsContiguity && isFirstSyncFromThisOrigin
+        ? entries[0]!.sequence
+        : cursor.sequence + 1,
+    // Per-entry key resolved by AUTHENTICATED sequence (never timestamp) — an entry signed before
+    // a rotation verifies against the old key only while its sequence is within that key's window.
+    resolvePublicKey
+  });
+  if (verification.valid) return;
 
-  if (hasContiguityAnchor) {
-    const strict = verifyJournalChain(entries, {
-      contiguous: true,
-      expectedPrevHash: isFirstSyncFromThisOrigin ? undefined : (cursor.rowHash ?? undefined),
-      // Full first-sync: anchor to the bundle's own first entry (trust-on-first-sync). Otherwise
-      // the exact next sequence.
-      expectedStartSequence: isFirstSyncFromThisOrigin ? entries[0]!.sequence : cursor.sequence + 1,
-      // Per-entry key resolved by AUTHENTICATED sequence (never timestamp) — an entry signed before
-      // a rotation verifies against the old key only while its sequence is within that key's window.
-      resolvePublicKey
-    });
-    if (strict.valid) return { sparse: false, scopeAsymmetry: null };
-    // FENCE 2: integrity failures are not retried in a laxer mode.
-    const code = strict.brokenAt?.code;
-    if (!code || !JOURNAL_CONTIGUITY_BREAK_CODES.includes(code)) reject(strict);
+  const code = verification.brokenAt?.code;
+  const reason = verification.brokenAt?.reason ?? "unknown";
+  if (code && JOURNAL_CONTIGUITY_BREAK_CODES.includes(code)) {
+    throw conflict(describeContiguityBreak(input, reason));
   }
+  throw conflict(`tampered or broken journal segment (rejected, fail-closed): ${reason}`);
+}
 
-  // FENCE 3.
-  const sparse = verifySparse();
-  if (!sparse.valid) reject(sparse);
-  // FENCE 4.
-  for (const entry of entries) {
-    if (entry.sequence < header.sinceSequence || entry.sequence > header.throughSequence) {
-      throw conflict(
-        `sparse journal segment carries entry ${entry.sequence} outside its own signed range ` +
-          `${header.sinceSequence}..${header.throughSequence} (rejected, fail-closed)`
-      );
-    }
-  }
-  return { sparse: true, scopeAsymmetry: describeScopeAsymmetry(input, entries) };
+/** This side's `sync_scope`, verbatim — the operator cannot read it from the other domain, and for
+ *  `custom` the mode name alone is not the configuration. */
+function describeScope(scope: SyncScope): string {
+  return scope.mode === "custom"
+    ? `custom ${JSON.stringify(scope.labelSelector)}`
+    : `'${scope.mode}'`;
 }
 
 /**
- * FENCE 5 — the diagnostic. The word "tampered" must never appear for a scope asymmetry, and the
- * operator must be told the two things they cannot see from one side: that the chain arrived
- * sparse, and what THIS side is configured to expect.
+ * THE DIAGNOSTIC for a contiguity break. Two things the operator cannot see from one side: that
+ * the arriving chain is not gap-free, and what THIS side is configured to expect. Deliberately
+ * NOT a verdict in either direction — the likely cause plus what to check, and an explicit note
+ * that a genuine break looks identical, because this check is exactly where that is caught.
  */
-function describeScopeAsymmetry(
+function describeContiguityBreak(
   input: {
-    header: SyncBundle["header"];
     receiverScope: SyncScope;
     peerName: string;
     exporterDomainId: TrustDomainId;
   },
-  entries: SyncJournalEntry[]
+  reason: string
 ): string {
-  const { header, receiverScope, peerName, exporterDomainId } = input;
-  const span = header.throughSequence - header.sinceSequence;
-  const omitted = Math.max(0, span - entries.length);
+  const { receiverScope, peerName, exporterDomainId } = input;
   return (
-    `peer '${peerName}' (${exporterDomainId}) delivered a SPARSE journal segment: ` +
-    `${entries.length} entries across the signed range ${header.sinceSequence}..${header.throughSequence} ` +
-    `(~${omitted} sequence(s) the sender chose not to ship). ` +
-    `This side's sync_scope for that peer is '${receiverScope.mode}', which expects a gap-free chain — ` +
-    `so the SENDER's sync_scope is almost certainly narrower (status_only / changes_only / policies_only / custom). ` +
-    `sync_scope is per-side local config and is never reconciled across the wire: compare ` +
-    `\`scp federation peers\` on BOTH domains and align them. ` +
-    `The segment was ACCEPTED — every entry's row hash and signature verified, and the bundle checksum ` +
-    `and signature already covered the whole payload — so this is NOT a tampering signal; ` +
-    `what is lost while the scopes disagree is only the proof that nothing in scope was omitted.`
+    `journal chain from peer '${peerName}' (${exporterDomainId}) is not gap-free — import ` +
+    `rejected, fail-closed (${reason}). ` +
+    `This side's sync_scope for that peer is ${describeScope(receiverScope)}, which expects a ` +
+    `contiguous, prev_hash-linked chain with no missing sequences. A peer whose OWN sync_scope for ` +
+    `this domain is narrower (status_only / changes_only / policies_only / custom) legitimately ` +
+    `ships a SPARSE chain, and that is the most likely cause here: sync_scope is per-side LOCAL ` +
+    `config, never carried on the wire and never reconciled, so neither operator can see the ` +
+    `mismatch from their own side. Run \`scp federation peers\` on BOTH domains and align the two ` +
+    `sync_scope values, then re-export. ` +
+    `If the two sides already agree, this is an unexplained break in the peer's journal — entries ` +
+    `withheld or removed after signing look exactly like this — and should be investigated as such.`
   );
 }
 
@@ -610,10 +556,10 @@ export async function importSyncBundle(
   // omitted predecessor this side never sees. Such a bundle is verified with `contiguous: false`
   // (still checking every rowHash + signature + strictly-increasing sequence — only omission of
   // in-scope entries becomes undetectable, inherent to scoping). A `full` peer keeps the strict
-  // contiguous, cursor-continuous verification with trust-on-first-sync — and, when the SENDER
-  // turns out to be narrower than that, falls back to the sparse mode via `verifySegment` below
-  // rather than crying tampering at a config asymmetry (see that function's doc).
-  const receiverExpectsContiguity = peer.syncScope.mode === "full";
+  // contiguous, cursor-continuous verification with trust-on-first-sync — and keeps it: a `full`
+  // receiver meeting a narrower SENDER fails closed (owner decision), with a message that names
+  // the scope asymmetry as the likely cause instead of crying tampering (`verifySegment`).
+  const isFullScope = peer.syncScope.mode === "full";
   const cursor = await getCursor(tx, orgId, peer.id, exporterDomainId);
   const toApply = bundle.entries.filter((entry) => entry.sequence > cursor.sequence);
 
@@ -625,25 +571,20 @@ export async function importSyncBundle(
     assertEntryAuthoredBySigner(entry, exporterDomainId);
   }
 
-  const segment = verifySegment({
+  // Throws a 409 on ANY failure — there is no accept-anyway path. The 409's `detail` is the
+  // operator-facing diagnostic and every transport carries it verbatim: `POST /v1/federation/imports`
+  // returns it as the problem detail, the live-pull scheduler records it as the peer's `refused`
+  // reason + block Decision (federation-sync.ts), and the air-gap inbox walk records it on the
+  // ledger row + block Decision for the offending file (inbox-loop.ts).
+  verifySegment({
     entries: toApply,
     cursor,
-    header: bundle.header,
-    receiverExpectsContiguity,
+    receiverExpectsContiguity: isFullScope,
     receiverScope: peer.syncScope,
     peerName: peer.name,
     exporterDomainId,
     resolvePublicKey: (entry) => verificationKeyForSequence(keyWindows, entry.sequence)
   });
-  // Once a segment has been accepted as sparse, the cursor has no rowHash anchor to continue from,
-  // so the whole apply below uses the sparse advance discipline.
-  const isFullScope = !segment.sparse;
-  if (segment.scopeAsymmetry) {
-    // A pull import never reaches an operator's terminal; the scheduler only reports counts. This
-    // is the one place the asymmetry is observable on EVERY transport, so it is logged here as well
-    // as returned (`ImportSyncBundleResult.scopeAsymmetry`, surfaced by `POST /v1/federation/imports`).
-    console.warn(`[federation-import] ${segment.scopeAsymmetry}`);
-  }
 
   let applied = 0;
   let lastSequence = cursor.sequence;
@@ -710,7 +651,6 @@ export async function importSyncBundle(
     peerDomainId: peer.id,
     appliedEntries: applied,
     skippedEntries: skipped,
-    lastAppliedSequence: lastSequence,
-    scopeAsymmetry: segment.scopeAsymmetry
+    lastAppliedSequence: lastSequence
   };
 }

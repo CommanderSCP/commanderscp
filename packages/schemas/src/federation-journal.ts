@@ -280,7 +280,7 @@ export function verifyJournalChain(
           id: entry.id,
           sequence: entry.sequence,
           reason: `row_hash mismatch: expected ${recomputed}, got ${entry.rowHash}`,
-            code: "row_hash_mismatch"
+          code: "row_hash_mismatch"
         }
       };
     }
@@ -293,7 +293,7 @@ export function verifyJournalChain(
           id: entry.id,
           sequence: entry.sequence,
           reason: "no public key available to verify signature",
-            code: "no_public_key"
+          code: "no_public_key"
         }
       };
     }
@@ -305,7 +305,7 @@ export function verifyJournalChain(
           id: entry.id,
           sequence: entry.sequence,
           reason: "signature verification failed",
-            code: "signature_invalid"
+          code: "signature_invalid"
         }
       };
     }

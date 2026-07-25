@@ -6202,6 +6202,7 @@ export type GetServiceBoardResponses = {
             via: 'live-pull' | 'bundle' | 'never' | 'unknown';
             ageSeconds: number;
             expectedWithinSeconds: number | null;
+            staleAfterSeconds: number | null;
             stale: boolean | null;
         } | null;
         unknownFields: Array<string>;
@@ -13811,7 +13812,6 @@ export type ImportBundleResponses = {
         appliedEntries: number;
         skippedEntries: number;
         lastAppliedSequence: number;
-        scopeAsymmetry?: string | null;
         kind: 'sync';
     } | {
         localChangeObjectId: string;

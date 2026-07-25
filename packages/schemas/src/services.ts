@@ -155,6 +155,12 @@ export type ServiceBoardSummary = z.infer<typeof ServiceBoardSummarySchema>;
  *  - `ageSeconds` — seconds since `at`, or since the peer was paired when nothing has ever arrived.
  *  - `expectedWithinSeconds` — the peer's OWN effective pull cadence (frequent poll vs proven sparse
  *    poke), or null when this instance schedules no pulls for that peer at all.
+ *  - `staleAfterSeconds` — the age at which `stale` actually flips to `true`: the cadence above WITH
+ *    the grace factor already applied, null exactly when `expectedWithinSeconds` is null. It is on
+ *    the wire because `expectedWithinSeconds` is NOT the threshold and a client that renders it as
+ *    one lies: `stale: false` covers ages well past one cadence, so "within its 60s cadence" is
+ *    false of a 90-second-old reading that is legitimately not stale. Clients render this; nothing
+ *    downstream re-derives the grace factor (see `federation/upstream-freshness.ts`).
  *  - `stale` — `true`/`false` against that cadence **plus a grace factor** (a peer's age necessarily
  *    exceeds its interval once per cycle; only a MISSED cycle is late — see
  *    `federation/upstream-freshness.ts`'s `FRESHNESS_GRACE_FACTOR`). **`null` when
@@ -179,6 +185,7 @@ export const ServiceBoardAsOfSchema = z.object({
   via: z.enum(["live-pull", "bundle", "never", "unknown"]),
   ageSeconds: z.number().int(),
   expectedWithinSeconds: z.number().int().nullable(),
+  staleAfterSeconds: z.number().int().nullable(),
   stale: z.boolean().nullable()
 });
 export type ServiceBoardAsOf = z.infer<typeof ServiceBoardAsOfSchema>;

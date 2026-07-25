@@ -467,18 +467,19 @@ export async function pullFromCommanderPeer(
     return {
       peerDomainId: peer.id,
       outcome: "imported",
-      // The sender-narrower-than-receiver sync_scope asymmetry rides out on the outcome too: the
-      // pull path has no other operator-visible surface, and a silent "applied N" would read as a
-      // clean sync while the completeness proof is quietly gone (import-repo.ts `verifySegment`).
-      detail:
-        `applied ${result.appliedEntries}, skipped ${result.skippedEntries}, cursor at ${result.lastAppliedSequence}` +
-        (result.scopeAsymmetry ? ` — SCOPE ASYMMETRY: ${result.scopeAsymmetry}` : ""),
+      detail: `applied ${result.appliedEntries}, skipped ${result.skippedEntries}, cursor at ${result.lastAppliedSequence}`,
       decisionId: null,
       appliedEntries: result.appliedEntries
     };
   } catch (err) {
     // 409 = the verify path REFUSED (checksum/signature/chain — identical to the file/CLI outcome,
     // carrying its Decision when the path persisted one). Record a block; the sweep continues.
+    //
+    // THIS IS THE LIVE-PULL SURFACE for `verifySegment`'s contiguity diagnostic: a pull never
+    // reaches an operator's terminal, so `err.detail` — which for a chain break is the full
+    // "compare `scp federation peers` on BOTH domains" guidance rather than a tampering alarm — is
+    // what lands in the peer's `refused` outcome AND, verbatim, in the block Decision's reason.
+    // Nothing here may summarise or truncate it.
     if (err instanceof ProblemError && err.status === 409) {
       const reason = err.detail ?? err.message;
       const decisionId = err.decisionId ?? (await recordSyncBlock(db, { orgId, peer, reason }));

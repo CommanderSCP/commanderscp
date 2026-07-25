@@ -126,13 +126,14 @@ export function upstreamFreshness(input: UpstreamFreshnessInput): ServiceBoardAs
   // cadence to be late against.
   const scheduled = peer.role === "commander" && peer.baseUrl !== null;
   const expectedWithinSeconds = scheduled ? effectivePullIntervalSeconds(peer, cadence) : null;
+  // THE ACTUAL THRESHOLD, computed once here and put on the wire. `expectedWithinSeconds` is the
+  // cadence, not the bound — a client that renders the cadence as the bound tells the operator that
+  // 90-second-old data is "within a 60s cadence". The grace factor lives in exactly one place.
+  const staleAfterSeconds =
+    expectedWithinSeconds === null ? null : expectedWithinSeconds * FRESHNESS_GRACE_FACTOR;
 
   const stale =
-    expectedWithinSeconds === null
-      ? null
-      : at === null
-        ? true
-        : ageSeconds > expectedWithinSeconds * FRESHNESS_GRACE_FACTOR;
+    staleAfterSeconds === null ? null : at === null ? true : ageSeconds > staleAfterSeconds;
 
   return {
     peerDomainId: peer.id,
@@ -141,6 +142,7 @@ export function upstreamFreshness(input: UpstreamFreshnessInput): ServiceBoardAs
     via,
     ageSeconds,
     expectedWithinSeconds,
+    staleAfterSeconds,
     stale
   };
 }
@@ -159,31 +161,48 @@ export function resolveCadenceInputs(env: NodeJS.ProcessEnv = process.env): Peer
 }
 
 /**
- * THE LIMITING UPSTREAM for a read projection over `peers` — the one whose staleness bounds what the
- * projection can claim, i.e. the OLDEST reading among them. `null` when `peers` is empty: a
- * single-domain org's projection is a complete local observation and must not claim an ignorance it
- * does not have.
+ * THE UPSTREAM BOUND for a read projection over `peers` — TWO answers, because one reading cannot
+ * carry both and conflating them is how each of the two bugs here got made.
  *
- * THE BOUND IS AGE, FULL STOP. An earlier pass let `stale === true` win unconditionally, which meant
- * a barely-late CONNECTED peer (61s past a 60s cadence) MASKED a genuinely ancient air-gapped one
- * (three weeks, `stale: null` because no cadence applies to it) — and the label then under-reported
- * the board's own freshness bound by orders of magnitude, while its docstring promised the oldest.
- * `stale` is a per-peer verdict against that peer's own schedule; it is not a comparator between
- * peers, and using it as one inverts the very ordering this function exists to compute. Greatest
- * `ageSeconds` wins; `stale === true` breaks an exact tie, which is the honest direction.
+ *  - `label` — the LIMITING upstream, i.e. the OLDEST reading: the "as of" bound a projection may
+ *    claim. `null` when `peers` is empty; a single-domain org's projection is a complete local
+ *    observation and must not claim an ignorance it does not have.
+ *  - `anyStale` — whether ANY peer is overdue by its OWN effective cadence. A caveat predicate, not
+ *    a label. It is deliberately independent of which reading won the label.
+ *
+ * WHY `label` IS AGE, FULL STOP. An earlier pass let `stale === true` win the label unconditionally,
+ * which meant a barely-late CONNECTED peer (61s past a 60s cadence) MASKED a genuinely ancient
+ * air-gapped one (three weeks, `stale: null` because no cadence applies to it) — the label then
+ * under-reported the board's own freshness bound by orders of magnitude, while its docstring
+ * promised the oldest. `stale` is a per-peer verdict against that peer's own schedule; it is not a
+ * comparator between peers, and using it as one inverts the ordering this exists to compute.
+ *
+ * WHY `anyStale` HAD TO BE SPLIT OUT. Fixing the above then broke the caveat, in the exact incident
+ * the caveat exists to catch: with only the oldest reading returned, a genuinely overdue peer that
+ * is NOT the oldest lost its caveat entirely (commander, 60s cadence, an hour since its last import
+ * → `stale: true`, masked by an air-gapped peer 21 days old whose `stale` is `null` because no
+ * cadence applies to it). Staleness is an ANY-peer predicate; the oldest peer is merely the one that
+ * bounds the label. They are different questions and are now answered separately.
  *
  * Callers pass only the peers whose scope can actually carry the data being rendered — a peer that
  * structurally cannot send change objects does not bound the freshness of change objects; it is
  * covered by the blindness caveat instead.
  */
+export interface UpstreamBound {
+  /** The oldest reading — the "as of" label. `null` only when `peers` was empty. */
+  label: ServiceBoardAsOf | null;
+  /** True when ANY peer read `stale: true`, whether or not it is the peer behind `label`. */
+  anyStale: boolean;
+}
+
 export async function limitingUpstreamFreshness(
   tx: TenantTx,
   orgId: string,
   peers: FederationPeerRow[],
   now: Date = new Date(),
   cadence: PeerCadenceInputs = resolveCadenceInputs()
-): Promise<ServiceBoardAsOf | null> {
-  if (peers.length === 0) return null;
+): Promise<UpstreamBound> {
+  if (peers.length === 0) return { label: null, anyStale: false };
   const readings = await Promise.all(
     peers.map(async (peer) =>
       upstreamFreshness({
@@ -194,12 +213,20 @@ export async function limitingUpstreamFreshness(
       })
     )
   );
-  return oldestReading(readings);
+  return summarizeReadings(readings);
 }
 
-/** PURE — {@link limitingUpstreamFreshness}'s selection rule, split out so the ordering itself is
- *  unit-testable without two databases (it is where the masking bug lived). Assumes a non-empty
- *  input; the caller has already handled the single-domain case. */
+/** PURE — {@link limitingUpstreamFreshness}'s two selection rules, split out so both are unit-
+ *  testable without two databases (this is where BOTH bugs lived). Assumes a non-empty input; the
+ *  caller has already handled the single-domain case. */
+export function summarizeReadings(
+  readings: ServiceBoardAsOf[]
+): { label: ServiceBoardAsOf } & UpstreamBound {
+  return { label: oldestReading(readings), anyStale: readings.some((r) => r.stale === true) };
+}
+
+/** PURE — the LABEL rule alone: greatest `ageSeconds` wins; `stale === true` breaks an exact tie,
+ *  which is the honest direction. */
 export function oldestReading(readings: ServiceBoardAsOf[]): ServiceBoardAsOf {
   return readings.reduce((oldest, candidate) => {
     if (candidate.ageSeconds !== oldest.ageSeconds) {

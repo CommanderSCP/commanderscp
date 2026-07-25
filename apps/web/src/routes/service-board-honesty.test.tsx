@@ -219,7 +219,10 @@ describe("service board as-of label: a snapshot is never painted as live status"
     peerName: "commander-1",
     at: "2026-07-25T11:59:55.000Z",
     ageSeconds: 5,
-    expectedWithinSeconds: 60
+    expectedWithinSeconds: 60,
+    // NOT the cadence — the age at which `stale` actually flips (cadence × the server's grace
+    // factor). The two are different numbers and the tooltip must never present one as the other.
+    staleAfterSeconds: 120
   };
 
   it("renders nothing at all for a single-domain board — there is no upstream to label", () => {
@@ -246,6 +249,25 @@ describe("service board as-of label: a snapshot is never painted as live status"
     expect(html).toContain("text-amber-700");
   });
 
+  /**
+   * THE TOOLTIP MUST NOT QUOTE THE CADENCE AS THE BOUND. `stale: false` covers ages well past one
+   * cadence (the server applies a grace factor), so the old wording — "Within <peer>'s effective
+   * sync cadence of 60s" — told the operator that 90-second-old data was inside a 60-second window.
+   * Wrong, and checkable against a clock, which is the worst kind of wrong for a freshness label.
+   */
+  it("a not-overdue reading OLDER than one cadence states the real threshold, not the cadence", () => {
+    const html = renderToStaticMarkup(
+      <BoardAsOfLabel asOf={{ ...base, ageSeconds: 90, via: "live-pull", stale: false }} />
+    );
+    // The number that actually governs the verdict.
+    expect(html).toContain("120s");
+    // ...and it is never claimed that 90s sits inside the 60s cadence.
+    expect(html).not.toContain("Within commander-1&#x27;s effective sync cadence");
+    expect(html).toMatch(/not counted late until 120s/);
+    // The cadence is still shown, named as the cadence rather than as the bound.
+    expect(html).toContain("effective sync cadence is 60s");
+  });
+
   it("an AIR-GAPPED upstream (`stale: null`) still gets the label, and is never dressed as fresh", () => {
     const html = renderToStaticMarkup(
       <BoardAsOfLabel
@@ -254,6 +276,7 @@ describe("service board as-of label: a snapshot is never painted as live status"
           ageSeconds: 604_800,
           via: "bundle",
           expectedWithinSeconds: null,
+          staleAfterSeconds: null,
           stale: null
         }}
       />

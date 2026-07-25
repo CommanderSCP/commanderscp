@@ -281,3 +281,138 @@ describe("service board staleness: an upstream is labelled, and an overdue one i
     expect(result.unknownFields).toContain("summary.stable");
   });
 });
+
+/**
+ * THE MASKING CASE — the defect the previous pass introduced while fixing a different one.
+ *
+ * `limitingUpstreamFreshness` was corrected to return the OLDEST reading (so a barely-late connected
+ * peer could no longer mask an ancient air-gapped one in the LABEL). But the board then derived its
+ * staleness caveat from that single returned reading's own `stale`, and the oldest reading is very
+ * often the air-gapped one — whose `stale` is `null` by design, because no cadence applies to it.
+ * Result: a peer that is genuinely, badly overdue lost its caveat entirely, in exactly the incident
+ * the caveat exists to catch.
+ *
+ * TWO PEERS, both at FULL scope so neither blindness arm can fire:
+ *   A — a commander on the 60s cadence whose last import confirmed an HOUR ago  → `stale: true`.
+ *   B — air-gapped (no baseUrl), 21 days old                                    → `stale: null`,
+ *       and OLDER, so it wins the label.
+ * The label must still be B (the true freshness bound) AND the caveat must still fire for A.
+ */
+describe("service board staleness: an overdue peer is not masked by an older one that has no cadence", () => {
+  let server: TestServer;
+  let org: TestOrg;
+  let serviceId: string;
+  const overduePeerId = randomUUID() as TrustDomainId;
+  const airGappedPeerId = randomUUID() as TrustDomainId;
+
+  const seedPeer = async (args: {
+    peerDomainId: TrustDomainId;
+    name: string;
+    baseUrl: string | null;
+    ageSeconds: number;
+  }): Promise<void> => {
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      pairPeer(tx, {
+        orgId: org.orgId,
+        domainId: args.peerDomainId,
+        name: args.name,
+        role: "commander",
+        // `pairPeer` cannot CLEAR a baseUrl (`input.baseUrl ?? existing.baseUrl`), so the air-gapped
+        // peer is paired without one from the start rather than cleared afterwards.
+        ...(args.baseUrl ? { baseUrl: args.baseUrl } : {}),
+        publicKey: "unused-for-this-projection"
+      })
+    );
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      recordBundleTransfer(tx, {
+        orgId: org.orgId,
+        peerDomainId: args.peerDomainId,
+        direction: "import",
+        kind: "sync",
+        status: "confirmed",
+        sinceSequence: 0,
+        throughSequence: 4,
+        transport: "bundle"
+      })
+    );
+    const at = new Date(Date.now() - args.ageSeconds * 1000);
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(bundleTransfers)
+        .set({ confirmedAt: at, createdAt: at })
+        .where(
+          and(
+            eq(bundleTransfers.orgId, org.orgId),
+            eq(bundleTransfers.peerDomainId, args.peerDomainId)
+          )
+        )
+    );
+  };
+
+  beforeAll(async () => {
+    server = await buildTestServer();
+    org = await createTestOrg(server, "board-staleness-mask");
+
+    serviceId = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const service = await createObject(tx, {
+        orgId: org.orgId,
+        domainId: null,
+        typeId: "service",
+        actorObjectId: org.orgId,
+        requestId: "mask-service",
+        name: `masking-api-${randomUUID().slice(0, 8)}`
+      });
+      const component = await createObject(tx, {
+        orgId: org.orgId,
+        domainId: null,
+        typeId: "component",
+        actorObjectId: org.orgId,
+        requestId: "mask-component",
+        name: `masking-web-${randomUUID().slice(0, 8)}`
+      });
+      await createRelationship(tx, {
+        orgId: org.orgId,
+        actorObjectId: org.orgId,
+        requestId: "mask-contains",
+        typeId: "contains",
+        fromId: service.id,
+        toId: component.id
+      });
+      return service.id;
+    });
+
+    await seedPeer({
+      peerDomainId: overduePeerId,
+      name: "commander-overdue",
+      baseUrl: "https://commander.example",
+      ageSeconds: 3600
+    });
+    await seedPeer({
+      peerDomainId: airGappedPeerId,
+      name: "outpost-airgapped",
+      baseUrl: null,
+      ageSeconds: 21 * 86_400
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  it("REGRESSION: the label is the true oldest bound, AND the overdue peer still gets its caveat", async () => {
+    const result = await withTenantTx(server.deps.db, org.orgId, async (tx) =>
+      buildServiceBoard(tx, org.orgId, await getObjectByIdOrUrnAnyType(tx, org.orgId, serviceId))
+    );
+
+    // The premise: the OLDEST peer is the one with no cadence, so its own `stale` is null.
+    expect(result.asOf!.peerDomainId).toBe(airGappedPeerId);
+    expect(result.asOf!.expectedWithinSeconds).toBeNull();
+    expect(result.asOf!.stale).toBeNull();
+
+    // ...and the caveat fires anyway, because a DIFFERENT peer is overdue. Reading it off the label
+    // above (`asOf.stale === true`) yielded an empty caveat here — a confident `stable` count over a
+    // commander that has been silent for an hour.
+    expect(result.unknownFields).toContain("summary.stable");
+    expect(result.unknownFields).toContain("rows[].latestChangeId");
+  });
+});

@@ -307,10 +307,16 @@ export async function buildServiceBoard(
   // exactly the mismatch arm 1 misses.
   const changeVisibilityUnknown = changeBlindPeers.length > 0 || unattachedInFlight.length > 0;
 
-  // STALENESS (DESIGN §13). The limiting upstream among the peers whose scope CAN carry change
-  // objects — the peers that can be blind are already covered above, and a peer that structurally
-  // cannot send change objects does not bound the freshness of change objects.
-  const asOf = await limitingUpstreamFreshness(
+  // STALENESS (DESIGN §13), over the peers whose scope CAN carry change objects — the peers that
+  // can be blind are already covered above, and a peer that structurally cannot send change objects
+  // does not bound the freshness of change objects.
+  //
+  // TWO ANSWERS, deliberately: `label` is the OLDEST reading (the "as of" bound), `anyStale` is an
+  // ANY-peer predicate. Reading the caveat off the label's own `stale` — as this did — silently
+  // dropped it for any overdue peer that was not also the oldest, which is the common shape: an
+  // air-gapped peer weeks old (`stale: null`, no cadence applies) wins the label and hides a
+  // commander an hour past its 60s cadence. See `upstream-freshness.ts`.
+  const { label: asOf, anyStale: anyUpstreamStale } = await limitingUpstreamFreshness(
     tx,
     orgId,
     peers.filter((peer) => scopeCarriesChangeObjects(peer.syncScope))
@@ -519,11 +525,16 @@ export async function buildServiceBoard(
   // blindness rule because it is the same two claims that fail — deduped below, since a board can
   // be both blind AND stale and must not say so twice.
   //
-  // Deliberately fires ONLY on `stale === true`. `stale === null` means no cadence exists for the
-  // data to be late against (an air-gapped peer; an outpost seen from the commander), and §13's
-  // contract there is the LABEL, which `asOf` now carries — asserting an unknown from the mere
-  // absence of a schedule would over-claim ignorance on every air-gapped deployment forever.
-  const stalenessUnknowns = asOf?.stale === true ? ["summary.stable", "rows[].latestChangeId"] : [];
+  // Fires on ANY overdue upstream (`anyUpstreamStale`), NOT on the label peer's own `stale`. The
+  // label is the oldest reading, which is routinely an air-gapped peer whose `stale` is `null` (no
+  // cadence applies to it) — conditioning the caveat on that reading silently suppressed it for
+  // every overdue peer that was not also the oldest, i.e. exactly the incident it exists to catch.
+  //
+  // Still deliberately keyed on `stale === true` per peer, never `null`. `null` means no cadence
+  // exists for the data to be late against, and §13's contract there is the LABEL, which `asOf`
+  // carries — asserting an unknown from the mere absence of a schedule would over-claim ignorance
+  // on every air-gapped deployment forever.
+  const stalenessUnknowns = anyUpstreamStale ? ["summary.stable", "rows[].latestChangeId"] : [];
 
   const serviceFreeze = activeFreezeByScope.get(service.id);
   return {

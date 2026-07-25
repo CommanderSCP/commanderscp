@@ -23548,6 +23548,18 @@
                                 }
                               ]
                             },
+                            "staleAfterSeconds": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
                             "stale": {
                               "anyOf": [
                                 {
@@ -23566,6 +23578,7 @@
                             "via",
                             "ageSeconds",
                             "expectedWithinSeconds",
+                            "staleAfterSeconds",
                             "stale"
                           ],
                           "additionalProperties": false
@@ -53318,16 +53331,6 @@
                           "type": "integer",
                           "minimum": -9007199254740991,
                           "maximum": 9007199254740991
-                        },
-                        "scopeAsymmetry": {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
                         },
                         "kind": {
                           "type": "string",

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { FRESHNESS_GRACE_FACTOR, oldestReading, upstreamFreshness } from "./upstream-freshness.js";
+import {
+  FRESHNESS_GRACE_FACTOR,
+  oldestReading,
+  summarizeReadings,
+  upstreamFreshness
+} from "./upstream-freshness.js";
 import type { FederationPeerRow } from "./peers-repo.js";
 import type { ServiceBoardAsOf, TrustDomainId } from "@scp/schemas";
 
@@ -21,6 +26,10 @@ import type { ServiceBoardAsOf, TrustDomainId } from "@scp/schemas";
  *     overshoot every healthy cycle produces.
  *  4. NO CADENCE ⇒ `stale: null`, NEVER `false`; NOTHING DELIVERED ⇒ `stale: true`, NEVER `false`.
  *  5. THE LIMITING PEER IS THE OLDEST. `stale` is a per-peer verdict, never a cross-peer comparator.
+ *  6. ...AND THEREFORE STALENESS IS AN ANY-PEER PREDICATE, computed separately from the label —
+ *     reading it off the label's own `stale` loses every overdue peer that is not also the oldest.
+ *  7. THE THRESHOLD IS ON THE WIRE (`staleAfterSeconds`), so no client re-derives the grace factor
+ *     or mistakes the cadence for the bound.
  */
 
 const NOW = new Date("2026-07-25T12:00:00.000Z");
@@ -162,6 +171,43 @@ describe("upstreamFreshness — DESIGN §13 'as of' reading", () => {
     expect(onTheLine.stale).toBe(false);
   });
 
+  it("`staleAfterSeconds` IS the threshold, and it is not the cadence", () => {
+    // The UI quotes this number. When it quoted `expectedWithinSeconds` instead, it told the
+    // operator that 90-second-old data was "within" a 60-second cadence — checkably false.
+    const reading = upstreamFreshness({
+      peer: peer(),
+      lastConfirmedImport: arrived(90, "live-pull"),
+      now: NOW,
+      cadence: CADENCE
+    });
+    expect(reading.expectedWithinSeconds).toBe(60);
+    expect(reading.staleAfterSeconds).toBe(60 * FRESHNESS_GRACE_FACTOR);
+    // The reading is genuinely NOT stale at an age well past the cadence — which is exactly why the
+    // cadence cannot be presented as the bound.
+    expect(reading.ageSeconds).toBeGreaterThan(reading.expectedWithinSeconds!);
+    expect(reading.stale).toBe(false);
+    // And the flip happens at the advertised number, never somewhere else.
+    const justPast = upstreamFreshness({
+      peer: peer(),
+      lastConfirmedImport: arrived(reading.staleAfterSeconds! + 1, "live-pull"),
+      now: NOW,
+      cadence: CADENCE
+    });
+    expect(justPast.stale).toBe(true);
+  });
+
+  it("no cadence ⇒ no threshold either: `staleAfterSeconds` is null, not a fabricated number", () => {
+    const reading = upstreamFreshness({
+      peer: peer({ baseUrl: null, role: "outpost" }),
+      lastConfirmedImport: arrived(7 * 86_400, "bundle"),
+      now: NOW,
+      cadence: CADENCE
+    });
+    expect(reading.expectedWithinSeconds).toBeNull();
+    expect(reading.staleAfterSeconds).toBeNull();
+    expect(reading.stale).toBeNull();
+  });
+
   it("an AIR-GAPPED peer: a real timestamp, `via: bundle`, and `stale: null` — never `false`", () => {
     const reading = upstreamFreshness({
       // No baseUrl: nothing here ever dials it, so the pull columns stay NULL forever.
@@ -240,6 +286,7 @@ describe("oldestReading — the LIMITING upstream is the oldest, full stop", () 
     via: "bundle",
     ageSeconds: 0,
     expectedWithinSeconds: null,
+    staleAfterSeconds: null,
     stale: null,
     ...over
   });
@@ -269,5 +316,53 @@ describe("oldestReading — the LIMITING upstream is the oldest, full stop", () 
   it("a single reading is its own bound", () => {
     const only = reading({ peerName: "solo", ageSeconds: 5 });
     expect(oldestReading([only])).toBe(only);
+  });
+
+  /**
+   * THE SECOND HALF OF THE SAME MISTAKE. Fixing the label to be the oldest reading (above) then
+   * broke the caveat that used to be read off it: the service board derived its staleness unknown
+   * from `asOf.stale === true`, so a genuinely overdue peer that was NOT the oldest lost its caveat
+   * entirely — and the masking peer is, typically, an air-gapped one whose `stale` is `null` because
+   * no cadence applies to it. The label answers "how old is the oldest thing here"; the caveat
+   * answers "is anything late". Different questions, answered separately.
+   */
+  it("REGRESSION: an overdue peer that is NOT the oldest still sets `anyStale`", () => {
+    // Peer A — a commander on a 60s cadence whose last import confirmed an hour ago. Overdue.
+    const overdueCommander = reading({
+      peerName: "commander",
+      ageSeconds: 3600,
+      expectedWithinSeconds: 60,
+      staleAfterSeconds: 120,
+      stale: true
+    });
+    // Peer B — air-gapped, no baseUrl, 21 days old. OLDER, so it wins the label, but `stale` is
+    // `null`: no schedule exists for it to be late against.
+    const ancientAirGapped = reading({
+      peerName: "air-gapped",
+      ageSeconds: 21 * 86_400,
+      stale: null
+    });
+
+    for (const order of [
+      [overdueCommander, ancientAirGapped],
+      [ancientAirGapped, overdueCommander]
+    ]) {
+      const summary = summarizeReadings(order);
+      // The label is still the true oldest bound...
+      expect(summary.label.peerName).toBe("air-gapped");
+      // ...and the caveat still fires for the peer that is actually late.
+      expect(summary.anyStale).toBe(true);
+    }
+  });
+
+  it("no peer stale ⇒ no caveat, whichever reading wins the label", () => {
+    const summary = summarizeReadings([
+      reading({ peerName: "air-gapped", ageSeconds: 21 * 86_400, stale: null }),
+      reading({ peerName: "commander", ageSeconds: 30, expectedWithinSeconds: 60, stale: false })
+    ]);
+    expect(summary.label.peerName).toBe("air-gapped");
+    // `stale: null` is not staleness — asserting one from the mere absence of a schedule would
+    // caveat every air-gapped deployment forever.
+    expect(summary.anyStale).toBe(false);
   });
 });

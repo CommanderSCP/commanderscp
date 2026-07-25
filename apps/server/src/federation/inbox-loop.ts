@@ -565,6 +565,14 @@ async function processBundleFile(
     // outcome, carrying its Decision when the path persisted one). Anything else (400/404 —
     // unpaired peer, graph not yet synced, config gap; or a transient error) is deferred and
     // retried next tick.
+    //
+    // THIS IS THE AIR-GAP SURFACE for `import-repo.ts`'s `verifySegment` contiguity diagnostic, and
+    // the likeliest place to hit it: a deliberately scope-narrowed outpost is usually the air-gapped
+    // one, and nobody is watching a terminal when its `.scpbundle` lands. `err.detail` is passed
+    // through WHOLE — it is the "compare `scp federation peers` on BOTH domains" guidance — so it
+    // reaches the operator three ways: the ledger row's `detail`, the block Decision's reason tree,
+    // and the audit event. Never summarise it here; the ledger row is very often the only record
+    // anyone reads.
     if (err instanceof ProblemError && err.status === 409) {
       return refuseFile(db, {
         orgId,
