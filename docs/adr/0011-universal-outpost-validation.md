@@ -6,12 +6,12 @@
 
 ## Refinement 2026-07-18 (two clarifications from the owner)
 
-1. **"Universal" means universal for *cross-boundary* artifacts.** Domain-locally-originated artifacts (outpost-owned domain-specific config/infra — [ADR-0010](0010-outpost-local-artifact-infra.md), ownership model) **never cross a boundary**, so they have **no transfer stage and nothing to validate** — a shorter pipeline. The "always-shown boundary stages" (M16.1) and this gate apply to changes that cross *into* a domain, not to ones already home.
+1. **"Universal" means universal for *cross-boundary* artifacts.** Domain-locally-originated artifacts (outpost-owned domain-specific config/infra — [ADR-0010](0010-outpost-local-artifact-infra.md), ownership model) **never cross a boundary**, so they have **no transfer phase and nothing to validate** — a shorter pipeline. The "always-shown boundary segment" (M16.1) and this gate apply to changes that cross *into* a domain, not to ones already home.
 2. **Full validation at *every* hop.** A **retrans** performs the **same full validation** (signature + SBOM/manifest, ADR-0013) **before** letting anything cross the CDS — nothing invalid enters the air-gapped domain in the first place — and the **outpost re-validates inside the domain before deploy**. Not a lighter bundle-integrity check at the retrans; the same level at each hop (defense in depth).
 
 ## Context
 
-Designing the component-pipeline "transferred to outpost" + "signatures validated" stages raised the question of *when* they apply. The initial framing treated them as conditional — only for changes that cross into a high/air-gap outpost.
+Designing the component-pipeline "transferred to outpost" + "signatures validated" phases raised the question of *when* they apply. The initial framing treated them as conditional — only for changes that cross into a high/air-gap outpost.
 
 The owner corrected this (2026-07-18): **a change cannot reach an outpost without being validated.** Deployment always terminates *at an outpost* (the per-environment/trust/geo instance that fronts the deploy target), and the receiving outpost always validates the signed artifact/config before it deploys. This holds in **commercial** too: there, the commander owns the git and image repos, but the artifact/config still must move to the outpost for the actual deployment, and the outpost still validates signatures first.
 
@@ -36,4 +36,4 @@ Consequences for the UI: the component pipeline's *transferred → validated* bo
 
 ## Alternatives considered
 
-- **Conditional stages (high/air-gap only).** Rejected per the owner: it misrepresents commercial, where validation also happens; it would also make the pipeline view's stage set inconsistent across changes.
+- **Conditional boundary phases (high/air-gap only).** Rejected per the owner: it misrepresents commercial, where validation also happens; it would also make the pipeline view's phase set inconsistent across changes.
