@@ -78,7 +78,39 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - run: tools/openapi/check.sh
+      # The `api-v2-exception` label is now READ here, not merely documented. Until this step
+      # existed the label was prose in three files and no workflow consumed it: an approved break
+      # went red and a human merged past it, and an UNapproved break looked exactly the same. The
+      # analysis always runs, so the breaking items are in the log either way — the label only
+      # decides whether they FAIL the job.
+      #
+      # The label alone is not enough: it must be paired with an entry in OASDIFF-EXCEPTIONS.md
+      # added by this same PR. That is already the documented process (§6, check.sh's header); this
+      # makes it mechanical, so the label cannot become a rubber stamp that leaves no durable record
+      # of what broke and why. Labels are read from the event payload, which is fixed when the run
+      # starts — LABEL FIRST, THEN RE-RUN THIS JOB (or push) if you labelled after CI began.
+      #
+      # Only users with write access can label, so a fork PR cannot self-approve its own break.
+      - name: oasdiff /v1 additive-only gate
+        env:
+          APPROVED: ${{ contains(github.event.pull_request.labels.*.name, 'api-v2-exception') }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -uo pipefail
+          if tools/openapi/check.sh; then
+            echo "No breaking /v1 change."
+            exit 0
+          fi
+          if [ "${APPROVED}" != "true" ]; then
+            echo "::error::Breaking change within /v1. If this is intentional and owner-approved, add the 'api-v2-exception' label AND an entry in tools/openapi/OASDIFF-EXCEPTIONS.md, then re-run this job (BUILD_AND_TEST.md §6)."
+            exit 1
+          fi
+          if ! git diff --name-only "${BASE_SHA}" HEAD -- tools/openapi/OASDIFF-EXCEPTIONS.md | grep -q .; then
+            echo "::error::'api-v2-exception' is applied but this PR adds no entry to tools/openapi/OASDIFF-EXCEPTIONS.md. The label and the log entry go together — the log is the durable record of what broke and why (BUILD_AND_TEST.md §6)."
+            exit 1
+          fi
+          echo "::warning::Breaking /v1 change ACCEPTED under the 'api-v2-exception' label, with an OASDIFF-EXCEPTIONS.md entry in this PR. The breaking items are listed above."
+          exit 0
 
   unit-tests:
     name: "4. Unit tests"

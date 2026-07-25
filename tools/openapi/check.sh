@@ -18,12 +18,19 @@
 # per §6's merge policy — that is a human decision recorded on the PR, not something this script
 # grants itself.
 #
-# HOW THAT ACTUALLY WORKS (2026-07-24): this job is deliberately NOT a required status check on
-# `main`, so a red result here does not mechanically block a merge — the label and the exceptions
-# log are the record of owner approval, and the reviewer is the gate. `main` DOES require
-# "5z. Integration (aggregation gate)" and "3. Codegen drift", so a break still cannot skip tests
-# or ship an unregenerated spec. Earlier revisions of this header described a branch-protection
-# override; there was no branch protection at all until that date.
+# SEPARATION OF CONCERNS: this SCRIPT is pure analysis and always exits non-zero on a breaking
+# change — it knows nothing about labels, so it behaves identically in CI, on a workstation, and on
+# an air-gapped machine. The POLICY lives in the workflow: job 3b reads the `api-v2-exception` label
+# and, when it is present AND this PR adds an entry to OASDIFF-EXCEPTIONS.md, downgrades the failure
+# to a warning. Both conditions are required, so the label cannot become a rubber stamp with no
+# durable record of what broke. Labels are read from the event payload at run start — label first,
+# then re-run job 3b.
+#
+# 3b is deliberately NOT a required status check on `main` (that is what lets an approved break land
+# without an admin override), and it sits in no `needs:` chain. `main` DOES require
+# "5z. Integration (aggregation gate)" and "3. Codegen drift", so a break can never skip tests or
+# ship an unregenerated spec. Earlier revisions of this header described a branch-protection
+# override; there was no branch protection at all before 2026-07-24.
 #
 # oasdiff is vendored at tools/openapi/bin/oasdiff-linux-amd64 (Apache-2.0, see bin/LICENSE-oasdiff)
 # so this runs fully air-gapped — no network call anywhere in this script. Only linux/amd64 is
