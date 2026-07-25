@@ -139,8 +139,9 @@ describe.runIf(await dockerAvailable())(
       // LEVER 1: resolve the runner image ONCE (PULL the pre-built content-hash GHCR image in CI via
       // SCP_RUNNER_SCAN_IMAGE_REF, else legacy-builder BUILD it locally as a dev fallback), and start
       // the postgres-domain + a registry:2, in parallel. The DOCKER_BUILDKIT=0 legacy-builder
-      // reasoning (the homelab DinD net=none session wedge, PR #126) lives in resolveRunnerImage —
-      // same build path, just no longer paid on every CI run.
+      // reasoning (the single-daemon net=none session wedge, PR #126 — now scoped to the local
+      // fallback only) lives in resolveRunnerImage — same build path, just no longer paid on every
+      // CI run.
       let scanImageRef: string;
       [scanImageRef, domain, registry] = await Promise.all([
         resolveRunnerImage({

@@ -4,16 +4,17 @@ name: Deploy Drills (M8 kind / air-gap / Ansible)
 # (workflow_dispatch + nightly schedule), NEVER merge-gating — same posture as
 # nightly-live-sandbox.yml. Why not per-PR gates:
 #   - The kind + air-gap drills stand up a full `kind` Kubernetes cluster (and, for air-gap, a
-#     Calico CNI so NetworkPolicy is genuinely enforced). Whether the self-hosted
-#     `homelab-commanderscp-linux-docker-build` runner supports nested-kind reliably was NOT
-#     verifiable from the environment this milestone was built in — so per the milestone's own
-#     "be HONEST about what's CI-gated vs. manual, don't fake it" instruction, these run here,
-#     nightly/on-demand, not as a merge gate.
+#     Calico CNI so NetworkPolicy is genuinely enforced).
 #   - Each drill is minutes-long (two full image builds + a bundle build + cluster bring-up).
 #
-# STATUS (M9.4, 2026-07-12): all three drills RUN GREEN on the homelab
-# `homelab-commanderscp-linux-docker-build` ARC runner — nested-kind IS viable there (the M8 open
-# question, now answered). Recorded green runs:
+# PROVENANCE — READ THIS BEFORE TRUSTING A GREEN BADGE HERE.
+# The recorded green runs below were on the homelab `homelab-commanderscp-linux-docker-build` ARC
+# runner, which NO LONGER EXECUTES THESE JOBS (they now run on GitHub-hosted `ubuntu-latest`).
+# The hosted-runner path is UNPROVEN until it actually runs — nothing here has been re-verified.
+#
+# STATUS (M9.4, 2026-07-12) — HISTORICAL, homelab ARC runner: all three drills ran green there;
+# nested-kind (the ARC runner is itself a pod with DinD, so kind ran NESTED) IS viable there — the
+# M8 open question, answered for that runner only. Recorded green runs:
 #   * scripts/kind-drill.sh    — install (old image) -> golden path -> zero-downtime helm upgrade
 #                                (a REAL new migration applied while old pods served) -> data
 #                                preserved -> rollback.  Green: run 29194162892.
@@ -22,13 +23,21 @@ name: Deploy Drills (M8 kind / air-gap / Ansible)
 #   * scripts/airgap-drill.sh  — genuine zero-egress drill (kind + Calico-enforced default-deny + a
 #                                deliberate-egress-attempt that MUST fail + golden path from a local
 #                                registry via the signed bundle).  Green: run 29196926938.
-# Getting them green on the ARC runner (vs. a plain workstation) needed the M9.4 fixes on this
-# branch: install kind/kubectl/helm/skopeo/cosign in-workflow; KUBECONFIG isolation + context-
-# namespace pin (an ARC pod's ambient in-cluster kubeconfig/SA-namespace otherwise leaks in);
-# restart-robust one-time-password capture; a skopeo single-platform postgres load + a kind
-# containerd-mirror local registry (docker-in-docker dual-addressing); and a real chart fix
-# (digest-pinned image tags aren't valid k8s labels — deploy/helm _helpers.tpl). Kept nightly +
-# on-demand, still NEVER merge-gating (each run is minutes-long: image builds + bundle + cluster).
+# Getting them green on the ARC runner (vs. a plain workstation) needed the M9.4 fixes: install
+# kind/kubectl/helm/skopeo/cosign in-workflow; KUBECONFIG isolation + context-namespace pin (an ARC
+# pod's ambient in-cluster kubeconfig/SA-namespace otherwise leaks in); restart-robust one-time-
+# password capture; a skopeo single-platform postgres load + a kind containerd-mirror local registry
+# (docker-in-docker dual-addressing); and a real chart fix (digest-pinned image tags aren't valid
+# k8s labels — deploy/helm _helpers.tpl). Those fixes are all retained: they are correct on any
+# runner, and the ARC-pod-specific ones (KUBECONFIG isolation) are simply inert on a hosted VM.
+#
+# ON THE HOSTED RUNNER, kind runs DIRECTLY on the host daemon rather than nested inside a DinD
+# sidecar — the ordinary, well-trodden path for kind in GitHub Actions, and strictly simpler than
+# what already worked. Expected to be fine; not yet demonstrated. The one genuinely NEW constraint
+# is DISK (~14 GB on a hosted runner vs. a homelab node), which is why every job below now starts by
+# reclaiming space — see the "Reclaim disk" step.
+#
+# Kept nightly + on-demand, still NEVER merge-gating (each run is minutes-long).
 
 on:
   schedule:
@@ -46,20 +55,24 @@ jobs:
     if: >-
       github.event_name == 'schedule' ||
       github.event.inputs.drill == 'all' || github.event.inputs.drill == 'kind'
-    runs-on: homelab-commanderscp-linux-docker-build
+    runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # kind-drill.sh builds an "old" image from an earlier commit on this branch
+      - name: Reclaim disk (see the "DISK" note in this file's header)
+        run: bash .github/scripts/free-disk.sh
       - uses: ./.github/actions/setup
       - run: pnpm build
       # Drill prerequisites (kind/kubectl/helm). Installed in-workflow via the same setup-action
       # pattern the `integration` CI job uses for helm/cosign/skopeo — a nightly/on-demand
-      # build-time fetch, NOT a product runtime dependency, so it doesn't violate CLAUDE.md #5. The
-      # homelab `linux-docker-build` runner ships Docker but not these k8s tools (confirmed by a
-      # workflow_dispatch spike: `kind: command not found`); rather than bake them into the runner
-      # image (homelab-runners, Rule #5), the drill self-provisions them.
+      # build-time fetch, NOT a product runtime dependency, so it doesn't violate CLAUDE.md #5.
+      # Self-provisioning rather than trusting the runner image is deliberate and KEPT after the
+      # hosted-runner swap: it originally existed because the homelab `linux-docker-build` runner
+      # shipped Docker but not these k8s tools (`kind: command not found`), and it now also pins
+      # kind v0.27.0 instead of inheriting whatever `ubuntu-latest` happens to ship, so the drill
+      # stays reproducible on any runner.
       - name: Install helm
         uses: azure/setup-helm@v4
         with:
@@ -76,20 +89,26 @@ jobs:
 
   ansible-drill:
     name: "ansible: bundle -> compose install -> compose upgrade (scp.platform)"
-    # Serialized after kind-drill (needs + always()): the three drills each stand up a full kind
-    # cluster / compose stack, and running them CONCURRENTLY starved the single homelab node — a
-    # `drill=all`/nightly run failed with Postgres transaction aborts + upgrade timeouts, while each
-    # drill passes cleanly alone. `always()` keeps this independent of kind's result (it still runs
-    # if kind failed or was skipped, e.g. `drill=ansible`); `needs` only orders them one-at-a-time.
+    # Serialized after kind-drill (needs + always()). ORIGINAL reason: the drills each stand up a
+    # full kind cluster / compose stack, and running them CONCURRENTLY starved the single homelab
+    # node — a `drill=all`/nightly run failed with Postgres transaction aborts + upgrade timeouts,
+    # while each drill passes cleanly alone. That specific contention is gone on hosted runners
+    # (each job gets its own fresh VM), but the serialization is KEPT: these are nightly/on-demand
+    # jobs with no wall-clock pressure, and running them one at a time keeps the failure signal
+    # clean and each drill's resource assumptions unchanged. `always()` keeps this independent of
+    # kind's result (it still runs if kind failed or was skipped, e.g. `drill=ansible`); `needs`
+    # only orders them one-at-a-time.
     needs: kind-drill
     if: >-
       always() && (
       github.event_name == 'schedule' ||
       github.event.inputs.drill == 'all' || github.event.inputs.drill == 'ansible')
-    runs-on: homelab-commanderscp-linux-docker-build
+    runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+      - name: Reclaim disk (see the "DISK" note in this file's header)
+        run: bash .github/scripts/free-disk.sh
       - uses: ./.github/actions/setup
       - run: pnpm build
       # Drill prerequisites installed in-workflow (same pattern as the integration CI job) —
@@ -110,15 +129,17 @@ jobs:
 
   airgap-drill:
     name: "air-gap: bundle -> local registry -> Calico zero-egress kind install"
-    needs: ansible-drill  # serialized (see ansible-drill) so the three drills never contend on the single node
+    needs: ansible-drill  # serialized (see ansible-drill for why this ordering is kept)
     if: >-
       always() && (
       github.event_name == 'schedule' ||
       github.event.inputs.drill == 'all' || github.event.inputs.drill == 'airgap')
-    runs-on: homelab-commanderscp-linux-docker-build
+    runs-on: ubuntu-latest
     timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
+      - name: Reclaim disk (see the "DISK" note in this file's header)
+        run: bash .github/scripts/free-disk.sh
       - uses: ./.github/actions/setup
       - run: pnpm build
       # Drill prerequisites installed in-workflow (same pattern as the integration CI job) —
@@ -150,12 +171,12 @@ jobs:
 
   bundled-argocd-drill:
     name: "bundled Argo CD: install -> live token mint+store -> scoped-token auth -> idempotent re-mint"
-    needs: airgap-drill  # serialized (see ansible-drill) so the drills never contend on the single node
+    needs: airgap-drill  # serialized (see ansible-drill for why this ordering is kept)
     if: >-
       always() && (
       github.event_name == 'schedule' ||
       github.event.inputs.drill == 'all' || github.event.inputs.drill == 'bundled-argocd')
-    runs-on: homelab-commanderscp-linux-docker-build
+    runs-on: ubuntu-latest
     # 55, not 40: the drill does a full scpd docker build + kind bring-up + in-cluster pull of the
     # heavy Argo CD stack + TWO helm operations (install, then the wrapper's upgrade), each with its
     # own --wait/--timeout up to ARGOCD_DRILL_INSTALL_TIMEOUT (900s default), plus the idempotency
@@ -163,6 +184,8 @@ jobs:
     timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
+      - name: Reclaim disk (see the "DISK" note in this file's header)
+        run: bash .github/scripts/free-disk.sh
       - uses: ./.github/actions/setup
       - run: pnpm build
       # Drill prerequisites installed in-workflow (same pattern as kind-drill / the integration CI

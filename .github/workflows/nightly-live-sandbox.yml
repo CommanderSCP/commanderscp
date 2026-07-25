@@ -14,6 +14,12 @@ name: Nightly Live Sandbox (M7 real GitHub/ArgoCD)
 # reporting a false green. This workflow itself has never been run (no live GitHub App/ArgoCD
 # credentials were available in the environment this milestone was built in) — it is unverified
 # infrastructure, flagged as such, not claimed as tested.
+#
+# RUNNERS: GitHub-hosted `ubuntu-latest` throughout. Previously the homelab ARC labels — the
+# `…-general` label for the secret check and the GitHub sandbox, the `…-docker-build` label for the
+# ArgoCD stub (whose eventual real implementation needs a Docker daemon for kind). `ubuntu-latest`
+# covers both cases with one label. The swap changes nothing about this workflow's verification
+# status: it was never run before and is still never run.
 
 on:
   schedule:
@@ -23,7 +29,7 @@ on:
 jobs:
   check-secrets:
     name: Check for live-sandbox credentials
-    runs-on: homelab-commanderscp-linux-general
+    runs-on: ubuntu-latest
     outputs:
       have-github-secrets: ${{ steps.check.outputs.have-github-secrets }}
       have-argocd-secrets: ${{ steps.check.outputs.have-argocd-secrets }}
@@ -52,7 +58,7 @@ jobs:
     name: GitHub live sandbox (real App, real repo)
     needs: check-secrets
     if: needs.check-secrets.outputs.have-github-secrets == 'true'
-    runs-on: homelab-commanderscp-linux-general
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
@@ -70,7 +76,7 @@ jobs:
     name: ArgoCD live sandbox (kind + real ArgoCD) — NOT YET IMPLEMENTED
     needs: check-secrets
     if: needs.check-secrets.outputs.have-argocd-secrets == 'true'
-    runs-on: homelab-commanderscp-linux-docker-build
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: honest stub — real kind+ArgoCD bring-up is tracked follow-up, not implemented this milestone
