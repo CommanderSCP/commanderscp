@@ -272,9 +272,12 @@ jobs:
     # LEVER 2: a single, stable status-check name for branch protection to require, standing in for
     # the per-shard matrix jobs (whose names include the shard index). `if: always()` + an explicit
     # result check means this gate goes RED whenever any shard failed or was cancelled, rather than
-    # being silently skipped. NOTE FOR THE REPO ADMIN: update the required status check in branch
-    # protection from the old "5. Integration ..." job name to THIS job ("5z. Integration
-    # (aggregation gate)") — see docs/BUILD_AND_TEST.md §6.
+    # being silently skipped.
+    #
+    # DONE (2026-07-24): `main` branch protection now requires exactly this check plus "3. Codegen
+    # drift". Requiring 5z transitively covers static-checks, codegen-drift, unit-tests and
+    # runner-images, because integration-shard `needs:` all four — if any of them fails the matrix is
+    # skipped, `needs.integration-shard.result != "success"`, and this gate goes red. See §6.
     needs: [integration-shard]
     if: always()
     runs-on: homelab-commanderscp-linux-general
