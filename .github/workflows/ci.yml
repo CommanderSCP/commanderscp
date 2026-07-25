@@ -2,9 +2,18 @@ name: CI
 
 # Stages 1-4 (+5 Integration, +7 E2E) from BUILD_AND_TEST.md §6. Every stage is a plain pnpm
 # command with no hosted-service dependency, so the same pipeline runs on self-hosted runners or
-# a bare scripts/ci-local.sh (charter self-hosting requirement). Stage 5 (Integration) and stage 7
-# (E2E)'s PR subset both gate every PR per §6 ("stages 1-6 are green, stage 7's PR subset is
-# green"); E2E's full run stays main-only per the M0 definition of done.
+# a bare local runner script (charter self-hosting requirement — §6). Stage 5 (Integration) and
+# stage 7 (E2E)'s PR subset both gate every PR per §6 ("stages 1-6 are green, stage 7's PR subset
+# is green"); E2E's full run stays main-only per the M0 definition of done.
+#
+# RUNNERS: GitHub-hosted `ubuntu-latest` throughout (previously two homelab ARC self-hosted labels,
+# `homelab-commanderscp-linux-general` and `homelab-commanderscp-linux-docker-build`). The old split
+# existed because only the docker-build label had a Docker daemon; `ubuntu-latest` ships a native
+# daemon plus Node/pnpm-capable tooling, so ONE label serves every job and the general/docker-build
+# distinction no longer buys anything. This does NOT weaken the charter portability requirement:
+# no stage gained a hosted-service dependency — the jobs are still plain pnpm/docker commands and
+# still run unchanged on a self-hosted runner. Jobs that need helm/kubectl/kind/cosign/skopeo keep
+# installing them in-workflow exactly as before, so they remain runner-image-agnostic.
 
 on:
   push:
@@ -18,7 +27,7 @@ concurrency:
 jobs:
   build:
     name: "1. Setup & build"
-    runs-on: homelab-commanderscp-linux-general
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
@@ -26,7 +35,7 @@ jobs:
 
   static-checks:
     name: "2. Static checks (lint + typecheck)"
-    runs-on: homelab-commanderscp-linux-general
+    runs-on: ubuntu-latest
     needs: build
     steps:
       - uses: actions/checkout@v4
@@ -39,7 +48,7 @@ jobs:
   # downstream job would be testing a lie. This one SHOULD gate them (see `needs:` on integration/e2e).
   codegen-drift:
     name: "3. Codegen drift"
-    runs-on: homelab-commanderscp-linux-general
+    runs-on: ubuntu-latest
     needs: build
     steps:
       - uses: actions/checkout@v4
@@ -63,7 +72,7 @@ jobs:
   # fetch-depth: 0 so check.sh's `git merge-base origin/main HEAD` can resolve the base spec.
   api-breaking-change:
     name: "3b. API breaking-change gate (oasdiff, /v1 additive-only)"
-    runs-on: homelab-commanderscp-linux-general
+    runs-on: ubuntu-latest
     needs: build
     steps:
       - uses: actions/checkout@v4
@@ -73,21 +82,30 @@ jobs:
 
   unit-tests:
     name: "4. Unit tests"
-    runs-on: homelab-commanderscp-linux-general
+    runs-on: ubuntu-latest
     needs: build
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - run: pnpm build
-      # `homelab-commanderscp-linux-general` ships Node only — no Helm, cosign, skopeo, or Docker
-      # (BUILD_AND_TEST.md §8 M1 item 9). `pnpm test` (turbo run test) must stay tool-free here so
-      # this stage genuinely reflects "unit tests," not "unit tests plus whatever binaries happen
-      # to be on this runner." Every tool-dependent check reachable from the default `test` task
-      # (tools/helm-verify's `test` script; deploy/airgap's install.sh-tamper suite) probes for its
-      # own binary and SKIPS (not fails) when absent — see tools/helm-verify/src/verify.ts's and
+      # This job installs NO tools of its own, deliberately: `pnpm test` (turbo run test) reflects
+      # "unit tests," not "unit tests plus whatever else got installed here." Do not add a tool
+      # -install step to this job.
+      #
+      # Every tool-dependent check reachable from the default `test` task (tools/helm-verify's
+      # `test` script; deploy/airgap's install.sh-tamper suite) probes for its own binary and SKIPS
+      # (not fails) when absent — see tools/helm-verify/src/verify.ts's and
       # deploy/airgap/src/install-sh-tamper.test.ts's own comments. Those same assertions are
-      # genuinely CI-gated elsewhere, with the tool actually installed first: helm-verify below
+      # genuinely CI-gated elsewhere, with the tool explicitly installed first: helm-verify below
       # (job 4b) and the install.sh tamper suite in job 5 (Integration).
+      #
+      # RUNNER NOTE: the old `homelab-commanderscp-linux-general` label shipped Node ONLY, so those
+      # probes always took the skip branch here. `ubuntu-latest` PRE-INSTALLS helm, so
+      # tools/helm-verify now genuinely renders and asserts inside this job too. That is a
+      # strengthening, not a risk — job 4b runs the identical script against a pinned Helm and is
+      # still the job that GUARANTEES the assertions run — but it means this stage's result is no
+      # longer independent of GitHub's runner-image contents. cosign and skopeo are NOT
+      # pre-installed, and the tamper suite requires all three, so it still skips here as designed.
       - run: pnpm test
 
   helm-verify:
@@ -98,22 +116,23 @@ jobs:
     # apply today, but the tool was never invoked anywhere in CI — "CI gate" was aspirational, not
     # real; a values.yaml regression would have shipped silently. This job is the actual gate: it
     # fails the build on any of those assertions regressing. Pure `helm template` (offline
-    # rendering, no live cluster) — the general runner is sufficient, no Docker needed.
+    # rendering, no live cluster) — no Docker daemon needed.
     #
-    # Helm is a documented toolchain prerequisite (BUILD_AND_TEST.md §1) but is NOT pre-provisioned
-    # on `homelab-commanderscp-linux-general` (confirmed by this job going red on PR #15 with
-    # `spawnSync helm ENOENT` before this fix) — so this job installs a real Helm binary itself
-    # (`azure/setup-helm@v4`, a static-binary download, no sudo/apt needed) rather than assuming
-    # it's already on PATH. That makes this job an unconditional real gate on every PR regardless
-    # of runner provisioning: `tools/helm-verify/src/verify.ts` SKIPS cleanly when helm is absent
-    # (see its own comment) precisely so the general unit-test stage stays green, but THIS job
-    # always has helm, so the same script here always genuinely renders the chart and asserts.
-    runs-on: homelab-commanderscp-linux-general
+    # Helm is a documented toolchain prerequisite (BUILD_AND_TEST.md §1). This job installs a real
+    # Helm binary ITSELF (`azure/setup-helm@v4`, a static-binary download, no sudo/apt needed)
+    # rather than trusting whatever is on the runner. That was originally forced by the old
+    # `homelab-commanderscp-linux-general` label shipping Node only (this job went red on PR #15
+    # with `spawnSync helm ENOENT`); it is KEPT on `ubuntu-latest` — which does pre-install helm —
+    # precisely so this gate does not depend on GitHub's runner-image contents and stays valid on
+    # any self-hosted runner. `tools/helm-verify/src/verify.ts` SKIPS cleanly when helm is absent
+    # (see its own comment), so THIS job — which always has helm — is what makes the assertions an
+    # unconditional gate on every PR regardless of runner provisioning.
+    runs-on: ubuntu-latest
     needs: build
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - name: "Install Helm (BUILD_AND_TEST.md §1: 3.16+) — general runner ships Node only"
+      - name: "Install Helm (BUILD_AND_TEST.md §1: 3.16+) — pinned here, not trusted from the runner image"
         uses: azure/setup-helm@v4
         with:
           version: latest
@@ -130,10 +149,22 @@ jobs:
     # job then just `docker pull`s them. Model mirrors the `ci-image` job (9a) exactly: pull the
     # tag, and only build+push on a cache miss (the build context actually changed). Runs on every
     # push/PR (no main-only guard) so a PR that touches a runner Dockerfile or a scanner pin rebuilds
-    # + republishes before the integration job pulls it. Needs a real Docker daemon → docker-build
-    # runner. DOCKER_BUILDKIT=0 for consistency with the legacy-builder policy (§6); this is a plain
-    # build+push job, not the DinD net=none path, so it is not strictly required here.
-    runs-on: homelab-commanderscp-linux-docker-build
+    # + republishes before the integration job pulls it. Needs a real Docker daemon, which
+    # `ubuntu-latest` provides natively.
+    #
+    # DROPPED (runner swap): this job used to force `DOCKER_BUILDKIT=0`. That legacy-builder policy
+    # (§6) had exactly ONE recorded justification — inside the homelab DinD sidecar, BuildKit's
+    # persistent embedded gRPC session deadlocked against `--network none` container operations in
+    # the same daemon ("session healthcheck failed fatally … only one connection allowed", PR #126).
+    # Two independent reasons it cannot apply here: (a) `ubuntu-latest` runs a NATIVE daemon, not
+    # DinD, so there is no sidecar session to wedge; (b) this job only builds and pushes — it never
+    # creates a net=none container — so even the original comment recorded it as "not strictly
+    # required here." Both runner Dockerfiles are plain single-stage FROM/RUN/COPY with no
+    # BuildKit-only features, so either builder produces a functionally identical image; BuildKit is
+    # simply the faster default. The constraint IS retained where it still has a live justification:
+    # `resolveRunnerImage`'s local-dev fallback, which does build and run net=none containers in one
+    # daemon (packages/plugin-testkit/src/runner-image.ts).
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
@@ -151,7 +182,7 @@ jobs:
               echo "cache hit: $image already in GHCR — no build needed."
             else
               echo "cache miss: building $image from $context and pushing to GHCR."
-              DOCKER_BUILDKIT=0 docker build -t "$image" "$context"
+              docker build -t "$image" "$context"
               docker push "$image"
             fi
           }
@@ -167,27 +198,30 @@ jobs:
     # forks WITHIN each shard, the two levers compose: files split across shards, then run in
     # parallel within a shard.)
     #
-    # Needs a real Docker daemon for Testcontainers — the general runner has none
-    # (BUILD_AND_TEST.md §8 M1 item 9). M7: `pnpm test:integration` (turbo run test:integration)
-    # automatically picks up @scp/plugin-managed-iac's own test:integration script too (turbo
-    # discovers it from that package's package.json, no separate wiring needed) — the DoD-critical
-    # "launches a REAL scp-runner-iac container" test therefore runs in THIS job, on the same
-    # docker-build runner, rather than needing a second CI job. Every push/PR (not main-only): this
-    # is a permanent regression test, same gating as the Testcontainers suite it sits alongside.
+    # Needs a real Docker daemon for Testcontainers, plus the ability to create `--network none`
+    # runner containers. `ubuntu-latest` ships a NATIVE Docker Engine (no DinD sidecar), which is a
+    # simpler substrate for this than the homelab ARC runner it replaced. M7: `pnpm test:integration`
+    # (turbo run test:integration) automatically picks up @scp/plugin-managed-iac's own
+    # test:integration script too (turbo discovers it from that package's package.json, no separate
+    # wiring needed) — the DoD-critical "launches a REAL scp-runner-iac container" test therefore
+    # runs in THIS job, against the same daemon, rather than needing a second CI job. Every push/PR
+    # (not main-only): this is a permanent regression test, same gating as the Testcontainers suite
+    # it sits alongside.
     #
     # This job also makes the CRITICAL #1 air-gap guard (adversarial review of PR #15:
     # `deploy/airgap/src/install-sh-tamper.test.ts` — a bundle re-signed with an attacker's
     # keypair must be REJECTED against the real external `--pubkey`, exercised against the actual
     # `install.sh` subprocess, not a reimplementation) a REAL gate on every PR. That suite's
     # tool-dependent `describe` block probes `cosign`/`skopeo`/`helm` on PATH and SKIPS when any
-    # are absent (see the test file's own comment) — which is what keeps `pnpm test` green on the
-    # tool-free general runner (job 4). None of those three are pre-provisioned on THIS runner
-    # either by default, so the steps below install them for real before re-running
+    # are absent (see the test file's own comment) — which is what keeps it inert in the
+    # deliberately tool-free unit-test job (job 4), where cosign and skopeo are absent.
+    # `ubuntu-latest` pre-installs none of cosign/skopeo, and its helm is not the pinned one, so the
+    # steps below install all three for real — pinned, not runner-supplied — before re-running
     # `@scp/airgap`'s suite explicitly (it's not part of the `test:integration` task graph — its
     # script is named `test`, and Turborepo only wires the `test:integration` task to packages
     # that declare that exact script name) — with all three tools genuinely on PATH, the tamper
     # scenario actually executes here instead of skipping.
-    runs-on: homelab-commanderscp-linux-docker-build
+    runs-on: ubuntu-latest
     needs: [static-checks, codegen-drift, unit-tests, runner-images]
     permissions:
       contents: read
@@ -226,9 +260,11 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq skopeo
       - name: Install the PINNED skopeo (the same binary+library closure the scp image vendors)
-        # PINNED, not apt's (M15.5 c1/c3 — the M17.3 E1 argument, now for skopeo): apt gives this
-        # Ubuntu runner skopeo 1.13.3, BELOW the documented 1.16+ floor (BUILD_AND_TEST.md §1) and
-        # not the 1.22.2 the runtime image vendors. That drift broke the M15.5(c) relay suite for
+        # PINNED, not apt's (M15.5 c1/c3 — the M17.3 E1 argument, now for skopeo): apt gave the
+        # (Ubuntu) runner skopeo 1.13.3, BELOW the documented 1.16+ floor (BUILD_AND_TEST.md §1) and
+        # not the 1.22.2 the runtime image vendors — and the exact apt version is a property of
+        # whatever Ubuntu the runner happens to be, which is precisely why this pin does not trust
+        # it. That drift broke the M15.5(c) relay suite for
         # real: cosign v3 attaches image signatures under the OCI 1.1 referrers-FALLBACK tag (an
         # image index with artifactType children), which skopeo 1.13.3 cannot copy with
         # --preserve-digests ("Manifest list must be converted…cannot modify it"), so the relay's
@@ -280,7 +316,7 @@ jobs:
     # skipped, `needs.integration-shard.result != "success"`, and this gate goes red. See §6.
     needs: [integration-shard]
     if: always()
-    runs-on: homelab-commanderscp-linux-general
+    runs-on: ubuntu-latest
     steps:
       - name: Require every integration shard to have succeeded
         run: |
@@ -293,7 +329,11 @@ jobs:
 
   e2e-m0:
     name: "7. E2E (M0 golden path, main only)"
-    runs-on: homelab-commanderscp-linux-docker-build
+    # Needs a real Docker daemon (compose), which `ubuntu-latest` provides. (Before the hosted-runner
+    # swap this — and every e2e-* job below — had to name the `homelab-…-docker-build` label, because
+    # the other homelab label had no daemon at all; there is now only one label and the "which runner
+    # and why" note on each of these jobs is purely historical.)
+    runs-on: ubuntu-latest
     needs: [static-checks, codegen-drift, unit-tests]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
@@ -304,8 +344,8 @@ jobs:
 
   e2e-m4:
     name: "8. E2E (M4 governance golden path, main only)"
-    # Same reason as e2e-m0: needs a real Docker daemon (compose) — the general runner has none.
-    runs-on: homelab-commanderscp-linux-docker-build
+    # Same as e2e-m0: needs a real Docker daemon (compose).
+    runs-on: ubuntu-latest
     needs: [static-checks, codegen-drift, unit-tests]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
@@ -316,8 +356,8 @@ jobs:
 
   e2e-m5:
     name: "8b. E2E (M5 campaigns & initiatives golden path, main only)"
-    # Same reason as e2e-m0/e2e-m4: needs a real Docker daemon (compose) — the general runner has none.
-    runs-on: homelab-commanderscp-linux-docker-build
+    # Same as e2e-m0/e2e-m4: needs a real Docker daemon (compose).
+    runs-on: ubuntu-latest
     needs: [static-checks, codegen-drift, unit-tests]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
@@ -328,12 +368,12 @@ jobs:
 
   e2e-m6:
     name: "8c. E2E (M6 federation two-domain round-trip, main only)"
-    # Same reason as e2e-m0/e2e-m4/e2e-m5: needs a real Docker daemon (compose) — the general
-    # runner has none. This one needs it twice over: the compose stack itself runs TWO fully
+    # Same as e2e-m0/e2e-m4/e2e-m5: needs a real Docker daemon (compose). This one leans on it
+    # twice over: the compose stack itself runs TWO fully
     # isolated scpd+postgres pairs on separate Docker networks with no shared network at all
     # (DESIGN.md §13's "no network path exists between the domains" requirement, enforced
     # structurally by Docker's own network isolation, not a firewall rule).
-    runs-on: homelab-commanderscp-linux-docker-build
+    runs-on: ubuntu-latest
     needs: [static-checks, codegen-drift, unit-tests]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
@@ -344,15 +384,15 @@ jobs:
 
   e2e-m7:
     name: "8d. E2E (M7 real executor integrations golden path, main only)"
-    # Same reason as e2e-m0/e2e-m4/e2e-m5/e2e-m6: needs a real Docker daemon (compose) — the
-    # general runner has none. HONEST SCOPE (see scripts/e2e-m7.sh's own header comment): this
+    # Same as e2e-m0/e2e-m4/e2e-m5/e2e-m6: needs a real Docker daemon (compose).
+    # HONEST SCOPE (see scripts/e2e-m7.sh's own header comment): this
     # proves the M7 API/CLI surface end to end — webhook HMAC signature verification (fail-closed),
     # executor/notification binding CRUD, the plugin-manifest catalog, and discovery's
     # never-auto-commits guarantee — against the real compose-deployed image. It does NOT include
     # an ArgoCD-in-kind wave-execution variant (deferred, flagged in the M7 PR body); real
     # GitHub/ArgoCD/Terraform wire-format coverage comes from each plugin's deterministic
     # nock-fixture suite (unit-tests job) plus the opt-in nightly-live-sandbox.yml workflow.
-    runs-on: homelab-commanderscp-linux-docker-build
+    runs-on: ubuntu-latest
     needs: [static-checks, codegen-drift, unit-tests]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
@@ -374,10 +414,18 @@ jobs:
     # main push just pulls it. That kills both the per-push multi-GB rebuild AND the per-push
     # dependency on cdn.playwright.dev: the Chromium download now happens only on a cache miss,
     # with retries baked into the Dockerfile — closing the air-gap gap the build-every-push
-    # approach had (CLAUDE.md #5, CI runs offline). Auth is the workflow's GITHUB_TOKEN (repo is
-    # private -> the package is private); no extra secret, assuming the org permits GITHUB_TOKEN
-    # packages:write (the same GHCR publish model the homelab already uses).
-    runs-on: homelab-commanderscp-linux-docker-build
+    # approach had (CLAUDE.md #5, CI runs offline).
+    #
+    # Auth is the workflow's GITHUB_TOKEN with `packages: write`; no extra secret. CORRECTION (this
+    # PR): the previous comment here claimed "repo is private -> the package is private." The repo
+    # is PUBLIC (`gh repo view --json visibility` => PUBLIC), so package visibility is NOT inherited
+    # from repo visibility — GHCR package visibility is set per-package and defaults to private on
+    # first publish. Nothing about the CI path depends on which it is: the pull below is
+    # authenticated with the same GITHUB_TOKEN either way.
+    #
+    # WHO CONSUMES THIS IMAGE: the `e2e-web` job below, via an explicit `docker run` (NOT a job-level
+    # `container:` — no job in this repo uses `container:`). See that job's steps.
+    runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
@@ -402,8 +450,10 @@ jobs:
 
   e2e-web:
     name: "9. E2E (Web UI, Playwright/Chromium, main only)"
-    # Same reason as e2e-m0: needs a real Docker daemon (compose) — the general runner has none.
-    runs-on: homelab-commanderscp-linux-docker-build
+    # Same as e2e-m0: needs a real Docker daemon (compose). This is ALSO the one and only consumer
+    # of the `tools/ci-image` artifact the `ci-image` job (9a) publishes — consumed by an explicit
+    # `docker run` below, not a job-level `container:`.
+    runs-on: ubuntu-latest
     needs: [static-checks, codegen-drift, unit-tests, ci-image]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
@@ -439,17 +489,19 @@ jobs:
       # `--network host`: lets Playwright, running inside this container, reach the compose
       # stack's host-published port (http://localhost:8080, per scripts/e2e-web.sh) the same way
       # it would running directly on the runner. Linux-only, which is fine — every runner in this
-      # workflow is homelab-commanderscp-linux-*.
+      # workflow is Linux (`ubuntu-latest`).
       #
-      # HONEST SCOPE / ASSUMPTION flagged for whoever lands this on the real homelab runners: the
-      # Docker-outside-of-Docker + `--network host` pattern above was verified locally (Docker
-      # CLI + `docker compose` from inside a tools/ci-image container reaching a real host
-      # daemon; a fully offline `pnpm install --offline --frozen-lockfile` against the baked
-      # store; a Chromium launch inside a `--network none` container) but NOT against an actual
-      # run of this exact job on the homelab self-hosted runners — if those runners are
-      # container-per-job (e.g. Actions Runner Controller pods) rather than plain VMs/hosts, the
-      # docker.sock bind-mount and `--network host` may need runner-specific adjustment. See the
-      # m8-hardening-packaging-rc PR description for the full list of what was and wasn't tested.
+      # HONEST SCOPE / PROVENANCE: the Docker-outside-of-Docker + `--network host` pattern above was
+      # verified LOCALLY (Docker CLI + `docker compose` from inside a tools/ci-image container
+      # reaching a real host daemon; a fully offline `pnpm install --offline --frozen-lockfile`
+      # against the baked store; a Chromium launch inside a `--network none` container) — never
+      # against a real run on the homelab ARC runners, where the open worry was exactly that a
+      # container-per-job ARC POD might not expose a usable docker.sock or honour `--network host`.
+      # The hosted-runner swap RESOLVES that worry rather than inheriting it: `ubuntu-latest` is a
+      # plain VM with a native daemon at /var/run/docker.sock and a real host network namespace, i.e.
+      # the same shape the local verification used. It is still unproven on this specific runner
+      # until this job actually runs here; if it fails, the docker.sock mount and `--network host`
+      # are the first two things to look at.
       - name: Run compose-stack Playwright E2E inside the baked CI runner image (zero network)
         run: |
           docker run --rm \

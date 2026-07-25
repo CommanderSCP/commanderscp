@@ -12,9 +12,10 @@ import { defineConfig } from "vitest/config";
  * relay — the three collision classes that previously forced serial execution. Files WITHIN a
  * worker still run serially against that worker's database.
  *
- * `maxForks` is capped (default 4) to match the CI docker-build runner's CPU limit; CI overrides it
- * via `SCP_TEST_MAX_FORKS` once the runner's CPU limit is raised (docs/BUILD_AND_TEST.md §6 — the
- * out-of-repo ARC recipe). Locally, raise it to your core count for maximum parallelism.
+ * `maxForks` is capped (default 4) to match the CI runner's core count — which happens to still be
+ * 4 on a GitHub-hosted standard `ubuntu-latest` runner, the same number the old homelab ARC pod's
+ * CPU limit gave (docs/BUILD_AND_TEST.md §6.1). Override with `SCP_TEST_MAX_FORKS` on a runner with
+ * more cores. Locally, raise it to your core count for maximum parallelism.
  */
 export default defineConfig({
   test: {

@@ -27,10 +27,12 @@
 #
 # oasdiff is vendored at tools/openapi/bin/oasdiff-linux-amd64 (Apache-2.0, see bin/LICENSE-oasdiff)
 # so this runs fully air-gapped — no network call anywhere in this script. Only linux/amd64 is
-# vendored today, matching the self-hosted CI runners in .github/workflows/ci.yml
-# (homelab-commanderscp-linux-*) and tools/ci-image, where this script is intended to run. Running
-# it on another host architecture requires vendoring a matching oasdiff-<os>-<arch> binary under
-# tools/openapi/bin/ first and pointing OASDIFF_BIN at it (see tools/openapi/README.md).
+# vendored today, matching the CI runners in .github/workflows/ci.yml (GitHub-hosted `ubuntu-latest`,
+# linux/amd64; previously the homelab `homelab-commanderscp-linux-*` self-hosted labels, also
+# linux/amd64 — the swap did not change the vendored architecture) and tools/ci-image, where this
+# script is intended to run. Running it on another host architecture requires vendoring a matching
+# oasdiff-<os>-<arch> binary under tools/openapi/bin/ first and pointing OASDIFF_BIN at it (see
+# tools/openapi/README.md).
 #
 # Usage:
 #   pnpm gen && tools/openapi/check.sh

@@ -30,12 +30,22 @@ export interface ResolveRunnerImageOptions {
  *   - Local-dev fallback (env unset): `DOCKER_BUILDKIT=0 docker build -t <localTag> <context>` and
  *     RETURN `localTag`. Behavior is unchanged from before this lever — same legacy-builder build.
  *
- * `DOCKER_BUILDKIT=0` forces the LEGACY builder (PR #126): inside the homelab DinD, the integration
- * job both builds runner images AND creates `--network none` scan containers; modern BuildKit opens
- * an embedded gRPC session that deadlocks against net=none container ops ("session healthcheck
- * failed fatally"). These Dockerfiles are plain single-stage FROM+RUN+COPY builds with no
- * BuildKit-only features, so the legacy builder yields a functionally identical image. Do NOT
- * re-enable BuildKit here without re-solving the DinD session wedge (docs/BUILD_AND_TEST.md §6).
+ * `DOCKER_BUILDKIT=0` forces the LEGACY builder (PR #126). The failure it avoids: when ONE daemon
+ * both builds runner images AND creates `--network none` scan containers, modern BuildKit's
+ * persistent embedded gRPC session can deadlock against those net=none container ops ("session
+ * healthcheck failed fatally: Unavailable: … only one connection allowed"), hanging the run. It was
+ * first hit inside the homelab DinD sidecar, which made it far easier to provoke.
+ *
+ * SCOPE (narrowed when CI moved to GitHub-hosted runners): this flag now applies ONLY to this
+ * local-dev fallback, which is exactly the case that still builds and runs net=none containers in a
+ * single daemon. The CI `runner-images` job no longer sets it — it runs on a native (non-DinD)
+ * daemon and only builds and pushes, never creating a net=none container, so the wedge cannot
+ * occur there. It is kept HERE because the local-dev shape is unchanged and untested against
+ * BuildKit; this is a deliberate retention, not leftover cargo cult.
+ *
+ * These Dockerfiles are plain single-stage FROM+RUN+COPY builds with no BuildKit-only features, so
+ * the legacy builder yields a functionally identical image. Do NOT re-enable BuildKit here without
+ * re-solving the single-daemon session wedge (docs/BUILD_AND_TEST.md §6).
  */
 export async function resolveRunnerImage(opts: ResolveRunnerImageOptions): Promise<string> {
   const preBuilt = process.env[opts.refEnvVar];

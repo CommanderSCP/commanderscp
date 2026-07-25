@@ -181,7 +181,9 @@ Turborepo derives this from workspace `dependsOn`; `pnpm build` = `turbo run bui
 
 ## 4. Test Strategy
 
-Four layers, matching DESIGN.md §18. Every layer runs offline; no test may reach the public internet (enforced in CI by running jobs with no egress except the local registry mirror).
+Four layers, matching DESIGN.md §18. Every layer runs offline; no test may reach the public internet.
+
+> **Honest note on how that is (not) enforced.** This used to read "enforced in CI by running jobs with no egress except the local registry mirror." That was never true. No NetworkPolicy — or any other egress restriction — was ever applied to the homelab CI runners, and GitHub-hosted runners have unrestricted egress by design. **No-internet-in-tests is a convention the suites honour, not something CI enforces:** it is upheld by the tests themselves (deterministic `nock` fixtures for every plugin's wire format, Testcontainers-local Postgres, `--network none` runner containers, vendored binaries, `pnpm install --offline` in the `e2e-web` job) and by review, not by the network. The one place egress *is* genuinely enforced is `scripts/airgap-drill.sh`, which stands up a Calico default-deny kind cluster and asserts a deliberate egress attempt **fails** — a real, targeted proof, not a blanket CI property. Moving CI from the homelab runners to GitHub-hosted runners therefore lost no isolation that existed; if a blanket enforcement is ever wanted, it has to be built, not documented.
 
 ```
         ┌──────────────┐   few, slow, definitive
@@ -277,7 +279,9 @@ pnpm doctor              # toolchain sanity
 
 ## 6. CI Pipeline
 
-Reference implementation is GitHub Actions (`.github/workflows/ci.yml`), but **every stage is a plain pnpm/docker command with no hosted-service dependency**, so the identical pipeline runs on self-hosted runners, GitLab CI, or a bare `scripts/ci-local.sh` on an air-gapped machine — a charter requirement (self-hosting first). Required tooling (Node, pnpm store, Playwright browsers, oasdiff) is baked into a versioned CI runner image built from `tools/ci-image/Dockerfile`.
+Reference implementation is GitHub Actions (`.github/workflows/ci.yml`), but **every stage is a plain pnpm/docker command with no hosted-service dependency**, so the identical pipeline runs on self-hosted runners, GitLab CI, or a bare local runner script on an air-gapped machine — a charter requirement (self-hosting first). Required tooling (Node, pnpm store, Playwright browsers, oasdiff) is baked into a versioned CI runner image built from `tools/ci-image/Dockerfile`.
+
+> *(A `scripts/ci-local.sh` is named as the intended shape of that bare local entry point but **has not been written yet** — the portability property is currently upheld by the stages being plain commands, not by a committed script that exercises them. Writing it is open work.)*
 
 Stages (each a job; 2–5 fan out in parallel after build):
 
@@ -297,6 +301,27 @@ Stages (each a job; 2–5 fan out in parallel after build):
 
 **What `main` branch protection actually enforces (set 2026-07-24):** exactly two required status checks — **`5z. Integration (aggregation gate)`** and **`3. Codegen drift`**. Requiring `5z` transitively covers stages 2, 3, 4 and 4c, because `integration-shard` `needs:` all of them: if any fails, the matrix is skipped, the aggregation gate sees a non-`success` result and goes red. Deliberate settings: `strict: false` (no forced rebase every time `main` moves), `enforce_admins: false` (so a docs-only PR that runs no CI can still be admin-merged, per the docs-PR convention), and force-pushes and branch deletion both disabled. **`3b. API breaking-change gate` is deliberately NOT required** — it is a policy signal a human may knowingly accept, and making it required would mean every owner-approved `/v1` break needed an admin override to land. Before this date `main` had no branch protection and no rulesets at all, while several comments in `ci.yml`, `tools/openapi/check.sh` and ADR-0004 described an override mechanism that did not exist.
 
+### 6.0 Runner topology
+
+**Every job runs on GitHub-hosted `ubuntu-latest`.** One label, across all four workflows (`ci.yml`, `publish-images.yml`, `deploy-drills.yml`, `nightly-live-sandbox.yml`).
+
+This replaced two homelab self-hosted ARC labels:
+
+| Old label | What it was | Why it is gone |
+|---|---|---|
+| `homelab-commanderscp-linux-general` | Node-only ARC runner pod, no Docker daemon | `ubuntu-latest` is a superset |
+| `homelab-commanderscp-linux-docker-build` | ARC runner pod with a DinD sidecar | `ubuntu-latest` has a **native** Docker daemon — simpler than DinD, not weaker |
+
+The general/docker-build split existed for exactly one reason: only the second label could run Docker. A hosted runner has a working daemon in every job, so the split buys nothing and the distinction is gone. Consequences worth knowing:
+
+- **The charter portability requirement is intact and unchanged.** No stage gained a hosted-service dependency. Jobs that need `helm`/`kubectl`/`kind`/`cosign`/`skopeo` still install them **in-workflow, pinned**, rather than trusting the runner image — deliberately kept so the pipeline stays runner-agnostic and reproducible on a self-hosted runner. GitHub Actions remains the *reference* implementation, not a requirement.
+- **`ubuntu-latest` pre-installs helm**, so probe-and-skip suites (`tools/helm-verify`) now genuinely execute inside the unit-test stage as well. That is a bonus, not the guarantee — the dedicated `helm-verify` job installing its own Helm is what makes those assertions an unconditional gate.
+- **Disk is the one genuinely new constraint** (~14 GB free on a hosted runner). Only the deploy drills — multiple full image builds *plus* a kind cluster *plus* a Kubernetes control plane and CNI — plausibly exceed it, so each drill job starts with `.github/scripts/free-disk.sh`, a plain shell step (not a third-party action) that removes preinstalled toolchains this repo never uses. It is deliberately **not** applied to jobs that do not need it.
+- **Cost:** the repo is public, so GitHub-hosted **standard** runners are free and unmetered, on the 4-vCPU/16 GB tier. Larger runners are *not* free even on public repos — keep to standard labels.
+- **Unproven paths.** Green history for the deploy drills and `e2e-web` was recorded on the homelab ARC runner and does **not** transfer. See §6.1 and those workflows' own headers.
+
+Decommissioning the idle homelab ARC runner sets is a separate, owner-gated step (they sit at `minRunners: 1`); nothing in this repo depends on them any more. [docs/runbooks/ci-runner-concurrency.md](runbooks/ci-runner-concurrency.md) is retained as history for that self-hosted topology.
+
 ### 6.1 Integration-suite speed model (three composed levers)
 
 The integration stage is the pipeline's long pole (real Postgres + real-Docker runner containers). Three levers cut its wall-clock, and they compose:
@@ -305,22 +330,13 @@ The integration stage is the pipeline's long pole (real Postgres + real-Docker r
 
 **Lever 2 — sharded matrix.** The integration job is a 2-way matrix (`integration-shard`, `shard: [1, 2]`) running `pnpm test:integration -- --shard=i/2`. vitest shards at file granularity, so the two shards cover every file exactly once (verified: 31 + 31 = 62 files, 268 + 275 = 543 tests). The `@scp/airgap` `install.sh` tamper-rejection suite is **not** part of the sharded vitest task graph, so it runs **exactly once** (shard 1 only, via `if: matrix.shard == 1`) rather than being duplicated. A small `integration` aggregation-gate job `needs:` the matrix and goes red unless every shard succeeded, giving branch protection **one stable required-check name** to reference. **Done (2026-07-24):** `5z. Integration (aggregation gate)` is now a required status check on `main` — see the merge-policy note above.
 
-**Lever 3 — per-worker template-DB parallelism (within each shard).** The suite no longer runs `singleFork`. `globalSetup` migrates a `scp_template` database once; a `setupFiles` entry (`test-support/per-worker-db.ts`) clones a private `scp_w<id>` database per worker fork (`CREATE DATABASE … TEMPLATE`, a fast file copy) and repoints the `TEST_*_DATABASE_URL` env vars at it. Files in different workers thus never share the instance-scoped singleton tables (`scan_requirement_floors`, `scanner_assignments`), the single global `pgboss` schema/reconcile queue, or the org-filter-less outbox relay — the three collision classes that forced serial execution. `maxForks` is capped at `Number(SCP_TEST_MAX_FORKS) || 4` to match the docker-build runner's CPU limit.
+**Lever 3 — per-worker template-DB parallelism (within each shard).** The suite no longer runs `singleFork`. `globalSetup` migrates a `scp_template` database once; a `setupFiles` entry (`test-support/per-worker-db.ts`) clones a private `scp_w<id>` database per worker fork (`CREATE DATABASE … TEMPLATE`, a fast file copy) and repoints the `TEST_*_DATABASE_URL` env vars at it. Files in different workers thus never share the instance-scoped singleton tables (`scan_requirement_floors`, `scanner_assignments`), the single global `pgboss` schema/reconcile queue, or the org-filter-less outbox relay — the three collision classes that forced serial execution. `maxForks` is capped at `Number(SCP_TEST_MAX_FORKS) || 4` to match the runner's core count.
 
-> **Operator step (out of repo, not code): raise the docker-build runner's CPU limit so Lever 3 has cores.** *(That CPU limit governs fork **depth** inside one shard. A separate axis — the **number** of concurrent docker-build runners — is capped by the `github-runners` namespace memory ResourceQuota; see [docs/runbooks/ci-runner-concurrency.md](runbooks/ci-runner-concurrency.md) for right-sizing the runner and `minRunners`.)* The homelab `homelab-commanderscp-linux-docker-build` runners are an Actions Runner Controller (ARC) `AutoscalingRunnerSet` in the `github-runners` namespace, whose runner pod is currently limited to **4 CPUs** — which is why `maxForks` defaults to 4. To let each shard fan out wider, raise the pod's CPU limit **and** bump `SCP_TEST_MAX_FORKS` in the integration job's env to match. This is a cluster/values edit, e.g. in the ARC Helm values for that runner set:
-> ```yaml
-> # values for the homelab-commanderscp-linux-docker-build AutoscalingRunnerSet (ns: github-runners)
-> template:
->   spec:
->     containers:
->       - name: runner
->         resources:
->           limits:   { cpu: "8", memory: 16Gi }
->           requests: { cpu: "8", memory: 16Gi }
-> ```
-> Apply with `helm upgrade` (or `kubectl -n github-runners edit autoscalingrunnerset homelab-commanderscp-linux-docker-build` for a quick change), then set `SCP_TEST_MAX_FORKS: "8"` on the `integration-shard` job. Keep the two numbers aligned — more forks than CPUs just adds context-switch overhead and can starve the per-worker Postgres clones.
+> **Fork depth is now capped by the hosted runner, not by an operator knob.** A GitHub-hosted standard `ubuntu-latest` runner on a public repo has **4 vCPUs**, so the `maxForks` default of 4 is already the right number and there is nothing to raise. `SCP_TEST_MAX_FORKS` remains the override for a self-hosted runner with more cores — set it to the core count, and keep the two numbers aligned, since more forks than CPUs just adds context-switch overhead and can starve the per-worker Postgres clones. Larger GitHub-hosted runners are **not** free even on a public repo, so widening this way is a paid decision, not a config edit.
+>
+> *(Historical: this used to be an out-of-repo operator step — raise the `homelab-commanderscp-linux-docker-build` ARC `AutoscalingRunnerSet` pod's CPU limit in the `github-runners` namespace, whose 4-CPU cap is where the default of 4 came from, then bump `SCP_TEST_MAX_FORKS` to match. That runner set no longer executes CI; see [docs/runbooks/ci-runner-concurrency.md](runbooks/ci-runner-concurrency.md), retained as history.)*
 
-**Runner-image builds (the `runner-images` job and the local-dev fallback) use the LEGACY builder (`DOCKER_BUILDKIT=0`).** The integration path runs on a Docker-in-Docker (DinD) runner and, via the managed-scan/managed-iac plugins, CREATES `--network none` runner containers in the same daemon that builds runner images. Modern Docker's default BuildKit builder opens a persistent embedded gRPC "session"; inside the homelab DinD that session deadlocks against the concurrent/subsequent net=none container operations (`session healthcheck failed fatally: Unavailable: ... only one connection allowed`), hanging the run. So runner-image builds pass `DOCKER_BUILDKIT=0` (in `resolveRunnerImage`'s local-fallback build, in the `runner-images` CI job). Both runner Dockerfiles are plain single-stage `FROM`+`RUN`+`COPY` builds with **no** BuildKit-only features (no `RUN --mount`, `--secret`, or heredocs), so the legacy builder produces functionally identical images. Do NOT re-enable BuildKit for these builds without first re-solving the DinD session wedge (e.g. a dedicated `buildx` builder instance, or serializing build-then-run so the session fully closes before any net=none container is created).
+**The `DOCKER_BUILDKIT=0` legacy-builder constraint now applies to the LOCAL-DEV fallback only.** The failure it avoids is real but narrow: when a *single* Docker daemon both builds runner images **and** creates `--network none` runner containers (which the managed-scan/managed-iac plugins do), modern Docker's default BuildKit builder opens a persistent embedded gRPC "session" that can deadlock against those net=none container operations (`session healthcheck failed fatally: Unavailable: … only one connection allowed`), hanging the run. It was first hit inside the homelab DinD sidecar, which made it trivially reproducible. **`resolveRunnerImage`'s local-fallback build (`@scp/plugin-testkit`) keeps `DOCKER_BUILDKIT=0`** — it is exactly that single-daemon shape, unchanged, and untested against BuildKit. **The `runner-images` CI job has DROPPED it** (hosted-runner swap): it runs against a native, non-DinD daemon and only builds and pushes — it never creates a net=none container — so the wedge cannot occur, and BuildKit is simply the faster default there. Both runner Dockerfiles are plain single-stage `FROM`+`RUN`+`COPY` builds with **no** BuildKit-only features (no `RUN --mount`, `--secret`, or heredocs), so either builder produces a functionally identical image. Do not re-enable BuildKit in the local fallback without first re-solving the single-daemon session wedge (e.g. a dedicated `buildx` builder instance, or serializing build-then-run so the session fully closes before any net=none container is created).
 
 ---
 

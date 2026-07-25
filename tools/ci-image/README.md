@@ -30,14 +30,19 @@ run-time offline guarantee the built image then provides.
 
 `.github/workflows/ci.yml` has two relevant jobs:
 
-- **`ci-image`** — builds this image and hands it to `e2e-web` via a workflow artifact
-  (`docker save | gzip` → `actions/upload-artifact` → `actions/download-artifact` → `gunzip |
-docker load`), main-branch pushes only.
-- **`e2e-web`** — loads the image, then runs `scripts/e2e-web.sh` entirely inside a container
+- **`ci-image`** — ensures this image exists in GHCR (pull by content-hash tag; build + push only
+  on a cache miss), main-branch pushes only.
+- **`e2e-web`** — pulls that same tag and runs `scripts/e2e-web.sh` entirely inside a container
   built from it (Docker-outside-of-Docker via a bind-mounted `/var/run/docker.sock`, plus
   `--network host` so Playwright can reach the compose stack's published port). No `playwright
 install` / cache-plus-network-fetch-on-miss step anymore — that's the whole point of this
   change. See the job's own comments in `ci.yml` for the full mechanics.
+
+**`e2e-web` is the image's ONLY consumer.** It consumes it with an explicit `docker run`, _not_ a
+job-level `container:` — no job in this repo uses `container:` at all. Nothing outside this repo
+consumes it either: the homelab ARC runner sets were built from their own runner images and never
+referenced `scp-ci-image`, and there is no `scripts/ci-local.sh` in the tree to consume it. So the
+image is **not** dead weight, but its blast radius is one job.
 
 As of **M9**, this uses **build-once → publish to GHCR → pull** (realizing what earlier notes here
 flagged as a follow-up). The `ci-image` job in `ci.yml` tags the image by a content hash of
@@ -51,10 +56,11 @@ and rebuilds + pushes **only on a cache miss** (the toolchain or lockfile actual
   tooling**, the air-gap posture CLAUDE.md #5 requires;
 - the image is reusable across workflow runs (no same-run artifact hand-off) and pinned by tag.
 
-Auth is the workflow's `GITHUB_TOKEN` (the repo is private → the package is private); no extra
-secret is needed **as long as the org permits `GITHUB_TOKEN` `packages:write`** — the same GHCR
-publish model the homelab uses. If the org restricts that, point the login at a GHCR PAT secret
-instead. Still open as a possible future step: let other CI jobs (e.g. the `integration`
+Auth is the workflow's `GITHUB_TOKEN`; no extra secret is needed **as long as the org permits
+`GITHUB_TOKEN` `packages:write`**. If the org restricts that, point the login at a GHCR PAT secret
+instead. (**Correction:** earlier text here claimed "the repo is private → the package is private."
+The repo is **public**; GHCR package visibility is set per package and is not inherited from repo
+visibility. Either way the CI pull is authenticated with the same token.) Still open as a possible future step: let other CI jobs (e.g. the `integration`
 Testcontainers suite) run inside this image too, now that it's a pullable artifact.
 
 ## Known gaps / follow-ups (tracked, not silently skipped)
@@ -64,17 +70,20 @@ Testcontainers suite) run inside this image too, now that it's a pullable artifa
   introduced it), but wiring it into `.github/workflows/ci.yml`'s `codegen-drift` job (plus giving
   that job enough git history — `fetch-depth: 0` — to resolve a merge base) was scoped out of this
   change; see `tools/openapi/README.md`.
-- **Only `linux/amd64` is vendored/tested for `oasdiff`** — matches the self-hosted CI runner
-  architecture. A local dev machine on another architecture needs its own vendored binary to run
+- **Only `linux/amd64` is vendored/tested for `oasdiff`** — matches the CI runner architecture
+  (GitHub-hosted `ubuntu-latest`; previously the homelab self-hosted runners, also linux/amd64). A local dev machine on another architecture needs its own vendored binary to run
   `check.sh` directly (or can run it inside a `tools/ci-image` container, which is `linux/amd64`
   regardless of host).
 - **The Docker-outside-of-Docker + `--network host` wiring in the `e2e-web` job was verified
   locally** (Docker CLI + `docker compose` from inside a `tools/ci-image` container reaching a
   real host daemon; a fully offline `pnpm install --offline --frozen-lockfile` against the baked
-  store under `--network none`; a real Chromium launch under `--network none`) **but not against
-  an actual run on the homelab self-hosted runners.** If those runners are container-per-job
-  (e.g. Actions Runner Controller pods) rather than plain VMs/hosts, the socket bind-mount and
-  `--network host` may need runner-specific adjustment — flagged in the job's own comments too.
+  store under `--network none`; a real Chromium launch under `--network none`) **but never against
+  an actual CI run.** The original worry was that the homelab runners were container-per-job ARC
+  pods rather than plain VMs, which could break the socket bind-mount and `--network host`. CI now
+  runs on GitHub-hosted `ubuntu-latest` — a plain VM with a native daemon at
+  `/var/run/docker.sock`, i.e. the same shape the local verification used — so that specific worry
+  is resolved, but the job is still **unproven on the hosted runner until it actually runs there**.
+  Flagged in the job's own comments too.
 - Local development/testing of this Dockerfile was done on `linux/arm64` (the author's machine);
   cross-building for `linux/amd64` locally was not possible in that environment (no `buildx`
   component installed, and the legacy builder mishandles `--platform` for multi-stage `COPY`

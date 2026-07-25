@@ -16,13 +16,18 @@
  * this is pure `helm template` (offline rendering).
  *
  * SKIPS (does not fail) when `helm` isn't on PATH at all — this script is wired into the
- * top-level `pnpm test` (Turborepo picks up this package's `test` script), which also runs on
- * CI's general Node-only runner (`homelab-commanderscp-linux-general` — no Helm pre-provisioned).
- * A hard ENOENT there would fail every PR's unit-test stage for a tool-availability gap, not a
- * real regression. The assertions below are still a REAL gate: `.github/workflows/ci.yml`'s
- * dedicated `helm-verify` job installs Helm first (`azure/setup-helm@v4`) before running this
- * exact script, so a loosened `values.yaml` genuinely fails CI there — see that job's own
- * comment. Locally, any dev with Helm on PATH gets the real check for free via `pnpm test`.
+ * top-level `pnpm test` (Turborepo picks up this package's `test` script), which runs in a CI job
+ * that deliberately installs no tools of its own, and on developer machines that may have no Helm.
+ * A hard ENOENT there would fail the unit-test stage for a tool-availability gap, not a real
+ * regression. (Historical note: that skip branch was ALWAYS taken in CI when the unit-test stage
+ * ran on `homelab-commanderscp-linux-general`, which shipped Node only. CI now runs on GitHub-hosted
+ * `ubuntu-latest`, which pre-installs helm, so the assertions below genuinely execute in the
+ * unit-test stage too — a bonus, not the guarantee.) The assertions below are a REAL gate
+ * regardless of any of that: `.github/workflows/ci.yml`'s
+ * dedicated `helm-verify` job installs Helm ITSELF (`azure/setup-helm@v4`) before running this
+ * exact script — not trusting the runner image — so a loosened `values.yaml` genuinely fails CI
+ * there on any runner. See that job's own comment. Locally, any dev with Helm on PATH gets the
+ * real check for free via `pnpm test`.
  */
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";

@@ -1,5 +1,13 @@
 # Runbook — raising homelab docker-build runner concurrency
 
+> **HISTORICAL — this runbook no longer describes how CommanderSCP CI runs.** Every job in every
+> workflow now runs on GitHub-hosted `ubuntu-latest` (BUILD_AND_TEST.md §6.0). The
+> `homelab-commanderscp-linux-*` ARC scale sets no longer execute any CI job; they sit idle at
+> `minRunners: 1`, and decommissioning them is a separate, owner-gated step. Everything below is
+> retained because it remains accurate and useful for **anyone running this pipeline on self-hosted
+> ARC runners** — which the charter's portability requirement explicitly keeps supported — but it is
+> not something you need to do to keep CI green today.
+
 **Problem.** The `homelab-commanderscp-linux-docker-build` ARC scale set is configured
 `maxRunners: 3`, and the ARC listener *correctly decides* to scale to 3 when 3 jobs are
 assigned — but only **1** runner pod ever runs. The cause is **not** `maxRunners`; it is the

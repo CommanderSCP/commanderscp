@@ -13,7 +13,9 @@ name: Publish product images (scpd + scp-runner-iac + scp-runner-scan)
 #   ghcr.io/commanderscp/scp-runner-iac:sha-<full commit sha>
 # plus a moving :latest for humans browsing the registry (never deployed from).
 # Auth: the workflow GITHUB_TOKEN (packages:write) — same proven pattern as
-# ci.yml's ci-image job. Runs on the docker-build runner (needs a Docker daemon).
+# ci.yml's ci-image job. Runs on GitHub-hosted `ubuntu-latest` (needs a Docker
+# daemon, which it provides natively); it previously named the homelab
+# `…-docker-build` ARC label, the only self-hosted label that had one.
 
 on:
   workflow_dispatch:
@@ -26,7 +28,13 @@ on:
 jobs:
   publish:
     name: "Build + push scpd and scp-runner-iac to GHCR"
-    runs-on: homelab-commanderscp-linux-docker-build
+    # DISK WATCH ITEM (hosted-runner swap): this job builds THREE images in one job on a runner with
+    # ~14 GB free. No cleanup step is wired in, deliberately — it stands up no cluster and pulls no
+    # Kubernetes control plane, which is what actually blows the budget in deploy-drills.yml, and
+    # this workflow is manual and trivially re-runnable. If a publish ever fails on "no space left on
+    # device", the fix is one line: `- run: bash .github/scripts/free-disk.sh` as the first step
+    # (that script exists and documents itself), or `docker image prune -f` between the three builds.
+    runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
       contents: read

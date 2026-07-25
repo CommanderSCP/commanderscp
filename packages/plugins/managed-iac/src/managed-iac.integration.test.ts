@@ -13,8 +13,10 @@ import { createManagedIacExecutorPlugin } from "./index.js";
  * REAL-DOCKER integration test (BUILD_AND_TEST.md §8 M7 DoD): "launches a REAL scp-runner-iac
  * container against a local-state tofu fixture end-to-end: plan evidence → gate block → approve
  * → apply → rollback via the prior state ref." Needs a reachable Docker daemon — excluded from
- * `pnpm test` (vitest.config.ts), run via `pnpm test:integration` on the
- * `homelab-commanderscp-linux-docker-build` CI runner, or locally per CLAUDE.md's ENVIRONMENT.
+ * `pnpm test` (vitest.config.ts), run via `pnpm test:integration` in the CI integration-shard job
+ * (GitHub-hosted `ubuntu-latest`, native Docker daemon; formerly the homelab
+ * `homelab-commanderscp-linux-docker-build` ARC runner and its DinD sidecar), or locally per
+ * CLAUDE.md's ENVIRONMENT.
  *
  * COPY-NOT-BIND-MOUNT (adversarial-review CRITICAL #1 fix, also fixes the dind CI failure): the
  * plugin `docker cp`s the workspace INTO the container and back OUT — it never bind-mounts a host
@@ -130,8 +132,9 @@ describe.runIf(await dockerAvailable())(
     beforeAll(async () => {
       // LEVER 1: PULL the pre-built image in CI (SCP_RUNNER_IAC_IMAGE_REF, set by the integration
       // job after `docker pull`ing the content-hash-tagged GHCR image), else legacy-builder BUILD it
-      // locally (dev fallback). The DOCKER_BUILDKIT=0 legacy-builder reasoning (the DinD net=none
-      // session wedge, PR #126) lives in resolveRunnerImage — same build, just no longer per-run in CI.
+      // locally (dev fallback). The DOCKER_BUILDKIT=0 legacy-builder reasoning (the single-daemon
+      // net=none session wedge, PR #126 — now scoped to the local fallback only) lives in
+      // resolveRunnerImage — same build, just no longer per-run in CI.
       runnerImageRef = await resolveRunnerImage({
         refEnvVar: "SCP_RUNNER_IAC_IMAGE_REF",
         localTag: RUNNER_IMAGE_TAG,
