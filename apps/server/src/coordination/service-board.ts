@@ -15,6 +15,7 @@ import { listApprovalRequestsForChange } from "../governance/approvals-repo.js";
 import { listFreezes, type FreezeRow } from "../governance/freezes-repo.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 import { listPeers } from "../federation/peers-repo.js";
+import { scopeCarriesChangeObjects } from "../federation/scope-filter.js";
 import { sqlIn } from "../graph/sql-helpers.js";
 
 /**
@@ -38,17 +39,33 @@ import { sqlIn } from "../graph/sql-helpers.js";
  * `stable` — an outpost rendering green while the commander drives a release through its components
  * is a fabricated all-clear, not an empty view.
  *
- * THE ONE GAP THIS PROJECTION STILL CANNOT CLOSE, stated accurately. A peer paired at `status_only`
- * scope (`federation/scope-filter.ts`) receives `change_status` entries but NOT the `object_upsert`
- * that carries the change object, so nothing lands here for arm 2 to find and the component reads
- * as an honest `stable`. That is NOT "genuinely indistinguishable from no change ever": the domain
- * DID receive positive evidence — a `change_status` entry naming `payload.objectId` and
- * `payload.toState`. `import-repo.ts`'s enrichment resolves that id, finds no replicated object,
- * throws, and the surrounding catch discards the evidence (see that file's `change_status` branch,
- * where the two failure modes are now distinguished rather than swallowed as one). The board cannot
- * attribute that evidence to a component — a `change_status` payload carries no `targets` — so
- * closing this gap means carrying the evidence at the FEDERATION layer, not here. Tracked as a
- * follow-up; described honestly rather than papered over as an equivalence.
+ * CHANGE-OBJECT BLINDNESS (the second honesty rule, board-level). Everything above assumes that a
+ * change replicated here AT ALL — that a component with no change object really has no change. That
+ * assumption holds only while every peer forwards change objects. A peer paired at `status_only`
+ * scope (`federation/scope-filter.ts`) forwards `change_status` entries but NOT the `object_upsert`
+ * that carries the change, `policies_only` forwards neither, and a `custom` label selector may
+ * forward some and not others. Under any of those, nothing lands for arm 2 to find and the row
+ * would fall through to a confident `stable` — the same fabricated all-clear, one level deeper:
+ * this domain HAS positive evidence changes exist on that peer (`import-repo.ts`'s `change_status`
+ * branch receives entries naming `payload.objectId` and `payload.toState`) and simply cannot
+ * attribute any of it to a component, because a `change_status` payload carries no `targets`.
+ *
+ * So this projection does not claim what it cannot see: when any peer's scope cannot carry change
+ * objects ({@link scopeCarriesChangeObjects}), every row whose lookup came up EMPTY has its
+ * would-be-clean fields named in `unknownFields` instead of passed off as observations, and the
+ * response declares `summary.stable` and `rows[].latestChangeId` board-level unknowns. Rows whose
+ * lookup DID find a change keep their reading untouched — an unknown must never displace a real
+ * observation (see `service-board-precedence.integration.test.ts`) — and the counts still add up to
+ * `rows.length` for shape stability; what changes is that they are no longer presented as facts.
+ *
+ * THE GAP THAT REMAINS, stated accurately: the treatment above is SCOPE-derived, not
+ * EVIDENCE-derived. It is sound in the direction that matters (a scope that cannot carry change
+ * objects is a sufficient condition for "I cannot see this peer's changes", so it never fabricates
+ * ignorance) but it is board-wide rather than per-component, because the evidence itself cannot be
+ * attributed to a component and is not persisted anywhere — `sync_journal` stores only entries this
+ * domain AUTHORED (`federation/journal-repo.ts`). Naming the specific components would require
+ * either persisting unattached peer status at the federation layer or widening what `status_only`
+ * forwards; both are owner decisions, deliberately not taken here.
  */
 
 /** Terminal statuses that count as a target/wave failure for the "blocked" derivation. `no_executor`
@@ -237,6 +254,31 @@ export async function buildServiceBoard(
     listFreezes(tx, orgId),
     listPeers(tx, orgId)
   ]);
+  // CHANGE-OBJECT BLINDNESS (see the file header). A peer whose scope cannot carry change
+  // `object_upsert` entries leaves this domain unable to tell "no change targets this component"
+  // from "I was never sent the change that does" — while `status_only` specifically keeps sending
+  // `change_status` entries, so the domain holds positive evidence that changes exist there.
+  // Derived from the peer's OWN recorded scope, which is exactly the predicate `import-repo.ts`
+  // re-applies on the way in, so it can only under-claim (a sender narrower than this receiver),
+  // never fabricate ignorance.
+  const changeBlindPeers = peers.filter((peer) => !scopeCarriesChangeObjects(peer.syncScope));
+  const changeVisibilityUnknown = changeBlindPeers.length > 0;
+  // Named once, used for every empty row: what a row would otherwise assert by staying silent.
+  // `changeName` is omitted deliberately — it is rendered from `latestChangeId`'s own cell, so
+  // naming the id covers it.
+  const emptyRowUnknowns = changeVisibilityUnknown
+    ? [
+        "latestChangeId",
+        "changeState",
+        "currentWave",
+        "waves",
+        "attention.blocked",
+        "attention.decisionId",
+        "attention.awaitingApproval",
+        "attention.emergency"
+      ]
+    : [];
+
   const now = Date.now();
   const activeFreezeByScope = new Map<string, FreezeRow>();
   for (const f of allFreezes) {
@@ -258,6 +300,13 @@ export async function buildServiceBoard(
     const componentFreeze = activeFreezeByScope.get(component.id);
 
     if (!latest || !changeId) {
+      // Nothing found for this component. On a domain every peer of which forwards change objects
+      // that is a complete observation — genuinely nothing is rolling here. On a change-blind
+      // deployment it is not an observation at all, and `emptyRowUnknowns` says so rather than
+      // letting the nulls/false/[] below read as an all-clear. It still counts toward `stable` for
+      // shape stability (the four buckets must keep summing to `rows.length`, as
+      // `service-board-federation.integration.test.ts` pins) — which is precisely why the response
+      // then declares `summary.stable` itself unknown.
       stable += 1;
       rows.push({
         component: { id: component.id, urn: component.urn, name: component.name },
@@ -269,7 +318,7 @@ export async function buildServiceBoard(
         attention: { blocked: false, decisionId: null, awaitingApproval: false, emergency: false },
         activeFreeze: componentFreeze ? toFreeze(componentFreeze) : null,
         driver: null,
-        unknownFields: []
+        unknownFields: emptyRowUnknowns
       });
       continue;
     }
@@ -393,12 +442,29 @@ export async function buildServiceBoard(
   // ignorance we don't have would be its own small dishonesty.
   const freezeVisibilityUnknowns = peers.length > 0 ? ["serviceFreeze", "rows[].activeFreeze"] : [];
 
+  // BOARD-LEVEL HONESTY, second rule: change-object blindness (see the file header). Two statements
+  // stop being observations the moment a peer's scope withholds change objects:
+  //
+  //  - `summary.stable` — it now mixes genuinely-settled rows with rows that merely came up empty,
+  //    and nothing in the response distinguishes them, so the COUNT cannot be read as "this many
+  //    components are fine". A client must not paint it as an all-clear.
+  //  - `rows[].latestChangeId` — for an empty row it may be an unsent change (the row's own
+  //    `unknownFields` says so); for a row that DID find one, that change may not be the newest,
+  //    because a newer one from the blind peer would never have arrived. Stated once here rather
+  //    than stamped onto rows whose reading is a real local observation.
+  //
+  // Board-level for the same reason freeze visibility is: this is a property of what this
+  // DEPLOYMENT can structurally see, not of any one row's driver.
+  const changeVisibilityUnknowns = changeVisibilityUnknown
+    ? ["summary.stable", "rows[].latestChangeId"]
+    : [];
+
   const serviceFreeze = activeFreezeByScope.get(service.id);
   return {
     service: { id: service.id, urn: service.urn, name: service.name },
     rows,
     summary: { releasing, blocked, stable, notDrivenHere },
     serviceFreeze: serviceFreeze ? toFreeze(serviceFreeze) : null,
-    unknownFields: freezeVisibilityUnknowns
+    unknownFields: [...freezeVisibilityUnknowns, ...changeVisibilityUnknowns]
   };
 }

@@ -2,9 +2,15 @@ name: CI
 
 # Stages 1-4 (+5 Integration, +7 E2E) from BUILD_AND_TEST.md §6. Every stage is a plain pnpm
 # command with no hosted-service dependency, so the same pipeline runs on self-hosted runners or
-# a bare local runner script (charter self-hosting requirement — §6). Stage 5 (Integration) and
-# stage 7 (E2E)'s PR subset both gate every PR per §6 ("stages 1-6 are green, stage 7's PR subset
-# is green"); E2E's full run stays main-only per the M0 definition of done.
+# a bare local runner script (charter self-hosting requirement — §6).
+#
+# WHAT ACTUALLY GATES A PR: stages 1-5. Every E2E job below (7, 8, 8b-8d, 9, plus the 9a image
+# build they depend on) carries `if: github.event_name == 'push' && github.ref == 'refs/heads/main'`
+# and is SKIPPED on pull requests. There is no "PR subset" of stage 7 — no --grep, no project
+# filter, no second job; an earlier version of this comment and of §6 claimed one, and it was never
+# built. So a regression that only a Playwright spec covers reaches `main` with both required
+# checks green and is caught only afterwards. Anything that must not regress needs an assertion
+# reachable from job 4 or job 5.
 #
 # RUNNERS: GitHub-hosted `ubuntu-latest` throughout (previously two homelab ARC self-hosted labels,
 # `homelab-commanderscp-linux-general` and `homelab-commanderscp-linux-docker-build`). The old split

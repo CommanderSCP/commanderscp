@@ -104,7 +104,13 @@ export const ServiceBoardRowSchema = z.object({
    *  Empty for a change this domain drives (there, `waves: []` / `blocked: false` really do mean
    *  "no waves compiled" / "not blocked"). Non-empty on a read-only replica, where the underlying
    *  plan/Decision/approval/freeze rows were never replicated. This is the same rule the graph
-   *  health surfaces already follow — absent health renders `unknown`, never `healthy`. */
+   *  health surfaces already follow — absent health renders `unknown`, never `healthy`.
+   *
+   *  Also non-empty — including `"latestChangeId"` itself — on a row with NO change found, when this
+   *  deployment has a peer whose sync scope cannot carry change objects (`status_only` forwards
+   *  change STATUS without the change; `policies_only` forwards neither; a `custom` selector may
+   *  forward some and not others). There, "no change here" is not an observation: the domain may
+   *  simply never have been sent the change that is rolling through this component. */
   unknownFields: z.array(z.string())
 });
 export type ServiceBoardRow = z.infer<typeof ServiceBoardRowSchema>;
@@ -142,14 +148,23 @@ export const ServiceBoardResponseSchema = z.object({
    *  {@link ServiceBoardRowSchema}'s per-row `unknownFields` (what THAT row's driving domain
    *  withheld).
    *
-   *  Today this carries exactly the freeze paths, and only when this org has a federation peer.
-   *  `freezes` is a local projection that never rides the sync journal in either direction, so a
+   *  Two families ride here today.
+   *
+   *  FREEZE VISIBILITY (`"serviceFreeze"`, `"rows[].activeFreeze"`), whenever this org has a
+   *  federation peer. `freezes` is a local projection that never rides the sync journal in either
+   *  direction, so a
    *  freeze declared in another domain is invisible here for EVERY row — including rows this domain
    *  drives. A null `activeFreeze`/`serviceFreeze` therefore means "no freeze declared in THIS
    *  domain", never "no freeze applies", and a client must not render it as an all-clear on a
    *  federated deployment. With no peer paired there is no other domain to be blind to, and the
    *  nulls are complete observations — the list is then empty rather than claiming an ignorance
-   *  this instance does not have. */
+   *  this instance does not have.
+   *
+   *  CHANGE-OBJECT BLINDNESS (`"summary.stable"`, `"rows[].latestChangeId"`), whenever a peer's
+   *  sync scope cannot carry change objects. `summary.stable` then mixes genuinely-settled rows
+   *  with rows that merely came up empty and must not be painted as an all-clear; and no row's
+   *  `latestChangeId` is certainly the LATEST, since a newer change from that peer would never have
+   *  arrived. See `coordination/service-board.ts` and `federation/scope-filter.ts`. */
   unknownFields: z.array(z.string())
 });
 export type ServiceBoardResponse = z.infer<typeof ServiceBoardResponseSchema>;
