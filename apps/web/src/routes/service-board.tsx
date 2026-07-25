@@ -242,6 +242,22 @@ export function BoardRow({ row }: { row: ServiceBoardRow }): React.JSX.Element {
  * {@link BoardRow} is: `Not driven here` must never be dressed as a success, and `Stable` must stop
  * being dressed as one the moment the server declares it unobservable.
  */
+/**
+ * The two BOARD-LEVEL unknowns, exported so the WIRING is gated and not just the components it
+ * feeds. Reading a literal field name out of `unknownFields` inline is exactly the kind of line a
+ * later edit silently changes: nothing would fail, and the caveat would just stop appearing.
+ */
+export function changeVisibilityUnknownOf(board: { unknownFields: string[] }): boolean {
+  // A peer paired at a scope that does not carry change objects (`status_only` sends change STATUS
+  // without the change; `policies_only` sends neither) leaves this instance unable to tell "nothing
+  // is rolling through this component" from "the change rolling through it was never sent to me".
+  return board.unknownFields.includes("summary.stable");
+}
+
+export function freezeVisibilityUnknownOf(board: { unknownFields: string[] }): boolean {
+  return board.unknownFields.includes("rows[].activeFreeze");
+}
+
 export function BoardSummary({
   summary,
   stableUnknown
@@ -317,12 +333,12 @@ export function ServiceBoardPage(): React.JSX.Element {
   // BOARD-LEVEL unknowns (as opposed to a row's own): today, freeze visibility on a federated
   // deployment. Freezes never ride the sync journal in either direction, so on an instance with a
   // federation peer NO row's "not frozen" — driven here or not — can be read as "no freeze applies".
-  const freezeVisibilityUnknown = board.unknownFields.includes("rows[].activeFreeze");
+  const freezeVisibilityUnknown = freezeVisibilityUnknownOf(board);
   // The other board-level unknown: a peer paired at a sync scope that does not carry change objects
   // (`status_only` sends change STATUS without the change; `policies_only` sends neither) leaves this
   // instance unable to tell "nothing is rolling through this component" from "the change rolling
   // through it was never sent to me". The stable COUNT is then not an all-clear, and says so.
-  const changeVisibilityUnknown = board.unknownFields.includes("summary.stable");
+  const changeVisibilityUnknown = changeVisibilityUnknownOf(board);
 
   return (
     <div className="flex flex-col gap-6">

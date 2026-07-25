@@ -32,7 +32,8 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   Link: ({ children }: { children?: React.ReactNode }) => <a>{children}</a>
 }));
 
-const { BoardRow, BoardSummary } = await import("./service-board");
+const { BoardRow, BoardSummary, changeVisibilityUnknownOf, freezeVisibilityUnknownOf } =
+  await import("./service-board");
 
 const ORIGIN_DOMAIN_ID = "2c1d3e4f-5a6b-4c8d-9e0f-1a2b3c4d5e6f";
 const REPLICA_CHANGE_ID = "5f6b4a2c-1d3e-4f8a-9b0c-2d4e6f8a0b1c";
@@ -138,7 +139,7 @@ describe("service board rendering: an unobservable field is never painted as a c
   it("refuses to render 'no active change' when change visibility itself is unobservable", () => {
     const html = renderRow(changeBlindRow);
 
-    // The empty latest-change cell becomes an explicit unknown (5th marker vs the replica row's 4),
+    // The empty latest-change cell becomes an explicit unknown; four markers either way,
     // never the reassuring "no active change".
     expect(html).not.toContain('data-testid="board-no-change"');
     expect(occurrences(html, 'data-testid="board-unknown"')).toBe(4);
@@ -180,5 +181,23 @@ describe("service board summary: an unassessable count is never dressed as a suc
     // purest form.
     expect(statMarkup(html, "board-summary-stable")).not.toContain("bg-green-600");
     expect(html).not.toContain("bg-green-600");
+  });
+
+  // THE WIRING, not just the components it feeds. `stableUnknown` and the caveat banner are only as
+  // honest as the predicate that derives them from the server's `unknownFields`. That derivation was
+  // an inline `.includes("summary.stable")` — a line a later edit could change with nothing failing,
+  // silently retiring the caveat. These pin the field names themselves.
+  it("derives change-visibility blindness from the server's declaration, by exact field name", () => {
+    expect(changeVisibilityUnknownOf({ unknownFields: ["summary.stable"] })).toBe(true);
+    expect(changeVisibilityUnknownOf({ unknownFields: [] })).toBe(false);
+    // Must NOT be satisfied by a neighbouring unknown — the two board-level caveats are independent,
+    // and a freeze-blind instance is not thereby change-blind.
+    expect(changeVisibilityUnknownOf({ unknownFields: ["rows[].activeFreeze"] })).toBe(false);
+  });
+
+  it("derives freeze-visibility blindness independently, by exact field name", () => {
+    expect(freezeVisibilityUnknownOf({ unknownFields: ["rows[].activeFreeze"] })).toBe(true);
+    expect(freezeVisibilityUnknownOf({ unknownFields: ["summary.stable"] })).toBe(false);
+    expect(freezeVisibilityUnknownOf({ unknownFields: [] })).toBe(false);
   });
 });
