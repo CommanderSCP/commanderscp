@@ -57,6 +57,7 @@ import { authorize } from "../authz/resolve.js";
 import { badRequest, notFound } from "../errors.js";
 import { validateProperties } from "../graph/property-validation.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { containmentDomainIdFromWire } from "../domain-id-edge.js";
 import { createRelationship } from "../graph/relationships-repo.js";
 import {
   upsertExecutorBinding,
@@ -880,7 +881,8 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
             orgId: auth.orgId,
             actorObjectId: auth.subjectObjectId,
             requestId: "discovery-accept",
-            domainId: request.body.domainId ?? undefined,
+            // WIRE BOUNDARY (ADR-0021 D4) — see src/domain-id-edge.ts.
+            domainId: containmentDomainIdFromWire(request.body.domainId) ?? undefined,
             typeId: proposedObject.typeId,
             name: proposedObject.name,
             properties: proposedObject.properties ?? {}

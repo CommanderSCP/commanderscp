@@ -35,6 +35,7 @@ import {
   relaySourceReadSecretKey,
   type RelayConfig
 } from "./retrans-relay.js";
+import type { TrustDomainId } from "@scp/schemas";
 
 /**
  * M15.5(c) — the RETRANS VALIDATE-THEN-RELAY (ADR-0019 §2), end to end: THE M15.5(c) DoD suite
@@ -115,9 +116,9 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
   let forbiddenHost: string;
 
   let scratch: string;
-  let commanderDomainId: string;
-  let retransDomainId: string;
-  let outpostDomainId: string;
+  let commanderDomainId: TrustDomainId;
+  let retransDomainId: TrustDomainId;
+  let outpostDomainId: TrustDomainId;
   let commanderCosignPub: string;
   let retransCosignPub: string;
   let commanderKeyPath: string; // A's instance cosign PRIVATE key materialized (harness = A's build executor)

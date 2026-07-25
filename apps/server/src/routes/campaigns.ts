@@ -11,6 +11,7 @@ import {
   RollbackCampaignRequestSchema,
   RollbackCampaignResponseSchema
 } from "@scp/schemas";
+import { containmentDomainIdFromWire } from "../domain-id-edge.js";
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
@@ -64,7 +65,8 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
           requestId: request.id,
           id: body.id,
           urn: body.urn,
-          domainId: body.domainId,
+          // WIRE BOUNDARY (ADR-0021 D4) — see src/domain-id-edge.ts.
+          domainId: containmentDomainIdFromWire(body.domainId),
           name: body.name,
           description: body.description,
           labels: body.labels,

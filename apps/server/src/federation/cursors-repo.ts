@@ -1,4 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
+import type { TrustDomainId } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { syncCursors } from "../db/schema.js";
 
@@ -20,8 +21,8 @@ export interface SyncCursor {
 export async function getCursor(
   tx: TenantTx,
   orgId: string,
-  peerDomainId: string,
-  originDomainId: string
+  peerDomainId: TrustDomainId,
+  originDomainId: TrustDomainId
 ): Promise<SyncCursor> {
   const rows = await tx
     .select({
@@ -48,7 +49,7 @@ export async function getCursor(
 export async function maxAppliedSequenceForPeer(
   tx: TenantTx,
   orgId: string,
-  peerDomainId: string
+  peerDomainId: TrustDomainId
 ): Promise<number> {
   const rows = await tx
     .select({ maxSeq: sql<number>`coalesce(max(${syncCursors.lastAppliedSeq}), 0)` })
@@ -63,8 +64,8 @@ export async function maxAppliedSequenceForPeer(
 export async function advanceCursor(
   tx: TenantTx,
   orgId: string,
-  peerDomainId: string,
-  originDomainId: string,
+  peerDomainId: TrustDomainId,
+  originDomainId: TrustDomainId,
   sequence: number,
   rowHash: string | null
 ): Promise<void> {

@@ -1,5 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
+import { asTrustDomainId } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { approvalRequests, approvalVotes, relationships } from "../db/schema.js";
 import { conflict, forbidden, notFound } from "../errors.js";
@@ -311,7 +312,21 @@ export async function castApprovalVote(
         fromId: input.voterObjectId,
         toId: request.changeObjectId,
         properties: relProperties,
-        originDomainId: input.orgId,
+        // FIXME(ADR-0021 D4, follow-on (i)) — SUSPECTED PRE-EXISTING DEFECT, surfaced by branding
+        // `relationships.origin_domain_id` as a `TrustDomainId` and reported to the owner rather
+        // than silently changed here.
+        //
+        // This writes the ORG id into the row's federation-provenance column. Every other writer
+        // of `origin_domain_id` (graph/relationships-repo.ts, graph/objects-repo.ts) stamps
+        // `(await ensureFederationSelf(tx, orgId)).domainId` — a SEPARATE uuid minted per org, not
+        // the org id. So this `approves` edge claims an origin domain that does not exist in
+        // `federation_self`, which makes its single-writer-authority check
+        // (`existing.originDomainId !== self.domainId`) fail for a federated delete.
+        //
+        // Behavior is PRESERVED byte-for-byte here — the fix changes persisted provenance on a
+        // graph-visible relationship and therefore needs its own PR and owner sign-off. The
+        // constructor marks the exact line rather than hiding it behind an implicit widening.
+        originDomainId: asTrustDomainId(input.orgId),
         revision: 1,
         contentHash: computeRelationshipContentHash({
           id: relId,

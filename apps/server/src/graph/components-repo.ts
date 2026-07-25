@@ -1,4 +1,4 @@
-import type { GraphObject } from "@scp/schemas";
+import type { ContainmentDomainId, GraphObject } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "./objects-repo.js";
 import { createRelationship, deleteRelationship, listRelationships } from "./relationships-repo.js";
@@ -13,7 +13,8 @@ export interface CreateComponentInServiceInput {
   id?: string;
   urn?: string;
   name: string;
-  domainId?: string | null;
+  /** CONTAINMENT sense (ADR-0021 D4). */
+  domainId?: ContainmentDomainId | null;
   properties?: Record<string, unknown>;
   labels?: Record<string, unknown>;
   /** id or URN of the service this component must belong to (the `contains` parent). */

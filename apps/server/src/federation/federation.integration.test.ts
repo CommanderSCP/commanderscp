@@ -42,6 +42,8 @@ import {
 } from "@scp/schemas/federation-journal";
 import type { ControlOutcomeStatus, PromotionBundle } from "@scp/schemas";
 import { PromotionBundleSchema } from "@scp/schemas";
+import { TrustDomainId } from "@scp/schemas";
+import { asTrustDomainId } from "@scp/schemas";
 
 /**
  * M6 Federation Basics — Testcontainers integration coverage (BUILD_AND_TEST.md §8 M6 DoD).
@@ -1779,7 +1781,7 @@ describe("M14.1 Federation: per-peer poke-mode (Testcontainers)", () => {
     baseUrl?: string;
     pokeMode?: boolean;
     name?: string;
-    domainId?: string;
+    domainId?: TrustDomainId;
   }) {
     return withTenantTx(commander.db, commander.orgId, (tx) =>
       pairPeer(tx, {
@@ -1843,13 +1845,13 @@ describe("M14.1 Federation: per-peer poke-mode (Testcontainers)", () => {
     // Fresh peer id so the effective baseUrl is exactly the plain-http one supplied here (a re-pair
     // of an existing https peer would legitimately satisfy the guard from the stored baseUrl).
     await expectGuardRejection(
-      pairWith({ domainId: randomUUID(), baseUrl: HTTP_URL, pokeMode: true })
+      pairWith({ domainId: asTrustDomainId(randomUUID()), baseUrl: HTTP_URL, pokeMode: true })
     );
   });
 
   it("pokeMode=true with NO baseUrl (null) is REJECTED by the pair-time guard", async () => {
     // Fresh, never-paired peer → no existing baseUrl to fall back on → effective baseUrl is null.
-    await expectGuardRejection(pairWith({ domainId: randomUUID(), pokeMode: true }));
+    await expectGuardRejection(pairWith({ domainId: asTrustDomainId(randomUUID()), pokeMode: true }));
   });
 
   it("the guard honors an EXISTING https baseUrl on re-pair when baseUrl is omitted", async () => {
@@ -1873,7 +1875,7 @@ describe("M14.1 Federation: per-peer poke-mode (Testcontainers)", () => {
     // entirely -> the row was persisted as {baseUrl: 'http://…', pokeMode: true}. The sender would
     // then have dialed it and put the federation bearer on the wire in cleartext. The effective
     // post-write tuple is (pokeMode: true [preserved], baseUrl: http) — it MUST be refused.
-    const domainId = randomUUID();
+    const domainId = asTrustDomainId(randomUUID());
     await pairWith({ domainId, baseUrl: HTTPS_URL, pokeMode: true });
     await expectGuardRejection(pairWith({ domainId, baseUrl: HTTP_URL }));
     // And the stored row is UNCHANGED — the rejected re-pair never downgraded it.
@@ -1887,7 +1889,7 @@ describe("M14.1 Federation: per-peer poke-mode (Testcontainers)", () => {
   it("re-pair to a NEW https baseUrl with pokeMode omitted is ALLOWED and preserves pokeMode=true", async () => {
     // The guard must not over-refuse: an https→https move keeps the invariant, so the tri-state
     // preserve semantics still hold.
-    const domainId = randomUUID();
+    const domainId = asTrustDomainId(randomUUID());
     await pairWith({ domainId, baseUrl: HTTPS_URL, pokeMode: true });
     const row = await pairWith({ domainId, baseUrl: "https://outpost-2.example.com" });
     expect(row.baseUrl).toBe("https://outpost-2.example.com");
@@ -1897,7 +1899,7 @@ describe("M14.1 Federation: per-peer poke-mode (Testcontainers)", () => {
   it("re-pair downgrading to plain-http is ALLOWED when pokeMode is explicitly turned OFF", async () => {
     // The effective tuple is (pokeMode: false, baseUrl: http) — no invariant to violate, so the
     // downgrade is a legitimate operator action.
-    const domainId = randomUUID();
+    const domainId = asTrustDomainId(randomUUID());
     await pairWith({ domainId, baseUrl: HTTPS_URL, pokeMode: true });
     const row = await pairWith({ domainId, baseUrl: HTTP_URL, pokeMode: false });
     expect(row.baseUrl).toBe(HTTP_URL);
@@ -1906,7 +1908,7 @@ describe("M14.1 Federation: per-peer poke-mode (Testcontainers)", () => {
 
   it("re-pair preserving BOTH (pokeMode omitted, baseUrl omitted) on an https peer stays allowed", async () => {
     // The pure no-op re-pair (an old client that knows neither field) must not start failing.
-    const domainId = randomUUID();
+    const domainId = asTrustDomainId(randomUUID());
     await pairWith({ domainId, baseUrl: HTTPS_URL, pokeMode: true });
     const row = await pairWith({ domainId });
     expect(row.baseUrl).toBe(HTTPS_URL);
@@ -1914,7 +1916,7 @@ describe("M14.1 Federation: per-peer poke-mode (Testcontainers)", () => {
   });
 
   it("explicit pokeMode=true on a plain-http baseUrl is still REJECTED (unchanged)", async () => {
-    const domainId = randomUUID();
+    const domainId = asTrustDomainId(randomUUID());
     await pairWith({ domainId, baseUrl: HTTPS_URL, pokeMode: true });
     await expectGuardRejection(pairWith({ domainId, baseUrl: HTTP_URL, pokeMode: true }));
   });
@@ -1935,7 +1937,7 @@ describe("M14.1 Federation: per-peer poke-mode (Testcontainers)", () => {
  */
 describe("M14.4 GET /federation/status effectiveCadence — agrees with the scheduler's D4 probe", () => {
   let domain: IsolatedDomain;
-  let peerDomainId: string;
+  let peerDomainId: TrustDomainId;
   let certDir: string;
   let realCert: string;
   let realKey: string;

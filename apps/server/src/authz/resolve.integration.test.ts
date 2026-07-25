@@ -12,6 +12,7 @@ import {
   type TestOrg,
   type TestServer
 } from "../test-support/harness.js";
+import { asContainmentDomainId } from "@scp/schemas";
 
 /**
  * PR #4 security review, CRITICAL 2 / BUILD_AND_TEST.md §9 ("RBAC inheritance + deny-override
@@ -123,7 +124,7 @@ describe("RBAC evaluator: inheritance + deny-override matrix", () => {
         actorObjectId: org.orgId,
         requestId: "authz-matrix-setup",
         name: "authz-service",
-        domainId: domain.id
+        domainId: asContainmentDomainId(domain.id)
       })
     );
     serviceId = service.id;

@@ -121,7 +121,8 @@ export async function runPreDeployArtifactGate(
   // Resolve the EXPORTER peer's distributed cosign public key (the same trust anchor M17.4(a) used).
   // `importedFromDomain` is the local federation_peers row id for the promoting peer.
   const cosignPublicKeyPem = await withTenantTx(db, orgId, (tx) =>
-    currentPeerCosignPublicKey(tx, orgId, change.importedFromDomain as string)
+    // Non-null by construction: `crossBoundaryManifestOf` returned null above when this is unset.
+    currentPeerCosignPublicKey(tx, orgId, change.importedFromDomain!)
   );
 
   let result: Awaited<ReturnType<typeof verifyAuthorizedArtifactSet>> | null = null;

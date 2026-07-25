@@ -21,6 +21,7 @@ import { exportPromotionBundle } from "./promotion-repo.js";
 import { MANAGED_SCAN_CONTROL_OBJECT_ID } from "./promotion-scan-step.js";
 import { loadScanDbBlob } from "../governance/scan-db.js";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
+import { asTrustDomainId } from "@scp/schemas";
 
 /**
  * M13.3b-ii — OFFLINE DB PRE-LOAD + STALENESS + OPERATOR-LOAD end-to-end (ADR-0020, proposal §13.3b).
@@ -137,7 +138,7 @@ describe("M13.3b-ii offline scan-DB pre-load + staleness + operator-load", () =>
     await withTenantTx(domain.db, domain.orgId, (tx) =>
       pairPeer(tx, {
         orgId: domain.orgId,
-        domainId: randomUUID(),
+        domainId: asTrustDomainId(randomUUID()),
         name: "peer-outpost",
         role: "outpost",
         publicKey: publicKey.toString("base64")

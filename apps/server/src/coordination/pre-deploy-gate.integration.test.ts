@@ -28,6 +28,8 @@ import { getSharedCelSandbox } from "../governance/cel-sandbox.js";
 import { createInMemoryFakeHost } from "./test-support/fake-plugin-host.js";
 import { pairPeer } from "../federation/peers-repo.js";
 import { PRE_DEPLOY_ARTIFACT_VERIFY_DECISION_KIND } from "./pre-deploy-gate.js";
+import { asTrustDomainId } from "@scp/schemas";
+import { TrustDomainId } from "@scp/schemas";
 
 /**
  * M17.4(b) — PER-ARTIFACT BYTE VERIFICATION, the operator-loaded pre-deploy VERIFY
@@ -87,9 +89,9 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
   let imageSignFlags: string[];
 
   /** The exporting peer (as paired locally, E5-complete: its cosign VERIFICATION key registered). */
-  const exporterDomainId = uuidv7();
+  const exporterDomainId = asTrustDomainId(uuidv7());
   /** A second peer paired PRE-E5 (no cosign key) — the key-vanished fail-closed axis. */
-  const keylessDomainId = uuidv7();
+  const keylessDomainId = asTrustDomainId(uuidv7());
 
   beforeAll(async () => {
     server = await listenTestServer();
@@ -296,7 +298,7 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
    *  verified `promotionManifest` + typed `artifacts[]` authorized set, `importedFromDomain` set. */
   async function proposeImportedChange(
     artifacts: ArtifactRef[],
-    opts: { fromDomain?: string; withManifest?: boolean } = {}
+    opts: { fromDomain?: TrustDomainId; withManifest?: boolean } = {}
   ): Promise<{ changeId: string; componentId: string }> {
     const component = await createTestComponent(admin, {
       name: `m174b-${randomUUID().slice(0, 8)}`

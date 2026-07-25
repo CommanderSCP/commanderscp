@@ -51,6 +51,21 @@ export interface ScopedHttpClient {
 
 export interface PluginContext {
   orgId: string;
+  /**
+   * A THIRD `domainId` sense — deliberately NOT one of ADR-0021 D4's branded domain ids, and
+   * deliberately left as a plain `string`.
+   *
+   * This is an opaque **plugin-host scope key**: a label the host stamps on a plugin invocation so
+   * logs, secret lookups and egress accounting can be partitioned. It is neither a
+   * `TrustDomainId` (a federation identity) nor a `ContainmentDomainId` (a `domain` graph object),
+   * and in practice it is not a uuid at all — every in-tree host populates it with a literal
+   * (`"default"`, `"commander"`, `"domain-1"`). Branding it would either force a bogus brand onto
+   * `"default"` or fail to compile against values that were never ids.
+   *
+   * ADR-0021 §Context 1 accounts for two SCP senses of "domain"; this scope key is a third that
+   * the ADR's premise does not cover. Renaming it is a **breaking change to a public plugin
+   * contract** and needs its own owner decision — out of scope for the branded-types work.
+   */
   domainId: string;
   logger: Logger;
   secrets: SecretsAccessor;

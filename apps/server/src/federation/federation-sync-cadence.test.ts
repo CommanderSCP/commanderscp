@@ -20,6 +20,7 @@ import {
   wakeFederationSyncNow,
   type FederationSyncJobData
 } from "./federation-sync.js";
+import { asTrustDomainId } from "@scp/schemas";
 
 /**
  * M14.4 (ADR-0009; owner decisions D1–D4, 2026-07-24) — UNIT coverage, no database, for the
@@ -39,7 +40,7 @@ function at(offsetSeconds: number): Date {
 
 function peer(overrides: Partial<FederationPeerRow> = {}): FederationPeerRow {
   return {
-    id: "00000000-0000-0000-0000-0000000000aa",
+    id: asTrustDomainId("00000000-0000-0000-0000-0000000000aa"),
     orgId: "org-1",
     name: "the-commander",
     role: "commander",

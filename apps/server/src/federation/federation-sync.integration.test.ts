@@ -36,6 +36,7 @@ import {
 import type { FederationClientMtls } from "./federation-outbound.js";
 import { listPeers } from "./peers-repo.js";
 import { createTestCa, issueLeafCert, opensslAvailable, type TestCa } from "./test-support/mtls-pki.js";
+import { TrustDomainId } from "@scp/schemas";
 
 /**
  * M14.0 — the OUTPOST LIVE-PULL SCHEDULER over mTLS, end-to-end against real Postgres + a real
@@ -320,7 +321,7 @@ describe.skipIf(!opensslAvailable())("M14.4 scheduler mode — poke vs poll cade
   let commander: Domain;
   let outpost: Domain;
   let outpostClientMtls: FederationClientMtls;
-  let commanderPeerId: string;
+  let commanderPeerId: TrustDomainId;
 
   const FREQUENT_SECONDS = 60; // SCP_FEDERATION_SYNC_INTERVAL_SECONDS default
   const SPARSE_SECONDS = 900; // SCP_FEDERATION_SYNC_SPARSE_INTERVAL_SECONDS default (D1)

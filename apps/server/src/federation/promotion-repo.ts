@@ -1,4 +1,4 @@
-import { ScanEvidenceSchema } from "@scp/schemas";
+import { ScanEvidenceSchema, type TrustDomainId } from "@scp/schemas";
 import type {
   ArtifactRef,
   ImportPromotionResponse,
@@ -713,7 +713,7 @@ async function applyPromotionImport(
   tx: TenantTx,
   orgId: string,
   bundle: PromotionBundle,
-  peerId: string
+  peerId: TrustDomainId
 ): Promise<ImportPromotionResponse> {
   // 2. Resolve local targets. Promotion targets are carried as object ids in `properties.targets`
   //    — these resolve locally only if the target objects were already replicated (a full-graph

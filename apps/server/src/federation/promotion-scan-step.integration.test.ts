@@ -26,6 +26,7 @@ import {
 } from "./promotion-scan-step.js";
 import { ScanEvidenceSchema } from "@scp/schemas";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
+import { asTrustDomainId } from "@scp/schemas";
 
 /**
  * M13.3a — THE E6 END-TO-END for the commander's promotion scan step (ADR-0020, proposal §13.3 DoD).
@@ -200,7 +201,7 @@ describe.runIf(await dockerAvailable())(
       await withTenantTx(domain.db, domain.orgId, (tx) =>
         pairPeer(tx, {
           orgId: domain.orgId,
-          domainId: randomUUID(),
+          domainId: asTrustDomainId(randomUUID()),
           name: "peer-outpost",
           role: "outpost",
           publicKey: publicKey.toString("base64")

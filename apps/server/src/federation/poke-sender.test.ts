@@ -9,6 +9,7 @@ import {
 } from "./federation-outbound.js";
 import { isPokeTarget } from "./poke-sender.js";
 import { PokeRateLimiter } from "./poke-rate-limit.js";
+import { asTrustDomainId } from "@scp/schemas";
 
 /**
  * M14.3 unit coverage for the commander poke SENDER's pure pieces: the poke-target gate
@@ -18,7 +19,7 @@ import { PokeRateLimiter } from "./poke-rate-limit.js";
 
 function peer(overrides: Partial<FederationPeerRow>): FederationPeerRow {
   return {
-    id: "peer-1",
+    id: asTrustDomainId("peer-1"),
     orgId: "org-1",
     name: "the-outpost",
     role: "outpost",

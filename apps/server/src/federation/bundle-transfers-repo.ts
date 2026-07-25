@@ -1,6 +1,6 @@
 import { and, desc, eq } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
-import type { BundleTransfer } from "@scp/schemas";
+import type { BundleTransfer, TrustDomainId } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { bundleTransfers } from "../db/schema.js";
 
@@ -30,7 +30,8 @@ export async function recordBundleTransfer(
   tx: TenantTx,
   input: {
     orgId: string;
-    peerDomainId: string;
+    /** TRUST sense (ADR-0021 D4). */
+    peerDomainId: TrustDomainId;
     direction: "export" | "import";
     kind: "sync" | "promotion";
     status?: "created" | "submitted" | "confirmed";
@@ -61,7 +62,7 @@ export async function recordBundleTransfer(
 export async function listRecentTransfers(
   tx: TenantTx,
   orgId: string,
-  peerDomainId: string,
+  peerDomainId: TrustDomainId,
   limit = 10
 ): Promise<BundleTransfer[]> {
   const rows = await tx

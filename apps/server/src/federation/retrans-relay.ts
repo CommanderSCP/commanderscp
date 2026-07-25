@@ -80,7 +80,7 @@ import { copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promi
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
 import { z } from "zod";
-import type { ArtifactRef } from "@scp/schemas";
+import type { ArtifactRef, TrustDomainId } from "@scp/schemas";
 import {
   assertPinnedSkopeoVersion,
   makeScratchDir,
@@ -430,7 +430,8 @@ export async function buildRelayTarball(
     const cosignPublicKeyPem = await currentPeerCosignPublicKey(
       tx,
       input.orgId,
-      change.importedFromDomain as string
+      // Non-null by construction: `crossBoundaryManifestOf` returned null above when this is unset.
+      change.importedFromDomain!
     );
     // Per-registry source READ creds from the vault (ADR-0019 §3) — resolved for every host this
     // relay could dial: each artifact's own location host plus the configured fallback repo host.
@@ -1280,7 +1281,8 @@ export interface ForwardRelayTarballInput {
    *  `export`/`submitted` `bundle_transfers` row to the peer the drop actually goes to (M16.1
    *  per-peer surface); observational only (the ledger is never authority). Absent (env-fallback
    *  drop, no downstream peer resolvable) → falls back to the upstream import peer. */
-  onwardPeerDomainId?: string;
+  /** TRUST sense (ADR-0021 D4) — the DOWNSTREAM boundary peer the onward drop targets. */
+  onwardPeerDomainId?: TrustDomainId;
   /** File name to drop under `outDir` (defaults to the tarball's own basename); rides the
    *  `resolveUnderDir` traversal guard. */
   fileName?: string;

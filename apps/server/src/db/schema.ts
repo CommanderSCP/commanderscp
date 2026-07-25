@@ -13,6 +13,7 @@ import {
   unique
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+import type { ContainmentDomainId, TrustDomainId } from "@scp/schemas";
 
 /**
  * M1 Graph Core schema (DESIGN.md §4.1-§4.3, §7, §8). Supersedes M0's minimal `objects` table
@@ -166,7 +167,11 @@ export const objects = pgTable(
   {
     id: uuid("id").primaryKey(), // UUIDv7, client-suppliable
     orgId: uuid("org_id").notNull(),
-    domainId: uuid("domain_id"), // containing object; NULL only for the org root object
+    // CONTAINMENT sense (ADR-0021 D4) — the containing `domain` graph object; NULL only for the
+    // org root object. Deliberately branded differently from `originDomainId` nine lines below,
+    // which is the TRUST sense: the two are structurally identical uuids and were freely
+    // interchangeable before branding.
+    domainId: uuid("domain_id").$type<ContainmentDomainId>(),
     typeId: text("type_id")
       .notNull()
       .references(() => objectTypes.id),
@@ -174,8 +179,9 @@ export const objects = pgTable(
     urn: text("urn").notNull(),
     properties: jsonb("properties").notNull().default({}),
     labels: jsonb("labels").notNull().default({}),
-    // federation provenance (DESIGN.md §4.1 — every row is born federation-ready)
-    originDomainId: uuid("origin_domain_id").notNull(),
+    // federation provenance (DESIGN.md §4.1 — every row is born federation-ready).
+    // TRUST sense (ADR-0021 D4) — the security domain that authored this row.
+    originDomainId: uuid("origin_domain_id").notNull().$type<TrustDomainId>(),
     revision: bigint("revision", { mode: "number" }).notNull().default(1),
     contentHash: text("content_hash").notNull(),
     // M6 (DESIGN.md §13): NULL = normally authored/imported-and-confirmed row. 'manual' = a
@@ -218,7 +224,8 @@ export const relationships = pgTable(
     // `objects.labels` so the `scp:managed-by`/`scp:stack` IaC pruning convention
     // (apps/server/src/iac/plan-diff.ts) applies uniformly to relationships, not just objects.
     labels: jsonb("labels").notNull().default({}),
-    originDomainId: uuid("origin_domain_id").notNull(),
+    // TRUST sense (ADR-0021 D4) — the security domain that authored this row.
+    originDomainId: uuid("origin_domain_id").notNull().$type<TrustDomainId>(),
     revision: bigint("revision", { mode: "number" }).notNull().default(1),
     contentHash: text("content_hash").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -286,7 +293,11 @@ export const auditEvents = pgTable(
     seq: bigint("seq", { mode: "number" }).generatedAlwaysAsIdentity().notNull(),
     id: uuid("id").primaryKey(), // UUIDv7
     orgId: uuid("org_id").notNull(),
-    domainId: uuid("domain_id"),
+    // CONTAINMENT sense (ADR-0021 D4) — the containing `domain` graph object the audited action
+    // happened under, matching its position in DESIGN.md §4.3 (org_id, domain_id, actor_id,
+    // subject_id are all graph-object scope). Nothing writes it today; branding it now keeps the
+    // first writer from silently supplying a federation identity.
+    domainId: uuid("domain_id").$type<ContainmentDomainId>(),
     actorId: uuid("actor_id").notNull(),
     action: text("action").notNull(),
     subjectId: uuid("subject_id"),
@@ -391,7 +402,8 @@ export const changes = pgTable(
     sourceRef: jsonb("source_ref"),
     correlationKey: text("correlation_key"),
     emergency: boolean("emergency").notNull().default(false),
-    importedFromDomain: uuid("imported_from_domain"),
+    // TRUST sense (ADR-0021 D4) — the security domain a promotion bundle imported this change from.
+    importedFromDomain: uuid("imported_from_domain").$type<TrustDomainId>(),
     /** The release-topology object (+ its document version, pinned) this change compiled against. */
     topologyObjectId: uuid("topology_object_id"),
     topologyVersion: bigint("topology_version", { mode: "number" }),
@@ -1008,7 +1020,9 @@ export const campaignWaveTargets = pgTable(
  *  inferred. */
 export const federationSelf = pgTable("federation_self", {
   orgId: uuid("org_id").primaryKey(),
-  domainId: uuid("domain_id").notNull().unique(), // this domain's own stable identity (UUIDv7, generated once, never reused)
+  // TRUST sense (ADR-0021 D4) — this security domain's own stable identity (UUIDv7, generated
+  // once, never reused). NOT a containment `domain` object id.
+  domainId: uuid("domain_id").notNull().unique().$type<TrustDomainId>(),
   name: text("name").notNull(),
   role: text("role").notNull().default("unset"), // 'unset' | 'commander' | 'outpost' | 'retrans'
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
@@ -1022,7 +1036,8 @@ export const federationSelf = pgTable("federation_self", {
 export const federationPeers = pgTable(
   "federation_peers",
   {
-    id: uuid("id").primaryKey(), // = the peer's own federation_self.domainId
+    // TRUST sense (ADR-0021 D4) — = the peer's own federation_self.domainId.
+    id: uuid("id").primaryKey().$type<TrustDomainId>(),
     orgId: uuid("org_id").notNull(),
     name: text("name").notNull(),
     role: text("role").notNull(), // as seen from here: 'commander' | 'outpost' | 'retrans'
@@ -1091,7 +1106,7 @@ export const federationPeerKeys = pgTable(
   {
     id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
-    peerDomainId: uuid("peer_domain_id").notNull(),
+    peerDomainId: uuid("peer_domain_id").notNull().$type<TrustDomainId>(), // TRUST sense (ADR-0021 D4)
     publicKey: text("public_key").notNull(), // base64 SPKI DER
     // M17.3 (E5) — the peer's cosign MANIFEST-VERIFICATION public key (`cosign.pub` PEM), riding in
     // the SAME key-window row as its Ed25519 `publicKey`: distributed via the existing out-of-band
@@ -1125,7 +1140,7 @@ export const syncJournal = pgTable(
     seq: bigint("seq", { mode: "number" }).generatedAlwaysAsIdentity().notNull(),
     id: uuid("id").primaryKey(), // UUIDv7
     orgId: uuid("org_id").notNull(),
-    originDomainId: uuid("origin_domain_id").notNull(),
+    originDomainId: uuid("origin_domain_id").notNull().$type<TrustDomainId>(), // TRUST sense (ADR-0021 D4)
     sequence: bigint("sequence", { mode: "number" }).notNull(), // per (org, originDomainId) monotonic — DESIGN §13
     // object_upsert | object_tombstone | relationship_upsert | relationship_tombstone |
     // change_status | policy_upsert | approval_evidence | audit_segment | key_rotation
@@ -1157,8 +1172,9 @@ export const syncCursors = pgTable(
   "sync_cursors",
   {
     orgId: uuid("org_id").notNull(),
-    peerDomainId: uuid("peer_domain_id").notNull(),
-    originDomainId: uuid("origin_domain_id").notNull(),
+    // Both TRUST sense (ADR-0021 D4).
+    peerDomainId: uuid("peer_domain_id").notNull().$type<TrustDomainId>(),
+    originDomainId: uuid("origin_domain_id").notNull().$type<TrustDomainId>(),
     lastAppliedSeq: bigint("last_applied_seq", { mode: "number" }).notNull().default(0),
     // The imported `rowHash` of the entry at `lastAppliedSeq` — SECURITY-SENSITIVE: this is what
     // lets a RESUMED import verify true hash-chain continuity across separate import calls (not
@@ -1182,7 +1198,7 @@ export const bundleTransfers = pgTable(
   {
     id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
-    peerDomainId: uuid("peer_domain_id").notNull(),
+    peerDomainId: uuid("peer_domain_id").notNull().$type<TrustDomainId>(), // TRUST sense (ADR-0021 D4)
     direction: text("direction").notNull(), // 'export' | 'import'
     kind: text("kind").notNull().default("sync"), // 'sync' | 'promotion'
     status: text("status").notNull().default("created"), // created|submitted|confirmed
@@ -1242,7 +1258,7 @@ export const importedApprovalEvidence = pgTable(
     id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     changeObjectId: uuid("change_object_id").notNull(), // the LOCAL imported change
-    originDomainId: uuid("origin_domain_id").notNull(), // whose approval this was
+    originDomainId: uuid("origin_domain_id").notNull().$type<TrustDomainId>(), // TRUST sense (ADR-0021 D4) — whose approval this was
     attestation: jsonb("attestation").notNull(), // the SignedAttestation exactly as received
     verified: boolean("verified").notNull(), // did validation pass against the origin's registered key?
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()

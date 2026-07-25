@@ -1,6 +1,7 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { DesiredStateManifest, Plan, PlanDiff, PlanStatus } from "@scp/schemas";
+import { containmentDomainIdFromWire } from "../domain-id-edge.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects, plans, relationships } from "../db/schema.js";
 import { badRequest, conflict, forbidden, notFound } from "../errors.js";
@@ -136,7 +137,13 @@ export async function computeDiffForManifest(
 ): Promise<PlanDiff> {
   const resolvedObjects: ResolvedManifestObject[] = [];
   for (const obj of manifest.objects) {
-    const domainId = await resolveDomainId(tx, orgId, obj.domainId ?? undefined);
+    // WIRE BOUNDARY (ADR-0021 D4) — see src/domain-id-edge.ts: the IaC manifest's `domainId` is
+    // a plain string in `DesiredStateManifestSchema`, and names a CONTAINMENT parent.
+    const domainId = await resolveDomainId(
+      tx,
+      orgId,
+      containmentDomainIdFromWire(obj.domainId) ?? undefined
+    );
     resolvedObjects.push({
       urn: obj.urn,
       typeId: obj.typeId,
@@ -511,7 +518,9 @@ export async function executePlanDiff(
       requestId,
       urn: target.urn,
       name: target.name,
-      domainId: target.domainId,
+      // WIRE BOUNDARY (ADR-0021 D4) — the plan diff round-trips through `PlanDiffSchema`, whose
+      // `domainId` is a plain string; it was produced by `resolveDomainId` above.
+      domainId: containmentDomainIdFromWire(target.domainId),
       properties: target.properties,
       labels: target.labels
     });
@@ -532,7 +541,8 @@ export async function executePlanDiff(
       requestId,
       idOrUrn: entry.urn,
       name: target.name,
-      domainId: target.domainId,
+      // WIRE BOUNDARY (ADR-0021 D4) — see the `create` branch above.
+      domainId: containmentDomainIdFromWire(target.domainId),
       properties: target.properties,
       labels: target.labels
     });

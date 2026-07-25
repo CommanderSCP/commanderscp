@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
+import { asTrustDomainId, type TrustDomainId } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { federationSelf } from "../db/schema.js";
 
@@ -23,7 +24,8 @@ import { federationSelf } from "../db/schema.js";
  */
 export interface FederationSelf {
   orgId: string;
-  domainId: string;
+  /** TRUST sense (ADR-0021 D4) — this org's own security-domain identity. */
+  domainId: TrustDomainId;
   name: string;
   role: "unset" | "commander" | "outpost" | "retrans";
 }
@@ -47,7 +49,9 @@ export async function ensureFederationSelf(tx: TenantTx, orgId: string): Promise
     .limit(1);
   if (existing[0]) return toFederationSelf(existing[0]);
 
-  const domainId = uuidv7();
+  // BOUNDARY (ADR-0021 D4): a freshly minted federation identity. `uuidv7()` returns a plain
+  // string; this is the one place in the tree where a TrustDomainId is created from nothing.
+  const domainId = asTrustDomainId(uuidv7());
   try {
     const [row] = await tx
       .insert(federationSelf)
