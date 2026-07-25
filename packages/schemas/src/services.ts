@@ -136,6 +136,20 @@ export const ServiceBoardResponseSchema = z.object({
   rows: z.array(ServiceBoardRowSchema),
   summary: ServiceBoardSummarySchema,
   /** An active freeze scoped directly to the SERVICE object (read-only), covering every component. */
-  serviceFreeze: ServiceBoardFreezeSchema.nullable()
+  serviceFreeze: ServiceBoardFreezeSchema.nullable(),
+  /** BOARD-LEVEL unobservable fields, by dotted path (`"serviceFreeze"`, `"rows[].activeFreeze"`) —
+   *  the ones no row can observe regardless of who drives its change, as opposed to
+   *  {@link ServiceBoardRowSchema}'s per-row `unknownFields` (what THAT row's driving domain
+   *  withheld).
+   *
+   *  Today this carries exactly the freeze paths, and only when this org has a federation peer.
+   *  `freezes` is a local projection that never rides the sync journal in either direction, so a
+   *  freeze declared in another domain is invisible here for EVERY row — including rows this domain
+   *  drives. A null `activeFreeze`/`serviceFreeze` therefore means "no freeze declared in THIS
+   *  domain", never "no freeze applies", and a client must not render it as an all-clear on a
+   *  federated deployment. With no peer paired there is no other domain to be blind to, and the
+   *  nulls are complete observations — the list is then empty rather than claiming an ignorance
+   *  this instance does not have. */
+  unknownFields: z.array(z.string())
 });
 export type ServiceBoardResponse = z.infer<typeof ServiceBoardResponseSchema>;

@@ -135,6 +135,69 @@ describe("services: release board (Phase 2, Layer A)", () => {
     expect(board.summary.releasing).toBe(0);
   });
 
+  /**
+   * REGRESSION (single-domain org — no federation anywhere in this test). An observed `blocked` must
+   * never be displaced by a newer change this domain knows less about.
+   *
+   * THE DEFECT this pins: the board's two lookups — the wave-target join (a REAL local observation:
+   * compiled plan, rolled waves, failed target) and the change-object `properties.targets` fallback
+   * (which knows only that a change exists) — were merged by "whichever `created_at` is greater",
+   * across two DIFFERENT timestamps (`changes.created_at` vs `objects.created_at`) that share no
+   * clock. So proposing ANY newer change against the same component — with no plan compiled, nothing
+   * executed, nothing observed — silently replaced the failed one, and `summary.blocked` fell to 0.
+   * Every field the operator needs (waves, the failed count, the block signal) vanished with it, on
+   * the commander's OWN board, for a release it is itself driving.
+   *
+   * The fix is a strict fallback: the planned arm is authoritative for any component it covers, and
+   * the declared arm is consulted only for components it does not. There is no cross-clock
+   * comparison left to get wrong.
+   */
+  it("REGRESSION: a newer unplanned change does NOT displace an older change's observed `blocked`", async () => {
+    const suffix = randomUUID().slice(0, 8);
+    const svc = await admin.services.create({ name: `svc-${suffix}` });
+    const comp = await createTestComponent(admin, { name: `wedge-${suffix}`, service: svc.id });
+
+    // Change A: proposed, planned, first wave forced to a terminal failure — a real observation.
+    const changeA = await admin.changes.propose({
+      name: `will fail ${suffix}`,
+      targets: [comp.id]
+    });
+    const plan = await compilePlan(changeA.id, [comp.id]);
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(changeWaves)
+        .set({ status: "failed" })
+        .where(and(eq(changeWaves.orgId, org.orgId), eq(changeWaves.id, plan.waves[0]!.id)))
+    );
+
+    const before = await admin.services.board(svc.id);
+    expect(before.summary.blocked, "premise: the failure is observed before B exists").toBe(1);
+
+    // Change B: NEWER, targets the same component, and has NO compiled plan — this domain has
+    // observed nothing about it beyond its existence.
+    const changeB = await admin.changes.propose({
+      name: `next up ${suffix}`,
+      targets: [comp.id]
+    });
+    expect(changeB.id).not.toBe(changeA.id);
+
+    const after = await admin.services.board(svc.id);
+    const row = after.rows.find((r) => r.component.id === comp.id)!;
+
+    // The observation survives — asserted POSITIVELY, field by field: "blocked is still 1" alone
+    // would also hold if the row had silently swapped to some other blocked change.
+    expect(after.summary.blocked).toBe(1);
+    expect(after.summary).toEqual({ releasing: 0, blocked: 1, stable: 0, notDrivenHere: 0 });
+    expect(row.latestChangeId).toBe(changeA.id);
+    expect(row.changeName).toBe(`will fail ${suffix}`);
+    expect(row.attention.blocked).toBe(true);
+    expect(row.waves.length).toBeGreaterThan(0);
+    expect(row.waves.some((w) => w.status === "failed")).toBe(true);
+    // Single-domain: every empty here is a real observation, nothing is declared unobservable.
+    expect(row.driver).toEqual({ drivenHere: true, originDomainId: null });
+    expect(row.unknownFields).toEqual([]);
+  });
+
   it("404s an unknown service, 401s an unauthenticated caller, 403s a caller without read on the service", async () => {
     const svc = await admin.services.create({ name: `svc-${randomUUID().slice(0, 8)}` });
 

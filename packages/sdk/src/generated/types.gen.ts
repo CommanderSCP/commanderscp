@@ -6195,6 +6195,7 @@ export type GetServiceBoardResponses = {
             reason: string;
             endsAt: string;
         } | null;
+        unknownFields: Array<string>;
     };
 };
 

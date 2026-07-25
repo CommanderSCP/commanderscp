@@ -159,6 +159,10 @@ export function ServiceBoardPage(): React.JSX.Element {
 
   const board = boardQuery.data;
   const { service, rows, summary, serviceFreeze } = board;
+  // BOARD-LEVEL unknowns (as opposed to a row's own): today, freeze visibility on a federated
+  // deployment. Freezes never ride the sync journal in either direction, so on an instance with a
+  // federation peer NO row's "not frozen" — driven here or not — can be read as "no freeze applies".
+  const freezeVisibilityUnknown = board.unknownFields.includes("rows[].activeFreeze");
 
   return (
     <div className="flex flex-col gap-6">
@@ -277,12 +281,22 @@ export function ServiceBoardPage(): React.JSX.Element {
                           >
                             {row.changeName ?? "Open pipeline"} →
                           </Link>
-                          {row.changeState && (
+                          {isUnknown(row, "changeState") ? (
+                            // The driving domain has not reported a lifecycle state for this
+                            // replica yet (the `object_upsert` normally lands before the first
+                            // `change_status`). Rendering nothing would be indistinguishable from a
+                            // row with no change at all — the exact confusion this board refuses.
                             <span>
-                              <Badge variant={stateBadgeVariant(row.changeState as ChangeState)}>
-                                {row.changeState}
-                              </Badge>
+                              <UnknownHere title="The domain that drives this change has not reported a lifecycle state for it here yet — its state is unknown from this instance, not absent." />
                             </span>
+                          ) : (
+                            row.changeState && (
+                              <span>
+                                <Badge variant={stateBadgeVariant(row.changeState as ChangeState)}>
+                                  {row.changeState}
+                                </Badge>
+                              </span>
+                            )
                           )}
                           {row.driver && !row.driver.drivenHere && (
                             <span
@@ -330,6 +344,17 @@ export function ServiceBoardPage(): React.JSX.Element {
           )}
         </CardContent>
       </Card>
+
+      {freezeVisibilityUnknown && (
+        <p
+          className="w-fit rounded border border-dashed border-amber-400 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800"
+          data-testid="board-freeze-visibility-unknown"
+        >
+          Freeze visibility is limited to this domain: freezes are never replicated between federated
+          instances, so an unfrozen row means &quot;no freeze declared here&quot; — not &quot;no freeze
+          applies&quot;.
+        </p>
+      )}
 
       <p className="text-xs text-slate-400">
         Per-wave image version/digest and component health are not modeled yet (Layer B) and are shown

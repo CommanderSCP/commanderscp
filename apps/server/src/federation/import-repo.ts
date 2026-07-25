@@ -71,6 +71,25 @@ function isNotFound(err: unknown): boolean {
 }
 
 /**
+ * The `change_status` enrichment's object lookup with case (a) — "this domain holds no replica of
+ * the object the entry names" — separated from every other failure: returns null rather than
+ * throwing, so the caller's best-effort catch covers only genuinely unexpected errors instead of
+ * collapsing the expected `status_only` shape and a real bug into one silent swallow.
+ */
+async function findReplicaOrNull(
+  tx: TenantTx,
+  orgId: string,
+  objectId: string
+): Promise<Awaited<ReturnType<typeof getObjectByIdOrUrnAnyType>> | null> {
+  try {
+    return await getObjectByIdOrUrnAnyType(tx, orgId, objectId);
+  } catch (err) {
+    if (isNotFound(err)) return null;
+    throw err;
+  }
+}
+
+/**
  * SECURITY-SENSITIVE (M6 review fix — CRITICAL: single-writer authority was forgeable on CREATE).
  * The ONLY domain a signed bundle may vouch authorship for is the domain that cryptographically
  * SIGNED it (the verified `exporterDomainId`). M6 federation is direct-peer: there is no multi-hop
@@ -246,10 +265,28 @@ async function applyEntry(
       // "not managed by MY engine," not just "not graph-writable"). Swallows any failure (e.g. the
       // underlying object hasn't been replicated yet) — this entry kind is enrichment, not core
       // graph content, so it must never abort an otherwise-valid import.
+      //
+      // THE TWO FAILURE MODES ARE NOT THE SAME, and are no longer collapsed into one bare `catch`:
+      //
+      //  (a) NO REPLICATED OBJECT TO ATTACH TO — the normal, expected shape for a peer paired at
+      //      `status_only` scope (scope-filter.ts sends `change_status` but never the change's
+      //      `object_upsert`), and a transient one at wider scopes when this entry precedes the
+      //      object it refers to. Note precisely what this means: this domain HAS received positive
+      //      evidence that a change exists on the peer (this entry names `payload.objectId` and
+      //      `payload.toState`) — it is NOT equivalent to "no change was ever proposed there". The
+      //      evidence is nonetheless dropped: a `change_status` payload carries no `targets`, so
+      //      nothing here can attribute it to a component, and synthesizing a graph object from it
+      //      would fabricate name/targets/urn this domain was never sent. Carrying it honestly needs
+      //      a federation-layer store for unattached peer status (a real feature, out of scope for
+      //      the read projection that surfaced it) — recorded here so the gap is documented at the
+      //      place it happens rather than assumed away as an equivalence.
+      //  (b) ANY OTHER failure — still swallowed (enrichment must never abort a valid import), but
+      //      deliberately distinguished below so (a) is not used to explain away (b).
       try {
         const objectId = String(payload.objectId ?? "");
         if (!objectId) return;
-        const existing = await getObjectByIdOrUrnAnyType(tx, orgId, objectId);
+        const existing = await findReplicaOrNull(tx, orgId, objectId);
+        if (!existing) return; // (a) — evidence received; nothing local to attach it to
         if (existing.originDomainId !== exporterDomainId) return; // not a replica of THIS peer — leave alone
         const state = (payload.toState ?? payload.state) as string | undefined;
         if (!state) return;
@@ -263,7 +300,8 @@ async function applyEntry(
           federationImport: { originDomainId: exporterDomainId, revision: existing.revision + 1 }
         });
       } catch {
-        // best-effort — see comment above
+        // (b) only — case (a) never reaches here (findReplicaOrNull returns null for it). Still
+        // swallowed: enrichment must never abort an otherwise-valid import.
       }
       return;
     }

@@ -23498,13 +23498,20 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "unknownFields": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
                     "service",
                     "rows",
                     "summary",
-                    "serviceFreeze"
+                    "serviceFreeze",
+                    "unknownFields"
                   ],
                   "additionalProperties": false
                 }
