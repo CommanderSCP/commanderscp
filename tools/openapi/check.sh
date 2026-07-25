@@ -14,9 +14,16 @@
 #
 # Exit non-zero iff oasdiff reports an ERR-level (breaking) change within /v1. The API is
 # additive-only within /v1 (CLAUDE.md "Codegen outputs are committed" / DESIGN.md); an intentional
-# breaking change requires an explicit `api-v2-exception` label + review per §6's merge policy —
-# that's a human/branch-protection override of this script's exit code, not something this script
+# breaking change requires an explicit `api-v2-exception` label + an entry in OASDIFF-EXCEPTIONS.md
+# per §6's merge policy — that is a human decision recorded on the PR, not something this script
 # grants itself.
+#
+# HOW THAT ACTUALLY WORKS (2026-07-24): this job is deliberately NOT a required status check on
+# `main`, so a red result here does not mechanically block a merge — the label and the exceptions
+# log are the record of owner approval, and the reviewer is the gate. `main` DOES require
+# "5z. Integration (aggregation gate)" and "3. Codegen drift", so a break still cannot skip tests
+# or ship an unregenerated spec. Earlier revisions of this header described a branch-protection
+# override; there was no branch protection at all until that date.
 #
 # oasdiff is vendored at tools/openapi/bin/oasdiff-linux-amd64 (Apache-2.0, see bin/LICENSE-oasdiff)
 # so this runs fully air-gapped — no network call anywhere in this script. Only linux/amd64 is
