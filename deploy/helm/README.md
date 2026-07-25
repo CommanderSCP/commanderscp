@@ -57,7 +57,10 @@ Every container this chart renders (api, worker, migrations Job) gets, by defaul
   `commanderscp.io/autowire-hook` marker label, so `api`/`worker`/`postgres-eval` are untouched, and
   it defaults to the RFC1918 private ranges on 443/6443 — never "any destination". Control-plane
   endpoint on a public IP or a non-standard port? Set `networkPolicy.kubeApi.cidrs` / `.ports`
-  (`kubectl get endpoints kubernetes` gives you the exact address to pin).
+  (`kubectl get endpoints kubernetes` gives you the exact address to pin). Upgrading a release that
+  predates this key needs no action: `helm upgrade --reuse-values` (what `scripts/scp-bundled.sh`
+  runs) renders against the OLD release's values, where `networkPolicy.kubeApi` is absent — the
+  template treats that as exactly the defaults above, so the policy still renders and applies.
 
 **Least privilege for database credentials** (`SCP_SKIP_MIGRATIONS`, `apps/server/src/config.ts`):
 only the migrations Job ever holds the admin/superuser-capable `DATABASE_URL`. `api`/`worker` pods

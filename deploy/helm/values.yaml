@@ -381,6 +381,13 @@ networkPolicy:
   # kind, k3s, and private-endpoint managed clusters, and the service CIDR too. Set `cidrs`
   # explicitly for a PUBLIC control-plane endpoint (e.g. an EKS public endpoint) or to scope this to
   # the exact endpoint: `kubectl get endpoints kubernetes` → set a /32 and that port.
+  #
+  # UPGRADES FROM A RELEASE THAT PREDATES THIS KEY: `helm upgrade --reuse-values` (what
+  # scripts/scp-bundled.sh runs) discards the NEW chart's values.yaml defaults and renders against
+  # the OLD release's values, where this whole map is absent. templates/networkpolicy.yaml therefore
+  # reads it defensively and treats "absent" as EXACTLY the three settings below — the policy still
+  # renders, so the upgrade this fix exists to unbreak works on existing installs, not just fresh
+  # ones. Keep these three in sync with the fallbacks in that template.
   kubeApi:
     enabled: true
     cidrs: []

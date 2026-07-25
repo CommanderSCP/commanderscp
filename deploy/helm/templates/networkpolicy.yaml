@@ -144,7 +144,33 @@ spec:
         - { protocol: TCP, port: 443 }
 ---
 {{- end }}
-{{- if and .Values.networkPolicy.kubeApi.enabled (or .Values.bundledExecutor.argocd.enabled .Values.bundledExecutor.gitea.enabled) }}
+{{/*
+NIL-SAFE READ OF `networkPolicy.kubeApi` — DO NOT collapse these back into a direct
+`.Values.networkPolicy.kubeApi.enabled` / `.cidrs` / `.ports` chain.
+
+WHY (the upgrade path this whole file exists to repair): `scripts/scp-bundled.sh` wires a bundled
+backend with `helm upgrade --reuse-values`. Helm implements `--reuse-values` by REPLACING the new
+chart's `values.yaml` defaults with the OLD release's coalesced values (`chart.Values = oldVals` in
+action/upgrade.go) and merging the user's overrides on top. A release installed from a chart that
+predates `networkPolicy.kubeApi` therefore renders with NO `kubeApi` key at all — and a direct
+`.Values.networkPolicy.kubeApi.enabled` dies at RENDER time with
+  Error: UPGRADE FAILED: ... at <.Values.networkPolicy.kubeApi.enabled>: nil pointer evaluating
+  interface {}.enabled
+i.e. the exact command this fix exists to unbreak would fail EARLIER, for every existing install,
+while a fresh install looked fine. (`.Values.networkPolicy.kubeApi` on its own is safe — a missing
+key on a map yields nil; it is the SECOND hop that explodes.)
+
+AND the absent key must mean ENABLED, not "off": a nil-safe read that silently disabled the policy
+would let the upgrade render and then hang on the auto-wire hook all over again. So the fallbacks
+below are the same values `values.yaml` documents, restated here as the render-time default that
+applies when the key is missing entirely. Keep the two in sync.
+*/}}
+{{- $kubeApi := .Values.networkPolicy.kubeApi | default dict }}
+{{- $kubeApiEnabled := true }}
+{{- if hasKey $kubeApi "enabled" }}{{- $kubeApiEnabled = $kubeApi.enabled }}{{- end }}
+{{- $kubeApiCidrs := $kubeApi.cidrs | default (list "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16") }}
+{{- $kubeApiPorts := $kubeApi.ports | default (list 443 6443) }}
+{{- if and $kubeApiEnabled (or .Values.bundledExecutor.argocd.enabled .Values.bundledExecutor.gitea.enabled) }}
 {{/*
 Egress: the Kubernetes API server — for the bundled-executor AUTO-WIRE HOOK PODS ONLY.
 
@@ -194,21 +220,12 @@ spec:
   policyTypes: ["Egress"]
   egress:
     - to:
-        {{- if .Values.networkPolicy.kubeApi.cidrs }}
-        {{- range .Values.networkPolicy.kubeApi.cidrs }}
+        {{- range $kubeApiCidrs }}
         - ipBlock:
             cidr: {{ . }}
         {{- end }}
-        {{- else }}
-        - ipBlock:
-            cidr: 10.0.0.0/8
-        - ipBlock:
-            cidr: 172.16.0.0/12
-        - ipBlock:
-            cidr: 192.168.0.0/16
-        {{- end }}
       ports:
-        {{- range .Values.networkPolicy.kubeApi.ports }}
+        {{- range $kubeApiPorts }}
         - { protocol: TCP, port: {{ . }} }
         {{- end }}
 ---
