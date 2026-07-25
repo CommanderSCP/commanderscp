@@ -22,8 +22,12 @@ import {
 import { getCursor, advanceCursor } from "./cursors-repo.js";
 import { recordBundleTransfer } from "./bundle-transfers-repo.js";
 import { entryMatchesScope } from "./scope-filter.js";
+import {
+  clearUnattachedChangeStatus,
+  recordUnattachedChangeStatus
+} from "./unattached-change-status-repo.js";
 import { createRelationship, deleteRelationship } from "../graph/relationships-repo.js";
-import { deleteObject, upsertObjectByUrn } from "../graph/objects-repo.js";
+import { deleteObject, isUuid, upsertObjectByUrn } from "../graph/objects-repo.js";
 import { updateObject } from "../graph/objects-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 
@@ -68,6 +72,28 @@ export const FEDERATION_IMPORT_ACTOR_ID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
 
 function isNotFound(err: unknown): boolean {
   return err instanceof ProblemError && err.status === 404;
+}
+
+/** The lifecycle state a `change_status` payload reports, from EITHER of the two shapes that exist:
+ *  `toState` (a transition entry) or `state` (a propose entry). `null` when neither is a string —
+ *  payloads are `z.record(z.string(), z.unknown())` on the wire, so nothing here may assume a type. */
+function reportedChangeState(payload: Record<string, unknown>): string | null {
+  const raw = payload.toState ?? payload.state;
+  return typeof raw === "string" ? raw : null;
+}
+
+/**
+ * The change object id a `change_status` payload names, but ONLY when it is genuinely a UUID.
+ *
+ * Load-bearing, not defensive noise: `federation_unattached_change_status.change_object_id` is a
+ * `uuid` column, and a malformed value would make the INSERT throw and poison the whole import
+ * transaction — turning "one unrecordable enrichment entry" into "this peer's entire bundle is
+ * rejected", a strictly worse outcome than the drop this record exists to stop. Payloads are
+ * `z.record(z.string(), z.unknown())`, so nothing upstream guarantees the shape.
+ */
+function recordableChangeObjectId(payload: Record<string, unknown>): string | null {
+  const raw = payload.objectId;
+  return typeof raw === "string" && isUuid(raw) ? raw : null;
 }
 
 /**
@@ -180,7 +206,7 @@ async function applyEntry(
       // `payload.originDomainId` (validated identical to `exporterDomainId` by
       // `assertEntryAuthoredBySigner` before we get here). CRITICAL review fix.
       const originDomainId = exporterDomainId;
-      await upsertObjectByUrn(tx, {
+      const { object: upserted } = await upsertObjectByUrn(tx, {
         orgId,
         typeId,
         actorObjectId: FEDERATION_IMPORT_ACTOR_ID,
@@ -193,6 +219,15 @@ async function applyEntry(
         labels: (payload.labels as Record<string, unknown>) ?? {},
         federationImport: { originDomainId, revision, provenance: null }
       });
+      // THE EVIDENCE RESOLVES ITSELF. If this domain had previously recorded unattached
+      // `change_status` for this very object (the status entry arrived before its object — routine
+      // at any scope wide enough to ship both), that ignorance is now over: the change object IS
+      // here and the board's normal replica treatment takes over. Clearing it is what stops the
+      // signal from being a ratchet — see `unattached-change-status-repo.ts`. Keyed on the object
+      // id rather than on `typeId === "change"` so it is correct even if a future entry kind
+      // carries the same id; a delete that matches nothing is a no-op. The id comes from the row
+      // that ACTUALLY landed, not from `payload.id` (which is optional on the wire).
+      await clearUnattachedChangeStatus(tx, orgId, exporterDomainId, upserted.id);
       return;
     }
     case "object_tombstone": {
@@ -276,19 +311,42 @@ async function applyEntry(
       //      `payload.toState`) — it is NOT equivalent to "no change was ever proposed there". The
       //      evidence is nonetheless dropped: a `change_status` payload carries no `targets`, so
       //      nothing here can attribute it to a component, and synthesizing a graph object from it
-      //      would fabricate name/targets/urn this domain was never sent. Carrying it honestly needs
-      //      a federation-layer store for unattached peer status (a real feature, out of scope for
-      //      the read projection that surfaced it) — recorded here so the gap is documented at the
-      //      place it happens rather than assumed away as an equivalence.
+      //      would fabricate name/targets/urn this domain was never sent.
+      //
+      //      THE EVIDENCE IS NO LONGER DROPPED. It is recorded in
+      //      `federation_unattached_change_status` (drizzle/0040) — the "federation-layer store for
+      //      unattached peer status" this comment used to name as missing future work. It carries
+      //      the object id, the propose-time urn/name when the payload supplied them, and the last
+      //      reported state, and it is DELETED by the `object_upsert` branch above the moment the
+      //      change object actually lands. `coordination/service-board.ts` reads it so a board can
+      //      no longer report a confident `stable` over evidence this domain literally received.
+      //      Attribution stays at (peer, change) grain — per-COMPONENT would need `targets` on the
+      //      wire; see the repo module's header for that owner decision.
       //  (b) ANY OTHER failure — still swallowed (enrichment must never abort a valid import), but
       //      deliberately distinguished below so (a) is not used to explain away (b).
       try {
         const objectId = String(payload.objectId ?? "");
         if (!objectId) return;
+        const reportedState = reportedChangeState(payload);
         const existing = await findReplicaOrNull(tx, orgId, objectId);
-        if (!existing) return; // (a) — evidence received; nothing local to attach it to
+        if (!existing) {
+          // (a) — evidence received; nothing local to attach it to. RECORD it.
+          const recordableId = recordableChangeObjectId(payload);
+          if (recordableId) {
+            await recordUnattachedChangeStatus(tx, {
+              orgId,
+              peerDomainId: exporterDomainId,
+              changeObjectId: recordableId,
+              urn: typeof payload.urn === "string" ? payload.urn : null,
+              name: typeof payload.name === "string" ? payload.name : null,
+              lastState: reportedState,
+              dropReason: "no_local_replica"
+            });
+          }
+          return;
+        }
         if (existing.originDomainId !== exporterDomainId) return; // not a replica of THIS peer — leave alone
-        const state = (payload.toState ?? payload.state) as string | undefined;
+        const state = reportedState;
         if (!state) return;
         await updateObject(tx, {
           orgId,
@@ -300,8 +358,11 @@ async function applyEntry(
           federationImport: { originDomainId: exporterDomainId, revision: existing.revision + 1 }
         });
       } catch {
-        // (b) only — case (a) never reaches here (findReplicaOrNull returns null for it). Still
-        // swallowed: enrichment must never abort an otherwise-valid import.
+        // (b) only — case (a) never reaches here (it returns from inside the branch above). Still
+        // swallowed: enrichment must never abort an otherwise-valid import. Note the (a) RECORD
+        // sits inside this try deliberately: a genuine failure of that write would poison the
+        // surrounding transaction anyway (Postgres), so the whole import fails closed at COMMIT —
+        // swallowing it here cannot turn a broken write into a silently green import.
       }
       return;
     }
@@ -429,6 +490,26 @@ export async function importSyncBundle(
     if (entryMatchesScope(entry, peer.syncScope)) {
       await applyEntry(tx, orgId, entry, exporterDomainId);
       applied += 1;
+    } else if (entry.entryKind === "change_status") {
+      // THE SECOND DROP CHOKEPOINT. This receiver's OWN scope discarded a change-status entry that
+      // the sender did ship — e.g. a `policies_only` receiver. The board's scope-derived caveat
+      // already covers this case, but recording it is strictly more precise (it names WHICH change
+      // and its state, so the caveat can be conditioned on the change still being in flight rather
+      // than firing forever). Recorded only for `change_status`: no other skipped entry kind
+      // carries a lifecycle state this domain could otherwise mistake for "nothing is happening".
+      const payload = entry.payload;
+      const objectId = recordableChangeObjectId(payload);
+      if (objectId) {
+        await recordUnattachedChangeStatus(tx, {
+          orgId,
+          peerDomainId: exporterDomainId,
+          changeObjectId: objectId,
+          urn: typeof payload.urn === "string" ? payload.urn : null,
+          name: typeof payload.name === "string" ? payload.name : null,
+          lastState: reportedChangeState(payload),
+          dropReason: "receiver_scope"
+        });
+      }
     }
     lastSequence = entry.sequence;
     // Full scope: advance per applied entry, carrying the rowHash for next sync's continuity check.

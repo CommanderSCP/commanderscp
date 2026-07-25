@@ -59,6 +59,46 @@ export async function recordBundleTransfer(
   return toBundleTransfer(row);
 }
 
+/**
+ * When a signed sync bundle from `peerDomainId` was last CONFIRMED as imported here — the one
+ * transport-agnostic freshness anchor this instance has, and the basis of DESIGN §13's
+ * "as of &lt;bundle/date&gt;" label.
+ *
+ * WHY THIS AND NOT `federation_peers.lastPullSuccessAt`. That column is stamped only by the
+ * live-pull scheduler (`federation-sync.ts`), which iterates `role === "commander" && baseUrl` —
+ * so on an AIR-GAPPED instance it is NULL forever, and a freshness label derived from it would
+ * render "never synced" on an instance that imports bundles weekly. Every import path instead
+ * funnels through `importSyncBundle` → `recordBundleTransfer(direction:'import', kind:'sync',
+ * status:'confirmed')`: the live pull, `POST /v1/federation/imports` (a pushed bundle or
+ * `scp federation import`), and the unattended air-gap inbox loop alike. `status:'confirmed'` is
+ * only ever written on IMPORT rows (exports insert `'created'` and this module exposes no update),
+ * so the predicate is unambiguous.
+ *
+ * Purely observational, exactly as this module's header says — it feeds a LABEL, never an
+ * authority or idempotency decision.
+ */
+export async function lastConfirmedSyncImportAt(
+  tx: TenantTx,
+  orgId: string,
+  peerDomainId: TrustDomainId
+): Promise<Date | null> {
+  const rows = await tx
+    .select({ confirmedAt: bundleTransfers.confirmedAt })
+    .from(bundleTransfers)
+    .where(
+      and(
+        eq(bundleTransfers.orgId, orgId),
+        eq(bundleTransfers.peerDomainId, peerDomainId),
+        eq(bundleTransfers.direction, "import"),
+        eq(bundleTransfers.kind, "sync"),
+        eq(bundleTransfers.status, "confirmed")
+      )
+    )
+    .orderBy(desc(bundleTransfers.confirmedAt))
+    .limit(1);
+  return rows[0]?.confirmedAt ?? null;
+}
+
 export async function listRecentTransfers(
   tx: TenantTx,
   orgId: string,

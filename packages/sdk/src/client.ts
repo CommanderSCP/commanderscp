@@ -916,8 +916,12 @@ export class ScpClient {
       removeDependsOn: dependsOn.remove,
       /**
        * The service release board (coordination-ui-views.md Phase 2, Layer A) — the service's
-       * components, each's latest change per-stage wave status + attention, and a releasing/blocked/
+       * components, each's latest change per-wave status + attention, and a releasing/blocked/
        * stable summary, projected server-side in one call. Read-only.
+       *
+       * (ADR-0021 D6 residual: this line said "per-stage wave status" until 2026-07-25 — a leftover
+       * of the wave-sense misuse of "stage". The field it describes is `waves`; the (iii-b) rename
+       * moved the field but missed this caption.)
        */
       board: async (idOrUrn: string): Promise<ServiceBoardResponse> => {
         const result = await getServiceBoardRequest({ client: this.client, path: { idOrUrn } });

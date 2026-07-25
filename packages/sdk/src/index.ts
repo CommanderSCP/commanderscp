@@ -69,7 +69,8 @@ export type {
   ServiceBoardKind,
   ServiceBoardAttention,
   ServiceBoardFreeze,
-  ServiceBoardSummary
+  ServiceBoardSummary,
+  ServiceBoardAsOf
 } from "@scp/schemas";
 
 // M4: Governance Engine — control runs/bindings, approvals (N-of-M quorum), freezes, and `scp

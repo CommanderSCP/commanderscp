@@ -16,6 +16,8 @@ import { listFreezes, type FreezeRow } from "../governance/freezes-repo.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 import { listPeers } from "../federation/peers-repo.js";
 import { scopeCarriesChangeObjects } from "../federation/scope-filter.js";
+import { listUnattachedChangeStatusInStates } from "../federation/unattached-change-status-repo.js";
+import { limitingUpstreamFreshness } from "../federation/upstream-freshness.js";
 import { sqlIn } from "../graph/sql-helpers.js";
 
 /**
@@ -58,14 +60,46 @@ import { sqlIn } from "../graph/sql-helpers.js";
  * observation (see `service-board-precedence.integration.test.ts`) — and the counts still add up to
  * `rows.length` for shape stability; what changes is that they are no longer presented as facts.
  *
- * THE GAP THAT REMAINS, stated accurately: the treatment above is SCOPE-derived, not
- * EVIDENCE-derived. It is sound in the direction that matters (a scope that cannot carry change
- * objects is a sufficient condition for "I cannot see this peer's changes", so it never fabricates
- * ignorance) but it is board-wide rather than per-component, because the evidence itself cannot be
- * attributed to a component and is not persisted anywhere — `sync_journal` stores only entries this
- * domain AUTHORED (`federation/journal-repo.ts`). Naming the specific components would require
- * either persisting unattached peer status at the federation layer or widening what `status_only`
- * forwards; both are owner decisions, deliberately not taken here.
+ * WHY SCOPE ALONE IS NOT ENOUGH — THE SECOND ARM (drizzle/0040). The rule above is derived from the
+ * RECEIVER's own `federation_peers.sync_scope`. That column is purely LOCAL config: it is written by
+ * `pairPeer`, read by export filtering, import defense-in-depth and this file, and it NEVER rides
+ * the wire — the two peers' values are set independently by two operators and are never reconciled.
+ * So it is blind to the case where the SENDER is the narrow side: a commander whose peer row for the
+ * outpost says `status_only` ships change STATUS and no change OBJECTS, while the outpost's own row
+ * says `changes_only` and its scope predicate cheerfully answers "I can see change objects". Every
+ * row then falls through to a confident `stable` with an EMPTY `unknownFields` — the same fabricated
+ * all-clear, on the most likely field misconfiguration there is.
+ *
+ * So the condition is a UNION of two independent arms, and both are kept:
+ *
+ *  1. SCOPE-derived (above) — the only signal available when THIS receiver's own scope guarantees
+ *     blindness, because such a receiver drops the entries and produces no evidence at all.
+ *  2. EVIDENCE-derived — `federation_unattached_change_status`, written by `import-repo.ts` at the
+ *     two points where a `change_status` entry is dropped (no local replica of `payload.objectId`;
+ *     or this receiver's scope filter discarded it). It fires downstream of BOTH peers' scopes, so
+ *     it catches the sender-narrow mismatch that arm 1 structurally cannot. It is also strictly more
+ *     precise than arm 1: the row carries the change's last reported state, so the caveat is
+ *     conditioned on that state being IN-FLIGHT and one long-settled change cannot make a board
+ *     claim ignorance forever. And it is self-clearing — the `object_upsert` path deletes the row
+ *     the moment the change object lands — so it cannot fabricate persistent ignorance either.
+ *
+ * THE GAP THAT REMAINS, stated accurately. (i) The caveat is board-wide, not per-component: no
+ * `change_status` payload carries `targets` and the change urn encodes nothing about them, so at
+ * import time the receiver holds an object id and a state and nothing that resolves a component.
+ * Per-component attribution would require widening the propose-time payload with `targets` — wire-
+ * safe, but it discloses target component ids to a peer scoped precisely to withhold graph content,
+ * which is an owner decision and deliberately not taken here. (ii) A sender at `policies_only` (or a
+ * `custom` selector excluding `change_status`) sends no evidence of ANY kind; if this receiver's own
+ * scope is wide, neither arm fires. Closing that would need the sender's scope carried in the bundle
+ * header, which is measurably NOT an additive wire change (an un-upgraded importer strips the unknown
+ * key and then fails every checksum, fail-closed) — a `formatVersion` flag day, not this fix.
+ *
+ * STALENESS (the third board-level rule, DESIGN §13). Everything above answers "can I see it"; none
+ * of it answers "when did what I can see arrive". §13 requires the "as of &lt;bundle/date&gt;" label
+ * and bans presenting stale data as live status. `asOf` carries that label for the LIMITING upstream
+ * peer, and when that peer is overdue by its OWN effective cadence the same two board-level fields
+ * are named unobservable — a newer change may exist upstream that has not been sent yet. See
+ * `federation/upstream-freshness.ts`.
  */
 
 /** Terminal statuses that count as a target/wave failure for the "blocked" derivation. `no_executor`
@@ -249,20 +283,38 @@ export async function buildServiceBoard(
   //    this change?". It is an ensure (not a get) because it is the one canonical way to name this
   //    instance; minting the identity row on first use is idempotent and race-safe (self-repo.ts).
   const self = await ensureFederationSelf(tx, orgId);
-  const [latestByComponent, allFreezes, peers] = await Promise.all([
+  const [latestByComponent, allFreezes, peers, unattachedInFlight] = await Promise.all([
     latestChangeByComponent(tx, orgId, componentIds, self.domainId),
     listFreezes(tx, orgId),
-    listPeers(tx, orgId)
+    listPeers(tx, orgId),
+    // ARM 2 of the change-blindness union — POSITIVE EVIDENCE that changes are moving on a peer
+    // and cannot be attributed to anything local. Conditioned on IN_FLIGHT so a change that
+    // settled long ago cannot keep a board claiming ignorance. One bounded, indexed read.
+    listUnattachedChangeStatusInStates(tx, orgId, [...IN_FLIGHT])
   ]);
-  // CHANGE-OBJECT BLINDNESS (see the file header). A peer whose scope cannot carry change
-  // `object_upsert` entries leaves this domain unable to tell "no change targets this component"
-  // from "I was never sent the change that does" — while `status_only` specifically keeps sending
-  // `change_status` entries, so the domain holds positive evidence that changes exist there.
-  // Derived from the peer's OWN recorded scope, which is exactly the predicate `import-repo.ts`
-  // re-applies on the way in, so it can only under-claim (a sender narrower than this receiver),
-  // never fabricate ignorance.
+  // CHANGE-OBJECT BLINDNESS (see the file header) — a UNION of two independent arms, because
+  // neither alone covers both directions of a scope mismatch.
+  //
+  // ARM 1, SCOPE-derived. A peer whose scope cannot carry change `object_upsert` entries leaves
+  // this domain unable to tell "no change targets this component" from "I was never sent the
+  // change that does" — while `status_only` specifically keeps sending `change_status` entries, so
+  // the domain holds positive evidence that changes exist there. Derived from this RECEIVER's own
+  // recorded scope, which is the predicate `import-repo.ts` re-applies on the way in. It is sound
+  // (it never fabricates ignorance) but it under-claims whenever the SENDER is the narrower side,
+  // since `sync_scope` never crosses the wire and the two sides are never reconciled.
   const changeBlindPeers = peers.filter((peer) => !scopeCarriesChangeObjects(peer.syncScope));
-  const changeVisibilityUnknown = changeBlindPeers.length > 0;
+  // ARM 2, EVIDENCE-derived. Recorded at import, downstream of BOTH peers' scopes, so it fires on
+  // exactly the mismatch arm 1 misses.
+  const changeVisibilityUnknown = changeBlindPeers.length > 0 || unattachedInFlight.length > 0;
+
+  // STALENESS (DESIGN §13). The limiting upstream among the peers whose scope CAN carry change
+  // objects — the peers that can be blind are already covered above, and a peer that structurally
+  // cannot send change objects does not bound the freshness of change objects.
+  const asOf = await limitingUpstreamFreshness(
+    tx,
+    orgId,
+    peers.filter((peer) => scopeCarriesChangeObjects(peer.syncScope))
+  );
   // Named once, used for every empty row: what a row would otherwise assert by staying silent.
   // `changeName` is omitted deliberately — it is rendered from `latestChangeId`'s own cell, so
   // naming the id covers it.
@@ -459,12 +511,29 @@ export async function buildServiceBoard(
     ? ["summary.stable", "rows[].latestChangeId"]
     : [];
 
+  // BOARD-LEVEL HONESTY, third rule: STALENESS (DESIGN §13 — "never presents stale data as live
+  // status"). The two statements above stop being current observations the moment the limiting
+  // upstream is overdue by its OWN effective cadence: a newer change may already exist there that
+  // simply has not been sent yet, so `summary.stable` may be counting rows that are no longer
+  // settled and no row's `latestChangeId` is certainly the latest. Same two dotted paths as the
+  // blindness rule because it is the same two claims that fail — deduped below, since a board can
+  // be both blind AND stale and must not say so twice.
+  //
+  // Deliberately fires ONLY on `stale === true`. `stale === null` means no cadence exists for the
+  // data to be late against (an air-gapped peer; an outpost seen from the commander), and §13's
+  // contract there is the LABEL, which `asOf` now carries — asserting an unknown from the mere
+  // absence of a schedule would over-claim ignorance on every air-gapped deployment forever.
+  const stalenessUnknowns = asOf?.stale === true ? ["summary.stable", "rows[].latestChangeId"] : [];
+
   const serviceFreeze = activeFreezeByScope.get(service.id);
   return {
     service: { id: service.id, urn: service.urn, name: service.name },
     rows,
     summary: { releasing, blocked, stable, notDrivenHere },
     serviceFreeze: serviceFreeze ? toFreeze(serviceFreeze) : null,
-    unknownFields: [...freezeVisibilityUnknowns, ...changeVisibilityUnknowns]
+    asOf,
+    unknownFields: [
+      ...new Set([...freezeVisibilityUnknowns, ...changeVisibilityUnknowns, ...stalenessUnknowns])
+    ]
   };
 }

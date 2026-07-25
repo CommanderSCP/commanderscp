@@ -1248,6 +1248,60 @@ export const federationInboxFiles = pgTable(
   ]
 );
 
+/** Pre-M16 residual, Track A (drizzle/0040) — peer change STATUS this domain received and could
+ *  not attach to anything. A `change_status` journal entry is positive evidence that a change
+ *  exists and is moving on the peer (it names `payload.objectId` and a state); when no local
+ *  replica of that object exists, or when this receiver's own scope filter discards the entry,
+ *  `federation/import-repo.ts` used to drop that evidence silently and
+ *  `coordination/service-board.ts` then reported the affected components as a confident `stable`.
+ *
+ *  This is the store `import-repo.ts`'s own comment already named as the missing feature. It is
+ *  what makes the board's change-blindness caveat EVIDENCE-derived rather than only SCOPE-derived
+ *  — decisive when the SENDER is the narrow side, because `sync_scope` is purely local config that
+ *  never rides the wire and the two peers' values are never reconciled.
+ *
+ *  Keyed on (org, peer, change object id) and UPSERTED, so a from-genesis re-sync converges
+ *  (DESIGN §6 replay invariant); DELETED when the change's `object_upsert` finally lands, so the
+ *  signal resolves itself and can never fabricate persistent ignorance. It deliberately carries no
+ *  target components: no `change_status` payload shape carries `targets`, so attribution stays at
+ *  the (peer, change) grain and the board's caveat stays board-level — see drizzle/0040's header
+ *  for the owner decision that would change that. */
+export const federationUnattachedChangeStatus = pgTable(
+  "federation_unattached_change_status",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    /** TRUST sense (ADR-0021 D4) — the peer whose bundle carried the dropped entry. */
+    peerDomainId: uuid("peer_domain_id").notNull().$type<TrustDomainId>(),
+    /** `payload.objectId` — the change graph object id on the ORIGIN domain. Deliberately not a
+     *  local FK: the whole point is that no local row with this id exists (yet). */
+    changeObjectId: uuid("change_object_id").notNull(),
+    /** Propose-time enrichment only — the transition payload carries neither, so both are nullable
+     *  and preserved across later transitions. */
+    urn: text("urn"),
+    name: text("name"),
+    /** `payload.toState ?? payload.state` — the last lifecycle state the peer reported. The board
+     *  conditions its caveat on this being IN-FLIGHT, so one long-settled change cannot make a
+     *  board claim ignorance forever. */
+    lastState: text("last_state"),
+    /** 'no_local_replica' (entry admitted; nothing local carries `changeObjectId` — the SENDER
+     *  withheld the change object) | 'receiver_scope' (this receiver's own scope filter discarded
+     *  it). Different operator-visible causes with different fixes; collapsing them would repeat
+     *  the conflation this table exists to end. */
+    dropReason: text("drop_reason").notNull(),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    uniqueIndex("federation_unattached_change_identity").on(
+      table.orgId,
+      table.peerDomainId,
+      table.changeObjectId
+    ),
+    index("federation_unattached_change_org_state").on(table.orgId, table.lastState)
+  ]
+);
+
 /** Imported-approval EVIDENCE (DESIGN §13: "approvals transfer as evidence, never as authority").
  *  Deliberately a separate table from `approval_votes` — these rows are never counted toward a
  *  LOCAL `approval_requests` quorum; they are read-only, attestation-validated proof attached to
