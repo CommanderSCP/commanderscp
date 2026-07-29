@@ -11,12 +11,7 @@ import type { ApprovalRequest } from "@scp/schemas";
 import { client } from "../lib/client";
 import { changeApprovalsKey, changeDetailKey, changeListKey } from "../lib/query-client";
 import { useIdParam } from "../lib/use-route-params";
-import {
-  ForeignOriginNotice,
-  isForeignOriginObject,
-  replicaGuard,
-  useOwnDomainId
-} from "../lib/replica-origin";
+import { ForeignOriginNotice, isForeignOriginObject, useOwnDomainId } from "../lib/replica-origin";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge, type BadgeProps } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -357,15 +352,23 @@ export function ChangeDetailPage(): React.JSX.Element {
   }
 
   const { change, plan, decisions, controlRuns, waitStatus } = explainQuery.data;
-  // M16.3 P2: these three gate ONLY on change STATE — whether the button is offered AT ALL for
-  // this lifecycle state. `foreign` (below) is a SEPARATE, additional gate on top: whether this
-  // domain actually DRIVES the change (single-writer authority, `lib/replica-origin.ts`) — a
-  // change this domain does not drive is a read-only replica, so a state-eligible action must
-  // still render DISABLED + EXPLAINED (mirrors service-board.tsx's `isUnknown`/`UnknownHere`
-  // idiom), never silently enabled just because the reported state happens to allow it.
+  // These three gate ONLY on change STATE — whether the button is offered AT ALL for this lifecycle
+  // state.
+  //
+  // M16.3 P2 (REMEASURED): Accept/Rollback/Cancel are deliberately NOT additionally gated on the
+  // change's federation origin. `apps/server/src/federation/foreign-origin-writes.integration.test.ts`
+  // measures cancel SUCCEEDING on a foreign-origin change, and accept/rollback answering one
+  // byte-identically to a local change in the same state (same status, same problem title) — the
+  // transition verbs write the `changes` state-machine row and never route through `updateObject`,
+  // so the single-writer guard is simply not on that path. The first cut of this milestone disabled
+  // all three anyway, on an uncited claim that the server refuses them. Whether the server SHOULD
+  // refuse an accept on a change another domain drives is a real open question (`service-board.ts`
+  // already models `drivenHere`), but it is a SERVER decision — the UI must not simulate an
+  // enforcement that does not exist. Recorded as a follow-up finding in the PR body.
   const canCancel = CANCELLABLE_STATES.includes(change.state);
   const canAccept = ACCEPTABLE_STATES.includes(change.state);
   const canRollback = ROLLBACKABLE_STATES.includes(change.state);
+  // Provenance badge only — never a gate (see above).
   const foreign = isForeignOriginObject(change.originDomainId, ownDomainId);
 
   return (
@@ -413,8 +416,7 @@ export function ChangeDetailPage(): React.JSX.Element {
           {canAccept && (
             <Button
               onClick={() => acceptMutation.mutate()}
-              disabled={foreign || acceptMutation.isPending}
-              title={foreign ? replicaGuard(true).title : undefined}
+              disabled={acceptMutation.isPending}
               data-testid="accept-change-button"
             >
               {acceptMutation.isPending ? "Accepting…" : "Accept"}
@@ -424,8 +426,6 @@ export function ChangeDetailPage(): React.JSX.Element {
             <Button
               variant="outline"
               onClick={() => setRollbackOpen(true)}
-              disabled={foreign}
-              title={foreign ? replicaGuard(true).title : undefined}
               data-testid="rollback-change-button"
             >
               Rollback
@@ -435,8 +435,6 @@ export function ChangeDetailPage(): React.JSX.Element {
             <Button
               variant="destructive"
               onClick={() => setCancelOpen(true)}
-              disabled={foreign}
-              title={foreign ? replicaGuard(true).title : undefined}
               data-testid="cancel-change-button"
             >
               Cancel

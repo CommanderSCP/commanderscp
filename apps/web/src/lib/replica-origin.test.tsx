@@ -1,66 +1,109 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Button } from "../components/ui/button";
-import { ForeignOriginNotice, isForeignOriginObject, replicaGuard } from "./replica-origin";
+import {
+  ForeignOriginNotice,
+  isForeignOriginObject,
+  isMergeLoserBlocked,
+  isMoveBlocked,
+  replicaGuard
+} from "./replica-origin";
 
 /**
- * M16.3 P2 — the write-control census fix: `registry-detail.tsx` (Assign/Move service, Detach/
- * Repurpose executor bindings, Merge) and `change-detail.tsx` (Accept/Rollback/Cancel) all share
- * these THREE primitives to decide whether a write control renders disabled+explained for a
- * foreign-origin object. This pins the primitives directly — the same "test the pure pieces, not
- * the whole hook-bearing page" idiom `service-board-honesty.test.tsx` uses for `isUnknown`/
- * `UnknownHere` (that file renders `BoardRow`, a purely presentational component with no hooks;
- * `registry-detail.tsx`'s cards DO use `useQuery`/`useMutation`, so — mirroring the idiom, not
- * duplicating the exact shape — this test renders the shared PRIMITIVES those cards wire onto
- * real `Button`/`Select` elements, plus a `Button` reproduction of the actual disabled+title
- * wiring, rather than the full hook-bearing page).
+ * M16.3 P2 (REMEASURED) — the primitives behind the TWO write-control gates that survive, both of
+ * which mirror a refusal MEASURED in `apps/server/src/federation/foreign-origin-writes.integration.
+ * test.ts`: MOVE across a foreign-origin `contains` edge (`deleteRelationship` 409s) and MERGE with
+ * a foreign-origin LOSER (`deleteObject` 409s). Everything else the first cut gated —
+ * Detach/Repurpose/Bind, ASSIGN, MOVE across a local edge, merge into a foreign SURVIVOR, and
+ * Accept/Rollback/Cancel — the server measurably ACCEPTS, so those gates are gone.
+ *
+ * `replicaGuard`'s mandatory `refusal` argument is the structural half of that correction: a gate
+ * cannot be written without naming the server refusal it mirrors.
  *
  * No jsdom, no QueryClientProvider — plain vitest + `renderToStaticMarkup`, so this runs in the
  * existing "4. Unit tests" job (transitively required on every PR), same as service-board-
  * honesty.test.tsx.
  */
-describe("replica-origin (M16.3 P2): foreign-origin write-control gating", () => {
+describe("replica-origin (M16.3 P2): measured foreign-origin write-control gating", () => {
   const OWN_DOMAIN = "2c1d3e4f-5a6b-4c8d-9e0f-1a2b3c4d5e6f";
   const OTHER_DOMAIN = "5f6b4a2c-1d3e-4f8a-9b0c-2d4e6f8a0b1c";
+  const REFUSAL = "Merging this component in would soft-delete it, which `deleteObject` refuses here:";
 
   describe("isForeignOriginObject", () => {
-    it("is FALSE for an object this domain itself originated", () => {
+    it("is FALSE for a row this domain itself originated", () => {
       expect(isForeignOriginObject(OWN_DOMAIN, OWN_DOMAIN)).toBe(false);
     });
 
-    it("is TRUE for an object authoritatively owned by another domain", () => {
+    it("is TRUE for a row authoritatively owned by another domain", () => {
       expect(isForeignOriginObject(OTHER_DOMAIN, OWN_DOMAIN)).toBe(true);
     });
 
-    it("is FALSE (not yet decidable) while this instance's own domain id hasn't loaded — never a false positive from missing data", () => {
+    it("is FALSE (not yet decidable) while this instance's own domain id hasn't loaded — missing data never fabricates a block", () => {
       expect(isForeignOriginObject(OTHER_DOMAIN, undefined)).toBe(false);
     });
 
-    it("is FALSE for an object with no origin recorded at all (null/undefined originDomainId)", () => {
+    it("is FALSE for a row with no origin recorded at all (null/undefined originDomainId)", () => {
       expect(isForeignOriginObject(null, OWN_DOMAIN)).toBe(false);
       expect(isForeignOriginObject(undefined, OWN_DOMAIN)).toBe(false);
     });
   });
 
-  describe("replicaGuard", () => {
-    it("locally-originated (foreign=false): enabled, no explanatory title", () => {
-      expect(replicaGuard(false)).toEqual({ disabled: false });
+  // The defect class this milestone shipped was not "no gate" — it was "gated on the WRONG ROW".
+  // These two pin WHICH row each surviving gate reads, against the measured server behaviour in
+  // apps/server/src/federation/foreign-origin-writes.integration.test.ts.
+  describe("isMoveBlocked — keyed on the `contains` EDGE, never on the component", () => {
+    it("no current edge (an ASSIGN) is NEVER blocked — measured: 'ASSIGN ... SUCCEEDS even when the COMPONENT is foreign-origin'", () => {
+      expect(isMoveBlocked(undefined, OWN_DOMAIN)).toBe(false);
     });
 
-    it("foreign-origin (foreign=true): disabled, WITH an explanatory title naming single-writer authority", () => {
-      const guard = replicaGuard(true);
-      expect(guard.disabled).toBe(true);
-      expect(guard.title).toBeDefined();
-      expect(guard.title).toMatch(/read-only replica|single-writer authority/i);
+    it("a LOCALLY-originated edge is not blocked — measured: 'MOVE across a LOCALLY-originated contains edge SUCCEEDS even when the COMPONENT is foreign-origin'", () => {
+      expect(isMoveBlocked({ originDomainId: OWN_DOMAIN }, OWN_DOMAIN)).toBe(false);
+    });
+
+    it("a FOREIGN-ORIGIN edge IS blocked — measured: 'MOVE across a FOREIGN-ORIGIN contains edge 409s'", () => {
+      expect(isMoveBlocked({ originDomainId: OTHER_DOMAIN }, OWN_DOMAIN)).toBe(true);
     });
   });
 
-  describe("a write control wired with replicaGuard (the actual shape every gated Button uses)", () => {
+  describe("isMergeLoserBlocked — keyed on the LOSER, never on the survivor", () => {
+    it("a locally-originated loser is not blocked", () => {
+      expect(isMergeLoserBlocked({ originDomainId: OWN_DOMAIN }, OWN_DOMAIN)).toBe(false);
+    });
+
+    it("a FOREIGN-ORIGIN loser IS blocked — measured: 'merge 409s when the LOSER is foreign-origin'", () => {
+      expect(isMergeLoserBlocked({ originDomainId: OTHER_DOMAIN }, OWN_DOMAIN)).toBe(true);
+    });
+  });
+
+  describe("replicaGuard", () => {
+    it("locally-originated (foreign=false): enabled, no explanatory title — and the refusal text is NOT leaked onto an enabled control", () => {
+      expect(replicaGuard(false, REFUSAL)).toEqual({ disabled: false });
+    });
+
+    it("foreign-origin (foreign=true): disabled, and the title carries the CALLER'S measured refusal, not a blanket claim", () => {
+      const guard = replicaGuard(true, REFUSAL);
+      expect(guard.disabled).toBe(true);
+      // The specific refusal this gate mirrors must survive into what the operator reads — that is
+      // what makes an unmeasured gate impossible to write without lying in the UI.
+      expect(guard.title).toContain(REFUSAL);
+      expect(guard.title).toMatch(/single-writer authority/i);
+    });
+
+    it("a DIFFERENT gate produces a DIFFERENT explanation — one blanket message for every control is exactly the defect being corrected", () => {
+      const move = replicaGuard(
+        true,
+        "Moving this component would delete its current service edge, which `deleteRelationship` refuses here:"
+      );
+      expect(move.title).not.toBe(replicaGuard(true, REFUSAL).title);
+    });
+  });
+
+  describe("a write control wired with replicaGuard (the actual shape both surviving gates use)", () => {
     function renderControl(foreign: boolean): string {
-      const guard = replicaGuard(foreign);
+      const guard = replicaGuard(foreign, REFUSAL);
       return renderToStaticMarkup(
-        <Button data-testid="gated-control" disabled={foreign} title={guard.title}>
-          Detach
+        <Button data-testid="gated-control" disabled={guard.disabled} title={guard.title}>
+          Merge in
         </Button>
       );
     }
@@ -81,7 +124,7 @@ describe("replica-origin (M16.3 P2): foreign-origin write-control gating", () =>
     });
   });
 
-  describe("ForeignOriginNotice (the honest marker — mirrors service-board.tsx's UnknownHere idiom)", () => {
+  describe("ForeignOriginNotice (the honest provenance marker — mirrors service-board.tsx's UnknownHere idiom)", () => {
     it("renders the dashed-amber 'read-only replica' marker, naming the owning domain in its title", () => {
       const html = renderToStaticMarkup(<ForeignOriginNotice originDomainId={OTHER_DOMAIN} />);
       expect(html).toContain("data-testid=\"foreign-origin-notice\"");
@@ -89,10 +132,16 @@ describe("replica-origin (M16.3 P2): foreign-origin write-control gating", () =>
       expect(html).toContain("read-only replica");
       expect(html).toContain(OTHER_DOMAIN);
       // Deliberately NOT the muted "—"/success-colored idiom `service-board.tsx` reserves for
-      // observed-and-clean — this must read as a DIFFERENT thing (an inability to act here), not a
-      // clean bill of health, exactly the distinction `service-board.tsx`'s own UnknownHere
-      // preserves for unobservable-vs-empty.
+      // observed-and-clean — this must read as a DIFFERENT thing, exactly the distinction
+      // `service-board.tsx`'s own UnknownHere preserves for unobservable-vs-empty.
       expect(html).not.toContain("text-slate-400");
+    });
+
+    it("scopes its claim to what was MEASURED (the object's own fields) instead of overclaiming that nothing works here", () => {
+      const html = renderToStaticMarkup(<ForeignOriginNotice originDomainId={OTHER_DOMAIN} />);
+      // `foreign-origin-writes.integration.test.ts` measures executor bindings SUCCEEDING against a
+      // foreign-origin target — the badge must not tell an operator otherwise.
+      expect(html).toMatch(/executor bindings is unaffected/i);
     });
   });
 });
