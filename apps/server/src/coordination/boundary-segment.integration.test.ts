@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, isNull } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
-import type { ArtifactRef, BoundarySegment, PromotionBundle } from "@scp/schemas";
+import type { BoundarySegment, PromotionBundle } from "@scp/schemas";
 import { signBlob } from "@scp/cosign";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { roleBindings, roles } from "../db/schema.js";

@@ -5,11 +5,22 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { bundleTransfers } from "../db/schema.js";
 
 /**
- * Bundle-transfer tracking (DESIGN.md §13: "export created -> transfer submitted -> confirmed when
- * a returned bundle carries the outpost's import cursor"). Purely observational bookkeeping —
- * never consulted for authority/idempotency decisions (the journal's own sequence/hash chain is
- * what makes replication safe); this just gives the commander UI/CLI something to show for an
- * air-gapped peer's outstanding handoffs.
+ * Bundle-transfer tracking (DESIGN.md §13). Purely observational bookkeeping — never consulted for
+ * authority/idempotency decisions (the journal's own sequence/hash chain is what makes replication
+ * safe); this just gives the commander UI/CLI something to show for an air-gapped peer's
+ * outstanding handoffs.
+ *
+ * PER-HOP AND INSERT-ONLY (doc corrected 2026-07-29, M16.1). This is NOT a lifecycle: a row is
+ * never updated, and there is no `update(bundleTransfers)` anywhere in the tree. One row per
+ * `.scpbundle` an instance produced or consumed, in THAT instance's own database:
+ *   `created`   — the EXPORTER, on producing a bundle (export-repo, exportPromotionBundle).
+ *   `submitted` — a RETRANS only, for its onward drop (retrans-relay).
+ *   `confirmed` — the RECEIVER, on a successful import (import-repo, applyPromotionImport,
+ *                 retrans-relay's inbound hop).
+ * CONSEQUENCE: in the commander's own database an export can only ever read `created`, so the
+ * commander may say "exported" and MUST declare the handoff unknown — see
+ * `coordination/boundary-segment.ts`. The DESIGN §13 aspiration ("confirmed when a returned bundle
+ * carries the outpost's import cursor") is UNBUILT and named there as future increment M16.4.
  */
 
 function toBundleTransfer(row: typeof bundleTransfers.$inferSelect): BundleTransfer {
