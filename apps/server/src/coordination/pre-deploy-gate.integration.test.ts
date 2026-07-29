@@ -795,4 +795,75 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(gate.decisionId).toBe(afterFirst[0]!.id);
     expect(await gateDecisionsFor(changeId)).toHaveLength(1);
   }, 120_000);
+
+  // ---------------------------------------------------------------------------------------------
+  // THE OTHER HALF OF THE B5 IDEMPOTENCE GUARD (M16.1 review D1). The suppression above is keyed on
+  // BOTH `previous?.verdict === "allow"` AND the authorized-artifact-SET-KEY comparing equal
+  // (`decisionArtifactSetKey(previous.inputContext) === artifactSetKey(verifiedArtifacts)`) —
+  // never on the verdict alone. A change whose authorized artifact set CHANGES between two gate
+  // runs over the SAME change row (e.g. a re-promotion landing before the change leaves
+  // `coordinated`) is a DIFFERENT statement from the first allow, over a set that was never
+  // verified before, and must be recorded as its own Decision + `.passed` audit event — not
+  // shadowed by the earlier allow's decision_id. If it were shadowed, `boundary-segment.ts`'s
+  // latest-verdict read would report `verified` for image B's artifact set on the strength of a
+  // verify that only ever looked at image A: the fabricated-pass class M16.1 (I2) exists to rule
+  // out, reached through the fix for B5.
+  // ---------------------------------------------------------------------------------------------
+  it("a REWRITTEN authorized artifact set on the same change row gets its OWN Decision, not the stale allow's id", async () => {
+    const imageA = await pushImage("scp/rewrite-a-img", "rewrite-a");
+    signImage(imageA.ref, exporterKey.keyPath);
+    const imageB = await pushImage("scp/rewrite-b-img", "rewrite-b");
+    signImage(imageB.ref, exporterKey.keyPath);
+    expect(imageB.digest).not.toBe(imageA.digest);
+
+    const { changeId } = await proposeImportedChange([
+      { type: "oci", digest: imageA.digest, location: imageA.ref, signatureRef: "registry-attached" }
+    ]);
+
+    // First gate run: authorized set = { imageA }. Persists allow #1.
+    const first = await runPreDeployArtifactGate(server.deps.db, org.orgId, await changeRow(changeId));
+    expect(first.blocked).toBe(false);
+    expect(first.decisionId).toEqual(expect.any(String));
+
+    // The authorized set CHANGES on the SAME change row — model a re-promotion directly by
+    // rewriting `sourceRef.artifacts` + `promotionManifest` to a DIFFERENT, still-authentic image.
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(changes)
+        .set({
+          sourceRef: {
+            promotedFromDomain: exporterDomainId,
+            artifactDigests: [imageB.digest],
+            artifacts: [{ type: "oci", digest: imageB.digest, location: imageB.ref, signatureRef: "registry-attached" }],
+            promotionManifest: { artifacts: [{ type: "oci", digest: imageB.digest }] }
+          }
+        })
+        .where(eq(changes.objectId, changeId))
+    );
+
+    // Second gate run: authorized set = { imageB } now. Must NOT return the first allow's id.
+    const second = await runPreDeployArtifactGate(server.deps.db, org.orgId, await changeRow(changeId));
+    expect(second.blocked).toBe(false);
+    expect(second.decisionId).toEqual(expect.any(String));
+    expect(second.decisionId).not.toBe(first.decisionId); // a NEW verdict — the stale allow must not shadow it.
+
+    // Exactly two gate Decisions exist for this change, both `allow`, never a `block`.
+    const gateDecisions = await gateDecisionsFor(changeId);
+    expect(gateDecisions).toHaveLength(2);
+    expect(gateDecisions.every((d) => d.verdict === "allow")).toBe(true);
+    expect(await gateAuditFor(changeId)).toHaveLength(0);
+
+    // The second Decision's inputs are pinned to imageB's authorized set (charter principle 6) —
+    // proof the second verify actually ran over the new set rather than replaying the first's.
+    const secondDecision = gateDecisions.find((d) => d.id === second.decisionId);
+    expect(secondDecision).toBeDefined();
+    expect(
+      (secondDecision!.inputContext as { authorizedArtifacts?: { digest: string }[] })
+        .authorizedArtifacts?.map((a) => a.digest)
+    ).toEqual([imageB.digest]);
+
+    // And exactly two `.passed` audit events — a fresh one for the second, genuinely-new verdict,
+    // not a re-use of the first's.
+    expect(await passAuditFor(changeId)).toHaveLength(2);
+  }, 120_000);
 });
