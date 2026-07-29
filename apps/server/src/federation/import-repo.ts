@@ -414,8 +414,10 @@ export interface ImportSyncBundleResult {
  * that entry's hash and may never have been shown it). Folding the second case into genesis is what
  * made a scope WIDEN a one-way ratchet: the peer's next contiguous, authentic run could not link to
  * genesis, so every subsequent import was refused forever. The recovery is the ONE-SHOT PERMIT
- * `cursor.reanchorFromSeq`, issued only by `pairPeer` when the LOCAL operator widens this peer back
- * to `full` (cursors-repo.ts `permitCursorReanchor`) — never by anything a peer sends, because
+ * `cursor.reanchorFromSeq`, issued only by `pairPeer` whenever the LOCAL operator's pairing leaves
+ * this peer's `sync_scope` at `full` with an anchorless cursor (R1: keyed to the RESULTING scope and
+ * the cursor's actual state, not to a from→full transition — see peers-repo.ts) (cursors-repo.ts
+ * `permitCursorReanchor`) — never by anything a peer sends, because
  * `sync_scope` is local config that never crosses the wire. With the permit in force the run adopts
  * its OWN first entry as the anchor and NOTHING ELSE is relaxed: it must still start at exactly
  * `cursor.sequence + 1`, be internally gap-free, and verify every rowHash and signature, so a
@@ -494,9 +496,16 @@ function verifySegment(input: {
  *  - `permitted` no recorded hash at a NON-ZERO cursor, and the local operator's one-shot
  *                re-anchor permit is in force for exactly this position (drizzle/0042).
  *  - `none`      no recorded hash at a non-zero cursor and NO permit. There is nothing to link to;
- *                the run will be compared against genesis and cannot match. No supported operation
- *                produces this state any more — a scope widen issues the permit — so it is a state
- *                to REPORT accurately, not to paper over. */
+ *                the run will be compared against genesis and cannot match. This is exactly the
+ *                state every peer wedged by the pre-R1 bug sits in RIGHT NOW: `pairPeer` used to
+ *                issue the permit only on a scope TRANSITION into `full`, so a peer whose
+ *                `sync_scope` was already `full` before the fix landed (the common case — that is
+ *                how it got wedged) stays in `none` until the operator re-pairs it. Since R1,
+ *                `pairPeer` issues the permit whenever the RESULTING scope is `full` and the cursor
+ *                is anchorless, regardless of what it changed from — so re-running the exact
+ *                recovery this message prescribes (`scp federation pair <peer> --sync-scope full`,
+ *                even though the row already says `full`) moves the peer to `permitted` and heals
+ *                it. It is still a state to REPORT accurately, not to paper over. */
 type AnchorState = "held" | "genesis" | "permitted" | "none";
 
 interface AnchorFacts {
@@ -598,9 +607,9 @@ function describeAnchorClause(anchor: AnchorFacts & { brokeAtRunStart: boolean }
         `with no row hash — what entries applied while THIS side's sync_scope was narrow leave ` +
         `behind, since a sparse chain carries no linkable tail — so there was nothing for the run ` +
         `to continue from and it was compared against genesis. RE-APPLY this side's scope for that ` +
-        `peer (\`scp federation pair <peer> --sync-scope full\`): widening back to 'full' issues a ` +
-        `one-shot permit for exactly this cursor position, and the peer's next contiguous run ` +
-        `re-anchors and resumes. `
+        `peer (\`scp federation pair <peer> --sync-scope full\`) — even if it already reads 'full' ` +
+        `— to issue a one-shot permit for exactly this cursor position; the peer's next contiguous ` +
+        `run re-anchors and resumes. `
       );
   }
 }

@@ -39,9 +39,24 @@
 -- permit leaves the sequence untouched.
 --
 -- NULLABLE WITH NO BACKFILL. NULL = "no permit" = today's strict behavior, so every existing row
--- migrates as an exact no-op. Plain additive DDL on an RLS-governed table: the existing
--- `org_isolation` policy and grants are inherited unchanged (same class as 0031 / 0033 / 0037 /
--- 0038 / 0041).
+-- migrates as an exact no-op AT THE DDL LEVEL: this statement alone issues no permit to anyone.
+-- Plain additive DDL on an RLS-governed table: the existing `org_isolation` policy and grants are
+-- inherited unchanged (same class as 0031 / 0033 / 0037 / 0038 / 0041).
+--
+-- WHAT THIS MEANS FOR A CURSOR THAT IS ALREADY WEDGED (R1 — pre-M16 residual W1 follow-up). "No-op"
+-- above is a statement about the DDL, not about the operator's situation. A peer that hit the W1 bug
+-- before this fix existed already has `sync_scope.mode = 'full'` (the operator widened it with the
+-- pre-fix code — that widen is HOW it got wedged) and an anchorless cursor
+-- (`last_applied_row_hash IS NULL AND last_applied_seq > 0`). This migration does not touch that row:
+-- it stays exactly as wedged after the migration runs as before. What un-wedges it is a SUBSEQUENT
+-- call to `pairPeer` (peers-repo.ts) — originally only when the call's scope TRANSITIONED into
+-- `full`, which an already-`full` peer can never do again, so the message's own prescribed recovery
+-- (`scp federation pair <peer> --sync-scope full`) was inert for exactly this population. `pairPeer`
+-- now issues the permit whenever the RESULTING scope is `full` and the cursor is anchorless,
+-- regardless of the previous scope, so re-running that same command — even though it does not change
+-- `sync_scope` at all — issues the permit and heals the peer. No backfill migration is needed or
+-- performed: the healing action is the documented, authenticated, LOCAL re-pair, not a write this
+-- migration makes to anyone's data at upgrade time.
 -- ===========================================================================================
 
 ALTER TABLE "sync_cursors" ADD COLUMN IF NOT EXISTS "reanchor_from_seq" bigint;
