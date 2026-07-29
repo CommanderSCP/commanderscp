@@ -108,11 +108,14 @@ export function isMergeLoserBlocked(
 /**
  * The props a write control spreads to disable itself + explain why.
  *
- * `refusal` is MANDATORY and must state the concrete server refusal this gate mirrors, naming the
- * repo function that performs it — so a gate cannot be added without something measured to point
- * at. That requirement is the whole correction: the previous signature took no argument and
- * emitted one blanket "commander-origin config can only be changed at its origin" for five
- * controls, four of which the server happily accepted.
+ * `refusal` is a required parameter and is intended to state the concrete server refusal this gate
+ * mirrors, naming the repo function that performs it — every CURRENT call site does this (see
+ * `registry-detail.tsx`). TypeScript enforces only that some string is supplied at each call site,
+ * not that its content names anything real (`replicaGuard(true, "")` compiles) — the discipline of
+ * citing a measured refusal is convention pinned by `replica-origin.test.tsx`'s examples, not a
+ * compile-time guarantee. This is still the whole correction over the previous signature, which
+ * took no argument at all and emitted one blanket "commander-origin config can only be changed at
+ * its origin" for five controls, four of which the server happily accepted.
  *
  * A pure function (no hooks), so it's directly unit-testable via `renderToStaticMarkup` — the same
  * idiom `service-board-honesty.test.tsx` uses for `isUnknown`/`UnknownHere`.

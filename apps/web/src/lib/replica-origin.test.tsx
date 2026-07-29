@@ -17,8 +17,17 @@ import {
  * Detach/Repurpose/Bind, ASSIGN, MOVE across a local edge, merge into a foreign SURVIVOR, and
  * Accept/Rollback/Cancel — the server measurably ACCEPTS, so those gates are gone.
  *
- * `replicaGuard`'s mandatory `refusal` argument is the structural half of that correction: a gate
- * cannot be written without naming the server refusal it mirrors.
+ * `replicaGuard`'s mandatory `refusal: string` parameter is a WEAKER guarantee than an earlier
+ * commit on this PR claimed ("gated on the wrong row is now a type error" — it is not): TypeScript
+ * requires a second argument at every call site, but does not check that its CONTENT names a real,
+ * measured refusal — `replicaGuard(true, "")` compiles cleanly, and `isMoveBlocked`/
+ * `isMergeLoserBlocked`'s `{ originDomainId: string }` parameter types accept any object with that
+ * shape, including a full `GraphObject` for the WRONG row (a component instead of its `contains`
+ * edge) — structural typing plus no excess-property check on a passed variable means `tsc
+ * --noEmit` is clean either way. What actually keeps each gate honest is this file: every
+ * `disabled`/`title` assertion below is pinned to the SPECIFIC measured case it names, so a gate
+ * rekeyed onto the wrong row breaks a test here, not a compile. `refusal` is good, enforced-by-
+ * convention documentation, not a compile-time guarantee.
  *
  * No jsdom, no QueryClientProvider — plain vitest + `renderToStaticMarkup`, so this runs in the
  * existing "4. Unit tests" job (transitively required on every PR), same as service-board-

@@ -20,21 +20,27 @@ import {
  * resource's `GraphObjectSchema.originDomainId` already carries — the real HTTP + SDK round trip,
  * not a unit tautology.
  *
- * GROUNDING FINDING (recorded in the PR body's `surprises`, and worth restating here): unlike
- * components/services/deployment-targets (whose `GraphObjectSchema.originDomainId` is reachable
- * for a genuine cross-domain READ-ONLY REPLICA — `federation/import-repo.ts`'s plain sync path),
- * a Change specifically has NO live path today where `GET /changes/{id}` returns a foreign
- * `originDomainId`: `import-repo.ts`'s `object_upsert` handling explicitly documents "Never
+ * GROUNDING FINDING (REMEASURED — see the PR body's measured table): unlike components/services/
+ * deployment-targets (whose `GraphObjectSchema.originDomainId` is reachable for a genuine
+ * cross-domain READ-ONLY REPLICA — `federation/import-repo.ts`'s plain sync path), a Change
+ * specifically has NO live path today where `GET /changes/{id}` returns a foreign `originDomainId`
+ * VIA FEDERATION SYNC: `import-repo.ts`'s `object_upsert` handling explicitly documents "Never
  * creates a LOCAL `changes` state-machine row" for a synced change object, and `changes-repo.ts`'s
  * `getChange`/`getChangeRow` REQUIRE that row (an inner join) — so a plain sync-replicated change
- * 404s through the typed Change API entirely, never reaching `change-detail.tsx`'s render path at
- * all. A PROMOTION import (`federation/promotion-repo.ts`'s `applyPromotionImport`) instead calls
- * `proposeChange` fresh (no `federationImport`), so a promoted change's `originDomainId` becomes
- * the RECEIVING domain's own id — control genuinely transfers on promotion, by design, so it is
- * never "foreign" there either. The Accept/Rollback/Cancel gate this milestone adds is therefore
- * correct, additive, and forward-looking defense-in-depth (and the identical mechanism the
- * `registry-detail.tsx` census below DOES find live, reachable foreign-origin objects for) rather
- * than closing an exploitable hole specific to changes today — see `surprises` in the PR body.
+ * 404s through the typed Change API entirely. A PROMOTION import (`federation/promotion-repo.ts`'s
+ * `applyPromotionImport`) instead calls `proposeChange` fresh (no `federationImport`), so a
+ * promoted change's `originDomainId` becomes the RECEIVING domain's own id — control genuinely
+ * transfers on promotion, by design, so it is never "foreign" there either.
+ *
+ * What this field IS used for on `change-detail.tsx`: a `ForeignOriginNotice` provenance badge
+ * only. It is NOT used to disable Accept/Rollback/Cancel, and correctly so —
+ * `apps/server/src/federation/foreign-origin-writes.integration.test.ts` drives a foreign-origin
+ * change (fixture-only today, per the paragraph above) through `proposed` AND `validating` and
+ * measures the transition verbs answering identically to a local change in both states: the
+ * `changes` state-machine transitions never route through `updateObject`'s single-writer guard,
+ * so there is no server-side refusal for a client-side gate to mirror. An EARLIER commit on this
+ * PR shipped exactly such a gate on the strength of an uncited claim that the server refused it;
+ * it did not, and the gate was removed (`fe05666`) once this was measured.
  */
 describe("Change.originDomainId (M16.3 P2): the SDK-reachable single-writer-authority field", () => {
   let server: ListeningTestServer;

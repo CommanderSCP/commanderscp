@@ -357,14 +357,18 @@ export function ChangeDetailPage(): React.JSX.Element {
   //
   // M16.3 P2 (REMEASURED): Accept/Rollback/Cancel are deliberately NOT additionally gated on the
   // change's federation origin. `apps/server/src/federation/foreign-origin-writes.integration.test.ts`
-  // measures cancel SUCCEEDING on a foreign-origin change, and accept/rollback answering one
-  // byte-identically to a local change in the same state (same status, same problem title) — the
-  // transition verbs write the `changes` state-machine row and never route through `updateObject`,
-  // so the single-writer guard is simply not on that path. The first cut of this milestone disabled
-  // all three anyway, on an uncited claim that the server refuses them. Whether the server SHOULD
-  // refuse an accept on a change another domain drives is a real open question (`service-board.ts`
-  // already models `drivenHere`), but it is a SERVER decision — the UI must not simulate an
-  // enforcement that does not exist. Recorded as a follow-up finding in the PR body.
+  // measures cancel SUCCEEDING on a foreign-origin change; accept/rollback answering one
+  // byte-identically to a local change in the same state when that state is `proposed` (same
+  // status, same problem title); AND — the state that actually matters, since `validating` is the
+  // only state `ACCEPTABLE_STATES` above offers Accept for — accept/rollback SUCCEEDING outright
+  // on a foreign-origin change once it reaches `validating`. The transition verbs write the
+  // `changes` state-machine row and never route through `updateObject`, so the single-writer guard
+  // is simply not on this path in any state. The first cut of this milestone disabled all three
+  // anyway, on an uncited claim that the server refuses them. Whether the server SHOULD refuse an
+  // accept on a change another domain drives is a real open question (`service-board.ts` already
+  // models `drivenHere`), but it is a SERVER decision — the UI must not simulate an enforcement
+  // that does not exist. Recorded as an out-of-scope finding in the PR body's "Out of scope —
+  // genuine server-side findings" section (finding (a): foreign-origin accept/rollback/cancel).
   const canCancel = CANCELLABLE_STATES.includes(change.state);
   const canAccept = ACCEPTABLE_STATES.includes(change.state);
   const canRollback = ROLLBACKABLE_STATES.includes(change.state);

@@ -18,7 +18,7 @@ export const queryClient = new QueryClient({
 });
 
 /** Query key for this instance's own federation identity (`GET /federation/self`) — M16.3 P2's
- *  `useOwnDomainId` (lib/replica-origin.ts). A single instance's own domain id never changes at
+ *  `useOwnDomainId` (lib/replica-origin.tsx). A single instance's own domain id never changes at
  *  runtime (federation/self-repo.ts: created once, lazily; `role`/`name` may be re-set via `scp
  *  federation init` but `domainId` never is), so this key is intentionally NOT parameterized. */
 export function federationSelfKey(): unknown[] {
