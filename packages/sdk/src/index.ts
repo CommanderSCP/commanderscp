@@ -60,6 +60,16 @@ export type {
   WebhookIngressResponse
 } from "@scp/schemas";
 
+// M16.1: the universal boundary segment on `explain` (ADR-0011; ADR-0021 D6 vocabulary — a boundary
+// SEGMENT of two boundary PHASES, never a "stage" and never a "wave"). Re-exported so `apps/web`
+// keeps consuming ONLY the generated SDK (charter principle 3).
+export type {
+  BoundarySegment,
+  BoundaryTransferPhase,
+  BoundaryTransferHop,
+  BoundaryValidatePhase
+} from "@scp/schemas";
+
 // Phase 2 coordination UI: the service release board projection (coordination-ui-views.md
 // § "Service release board") — one HTTP call backing `client.services.board(idOrUrn)`.
 export type {

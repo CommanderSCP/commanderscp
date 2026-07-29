@@ -9342,6 +9342,26 @@ export type ExplainChangeResponses = {
             }>;
             malformed?: Array<unknown>;
         } | null;
+        boundarySegment?: {
+            transfer: {
+                state: 'exported' | 'received' | 'not_observed';
+                hops: Array<{
+                    direction: 'export' | 'import';
+                    status: 'created' | 'submitted' | 'confirmed';
+                    peerDomainId: string;
+                    checksum: string | null;
+                    observedAt: string;
+                }>;
+                observedAt: string | null;
+            };
+            validate: {
+                state: 'verified' | 'refused' | 'not_yet_verified' | 'not_reported';
+                decisionId: string | null;
+                observedAt: string | null;
+                verifiedArtifactCount: number | null;
+            };
+            unknownFields: Array<string>;
+        } | null;
     };
 };
 

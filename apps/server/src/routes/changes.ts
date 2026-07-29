@@ -29,6 +29,7 @@ import { transitionChange } from "../coordination/transition.js";
 import type { GateDeps } from "../coordination/gates.js";
 import { triggerRollback } from "../coordination/rollback.js";
 import { getLatestPlanForChange } from "../coordination/plan-service.js";
+import { buildBoundarySegment } from "../coordination/boundary-segment.js";
 import { getDecision, listDecisions, listDecisionsForSubject } from "../coordination/decisions-repo.js";
 import { listControlRunsForChange } from "../governance/controls-repo.js";
 import { conflict } from "../errors.js";
@@ -261,11 +262,14 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
           scopeObjectId: auth.orgId
         });
         const change = await getChange(tx, auth.orgId, request.params.id);
-        const [plan, decisions, controlRuns, waitStatus] = await Promise.all([
+        const [plan, decisions, controlRuns, waitStatus, boundarySegment] = await Promise.all([
           getLatestPlanForChange(tx, auth.orgId, request.params.id),
           listDecisionsForSubject(tx, auth.orgId, request.params.id),
           listControlRunsForChange(tx, auth.orgId, request.params.id),
-          buildWaitStatus(tx, auth.orgId, change)
+          buildWaitStatus(tx, auth.orgId, change),
+          // M16.1 — the boundary segment (transferred + validated phases). Read-only; null for a
+          // change that never crossed a domain boundary.
+          buildBoundarySegment(tx, auth.orgId, change)
         ]);
         return {
           change,
@@ -281,7 +285,8 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
             decisionId: r.decisionId,
             createdAt: r.createdAt.toISOString()
           })),
-          waitStatus
+          waitStatus,
+          boundarySegment
         };
       });
       reply.status(200).send(result);
