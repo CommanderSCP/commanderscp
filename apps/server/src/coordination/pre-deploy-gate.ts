@@ -93,8 +93,19 @@ export function crossBoundaryManifestOf(change: ChangeRow): CrossBoundaryManifes
   return { artifacts, exporterDomainId };
 }
 
+/**
+ * M16.1 (I2) — the audit action for a PASSING pre-deploy verify, sibling of the long-standing
+ * `change.pre_deploy.artifact_verify.blocked`. Written ONLY when a real per-artifact verify ran and
+ * every artifact passed; see {@link runPreDeployArtifactGate}'s "the two vacuous exits" note.
+ */
+export const PRE_DEPLOY_ARTIFACT_VERIFY_PASSED_AUDIT_ACTION =
+  "change.pre_deploy.artifact_verify.passed";
+
 export interface PreDeployGateResult {
   blocked: boolean;
+  /** The persisted verdict's id — a `block` Decision when `blocked`, an `allow` Decision when a
+   *  real verify ran and passed (M16.1 I2). ABSENT when nothing was verified at all: a
+   *  domain-local/unmanifested change, or a metadata-only promotion with zero artifacts. */
   decisionId?: string;
 }
 
@@ -112,6 +123,15 @@ export async function runPreDeployArtifactGate(
   change: ChangeRow,
   reader: ArtifactRegistryReader = new LocationRegistryReader()
 ): Promise<PreDeployGateResult> {
+  // ===========================================================================================
+  // THE TWO VACUOUS EXITS. Both return here writing NOTHING, and must stay that way (M16.1 I2).
+  // Neither of them RAN a verification, so an `allow` Decision at either would assert that this
+  // change's artifacts were checked and found authentic when nothing was ever looked at — a
+  // fabricated attestation, and strictly worse than the silence it replaced. The `boundarySegment`
+  // read model depends on this: it reports the validate phase as verified ONLY on the strength of
+  // an `allow` Decision of this kind, so writing one here would fabricate a pass in the UI too.
+  // Pinned by `pre-deploy-gate.integration.test.ts` SCOPE (e1)/(e2) and by the metadata-only axis.
+  // ===========================================================================================
   const manifestRef = crossBoundaryManifestOf(change);
   if (!manifestRef) return { blocked: false }; // domain-local / no manifest — not gated.
 
@@ -146,7 +166,56 @@ export async function runPreDeployArtifactGate(
       reader,
       allowInsecureRegistry: (host) => insecureHosts.includes(host.toLowerCase())
     });
-    if (result.ok) return { blocked: false }; // every artifact present + authentic — deploy proceeds.
+    if (result.ok) {
+      // PASS. Every artifact present + authentic — deploy proceeds, AND the verdict is persisted.
+      //
+      // M16.1 (I2): before this, a passing verify returned here having written nothing at all, so
+      // the strongest statement the system could make about a successfully verified change was an
+      // ABSENCE — indistinguishable from "never gated" and from "gate never ran". That made
+      // "validated" unrenderable even at the receiving outpost without fabricating it. This mirrors
+      // the block path below exactly (same Decision kind, same subject, same input context, a
+      // sibling `.passed` audit action carrying the decision_id), so charter principle 6 holds for
+      // the allow verdict as it already did for the deny.
+      //
+      // The cosign subprocess window has CLOSED by this line (`verifyAuthorizedArtifactSet` has
+      // returned), so opening a tenant tx here honors this file's own invariant: never hold a
+      // pooled connection across a cosign subprocess. Nothing else is written — no state change,
+      // no park — this gate still drives nothing on the pass path.
+      const verifiedArtifacts = manifestRef.artifacts.map((a) => ({
+        type: a.type,
+        digest: a.digest
+      }));
+      const passReason =
+        `all ${manifestRef.artifacts.length} authorized artifact(s) verified present and ` +
+        `signed by the exporting peer's cosign key — pre-deploy artifact verification passed`;
+      const passDecisionId = await withTenantTx(db, orgId, async (tx) => {
+        const decision = await insertDecision(tx, {
+          orgId,
+          kind: PRE_DEPLOY_ARTIFACT_VERIFY_DECISION_KIND,
+          subjectId: change.objectId,
+          verdict: "allow",
+          inputContext: {
+            exporterDomainId: manifestRef.exporterDomainId,
+            importedFromDomain: change.importedFromDomain,
+            authorizedArtifacts: verifiedArtifacts,
+            failing: null,
+            peerHasCosignKey: true
+          },
+          reasonTree: { summary: passReason }
+        });
+        await appendAuditEvent(tx, {
+          orgId,
+          actorId: SYSTEM_ACTOR_ID,
+          action: PRE_DEPLOY_ARTIFACT_VERIFY_PASSED_AUDIT_ACTION,
+          subjectId: change.objectId,
+          reason: passReason,
+          decisionId: decision.id,
+          requestId: "reconcile"
+        });
+        return decision.id;
+      });
+      return { blocked: false, decisionId: passDecisionId };
+    }
     blockReason =
       `per-artifact byte verification failed for ${result.failing.length} of ` +
       `${manifestRef.artifacts.length} authorized artifact(s) — ` +

@@ -27,7 +27,10 @@ import { reconcileOrgTick } from "./reconcile.js";
 import { getSharedCelSandbox } from "../governance/cel-sandbox.js";
 import { createInMemoryFakeHost } from "./test-support/fake-plugin-host.js";
 import { pairPeer } from "../federation/peers-repo.js";
-import { PRE_DEPLOY_ARTIFACT_VERIFY_DECISION_KIND } from "./pre-deploy-gate.js";
+import {
+  PRE_DEPLOY_ARTIFACT_VERIFY_DECISION_KIND,
+  PRE_DEPLOY_ARTIFACT_VERIFY_PASSED_AUDIT_ACTION
+} from "./pre-deploy-gate.js";
 import { asTrustDomainId } from "@scp/schemas";
 import { TrustDomainId } from "@scp/schemas";
 
@@ -358,6 +361,11 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.select().from(auditEvents).where(eq(auditEvents.subjectId, changeId))
     ).then((rows) => rows.filter((e) => e.action === "change.pre_deploy.artifact_verify.blocked"));
+  /** M16.1 (I2) — the PASSING verify's audit action, the `.blocked` action's sibling. */
+  const passAuditFor = (changeId: string) =>
+    withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(auditEvents).where(eq(auditEvents.subjectId, changeId))
+    ).then((rows) => rows.filter((e) => e.action === PRE_DEPLOY_ARTIFACT_VERIFY_PASSED_AUDIT_ACTION));
 
   /** The three fail-closed invariants every BLOCK case must satisfy. */
   async function expectBlocked(changeId: string, componentId: string): Promise<{ decisionId: string; reason: string }> {
@@ -419,7 +427,24 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(targets).toHaveLength(1);
     expect(["triggered", "observing", "succeeded"]).toContain(targets[0]!.status);
     expect(targets[0]!.executorPluginId).toBe("fake-executor");
-    expect(await gateDecisionsFor(changeId)).toHaveLength(0); // no block anywhere
+
+    // M16.1 (I2) — a PASSING verify now PERSISTS its verdict (it wrote nothing at all before, so
+    // "verified" was indistinguishable from "never gated"). Exactly one Decision, verdict `allow`,
+    // never a block, with the verified artifact set pinned in its inputs (charter principle 6)...
+    const gateDecisions = await gateDecisionsFor(changeId);
+    expect(gateDecisions).toHaveLength(1);
+    expect(gateDecisions[0]!.verdict).toBe("allow");
+    expect(
+      (gateDecisions[0]!.inputContext as { authorizedArtifacts?: { digest: string }[] })
+        .authorizedArtifacts?.map((a) => a.digest).sort()
+    ).toEqual([image.digest, blob.digest].sort());
+    expect(await gateAuditFor(changeId)).toHaveLength(0); // ...and NOT the `.blocked` action.
+
+    // ...and a hash-chained `.passed` audit event in the same tx carries that decision_id.
+    const passAudit = await passAuditFor(changeId);
+    expect(passAudit).toHaveLength(1);
+    expect(passAudit[0]!.decisionId).toBe(gateDecisions[0]!.id);
+    expect(passAudit[0]!.rowHash).toEqual(expect.any(String));
   }, 120_000);
 
   // ---------------------------------------------------------------------------------------------
@@ -659,6 +684,10 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(["triggered", "observing", "succeeded"]).toContain(targets[0]!.status);
     expect(await gateDecisionsFor(change.id)).toHaveLength(0);
     expect(await gateAuditFor(change.id)).toHaveLength(0);
+    // M16.1 (I2) — THE VACUOUS EXIT MUST STAY SILENT. No verification ran here (the gate returned
+    // before looking at anything), so an `allow` Decision or a `.passed` audit event would assert a
+    // verification that never happened — the worst failure mode of the I2 change.
+    expect(await passAuditFor(change.id)).toHaveLength(0);
   }, 60_000);
 
   it("SCOPE (e2): a PRE-MANIFEST imported change (no promotionManifest on sourceRef) deploys ungated — back-compat", async () => {
@@ -678,5 +707,27 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     const targets = await waveTargetsFor(componentId);
     expect(["triggered", "observing", "succeeded"]).toContain(targets[0]!.status);
     expect(await gateDecisionsFor(changeId)).toHaveLength(0);
+    expect(await passAuditFor(changeId)).toHaveLength(0); // M16.1 (I2) — vacuous exit stays silent.
+  }, 60_000);
+
+  it("SCOPE (e3): a METADATA-ONLY promotion (manifest, ZERO artifacts) deploys ungated and records NOTHING", async () => {
+    // M16.1 (I2)'s second vacuous exit, and the sharper of the two: this change IS a verified
+    // cross-boundary promotion — it carries `promotionManifest` and came from a peer WITH a
+    // registered cosign key — it simply has no substantive bytes to verify (config/policy-only).
+    // `runPreDeployArtifactGate` returns on `artifacts.length === 0` before any cosign runs.
+    // An `allow` Decision here would read, in the boundary segment and in the audit log, exactly
+    // like a change whose artifacts were fetched and cryptographically verified. Nothing was.
+    const { changeId, componentId } = await proposeImportedChange([]);
+
+    await tick();
+
+    const row = await changeRow(changeId);
+    expect(row.state).toBe("executing");
+    expect(row.reconcileBlockedAt).toBeNull();
+    const targets = await waveTargetsFor(componentId);
+    expect(["triggered", "observing", "succeeded"]).toContain(targets[0]!.status);
+    expect(await gateDecisionsFor(changeId)).toHaveLength(0);
+    expect(await gateAuditFor(changeId)).toHaveLength(0);
+    expect(await passAuditFor(changeId)).toHaveLength(0);
   }, 60_000);
 });
