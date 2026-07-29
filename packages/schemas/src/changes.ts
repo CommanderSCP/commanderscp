@@ -49,7 +49,30 @@ export const ChangeSchema = z.object({
   watchdogFlaggedAt: z.string().datetime().nullable(),
   properties: z.record(z.string(), z.unknown()),
   createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime()
+  updatedAt: z.string().datetime(),
+  /**
+   * M16.3 P2 (additive) — the underlying graph object's `origin_domain_id` (`objects.
+   * origin_domain_id`, same field `GraphObjectSchema.originDomainId` carries for every other
+   * typed resource, and the SAME authoritative field `coordination/service-board.ts`'s
+   * `drivenHere`/`originDomainId` are already derived from — NOT `importedFromDomain` above,
+   * which is a narrower "which peer's promotion bundle did THIS import come through" stamp, set
+   * only on promotion-imported changes (federation/promotion-repo.ts), not the general
+   * single-writer-authority origin every object carries).
+   *
+   * `originDomainId` was missing from the wire `Change` shape entirely before this — the ONLY
+   * SDK-reachable domain-identity field on a change was `importedFromDomain`, which is null for
+   * every plain (non-promotion-bundle) federation-synced change, so a UI could not tell "this
+   * change is a read-only replica of another domain's change" from "this change was authored
+   * here" without it. `federation.self()` (`GET /federation/self`) already gives a caller its OWN
+   * domain id; comparing the two is how `apps/web` now decides whether to disable Accept/
+   * Rollback/Cancel for a change this domain does not drive (see `apps/web/src/lib/replica-
+   * origin.ts`).
+   *
+   * Optional (not `.nullable()`) so it defaults to `undefined` — matching every other additive
+   * `/v1` field (CLAUDE.md: "every new field must be OPTIONAL") — rather than forcing every
+   * existing caller that builds a `Change`-shaped object by hand (tests, fixtures) to supply it.
+   */
+  originDomainId: z.string().uuid().optional()
 });
 export type Change = z.infer<typeof ChangeSchema>;
 

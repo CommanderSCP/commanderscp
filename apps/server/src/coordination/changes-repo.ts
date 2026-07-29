@@ -29,8 +29,11 @@ export type ChangeRow = typeof changes.$inferSelect;
 type ObjectRow = typeof objects.$inferSelect;
 /** The minimal object shape `toChangeShape` actually reads — satisfied by both a raw `ObjectRow`
  *  (joined-query callers below) and a `GraphObject` (createObject's return shape in `proposeChange`,
- *  which has ISO-string dates and no `contentHash`) without forcing either side to convert. */
-type ObjectLike = Pick<ObjectRow, "id" | "urn" | "name"> & { properties: unknown };
+ *  which has ISO-string dates and no `contentHash`) without forcing either side to convert.
+ *  `originDomainId` is typed as plain `string` (not `ObjectRow`'s branded `TrustDomainId`) so
+ *  `GraphObject.originDomainId` (also plain `string` on the wire schema) satisfies it directly —
+ *  a `TrustDomainId` is itself always a valid `string`, so an `ObjectRow` still satisfies this too. */
+type ObjectLike = Pick<ObjectRow, "id" | "urn" | "name"> & { properties: unknown; originDomainId: string };
 
 export function toChangeShape(change: ChangeRow, object: ObjectLike): Change {
   return {
@@ -53,7 +56,12 @@ export function toChangeShape(change: ChangeRow, object: ObjectLike): Change {
     watchdogFlaggedAt: change.watchdogFlaggedAt?.toISOString() ?? null,
     properties: object.properties as Record<string, unknown>,
     createdAt: change.createdAt.toISOString(),
-    updatedAt: change.updatedAt.toISOString()
+    updatedAt: change.updatedAt.toISOString(),
+    // M16.3 P2 (additive): the authoritative single-writer-authority origin (graph/objects-repo.ts's
+    // module doc) — same field every other typed resource's `GraphObjectSchema.originDomainId`
+    // carries, and what `coordination/service-board.ts`'s `drivenHere` is derived from. Distinct
+    // from `importedFromDomain` above (promotion-bundle provenance only).
+    originDomainId: object.originDomainId
   };
 }
 

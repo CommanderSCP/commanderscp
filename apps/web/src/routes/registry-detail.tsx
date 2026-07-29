@@ -6,6 +6,12 @@ import { client } from "../lib/client";
 import { findRegistry, getEdgeClient, getOwnerClient, getRegistryClient } from "../lib/registries";
 import { registryDetailKey, registryListKey } from "../lib/query-client";
 import { useBasePathParam, useIdOrUrnParam } from "../lib/use-route-params";
+import {
+  ForeignOriginNotice,
+  isForeignOriginObject,
+  replicaGuard,
+  useOwnDomainId
+} from "../lib/replica-origin";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -27,6 +33,7 @@ export function RegistryDetailPage(): React.JSX.Element {
   const idOrUrn = useIdOrUrnParam();
   const registry = findRegistry(basePath);
   const detailKey = registryDetailKey(basePath ?? "", idOrUrn ?? "");
+  const { domainId: ownDomainId } = useOwnDomainId();
 
   const objectQuery = useQuery({
     queryKey: detailKey,
@@ -67,14 +74,22 @@ export function RegistryDetailPage(): React.JSX.Element {
   }
 
   const object = objectQuery.data;
+  // M16.3 P2: is THIS object a read-only replica of another domain's commander-origin config?
+  // `foreign` is threaded into every card below that offers a write control on `object` (or on an
+  // edge/binding scoped to it) — see `lib/replica-origin.ts`'s module doc for why this is the one
+  // shared idiom rather than a per-card bespoke check.
+  const foreign = isForeignOriginObject(object.originDomainId, ownDomainId);
 
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-900" data-testid="object-name">
-            {object.name}
-          </h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-semibold text-slate-900" data-testid="object-name">
+              {object.name}
+            </h1>
+            {foreign && <ForeignOriginNotice originDomainId={object.originDomainId} />}
+          </div>
           <p className="font-mono text-xs text-slate-500">{object.urn}</p>
         </div>
         <div className="flex items-center gap-2">
@@ -125,7 +140,9 @@ export function RegistryDetailPage(): React.JSX.Element {
         </CardContent>
       </Card>
 
-      {registry.serviceMember && <ComponentServiceCard componentId={object.id} detailKey={detailKey} />}
+      {registry.serviceMember && (
+        <ComponentServiceCard componentId={object.id} detailKey={detailKey} foreign={foreign} />
+      )}
 
       {registry.ownable && (
         <Card>
@@ -190,11 +207,11 @@ export function RegistryDetailPage(): React.JSX.Element {
       )}
 
       {(object.typeId === "component" || object.typeId === "deployment-target") && (
-        <TargetBindingsCard targetId={object.id} detailKey={detailKey} />
+        <TargetBindingsCard targetId={object.id} detailKey={detailKey} foreign={foreign} />
       )}
 
       {object.typeId === "component" && (
-        <MergeComponentCard survivorId={object.id} detailKey={detailKey} />
+        <MergeComponentCard survivorId={object.id} detailKey={detailKey} foreign={foreign} />
       )}
 
       <p className="text-xs text-slate-400">
@@ -212,10 +229,15 @@ export function RegistryDetailPage(): React.JSX.Element {
  */
 function ComponentServiceCard({
   componentId,
-  detailKey
+  detailKey,
+  foreign
 }: {
   componentId: string;
   detailKey: unknown[];
+  /** M16.3 P2 — true when the COMPONENT itself is a read-only replica; disables Assign/Move (the
+   *  server's `createRelationship`/`deleteRelationship` refuse a replica's `contains` edge either
+   *  way — `lib/replica-origin.ts`). */
+  foreign: boolean;
 }): React.JSX.Element {
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState("");
@@ -269,8 +291,12 @@ function ComponentServiceCard({
             <label htmlFor="assign-service" className="text-xs font-medium text-slate-600">
               {currentServiceId ? "Move to service" : "Assign to service"}
             </label>
-            <Select value={selected} onValueChange={setSelected}>
-              <SelectTrigger id="assign-service" data-testid="assign-service-select">
+            <Select value={selected} onValueChange={setSelected} disabled={foreign}>
+              <SelectTrigger
+                id="assign-service"
+                data-testid="assign-service-select"
+                {...replicaGuard(foreign)}
+              >
                 <SelectValue placeholder="Select a service…" />
               </SelectTrigger>
               <SelectContent>
@@ -285,9 +311,10 @@ function ComponentServiceCard({
             </Select>
           </div>
           <Button
-            disabled={!selected || setServiceMutation.isPending}
+            disabled={foreign || !selected || setServiceMutation.isPending}
             onClick={() => selected && setServiceMutation.mutate(selected)}
             data-testid="assign-service-submit"
+            title={foreign ? replicaGuard(true).title : undefined}
           >
             {setServiceMutation.isPending ? "Saving…" : currentServiceId ? "Move" : "Assign"}
           </Button>
@@ -309,10 +336,14 @@ function ComponentServiceCard({
  */
 function TargetBindingsCard({
   targetId,
-  detailKey
+  detailKey,
+  foreign
 }: {
   targetId: string;
   detailKey: unknown[];
+  /** M16.3 P2 — true when the TARGET (component/deployment-target) itself is a read-only replica;
+   *  disables Detach/Repurpose (`lib/replica-origin.ts`). */
+  foreign: boolean;
 }): React.JSX.Element {
   const queryClient = useQueryClient();
   const bindingsKey = [...detailKey, "executor-bindings"];
@@ -361,15 +392,21 @@ function TargetBindingsCard({
                   <span className="font-mono text-xs text-slate-500">{b.pluginInstanceId}</span>
                 </div>
                 <div className="flex gap-2">
-                  {/* Relabel this binding to any other routing Type (ADR-0007). */}
+                  {/* Relabel this binding to any other routing Type (ADR-0007). M16.3 P2: disabled
+                      + explained on a foreign-origin target — the server refuses this write on a
+                      read-only replica regardless. */}
                   <Select
                     value={b.type}
-                    disabled={pending}
+                    disabled={foreign || pending}
                     onValueChange={(to) =>
                       repurposeMutation.mutate({ from: b.type, to: to as ExecutorType })
                     }
                   >
-                    <SelectTrigger className="w-40" data-testid={`repurpose-${b.type}`}>
+                    <SelectTrigger
+                      className="w-40"
+                      data-testid={`repurpose-${b.type}`}
+                      {...replicaGuard(foreign)}
+                    >
                       <SelectValue placeholder="Change type" />
                     </SelectTrigger>
                     <SelectContent>
@@ -382,9 +419,10 @@ function TargetBindingsCard({
                   </Select>
                   <Button
                     variant="outline"
-                    disabled={pending}
+                    disabled={foreign || pending}
                     onClick={() => deleteMutation.mutate(b.type)}
                     data-testid={`unbind-${b.type}`}
+                    title={foreign ? replicaGuard(true).title : undefined}
                   >
                     Detach
                   </Button>
@@ -411,13 +449,20 @@ function TargetBindingsCard({
  */
 function MergeComponentCard({
   survivorId,
-  detailKey
+  detailKey,
+  foreign
 }: {
   survivorId: string;
   detailKey: unknown[];
+  /** M16.3 P2 — true when the SURVIVOR (this page's own object) is a read-only replica; disables
+   *  the whole merge (the server refuses to write its bindings — `lib/replica-origin.ts`). Loser
+   *  candidates that are themselves foreign-origin are additionally filtered out below — merging
+   *  one would `deleteObject` a replica, which the server refuses just the same. */
+  foreign: boolean;
 }): React.JSX.Element {
   const queryClient = useQueryClient();
   const [loser, setLoser] = useState("");
+  const { domainId: ownDomainId } = useOwnDomainId();
 
   const componentsQuery = useQuery({
     queryKey: registryListKey("components"),
@@ -433,7 +478,9 @@ function MergeComponentCard({
     }
   });
 
-  const candidates = (componentsQuery.data?.items ?? []).filter((c) => c.id !== survivorId);
+  const candidates = (componentsQuery.data?.items ?? []).filter(
+    (c) => c.id !== survivorId && !isForeignOriginObject(c.originDomainId, ownDomainId)
+  );
 
   return (
     <Card>
@@ -450,8 +497,8 @@ function MergeComponentCard({
             <label htmlFor="merge-loser" className="text-xs font-medium text-slate-600">
               Component to merge in
             </label>
-            <Select value={loser} onValueChange={setLoser}>
-              <SelectTrigger id="merge-loser" data-testid="merge-loser-select">
+            <Select value={loser} onValueChange={setLoser} disabled={foreign}>
+              <SelectTrigger id="merge-loser" data-testid="merge-loser-select" {...replicaGuard(foreign)}>
                 <SelectValue placeholder="Select a component…" />
               </SelectTrigger>
               <SelectContent>
@@ -465,9 +512,10 @@ function MergeComponentCard({
           </div>
           <Button
             variant="outline"
-            disabled={!loser || mergeMutation.isPending}
+            disabled={foreign || !loser || mergeMutation.isPending}
             onClick={() => loser && mergeMutation.mutate(loser)}
             data-testid="merge-submit"
+            title={foreign ? replicaGuard(true).title : undefined}
           >
             {mergeMutation.isPending ? "Merging…" : "Merge in"}
           </Button>

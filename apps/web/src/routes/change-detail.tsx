@@ -11,6 +11,12 @@ import type { ApprovalRequest } from "@scp/schemas";
 import { client } from "../lib/client";
 import { changeApprovalsKey, changeDetailKey, changeListKey } from "../lib/query-client";
 import { useIdParam } from "../lib/use-route-params";
+import {
+  ForeignOriginNotice,
+  isForeignOriginObject,
+  replicaGuard,
+  useOwnDomainId
+} from "../lib/replica-origin";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge, type BadgeProps } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -266,6 +272,7 @@ export function ChangeDetailPage(): React.JSX.Element {
   const detailKey = changeDetailKey(id ?? "");
   const [cancelOpen, setCancelOpen] = useState(false);
   const [rollbackOpen, setRollbackOpen] = useState(false);
+  const { domainId: ownDomainId } = useOwnDomainId();
 
   const explainQuery = useQuery({
     queryKey: detailKey,
@@ -350,9 +357,16 @@ export function ChangeDetailPage(): React.JSX.Element {
   }
 
   const { change, plan, decisions, controlRuns, waitStatus } = explainQuery.data;
+  // M16.3 P2: these three gate ONLY on change STATE — whether the button is offered AT ALL for
+  // this lifecycle state. `foreign` (below) is a SEPARATE, additional gate on top: whether this
+  // domain actually DRIVES the change (single-writer authority, `lib/replica-origin.ts`) — a
+  // change this domain does not drive is a read-only replica, so a state-eligible action must
+  // still render DISABLED + EXPLAINED (mirrors service-board.tsx's `isUnknown`/`UnknownHere`
+  // idiom), never silently enabled just because the reported state happens to allow it.
   const canCancel = CANCELLABLE_STATES.includes(change.state);
   const canAccept = ACCEPTABLE_STATES.includes(change.state);
   const canRollback = ROLLBACKABLE_STATES.includes(change.state);
+  const foreign = isForeignOriginObject(change.originDomainId, ownDomainId);
 
   return (
     <div className="flex flex-col gap-6">
@@ -366,6 +380,9 @@ export function ChangeDetailPage(): React.JSX.Element {
               {change.state}
             </Badge>
             {change.emergency && <Badge variant="destructive">Emergency</Badge>}
+            {foreign && change.originDomainId && (
+              <ForeignOriginNotice originDomainId={change.originDomainId} />
+            )}
           </div>
           <p className="text-sm text-slate-500">
             {change.sourceKind ? `Source: ${change.sourceKind}` : "No source kind"}
@@ -396,7 +413,8 @@ export function ChangeDetailPage(): React.JSX.Element {
           {canAccept && (
             <Button
               onClick={() => acceptMutation.mutate()}
-              disabled={acceptMutation.isPending}
+              disabled={foreign || acceptMutation.isPending}
+              title={foreign ? replicaGuard(true).title : undefined}
               data-testid="accept-change-button"
             >
               {acceptMutation.isPending ? "Accepting…" : "Accept"}
@@ -406,6 +424,8 @@ export function ChangeDetailPage(): React.JSX.Element {
             <Button
               variant="outline"
               onClick={() => setRollbackOpen(true)}
+              disabled={foreign}
+              title={foreign ? replicaGuard(true).title : undefined}
               data-testid="rollback-change-button"
             >
               Rollback
@@ -415,6 +435,8 @@ export function ChangeDetailPage(): React.JSX.Element {
             <Button
               variant="destructive"
               onClick={() => setCancelOpen(true)}
+              disabled={foreign}
+              title={foreign ? replicaGuard(true).title : undefined}
               data-testid="cancel-change-button"
             >
               Cancel
