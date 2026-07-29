@@ -262,11 +262,18 @@ function selectorSelects(sel: LabelSelector | undefined, labels: Record<string, 
  *          destination is 172.18.0.2:6443. A rule listing only 443 renders, reads plausibly, passes
  *          any "is 443 allowed" check — and the hook is dropped exactly as before the fix. 443 alone
  *          is therefore NOT sufficient evidence of reachability and must not satisfy this guard.
- *   CIDR — the allowed ipBlocks must actually cover a node IP. `cidrs: [10.0.0.0/8]` looks careful
- *          and misses kind's 172.18.0.0/16 entirely. So the guard requires the union of the rule's
- *          ipBlocks (minus any `except`) to cover ALL THREE RFC1918 ranges the chart ships as its
- *          default — that is the set the chart claims covers "kind, k3s, and private-endpoint
- *          managed clusters", and narrowing it silently breaks one of them.
+ *   CIDR — the allowed ipBlocks must actually cover a node IP, AND must not cover anything else.
+ *          `cidrs: [10.0.0.0/8]` looks careful and misses kind's 172.18.0.0/16 entirely — narrowing
+ *          breaks reachability. `cidrs: [0.0.0.0/0]` goes the other way: it covers all three
+ *          required ranges trivially, so a coverage-only check waves it through, but it ALSO grants
+ *          the hook pod unrestricted public-internet egress on TCP/6443 (and 443) — inside a chart
+ *          whose whole posture is default-deny, and that the air-gap drill exists to certify as
+ *          zero-egress. So the guard requires the union of the rule's ipBlocks (minus any `except`)
+ *          to cover ALL THREE RFC1918 ranges the chart ships as its default — the set the chart
+ *          claims covers "kind, k3s, and private-endpoint managed clusters" — AND to extend no
+ *          further than that union. Same class of bug as the ports check above: "at least" is not
+ *          "exactly"; both the lower and the upper bound have to be asserted, or the guard only
+ *          catches half of the ways this can regress.
  *
  * An operator with a genuinely public control-plane endpoint sets `networkPolicy.kubeApi.cidrs` to
  * that endpoint and this guard would flag it — deliberately: this asserts on the CHART'S SHIPPED
@@ -339,6 +346,19 @@ function rangesCover(covered: IpRange[], required: IpRange): boolean {
   return cursor > required[1];
 }
 
+function ipToStr(n: number): string {
+  return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join(".");
+}
+
+/** The exact union of the three required RFC1918 ranges, as merged [start,end] pairs. Anything a
+ *  granting rule covers OUTSIDE this union — 0.0.0.0/0, another private block, the public
+ *  internet — is exactly as dangerous as failing to cover it: this chart's whole posture is
+ *  default-deny, and the kube-API allow exists to punch ONE narrow, known hole in that, not to
+ *  become a second "allow-all" rule wearing a kube-API label. */
+const KUBE_API_REQUIRED_RANGES: IpRange[] = mergeRanges(
+  KUBE_API_REQUIRED_CIDRS.map((c) => cidrToRange(c)).filter((r): r is IpRange => r !== undefined)
+);
+
 /**
  * THE AIR-GAP REGRESSION GUARD (nightly deploy-drills.yml has no `pull_request` trigger; THIS job
  * runs on every PR).
@@ -361,8 +381,11 @@ function rangesCover(covered: IpRange[], required: IpRange): boolean {
  * would have passed on the very render that was broken in production.
  *
  * ipBlock-ness is necessary but NOT sufficient — see KUBE_API_ENDPOINT_PORT / KUBE_API_REQUIRED_CIDRS
- * above for the actual reachability constraint (6443 must be allowed, and the ipBlocks must cover the
- * private ranges the chart ships) and for the two mutations that used to slip past.
+ * / KUBE_API_REQUIRED_RANGES above for the actual reachability constraint (6443 must be allowed, the
+ * ipBlocks must cover the private ranges the chart ships, and must not grant more than that) and for
+ * the mutations that used to slip past (narrowing the ports, narrowing the CIDRs, and — the
+ * complementary failure — widening the CIDRs to something like `0.0.0.0/0` that covers the required
+ * ranges while also granting public-internet egress).
  */
 function autowireHookKubeApiViolations(label: string, docs: K8sDoc[]): string[] {
   const violations: string[] = [];
@@ -406,6 +429,22 @@ function autowireHookKubeApiViolations(label: string, docs: K8sDoc[]): string[] 
       return `its ipBlocks (${blocks
         .map((b) => b.cidr)
         .join(",")}) do not cover ${missing.join(",")}`;
+    }
+    // COVERING the three required ranges is necessary but NOT sufficient — a bare `0.0.0.0/0`
+    // covers all of them trivially while ALSO granting the hook pod unrestricted egress to the
+    // public internet on TCP/6443 (and 443), inside a chart whose entire posture is default-deny
+    // and that the air-gap drill exists to certify as zero-egress. So the grant must be bounded
+    // from BOTH sides: it must not extend beyond the union of the required private ranges either
+    // — computed on `covered` (post-`except`), so an `except` carve-out cannot be used to dodge
+    // this any more than it can be used to dodge the coverage check above.
+    const excess = subtractRanges(covered, KUBE_API_REQUIRED_RANGES);
+    if (excess.length > 0) {
+      return `its ipBlocks (${blocks.map((b) => b.cidr).join(",")}) grant egress BEYOND the ` +
+        `required private ranges (${KUBE_API_REQUIRED_CIDRS.join(", ")}) — e.g. ${excess
+          .map(([s, e]) => (s === e ? ipToStr(s) : `${ipToStr(s)}-${ipToStr(e)}`))
+          .join(", ")} — which includes public-internet address space; the kube-API allow must be ` +
+        `scoped to exactly the required private ranges, never 0.0.0.0/0 or any range that reaches ` +
+        `beyond them`;
     }
     return undefined;
   };
@@ -1075,6 +1114,38 @@ function main(): void {
     console.log(`  negative case (${what}) correctly flagged both hooks`);
   }
 
+  // NEGATIVE case — WIDENING. This is the complementary failure to the two narrowing mutations
+  // above: `cidrs: ["0.0.0.0/0"]` trivially COVERS all three required RFC1918 ranges (so a
+  // coverage-only check waves it through — verified: this render passed 'all hardened-defaults
+  // assertions passed' before this case existed), while ALSO granting the hook pods unrestricted
+  // public-internet egress on TCP/6443 (and 443) — inside a chart whose whole posture is
+  // default-deny and that the air-gap drill exists to certify as zero-egress. The guard must bound
+  // the grant from BOTH sides — "at least" is not "exactly" — or a widened CIDR list sails through
+  // exactly as a narrowed one used to.
+  {
+    const guardLabel = "autowire-kube-api-guard (cidrs widened to [0.0.0.0/0])";
+    const widened = renderChart("verify-autowire-widen", [
+      "--set", "bundledExecutor.argocd.enabled=true",
+      "--set", "bundledExecutor.gitea.enabled=true",
+      "--set-json", 'networkPolicy.kubeApi.cidrs=["0.0.0.0/0"]'
+    ]);
+    const widenedViolations = autowireHookKubeApiViolations(guardLabel, widened);
+    assert(
+      widenedViolations.length >= 2,
+      `[${guardLabel}] this render must be flagged for BOTH hooks — 0.0.0.0/0 covers the required ` +
+        `private ranges but ALSO grants the hook pods egress to the entire public internet, which a ` +
+        `chart whose whole posture is default-deny must never accept. The guard must encode BOTH a ` +
+        `lower bound (covers the required ranges) and an upper bound (extends no further than them), ` +
+        `not coverage alone; got ${widenedViolations.length} violation(s)`
+    );
+    assert(
+      widenedViolations.every((v) => v.includes("BEYOND the required private ranges")),
+      `[${guardLabel}] the violations for this render must name the specific defect — grant extends ` +
+        `beyond the required private ranges — not some unrelated gap; got: ${JSON.stringify(widenedViolations)}`
+    );
+    console.log("  negative case (cidrs widened to 0.0.0.0/0) correctly flagged both hooks");
+  }
+
   // NEGATIVE case 4 — default-deny written as `egress: []` instead of omitting the field. Kubernetes
   // treats the two identically; a detector that recognises only the omitted form sees NO default-deny,
   // skips every hook, and reports success on a render whose hooks are still dropped. Synthetic docs
@@ -1097,11 +1168,29 @@ function main(): void {
       }
     ];
     const syntheticViolations = autowireHookKubeApiViolations(guardLabel, synthetic);
+    // NOT a bare count. With only one NetworkPolicy and one hook Job in this synthetic set, BOTH
+    // branches of the detector produce exactly one violation — the buggy `hasNoAllowRules` (i.e.
+    // `=== undefined` only) sees `egress: []` as NOT deny-all, so the hook is reported as "not
+    // selected by any deny-all-egress policy" (a DIFFERENT, WRONG diagnosis, and one that would
+    // also fire on a render with no NetworkPolicy at all). Asserting only `.length >= 1` cannot
+    // tell these apart and would stay green through that exact regression. So pin down the
+    // SPECIFIC violation the fixed detector must produce: the hook IS recognised as denied by the
+    // `egress: []` policy, and THEN found to lack a kube-API path.
+    const correctlyDenied = syntheticViolations.some(
+      (v) =>
+        v.includes("synthetic-argocd-autowire") &&
+        v.includes("is selected by a deny-all-egress NetworkPolicy but NO") &&
+        v.includes("plausible path to the Kubernetes API server")
+    );
+    const wronglyUnselected = syntheticViolations.some((v) => v.includes("is NOT selected by any"));
     assert(
-      syntheticViolations.length >= 1,
+      correctlyDenied && !wronglyUnselected,
       `[${guardLabel}] a deny-all-egress policy written as 'egress: []' must still be recognised as ` +
-        `default-deny — otherwise every hook takes the "nothing denies it" branch and this whole guard ` +
-        `passes green on a broken render; got ${syntheticViolations.length} violation(s)`
+        `default-deny, and the hook must then be reported as DENIED-with-no-kube-API-path — not as ` +
+        `"not selected by any deny-all-egress policy" (the wrong diagnosis a detector matching only ` +
+        `'egress === undefined' produces, since it never counts the [] policy as denying anything, ` +
+        `and which is just as green a violation count while checking nothing this case exists to ` +
+        `check); got: ${JSON.stringify(syntheticViolations)}`
     );
     console.log(`  negative case (default-deny as \`egress: []\`) correctly recognised as deny-all`);
   }
