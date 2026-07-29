@@ -13403,6 +13403,7 @@ export type GetFederationStatusResponses = {
                 status: 'created' | 'submitted' | 'confirmed';
                 sinceSequence: number | null;
                 throughSequence: number | null;
+                checksum?: string | null;
                 createdAt: string;
                 confirmedAt: string | null;
             }>;

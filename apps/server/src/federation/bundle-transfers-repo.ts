@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { BundleTransfer, TrustDomainId } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -21,6 +21,8 @@ function toBundleTransfer(row: typeof bundleTransfers.$inferSelect): BundleTrans
     status: row.status as "created" | "submitted" | "confirmed",
     sinceSequence: row.sinceSequence,
     throughSequence: row.throughSequence,
+    // M16.1 (I1): the per-change join handle (see `boundary-bundle-ref.ts`). Additive on the wire.
+    checksum: row.checksum,
     createdAt: row.createdAt.toISOString(),
     confirmedAt: row.confirmedAt?.toISOString() ?? null
   };
@@ -117,6 +119,26 @@ export async function lastConfirmedSyncImportAt(
     at: row.confirmedAt,
     transport: row.transport === "live-pull" || row.transport === "bundle" ? row.transport : null
   };
+}
+
+/**
+ * M16.1 (I1) — every ledger row whose bundle checksum is one of `checksums`: the PER-CHANGE cut of
+ * this per-hop ledger, reached through the stamp `federation/boundary-bundle-ref.ts` writes onto a
+ * change's `sourceRef`. Ordered oldest-first so a caller reads the hops in the order they happened.
+ * An empty input (a change that never crossed a boundary) short-circuits to `[]` without a query.
+ */
+export async function listTransfersByChecksums(
+  tx: TenantTx,
+  orgId: string,
+  checksums: string[]
+): Promise<BundleTransfer[]> {
+  if (checksums.length === 0) return [];
+  const rows = await tx
+    .select()
+    .from(bundleTransfers)
+    .where(and(eq(bundleTransfers.orgId, orgId), inArray(bundleTransfers.checksum, checksums)))
+    .orderBy(asc(bundleTransfers.createdAt));
+  return rows.map(toBundleTransfer);
 }
 
 export async function listRecentTransfers(

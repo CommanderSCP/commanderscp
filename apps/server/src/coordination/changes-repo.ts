@@ -15,6 +15,7 @@ import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagin
 import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { insertDecision } from "./decisions-repo.js";
 import { appendJournalEntry } from "../federation/journal-repo.js";
+import { withBoundaryBundleChecksum } from "../federation/boundary-bundle-ref.js";
 
 /** `change_status` journal entries aren't tied to a graph object's own `content_hash` (that one
  *  covers the change's static metadata; this covers the lifecycle-state snapshot) — hashed
@@ -339,6 +340,35 @@ export async function markChangeReconcileBlocked(
         isNull(changes.reconcileBlockedAt)
       )
     );
+}
+
+/**
+ * M16.1 (I1) — stamps a promotion bundle's `checksum` onto a change's `sourceRef`, giving the
+ * boundary segment its PER-CHANGE JOIN into the `bundle_transfers` ledger (which has no change
+ * column; see `federation/boundary-bundle-ref.ts` for the full rationale).
+ *
+ * Deliberately NOT journalled: `bundle_transfers` rows are per-instance observational bookkeeping,
+ * so a replica of this change on another domain must not inherit this domain's checksums — it
+ * stamps whatever IT observed. Additive to whatever `sourceRef` already holds; no other key is
+ * touched, and the value is a deduped list because one change may be exported to several peers.
+ */
+export async function stampBoundaryBundleChecksum(
+  tx: TenantTx,
+  orgId: string,
+  changeObjectId: string,
+  checksum: string
+): Promise<void> {
+  const [row] = await tx
+    .select({ sourceRef: changes.sourceRef })
+    .from(changes)
+    .where(and(eq(changes.orgId, orgId), eq(changes.objectId, changeObjectId)))
+    .limit(1);
+  if (!row) return; // change vanished (cancelled/purged mid-export) — nothing to decorate.
+  const next = withBoundaryBundleChecksum(row.sourceRef, checksum);
+  await tx
+    .update(changes)
+    .set({ sourceRef: next, updatedAt: new Date() })
+    .where(and(eq(changes.orgId, orgId), eq(changes.objectId, changeObjectId)));
 }
 
 /** Reads the target object ids `proposeChange` stashed under `properties.targets` at creation time. */

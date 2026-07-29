@@ -51690,6 +51690,16 @@
                                     }
                                   ]
                                 },
+                                "checksum": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
                                 "createdAt": {
                                   "type": "string",
                                   "format": "date-time",

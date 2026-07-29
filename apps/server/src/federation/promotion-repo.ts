@@ -29,7 +29,15 @@ import { ensureInstanceCosignKey } from "../governance/cosign-keys.js";
 import { insertDecision } from "../coordination/decisions-repo.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
-import { getChange, proposeChange } from "../coordination/changes-repo.js";
+import {
+  getChange,
+  proposeChange,
+  stampBoundaryBundleChecksum
+} from "../coordination/changes-repo.js";
+import {
+  BOUNDARY_BUNDLE_CHECKSUMS_KEY,
+  withoutBoundaryBundleChecksums
+} from "./boundary-bundle-ref.js";
 import { listControlRunsForChange } from "../governance/controls-repo.js";
 import {
   listApprovalRequestsForChange,
@@ -328,7 +336,11 @@ export async function exportPromotionBundle(
       name: change.name,
       properties: change.properties,
       sourceKind: change.sourceKind,
-      sourceRef: change.sourceRef
+      // M16.1 (I1): the LOCAL boundary-checksum stamp is stripped from the wire payload, so a
+      // re-export of an already-exported change produces a byte-identical canonical bundle string
+      // (and hence the same Ed25519 checksum) as it would have before this key existed. The
+      // exporter's ledger checksums are meaningless on the far side — the receiver stamps its own.
+      sourceRef: withoutBoundaryBundleChecksums(change.sourceRef)
     };
 
     // The SELF-BINDING manifest — binds THIS bundle's identity + artifact set (built here so it sees
@@ -390,6 +402,13 @@ export async function exportPromotionBundle(
       status: "created",
       checksum
     });
+
+    // M16.1 (I1) — the per-change join. Written in the SAME tx as the ledger row it points at, so
+    // the two can never disagree. NOTE the honesty consequence recorded in `boundary-segment.ts`:
+    // this row is and stays `created` on THIS instance (the ledger is INSERT-only and every
+    // `submitted`/`confirmed` row is written by a LATER hop's own instance), so the boundary
+    // segment may say "exported" here and must call the handoff unknown.
+    await stampBoundaryBundleChecksum(tx, input.orgId, gathered.header.sourceChangeObjectId, checksum);
 
     return {
       header: gathered.header,
@@ -761,7 +780,12 @@ async function applyPromotionImport(
       // the verify gate — the fields are carried through untouched and non-blocking; an old bundle
       // without them imports exactly as before.
       ...(bundle.promotionManifest ? { promotionManifest: bundle.promotionManifest } : {}),
-      ...(bundle.manifestSignature ? { manifestSignature: bundle.manifestSignature } : {})
+      ...(bundle.manifestSignature ? { manifestSignature: bundle.manifestSignature } : {}),
+      // M16.1 (I1) — the RECEIVING side's per-change join into its own `bundle_transfers` ledger.
+      // Set (not appended) to exactly the bundle this change arrived in: a promotion bundle is 1:1
+      // with a change, and any checksum the exporter might have carried over is its ledger, not
+      // ours. The matching `confirmed` import row is written a few lines below in this same tx.
+      [BOUNDARY_BUNDLE_CHECKSUMS_KEY]: [bundle.checksum]
     },
     targets,
     importedFromDomain: peerId
