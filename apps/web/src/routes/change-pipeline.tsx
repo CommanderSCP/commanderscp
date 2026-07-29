@@ -23,6 +23,10 @@ import { Badge } from "../components/ui/badge";
 import { stateBadgeVariant } from "./change-list";
 import { formatDate } from "./change-detail";
 import { PromotionArrow, type PromotionState } from "../components/pipeline/PromotionArrow";
+import {
+  BoundarySegmentStrip,
+  NoBoundarySegment
+} from "../components/pipeline/BoundarySegmentStrip";
 import { PipelineWaveCard, type PipelineWaveTargetLinks } from "../components/pipeline/PipelineWaveCard";
 
 interface PromotionVerdict {
@@ -308,6 +312,9 @@ export function ChangePipelinePage(): React.JSX.Element {
   }
 
   const { decisions, controlRuns, waitStatus } = explainQuery.data;
+  // M16.1 — the boundary segment. `undefined` only from a pre-M16.1 server (the field is additive
+  // and optional); `null` from a current server means "this change never crossed a boundary".
+  const boundarySegment = explainQuery.data.boundarySegment ?? null;
   const approvals = approvalsQuery.data?.items ?? [];
 
   function linksFor(target: ChangeWaveTarget): PipelineWaveTargetLinks {
@@ -395,6 +402,42 @@ export function ChangePipelinePage(): React.JSX.Element {
           </CardContent>
         </Card>
       )}
+
+      {/* M16.1 — THE UNIVERSAL BOUNDARY SEGMENT (ADR-0011, ADR-0021 D6). ALWAYS SHOWN: either the
+          two real phases, or an explicit statement that this change never crossed a boundary. It
+          sits where the proposal places it — after build/config, before the deploy waves — and it
+          drives nothing. Every state comes from the server's real ledger rows and Decisions. */}
+      <Card data-testid="pipeline-boundary-card">
+        <CardHeader>
+          <CardTitle className="text-base">Domain boundary · transferred → validated</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {boundarySegment ? (
+            <BoundarySegmentStrip
+              segment={boundarySegment}
+              why={
+                boundarySegment.validate.decisionId ? (
+                  boundarySegment.validate.state === "refused" ? (
+                    <WhyLink changeId={id} decisionId={boundarySegment.validate.decisionId} />
+                  ) : (
+                    <Link
+                      to="/changes/$id"
+                      params={{ id }}
+                      hash={`decision-${boundarySegment.validate.decisionId}`}
+                      className="text-xs font-medium text-slate-600 underline hover:text-slate-900"
+                      data-testid="boundary-decision-link"
+                    >
+                      Decision
+                    </Link>
+                  )
+                ) : undefined
+              }
+            />
+          ) : (
+            <NoBoundarySegment />
+          )}
+        </CardContent>
+      </Card>
 
       {!plan && (
         <p className="text-sm text-slate-500" data-testid="pipeline-no-plan">
