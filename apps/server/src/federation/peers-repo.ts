@@ -290,29 +290,42 @@ export async function pairPeer(tx: TenantTx, input: PairPeerInput): Promise<Fede
     .returning();
   if (!row) throw new Error("pairPeer: failed to update peer");
 
-  // ── THE SCOPE-WIDEN RE-ANCHOR (pre-M16 residual W1; drizzle/0042). SECURITY-SENSITIVE.
+  // ── THE RE-ANCHOR ON `full` (pre-M16 residual W1; drizzle/0042; R1 fix). SECURITY-SENSITIVE.
   //
-  // Widening this side's own `sync_scope` for a peer back to `full` is a SUPPORTED configuration
-  // change that used to wedge that peer permanently: while narrow, this side verified the peer's
-  // sparse chain and advanced its cursor with `last_applied_row_hash = NULL` (correct — it never
-  // held the range tail's hash). Widening then put the strict path in front of an ANCHORLESS
-  // cursor, whose absent hash `verifyJournalChain` reads as JOURNAL_GENESIS_HASH, so the peer's
-  // next run — contiguous, gap-free, authentic — could not link, and every subsequent import was
-  // refused forever. The prescribed recovery ("align both sync_scope values, re-export") was inert.
+  // This side's own `sync_scope` for a peer being (or ending up) `full` is a SUPPORTED configuration
+  // state that used to wedge that peer permanently the first time it happened: while narrow, this
+  // side verified the peer's sparse chain and advanced its cursor with `last_applied_row_hash = NULL`
+  // (correct — it never held the range tail's hash). The strict path then sat in front of an
+  // ANCHORLESS cursor, whose absent hash `verifyJournalChain` reads as JOURNAL_GENESIS_HASH, so the
+  // peer's next run — contiguous, gap-free, authentic — could not link, and every subsequent import
+  // was refused forever. The prescribed recovery ("align both sync_scope values, re-export") was
+  // inert.
   //
-  // A scope change is a LOCAL, AUTHENTICATED OPERATOR ACTION on config that is never carried on the
-  // wire and never reconciled, so it is the one signal it is legitimate to key a re-anchor off.
-  // ANCHORING OFF WIRE DATA — e.g. adopting the row hash of whatever entry the bundle claims sits at
-  // the cursor — would be an anchor chosen by the sender, which is precisely the splice this cursor
-  // exists to prevent. Nothing a peer sends reaches this function: `pairPeer` has exactly one
-  // caller, `POST /v1/federation/peers`, behind `federation:write`.
+  // ORIGINALLY THIS WAS GATED ON THE TRANSITION (`previousScope.mode !== "full" && syncScope.mode ===
+  // "full"`), which issues the permit exactly once, at the moment of the widen. That missed the ONLY
+  // population that actually existed: every peer already wedged by the pre-fix bug already has
+  // `sync_scope.mode === "full"` (the operator widened it with the OLD code, before this fix existed)
+  // and an anchorless cursor — so there is no transition left to catch, and the message's own
+  // prescribed recovery (re-pair with `--sync-scope full`) was a no-op transition-wise and issued
+  // nothing. THE FIX: key issuance off the RESULTING scope and the cursor's actual state, not off
+  // what it changed FROM. `permitCursorReanchor` itself already only touches a cursor that is
+  // anchorless (`last_applied_row_hash IS NULL AND last_applied_seq > 0` — see cursors-repo.ts), so
+  // calling it on every `pairPeer` that leaves this peer at `full` is safe and idempotent: a peer
+  // that is already strictly anchored has nothing for the predicate to match, and re-declaring the
+  // SAME `full` scope on an already-wedged peer now heals it, exactly as the refusal message says.
   //
-  // WIDEN ONLY, AND ONLY TO `full`. `full` is the only mode that demands a contiguous, anchored
-  // chain, so it is the only transition that can strand an anchorless cursor. Narrowing needs no
-  // permit (sparse verification never consults the anchor) and gets none. `permitCursorReanchor`
-  // additionally refuses to touch any cursor that DOES hold a real anchor — see cursors-repo.ts.
-  const previousScope = existing[0].syncScope as SyncScope;
-  if (previousScope.mode !== "full" && syncScope.mode === "full") {
+  // A scope of `full` being set is a LOCAL, AUTHENTICATED OPERATOR ACTION on config that is never
+  // carried on the wire and never reconciled, so it is the one signal it is legitimate to key a
+  // re-anchor off. ANCHORING OFF WIRE DATA — e.g. adopting the row hash of whatever entry the bundle
+  // claims sits at the cursor — would be an anchor chosen by the sender, which is precisely the
+  // splice this cursor exists to prevent. Nothing a peer sends reaches this function: `pairPeer` has
+  // exactly one caller, `POST /v1/federation/peers`, behind `federation:write`.
+  //
+  // ONLY TO `full`. `full` is the only mode that demands a contiguous, anchored chain, so it is the
+  // only resulting scope that can strand an anchorless cursor. Narrowing needs no permit (sparse
+  // verification never consults the anchor) and gets none. `permitCursorReanchor` additionally
+  // refuses to touch any cursor that DOES hold a real anchor — see cursors-repo.ts.
+  if (syncScope.mode === "full") {
     await permitCursorReanchor(tx, input.orgId, input.domainId);
   }
 
