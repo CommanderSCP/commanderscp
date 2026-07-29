@@ -81,7 +81,12 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "commanderscp.selectorLabels" . | nindent 8 }}
+        {{/* selectorLabels + the commanderscp.io/autowire-hook marker: the marker is what the
+             `-allow-kube-api-autowire` NetworkPolicy selects, so this pod can make its
+             cross-namespace Secret read against https://kubernetes.default.svc under the chart's
+             enforced default-deny. Without it the hook hangs on waitFor and helm reports the
+             useless "Job in progress". See _helpers.tpl. */}}
+        {{- include "commanderscp.autowireHookSelectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: argocd-autowire
     spec:
       restartPolicy: Never

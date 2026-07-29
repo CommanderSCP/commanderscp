@@ -31,9 +31,18 @@
 #       the 'never admin' half of the invariant, which a positive read alone cannot prove.
 #   §9  idempotency: re-running enable re-mints without error, still exactly one token row.
 #
-# NetworkPolicy is DISABLED for this drill (the hardened default-deny doesn't yet grant the hook
-# egress to the kube API + DNS — a documented follow-up). Requires docker, kind, helm, kubectl. Pulls
-# quay.io/argoproj/argocd + valkey once (drills allow egress; this is not the air-gap drill).
+# NetworkPolicy is ENABLED for this drill — i.e. the SHIPPED default. It used to be disabled here
+# ("the hardened default-deny doesn't yet grant the hook egress to the kube API + DNS — a documented
+# follow-up"), and that opt-out is precisely why this drill never caught the bug that then failed the
+# nightly air-gap drill on every scheduled run from 2026-07-13: the chart's own default-deny blocked
+# the auto-wire hook's `https://kubernetes.default.svc` Secret read. The chart now renders
+# `-allow-kube-api-autowire` for the hook pods (deploy/helm/templates/networkpolicy.yaml).
+# HONEST CAVEAT: kind's DEFAULT CNI does not enforce NetworkPolicy, so this drill proves the chart
+# still INSTALLS and auto-wires with the shipped policy set, NOT that the policies are enforced —
+# enforcement is proven only by scripts/airgap-drill.sh, which installs Calico for exactly that
+# reason. What this drill does buy is that the drill no longer diverges from the shipped default.
+# Requires docker, kind, helm, kubectl. Pulls quay.io/argoproj/argocd + valkey once (drills allow
+# egress; this is not the air-gap drill).
 
 set -euo pipefail
 
@@ -130,7 +139,7 @@ helm install "$RELEASE_NAME" deploy/helm \
   --set api.replicaCount=1 \
   --set api.hpa.enabled=false \
   --set worker.replicaCount=1 \
-  --set networkPolicy.enabled=false \
+  --set networkPolicy.enabled=true \
   --wait --timeout 300s \
   || fail "helm install of the main SCP chart FAILED — is the chart back over Helm's 1 MB release-Secret limit? (the deploy/helm-bundled split must keep vendored manifests OUT of deploy/helm)"
 log "PASS §2: helm install of the main SCP chart succeeded (chart is under Helm's 1 MB release limit)"

@@ -33,6 +33,14 @@ SCP_CHART_DIR="${SCP_MAIN_CHART_DIR:-${ROOT_DIR}/deploy/helm}"
 SCP_RELEASE="scp"
 SCP_NAMESPACE="default"
 WAIT_TIMEOUT="600s"
+# Helm's patience for the SCP release upgrade, which BLOCKS ON THE AUTO-WIRE HOOK JOB. It MUST be
+# strictly greater than that Job's `activeDeadlineSeconds` (600 — deploy/helm/templates/bundled-*
+# -autowire-job.yaml), otherwise Helm gives up at the exact instant the Job does and reports the
+# useless "post-upgrade hooks failed ... Job in progress" instead of the Job's real terminal state.
+# That equal-timeout collision is why 12 consecutive air-gap-drill failures produced zero diagnostic
+# detail. Deliberately a SEPARATE knob from --wait-timeout (the backend rollout wait): raising the
+# rollout wait must not silently re-create the collision.
+SCP_WAIT_TIMEOUT="900s"
 DRY_RUN=0
 declare -a HELM_EXTRA=()
 
@@ -49,7 +57,10 @@ Options:
   --scp-namespace <ns>     namespace of the SCP release + its bundled-backend NetworkPolicy (default: default)
   --values <file>          extra Helm values file (repeatable) — e.g. air-gap retargeted images
   --set <key=value>        extra Helm --set (repeatable) — e.g. a retargeted image ref
-  --wait-timeout <dur>     readiness wait per backend (default: 600s)
+  --wait-timeout <dur>     readiness wait per backend rollout (default: 600s)
+  --scp-wait-timeout <dur> helm timeout for the SCP release upgrade, which blocks on the auto-wire
+                           hook Job (default: 900s). MUST exceed the hook Job's
+                           activeDeadlineSeconds (600s) or helm masks the Job's real failure.
   --chart <dir>            bundled chart dir (default: deploy/helm-bundled)
   --scp-chart <dir>        main SCP chart dir for the hook/NetworkPolicy upgrade (default: deploy/helm)
   --dry-run                same as 'render' — print, apply nothing
@@ -82,6 +93,7 @@ while [ $# -gt 0 ]; do
     --scp-release)   SCP_RELEASE="$2"; shift 2 ;;
     --scp-namespace) SCP_NAMESPACE="$2"; shift 2 ;;
     --wait-timeout)  WAIT_TIMEOUT="$2"; shift 2 ;;
+    --scp-wait-timeout) SCP_WAIT_TIMEOUT="$2"; shift 2 ;;
     --chart)         CHART_DIR="$2"; shift 2 ;;
     --scp-chart)     SCP_CHART_DIR="$2"; shift 2 ;;
     --values)        HELM_EXTRA+=(--values "$2"); shift 2 ;;
@@ -119,14 +131,45 @@ kubectl rollout status --namespace "$NS" --timeout "$WAIT_TIMEOUT" \
     echo "scp-bundled: WARNING — not all ${BACKEND} workloads reported ready within ${WAIT_TIMEOUT}; check: kubectl get pods -n ${NS}" >&2
   }
 
+# Dump everything an operator needs to diagnose a FAILED auto-wire hook. A failed `helm upgrade
+# --wait` on a hook says only "post-upgrade hooks failed" and names the Job — never why. Helm's
+# hook-delete-policy is `before-hook-creation,hook-succeeded`, so a FAILED Job and its pods are still
+# there at this point; this prints the Job's describe (events: DeadlineExceeded, BackoffLimitExceeded,
+# image pull errors) and EVERY attempt pod's logs (the bin's own error — e.g. the 300s
+# `waitFor ... timed out` that a missing kube-API egress allow produces).
+dump_autowire_diagnostics() {
+  local component="${BACKEND}-autowire"
+  echo "--- scp-bundled: auto-wire hook diagnostics (${component}, namespace ${SCP_NAMESPACE}) ---" >&2
+  kubectl get jobs,pods -n "$SCP_NAMESPACE" -l "app.kubernetes.io/component=${component}" >&2 2>&1 || true
+  local job
+  for job in $(kubectl get jobs -n "$SCP_NAMESPACE" -l "app.kubernetes.io/component=${component}" -o name 2>/dev/null); do
+    echo "--- describe ${job} ---" >&2
+    kubectl describe -n "$SCP_NAMESPACE" "$job" >&2 2>&1 || true
+  done
+  local pod
+  for pod in $(kubectl get pods -n "$SCP_NAMESPACE" -l "app.kubernetes.io/component=${component}" \
+                 --sort-by=.metadata.creationTimestamp -o name 2>/dev/null); do
+    echo "--- describe ${pod} ---" >&2
+    kubectl describe -n "$SCP_NAMESPACE" "$pod" >&2 2>&1 || true
+    echo "--- logs ${pod} ---" >&2
+    kubectl logs -n "$SCP_NAMESPACE" "$pod" --tail=-1 >&2 2>&1 || true
+  done
+  echo "--- end auto-wire hook diagnostics ---" >&2
+}
+
 # ---- 4. For argocd: flip the flag on the SCP release (auto-wire hook + NetworkPolicy) --
 if [ -n "$SCP_FLAG" ]; then
   if helm status "$SCP_RELEASE" --namespace "$SCP_NAMESPACE" >/dev/null 2>&1; then
     log "enabling ${SCP_FLAG} on SCP release '${SCP_RELEASE}' (auto-wire hook + NetworkPolicy egress)"
     [ -f "${SCP_CHART_DIR}/Chart.yaml" ] || fail "main SCP chart not found at ${SCP_CHART_DIR} (pass --scp-chart)"
-    helm upgrade "$SCP_RELEASE" "$SCP_CHART_DIR" \
+    # --timeout uses SCP_WAIT_TIMEOUT (900s), NOT WAIT_TIMEOUT — see its definition above: helm must
+    # OUTLAST the hook Job's activeDeadlineSeconds so the Job's real failure surfaces.
+    if ! helm upgrade "$SCP_RELEASE" "$SCP_CHART_DIR" \
       --namespace "$SCP_NAMESPACE" --reuse-values \
-      --set "${SCP_FLAG}=true" --wait --timeout "$WAIT_TIMEOUT"
+      --set "${SCP_FLAG}=true" --wait --timeout "$SCP_WAIT_TIMEOUT"; then
+      dump_autowire_diagnostics
+      fail "helm upgrade of SCP release '${SCP_RELEASE}' FAILED (see the ${BACKEND}-autowire hook diagnostics above)"
+    fi
   else
     echo "scp-bundled: SCP Helm release '${SCP_RELEASE}' not found in namespace '${SCP_NAMESPACE}'." >&2
     echo "  ${BACKEND} is applied. To finish wiring it, set '${SCP_FLAG}=true' in your SCP deployment:" >&2

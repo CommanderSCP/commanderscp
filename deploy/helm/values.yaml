@@ -362,6 +362,36 @@ networkPolicy:
   # scope precisely instead of relying on the private-range default.
   postgresCidr: ""
   natsCidr: ""
+  # Egress to the KUBERNETES API SERVER, granted to the bundled-executor AUTO-WIRE HOOK PODS ONLY
+  # (the short-lived `helm` post-install/post-upgrade Jobs that mint the bundled Argo CD / Gitea
+  # scoped tokens). It is NOT granted to api / worker / migrations / postgres-eval — their
+  # default-deny posture is untouched. Rendered only when a bundled executor is enabled.
+  #
+  # Why it must exist: the hook's first action is a cross-namespace Secret read against
+  # https://kubernetes.default.svc; under the chart's own enforced default-deny that read was
+  # dropped, hanging the hook until `helm --wait` gave up ("post-upgrade hooks failed ... Job in
+  # progress"). That is the air-gap drill's 12-run failure.
+  #
+  # Why CIDRs and not a namespaceSelector: kube-apiserver is a host-networked static pod, so no
+  # pod/namespace selector can match it, and CNIs like Calico evaluate egress policy against the
+  # POST-DNAT destination — the node/endpoint IP:6443, not the 10.96.0.1:443 ClusterIP.
+  #
+  # Empty `cidrs` (the default) = the RFC1918 private ranges (10/8, 172.16/12, 192.168/16) — the
+  # same never-the-public-internet default the Postgres/NATS rules use. That covers the node IPs of
+  # kind, k3s, and private-endpoint managed clusters, and the service CIDR too. Set `cidrs`
+  # explicitly for a PUBLIC control-plane endpoint (e.g. an EKS public endpoint) or to scope this to
+  # the exact endpoint: `kubectl get endpoints kubernetes` → set a /32 and that port.
+  #
+  # UPGRADES FROM A RELEASE THAT PREDATES THIS KEY: `helm upgrade --reuse-values` (what
+  # scripts/scp-bundled.sh runs) discards the NEW chart's values.yaml defaults and renders against
+  # the OLD release's values, where this whole map is absent. templates/networkpolicy.yaml therefore
+  # reads it defensively and treats "absent" as EXACTLY the three settings below — the policy still
+  # renders, so the upgrade this fix exists to unbreak works on existing installs, not just fresh
+  # ones. Keep these three in sync with the fallbacks in that template.
+  kubeApi:
+    enabled: true
+    cidrs: []
+    ports: [443, 6443]
   # Egress allowances for the execution systems SCP coordinates (Mode A / BYO-coordinate — Argo CD,
   # GitHub, …). Opt-in and additive, same as every other rule in this file: empty (default) renders
   # NO extra NetworkPolicy at all, so the default-deny baseline is completely unchanged. Each entry

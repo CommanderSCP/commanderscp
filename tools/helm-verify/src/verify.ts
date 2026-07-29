@@ -198,6 +198,355 @@ function podSpecOf(doc: K8sDoc): PodSpec | undefined {
   return undefined;
 }
 
+function podTemplateLabelsOf(doc: K8sDoc): Record<string, string> {
+  const spec = doc.spec as { template?: { metadata?: { labels?: Record<string, string> } } } | undefined;
+  return spec?.template?.metadata?.labels ?? {};
+}
+
+interface LabelSelector {
+  matchLabels?: Record<string, string>;
+  matchExpressions?: { key: string; operator: string; values?: string[] }[];
+}
+
+interface NpEgressRule {
+  to?: {
+    ipBlock?: { cidr?: string; except?: string[] };
+    namespaceSelector?: unknown;
+    podSelector?: unknown;
+  }[];
+  ports?: { protocol?: string; port?: number; endPort?: number }[];
+}
+
+/** Full Kubernetes LabelSelector semantics (matchLabels AND matchExpressions) against a concrete
+ *  label set. Used to answer the question a name-based grep cannot: "does THIS policy actually
+ *  select THAT pod?" — the exact question the air-gap regression turned on. */
+function selectorSelects(sel: LabelSelector | undefined, labels: Record<string, string>): boolean {
+  if (!sel) return false;
+  for (const [k, v] of Object.entries(sel.matchLabels ?? {})) {
+    if (String(labels[k]) !== String(v)) return false;
+  }
+  for (const expr of sel.matchExpressions ?? []) {
+    const val = labels[expr.key];
+    const present = val !== undefined;
+    const values = (expr.values ?? []).map(String);
+    switch (expr.operator) {
+      case "In":
+        if (!present || !values.includes(String(val))) return false;
+        break;
+      case "NotIn":
+        if (present && values.includes(String(val))) return false;
+        break;
+      case "Exists":
+        if (!present) return false;
+        break;
+      case "DoesNotExist":
+        if (present) return false;
+        break;
+      default:
+        return false; // unknown operator — refuse to claim a match
+    }
+  }
+  return true;
+}
+
+/**
+ * THE REACHABILITY CONSTRAINT this guard encodes — and why "an ipBlock rule mentioning 443 or 6443"
+ * is NOT it.
+ *
+ * A NetworkPolicy egress rule lets the hook pod reach the apiserver only if BOTH halves hold on the
+ * destination the CNI actually evaluates, which is the POST-DNAT one: kube-proxy has already
+ * rewritten `kubernetes.default` (10.96.0.1:443) to the real endpoint, `<node-ip>:6443`, before
+ * policy is applied.
+ *
+ *   PORT — 6443 must be allowed. Measured on the drill's own environment (kind): the post-DNAT
+ *          destination is 172.18.0.2:6443. A rule listing only 443 renders, reads plausibly, passes
+ *          any "is 443 allowed" check — and the hook is dropped exactly as before the fix. 443 alone
+ *          is therefore NOT sufficient evidence of reachability and must not satisfy this guard.
+ *   CIDR — the allowed ipBlocks must actually cover a node IP, AND must not cover anything else.
+ *          `cidrs: [10.0.0.0/8]` looks careful and misses kind's 172.18.0.0/16 entirely — narrowing
+ *          breaks reachability. `cidrs: [0.0.0.0/0]` goes the other way: it covers all three
+ *          required ranges trivially, so a coverage-only check waves it through, but it ALSO grants
+ *          the hook pod unrestricted public-internet egress on TCP/6443 (and 443) — inside a chart
+ *          whose whole posture is default-deny, and that the air-gap drill exists to certify as
+ *          zero-egress. So the guard requires the union of the rule's ipBlocks (minus any `except`)
+ *          to cover ALL THREE RFC1918 ranges the chart ships as its default — the set the chart
+ *          claims covers "kind, k3s, and private-endpoint managed clusters" — AND to extend no
+ *          further than that union. Same class of bug as the ports check above: "at least" is not
+ *          "exactly"; both the lower and the upper bound have to be asserted, or the guard only
+ *          catches half of the ways this can regress.
+ *
+ * An operator with a genuinely public control-plane endpoint sets `networkPolicy.kubeApi.cidrs` to
+ * that endpoint and this guard would flag it — deliberately: this asserts on the CHART'S SHIPPED
+ * DEFAULT render, which is what the drill and every out-of-the-box install use.
+ */
+const KUBE_API_ENDPOINT_PORT = 6443;
+const KUBE_API_REQUIRED_CIDRS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"];
+
+/** A NetworkPolicy rule list carries NO ALLOW RULES — i.e. the policy DENIES that direction — when
+ *  the field is absent OR an empty array. Kubernetes treats `egress:` (absent) and `egress: []` as
+ *  identical; anything that recognises only one of the two can be evaded by writing the other.
+ *  Shared by every default-deny detection in this file so the two can never drift apart again. */
+function hasNoAllowRules(v: unknown): boolean {
+  return v === undefined || v === null || (Array.isArray(v) && v.length === 0);
+}
+
+type IpRange = [start: number, end: number];
+
+/** IPv4 CIDR -> inclusive [start,end] as unsigned 32-bit numbers. `undefined` for anything this can
+ *  not reason about (IPv6, malformed) — which then never counts as coverage, so an unparseable CIDR
+ *  can only make the guard STRICTER, never accidentally satisfy it. */
+function cidrToRange(cidr: string): IpRange | undefined {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(cidr.trim());
+  if (!m) return undefined;
+  const octets = [m[1], m[2], m[3], m[4]].map(Number);
+  if (octets.some((o) => !Number.isInteger(o) || o < 0 || o > 255)) return undefined;
+  const bits = Number(m[5]);
+  if (!Number.isInteger(bits) || bits < 0 || bits > 32) return undefined;
+  const addr = octets.reduce((acc, o) => acc * 256 + o, 0);
+  const size = 2 ** (32 - bits);
+  const start = Math.floor(addr / size) * size; // normalise to the network address
+  return [start, start + size - 1];
+}
+
+function mergeRanges(ranges: IpRange[]): IpRange[] {
+  const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
+  const out: IpRange[] = [];
+  for (const [s, e] of sorted) {
+    const last = out[out.length - 1];
+    if (last && s <= last[1] + 1) last[1] = Math.max(last[1], e);
+    else out.push([s, e]);
+  }
+  return out;
+}
+
+/** base minus sub — used so an ipBlock's `except` holes cannot be counted as coverage. */
+function subtractRanges(base: IpRange[], sub: IpRange[]): IpRange[] {
+  let acc = mergeRanges(base);
+  for (const [ss, se] of mergeRanges(sub)) {
+    const next: IpRange[] = [];
+    for (const [s, e] of acc) {
+      if (se < s || ss > e) next.push([s, e]);
+      else {
+        if (s < ss) next.push([s, ss - 1]);
+        if (e > se) next.push([se + 1, e]);
+      }
+    }
+    acc = next;
+  }
+  return acc;
+}
+
+function rangesCover(covered: IpRange[], required: IpRange): boolean {
+  let cursor = required[0];
+  for (const [s, e] of mergeRanges(covered)) {
+    if (s > cursor) return false;
+    if (e >= cursor) cursor = e + 1;
+    if (cursor > required[1]) return true;
+  }
+  return cursor > required[1];
+}
+
+function ipToStr(n: number): string {
+  return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join(".");
+}
+
+/** The exact union of the three required RFC1918 ranges, as merged [start,end] pairs. Anything a
+ *  granting rule covers OUTSIDE this union — 0.0.0.0/0, another private block, the public
+ *  internet — is exactly as dangerous as failing to cover it: this chart's whole posture is
+ *  default-deny, and the kube-API allow exists to punch ONE narrow, known hole in that, not to
+ *  become a second "allow-all" rule wearing a kube-API label. */
+const KUBE_API_REQUIRED_RANGES: IpRange[] = mergeRanges(
+  KUBE_API_REQUIRED_CIDRS.map((c) => cidrToRange(c)).filter((r): r is IpRange => r !== undefined)
+);
+
+/**
+ * THE AIR-GAP REGRESSION GUARD (nightly deploy-drills.yml has no `pull_request` trigger; THIS job
+ * runs on every PR).
+ *
+ * Every bundled-executor auto-wire hook Job (`*-autowire-*`) begins by reading the backend's admin
+ * Secret from `https://kubernetes.default.svc`. Its pod carries the chart's selector labels, so the
+ * chart's own `-default-deny` NetworkPolicy selects it — and for 12 consecutive nightly air-gap runs
+ * NOTHING in the chart allowed egress to the API server, so Calico dropped that read, the bin's
+ * `waitFor` timed out, and `helm upgrade --wait` failed with the uninformative "post-upgrade hooks
+ * failed ... Job in progress".
+ *
+ * Pure detector (returns violations; empty ⇒ clean) so the standing gate and the explicit NEGATIVE
+ * case below share ONE decision function.
+ *
+ * The check is deliberately structural, and deliberately demands an **ipBlock**: a `namespaceSelector`
+ * can NEVER reach the API server (kube-apiserver is a host-networked static pod, not a workload
+ * endpoint, and CNIs such as Calico evaluate egress policy against the POST-DNAT destination — the
+ * node IP:6443, not the ClusterIP). Without that requirement the pre-existing `allow-argocd` rule
+ * (namespaceSelector, ports 80+443) would satisfy a naive "port 443 is allowed" check and this guard
+ * would have passed on the very render that was broken in production.
+ *
+ * ipBlock-ness is necessary but NOT sufficient — see KUBE_API_ENDPOINT_PORT / KUBE_API_REQUIRED_CIDRS
+ * / KUBE_API_REQUIRED_RANGES above for the actual reachability constraint (6443 must be allowed, the
+ * ipBlocks must cover the private ranges the chart ships, and must not grant more than that) and for
+ * the mutations that used to slip past (narrowing the ports, narrowing the CIDRs, and — the
+ * complementary failure — widening the CIDRs to something like `0.0.0.0/0` that covers the required
+ * ranges while also granting public-internet egress).
+ */
+function autowireHookKubeApiViolations(label: string, docs: K8sDoc[]): string[] {
+  const violations: string[] = [];
+  const policies = docs.filter((d) => d.kind === "NetworkPolicy");
+  /** Does this single egress rule plausibly reach a kube-apiserver endpoint? Returns the reason it
+   *  does NOT, so the violation message can say which half failed. */
+  const kubeApiRuleGap = (rule: NpEgressRule): string | undefined => {
+    const blocks = (rule.to ?? []).map((t) => t.ipBlock).filter((b): b is NonNullable<typeof b> => Boolean(b));
+    if (blocks.length === 0) return "no ipBlock 'to' entry";
+    const ports = rule.ports ?? [];
+    // An absent/empty `ports` means "every port" in Kubernetes — genuinely reachable.
+    const portOk =
+      ports.length === 0 ||
+      ports.some(
+        (p) =>
+          (p.protocol ?? "TCP") === "TCP" &&
+          typeof p.port === "number" &&
+          (p.port === KUBE_API_ENDPOINT_PORT ||
+            (typeof p.endPort === "number" &&
+              p.port <= KUBE_API_ENDPOINT_PORT &&
+              KUBE_API_ENDPOINT_PORT <= p.endPort))
+      );
+    if (!portOk) {
+      return `TCP/${KUBE_API_ENDPOINT_PORT} is not among its ports (${ports
+        .map((p) => `${p.protocol ?? "TCP"}/${p.port}${p.endPort ? `-${p.endPort}` : ""}`)
+        .join(",")})`;
+    }
+    const allowed = blocks
+      .map((b) => cidrToRange(String(b.cidr ?? "")))
+      .filter((r): r is IpRange => r !== undefined);
+    const excepted = blocks
+      .flatMap((b) => b.except ?? [])
+      .map((c) => cidrToRange(String(c)))
+      .filter((r): r is IpRange => r !== undefined);
+    const covered = subtractRanges(allowed, excepted);
+    const missing = KUBE_API_REQUIRED_CIDRS.filter((c) => {
+      const req = cidrToRange(c);
+      return req === undefined || !rangesCover(covered, req);
+    });
+    if (missing.length > 0) {
+      return `its ipBlocks (${blocks
+        .map((b) => b.cidr)
+        .join(",")}) do not cover ${missing.join(",")}`;
+    }
+    // COVERING the three required ranges is necessary but NOT sufficient — a bare `0.0.0.0/0`
+    // covers all of them trivially while ALSO granting the hook pod unrestricted egress to the
+    // public internet on TCP/6443 (and 443), inside a chart whose entire posture is default-deny
+    // and that the air-gap drill exists to certify as zero-egress. So the grant must be bounded
+    // from BOTH sides: it must not extend beyond the union of the required private ranges either
+    // — computed on `covered` (post-`except`), so an `except` carve-out cannot be used to dodge
+    // this any more than it can be used to dodge the coverage check above.
+    const excess = subtractRanges(covered, KUBE_API_REQUIRED_RANGES);
+    if (excess.length > 0) {
+      return `its ipBlocks (${blocks.map((b) => b.cidr).join(",")}) grant egress BEYOND the ` +
+        `required private ranges (${KUBE_API_REQUIRED_CIDRS.join(", ")}) — e.g. ${excess
+          .map(([s, e]) => (s === e ? ipToStr(s) : `${ipToStr(s)}-${ipToStr(e)}`))
+          .join(", ")} — which includes public-internet address space; the kube-API allow must be ` +
+        `scoped to exactly the required private ranges, never 0.0.0.0/0 or any range that reaches ` +
+        `beyond them`;
+    }
+    return undefined;
+  };
+  // Identify hooks by their COMPONENT LABEL, never by name substring: the rendered Job name embeds
+  // the Helm release name, so a release called e.g. `verify-autowire-argocd` would drag the
+  // unrelated migrations Job into this check.
+  const hookJobs = docs.filter(
+    (d) =>
+      d.kind === "Job" && /-autowire$/.test(String(d.metadata?.labels?.["app.kubernetes.io/component"] ?? ""))
+  );
+  if (hookJobs.length === 0) {
+    return [`[${label}] expected at least one *-autowire hook Job in this render, found none`];
+  }
+  // WHAT COUNTS AS "DENY-ALL EGRESS": policyTypes contains Egress and the policy carries NO egress
+  // ALLOW RULE. `egress` absent and `egress: []` are the SAME policy to Kubernetes — both deny
+  // everything — so both must be recognised here. Matching only `=== undefined` (as this did) made
+  // an equally valid `egress: []` default-deny invisible, every hook took the `!denied` branch, and
+  // this entire regression guard passed green while the hooks were still being dropped.
+  // The old `spec.ingress === undefined` clause is gone too: whether a policy also carries INGRESS
+  // rules has no bearing on whether it denies EGRESS, so requiring it was a second way to hide a
+  // real deny-all. And it is `filter`+`some`, not `find`: with several policies, the first match is
+  // not necessarily the one that selects the hook pod.
+  const denyPolicies = policies.filter((np) => {
+    const spec = np.spec as { policyTypes?: string[]; egress?: unknown } | undefined;
+    return Boolean(spec?.policyTypes?.includes("Egress")) && hasNoAllowRules(spec?.egress);
+  });
+
+  for (const job of hookJobs) {
+    const jobName = String(job.metadata?.name ?? "<unnamed>");
+    const podLabels = podTemplateLabelsOf(job);
+    const denied = denyPolicies.some((np) =>
+      selectorSelects((np.spec as { podSelector?: LabelSelector }).podSelector, podLabels)
+    );
+    if (!denied) {
+      // networkPolicy.enabled=false ⇒ nothing is enforced anywhere and there is genuinely nothing to
+      // check. But if the render DOES contain NetworkPolicies and yet no deny-all selects this hook,
+      // the guard would pass VACUOUSLY — the exact silent-pass shape this check exists to prevent —
+      // so say so instead of skipping.
+      if (policies.length === 0) continue;
+      violations.push(
+        `[${label}] hook Job '${jobName}' pod (${JSON.stringify(podLabels)}) is NOT selected by any ` +
+          `deny-all-egress NetworkPolicy in a render that HAS ${policies.length} NetworkPolicy(s). ` +
+          `This chart always renders '-default-deny' over its own selector labels when ` +
+          `networkPolicy.enabled, so either that policy was weakened or the hook's labels drifted — ` +
+          `and either way the kube-API reachability assertion below would be skipped and this guard ` +
+          `would pass without checking anything.`
+      );
+      continue;
+    }
+
+    const gaps: string[] = [];
+    const granting = policies.filter((np) => {
+      const spec = np.spec as { podSelector?: LabelSelector; egress?: NpEgressRule[] } | undefined;
+      if (!selectorSelects(spec?.podSelector, podLabels)) return false;
+      let ok = false;
+      for (const rule of spec?.egress ?? []) {
+        const gap = kubeApiRuleGap(rule);
+        if (gap === undefined) ok = true;
+        else if (gap !== "no ipBlock 'to' entry") gaps.push(`NetworkPolicy/${np.metadata?.name}: ${gap}`);
+      }
+      return ok;
+    });
+    if (granting.length === 0) {
+      violations.push(
+        `[${label}] hook Job '${jobName}' is selected by a deny-all-egress NetworkPolicy but NO ` +
+          `NetworkPolicy grants its pod (${JSON.stringify(podLabels)}) a plausible path to the ` +
+          `Kubernetes API server. Required, because the CNI evaluates the POST-DNAT destination ` +
+          `(<node-ip>:${KUBE_API_ENDPOINT_PORT}, measured 172.18.0.2:6443 on the drill's kind cluster — ` +
+          `NOT the 10.96.0.1:443 ClusterIP): an egress rule with ipBlock 'to' entries whose CIDRs cover ` +
+          `${KUBE_API_REQUIRED_CIDRS.join(", ")} AND whose ports include TCP/${KUBE_API_ENDPOINT_PORT}. ` +
+          `443 alone is NOT enough (it is the pre-DNAT port; the packet the CNI sees is on ` +
+          `${KUBE_API_ENDPOINT_PORT}), and a single private range is not enough (kind's node IPs are ` +
+          `172.18.0.0/16, k3s' are elsewhere). Its first action is a cross-namespace Secret read ` +
+          `against https://kubernetes.default.svc — under an enforced default-deny (the air-gap drill) ` +
+          `that read is DROPPED and 'helm upgrade --wait' dies on the hook. Fix ` +
+          `networkPolicy.kubeApi (deploy/helm/templates/networkpolicy.yaml, -allow-kube-api-autowire)` +
+          (gaps.length > 0 ? `. Closest candidate rule(s) — ${gaps.join("; ")}` : "") +
+          `.`
+      );
+      continue;
+    }
+    // Blast radius: the granting policy must NOT also cover the ordinary workloads. api/worker keep
+    // the unmodified default-deny posture — the kube-API allow is for the short-lived hook pods only.
+    for (const np of granting) {
+      const sel = (np.spec as { podSelector?: LabelSelector }).podSelector;
+      for (const kind of ["api", "worker"]) {
+        const deploy = docs.find(
+          (d) => d.kind === "Deployment" && d.metadata?.labels?.["app.kubernetes.io/component"] === kind
+        );
+        if (deploy && selectorSelects(sel, podTemplateLabelsOf(deploy))) {
+          violations.push(
+            `[${label}] NetworkPolicy/${np.metadata?.name} grants kube-API egress but ALSO selects the ` +
+              `'${kind}' Deployment's pods — the API-server allow must be scoped to the auto-wire hook ` +
+              `pods only, never the long-running workloads`
+          );
+        }
+      }
+    }
+  }
+  return violations;
+}
+
 function assertHardenedContainer(scope: string, container: Container): void {
   const sc = container.securityContext;
   assert(sc, `${scope} container '${container.name}' has no securityContext at all`);
@@ -402,18 +751,24 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
         `[${label}] bundledExecutor.${be}.enabled but no allow-${be} NetworkPolicy egress in the main chart`
       );
     }
+    // ...and the third thing the main chart must keep for them: a path from the hook pods to the
+    // Kubernetes API server under the chart's own default-deny. See autowireHookKubeApiViolations.
+    for (const v of autowireHookKubeApiViolations(label, docs)) fail(v);
   }
 
   // NetworkPolicy — default-deny AND at least one explicit allow, both present.
   const networkPolicies = docs.filter((d) => d.kind === "NetworkPolicy");
   assert(networkPolicies.length >= 2, `[${label}] expected multiple NetworkPolicies (default-deny + explicit allows), got ${networkPolicies.length}`);
+  // `hasNoAllowRules` rather than `=== undefined`: `ingress: []` / `egress: []` is the same
+  // deny-everything policy to Kubernetes as omitting the field (same predicate the auto-wire
+  // kube-API guard uses — see hasNoAllowRules).
   const defaultDeny = networkPolicies.find((np) => {
     const spec = np.spec as { policyTypes?: string[]; ingress?: unknown; egress?: unknown } | undefined;
     return (
       spec?.policyTypes?.includes("Ingress") &&
       spec?.policyTypes?.includes("Egress") &&
-      spec.ingress === undefined &&
-      spec.egress === undefined
+      hasNoAllowRules(spec.ingress) &&
+      hasNoAllowRules(spec.egress)
     );
   });
   assert(defaultDeny, `[${label}] expected a default-deny NetworkPolicy (policyTypes [Ingress,Egress], no ingress/egress rules)`);
@@ -644,6 +999,201 @@ function main(): void {
       "--set-json", 'internalEgressHosts=["argocd-server.argocd.svc.cluster.local"]'
     ])
   );
+
+  // AIR-GAP REGRESSION GUARD — the bundled-executor auto-wire hooks' path to the Kubernetes API
+  // server under the chart's own enforced default-deny. This is what broke the nightly air-gap drill
+  // on every scheduled run from 2026-07-13, and `deploy-drills.yml` has NO `pull_request` trigger —
+  // so this PR-time job is the only thing that can catch a regression before a nightly does.
+  //
+  // Checked PER BACKEND, each enabled ALONE, not just together in the kitchen sink: the gitea hook
+  // makes the identical `https://kubernetes.default.svc` call and had the identical latent failure,
+  // reached only because argocd is enabled first and died first. A fix that happened to work only
+  // when both flags are on would be exactly the "fixed the instance, not the class" bug.
+  console.log("helm-verify: checking the bundled auto-wire hooks' kube-API egress under default-deny...");
+  for (const be of ["argocd", "gitea"]) {
+    const docs = renderChart(`verify-autowire-${be}`, ["--set", `bundledExecutor.${be}.enabled=true`]);
+    const violations = autowireHookKubeApiViolations(`autowire-${be}-only`, docs);
+    for (const v of violations) fail(v);
+    if (violations.length === 0) {
+      console.log(
+        `  ${be}-only render: hook pods have an ipBlock egress path covering ` +
+          `${KUBE_API_REQUIRED_CIDRS.join("/")} on TCP/${KUBE_API_ENDPOINT_PORT} (the POST-DNAT ` +
+          `apiserver destination, not the 443 ClusterIP port) — OK`
+      );
+    }
+  }
+
+  // UPGRADE-FROM-A-SHIPPED-RELEASE GUARD — `networkPolicy.kubeApi` is a values map that did NOT
+  // exist in previously released charts, and `scripts/scp-bundled.sh` wires a bundled backend with
+  // `helm upgrade --reuse-values`. Helm implements that flag by REPLACING the new chart's
+  // values.yaml defaults with the OLD release's coalesced values (`chart.Values = oldVals`), so on
+  // every existing installation this key is simply ABSENT at render time. `--set
+  // networkPolicy.kubeApi=null` reproduces that value tree exactly (both yield nil at that path,
+  // and both made the pre-fix template die with
+  //   Error: ... at <.Values.networkPolicy.kubeApi.enabled>: nil pointer evaluating interface {}.enabled
+  // — i.e. the very command this fix exists to unbreak would have failed EARLIER, at render, for
+  // every existing install, while a fresh install looked fine).
+  //
+  // TWO things must hold, and the second is the one a bare "does it render?" check misses: the
+  // policy must still be RENDERED. A nil-safe read that let the absent key mean "disabled" would
+  // render happily and then hang the auto-wire hook all over again.
+  {
+    const label = "reuse-values-upgrade (networkPolicy.kubeApi absent, as on any pre-existing release)";
+    const upgraded = renderChart("verify-reuse-values", [
+      "--set", "bundledExecutor.argocd.enabled=true",
+      "--set", "bundledExecutor.gitea.enabled=true",
+      "--set", "networkPolicy.kubeApi=null"
+    ]);
+    assert(
+      upgraded.some(
+        (d) => d.kind === "NetworkPolicy" && String(d.metadata?.name).includes("allow-kube-api-autowire")
+      ),
+      `[${label}] rendered without error but produced NO -allow-kube-api-autowire NetworkPolicy — an ` +
+        `absent kubeApi key must default to ENABLED with the chart's documented CIDRs/ports, otherwise ` +
+        `every 'helm upgrade --reuse-values' from an existing release silently drops the fix and the ` +
+        `auto-wire hook hangs exactly as it did before`
+    );
+    for (const v of autowireHookKubeApiViolations(label, upgraded)) fail(v);
+    console.log("  reuse-values upgrade render (kubeApi key absent): policy still rendered and reachable — OK");
+  }
+
+  // NEGATIVE case — PROVE the guard above actually fires. Rendering with networkPolicy.kubeApi
+  // disabled reproduces the exact pre-fix manifest set (default-deny selects the hook pod; the only
+  // other policies covering it are DNS, the RFC1918 DB-port allow, and the backend's
+  // namespaceSelector allow — none of which can reach a host-networked apiserver). The detector MUST
+  // report a violation for each hook; if a future change made it permissive, THIS assert goes red.
+  {
+    const guardLabel = "autowire-kube-api-guard";
+    const preFix = renderChart("verify-autowire-prefix", [
+      "--set", "bundledExecutor.argocd.enabled=true",
+      "--set", "bundledExecutor.gitea.enabled=true",
+      "--set", "networkPolicy.kubeApi.enabled=false"
+    ]);
+    const preFixViolations = autowireHookKubeApiViolations(guardLabel, preFix);
+    assert(
+      preFixViolations.length >= 2,
+      `[${guardLabel}] with networkPolicy.kubeApi disabled BOTH auto-wire hooks must be flagged as having no kube-API egress path (that is the shipped-broken state); got ${preFixViolations.length} violation(s)`
+    );
+    for (const be of ["argocd", "gitea"]) {
+      assert(
+        preFixViolations.some((v) => v.includes(`${be}-autowire`)),
+        `[${guardLabel}] the negative case must name the ${be}-autowire hook Job; got: ${preFixViolations.join("; ")}`
+      );
+    }
+    console.log(`  negative case (networkPolicy.kubeApi disabled) correctly flagged both hooks`);
+  }
+
+  // NEGATIVE cases 2+3 — the two MUTATIONS that used to slip past this guard while leaving the hook
+  // just as dead on a real cluster. Both render a perfectly valid, ipBlock-backed, 443-bearing
+  // -allow-kube-api-autowire policy; both are unreachable post-DNAT. If someone loosens
+  // kubeApiRuleGap back to "any ipBlock rule mentioning 443 or 6443", THESE go red.
+  for (const [what, setArgs, why] of [
+    [
+      "ports narrowed to [443]",
+      ["--set-json", "networkPolicy.kubeApi.ports=[443]"],
+      "443 is the pre-DNAT ClusterIP port; the packet the CNI actually evaluates is <node-ip>:6443 (measured 172.18.0.2:6443 on kind)"
+    ],
+    [
+      "cidrs narrowed to [10.0.0.0/8]",
+      ["--set-json", 'networkPolicy.kubeApi.cidrs=["10.0.0.0/8"]'],
+      "kind's node IPs are 172.18.0.0/16 — outside 10/8 — so the drill's own cluster is not covered"
+    ]
+  ] as [string, string[], string][]) {
+    const guardLabel = `autowire-kube-api-guard (${what})`;
+    const mutated = renderChart("verify-autowire-mutation", [
+      "--set", "bundledExecutor.argocd.enabled=true",
+      "--set", "bundledExecutor.gitea.enabled=true",
+      ...setArgs
+    ]);
+    const mutatedViolations = autowireHookKubeApiViolations(guardLabel, mutated);
+    assert(
+      mutatedViolations.length >= 2,
+      `[${guardLabel}] this render must be flagged for BOTH hooks — ${why}. The guard must encode real ` +
+        `reachability, not "an ipBlock rule exists on some kube-ish port"; got ${mutatedViolations.length} violation(s)`
+    );
+    console.log(`  negative case (${what}) correctly flagged both hooks`);
+  }
+
+  // NEGATIVE case — WIDENING. This is the complementary failure to the two narrowing mutations
+  // above: `cidrs: ["0.0.0.0/0"]` trivially COVERS all three required RFC1918 ranges (so a
+  // coverage-only check waves it through — verified: this render passed 'all hardened-defaults
+  // assertions passed' before this case existed), while ALSO granting the hook pods unrestricted
+  // public-internet egress on TCP/6443 (and 443) — inside a chart whose whole posture is
+  // default-deny and that the air-gap drill exists to certify as zero-egress. The guard must bound
+  // the grant from BOTH sides — "at least" is not "exactly" — or a widened CIDR list sails through
+  // exactly as a narrowed one used to.
+  {
+    const guardLabel = "autowire-kube-api-guard (cidrs widened to [0.0.0.0/0])";
+    const widened = renderChart("verify-autowire-widen", [
+      "--set", "bundledExecutor.argocd.enabled=true",
+      "--set", "bundledExecutor.gitea.enabled=true",
+      "--set-json", 'networkPolicy.kubeApi.cidrs=["0.0.0.0/0"]'
+    ]);
+    const widenedViolations = autowireHookKubeApiViolations(guardLabel, widened);
+    assert(
+      widenedViolations.length >= 2,
+      `[${guardLabel}] this render must be flagged for BOTH hooks — 0.0.0.0/0 covers the required ` +
+        `private ranges but ALSO grants the hook pods egress to the entire public internet, which a ` +
+        `chart whose whole posture is default-deny must never accept. The guard must encode BOTH a ` +
+        `lower bound (covers the required ranges) and an upper bound (extends no further than them), ` +
+        `not coverage alone; got ${widenedViolations.length} violation(s)`
+    );
+    assert(
+      widenedViolations.every((v) => v.includes("BEYOND the required private ranges")),
+      `[${guardLabel}] the violations for this render must name the specific defect — grant extends ` +
+        `beyond the required private ranges — not some unrelated gap; got: ${JSON.stringify(widenedViolations)}`
+    );
+    console.log("  negative case (cidrs widened to 0.0.0.0/0) correctly flagged both hooks");
+  }
+
+  // NEGATIVE case 4 — default-deny written as `egress: []` instead of omitting the field. Kubernetes
+  // treats the two identically; a detector that recognises only the omitted form sees NO default-deny,
+  // skips every hook, and reports success on a render whose hooks are still dropped. Synthetic docs
+  // rather than a render, because the chart cannot be coaxed into emitting the empty-list form —
+  // which is exactly why the hole survived review.
+  {
+    const guardLabel = "autowire-kube-api-guard (default-deny as `egress: []`)";
+    const hookLabels = { "app.kubernetes.io/name": "commanderscp", "commanderscp.io/autowire-hook": "true" };
+    const synthetic: K8sDoc[] = [
+      {
+        kind: "NetworkPolicy",
+        metadata: { name: "synthetic-default-deny" },
+        // The evasion: an ALLOW-RULE-FREE egress list spelled as [] rather than omitted.
+        spec: { podSelector: { matchLabels: { "app.kubernetes.io/name": "commanderscp" } }, policyTypes: ["Egress"], egress: [] }
+      },
+      {
+        kind: "Job",
+        metadata: { name: "synthetic-argocd-autowire", labels: { "app.kubernetes.io/component": "argocd-autowire" } },
+        spec: { template: { metadata: { labels: hookLabels } } }
+      }
+    ];
+    const syntheticViolations = autowireHookKubeApiViolations(guardLabel, synthetic);
+    // NOT a bare count. With only one NetworkPolicy and one hook Job in this synthetic set, BOTH
+    // branches of the detector produce exactly one violation — the buggy `hasNoAllowRules` (i.e.
+    // `=== undefined` only) sees `egress: []` as NOT deny-all, so the hook is reported as "not
+    // selected by any deny-all-egress policy" (a DIFFERENT, WRONG diagnosis, and one that would
+    // also fire on a render with no NetworkPolicy at all). Asserting only `.length >= 1` cannot
+    // tell these apart and would stay green through that exact regression. So pin down the
+    // SPECIFIC violation the fixed detector must produce: the hook IS recognised as denied by the
+    // `egress: []` policy, and THEN found to lack a kube-API path.
+    const correctlyDenied = syntheticViolations.some(
+      (v) =>
+        v.includes("synthetic-argocd-autowire") &&
+        v.includes("is selected by a deny-all-egress NetworkPolicy but NO") &&
+        v.includes("plausible path to the Kubernetes API server")
+    );
+    const wronglyUnselected = syntheticViolations.some((v) => v.includes("is NOT selected by any"));
+    assert(
+      correctlyDenied && !wronglyUnselected,
+      `[${guardLabel}] a deny-all-egress policy written as 'egress: []' must still be recognised as ` +
+        `default-deny, and the hook must then be reported as DENIED-with-no-kube-API-path — not as ` +
+        `"not selected by any deny-all-egress policy" (the wrong diagnosis a detector matching only ` +
+        `'egress === undefined' produces, since it never counts the [] policy as denying anything, ` +
+        `and which is just as green a violation count while checking nothing this case exists to ` +
+        `check); got: ${JSON.stringify(syntheticViolations)}`
+    );
+    console.log(`  negative case (default-deny as \`egress: []\`) correctly recognised as deny-all`);
+  }
 
   // Size-regression guard: the MAIN chart's Helm release Secret must stay under Kubernetes' 1 MB
   // limit. Helm stores base64(gzip(whole chart)) in the release — a vendored backend manifest
