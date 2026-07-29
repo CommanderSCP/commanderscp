@@ -29,7 +29,8 @@ import { createInMemoryFakeHost } from "./test-support/fake-plugin-host.js";
 import { pairPeer } from "../federation/peers-repo.js";
 import {
   PRE_DEPLOY_ARTIFACT_VERIFY_DECISION_KIND,
-  PRE_DEPLOY_ARTIFACT_VERIFY_PASSED_AUDIT_ACTION
+  PRE_DEPLOY_ARTIFACT_VERIFY_PASSED_AUDIT_ACTION,
+  runPreDeployArtifactGate
 } from "./pre-deploy-gate.js";
 import { asTrustDomainId } from "@scp/schemas";
 import { TrustDomainId } from "@scp/schemas";
@@ -301,7 +302,14 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
    *  verified `promotionManifest` + typed `artifacts[]` authorized set, `importedFromDomain` set. */
   async function proposeImportedChange(
     artifacts: ArtifactRef[],
-    opts: { fromDomain?: TrustDomainId; withManifest?: boolean } = {}
+    opts: {
+      fromDomain?: TrustDomainId;
+      withManifest?: boolean;
+      /** Cross-change prerequisite KEYS (M12 P4B), pinned at this change's own component so they
+       *  are resolvable but unprovided — i.e. permanently unsatisfied, which parks the change in
+       *  `waiting`. Used only by the per-tick-flood test. */
+      requiresKeys?: string[];
+    } = {}
   ): Promise<{ changeId: string; componentId: string }> {
     const component = await createTestComponent(admin, {
       name: `m174b-${randomUUID().slice(0, 8)}`
@@ -326,6 +334,9 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
             ? { promotionManifest: { artifacts: artifacts.map((a) => ({ type: a.type, digest: a.digest })) } }
             : {})
         },
+        ...(opts.requiresKeys
+          ? { requires: opts.requiresKeys.map((key) => ({ key, at: component.id })) }
+          : {}),
         importedFromDomain: fromDomain
       })
     );
@@ -730,4 +741,58 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(await gateAuditFor(changeId)).toHaveLength(0);
     expect(await passAuditFor(changeId)).toHaveLength(0);
   }, 60_000);
+
+  // ---------------------------------------------------------------------------------------------
+  // THE PER-TICK FLOOD (M16.1 review B5). A change parked in `waiting` on an outstanding
+  // cross-change prerequisite is re-swept EVERY tick, and `advanceWaitingChanges` runs this gate on
+  // each one (defence-in-depth: `waiting -> executing` is a second edge into execution). Before I2
+  // a passing verify wrote nothing, so that was free. Persisting the pass made every tick a new
+  // `allow` Decision + a new hash-chained `.passed` audit event, for as long as the wait lasts —
+  // the very "Decision per tick" flood `advanceWaitingChanges`'s own doc comment forbids, arriving
+  // through a different door, and an audit chain asserting fresh events where nothing happened.
+  //
+  // (Unreachable in production today ONLY because `applyPromotionImport` strips `requires`, which
+  // is a coincidence and precisely why that call site is labelled defence-in-depth. This test
+  // constructs the shape directly rather than relying on that coincidence to stay true.)
+  // ---------------------------------------------------------------------------------------------
+  it("re-ticking a WAITING manifest-carrying change records the pass ONCE, not once per tick", async () => {
+    const image = await pushImage("scp/waiting-img", "waiting");
+    signImage(image.ref, exporterKey.keyPath);
+
+    // Gated shape (verified manifest + one real artifact) AND an unsatisfiable prerequisite, so it
+    // parks in `waiting` and is re-swept indefinitely instead of leaving for `executing`.
+    const { changeId } = await proposeImportedChange(
+      [{ type: "oci", digest: image.digest, location: image.ref, signatureRef: "registry-attached" }],
+      { requiresKeys: [`never-provided-${randomUUID().slice(0, 8)}`] }
+    );
+
+    // Tick 1: the gate runs on the `coordinated` edge (allow recorded), then the change parks.
+    await tick();
+    expect((await changeRow(changeId)).state).toBe("waiting");
+    const afterFirst = await gateDecisionsFor(changeId);
+    expect(afterFirst).toHaveLength(1);
+    expect(afterFirst[0]!.verdict).toBe("allow");
+    expect(await passAuditFor(changeId)).toHaveLength(1);
+
+    // Ticks 2 and 3: the WAITING sweep re-runs the gate. The verify itself still runs (the gate
+    // stays fail-closed against bytes that vanish mid-wait) — but the verdict is unchanged over an
+    // unchanged authorized set, so nothing new is recorded.
+    await tick();
+    await tick();
+
+    expect((await changeRow(changeId)).state).toBe("waiting"); // still parked, still re-swept
+    const afterThird = await gateDecisionsFor(changeId);
+    expect(afterThird).toHaveLength(1);
+    expect(afterThird[0]!.id).toBe(afterFirst[0]!.id); // the SAME row, not a fresh identical one
+    expect(await passAuditFor(changeId)).toHaveLength(1);
+    expect(await gateAuditFor(changeId)).toHaveLength(0); // and never a block
+
+    // The verdict the gate REPORTS is still the real one — suppressing the duplicate write must not
+    // suppress the decision_id callers (and the boundary segment) rely on.
+    const row = await changeRow(changeId);
+    const gate = await runPreDeployArtifactGate(server.deps.db, org.orgId, row);
+    expect(gate.blocked).toBe(false);
+    expect(gate.decisionId).toBe(afterFirst[0]!.id);
+    expect(await gateDecisionsFor(changeId)).toHaveLength(1);
+  }, 120_000);
 });

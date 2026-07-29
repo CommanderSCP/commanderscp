@@ -28,7 +28,11 @@ vi.mock("../federation/artifact-verify.js", async (importOriginal) => {
 });
 // The gate PERSISTS on both verdicts (M16.1 I2 added the passing one), so these stubs must return
 // what the real repos return: `insertDecision` a row whose `id` the audit append then carries.
-vi.mock("./decisions-repo.js", () => ({ insertDecision: vi.fn(async () => ({ id: "dec-1" })) }));
+vi.mock("./decisions-repo.js", () => ({
+  insertDecision: vi.fn(async () => ({ id: "dec-1" })),
+  // No prior verdict — so the gate's idempotence check falls through to the insert above.
+  latestDecisionForSubjectKind: vi.fn(async () => undefined)
+}));
 vi.mock("../audit/audit-repo.js", () => ({ appendAuditEvent: vi.fn(async () => undefined) }));
 vi.mock("./changes-repo.js", () => ({ markChangeReconcileBlocked: vi.fn() }));
 

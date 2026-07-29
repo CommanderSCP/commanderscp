@@ -37,7 +37,7 @@ import {
   verifyAuthorizedArtifactSet,
   type ArtifactRegistryReader
 } from "../federation/artifact-verify.js";
-import { insertDecision } from "./decisions-repo.js";
+import { insertDecision, latestDecisionForSubjectKind } from "./decisions-repo.js";
 import { markChangeReconcileBlocked, type ChangeRow } from "./changes-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 
@@ -100,6 +100,28 @@ export function crossBoundaryManifestOf(change: ChangeRow): CrossBoundaryManifes
  */
 export const PRE_DEPLOY_ARTIFACT_VERIFY_PASSED_AUDIT_ACTION =
   "change.pre_deploy.artifact_verify.passed";
+
+/** An artifact set as an order-independent, comparable key — the identity an `allow` verdict is
+ *  ABOUT. Two verdicts cover "the same verified set" iff these match. */
+function artifactSetKey(artifacts: { type: string; digest: string }[]): string {
+  return artifacts.map((a) => `${a.type}:${a.digest}`).sort().join("|");
+}
+
+/** The authorized artifact set a persisted verdict covered, read defensively out of its opaque
+ *  `inputContext` (JSONB — a malformed value must yield "no match", never a throw and never a
+ *  false match against the empty set, hence `null` rather than `[]`). */
+function decisionArtifactSetKey(inputContext: Record<string, unknown>): string | null {
+  const raw = inputContext.authorizedArtifacts;
+  if (!Array.isArray(raw)) return null;
+  const parsed: { type: string; digest: string }[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") return null;
+    const { type, digest } = entry as Record<string, unknown>;
+    if (typeof type !== "string" || typeof digest !== "string") return null;
+    parsed.push({ type, digest });
+  }
+  return artifactSetKey(parsed);
+}
 
 export interface PreDeployGateResult {
   blocked: boolean;
@@ -188,7 +210,41 @@ export async function runPreDeployArtifactGate(
       const passReason =
         `all ${manifestRef.artifacts.length} authorized artifact(s) verified present and ` +
         `signed by the exporting peer's cosign key — pre-deploy artifact verification passed`;
+      //
+      // IDEMPOTENT (M16.1 review B5 — the per-tick Decision/audit flood). Both callers in
+      // reconcile.ts run this gate on EVERY sweep tick, and one of them —
+      // `advanceWaitingChanges` — runs it for a change that may sit in `waiting` for hours while
+      // a cross-change prerequisite is outstanding. Before I2 a pass wrote nothing, so ticking was
+      // free; persisting made every one of those ticks append an `allow` Decision AND a
+      // hash-chained `.passed` audit event, which is the "blocked-gate flood" (~30k rows/day per
+      // waiter) that `advanceWaitingChanges`'s own doc comment forbids, arriving through a
+      // different door. It is unreachable today only by the coincidence that
+      // `applyPromotionImport` strips `requires`, which is exactly why that call site is labelled
+      // defence-in-depth: it must be correct on its own.
+      //
+      // So: re-record only what is NEW. If the LATEST verdict of this kind for this change is
+      // already an `allow` over the SAME authorized set, that statement is still true and still
+      // on the record — a second identical row would add no information and no auditability, only
+      // volume, and would make the audit chain claim a fresh event where nothing happened.
+      // "Latest" (not "any"), so a later `block` is never shadowed by an older allow, matching
+      // `boundary-segment.ts`'s latest-verdict-wins read.
+      //
+      // The VERIFY still runs every tick — deliberately. Skipping it would let bytes that vanished
+      // from the registry mid-wait sail into `executing` on an old verdict; the gate is fail-closed
+      // and stays that way. Only the WRITE is suppressed.
       const passDecisionId = await withTenantTx(db, orgId, async (tx) => {
+        const previous = await latestDecisionForSubjectKind(
+          tx,
+          orgId,
+          change.objectId,
+          PRE_DEPLOY_ARTIFACT_VERIFY_DECISION_KIND
+        );
+        if (
+          previous?.verdict === "allow" &&
+          decisionArtifactSetKey(previous.inputContext) === artifactSetKey(verifiedArtifacts)
+        ) {
+          return previous.id;
+        }
         const decision = await insertDecision(tx, {
           orgId,
           kind: PRE_DEPLOY_ARTIFACT_VERIFY_DECISION_KIND,
