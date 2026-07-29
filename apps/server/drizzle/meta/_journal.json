@@ -295,6 +295,13 @@
       "when": 1786600000000,
       "tag": "0041_bundle_transfer_transport",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1786700000000,
+      "tag": "0042_sync_cursor_reanchor",
+      "breakpoints": true
     }
   ]
 }

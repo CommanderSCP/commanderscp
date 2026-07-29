@@ -406,17 +406,32 @@ export interface ImportSyncBundleResult {
  * one place it is caught. So it stays absolute. The misconfiguration is fixed where it belongs —
  * in the operator's hands, with a message that tells them exactly what to fix.
  *
+ * THE ANCHOR THIS SIDE ACTUALLY HOLDS (pre-M16 residual W1 — SECURITY-SENSITIVE; drizzle/0042).
+ * `cursor.rowHash === null` does NOT mean genesis. It means NO ANCHOR WAS EVER RECORDED, and there
+ * are two ways to get there, both purely local: nothing has ever been applied from this origin
+ * (`sequence === 0` — trust-on-first-sync, unchanged), or THIS side's own `sync_scope` was narrow,
+ * so the sparse path advanced the cursor to the range tail with `rowHash: null` (it does not hold
+ * that entry's hash and may never have been shown it). Folding the second case into genesis is what
+ * made a scope WIDEN a one-way ratchet: the peer's next contiguous, authentic run could not link to
+ * genesis, so every subsequent import was refused forever. The recovery is the ONE-SHOT PERMIT
+ * `cursor.reanchorFromSeq`, issued only by `pairPeer` when the LOCAL operator widens this peer back
+ * to `full` (cursors-repo.ts `permitCursorReanchor`) — never by anything a peer sends, because
+ * `sync_scope` is local config that never crosses the wire. With the permit in force the run adopts
+ * its OWN first entry as the anchor and NOTHING ELSE is relaxed: it must still start at exactly
+ * `cursor.sequence + 1`, be internally gap-free, and verify every rowHash and signature, so a
+ * re-signed run with a deleted middle entry is refused exactly as before.
+ *
  * THE MESSAGE IS THE FEATURE. A contiguity break (`sequence_gap` / `prev_hash_mismatch` —
  * `JOURNAL_CONTIGUITY_BREAK_CODES`) gets {@link describeContiguityBreak}: an opening clause that
  * states what the CODE actually means (the two do not mean the same thing — see
  * {@link describeBreakShape}), the peer, THIS side's `sync_scope` verbatim, why a gap-free chain
- * was expected, BOTH ways a scope change legitimately produces this (a narrower sender shipping a
- * sparse chain; a re-widened/re-narrowed side left on a stale cursor anchor), and the commands to
- * compare. It never says "tampered" — that would be a
- * verdict, and the likeliest cause is config. It also never says the opposite: a broken chain IS
- * what withheld or removed entries look like, and the message says so too. Every OTHER break code
- * (`row_hash_mismatch`, `signature_invalid`, `no_public_key`, `sequence_not_increasing`,
- * `sequence_before_start`) is a content-integrity failure and keeps the security-toned wording.
+ * was expected, the state of THIS side's anchor as measured rather than as assumed, the ways a
+ * scope change legitimately produces this, and the commands to compare. It never says "tampered" —
+ * that would be a verdict, and the likeliest cause is config. It also never says the opposite: a
+ * broken chain IS what withheld or removed entries look like, and the message says so too. Every
+ * OTHER break code (`row_hash_mismatch`, `signature_invalid`, `no_public_key`,
+ * `sequence_not_increasing`, `sequence_before_start`) is a content-integrity failure and keeps the
+ * security-toned wording.
  */
 function verifySegment(input: {
   entries: SyncJournalEntry[];
@@ -430,17 +445,24 @@ function verifySegment(input: {
   const { entries, cursor, receiverExpectsContiguity, resolvePublicKey } = input;
   if (entries.length === 0) return;
 
-  const isFirstSyncFromThisOrigin = cursor.sequence === 0 && cursor.rowHash === null;
+  const anchor = describeAnchor(cursor);
   const verification = verifyJournalChain(entries, {
     contiguous: receiverExpectsContiguity,
+    // Only a REAL recorded hash is ever passed. `undefined` here means genesis, which is the right
+    // claim for a true first sync and a lie for an anchorless resumed cursor — the two are kept
+    // apart by `anchorToFirstEntry` below rather than by pretending they are the same thing.
     expectedPrevHash:
-      receiverExpectsContiguity && !isFirstSyncFromThisOrigin
+      receiverExpectsContiguity && anchor.state === "held"
         ? (cursor.rowHash ?? undefined)
         : undefined,
+    // The ONE relaxation, and only with a local operator's one-shot permit in force (W1).
+    anchorToFirstEntry: receiverExpectsContiguity && anchor.state === "permitted",
     // Full first-sync: anchor to the bundle's own first entry (trust-on-first-sync). Otherwise a
-    // lower bound of cursor+1 (exact for contiguous; minimum for sparse).
+    // lower bound of cursor+1 (exact for contiguous; minimum for sparse) — and note that a
+    // re-anchor permit does NOT loosen this: a permitted run must still begin at exactly cursor+1,
+    // so nothing between the cursor and the run's start can be skipped.
     expectedStartSequence:
-      receiverExpectsContiguity && isFirstSyncFromThisOrigin
+      receiverExpectsContiguity && anchor.state === "genesis"
         ? entries[0]!.sequence
         : cursor.sequence + 1,
     // Per-entry key resolved by AUTHENTICATED sequence (never timestamp) — an entry signed before
@@ -452,9 +474,45 @@ function verifySegment(input: {
   const code = verification.brokenAt?.code;
   const reason = verification.brokenAt?.reason ?? "unknown";
   if (code && JOURNAL_CONTIGUITY_BREAK_CODES.includes(code)) {
-    throw conflict(describeContiguityBreak(input, code, reason));
+    throw conflict(
+      describeContiguityBreak(input, code, reason, {
+        ...anchor,
+        // Only a break on the run's FIRST entry is a failure of the ANCHOR comparison; from the
+        // second entry on, the thing that did not match is the previous entry's own row hash, which
+        // is present and real whatever the cursor holds.
+        brokeAtRunStart: verification.brokenAt?.sequence === entries[0]!.sequence
+      })
+    );
   }
   throw conflict(`tampered or broken journal segment (rejected, fail-closed): ${reason}`);
+}
+
+/** What this side can actually anchor a strict run to — MEASURED from the cursor, never assumed:
+ *  - `held`      a real recorded row hash for `cursor.sequence`; the strict link is checkable.
+ *  - `genesis`   nothing has ever been applied from this origin (`sequence === 0`): the run really
+ *                must be the start of the chain (trust-on-first-sync).
+ *  - `permitted` no recorded hash at a NON-ZERO cursor, and the local operator's one-shot
+ *                re-anchor permit is in force for exactly this position (drizzle/0042).
+ *  - `none`      no recorded hash at a non-zero cursor and NO permit. There is nothing to link to;
+ *                the run will be compared against genesis and cannot match. No supported operation
+ *                produces this state any more — a scope widen issues the permit — so it is a state
+ *                to REPORT accurately, not to paper over. */
+type AnchorState = "held" | "genesis" | "permitted" | "none";
+
+interface AnchorFacts {
+  state: AnchorState;
+  sequence: number;
+}
+
+function describeAnchor(cursor: SyncCursor): AnchorFacts {
+  if (cursor.rowHash !== null) return { state: "held", sequence: cursor.sequence };
+  if (cursor.sequence === 0) return { state: "genesis", sequence: 0 };
+  return {
+    // The permit is issued for ONE exact cursor position; a cursor that has moved since has
+    // outrun it, and `advanceCursor` clears it on any real advance regardless.
+    state: cursor.reanchorFromSeq === cursor.sequence ? "permitted" : "none",
+    sequence: cursor.sequence
+  };
 }
 
 /** This side's `sync_scope`, verbatim — the operator cannot read it from the other domain, and for
@@ -466,34 +524,100 @@ function describeScope(scope: SyncScope): string {
 }
 
 /**
- * THE OPENING CLAUSE MUST MATCH THE CODE. The two contiguity codes do not mean the same thing, and
- * saying "not gap-free" for both is false half the time:
+ * THE OPENING CLAUSE MUST MATCH THE CODE — AND THE ANCHOR THIS SIDE ACTUALLY HAS. The two
+ * contiguity codes do not mean the same thing, and neither does "we compared against an anchor"
+ * when there was no anchor to compare against:
  *  - `sequence_gap` really is "the run I was shown has holes in it" — sequences are missing.
- *  - `prev_hash_mismatch` is "this run does not link to the anchor I am holding". The run can be
- *    perfectly contiguous, gap-free and authentic and still fail this, because the anchor is THIS
- *    side's state, not the peer's. Telling that operator their peer shipped a chain with gaps
- *    sends them hunting for something that is not there.
+ *  - `prev_hash_mismatch` against a HELD anchor is "this run does not link to the anchor I am
+ *    holding". The run can be perfectly contiguous, gap-free and authentic and still fail this,
+ *    because the anchor is THIS side's state, not the peer's. Telling that operator their peer
+ *    shipped a chain with gaps sends them hunting for something that is not there.
+ *  - `prev_hash_mismatch` on the run's FIRST entry with NO anchor held is a third thing entirely,
+ *    and the previous wording got it flatly wrong (W2): it blamed "this side's last known-good
+ *    anchor" and "the previous scope regime" when the measured cursor was `{sequence: N,
+ *    rowHash: null}` and the comparison was against JOURNAL_GENESIS_HASH. There was no anchor at
+ *    all. Say that, because it is the fact that determines the recovery.
  */
-function describeBreakShape(code: JournalChainBreakCode, peerLabel: string): string {
-  return code === "sequence_gap"
-    ? `journal chain from peer ${peerLabel} is not gap-free — sequences are missing from the run`
-    : `journal run from peer ${peerLabel} does not link to this side's last known-good anchor ` +
-        `(prev_hash) — the arriving run may itself be perfectly contiguous`;
+function describeBreakShape(
+  code: JournalChainBreakCode,
+  peerLabel: string,
+  anchor: AnchorFacts & { brokeAtRunStart: boolean }
+): string {
+  if (code === "sequence_gap") {
+    return `journal chain from peer ${peerLabel} is not gap-free — sequences are missing from the run`;
+  }
+  if (anchor.state === "none" && anchor.brokeAtRunStart) {
+    return (
+      `journal run from peer ${peerLabel} could not be anchored: this side has NO recorded ` +
+      `anchor for that peer (its cursor sits at sequence ${anchor.sequence} with no row hash), so ` +
+      `the run's first entry was compared against the genesis hash and could not match — the ` +
+      `arriving run may itself be perfectly contiguous`
+    );
+  }
+  return (
+    `journal run from peer ${peerLabel} does not link to this side's last known-good anchor ` +
+    `(prev_hash${anchor.state === "held" ? `, recorded at sequence ${anchor.sequence}` : ""}) — ` +
+    `the arriving run may itself be perfectly contiguous`
+  );
 }
 
 /**
- * THE DIAGNOSTIC for a contiguity break. Two things the operator cannot see from one side: what
- * shape the arriving run actually has, and what THIS side is configured to expect. Deliberately
- * NOT a verdict in either direction — the likely causes plus what to check, and an explicit note
- * that a genuine break looks identical, because this check is exactly where that is caught.
+ * THE ANCHOR CLAUSE — what this side is holding, measured, and what to do about it. This is where
+ * W2's dishonesty lived: the message asserted a stale anchor from "the previous scope regime" for a
+ * cursor that had no anchor at all, and prescribed a recovery (align the scopes and re-export) that
+ * was INERT for that state.
+ */
+function describeAnchorClause(anchor: AnchorFacts & { brokeAtRunStart: boolean }): string {
+  switch (anchor.state) {
+    case "held":
+      return (
+        `(2) THIS SIDE'S ANCHOR: a real anchor IS recorded for that peer — the row hash of ` +
+        `sequence ${anchor.sequence} — and the run does not continue from it. A scope change on ` +
+        `THIS side no longer strands a cursor (widening back to 'full' re-anchors it at the next ` +
+        `run), so also check whether the peer rebuilt, rewound or replayed its own journal. `
+      );
+    case "genesis":
+      return (
+        `(2) THIS SIDE'S ANCHOR: nothing has ever been applied from that peer, so the run was ` +
+        `required to start at the beginning of its chain (genesis). A peer that has been synced ` +
+        `elsewhere first, or that starts mid-chain, needs a bootstrap snapshot rather than a ` +
+        `resumed export. `
+      );
+    case "permitted":
+      return (
+        `(2) THIS SIDE'S ANCHOR: none is recorded (the cursor sits at sequence ${anchor.sequence} ` +
+        `with no row hash, which is what entries applied while THIS side was narrow leave behind), ` +
+        `and a one-shot re-anchor permit IS already in force for exactly that position from the ` +
+        `scope widen. The anchor comparison was therefore NOT what failed: the permit re-anchors, ` +
+        `it does not loosen anything else — the run must still begin at exactly sequence ` +
+        `${anchor.sequence + 1} and be internally gap-free, and that is what it failed. `
+      );
+    case "none":
+      return (
+        `(2) THIS SIDE'S ANCHOR: none is recorded. The cursor sits at sequence ${anchor.sequence} ` +
+        `with no row hash — what entries applied while THIS side's sync_scope was narrow leave ` +
+        `behind, since a sparse chain carries no linkable tail — so there was nothing for the run ` +
+        `to continue from and it was compared against genesis. RE-APPLY this side's scope for that ` +
+        `peer (\`scp federation pair <peer> --sync-scope full\`): widening back to 'full' issues a ` +
+        `one-shot permit for exactly this cursor position, and the peer's next contiguous run ` +
+        `re-anchors and resumes. `
+      );
+  }
+}
+
+/**
+ * THE DIAGNOSTIC for a contiguity break. Three things the operator cannot see from one side: what
+ * shape the arriving run actually has, what THIS side is configured to expect, and what THIS side's
+ * cursor is actually holding. Deliberately NOT a verdict in either direction — the likely causes
+ * plus what to check, and an explicit note that a genuine break looks identical, because this check
+ * is exactly where that is caught.
  *
- * BOTH DIRECTIONS OF A SCOPE CHANGE ARE NAMED, because the product itself produces both. A sender
- * narrower than this side ships a sparse chain (`sequence_gap`). But re-widening or re-narrowing
- * EITHER side leaves this side's cursor anchored under the previous scope regime, so the peer's
- * next run — contiguous, gap-free, authentic — does not link to that stale anchor
- * (`prev_hash_mismatch`). Leading the operator to a tampering investigation for a state the
- * product just created is exactly the failure this message exists to avoid, so the withheld-after-
- * signing clause is kept but gated on "and no scope changed since the last accepted import".
+ * THE CAUSES ARE THE ONES THE PRODUCT ACTUALLY PRODUCES. (1) A sender narrower than this side ships
+ * a sparse chain (`sequence_gap`). (2) Whatever this side's anchor really is — see
+ * {@link describeAnchorClause}, which reads it from the cursor rather than asserting it. The
+ * withheld-after-signing clause is kept, and stays gated on "the two sides already agree and no
+ * scope changed since the last accepted import", because that is exactly the condition under which
+ * none of the benign explanations apply.
  */
 function describeContiguityBreak(
   input: {
@@ -502,23 +626,22 @@ function describeContiguityBreak(
     exporterDomainId: TrustDomainId;
   },
   code: JournalChainBreakCode,
-  reason: string
+  reason: string,
+  anchor: AnchorFacts & { brokeAtRunStart: boolean }
 ): string {
   const { receiverScope, peerName, exporterDomainId } = input;
   return (
-    `${describeBreakShape(code, `'${peerName}' (${exporterDomainId})`)} — import rejected, ` +
+    `${describeBreakShape(code, `'${peerName}' (${exporterDomainId})`, anchor)} — import rejected, ` +
     `fail-closed (${reason}). ` +
     `This side's sync_scope for that peer is ${describeScope(receiverScope)}, which expects a ` +
     `contiguous, gap-free, prev_hash-linked chain with no missing sequences. sync_scope is ` +
     `per-side LOCAL config: never carried on the wire and never reconciled, so neither operator ` +
     `can see the other side's value from their own — which makes a scope change on EITHER side ` +
-    `the most likely cause here, in either of two shapes. ` +
+    `the most likely cause here. ` +
     `(1) ASYMMETRY: a peer whose OWN sync_scope for this domain is narrower (status_only / ` +
     `changes_only / policies_only / custom) legitimately ships a SPARSE chain, which a side at ` +
     `'full' refuses. ` +
-    `(2) RE-ALIGNMENT: re-widening or re-narrowing either side back does not rewrite this side's ` +
-    `cursor, which is still anchored to the previous scope regime — so the peer's next run, ` +
-    `contiguous and authentic though it is, links to an anchor this side no longer expects. ` +
+    describeAnchorClause(anchor) +
     `Run \`scp federation peers\` on BOTH domains, align the two sync_scope values, and check ` +
     `whether either side's scope changed since the last accepted import; then re-export. ` +
     `If the two sides already agree AND neither scope has changed since that import, this is an ` +

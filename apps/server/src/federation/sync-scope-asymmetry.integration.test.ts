@@ -1,6 +1,8 @@
+import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { SyncBundle } from "@scp/schemas";
 import { computeBundleChecksum, signBundleChecksum } from "@scp/schemas/federation-journal";
+import { syncCursors } from "../db/schema.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { createObject } from "../graph/objects-repo.js";
 import { createRelationship } from "../graph/relationships-repo.js";
@@ -39,6 +41,21 @@ import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolat
  *  3. NOTHING is applied and the cursor does not move;
  *  4. once the operator RE-ALIGNS the two scopes, sync resumes cleanly — in EITHER direction, and
  *     with the strict path fully intact afterwards (no one-way ratchet).
+ *
+ * (4) IS THE ONE THAT KEEPS BREAKING, AND PHASES 5-8 ARE WHERE IT IS NAILED DOWN (pre-M16 residual
+ * W1). A receiver whose OWN scope was narrow holds a cursor with NO row hash — correct while it is
+ * narrow, because a sparse chain has no linkable tail. WIDENING that peer back to `full` used to
+ * leave the strict path comparing the peer's next, perfectly contiguous run against
+ * JOURNAL_GENESIS_HASH, which it can never equal: the peer was wedged forever, by a SUPPORTED local
+ * configuration change, and the message's prescribed recovery was inert. The fix is a ONE-SHOT
+ * re-anchor permit written by `pairPeer` on the widen — a local, authenticated operator action on
+ * config that never crosses the wire — which re-anchors the next run and relaxes NOTHING else. So:
+ *  5. re-widening BOTH sides resumes sync and restores a real anchor (PHASE 5, PHASE 6);
+ *  6. and the permit does not reopen the deletion window the owner chose to keep closed: a
+ *     re-signed run with a middle entry removed is refused WITH the permit in force (PHASE 5a) and
+ *     after it has been consumed (PHASE 7);
+ *  7. an anchorless cursor with NO permit — which no supported operation produces any more — is
+ *     described as what it is rather than as a stale anchor (PHASE 8, the W2 honesty fix).
  */
 describe("federation sync_scope asymmetry: refused fail-closed, diagnosed accurately, recoverable (Testcontainers, two databases)", () => {
   let commander: IsolatedDomain;
@@ -47,6 +64,7 @@ describe("federation sync_scope asymmetry: refused fail-closed, diagnosed accura
   let selfOutpost: FederationSelf;
   let outpostPublicKey: string;
   let commanderPublicKey: string;
+  let commanderPrivateKey: string;
 
   let componentId: string;
 
@@ -58,9 +76,17 @@ describe("federation sync_scope asymmetry: refused fail-closed, diagnosed accura
   let cursorAfterRealign: SyncCursor;
   let resumedResult: ImportSyncBundleResult;
   let receiverNarrowedResult: ImportSyncBundleResult;
+  let cursorBeforeRewiden: SyncCursor;
+  let cursorAfterWidenPair: SyncCursor;
+  let thinnedWhilePermittedRefusal: ProblemError;
   let rewidenOutcome:
     | { ok: true; result: ImportSyncBundleResult }
     | { ok: false; refusal: ProblemError };
+  let cursorAfterRewiden: SyncCursor;
+  let postRewidenResult: ImportSyncBundleResult;
+  let cursorAfterPostRewiden: SyncCursor;
+  let thinnedAfterReanchorRefusal: ProblemError;
+  let unanchoredRefusal: ProblemError;
 
   const exportToOutpost = (): Promise<SyncBundle> =>
     withTenantTx(commander.db, commander.orgId, (tx) =>
@@ -98,6 +124,40 @@ describe("federation sync_scope asymmetry: refused fail-closed, diagnosed accura
         syncScope
       })
     );
+  /** Re-sign a mutated entry list so the bundle-level checksum/signature gate PASSES and the chain
+   *  check is what has to catch the mutation — the residual threat this whole design is about (a
+   *  signer, or anyone holding its key, producing bad content). */
+  const resign = (bundle: SyncBundle, entries: SyncBundle["entries"]): SyncBundle => {
+    const checksum = computeBundleChecksum({ header: bundle.header, entries });
+    return {
+      ...bundle,
+      entries,
+      checksum,
+      bundleSignature: signBundleChecksum(commanderPrivateKey, checksum)
+    };
+  };
+  /** REMOVE one entry from the MIDDLE of the part of the bundle this side has not yet applied, and
+   *  re-sign. Deleting below the cursor would be filtered out before verification ever sees it, and
+   *  deleting the last would merely truncate — neither exercises the hole. */
+  const thinAboveCursor = (bundle: SyncBundle, cursorSequence: number): SyncBundle => {
+    const pending = bundle.entries.filter((entry) => entry.sequence > cursorSequence);
+    expect(pending.length).toBeGreaterThan(2);
+    const removed = pending[1]!;
+    return resign(
+      bundle,
+      bundle.entries.filter((entry) => entry.sequence !== removed.sequence)
+    );
+  };
+  const expectRefused = async (bundle: SyncBundle): Promise<ProblemError> =>
+    importAtOutpost(bundle).then(
+      () => {
+        throw new Error("expected this segment to be REFUSED, fail-closed");
+      },
+      (err: unknown) => {
+        if (!(err instanceof ProblemError)) throw err;
+        return err;
+      }
+    );
   const proposeOnCommander = (requestId: string, name: string): Promise<string> =>
     withTenantTx(commander.db, commander.orgId, async (tx) => {
       const { change } = await proposeChange(tx, {
@@ -124,6 +184,7 @@ describe("federation sync_scope asymmetry: refused fail-closed, diagnosed accura
       ensureInstanceKey(tx, commander.orgId)
     );
     commanderPublicKey = commanderKey.publicKey;
+    commanderPrivateKey = commanderKey.privateKey;
     const outpostKey = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
       ensureInstanceKey(tx, outpost.orgId)
     );
@@ -199,22 +260,71 @@ describe("federation sync_scope asymmetry: refused fail-closed, diagnosed accura
     await proposeOnCommander("scope-asym-change-4", "payments rollout four");
     receiverNarrowedResult = await importAtOutpost(await exportToOutpost());
 
-    // ── PHASE 5. THE OPERATOR UNDOES PHASE 4: both sides go back to `full`. Nothing is
-    // misconfigured now — the two rows agree, and the commander's next bundle is contiguous,
-    // gap-free and authentic. It is refused anyway, because the cursor this side is holding was
-    // anchored under the SPARSE regime and the contiguous run does not link to it. The product
-    // produced this state; the diagnostic must not send the operator hunting for an asymmetry that
-    // no longer exists, nor for tampering.
+    // ── PHASE 5. THE OPERATOR UNDOES PHASE 4: both sides go back to `full`. This is THE WEDGE
+    // (pre-M16 residual W1). This side's cursor was advanced under the SPARSE regime and therefore
+    // carries NO row hash — it never held one, because a sparse chain has no linkable tail. The
+    // commander's next bundle is contiguous, gap-free and authentic, and used to be refused anyway
+    // (and forever after), because an absent anchor was read as genesis, which a mid-chain run can
+    // never equal. Widening is a LOCAL, AUTHENTICATED operator action, so it — and nothing that
+    // arrives on the wire — is what issues the one-shot re-anchor permit.
+    cursorBeforeRewiden = await outpostCursor();
     await setCommanderScopeForOutpost({ mode: "full" });
     await setOutpostScopeForCommander({ mode: "full" });
+    cursorAfterWidenPair = await outpostCursor();
     await proposeOnCommander("scope-asym-change-5", "payments rollout five");
-    rewidenOutcome = await importAtOutpost(await exportToOutpost()).then(
+    await proposeOnCommander("scope-asym-change-5b", "payments rollout five-b");
+    const rewidenBundle = await exportToOutpost();
+
+    // ── PHASE 5a. THE PERMIT MUST NOT BE A HOLE. Before the honest run, offer the SAME bundle with
+    // a middle entry deleted and re-signed — indistinguishable, byte for byte, from a legitimately
+    // thinned chain. The permit re-anchors; it does not tolerate gaps. This must be REFUSED, with
+    // the permit still in force afterwards.
+    thinnedWhilePermittedRefusal = await expectRefused(
+      thinAboveCursor(rewidenBundle, cursorBeforeRewiden.sequence)
+    );
+
+    // ── PHASE 5b. The honest run: accepted, and the cursor is strictly anchored again.
+    rewidenOutcome = await importAtOutpost(rewidenBundle).then(
       (result) => ({ ok: true as const, result }),
       (err: unknown) => {
         if (!(err instanceof ProblemError)) throw err;
         return { ok: false as const, refusal: err };
       }
     );
+    cursorAfterRewiden = await outpostCursor();
+
+    // ── PHASE 6. FOLLOW-ON. A brand-new change on the commander, after the re-anchor, on the fully
+    // strict path with a real anchor — the case the reviewer measured as still REFUSED.
+    await proposeOnCommander("scope-asym-change-6", "payments rollout six");
+    postRewidenResult = await importAtOutpost(await exportToOutpost());
+    cursorAfterPostRewiden = await outpostCursor();
+
+    // ── PHASE 7. AND THE DELETION WINDOW STAYS CLOSED once the permit has been consumed: same
+    // thinning, now against a cursor that holds a real anchor.
+    await proposeOnCommander("scope-asym-change-7", "payments rollout seven");
+    await proposeOnCommander("scope-asym-change-7b", "payments rollout seven-b");
+    thinnedAfterReanchorRefusal = await expectRefused(
+      thinAboveCursor(await exportToOutpost(), cursorAfterPostRewiden.sequence)
+    );
+
+    // ── PHASE 8 (W2 — THE MESSAGE MUST DESCRIBE THE CODE'S ACTUAL STATE). An anchorless cursor
+    // with NO permit is not produced by any supported operation any more, so it is FORCED here:
+    // strip the row hash and the permit directly. What is pinned is that the refusal then says what
+    // actually happened — no anchor recorded, compared against genesis — instead of blaming a
+    // "last known-good anchor" and a "previous scope regime" that do not exist.
+    await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      tx
+        .update(syncCursors)
+        .set({ lastAppliedRowHash: null, reanchorFromSeq: null })
+        .where(
+          and(
+            eq(syncCursors.orgId, outpost.orgId),
+            eq(syncCursors.peerDomainId, selfCommander.domainId),
+            eq(syncCursors.originDomainId, selfCommander.domainId)
+          )
+        )
+    );
+    unanchoredRefusal = await expectRefused(await exportToOutpost());
   }, 180_000);
 
   afterAll(async () => {
@@ -286,28 +396,87 @@ describe("federation sync_scope asymmetry: refused fail-closed, diagnosed accura
     expect(receiverNarrowedResult.appliedEntries).toBeGreaterThan(0);
   });
 
-  it("RE-WIDENED BOTH SIDES: a contiguous, authentic run is still refused — the anchor, not a gap", () => {
-    // Not a bug being blessed: the verdict stays fail-closed (a re-signed thinned run is these same
-    // bytes). What is pinned is that the operator is told the TRUTH about why.
-    expect(rewidenOutcome.ok).toBe(false);
-    if (rewidenOutcome.ok) return;
-    const message = rewidenOutcome.refusal.detail ?? rewidenOutcome.refusal.message;
+  it("THE PREMISE OF THE WEDGE: narrow-scope importing really did leave an ANCHORLESS cursor", () => {
+    // Not a contrivance — this is what the sparse path records, because it never holds the range
+    // tail's row hash (the tail may be an entry this side was never shown).
+    expect(cursorBeforeRewiden.sequence).toBeGreaterThan(0);
+    expect(cursorBeforeRewiden.rowHash).toBeNull();
+    expect(cursorBeforeRewiden.reanchorFromSeq).toBeNull();
+    // ...and WIDENING this side's own scope — a local, authenticated operator action on config that
+    // never crosses the wire — is what issues the one-shot permit, for that EXACT position.
+    expect(cursorAfterWidenPair.sequence).toBe(cursorBeforeRewiden.sequence);
+    expect(cursorAfterWidenPair.rowHash).toBeNull();
+    expect(cursorAfterWidenPair.reanchorFromSeq).toBe(cursorBeforeRewiden.sequence);
+  });
 
-    // (a) THE OPENING CLAUSE MATCHES THE CODE. This run has no holes in it, so the message must not
-    // open by declaring the peer's chain "not gap-free" — the old wording did exactly that.
-    expect(message).toMatch(/does not link to this side's last known-good anchor/);
+  it("THE PERMIT IS NOT A HOLE: a re-signed run with a middle entry deleted is REFUSED anyway", () => {
+    // The deletion case is the one that decides the whole design, and the re-anchor must not
+    // reopen it: with the permit in force, the ONLY relaxed check is the first entry's link to an
+    // anchor this side never recorded. Gaps are still fatal.
+    expect(thinnedWhilePermittedRefusal.status).toBe(409);
+    const message =
+      thinnedWhilePermittedRefusal.detail ?? thinnedWhilePermittedRefusal.message;
+    expect(message).toMatch(/is not gap-free/);
+    // ...and it says, truthfully, that the permit was in force and was not what failed.
+    expect(message).toMatch(/one-shot re-anchor permit IS already in force/);
+    expect(message).toMatch(/must still begin at exactly sequence/);
+    expect(message.toLowerCase()).not.toContain("tamper");
+  });
+
+  it("RE-WIDENED BOTH SIDES: sync RESUMES and the cursor is strictly anchored again (no ratchet)", () => {
+    // THE W1 REGRESSION. This used to be refused — and refused for every subsequent bundle too,
+    // byte-identically — so a supported, purely local configuration change wedged the peer forever.
+    expect(rewidenOutcome.ok).toBe(true);
+    if (!rewidenOutcome.ok) return;
+    expect(rewidenOutcome.result.appliedEntries).toBeGreaterThan(0);
+
+    // Strictly anchored again: a real row hash is recorded, and the permit is CONSUMED — one run,
+    // not a standing exemption.
+    expect(cursorAfterRewiden.rowHash).not.toBeNull();
+    expect(cursorAfterRewiden.sequence).toBe(rewidenOutcome.result.lastAppliedSequence);
+    expect(cursorAfterRewiden.reanchorFromSeq).toBeNull();
+    // And it never rewound: the re-anchor is a permit, not a cursor reset (which would also rewind
+    // the key-rotation anchor `maxAppliedSequenceForPeer`).
+    expect(cursorAfterRewiden.sequence).toBeGreaterThan(cursorBeforeRewiden.sequence);
+  });
+
+  it("...and the NEXT change after the re-anchor syncs on the fully strict path", () => {
+    expect(postRewidenResult.appliedEntries).toBeGreaterThan(0);
+    expect(cursorAfterPostRewiden.rowHash).not.toBeNull();
+    expect(cursorAfterPostRewiden.sequence).toBe(postRewidenResult.lastAppliedSequence);
+    expect(cursorAfterPostRewiden.reanchorFromSeq).toBeNull();
+  });
+
+  it("...and the deletion window stays CLOSED after the permit is consumed", () => {
+    expect(thinnedAfterReanchorRefusal.status).toBe(409);
+    const message = thinnedAfterReanchorRefusal.detail ?? thinnedAfterReanchorRefusal.message;
+    expect(message).toMatch(/is not gap-free/);
+    // A real anchor is held now, and the message says so rather than inventing a scope story.
+    expect(message).toMatch(/a real anchor IS recorded for that peer/);
+    expect(message.toLowerCase()).not.toContain("tamper");
+  });
+
+  it("AN ANCHORLESS CURSOR IS DESCRIBED AS ONE — not as a stale anchor from a previous regime", () => {
+    // W2. The old message blamed "this side's last known-good anchor" and "the previous scope
+    // regime" for a measured cursor of `{sequence: N, rowHash: null}` compared against
+    // JOURNAL_GENESIS_HASH. There was no anchor and no stale regime — and the recovery it
+    // prescribed did nothing.
+    expect(unanchoredRefusal.status).toBe(409);
+    const message = unanchoredRefusal.detail ?? unanchoredRefusal.message;
+
+    // (a) THE OPENING CLAUSE STATES WHAT ACTUALLY HAPPENED. No holes in this run, so it must not
+    // open with "not gap-free"; no anchor either, so it must not claim one.
     expect(message).not.toMatch(/^journal chain from peer .* is not gap-free/);
+    expect(message).toMatch(/could not be anchored: this side has NO recorded anchor/);
+    expect(message).toMatch(/compared against the genesis hash/);
+    expect(message).toMatch(new RegExp(`cursor sits at sequence ${cursorAfterPostRewiden.sequence}`));
 
-    // (b) THE RE-ALIGNMENT CAUSE IS NAMED. The asymmetry the operator would otherwise be sent to
-    // hunt for no longer exists — both rows say `full` — so re-widening/re-narrowing has to appear
-    // as a cause in its own right, not merely as an afterthought to the asymmetry story.
-    expect(message).toMatch(/RE-ALIGNMENT/);
-    expect(message).toMatch(/re-widening or re-narrowing/);
-    expect(message).toMatch(/cursor/);
+    // (b) AND THE RECOVERY IS THE ONE THAT ACTUALLY WORKS — the operator-side widen that issues the
+    // permit, not "align the scopes and re-export" (which is inert for this state).
+    expect(message).toMatch(/--sync-scope full/);
+    expect(message).toMatch(/one-shot permit/);
 
-    // (c) AND IT DOES NOT SEND THEM AFTER TAMPERING for a state the product itself produced. The
-    // withheld-after-signing clause is still there and still honest, but it is now gated on "and
-    // neither scope has changed", which is false here.
+    // (c) still not a verdict, in either direction.
     expect(message.toLowerCase()).not.toContain("tamper");
     expect(message).toMatch(/AND neither scope has changed since that import/);
     expect(message).toMatch(/check whether either side's scope changed/);

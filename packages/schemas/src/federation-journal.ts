@@ -209,6 +209,26 @@ export function verifyJournalChain(
      *  entries becomes undetectable, which is inherent to scoping (you cannot prove completeness of a
      *  chain you are deliberately only shown part of) and is the documented scope tradeoff. */
     contiguous?: boolean;
+    /**
+     * SECURITY-SENSITIVE — "I HOLD NO ANCHOR", said out loud instead of faked with genesis.
+     *
+     * `expectedPrevHash: undefined` means genesis, i.e. "this run must be the START of the chain".
+     * That is a real, checkable claim, and it is the WRONG one for a caller resuming mid-chain that
+     * simply never recorded a row hash (see `import-repo.ts`: a receiver whose own `sync_scope` was
+     * narrow advances its cursor with a null hash, because the range tail may be an entry it was
+     * never shown). Such a caller has nothing to compare against; comparing against genesis is not a
+     * weaker check, it is a check that can only ever FAIL, which is how a widened receiver used to
+     * wedge permanently.
+     *
+     * `true` therefore ADOPTS the first entry's `prevHash` as the anchor instead of comparing it,
+     * and chains strictly from there. It relaxes exactly one comparison, on the first entry only:
+     * `expectedStartSequence` still pins where the run must begin (so nothing can be skipped), every
+     * later entry's `prevHash` is still linked, and every `rowHash` and signature is still verified —
+     * so a run with a deleted MIDDLE entry is still refused. Callers must gate it on a LOCAL,
+     * AUTHENTICATED operator action, never on anything the sender supplied; passing it together with
+     * `expectedPrevHash` is a contradiction (the anchor wins is not defined — don't).
+     */
+    anchorToFirstEntry?: boolean;
     resolvePublicKey: (entry: SyncJournalEntry) => string | null;
   }
 ): JournalChainVerification {
@@ -216,6 +236,7 @@ export function verifyJournalChain(
   let expectedPrevHash = opts.expectedPrevHash ?? JOURNAL_GENESIS_HASH;
   let expectedSequence = opts.expectedStartSequence ?? null;
   let lastSequence: number | null = null;
+  let adoptAnchor = contiguous && opts.anchorToFirstEntry === true;
 
   for (const entry of entries) {
     if (contiguous) {
@@ -231,7 +252,11 @@ export function verifyJournalChain(
           }
         };
       }
-      if (entry.prevHash !== expectedPrevHash) {
+      if (adoptAnchor) {
+        // First entry, and the caller told us it holds no anchor: adopt, don't compare. Every
+        // entry after this one is linked normally (`expectedPrevHash` is reassigned below).
+        adoptAnchor = false;
+      } else if (entry.prevHash !== expectedPrevHash) {
         return {
           valid: false,
           entryCount: entries.length,

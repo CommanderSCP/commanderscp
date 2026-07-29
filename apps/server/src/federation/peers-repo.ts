@@ -10,7 +10,7 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { federationPeers, federationPeerKeys } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
 import { isUuid } from "../graph/objects-repo.js";
-import { maxAppliedSequenceForPeer } from "./cursors-repo.js";
+import { maxAppliedSequenceForPeer, permitCursorReanchor } from "./cursors-repo.js";
 import { federationPeerRequiresMtls } from "./federation-outbound.js";
 
 /**
@@ -289,6 +289,32 @@ export async function pairPeer(tx: TenantTx, input: PairPeerInput): Promise<Fede
     .where(and(eq(federationPeers.orgId, input.orgId), eq(federationPeers.id, input.domainId)))
     .returning();
   if (!row) throw new Error("pairPeer: failed to update peer");
+
+  // ── THE SCOPE-WIDEN RE-ANCHOR (pre-M16 residual W1; drizzle/0042). SECURITY-SENSITIVE.
+  //
+  // Widening this side's own `sync_scope` for a peer back to `full` is a SUPPORTED configuration
+  // change that used to wedge that peer permanently: while narrow, this side verified the peer's
+  // sparse chain and advanced its cursor with `last_applied_row_hash = NULL` (correct — it never
+  // held the range tail's hash). Widening then put the strict path in front of an ANCHORLESS
+  // cursor, whose absent hash `verifyJournalChain` reads as JOURNAL_GENESIS_HASH, so the peer's
+  // next run — contiguous, gap-free, authentic — could not link, and every subsequent import was
+  // refused forever. The prescribed recovery ("align both sync_scope values, re-export") was inert.
+  //
+  // A scope change is a LOCAL, AUTHENTICATED OPERATOR ACTION on config that is never carried on the
+  // wire and never reconciled, so it is the one signal it is legitimate to key a re-anchor off.
+  // ANCHORING OFF WIRE DATA — e.g. adopting the row hash of whatever entry the bundle claims sits at
+  // the cursor — would be an anchor chosen by the sender, which is precisely the splice this cursor
+  // exists to prevent. Nothing a peer sends reaches this function: `pairPeer` has exactly one
+  // caller, `POST /v1/federation/peers`, behind `federation:write`.
+  //
+  // WIDEN ONLY, AND ONLY TO `full`. `full` is the only mode that demands a contiguous, anchored
+  // chain, so it is the only transition that can strand an anchorless cursor. Narrowing needs no
+  // permit (sparse verification never consults the anchor) and gets none. `permitCursorReanchor`
+  // additionally refuses to touch any cursor that DOES hold a real anchor — see cursors-repo.ts.
+  const previousScope = existing[0].syncScope as SyncScope;
+  if (previousScope.mode !== "full" && syncScope.mode === "full") {
+    await permitCursorReanchor(tx, input.orgId, input.domainId);
+  }
 
   const current = await currentPeerKeyRow(tx, input.orgId, input.domainId);
   // The cosign key that WILL be in the window after this pairing: the supplied one when provided,

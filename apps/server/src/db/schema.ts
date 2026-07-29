@@ -1183,6 +1183,24 @@ export const syncCursors = pgTable(
     // matches nothing real, and `verifyJournalChain` would have no prior tail to check it against.
     // NULL until the first entry from this (peer, origin) pair is applied.
     lastAppliedRowHash: text("last_applied_row_hash"),
+    /** ONE-SHOT RE-ANCHOR PERMIT (drizzle/0042) — SECURITY-SENSITIVE, and deliberately writable
+     *  from exactly ONE place: `pairPeer`, i.e. a LOCAL, AUTHENTICATED operator action.
+     *
+     *  A receiver whose own `sync_scope` is narrow verifies sparse and advances this cursor with
+     *  `last_applied_row_hash = NULL` (it never holds the tail entry's hash — the tail may be an
+     *  entry it was never shown). That is correct while it stays narrow. When the operator WIDENS
+     *  that peer back to `full`, the strict path has an anchorless cursor and no way to link the
+     *  peer's next, perfectly contiguous run to it — every subsequent import is refused forever
+     *  (the one-way ratchet). Setting this column to the CURRENT `last_applied_seq` permits the
+     *  next strict run to adopt its OWN first entry as the anchor, for that one cursor position
+     *  only. Everything else stays strict: the run must still begin at exactly
+     *  `last_applied_seq + 1`, be internally gap-free, and verify every rowHash and signature —
+     *  so a re-signed run with a deleted middle entry is still refused.
+     *
+     *  Consumed by the first `advanceCursor` that records real progress (which always writes a
+     *  real row hash on the strict path), and only re-issued by another operator widen. NOTHING a
+     *  peer sends can set it: no import/relay/poke path writes this column. */
+    reanchorFromSeq: bigint("reanchor_from_seq", { mode: "number" }),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [

@@ -1,0 +1,47 @@
+-- ===========================================================================================
+-- Pre-M16 residual (W1) — UNWEDGE A RECEIVER WHOSE OWN sync_scope WAS WIDENED BACK TO `full`.
+--
+-- THE BUG. A receiver configured narrow verifies its peer's SPARSE chain with
+-- `contiguous: false` and advances `sync_cursors` with `last_applied_row_hash = NULL` — correct,
+-- because it never holds the row hash of the range tail (that entry may be one it was never
+-- shown). When the operator later WIDENS that peer back to `full`, the strict path reads
+-- `cursor.rowHash ?? undefined`, which `verifyJournalChain` folds into JOURNAL_GENESIS_HASH, and
+-- the peer's next run — contiguous, gap-free, authentic — cannot link to genesis. Every
+-- subsequent import is refused, forever, with a byte-identical message. A SUPPORTED, purely local
+-- configuration change permanently wedged the peer, and the message's prescribed recovery
+-- ("align the two sync_scope values and re-export") was inert.
+--
+-- THE FIX, AND WHY IT IS THIS SHAPE. `reanchor_from_seq` is a ONE-SHOT PERMIT: "the local
+-- operator widened this peer's scope while this cursor held no anchor, so the next strict run may
+-- adopt its OWN first entry as the anchor — at exactly this sequence and nowhere else."
+--
+--   * It is written by ONE function, `pairPeer` (peers-repo.ts), reached by ONE route,
+--     `POST /v1/federation/peers`, behind `federation:write`. It is therefore keyed to a LOCAL,
+--     AUTHENTICATED OPERATOR ACTION. No import, relay, inbox, poke or pull path writes it, and
+--     `sync_scope` is per-side local config that is never carried on the wire — so there is
+--     nothing a peer can SEND that opens this window. That is the whole reason the re-anchor is
+--     keyed off the scope change rather than off anything in the bundle: an anchor taken from the
+--     wire would be an anchor the sender chose.
+--   * It relaxes EXACTLY ONE comparison — the first entry's `prev_hash` against a hash this side
+--     never recorded, i.e. a check that could only ever have compared against a fiction. The run
+--     must still start at exactly `last_applied_seq + 1` (nothing can be skipped), be internally
+--     gap-free (a re-signed bundle with a deleted MIDDLE entry is still refused), and verify
+--     every `row_hash` and Ed25519 signature.
+--   * It is consumed by the first `advanceCursor` that records progress, which on the strict path
+--     always writes a real row hash — so the permit survives exactly one accepted run and is
+--     re-issued only by another operator widen.
+--
+-- WHY NOT RESET THE CURSOR TO 0 (the other candidate). Rewinding `last_applied_seq` would also
+-- rewind `maxAppliedSequenceForPeer`, which is the KEY-ROTATION ANCHOR (federation_peer_keys'
+-- `superseded_at_sequence` / `effective_from_sequence`, schema.ts). A rotation performed between
+-- the widen and the next sync would then supersede the old key at sequence 0, and every historical
+-- entry it legitimately signed would fail `signature_invalid` — trading one wedge for another. A
+-- permit leaves the sequence untouched.
+--
+-- NULLABLE WITH NO BACKFILL. NULL = "no permit" = today's strict behavior, so every existing row
+-- migrates as an exact no-op. Plain additive DDL on an RLS-governed table: the existing
+-- `org_isolation` policy and grants are inherited unchanged (same class as 0031 / 0033 / 0037 /
+-- 0038 / 0041).
+-- ===========================================================================================
+
+ALTER TABLE "sync_cursors" ADD COLUMN IF NOT EXISTS "reanchor_from_seq" bigint;
