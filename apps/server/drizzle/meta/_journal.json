@@ -281,6 +281,27 @@
       "when": 1786400000000,
       "tag": "0039_change_state_accepted",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1786500000000,
+      "tag": "0040_federation_unattached_change_status",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1786600000000,
+      "tag": "0041_bundle_transfer_transport",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1786700000000,
+      "tag": "0042_sync_cursor_reanchor",
+      "breakpoints": true
     }
   ]
 }

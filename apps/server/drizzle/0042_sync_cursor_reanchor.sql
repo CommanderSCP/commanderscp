@@ -1,0 +1,64 @@
+-- ===========================================================================================
+-- Pre-M16 residual (W1) — UNWEDGE A RECEIVER LEFT AT sync_scope `full` WITH AN ANCHORLESS CURSOR.
+--
+-- THE BUG. A receiver configured narrow verifies its peer's SPARSE chain with
+-- `contiguous: false` and advances `sync_cursors` with `last_applied_row_hash = NULL` — correct,
+-- because it never holds the row hash of the range tail (that entry may be one it was never
+-- shown). When the operator later WIDENS that peer back to `full`, the strict path reads
+-- `cursor.rowHash ?? undefined`, which `verifyJournalChain` folds into JOURNAL_GENESIS_HASH, and
+-- the peer's next run — contiguous, gap-free, authentic — cannot link to genesis. Every
+-- subsequent import is refused, forever, with a byte-identical message. A SUPPORTED, purely local
+-- configuration change permanently wedged the peer, and the message's prescribed recovery
+-- ("align the two sync_scope values and re-export") was inert.
+--
+-- THE FIX, AND WHY IT IS THIS SHAPE. `reanchor_from_seq` is a ONE-SHOT PERMIT: "a local,
+-- authenticated re-pair left this peer's `sync_scope` at `full` — whatever it was set to before
+-- that call — while this cursor held no anchor, so the next strict run may adopt its OWN first
+-- entry as the anchor — at exactly this sequence and nowhere else."
+--
+--   * It is written by ONE function, `pairPeer` (peers-repo.ts), reached by ONE route,
+--     `POST /v1/federation/peers`, behind `federation:write`. It is therefore keyed to a LOCAL,
+--     AUTHENTICATED OPERATOR ACTION. No import, relay, inbox, poke or pull path writes it, and
+--     `sync_scope` is per-side local config that is never carried on the wire — so there is
+--     nothing a peer can SEND that opens this window. That is the whole reason the re-anchor is
+--     keyed off this local pairing call rather than off anything in the bundle: an anchor taken
+--     from the wire would be an anchor the sender chose.
+--   * It relaxes EXACTLY ONE comparison — the first entry's `prev_hash` against a hash this side
+--     never recorded, i.e. a check that could only ever have compared against a fiction. The run
+--     must still start at exactly `last_applied_seq + 1` (nothing can be skipped), be internally
+--     gap-free (a re-signed bundle with a deleted MIDDLE entry is still refused), and verify
+--     every `row_hash` and Ed25519 signature.
+--   * It is consumed by the first `advanceCursor` that records progress, which on the strict path
+--     always writes a real row hash — so the permit survives exactly one accepted run and is
+--     re-issued only by another `pairPeer` call that again leaves this peer at `full` with an
+--     anchorless cursor.
+--
+-- WHY NOT RESET THE CURSOR TO 0 (the other candidate). Rewinding `last_applied_seq` would also
+-- rewind `maxAppliedSequenceForPeer`, which is the KEY-ROTATION ANCHOR (federation_peer_keys'
+-- `superseded_at_sequence` / `effective_from_sequence`, schema.ts). A rotation performed between
+-- the re-pair that issues the permit and the next sync would then supersede the old key at
+-- sequence 0, and every historical entry it legitimately signed would fail `signature_invalid` —
+-- trading one wedge for another. A permit leaves the sequence untouched.
+--
+-- NULLABLE WITH NO BACKFILL. NULL = "no permit" = today's strict behavior, so every existing row
+-- migrates as an exact no-op AT THE DDL LEVEL: this statement alone issues no permit to anyone.
+-- Plain additive DDL on an RLS-governed table: the existing `org_isolation` policy and grants are
+-- inherited unchanged (same class as 0031 / 0033 / 0037 / 0038 / 0041).
+--
+-- WHAT THIS MEANS FOR A CURSOR THAT IS ALREADY WEDGED (R1 — pre-M16 residual W1 follow-up). "No-op"
+-- above is a statement about the DDL, not about the operator's situation. A peer that hit the W1 bug
+-- before this fix existed already has `sync_scope.mode = 'full'` (the operator widened it with the
+-- pre-fix code — that widen is HOW it got wedged) and an anchorless cursor
+-- (`last_applied_row_hash IS NULL AND last_applied_seq > 0`). This migration does not touch that row:
+-- it stays exactly as wedged after the migration runs as before. What un-wedges it is a SUBSEQUENT
+-- call to `pairPeer` (peers-repo.ts) — originally only when the call's scope TRANSITIONED into
+-- `full`, which an already-`full` peer can never do again, so the message's own prescribed recovery
+-- (`scp federation pair <peer> --sync-scope full`) was inert for exactly this population. `pairPeer`
+-- now issues the permit whenever the RESULTING scope is `full` and the cursor is anchorless,
+-- regardless of the previous scope, so re-running that same command — even though it does not change
+-- `sync_scope` at all — issues the permit and heals the peer. No backfill migration is needed or
+-- performed: the healing action is the documented, authenticated, LOCAL re-pair, not a write this
+-- migration makes to anyone's data at upgrade time.
+-- ===========================================================================================
+
+ALTER TABLE "sync_cursors" ADD COLUMN IF NOT EXISTS "reanchor_from_seq" bigint;

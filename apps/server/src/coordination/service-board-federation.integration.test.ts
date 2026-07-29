@@ -197,6 +197,19 @@ describe("service board honesty across a federation link (Testcontainers, two da
       return { changes: changeRows.rows[0]!.n, waveTargets: targetRows.rows[0]!.n };
     });
     expect(local).toEqual({ changes: "0", waveTargets: "0" });
+
+    // ...and the evidence store stays EMPTY on a full-scope link — the negative control for
+    // drizzle/0040. Both the change's `object_upsert` and its `change_status` ride this bundle, in
+    // that journal order, so nothing is ever unattached. A mechanism that recorded a row here would
+    // make every healthy federated board declare `summary.stable` unobservable forever, which
+    // over-claims ignorance — the same dishonesty in the opposite direction.
+    const unattached = await withTenantTx(outpost.db, outpost.orgId, async (tx) => {
+      const rows = await tx.execute<{ n: string }>(
+        sql`SELECT count(*)::text AS n FROM federation_unattached_change_status WHERE org_id = ${outpost.orgId}::uuid`
+      );
+      return rows.rows[0]!.n;
+    });
+    expect(unattached).toBe("0");
   });
 
   it("the COMMANDER (which drives the change) reports it in flight", () => {

@@ -66,7 +66,7 @@ packages:
   - "packages/*"
   - "packages/plugins/*"
   - "tools/*"
-  - "deploy/airgap"      # @scp/airgap — bundle-builder scripts (referenced by CI stage 8)
+  - "deploy/airgap"      # @scp/airgap — bundle-builder scripts (used by deploy-drills.yml)
 EOF
 
 # 1. Workspace tooling
@@ -207,20 +207,24 @@ Four layers, matching DESIGN.md §18. Every layer runs offline; no test may reac
 
 - **What:** graph CRUD + type registry, recursive-CTE named queries against seeded fixture graphs, **adversarial RLS cross-org probes** (attempt reads/writes across `org_id` with a mis-set/unset `app.current_org_id`), transactional outbox delivery (Postgres and NATS `EventBus` backends), pg-boss retry/backoff/poison-message behavior, subprocess plugin-host lifecycle (crash isolation, restart-with-backoff, timeout kill), transition-function atomicity (audit event + Decision + state change commit or roll back together), audit-chain integrity (`scp audit verify` logic), migration up-path from every released version's schema snapshot, plan/apply diff engine, federation journal derivation and import idempotency.
 - **Executor plugins:** tested against recorded HTTP fixtures (nock) plus a **fake-executor plugin** (in-repo, implements `ExecutorPlugin` with controllable outcomes) used for full coordination-loop tests without any external system.
-- **Runner:** `pnpm test:integration` — Vitest project with `testTimeout: 60_000`, **one** Postgres container for the whole run whose `scp_template` database is migrated once, then **cloned per worker fork** (`CREATE DATABASE … TEMPLATE`) so workers run in parallel without sharing state; within a worker, isolation is per-test unique `org_id` + RLS. See §6.1 for the full speed model (this replaced the old `singleFork` serial execution).
+- **Runner:** `pnpm test:integration` — Vitest project with `testTimeout: 60_000`, **one** Postgres container for the whole run whose `scp_template` database is migrated once, then **cloned per worker fork** (`CREATE DATABASE … TEMPLATE`) so workers run in parallel without sharing state; within a worker, isolation is per-test unique `org_id` + RLS. See §6.2 for the full speed model (this replaced the old `singleFork` serial execution).
 - **Plugin conformance:** every shipped plugin runs the relevant `@scp/plugin-testkit` suite in its own package tests.
 
 ### 4.3 Contract
 
-- **Spec stability:** `tools/openapi/check.sh` runs vendored `oasdiff breaking` between the committed spec on the merge base and the newly emitted spec; any breaking change within `/v1` fails CI.
-- **SDK-vs-server:** the generated SDK is exercised against a live server (compose Postgres + `scpd` booted in-process) covering every resource: create/read/update/delete/list/paginate through SDK calls only.
-- **Idempotency fuzzing (fast-check):** property-based tests firing randomized sequences of `PUT` upserts-by-URN, replayed `Idempotency-Key` POSTs, and duplicated federation-journal applications, asserting convergence to identical graph state — this property is what federation import correctness rests on.
+- **Spec stability — BUILT.** `tools/openapi/check.sh` runs vendored `oasdiff breaking` between two **committed** copies of `tools/openapi/openapi.v1.json`: the one at `git merge-base origin/main HEAD`, and the one in the working tree. Any breaking change within `/v1` fails the script. Wired as job 3b, which is advisory (§6.0).
+  - **Job 3b does not run codegen** — `ci.yml` says so in the job's own comment ("No build/gen here"). It checks out the branch (`fetch-depth: 0`, so `merge-base` resolves) and diffs the committed spec as-is. That is sound only because job 3 ("Codegen drift") separately proves the committed spec is byte-identical to a freshly emitted one; 3b piggybacks on that instead of paying for a second full build.
+  - **Reproducing it locally: do NOT run `pnpm gen` first.** `tools/openapi/check.sh` on its own is the faithful reproduction — it reads the working-tree file, which on a clean checkout *is* the committed spec. Running `pnpm gen` beforehand emits into the working tree and, if anything is out of date, leaves you diffing an uncommitted spec against the merge base — a dirty tree whose oasdiff result matches neither job 3 nor job 3b. (The script's own usage line still shows `pnpm gen && tools/openapi/check.sh`; that is the belt-and-braces local flow for **authoring** a change, where you want the emitted spec, and it is meant to be followed by committing the result.)
+- **SDK-vs-server — NOT BUILT.** Intended: exercise the generated SDK against a live server (compose Postgres + `scpd` booted in-process), covering create/read/update/delete/list/paginate for every resource through SDK calls only.
+- **Idempotency fuzzing (fast-check) — NOT BUILT.** Intended: property-based tests firing randomized sequences of `PUT` upserts-by-URN, replayed `Idempotency-Key` POSTs, and duplicated federation-journal applications, asserting convergence to identical graph state.
+
+> The last two are the "no contract-test stage" gap in §6.0a: no `contract` script exists in any package and no CI job runs one. **Open owner decision: build them or drop them.**
 
 ### 4.4 E2E
 
 - **Golden path (CLI, compose in CI):** script boots `docker compose up`, then via the real `scp` CLI: register service → register component → connect fake executor → propose change → gate blocks → approve → accept → `scp change explain` shows the Decision → `scp audit verify` passes.
 - **UI (Playwright, Chromium):** login (local auth), graph explorer renders seeded org, service detail shows owners/dependents, change detail shows waves and a working "Why?" Decision link, blocked action surfaces `decision_id`. Runs against the compose stack; also a `pnpm --filter @scp/web test:e2e` local target against the dev server.
-- **Two-domain federation round-trip (every merge, non-negotiable):** compose file with two isolated `scpd`+postgres pairs; create objects in Domain A → `scp federation export` → file copy (simulating the air gap — no network path exists between the stacks) → `scp federation import` into B → assert graph equivalence → accept a change through B's **local** gates → export status back to A → assert convergence and audit-chain integrity on both sides.
+- **Two-domain federation round-trip (`scripts/e2e-m6.sh`, job 8c — post-merge on `main`, not a PR gate; §6.0):** compose file with two isolated `scpd`+postgres pairs; create objects in Domain A → `scp federation export` → file copy (simulating the air gap — no network path exists between the stacks) → `scp federation import` into B → assert graph equivalence → accept a change through B's **local** gates → export status back to A → assert convergence and audit-chain integrity on both sides.
 
 ### 4.5 What runs where / target runtimes
 
@@ -228,9 +232,9 @@ Four layers, matching DESIGN.md §18. Every layer runs offline; no test may reac
 |---|---|---|---|---|
 | Unit | on save (`vitest --watch`) | every push | no | Node 22 |
 | Integration | `pnpm test:integration` before push | every push | yes | Node 22 + postgres:16 |
-| Contract | `pnpm contract` | every push | partial | Node 22 |
-| E2E | on demand | every merge to main + every PR labeled `e2e` (fast subset on all PRs) | yes | linux/amd64 compose stack; Chromium |
-| Chart install | on demand (`kind`) | nightly + release | yes | kind ≥ 1.30 |
+| Contract | — | **not built** (§4.3, §6.0a) | — | Node 22 |
+| E2E | on demand | **post-merge on `main` only** — never on a PR, and there is no PR subset mechanism (§6.0) | yes | linux/amd64 compose stack; Chromium |
+| Chart install | on demand (`kind`) | nightly + dispatch (`deploy-drills.yml`) | yes | kind ≥ 1.30 |
 
 Published images target **linux/amd64 and linux/arm64**. Node 22 is the only supported server runtime for v1.
 
@@ -279,29 +283,44 @@ pnpm doctor              # toolchain sanity
 
 ## 6. CI Pipeline
 
-Reference implementation is GitHub Actions (`.github/workflows/ci.yml`), but **every stage is a plain pnpm/docker command with no hosted-service dependency**, so the identical pipeline runs on self-hosted runners, GitLab CI, or a bare local runner script on an air-gapped machine — a charter requirement (self-hosting first). Required tooling (Node, pnpm store, Playwright browsers, oasdiff) is baked into a versioned CI runner image built from `tools/ci-image/Dockerfile`.
+**`.github/workflows/ci.yml` is the pipeline. This section deliberately does not restate it.**
 
-> *(A `scripts/ci-local.sh` is named as the intended shape of that bare local entry point but **has not been written yet** — the portability property is currently upheld by the stages being plain commands, not by a committed script that exercises them. Writing it is open work.)*
+Every earlier revision of this section carried a table repeating each job's exact command, its rule text and measured counts. Each correction pass fixed some false rows and introduced new ones — the last one alone left seven, several of which it had just written itself. A dense claims surface duplicating a file that changes independently cannot be kept true by discipline. So this section now carries only what the workflow file cannot: **intent, topology, and an honest list of what is not built or not proven.** For "what does stage *N* actually run", read the job named `N.` in `ci.yml` — that numbering is the one this document and `tools/openapi/` cite.
 
-Stages (each a job; 2–5 fan out in parallel after build):
+The one property that is *not* visible in the workflow file, and is a charter requirement: **every stage is a plain pnpm/docker command with no hosted-service dependency**, so the identical pipeline runs on a self-hosted runner, on GitLab CI, or from a bare script on an air-gapped machine. GitHub Actions is the *reference* implementation, not a requirement. Jobs that need `helm`/`kind`/`cosign`/`skopeo` install them in-workflow rather than trusting the runner image, for exactly that reason — `cosign` and `skopeo` from the same pins the runtime image vendors (`scripts/install-pinned-*.sh`, fail-closed on a version mismatch), `helm` and `kind` as their own install steps.
 
-| # | Stage | Command | Gates merge? |
-|---|---|---|---|
-| 1 | Setup & build | `pnpm install --frozen-lockfile && pnpm build` (Turbo cache restored) | yes |
-| 2 | Static checks | `pnpm lint && pnpm typecheck` | yes |
-| 3 | Codegen drift | `pnpm gen && git diff --exit-code` + `tools/openapi/check.sh` (oasdiff vs merge base) | yes |
-| 4 | Unit | `pnpm test` (job "4. Unit tests"). Coverage thresholds (§7) are **not** enforced here — the job runs bare `pnpm test`; treat §7's numbers as a target, not a gate | yes (transitively, via `5z`) |
-| 5 | Integration | `pnpm test:integration -- --shard=i/2` — 2-way sharded matrix; per-worker template-DB parallelism; pre-built runner images pulled from GHCR | yes (via the `integration` aggregation gate) |
-| 6 | Contract | `pnpm contract` (SDK-vs-live-server + idempotency fuzz) — **PLANNED, NOT BUILT.** No `contract` script exists in any package and no CI job runs one | no (does not exist) |
-| 7 | E2E | `docker build -t scp:ci . && pnpm e2e` — golden path CLI + Playwright smoke + **two-domain federation round-trip** | **main only.** Every E2E job (7, 8, 8b–8d, 9, 9a) is guarded by `github.event_name == 'push' && github.ref == 'refs/heads/main'` and is SKIPPED on PRs. There is no PR subset mechanism — no `--grep`, no project filter, no second job |
-| 8 | Package (main only) | multi-arch image build, `helm lint` + kind install test, `pnpm --filter @scp/airgap bundle` (nightly) | no (informational until release) |
-| 9 | Release (tag only) | Changesets version/publish, image push, cosign sign, air-gap bundle `scp-bundle-<version>.tar.gz` build + signature | n/a |
+> *(A `scripts/ci-local.sh` is named as the intended shape of that bare local entry point but **has not been written**. The portability property is upheld today by the stages being plain commands, not by a committed script that exercises them. Writing it is open work.)*
 
-**Merge policy:** a PR merges only when stages 1–5 are green and (for changes under `packages/plugin-api` or `packages/sdk`) a changeset file is present (`pnpm changeset status` check). Stage 7 does **not** gate a PR at all — see the row above; a defect only Playwright covers is caught on the post-merge `main` run, i.e. after it has already landed. Anything that must not regress therefore needs an assertion reachable from stage 4 or 5, not only from an E2E spec (worked example: `apps/web/src/routes/service-board-honesty.test.tsx`, which pins the service board's unknown-vs-observed rendering in the unit job because `apps/web/e2e/service-board-honesty.spec.ts` never runs on a PR).
+### 6.0 What gates a merge
 
-**What `main` branch protection actually enforces (set 2026-07-24):** exactly two required status checks — **`5z. Integration (aggregation gate)`** and **`3. Codegen drift`**. Requiring `5z` transitively covers stages 2, 3, 4 and 4c, because `integration-shard` `needs:` all of them: if any fails, the matrix is skipped, the aggregation gate sees a non-`success` result and goes red. Deliberate settings: `strict: false` (no forced rebase every time `main` moves), `enforce_admins: false` (so a docs-only PR that runs no CI can still be admin-merged, per the docs-PR convention), and force-pushes and branch deletion both disabled. **`3b. API breaking-change gate` is deliberately NOT required** — it is a policy signal a human may knowingly accept, and making it required would mean every owner-approved `/v1` break needed an admin override to land. **Job 3b reads the label** (2026-07-25): the analysis always runs, but a breaking result FAILS only when the `api-v2-exception` label is absent, or when it is present without a matching `OASDIFF-EXCEPTIONS.md` entry added by the same PR. So an owner-approved break merges green-with-justification rather than red-and-overridden, while an unapproved one still fails. `tools/openapi/check.sh` stays label-agnostic and always exits non-zero on a break, so it behaves identically on a workstation or an air-gapped machine — the policy lives in the workflow, the analysis in the script. **Ordering matters:** label FIRST, then trigger a FRESH run (push a commit, or close+reopen the PR). A re-run will NOT work: GitHub replays the original event payload, so a label added after the run started is invisible to it — verified on PR #145, where a re-run reported `APPROVED: false` with the label applied. Before this date `main` had no branch protection and no rulesets at all, while several comments in `ci.yml`, `tools/openapi/check.sh` and ADR-0004 described an override mechanism that did not exist.
+`main` branch protection requires **exactly two status checks** (set 2026-07-24):
 
-### 6.0 Runner topology
+- **`5z. Integration (aggregation gate)`**
+- **`3. Codegen drift`**
+
+Nothing else is required directly. `5z` is what lends everything else its authority: the `integration-shard` matrix `needs:` stages 2, 3, 4 and 4c, so if any of those fails the matrix never runs, the aggregation gate sees a non-`success` result, and it goes red. **That `needs:` list in `ci.yml` — not this document — is the definition of which stages gate.** Stage 3 is separated from the *policy* gate below for a correctness reason: stale codegen means the committed spec/SDK do not match the routes, so every downstream job would be testing a lie.
+
+**Two jobs run on every PR and gate nothing.** Knowing which, and why, is the point:
+
+- **`3b. API breaking-change gate`** — advisory **by design**. It is a policy signal a human may knowingly accept, and it must never sit in any `needs:` chain: when it was bundled into stage 3, an owner-approved break failed that job and *silently skipped* integration and every E2E. That bit us on PR #35 — a PR shipping a migration, which consequently got zero database coverage while every visible check looked fine. A policy gate a human may override must never be able to cancel test execution.
+- **`4b. Helm hardened-defaults gate`** — advisory **by accident**. It has `needs: build` and nothing `needs:` it, so it sits outside the `5z` chain: it runs on every PR and goes red on a violation, but a red 4b does not block the merge button. Whether to wire it in is an **open owner decision**; unlike 3b this is not a deliberate exemption.
+
+**E2E gates nothing on a PR.** Every `e2e-*` job is guarded by `github.event_name == 'push' && github.ref == 'refs/heads/main'` and is skipped on pull requests; there is no PR subset mechanism. A defect that only an E2E spec covers is caught *after* it has landed. Anything that must not regress therefore needs an assertion reachable from stage 4 or 5 — worked example: `apps/web/src/routes/service-board-honesty.test.tsx` pins the service board's unknown-vs-observed rendering in the unit job precisely because `apps/web/e2e/service-board-honesty.spec.ts` never runs on a PR.
+
+Other deliberate branch-protection settings: `strict: false` (no forced rebase every time `main` moves), `enforce_admins: false` (so a docs-only PR that runs no CI can still be admin-merged, per the docs-PR convention), and force-pushes and branch deletion both disabled. Before 2026-07-24 `main` had no branch protection and no rulesets at all, while comments in `ci.yml`, `tools/openapi/check.sh` and ADR-0004 described an override mechanism that did not exist.
+
+**The `api-v2-exception` ordering gotcha.** Labels are read from the event payload, which is fixed when the run starts. Apply the label **first**, then trigger a **fresh** run (push a commit, or close+reopen the PR). A **re-run will not work** — GitHub replays the original payload, so a label added afterwards stays invisible to it (verified on PR #145). The label alone is also not enough: job 3b requires a matching `tools/openapi/OASDIFF-EXCEPTIONS.md` entry added by the same PR, so the label cannot rubber-stamp a break with no durable record. `tools/openapi/check.sh` itself stays label-agnostic and always exits non-zero on a break, so it behaves identically on a workstation or an air-gapped machine — the policy lives in the workflow, the analysis in the script.
+
+### 6.0a What does not exist
+
+Named so the gaps stay visible. Nothing in the repo is waiting on any of them.
+
+- **No contract-test stage.** No `contract` script exists in any package and no job runs one; §4.3 describes intent only. **Open owner decision: build it, or drop the claim.**
+- **No packaging job in `ci.yml`.** The pieces live in other workflows and none is multi-arch: `publish-images.yml` is `workflow_dispatch`-only; the kind install test and the air-gap bundle build run in `deploy-drills.yml` (nightly cron + dispatch).
+- **No release workflow at all.** No workflow has a `tags:` trigger, and the strings `changeset version`, `changeset publish` and `cosign sign` appear in no workflow or script. Releasing is a manual `publish-images.yml` dispatch. **Open owner decision** — a release pipeline is a real design decision (signing keys, provenance, artifact retention), not a doc fix.
+- **No changeset check.** `changeset` appears in no workflow; the only thing in the repo is the author-side `pnpm changeset` script. This document used to state one as a merge requirement for `packages/plugin-api` / `packages/sdk` changes. Wiring one is cheap and remains open.
+
+### 6.1 Runner topology
 
 **Every job runs on GitHub-hosted `ubuntu-latest`.** One label, across all four workflows (`ci.yml`, `publish-images.yml`, `deploy-drills.yml`, `nightly-live-sandbox.yml`).
 
@@ -314,21 +333,22 @@ This replaced two homelab self-hosted ARC labels:
 
 The general/docker-build split existed for exactly one reason: only the second label could run Docker. A hosted runner has a working daemon in every job, so the split buys nothing and the distinction is gone. Consequences worth knowing:
 
-- **The charter portability requirement is intact and unchanged.** No stage gained a hosted-service dependency. Jobs that need `helm`/`kubectl`/`kind`/`cosign`/`skopeo` still install them **in-workflow, pinned**, rather than trusting the runner image — deliberately kept so the pipeline stays runner-agnostic and reproducible on a self-hosted runner. GitHub Actions remains the *reference* implementation, not a requirement.
-- **`ubuntu-latest` pre-installs helm**, so probe-and-skip suites (`tools/helm-verify`) now genuinely execute inside the unit-test stage as well. That is a bonus, not the guarantee — the dedicated `helm-verify` job installing its own Helm is what makes those assertions an unconditional gate.
+- **The charter portability requirement is intact and unchanged** — no stage gained a hosted-service dependency; see the in-workflow pinned-tool note in §6's preamble.
+- **`ubuntu-latest` pre-installs helm**, so probe-and-skip suites (`tools/helm-verify`) now also execute inside the unit-test stage. That is a bonus, not the guarantee: the dedicated `helm-verify` job installs its own Helm so those assertions run regardless of runner provisioning — but it gates nothing (§6.0). What *does* gate is the copy that runs inside the unit-test stage, transitively via `5z`, which is a reason to keep that probe-and-skip path working rather than to treat it as incidental. It also means this stage's result is no longer independent of GitHub's runner-image contents.
 - **Disk is the one genuinely new constraint** (~14 GB free on a hosted runner). Only the deploy drills — multiple full image builds *plus* a kind cluster *plus* a Kubernetes control plane and CNI — plausibly exceed it, so each drill job starts with `.github/scripts/free-disk.sh`, a plain shell step (not a third-party action) that removes preinstalled toolchains this repo never uses. It is deliberately **not** applied to jobs that do not need it.
 - **Cost:** the repo is public, so GitHub-hosted **standard** runners are free and unmetered, on the 4-vCPU/16 GB tier. Larger runners are *not* free even on public repos — keep to standard labels.
-- **Unproven paths.** Green history for the deploy drills and `e2e-web` was recorded on the homelab ARC runner and does **not** transfer. See §6.1 and those workflows' own headers. Two further paths are unproven on the hosted runner and should not be claimed until a run exercises them: **a GHCR push** and **a real (non-cache-hit) runner-image build**. The first hosted `runner-images` run was a cache hit on both tags, so it evidenced only `docker login` + `docker pull` — neither `docker build` nor `docker push` executed.
+- **The deploy drills are measured RED — on the ARC runner. Their hosted-runner status is still unknown.** `deploy-drills.yml` now carries `ubuntu-latest` like everything else, but **no scheduled drill run has executed on a hosted runner yet**: every job of every one of the ten scheduled runs in the measured window ran on `homelab-commanderscp-linux-docker-build` (check `runner_name`/`labels` per job, not the workflow file — `gh api repos/CommanderSCP/commanderscp/actions/runs/<id>/jobs`), and the label switch merged hours *after* the most recent of them. So the old framing here holds for the drills and is restored: **green history does not transfer — and neither does the red.** Both the drills' earlier green history and the newly measured failures come from the same self-hosted runner. The red is real and is being acted on (it is what surfaced the air-gap NetworkPolicy bug); it simply is not evidence about `ubuntu-latest` in either direction. Per-job pass rates, the reproduction commands and the consequence for the "Migration safety" gate live in [§7](#7-quality-gates) — that is where they are maintained, and they are deliberately not restated here.
+- **Still genuinely unproven on the hosted runner**, and not to be claimed until a run exercises them: **all four deploy drills** (`kind`, `air-gap`, `ansible`, `bundled Argo CD` — nothing in `deploy-drills.yml` has ever executed on a hosted runner, so both their green history and their red are ARC-runner facts), `e2e-web` (its green history was recorded on the homelab ARC runner and does **not** transfer), **a GHCR push**, and **a real (non-cache-hit) runner-image build**. The first hosted `runner-images` run was a cache hit on both tags, so it evidenced only `docker login` + `docker pull` — neither `docker build` nor `docker push` executed.
 
 Decommissioning the idle homelab ARC runner sets is a separate, owner-gated step (they sit at `minRunners: 1`); nothing in this repo depends on them any more. [docs/runbooks/ci-runner-concurrency.md](runbooks/ci-runner-concurrency.md) is retained as history for that self-hosted topology.
 
-### 6.1 Integration-suite speed model (three composed levers)
+### 6.2 Integration-suite speed model (three composed levers)
 
 The integration stage is the pipeline's long pole (real Postgres + real-Docker runner containers). Three levers cut its wall-clock, and they compose:
 
 **Lever 1 — pre-built runner images, pulled not built.** The integration tests need two ephemeral runner images: `scp-runner-scan` (promotion scan step) and `scp-runner-iac` (managed-IaC). They used to `docker build` them in-process on *every* run. Now a dedicated `runner-images` CI job builds each image **once per content change** and pushes it to GHCR under a content-hash tag (`scripts/runner-image-tags.sh` is the single source of truth for the tag formula — `scp-runner-scan` hashed over `apps/runner-scan/**` + `tools/trivy/pin.env` + `tools/openscap/pin.env`, `scp-runner-iac` over `apps/runner-iac/**`), rebuilding only on a cache miss (`docker pull || build+push`, mirroring the `ci-image` job). The integration job then `docker pull`s both and exports their refs into `$GITHUB_ENV`; the shared helper `resolveRunnerImage` (`@scp/plugin-testkit`) returns the pre-pulled ref instead of building. With the ref env vars unset (local dev), it falls back to the legacy-builder build — behavior identical to before. `turbo.json`'s `test:integration` task declares those refs in `passThroughEnv` because Turborepo 2.x runs tasks in strict env mode. The manual `publish-images.yml` release workflow publishes `scp-runner-scan` too (alongside `scpd` + `scp-runner-iac`), under the deliberate `sha-<commit>`/`latest` release tags a consuming gitops repo pins against.
 
-**Lever 2 — sharded matrix.** The integration job is a 2-way matrix (`integration-shard`, `shard: [1, 2]`) running `pnpm test:integration -- --shard=i/2`. vitest shards at file granularity, so the two shards cover every file exactly once (verified: 31 + 31 = 62 files, 268 + 275 = 543 tests). The `@scp/airgap` `install.sh` tamper-rejection suite is **not** part of the sharded vitest task graph, so it runs **exactly once** (shard 1 only, via `if: matrix.shard == 1`) rather than being duplicated. A small `integration` aggregation-gate job `needs:` the matrix and goes red unless every shard succeeded, giving branch protection **one stable required-check name** to reference. **Done (2026-07-24):** `5z. Integration (aggregation gate)` is now a required status check on `main` — see the merge-policy note above.
+**Lever 2 — sharded matrix.** The integration job is a 2-way matrix (`integration-shard`, `shard: [1, 2]`) running `pnpm test:integration -- --shard=i/2`. vitest shards at file granularity, so **the two shards cover every file exactly once** — that partition property is the whole point of the lever and is what must stay true. No file/test counts are quoted here on purpose: the suite grows on most PRs, so a number written into this document is stale before the PR that adds it merges, and a stale count reads as a verified invariant. If you need the current split, read it off the two `5. Integration (shard i/2)` jobs of any recent run (`gh run view <id> --log`; vitest prints `Test Files`/`Tests` per shard) — that is the measurement, and it is dated by the run it came from. A previous revision of this line carried `31 + 31 = 62 files, 268 + 275 = 543 tests`, which was already wrong by ~20% when it was re-audited. The `@scp/airgap` `install.sh` tamper-rejection suite is **not** part of the sharded vitest task graph, so it runs **exactly once** (shard 1 only, via `if: matrix.shard == 1`) rather than being duplicated. A small `integration` aggregation-gate job `needs:` the matrix and goes red unless every shard succeeded, giving branch protection **one stable required-check name** to reference. **Done (2026-07-24):** `5z. Integration (aggregation gate)` is now a required status check on `main` — see the merge-policy note above.
 
 **Lever 3 — per-worker template-DB parallelism (within each shard).** The suite no longer runs `singleFork`. `globalSetup` migrates a `scp_template` database once; a `setupFiles` entry (`test-support/per-worker-db.ts`) clones a private `scp_w<id>` database per worker fork (`CREATE DATABASE … TEMPLATE`, a fast file copy) and repoints the `TEST_*_DATABASE_URL` env vars at it. Files in different workers thus never share the instance-scoped singleton tables (`scan_requirement_floors`, `scanner_assignments`), the single global `pgboss` schema/reconcile queue, or the org-filter-less outbox relay — the three collision classes that forced serial execution. `maxForks` is capped at `Number(SCP_TEST_MAX_FORKS) || 4` to match the runner's core count.
 
@@ -342,19 +362,39 @@ The integration stage is the pipeline's long pole (real Postgres + real-Docker r
 
 ## 7. Quality Gates
 
-| Gate | Tool / command | Threshold / rule |
+**Only gates that are actually wired appear in this table.** Rows describing tools nobody runs were deleted rather than annotated: an aspiration written in the same shape as an enforced rule is what made this table wrong in the first place, and a footnote saying "not wired" does not fix the shape. What is genuinely intended-but-absent is listed underneath, as prose, with no rule text and no numbers to go stale. The authority of each row is `.github/workflows/ci.yml` (see §6.0 for which jobs gate); this table names the property and where it is enforced, not the command text.
+
+| Gate | Where it is enforced | What it means |
 |---|---|---|
-| Lint | ESLint 9 flat config + typescript-eslint (`pnpm lint`) | zero errors; warnings fail CI |
-| Import boundaries | eslint `import/no-restricted-paths` | `apps/web` may import only `@scp/sdk` + `@scp/schemas`; `packages/plugins/*` may import only `@scp/plugin-api`; server modules respect DESIGN §1 module boundaries |
-| Format | Prettier (`pnpm format:check`) | byte-exact |
-| Types | `tsc --noEmit` strict everywhere (`pnpm typecheck`) | zero errors; no `any` escapes in `@scp/schemas`, `@scp/plugin-api`, `@scp/sdk` public surfaces (`noImplicitAny` + eslint ban) |
-| Unit coverage | Vitest v8 provider | global ≥ **80% lines/branches**; ≥ **95%** for `coordination/transitions`, `governance/evaluate`, `authz/resolve`, `graph/traverse`, `federation/journal` — the modules whose failure modes are the platform's worst |
-| API spec drift | `pnpm gen && git diff --exit-code` | committed spec/SDK always match routes |
-| API breaking change | `oasdiff breaking base.json head.json` | zero breaking changes within `/v1`. An intentional break needs an `api-v2-exception` label **and** an `OASDIFF-EXCEPTIONS.md` entry in the same PR — job 3b reads both and downgrades the failure to a warning only when both are present, so the label cannot rubber-stamp a break with no durable record. Not a required status check, so it can never block or skip tests |
-| Migration safety | CI job applies migrations to the previous release's schema snapshot, then boots the previous server version against the migrated schema | expand/contract holds (old code runs on new schema) |
-| Audit integrity | integration test + `scp audit verify` in every E2E run | chain verifies end-to-end |
-| Dependency hygiene | `pnpm audit --prod` (against a mirrored advisory DB for air-gapped runners) + lockfile-only installs | no critical vulns in prod deps at release |
-| Release artifacts | cosign verify in the release pipeline itself | every published image/bundle verifiable offline |
+| Lint | `pnpm lint` in stage 2 | ESLint 9 flat config (`eslint.config.mjs`) + typescript-eslint; a lint **error** fails the job |
+| Import boundaries | the same lint run; rules live in `eslint.config.mjs` | Enforced today for **`apps/web` only**: the SPA may not use raw `fetch`/`XMLHttpRequest`, may not pull in an HTTP-client dependency, and may not deep-import server/CLI/IaC source. `EventSource` has one file-scoped exception, declared in the config rather than by inline disables |
+| Types | `pnpm typecheck` in stage 2 | `tsc --noEmit`, strict, every package |
+| API spec drift | stage 3 (`3. Codegen drift`) — **a required check** | The committed OpenAPI spec and generated SDK are byte-identical to what the routes emit |
+| API breaking change | stage 3b, via `tools/openapi/check.sh` | Additive-only within `/v1`. An intentional break needs the `api-v2-exception` label **and** a `tools/openapi/OASDIFF-EXCEPTIONS.md` entry in the same PR. Advisory by design — see §6.0, including the label-then-fresh-run ordering |
+| Helm hardened defaults | stage 4b (`tools/helm-verify`), and the same assertions inside stage 4 | Non-root, read-only rootfs, dropped caps, seccomp, default-deny NetworkPolicy, migrations hook, least-privilege DB creds, ingress mTLS annotations. 4b itself gates nothing (§6.0); the stage-4 copy gates transitively |
+| Migration safety | `deploy-drills.yml` (nightly cron + dispatch), **not** `ci.yml` | Expand/contract intent — install on the old image, golden path, zero-downtime `helm upgrade`, rollback. **RUN nightly, NOT currently proven, and never on a PR** — see the drill-status note below |
+| Audit integrity | `scp audit verify` inside `scripts/e2e-m{4,5,6,7}.sh`, plus integration tests | The audit hash chain verifies end to end. The E2E half is **main-only**, so it never gates a PR; the integration half does |
+
+**Drill status — the Migration safety row is RED, and this is the measurement.** `deploy-drills.yml` runs nightly (`cron: "37 5 * * *"`). Over the **ten scheduled runs from 2026-07-16 to 2026-07-25 inclusive**, by job:
+
+| Drill job | Scheduled runs green |
+|---|---|
+| `kind: install -> golden path -> zero-downtime upgrade -> rollback` | **4 / 10** |
+| `air-gap: bundle -> local registry -> Calico zero-egress kind install` | **0 / 10** |
+| `ansible: bundle -> compose install -> compose upgrade (scp.platform)` | 9 / 10 |
+| `bundled Argo CD: install -> live token mint+store -> scoped-token auth -> idempotent re-mint` | 10 / 10 |
+
+**Which runner produced these numbers: the homelab ARC one.** All forty jobs above ran on `homelab-commanderscp-linux-docker-build`; the move of `deploy-drills.yml` to `ubuntu-latest` (§6.1) merged hours after the last of these runs, and **no scheduled drill run has executed on a hosted runner since**. The pass rates are real and current — the air-gap `0/10` is what exposed the NetworkPolicy bug — but their attribution is the self-hosted runner, and the hosted-runner status of every drill is simply **unproven, not measured**.
+
+The **workflow itself concluded `failure` on every one of those ten runs** (and on the three before them), because the air-gap job never passed. So: the kind drill is flaky rather than proven, and the air-gap drill did not go green once in this window (its M9-era green, like everything else here, was recorded on the ARC runner) — nothing here may be described as a proven gate until that changes, and nothing here may be described as hosted-runner evidence at all. Reproduce with `gh run list --workflow=deploy-drills.yml --event=schedule --limit 10` and `gh api repos/CommanderSCP/commanderscp/actions/runs/<id>/jobs` (use the API, not `gh run view --json jobs` — the latter reports `runnerName: null`, and the runner is half the measurement); re-measure before editing the numbers, and move the date window with them.
+
+**Intended but not wired.** Each is an open owner decision; none is a doc fix.
+
+- **Format (`prettier`).** `pnpm format:check` runs in no workflow and is not part of `pnpm check`. It cannot currently go green: measured with `pnpm format:check` at commit `2c0a846`, prettier reports **223** files as unformatted *and* fails to parse **21** more — every one of those a Helm template under `deploy/helm*/templates/`, which are Go templates that are not valid YAML (`{{- if … }}` at the top of a document). Running `pnpm format` would fix the 223 and leave the 21 failing, so wiring this needs a `.prettierignore` decision first, and a repo-wide reformat is its own PR.
+- **Unit coverage.** No threshold is enforced anywhere; stage 4 runs the test task bare. This document previously quoted specific per-module percentages — they are removed rather than carried forward, because they were not re-measured and a stale number is worse than none. If the gate is ever taken up, re-measure first, and note that the interesting modules (`authz/resolve`, `graph/traverse`, `federation/journal-repo`) are exercised by the **integration** suite, which a unit-only coverage report does not see.
+- **Dependency hygiene.** `pnpm audit` appears in no workflow and no script. The only half that holds today is lockfile-only installs (`--frozen-lockfile`). Wiring it needs the mirrored advisory DB decided first — an unmirrored `pnpm audit` is a runtime call to the outside world, which is exactly what charter principle 5 forbids CI to make.
+- **Release artifacts.** There is no release pipeline (§6.0a). `cosign` is installed and used by the air-gap install/verify paths and the deploy drills, so the *verification* machinery exists; nothing signs a release, because nothing releases.
+- **Module boundaries beyond `apps/web`.** The `packages/plugins/*` → `@scp/plugin-api` boundary and the server-internal module boundaries of DESIGN §1 are conventions, not lint rules. Nothing enforces them.
 
 ---
 
@@ -413,12 +453,12 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
   - **Graph reachability-CTE node-dedup** — rewrite `impact-of`/`dependents-of`/`consumers-of`/`blast-radius`/`domains-impacted` (`graph/named-queries.ts`) to dedupe at the node level between recursion steps (drop path-tracking for the reachability variants in favor of `UNION` visited-set semantics; any depth/distance column becomes a post-aggregate), eliminating the fan-in^depth intermediate-row blowup on shared-component topologies. `paths-between` keeps full path-tracking. The M8 defensive `statement_timeout` guardrail remains as belt-and-suspenders.
   - **Dependency-advisory pass** — resolve the pre-existing lodash-es HIGH (prod, via `cel-js>chevrotain>lodash-es`) by upstream bump / pnpm override / justified+expiring audit-ignore, and the moderate esbuild advisory (dev-only, via `drizzle-kit>@esbuild-kit`) by bump or a documented dev-only-not-shipped disposition.
   - **In-app federation mTLS** — server-side client-cert request+verification on federation transport endpoints, mapping the peer cert identity (CN/SAN) to the expected commander/outpost, **fail-closed** on misconfiguration, optional (air-gap file transport unaffected), with documented precedence vs. the M8 ingress-mTLS option. Preceded by an ADR (`docs/adr/`) + DESIGN.md edit reviewed before implementation.
-  - **Deployment drills proven-green (prove-once + nightly)** — get the kind, air-gap, and Ansible drills (`scripts/*-drill.sh`, `.github/workflows/deploy-drills.yml`) to a recorded green run on the self-hosted runner (starting with a nested-kind capability spike), fixing whatever breaks (disk, CNI/privileges, offline vendoring of the Calico manifest + base images); kept nightly + on-demand, never a per-PR gate. *(historical — homelab ARC runner; not re-verified on the hosted runner, see §6.0 Unproven paths.)*
+  - **Deployment drills proven-green (prove-once + nightly)** — get the kind, air-gap, and Ansible drills (`scripts/*-drill.sh`, `.github/workflows/deploy-drills.yml`) to a recorded green run on the self-hosted runner (starting with a nested-kind capability spike), fixing whatever breaks (disk, CNI/privileges, offline vendoring of the Calico manifest + base images); kept nightly + on-demand, never a per-PR gate. *(historical — homelab ARC runner; not re-verified on the hosted runner, see §6.1 Unproven paths.)*
 - **Done / verified by:**
   - **Graph:** a property test over random graphs (incl. cycles + shared components) asserts each reachability query's result **set equals** a naive BFS reachable-set (semantics preserved), and a perf regression test on the pathological high-fan-in topology completes well under the `statement_timeout`; `paths-between` results unchanged.
   - **Advisories:** `pnpm audit --prod` clear of the lodash-es HIGH; the esbuild advisory resolved or explicitly dispositioned; full suite green after any override.
   - **mTLS:** integration matrix — valid peer cert → federation sync succeeds; no cert / wrong-CA / valid-CA-but-wrong-identity → rejected fail-closed; air-gap file transport unaffected; ADR + Helm values + DESIGN.md merged.
-  - **Drills:** each of the three has ≥1 linked green run on the self-hosted runner, re-triggered once for stability; the workflow's honest-scope comment updated from "not claimed as passing CI yet" to the recorded green run IDs + date. *(historical — homelab ARC runner; not re-verified on the hosted runner, see §6.0 Unproven paths.)*
+  - **Drills:** each of the three has ≥1 linked green run on the self-hosted runner, re-triggered once for stability; the workflow's honest-scope comment updated from "not claimed as passing CI yet" to the recorded green run IDs + date. *(historical — homelab ARC runner; not re-verified on the hosted runner, see §6.1 Unproven paths.)*
 
 ---
 
@@ -577,6 +617,8 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
 ## 9. Verification Mapping
 
 Every MVP Scope item from the charter, the milestone that delivers it, and the test layer that proves it (deepest layer listed; lower layers also cover it).
+
+> **Read this table as the INTENDED proof, not as a statement about CI.** Two of the layers it cites do not behave the way the wording implies, and §6.0/§6.0a are authoritative on both: the **contract** suite (SDK-vs-live-server, idempotency fuzz) **is not built** — only the oasdiff half of §4.3 exists — and every **E2E** job runs **post-merge on `main`**, never on a pull request, so "on every merge" means *after* the merge. This section has not otherwise been re-audited; it tracks charter MVP items, not the pipeline.
 
 | Charter MVP item | Delivered in | Proven by |
 |---|---|---|

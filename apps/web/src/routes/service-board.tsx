@@ -1,6 +1,11 @@
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import type { ServiceBoardRow, ServiceBoardSummary, ServiceBoardWave } from "@scp/sdk";
+import type {
+  ServiceBoardAsOf,
+  ServiceBoardRow,
+  ServiceBoardSummary,
+  ServiceBoardWave
+} from "@scp/sdk";
 import { client } from "../lib/client";
 import { serviceBoardKey } from "../lib/query-client";
 import { useIdParam } from "../lib/use-route-params";
@@ -248,14 +253,71 @@ export function BoardRow({ row }: { row: ServiceBoardRow }): React.JSX.Element {
  * later edit silently changes: nothing would fail, and the caveat would just stop appearing.
  */
 export function changeVisibilityUnknownOf(board: { unknownFields: string[] }): boolean {
-  // A peer paired at a scope that does not carry change objects (`status_only` sends change STATUS
-  // without the change; `policies_only` sends neither) leaves this instance unable to tell "nothing
-  // is rolling through this component" from "the change rolling through it was never sent to me".
+  // The server names `summary.stable` unobservable for THREE distinct reasons, all of which mean
+  // the same thing to this badge — the count is not an all-clear:
+  //   (1) a peer paired at a scope that does not carry change objects (`status_only` sends change
+  //       STATUS without the change; `policies_only` sends neither);
+  //   (2) evidence of a change in flight on a peer that this instance could not attach to anything
+  //       local — which is what catches the SENDING side being the narrow one;
+  //   (3) the upstream this board depends on is overdue by its own sync cadence.
+  // Which one it is shows in the "as of" line (3) and the row-level markers (1, 2).
   return board.unknownFields.includes("summary.stable");
 }
 
 export function freezeVisibilityUnknownOf(board: { unknownFields: string[] }): boolean {
   return board.unknownFields.includes("rows[].activeFreeze");
+}
+
+/**
+ * DESIGN §13's "as of &lt;bundle/date&gt;" label — the requirement paired with an explicit ban on
+ * *"presenting stale data as live status"*, and the UI is the layer §13 names as responsible for it.
+ * A board on a federated instance renders another domain's changes; without this line nothing on
+ * screen distinguishes a live view from a snapshot taken last quarter.
+ *
+ * THREE READINGS, THREE TREATMENTS — and `null` is deliberately not one of the other two:
+ *  - `stale === true`  → the upstream is past the age at which a cycle counts as missed. Warned, and
+ *    the server has additionally named `summary.stable` unobservable, so the Stable badge drops its
+ *    green in the same render.
+ *  - `stale === false` → not overdue. A plain, quiet timestamp.
+ *  - `stale === null`  → this instance schedules no pulls for that peer at all (an air-gapped peer;
+ *    an outpost seen from the commander). There is no schedule for the data to be late against, so
+ *    rendering it as "fresh" would assert something nobody measured. It renders as the bare as-of
+ *    label, which is exactly the bounded guarantee §13 grants for an air-gapped domain.
+ *
+ * THE THRESHOLD IS `staleAfterSeconds`, NEVER `expectedWithinSeconds`. The two differ by the
+ * server's grace factor, and this tooltip used to quote the cadence as if it were the bound —
+ * telling an operator that 90-second-old data was "within" a 60-second cadence, which is false and
+ * is exactly the kind of number a reader checks against a clock. Both are shown, each named for
+ * what it is; the factor between them is never recomputed here.
+ */
+export function BoardAsOfLabel({ asOf }: { asOf: ServiceBoardAsOf | null }): React.JSX.Element | null {
+  if (!asOf) return null;
+  const when = asOf.at ? formatDate(asOf.at) : "never";
+  // Exhaustive on purpose: "unknown" is a transfer recorded before the transport was stored, and it
+  // must read as "we do not know" rather than fall through to "nothing received" (a different, and
+  // false, statement).
+  const arrival: string = {
+    "live-pull": "live pull",
+    bundle: "bundle import",
+    never: "nothing received",
+    unknown: "transport not recorded"
+  }[asOf.via];
+  return (
+    <p
+      className={`mt-1 text-xs ${asOf.stale === true ? "font-medium text-amber-700" : "text-slate-500"}`}
+      data-testid="board-as-of"
+      title={
+        asOf.stale === true
+          ? `Overdue: nothing has arrived from ${asOf.peerName} for ${asOf.ageSeconds}s, past the ${asOf.staleAfterSeconds}s after which a sync cycle counts as missed (its effective sync cadence is ${asOf.expectedWithinSeconds}s, plus the grace a healthy peer needs — data is always at least one cadence old by the time the next import lands). This board may not reflect changes already in flight upstream.`
+          : asOf.stale === null
+            ? `This instance runs no pull schedule for ${asOf.peerName}, so there is no cadence for this data to be late against. It is last-known state as of the bundle named here — not live status (DESIGN §13).`
+            : `Not overdue: this data is ${asOf.ageSeconds}s old and ${asOf.peerName} is not counted late until ${asOf.staleAfterSeconds}s (its effective sync cadence is ${asOf.expectedWithinSeconds}s, plus the grace a healthy peer needs — data is always at least one cadence old by the time the next import lands).`
+      }
+    >
+      {asOf.stale === true ? "STALE — as of " : "As of "}
+      {when} · {arrival} · {asOf.peerName}
+    </p>
+  );
 }
 
 export function BoardSummary({
@@ -278,7 +340,7 @@ export function BoardSummary({
         variant={stableUnknown ? "outline" : "success"}
         title={
           stableUnknown
-            ? "NOT an all-clear on this deployment: a federation peer's sync scope does not carry change objects, so components with no change here may simply be ones whose change was never sent. Counted for shape, not asserted as fact."
+            ? "NOT an all-clear on this deployment. Either a federation peer is not sending this instance the change objects it would need (its own scope, or the sending side's), or the upstream this board depends on is overdue by its own sync cadence — see the 'as of' line under the service name. Counted for shape, not asserted as fact."
             : undefined
         }
       />
@@ -356,6 +418,8 @@ export function ServiceBoardPage(): React.JSX.Element {
           </div>
           <p className="font-mono text-xs text-slate-500">{service.urn}</p>
           <p className="mt-1 text-sm text-slate-500">Service release board · Layer A (real data only)</p>
+          {/* DESIGN §13: label the upstream the board depends on, never present it as live status. */}
+          <BoardAsOfLabel asOf={board.asOf} />
         </div>
         <div className="flex items-center gap-2">
           <Link

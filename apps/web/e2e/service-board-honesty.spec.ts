@@ -90,6 +90,10 @@ function boardPayload(service: StubComponent, driven: StubComponent, replica: St
     ],
     summary: { releasing: 0, blocked: 0, stable: 1, notDrivenHere: 1 },
     serviceFreeze: null,
+    // DESIGN §13's "as of" label. Null here on purpose: this stub is about the observed-vs-unknown
+    // distinction, and a single-domain board legitimately has no upstream to label. The staleness
+    // rendering has its own PR-gated coverage in `src/routes/service-board-honesty.test.tsx`.
+    asOf: null,
     // Board-level: freezes never ride the sync journal, so no row's "not frozen" is a statement
     // about freezes declared in another domain.
     unknownFields: ["serviceFreeze", "rows[].activeFreeze"]

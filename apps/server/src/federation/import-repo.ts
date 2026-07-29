@@ -4,26 +4,29 @@ import {
   type ContainmentDomainId,
   type SyncBundle,
   type SyncJournalEntry,
+  type SyncScope,
   type TrustDomainId
 } from "@scp/schemas";
 import {
   computeBundleChecksum,
   verifyBundleSignature,
-  verifyJournalChain
+  verifyJournalChain,
+  JOURNAL_CONTIGUITY_BREAK_CODES,
+  type JournalChainBreakCode
 } from "@scp/schemas/federation-journal";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { conflict, ProblemError } from "../errors.js";
 import { ensureFederationSelf } from "./self-repo.js";
-import {
-  getPeerByIdOrName,
-  listPeerKeyWindows,
-  verificationKeyForSequence
-} from "./peers-repo.js";
-import { getCursor, advanceCursor } from "./cursors-repo.js";
-import { recordBundleTransfer } from "./bundle-transfers-repo.js";
+import { getPeerByIdOrName, listPeerKeyWindows, verificationKeyForSequence } from "./peers-repo.js";
+import { getCursor, advanceCursor, type SyncCursor } from "./cursors-repo.js";
+import { recordBundleTransfer, type BundleTransport } from "./bundle-transfers-repo.js";
 import { entryMatchesScope } from "./scope-filter.js";
+import {
+  clearUnattachedChangeStatus,
+  recordUnattachedChangeStatus
+} from "./unattached-change-status-repo.js";
 import { createRelationship, deleteRelationship } from "../graph/relationships-repo.js";
-import { deleteObject, upsertObjectByUrn } from "../graph/objects-repo.js";
+import { deleteObject, isUuid, upsertObjectByUrn } from "../graph/objects-repo.js";
 import { updateObject } from "../graph/objects-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 
@@ -68,6 +71,28 @@ export const FEDERATION_IMPORT_ACTOR_ID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
 
 function isNotFound(err: unknown): boolean {
   return err instanceof ProblemError && err.status === 404;
+}
+
+/** The lifecycle state a `change_status` payload reports, from EITHER of the two shapes that exist:
+ *  `toState` (a transition entry) or `state` (a propose entry). `null` when neither is a string —
+ *  payloads are `z.record(z.string(), z.unknown())` on the wire, so nothing here may assume a type. */
+function reportedChangeState(payload: Record<string, unknown>): string | null {
+  const raw = payload.toState ?? payload.state;
+  return typeof raw === "string" ? raw : null;
+}
+
+/**
+ * The change object id a `change_status` payload names, but ONLY when it is genuinely a UUID.
+ *
+ * Load-bearing, not defensive noise: `federation_unattached_change_status.change_object_id` is a
+ * `uuid` column, and a malformed value would make the INSERT throw and poison the whole import
+ * transaction — turning "one unrecordable enrichment entry" into "this peer's entire bundle is
+ * rejected", a strictly worse outcome than the drop this record exists to stop. Payloads are
+ * `z.record(z.string(), z.unknown())`, so nothing upstream guarantees the shape.
+ */
+function recordableChangeObjectId(payload: Record<string, unknown>): string | null {
+  const raw = payload.objectId;
+  return typeof raw === "string" && isUuid(raw) ? raw : null;
 }
 
 /**
@@ -180,7 +205,7 @@ async function applyEntry(
       // `payload.originDomainId` (validated identical to `exporterDomainId` by
       // `assertEntryAuthoredBySigner` before we get here). CRITICAL review fix.
       const originDomainId = exporterDomainId;
-      await upsertObjectByUrn(tx, {
+      const { object: upserted } = await upsertObjectByUrn(tx, {
         orgId,
         typeId,
         actorObjectId: FEDERATION_IMPORT_ACTOR_ID,
@@ -193,6 +218,15 @@ async function applyEntry(
         labels: (payload.labels as Record<string, unknown>) ?? {},
         federationImport: { originDomainId, revision, provenance: null }
       });
+      // THE EVIDENCE RESOLVES ITSELF. If this domain had previously recorded unattached
+      // `change_status` for this very object (the status entry arrived before its object — routine
+      // at any scope wide enough to ship both), that ignorance is now over: the change object IS
+      // here and the board's normal replica treatment takes over. Clearing it is what stops the
+      // signal from being a ratchet — see `unattached-change-status-repo.ts`. Keyed on the object
+      // id rather than on `typeId === "change"` so it is correct even if a future entry kind
+      // carries the same id; a delete that matches nothing is a no-op. The id comes from the row
+      // that ACTUALLY landed, not from `payload.id` (which is optional on the wire).
+      await clearUnattachedChangeStatus(tx, orgId, exporterDomainId, upserted.id);
       return;
     }
     case "object_tombstone": {
@@ -276,19 +310,42 @@ async function applyEntry(
       //      `payload.toState`) — it is NOT equivalent to "no change was ever proposed there". The
       //      evidence is nonetheless dropped: a `change_status` payload carries no `targets`, so
       //      nothing here can attribute it to a component, and synthesizing a graph object from it
-      //      would fabricate name/targets/urn this domain was never sent. Carrying it honestly needs
-      //      a federation-layer store for unattached peer status (a real feature, out of scope for
-      //      the read projection that surfaced it) — recorded here so the gap is documented at the
-      //      place it happens rather than assumed away as an equivalence.
+      //      would fabricate name/targets/urn this domain was never sent.
+      //
+      //      THE EVIDENCE IS NO LONGER DROPPED. It is recorded in
+      //      `federation_unattached_change_status` (drizzle/0040) — the "federation-layer store for
+      //      unattached peer status" this comment used to name as missing future work. It carries
+      //      the object id, the propose-time urn/name when the payload supplied them, and the last
+      //      reported state, and it is DELETED by the `object_upsert` branch above the moment the
+      //      change object actually lands. `coordination/service-board.ts` reads it so a board can
+      //      no longer report a confident `stable` over evidence this domain literally received.
+      //      Attribution stays at (peer, change) grain — per-COMPONENT would need `targets` on the
+      //      wire; see the repo module's header for that owner decision.
       //  (b) ANY OTHER failure — still swallowed (enrichment must never abort a valid import), but
       //      deliberately distinguished below so (a) is not used to explain away (b).
       try {
         const objectId = String(payload.objectId ?? "");
         if (!objectId) return;
+        const reportedState = reportedChangeState(payload);
         const existing = await findReplicaOrNull(tx, orgId, objectId);
-        if (!existing) return; // (a) — evidence received; nothing local to attach it to
+        if (!existing) {
+          // (a) — evidence received; nothing local to attach it to. RECORD it.
+          const recordableId = recordableChangeObjectId(payload);
+          if (recordableId) {
+            await recordUnattachedChangeStatus(tx, {
+              orgId,
+              peerDomainId: exporterDomainId,
+              changeObjectId: recordableId,
+              urn: typeof payload.urn === "string" ? payload.urn : null,
+              name: typeof payload.name === "string" ? payload.name : null,
+              lastState: reportedState,
+              dropReason: "no_local_replica"
+            });
+          }
+          return;
+        }
         if (existing.originDomainId !== exporterDomainId) return; // not a replica of THIS peer — leave alone
-        const state = (payload.toState ?? payload.state) as string | undefined;
+        const state = reportedState;
         if (!state) return;
         await updateObject(tx, {
           orgId,
@@ -300,8 +357,11 @@ async function applyEntry(
           federationImport: { originDomainId: exporterDomainId, revision: existing.revision + 1 }
         });
       } catch {
-        // (b) only — case (a) never reaches here (findReplicaOrNull returns null for it). Still
-        // swallowed: enrichment must never abort an otherwise-valid import.
+        // (b) only — case (a) never reaches here (it returns from inside the branch above). Still
+        // swallowed: enrichment must never abort an otherwise-valid import. Note the (a) RECORD
+        // sits inside this try deliberately: a genuine failure of that write would poison the
+        // surrounding transaction anyway (Postgres), so the whole import fails closed at COMMIT —
+        // swallowing it here cannot turn a broken write into a silently green import.
       }
       return;
     }
@@ -326,10 +386,290 @@ export interface ImportSyncBundleResult {
   lastAppliedSequence: number;
 }
 
+/**
+ * SEGMENT VERIFICATION — strict, fail-closed, one path; only the DIAGNOSTIC is smart.
+ *
+ * WHAT THIS DOES. `contiguous` is chosen from the RECEIVER's `peer.syncScope` and from nothing
+ * else. A `full` receiver demands an exactly gap-free, prev_hash-linked, cursor-continuous run
+ * (with trust-on-first-sync for the very first segment ever seen from an origin); a receiver
+ * configured narrow verifies the sparse shape it asked for. A run that does not verify is
+ * REJECTED — there is no fallback, no laxer retry, and no path by which a chain with a hole in it
+ * is applied.
+ *
+ * WHY NOT "ACCEPT A SPARSE CHAIN FROM A NARROWER SENDER" (owner decision). It is true that a
+ * sender narrowed to `status_only`/`changes_only`/`policies_only` legitimately ships a chain full
+ * of holes, and that a `full` receiver meeting one is almost certainly looking at a config
+ * asymmetry rather than an attack. It is ALSO true that a sparse run and a maliciously thinned run
+ * are the same bytes: the bundle checksum/signature only prove the SENDER produced what arrived,
+ * so a signer (or anyone holding its key) can delete a middle entry, re-sign, and a receiver that
+ * tolerates holes will take it. Contiguity is the ONLY check that catches that, and this is the
+ * one place it is caught. So it stays absolute. The misconfiguration is fixed where it belongs —
+ * in the operator's hands, with a message that tells them exactly what to fix.
+ *
+ * THE ANCHOR THIS SIDE ACTUALLY HOLDS (pre-M16 residual W1 — SECURITY-SENSITIVE; drizzle/0042).
+ * `cursor.rowHash === null` does NOT mean genesis. It means NO ANCHOR WAS EVER RECORDED, and there
+ * are two ways to get there, both purely local: nothing has ever been applied from this origin
+ * (`sequence === 0` — trust-on-first-sync, unchanged), or THIS side's own `sync_scope` was narrow,
+ * so the sparse path advanced the cursor to the range tail with `rowHash: null` (it does not hold
+ * that entry's hash and may never have been shown it). Folding the second case into genesis is what
+ * made a scope WIDEN a one-way ratchet: the peer's next contiguous, authentic run could not link to
+ * genesis, so every subsequent import was refused forever. The recovery is the ONE-SHOT PERMIT
+ * `cursor.reanchorFromSeq`, issued only by `pairPeer` whenever the LOCAL operator's pairing leaves
+ * this peer's `sync_scope` at `full` with an anchorless cursor (R1: keyed to the RESULTING scope and
+ * the cursor's actual state, not to a from→full transition — see peers-repo.ts) (cursors-repo.ts
+ * `permitCursorReanchor`) — never by anything a peer sends, because
+ * `sync_scope` is local config that never crosses the wire. With the permit in force the run adopts
+ * its OWN first entry as the anchor and NOTHING ELSE is relaxed: it must still start at exactly
+ * `cursor.sequence + 1`, be internally gap-free, and verify every rowHash and signature, so a
+ * re-signed run with a deleted middle entry is refused exactly as before.
+ *
+ * THE MESSAGE IS THE FEATURE. A contiguity break (`sequence_gap` / `prev_hash_mismatch` —
+ * `JOURNAL_CONTIGUITY_BREAK_CODES`) gets {@link describeContiguityBreak}: an opening clause that
+ * states what the CODE actually means (the two do not mean the same thing — see
+ * {@link describeBreakShape}), the peer, THIS side's `sync_scope` verbatim, why a gap-free chain
+ * was expected, the state of THIS side's anchor as measured rather than as assumed, the ways a
+ * scope change legitimately produces this, and the commands to compare. It never says "tampered" —
+ * that would be a verdict, and the likeliest cause is config. It also never says the opposite: a
+ * broken chain IS what withheld or removed entries look like, and the message says so too. Every
+ * OTHER break code (`row_hash_mismatch`, `signature_invalid`, `no_public_key`,
+ * `sequence_not_increasing`, `sequence_before_start`) is a content-integrity failure and keeps the
+ * security-toned wording.
+ */
+function verifySegment(input: {
+  entries: SyncJournalEntry[];
+  cursor: SyncCursor;
+  receiverExpectsContiguity: boolean;
+  receiverScope: SyncScope;
+  peerName: string;
+  exporterDomainId: TrustDomainId;
+  resolvePublicKey: (entry: SyncJournalEntry) => string | null;
+}): void {
+  const { entries, cursor, receiverExpectsContiguity, resolvePublicKey } = input;
+  if (entries.length === 0) return;
+
+  const anchor = describeAnchor(cursor);
+  const verification = verifyJournalChain(entries, {
+    contiguous: receiverExpectsContiguity,
+    // Only a REAL recorded hash is ever passed. `undefined` here means genesis, which is the right
+    // claim for a true first sync and a lie for an anchorless resumed cursor — the two are kept
+    // apart by `anchorToFirstEntry` below rather than by pretending they are the same thing.
+    expectedPrevHash:
+      receiverExpectsContiguity && anchor.state === "held"
+        ? (cursor.rowHash ?? undefined)
+        : undefined,
+    // The ONE relaxation, and only with a local operator's one-shot permit in force (W1).
+    anchorToFirstEntry: receiverExpectsContiguity && anchor.state === "permitted",
+    // Full first-sync: anchor to the bundle's own first entry (trust-on-first-sync). Otherwise a
+    // lower bound of cursor+1 (exact for contiguous; minimum for sparse) — and note that a
+    // re-anchor permit does NOT loosen this: a permitted run must still begin at exactly cursor+1,
+    // so nothing between the cursor and the run's start can be skipped.
+    expectedStartSequence:
+      receiverExpectsContiguity && anchor.state === "genesis"
+        ? entries[0]!.sequence
+        : cursor.sequence + 1,
+    // Per-entry key resolved by AUTHENTICATED sequence (never timestamp) — an entry signed before
+    // a rotation verifies against the old key only while its sequence is within that key's window.
+    resolvePublicKey
+  });
+  if (verification.valid) return;
+
+  const code = verification.brokenAt?.code;
+  const reason = verification.brokenAt?.reason ?? "unknown";
+  if (code && JOURNAL_CONTIGUITY_BREAK_CODES.includes(code)) {
+    throw conflict(
+      describeContiguityBreak(input, code, reason, {
+        ...anchor,
+        // Only a break on the run's FIRST entry is a failure of the ANCHOR comparison; from the
+        // second entry on, the thing that did not match is the previous entry's own row hash, which
+        // is present and real whatever the cursor holds.
+        brokeAtRunStart: verification.brokenAt?.sequence === entries[0]!.sequence
+      })
+    );
+  }
+  throw conflict(`tampered or broken journal segment (rejected, fail-closed): ${reason}`);
+}
+
+/** What this side can actually anchor a strict run to — MEASURED from the cursor, never assumed:
+ *  - `held`      a real recorded row hash for `cursor.sequence`; the strict link is checkable.
+ *  - `genesis`   nothing has ever been applied from this origin (`sequence === 0`): the run really
+ *                must be the start of the chain (trust-on-first-sync).
+ *  - `permitted` no recorded hash at a NON-ZERO cursor, and the local operator's one-shot
+ *                re-anchor permit is in force for exactly this position (drizzle/0042).
+ *  - `none`      no recorded hash at a non-zero cursor and NO permit. There is nothing to link to;
+ *                the run will be compared against genesis and cannot match. This is exactly the
+ *                state every peer wedged by the pre-R1 bug sits in RIGHT NOW: `pairPeer` used to
+ *                issue the permit only on a scope TRANSITION into `full`, so a peer whose
+ *                `sync_scope` was already `full` before the fix landed (the common case — that is
+ *                how it got wedged) stays in `none` until the operator re-pairs it. Since R1,
+ *                `pairPeer` issues the permit whenever the RESULTING scope is `full` and the cursor
+ *                is anchorless, regardless of what it changed from — so re-running the exact
+ *                recovery this message prescribes (`scp federation pair <peer> --sync-scope full`,
+ *                even though the row already says `full`) moves the peer to `permitted` and heals
+ *                it. It is still a state to REPORT accurately, not to paper over. */
+type AnchorState = "held" | "genesis" | "permitted" | "none";
+
+interface AnchorFacts {
+  state: AnchorState;
+  sequence: number;
+}
+
+function describeAnchor(cursor: SyncCursor): AnchorFacts {
+  if (cursor.rowHash !== null) return { state: "held", sequence: cursor.sequence };
+  if (cursor.sequence === 0) return { state: "genesis", sequence: 0 };
+  return {
+    // The permit is issued for ONE exact cursor position; a cursor that has moved since has
+    // outrun it, and `advanceCursor` clears it on any real advance regardless.
+    state: cursor.reanchorFromSeq === cursor.sequence ? "permitted" : "none",
+    sequence: cursor.sequence
+  };
+}
+
+/** This side's `sync_scope`, verbatim — the operator cannot read it from the other domain, and for
+ *  `custom` the mode name alone is not the configuration. */
+function describeScope(scope: SyncScope): string {
+  return scope.mode === "custom"
+    ? `custom ${JSON.stringify(scope.labelSelector)}`
+    : `'${scope.mode}'`;
+}
+
+/**
+ * THE OPENING CLAUSE MUST MATCH THE CODE — AND THE ANCHOR THIS SIDE ACTUALLY HAS. The two
+ * contiguity codes do not mean the same thing, and neither does "we compared against an anchor"
+ * when there was no anchor to compare against:
+ *  - `sequence_gap` really is "the run I was shown has holes in it" — sequences are missing.
+ *  - `prev_hash_mismatch` against a HELD anchor is "this run does not link to the anchor I am
+ *    holding". The run can be perfectly contiguous, gap-free and authentic and still fail this,
+ *    because the anchor is THIS side's state, not the peer's. Telling that operator their peer
+ *    shipped a chain with gaps sends them hunting for something that is not there.
+ *  - `prev_hash_mismatch` on the run's FIRST entry with NO anchor held is a third thing entirely,
+ *    and the previous wording got it flatly wrong (W2): it blamed "this side's last known-good
+ *    anchor" and "the previous scope regime" when the measured cursor was `{sequence: N,
+ *    rowHash: null}` and the comparison was against JOURNAL_GENESIS_HASH. There was no anchor at
+ *    all. Say that, because it is the fact that determines the recovery.
+ */
+function describeBreakShape(
+  code: JournalChainBreakCode,
+  peerLabel: string,
+  anchor: AnchorFacts & { brokeAtRunStart: boolean }
+): string {
+  if (code === "sequence_gap") {
+    return `journal chain from peer ${peerLabel} is not gap-free — sequences are missing from the run`;
+  }
+  if (anchor.state === "none" && anchor.brokeAtRunStart) {
+    return (
+      `journal run from peer ${peerLabel} could not be anchored: this side has NO recorded ` +
+      `anchor for that peer (its cursor sits at sequence ${anchor.sequence} with no row hash), so ` +
+      `the run's first entry was compared against the genesis hash and could not match — the ` +
+      `arriving run may itself be perfectly contiguous`
+    );
+  }
+  return (
+    `journal run from peer ${peerLabel} does not link to this side's last known-good anchor ` +
+    `(prev_hash${anchor.state === "held" ? `, recorded at sequence ${anchor.sequence}` : ""}) — ` +
+    `the arriving run may itself be perfectly contiguous`
+  );
+}
+
+/**
+ * THE ANCHOR CLAUSE — what this side is holding, measured, and what to do about it. This is where
+ * W2's dishonesty lived: the message asserted a stale anchor from "the previous scope regime" for a
+ * cursor that had no anchor at all, and prescribed a recovery (align the scopes and re-export) that
+ * was INERT for that state.
+ */
+function describeAnchorClause(anchor: AnchorFacts & { brokeAtRunStart: boolean }): string {
+  switch (anchor.state) {
+    case "held":
+      return (
+        `(2) THIS SIDE'S ANCHOR: a real anchor IS recorded for that peer — the row hash of ` +
+        `sequence ${anchor.sequence} — and the run does not continue from it. A scope change on ` +
+        `THIS side no longer strands a cursor (re-pairing this peer at 'full' re-anchors an ` +
+        `anchorless one at the next run, whatever the scope was before that call), so also check ` +
+        `whether the peer rebuilt, rewound or replayed its own journal. `
+      );
+    case "genesis":
+      return (
+        `(2) THIS SIDE'S ANCHOR: nothing has ever been applied from that peer, so the run was ` +
+        `required to start at the beginning of its chain (genesis). A peer that has been synced ` +
+        `elsewhere first, or that starts mid-chain, needs a bootstrap snapshot rather than a ` +
+        `resumed export. `
+      );
+    case "permitted":
+      return (
+        `(2) THIS SIDE'S ANCHOR: none is recorded (the cursor sits at sequence ${anchor.sequence} ` +
+        `with no row hash, which is what entries applied while THIS side was narrow leave behind), ` +
+        `and a one-shot re-anchor permit IS already in force for exactly that position from a local ` +
+        `re-pair of this peer at sync_scope 'full' (whatever the scope was set to before that call). ` +
+        `The anchor comparison was therefore NOT what failed: the permit re-anchors, ` +
+        `it does not loosen anything else — the run must still begin at exactly sequence ` +
+        `${anchor.sequence + 1} and be internally gap-free, and that is what it failed. `
+      );
+    case "none":
+      return (
+        `(2) THIS SIDE'S ANCHOR: none is recorded. The cursor sits at sequence ${anchor.sequence} ` +
+        `with no row hash — what entries applied while THIS side's sync_scope was narrow leave ` +
+        `behind, since a sparse chain carries no linkable tail — so there was nothing for the run ` +
+        `to continue from and it was compared against genesis. RE-APPLY this side's scope for that ` +
+        `peer (\`scp federation pair <peer> --sync-scope full\`) — even if it already reads 'full' ` +
+        `— to issue a one-shot permit for exactly this cursor position; the peer's next contiguous ` +
+        `run re-anchors and resumes. `
+      );
+  }
+}
+
+/**
+ * THE DIAGNOSTIC for a contiguity break. Three things the operator cannot see from one side: what
+ * shape the arriving run actually has, what THIS side is configured to expect, and what THIS side's
+ * cursor is actually holding. Deliberately NOT a verdict in either direction — the likely causes
+ * plus what to check, and an explicit note that a genuine break looks identical, because this check
+ * is exactly where that is caught.
+ *
+ * THE CAUSES ARE THE ONES THE PRODUCT ACTUALLY PRODUCES. (1) A sender narrower than this side ships
+ * a sparse chain (`sequence_gap`). (2) Whatever this side's anchor really is — see
+ * {@link describeAnchorClause}, which reads it from the cursor rather than asserting it. The
+ * withheld-after-signing clause is kept, and stays gated on "the two sides already agree and no
+ * scope changed since the last accepted import", because that is exactly the condition under which
+ * none of the benign explanations apply.
+ */
+function describeContiguityBreak(
+  input: {
+    receiverScope: SyncScope;
+    peerName: string;
+    exporterDomainId: TrustDomainId;
+  },
+  code: JournalChainBreakCode,
+  reason: string,
+  anchor: AnchorFacts & { brokeAtRunStart: boolean }
+): string {
+  const { receiverScope, peerName, exporterDomainId } = input;
+  return (
+    `${describeBreakShape(code, `'${peerName}' (${exporterDomainId})`, anchor)} — import rejected, ` +
+    `fail-closed (${reason}). ` +
+    `This side's sync_scope for that peer is ${describeScope(receiverScope)}, which expects a ` +
+    `contiguous, gap-free, prev_hash-linked chain with no missing sequences. sync_scope is ` +
+    `per-side LOCAL config: never carried on the wire and never reconciled, so neither operator ` +
+    `can see the other side's value from their own — which makes a scope change on EITHER side ` +
+    `the most likely cause here. ` +
+    `(1) ASYMMETRY: a peer whose OWN sync_scope for this domain is narrower (status_only / ` +
+    `changes_only / policies_only / custom) legitimately ships a SPARSE chain, which a side at ` +
+    `'full' refuses. ` +
+    describeAnchorClause(anchor) +
+    `Run \`scp federation peers\` on BOTH domains, align the two sync_scope values, and check ` +
+    `whether either side's scope changed since the last accepted import; then re-export. ` +
+    `If the two sides already agree AND neither scope has changed since that import, this is an ` +
+    `unexplained break in the peer's journal — entries withheld or removed after signing look ` +
+    `exactly like this — and should be investigated as such.`
+  );
+}
+
 export async function importSyncBundle(
   tx: TenantTx,
   orgId: string,
-  bundle: SyncBundle
+  bundle: SyncBundle,
+  /** HOW this bundle reached us. Defaults to `"bundle"` — every path EXCEPT the live-pull scheduler
+   *  is a file/pushed/inbox handoff, and the scheduler is the one caller that passes `"live-pull"`
+   *  explicitly. Recorded on the transfer row so the §13 "as of" label can attribute the transport
+   *  from fact rather than from a timestamp comparison that cannot work (drizzle/0041). */
+  transport: BundleTransport = "bundle"
 ): Promise<ImportSyncBundleResult> {
   const self = await ensureFederationSelf(tx, orgId);
   if (bundle.header.peerDomainId !== self.domainId) {
@@ -386,7 +726,9 @@ export async function importSyncBundle(
   // omitted predecessor this side never sees. Such a bundle is verified with `contiguous: false`
   // (still checking every rowHash + signature + strictly-increasing sequence — only omission of
   // in-scope entries becomes undetectable, inherent to scoping). A `full` peer keeps the strict
-  // contiguous, cursor-continuous verification with trust-on-first-sync.
+  // contiguous, cursor-continuous verification with trust-on-first-sync — and keeps it: a `full`
+  // receiver meeting a narrower SENDER fails closed (owner decision), with a message that names
+  // the scope asymmetry as the likely cause instead of crying tampering (`verifySegment`).
   const isFullScope = peer.syncScope.mode === "full";
   const cursor = await getCursor(tx, orgId, peer.id, exporterDomainId);
   const toApply = bundle.entries.filter((entry) => entry.sequence > cursor.sequence);
@@ -399,26 +741,20 @@ export async function importSyncBundle(
     assertEntryAuthoredBySigner(entry, exporterDomainId);
   }
 
-  if (toApply.length > 0) {
-    const isFirstSyncFromThisOrigin = cursor.sequence === 0 && cursor.rowHash === null;
-    const verification = verifyJournalChain(toApply, {
-      contiguous: isFullScope,
-      expectedPrevHash:
-        isFullScope && !isFirstSyncFromThisOrigin ? (cursor.rowHash ?? undefined) : undefined,
-      // Full first-sync: anchor to the bundle's own first entry (trust-on-first-sync). Otherwise a
-      // lower bound of cursor+1 (exact for contiguous; minimum for sparse).
-      expectedStartSequence:
-        isFullScope && isFirstSyncFromThisOrigin ? toApply[0]!.sequence : cursor.sequence + 1,
-      // Per-entry key resolved by AUTHENTICATED sequence (never timestamp) — an entry signed before
-      // a rotation verifies against the old key only while its sequence is within that key's window.
-      resolvePublicKey: (entry) => verificationKeyForSequence(keyWindows, entry.sequence)
-    });
-    if (!verification.valid) {
-      throw conflict(
-        `tampered or broken journal segment (rejected, fail-closed): ${verification.brokenAt?.reason ?? "unknown"}`
-      );
-    }
-  }
+  // Throws a 409 on ANY failure — there is no accept-anyway path. The 409's `detail` is the
+  // operator-facing diagnostic and every transport carries it verbatim: `POST /v1/federation/imports`
+  // returns it as the problem detail, the live-pull scheduler records it as the peer's `refused`
+  // reason + block Decision (federation-sync.ts), and the air-gap inbox walk records it on the
+  // ledger row + block Decision for the offending file (inbox-loop.ts).
+  verifySegment({
+    entries: toApply,
+    cursor,
+    receiverExpectsContiguity: isFullScope,
+    receiverScope: peer.syncScope,
+    peerName: peer.name,
+    exporterDomainId,
+    resolvePublicKey: (entry) => verificationKeyForSequence(keyWindows, entry.sequence)
+  });
 
   let applied = 0;
   let lastSequence = cursor.sequence;
@@ -429,6 +765,26 @@ export async function importSyncBundle(
     if (entryMatchesScope(entry, peer.syncScope)) {
       await applyEntry(tx, orgId, entry, exporterDomainId);
       applied += 1;
+    } else if (entry.entryKind === "change_status") {
+      // THE SECOND DROP CHOKEPOINT. This receiver's OWN scope discarded a change-status entry that
+      // the sender did ship — e.g. a `policies_only` receiver. The board's scope-derived caveat
+      // already covers this case, but recording it is strictly more precise (it names WHICH change
+      // and its state, so the caveat can be conditioned on the change still being in flight rather
+      // than firing forever). Recorded only for `change_status`: no other skipped entry kind
+      // carries a lifecycle state this domain could otherwise mistake for "nothing is happening".
+      const payload = entry.payload;
+      const objectId = recordableChangeObjectId(payload);
+      if (objectId) {
+        await recordUnattachedChangeStatus(tx, {
+          orgId,
+          peerDomainId: exporterDomainId,
+          changeObjectId: objectId,
+          urn: typeof payload.urn === "string" ? payload.urn : null,
+          name: typeof payload.name === "string" ? payload.name : null,
+          lastState: reportedChangeState(payload),
+          dropReason: "receiver_scope"
+        });
+      }
     }
     lastSequence = entry.sequence;
     // Full scope: advance per applied entry, carrying the rowHash for next sync's continuity check.
@@ -457,7 +813,8 @@ export async function importSyncBundle(
     status: "confirmed",
     sinceSequence: bundle.header.sinceSequence,
     throughSequence: bundle.header.throughSequence,
-    checksum: bundle.checksum
+    checksum: bundle.checksum,
+    transport
   });
 
   return {

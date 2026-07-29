@@ -460,7 +460,10 @@ export async function pullFromCommanderPeer(
   }
 
   try {
-    const result = await withTenantTx(db, orgId, (tx) => importSyncBundle(tx, orgId, bundle));
+    // THE one caller that is a live pull — the sole writer of `transport: 'live-pull'`.
+    const result = await withTenantTx(db, orgId, (tx) =>
+      importSyncBundle(tx, orgId, bundle, "live-pull")
+    );
     return {
       peerDomainId: peer.id,
       outcome: "imported",
@@ -471,6 +474,12 @@ export async function pullFromCommanderPeer(
   } catch (err) {
     // 409 = the verify path REFUSED (checksum/signature/chain — identical to the file/CLI outcome,
     // carrying its Decision when the path persisted one). Record a block; the sweep continues.
+    //
+    // THIS IS THE LIVE-PULL SURFACE for `verifySegment`'s contiguity diagnostic: a pull never
+    // reaches an operator's terminal, so `err.detail` — which for a chain break is the full
+    // "compare `scp federation peers` on BOTH domains" guidance rather than a tampering alarm — is
+    // what lands in the peer's `refused` outcome AND, verbatim, in the block Decision's reason.
+    // Nothing here may summarise or truncate it.
     if (err instanceof ProblemError && err.status === 409) {
       const reason = err.detail ?? err.message;
       const decisionId = err.decisionId ?? (await recordSyncBlock(db, { orgId, peer, reason }));

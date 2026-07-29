@@ -134,11 +134,41 @@ export function verifyJournalEntrySignature(
   }
 }
 
+/**
+ * WHY THE FAILURE IS CODED, not just described. Two of these mean "the run I was shown is not
+ * gap-free" — which is what a DELIBERATELY SCOPE-FILTERED sender produces — while the rest mean
+ * "this content is not what its signer produced". Callers that must tell those two apart (see
+ * `import-repo.ts`: a receiver at `full` facing a narrower sender) were otherwise left matching on
+ * prose, which is exactly the kind of coupling that rots. `reason` stays the human string.
+ */
+export type JournalChainBreakCode =
+  /** Contiguity only: a gap or a reorder against the expected next sequence. */
+  | "sequence_gap"
+  /** Contiguity only: `prevHash` does not link to the previous entry / the caller's anchor. */
+  | "prev_hash_mismatch"
+  /** Sparse mode: sequences did not strictly increase (a reorder or duplicate). */
+  | "sequence_not_increasing"
+  /** Sparse mode: the first entry sits below the caller's lower bound. */
+  | "sequence_before_start"
+  /** Integrity: the row's content does not hash to its recorded `rowHash`. */
+  | "row_hash_mismatch"
+  /** Integrity: no key is available for this entry's sequence window (fail-closed). */
+  | "no_public_key"
+  /** Integrity: the entry's Ed25519 signature does not verify. */
+  | "signature_invalid";
+
+/** The two codes that mean ONLY "this run is not gap-free" — everything else is an integrity
+ *  failure and must never be retried in a laxer mode. */
+export const JOURNAL_CONTIGUITY_BREAK_CODES: readonly JournalChainBreakCode[] = [
+  "sequence_gap",
+  "prev_hash_mismatch"
+];
+
 export interface JournalChainVerification {
   valid: boolean;
   entryCount: number;
   /** First entry (by chain order) that failed to verify, if any. */
-  brokenAt?: { id: string; sequence: number; reason: string };
+  brokenAt?: { id: string; sequence: number; reason: string; code: JournalChainBreakCode };
 }
 
 /**
@@ -179,6 +209,26 @@ export function verifyJournalChain(
      *  entries becomes undetectable, which is inherent to scoping (you cannot prove completeness of a
      *  chain you are deliberately only shown part of) and is the documented scope tradeoff. */
     contiguous?: boolean;
+    /**
+     * SECURITY-SENSITIVE — "I HOLD NO ANCHOR", said out loud instead of faked with genesis.
+     *
+     * `expectedPrevHash: undefined` means genesis, i.e. "this run must be the START of the chain".
+     * That is a real, checkable claim, and it is the WRONG one for a caller resuming mid-chain that
+     * simply never recorded a row hash (see `import-repo.ts`: a receiver whose own `sync_scope` was
+     * narrow advances its cursor with a null hash, because the range tail may be an entry it was
+     * never shown). Such a caller has nothing to compare against; comparing against genesis is not a
+     * weaker check, it is a check that can only ever FAIL, which is how a widened receiver used to
+     * wedge permanently.
+     *
+     * `true` therefore ADOPTS the first entry's `prevHash` as the anchor instead of comparing it,
+     * and chains strictly from there. It relaxes exactly one comparison, on the first entry only:
+     * `expectedStartSequence` still pins where the run must begin (so nothing can be skipped), every
+     * later entry's `prevHash` is still linked, and every `rowHash` and signature is still verified —
+     * so a run with a deleted MIDDLE entry is still refused. Callers must gate it on a LOCAL,
+     * AUTHENTICATED operator action, never on anything the sender supplied; passing it together with
+     * `expectedPrevHash` is a contradiction (the anchor wins is not defined — don't).
+     */
+    anchorToFirstEntry?: boolean;
     resolvePublicKey: (entry: SyncJournalEntry) => string | null;
   }
 ): JournalChainVerification {
@@ -186,6 +236,7 @@ export function verifyJournalChain(
   let expectedPrevHash = opts.expectedPrevHash ?? JOURNAL_GENESIS_HASH;
   let expectedSequence = opts.expectedStartSequence ?? null;
   let lastSequence: number | null = null;
+  let adoptAnchor = contiguous && opts.anchorToFirstEntry === true;
 
   for (const entry of entries) {
     if (contiguous) {
@@ -196,18 +247,24 @@ export function verifyJournalChain(
           brokenAt: {
             id: entry.id,
             sequence: entry.sequence,
-            reason: `sequence gap or reorder: expected ${expectedSequence}, got ${entry.sequence}`
+            reason: `sequence gap or reorder: expected ${expectedSequence}, got ${entry.sequence}`,
+            code: "sequence_gap"
           }
         };
       }
-      if (entry.prevHash !== expectedPrevHash) {
+      if (adoptAnchor) {
+        // First entry, and the caller told us it holds no anchor: adopt, don't compare. Every
+        // entry after this one is linked normally (`expectedPrevHash` is reassigned below).
+        adoptAnchor = false;
+      } else if (entry.prevHash !== expectedPrevHash) {
         return {
           valid: false,
           entryCount: entries.length,
           brokenAt: {
             id: entry.id,
             sequence: entry.sequence,
-            reason: `prev_hash mismatch: expected ${expectedPrevHash}, got ${entry.prevHash}`
+            reason: `prev_hash mismatch: expected ${expectedPrevHash}, got ${entry.prevHash}`,
+            code: "prev_hash_mismatch"
           }
         };
       }
@@ -221,7 +278,8 @@ export function verifyJournalChain(
           brokenAt: {
             id: entry.id,
             sequence: entry.sequence,
-            reason: `sequence not strictly increasing: ${entry.sequence} after ${lastSequence}`
+            reason: `sequence not strictly increasing: ${entry.sequence} after ${lastSequence}`,
+            code: "sequence_not_increasing"
           }
         };
       }
@@ -232,7 +290,8 @@ export function verifyJournalChain(
           brokenAt: {
             id: entry.id,
             sequence: entry.sequence,
-            reason: `sequence ${entry.sequence} precedes expected start ${expectedSequence}`
+            reason: `sequence ${entry.sequence} precedes expected start ${expectedSequence}`,
+            code: "sequence_before_start"
           }
         };
       }
@@ -245,7 +304,8 @@ export function verifyJournalChain(
         brokenAt: {
           id: entry.id,
           sequence: entry.sequence,
-          reason: `row_hash mismatch: expected ${recomputed}, got ${entry.rowHash}`
+          reason: `row_hash mismatch: expected ${recomputed}, got ${entry.rowHash}`,
+          code: "row_hash_mismatch"
         }
       };
     }
@@ -257,7 +317,8 @@ export function verifyJournalChain(
         brokenAt: {
           id: entry.id,
           sequence: entry.sequence,
-          reason: "no public key available to verify signature"
+          reason: "no public key available to verify signature",
+          code: "no_public_key"
         }
       };
     }
@@ -268,7 +329,8 @@ export function verifyJournalChain(
         brokenAt: {
           id: entry.id,
           sequence: entry.sequence,
-          reason: "signature verification failed"
+          reason: "signature verification failed",
+          code: "signature_invalid"
         }
       };
     }

@@ -6195,6 +6195,16 @@ export type GetServiceBoardResponses = {
             reason: string;
             endsAt: string;
         } | null;
+        asOf: {
+            peerDomainId: string;
+            peerName: string;
+            at: string | null;
+            via: 'live-pull' | 'bundle' | 'never' | 'unknown';
+            ageSeconds: number;
+            expectedWithinSeconds: number | null;
+            staleAfterSeconds: number | null;
+            stale: boolean | null;
+        } | null;
         unknownFields: Array<string>;
     };
 };

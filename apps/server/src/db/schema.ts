@@ -1183,6 +1183,26 @@ export const syncCursors = pgTable(
     // matches nothing real, and `verifyJournalChain` would have no prior tail to check it against.
     // NULL until the first entry from this (peer, origin) pair is applied.
     lastAppliedRowHash: text("last_applied_row_hash"),
+    /** ONE-SHOT RE-ANCHOR PERMIT (drizzle/0042) — SECURITY-SENSITIVE, and deliberately writable
+     *  from exactly ONE place: `pairPeer`, i.e. a LOCAL, AUTHENTICATED operator action.
+     *
+     *  A receiver whose own `sync_scope` is narrow verifies sparse and advances this cursor with
+     *  `last_applied_row_hash = NULL` (it never holds the tail entry's hash — the tail may be an
+     *  entry it was never shown). That is correct while it stays narrow. When a `pairPeer` call
+     *  leaves that peer's `sync_scope` at `full` — whatever it was set to before that call — while
+     *  this cursor is still anchorless, the strict path has no way to link the peer's next,
+     *  perfectly contiguous run to it — every subsequent import is refused forever (the one-way
+     *  ratchet). Setting this column to the CURRENT `last_applied_seq` permits the next strict run
+     *  to adopt its OWN first entry as the anchor, for that one cursor position only. Everything
+     *  else stays strict: the run must still begin at exactly `last_applied_seq + 1`, be internally
+     *  gap-free, and verify every rowHash and signature — so a re-signed run with a deleted middle
+     *  entry is still refused.
+     *
+     *  Consumed by the first `advanceCursor` that records real progress (which always writes a
+     *  real row hash on the strict path), and only re-issued by another `pairPeer` call that again
+     *  leaves this peer at `full` with an anchorless cursor. NOTHING a peer sends can set it: no
+     *  import/relay/poke path writes this column. */
+    reanchorFromSeq: bigint("reanchor_from_seq", { mode: "number" }),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [
@@ -1205,11 +1225,26 @@ export const bundleTransfers = pgTable(
     sinceSequence: bigint("since_sequence", { mode: "number" }),
     throughSequence: bigint("through_sequence", { mode: "number" }),
     checksum: text("checksum"),
+    /** drizzle/0041 — HOW this transfer travelled: 'live-pull' (the federation-sync scheduler
+     *  dialled the peer) or 'bundle' (a file/pushed/inbox handoff). NULL on rows written before
+     *  0041, which surfaces as `via: "unknown"` rather than a guess. Recorded at import time
+     *  because that is the only moment the transport is known — no pair of stored timestamps can
+     *  reconstruct it (see the migration header). */
+    transport: text("transport"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     confirmedAt: timestamp("confirmed_at", { withTimezone: true })
   },
   (table) => [
-    index("bundle_transfers_org_peer").on(table.orgId, table.peerDomainId, table.createdAt)
+    index("bundle_transfers_org_peer").on(table.orgId, table.peerDomainId, table.createdAt),
+    // drizzle/0041 — serves `lastConfirmedSyncImportAt`, which runs per peer on every service-board
+    // render. Declared here for schema fidelity; the migration creates it PARTIAL + INCLUDE
+    // (`direction='import' AND kind='sync' AND status='confirmed'`, INCLUDE (transport)), which
+    // drizzle-kit cannot express — see 0041's header.
+    index("bundle_transfers_org_peer_confirmed").on(
+      table.orgId,
+      table.peerDomainId,
+      table.confirmedAt
+    )
   ]
 );
 
@@ -1245,6 +1280,60 @@ export const federationInboxFiles = pgTable(
       table.sha256
     ),
     index("federation_inbox_files_org_processed").on(table.orgId, table.processedAt)
+  ]
+);
+
+/** Pre-M16 residual, Track A (drizzle/0040) — peer change STATUS this domain received and could
+ *  not attach to anything. A `change_status` journal entry is positive evidence that a change
+ *  exists and is moving on the peer (it names `payload.objectId` and a state); when no local
+ *  replica of that object exists, or when this receiver's own scope filter discards the entry,
+ *  `federation/import-repo.ts` used to drop that evidence silently and
+ *  `coordination/service-board.ts` then reported the affected components as a confident `stable`.
+ *
+ *  This is the store `import-repo.ts`'s own comment already named as the missing feature. It is
+ *  what makes the board's change-blindness caveat EVIDENCE-derived rather than only SCOPE-derived
+ *  — decisive when the SENDER is the narrow side, because `sync_scope` is purely local config that
+ *  never rides the wire and the two peers' values are never reconciled.
+ *
+ *  Keyed on (org, peer, change object id) and UPSERTED, so a from-genesis re-sync converges
+ *  (DESIGN §6 replay invariant); DELETED when the change's `object_upsert` finally lands, so the
+ *  signal resolves itself and can never fabricate persistent ignorance. It deliberately carries no
+ *  target components: no `change_status` payload shape carries `targets`, so attribution stays at
+ *  the (peer, change) grain and the board's caveat stays board-level — see drizzle/0040's header
+ *  for the owner decision that would change that. */
+export const federationUnattachedChangeStatus = pgTable(
+  "federation_unattached_change_status",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    /** TRUST sense (ADR-0021 D4) — the peer whose bundle carried the dropped entry. */
+    peerDomainId: uuid("peer_domain_id").notNull().$type<TrustDomainId>(),
+    /** `payload.objectId` — the change graph object id on the ORIGIN domain. Deliberately not a
+     *  local FK: the whole point is that no local row with this id exists (yet). */
+    changeObjectId: uuid("change_object_id").notNull(),
+    /** Propose-time enrichment only — the transition payload carries neither, so both are nullable
+     *  and preserved across later transitions. */
+    urn: text("urn"),
+    name: text("name"),
+    /** `payload.toState ?? payload.state` — the last lifecycle state the peer reported. The board
+     *  conditions its caveat on this being IN-FLIGHT, so one long-settled change cannot make a
+     *  board claim ignorance forever. */
+    lastState: text("last_state"),
+    /** 'no_local_replica' (entry admitted; nothing local carries `changeObjectId` — the SENDER
+     *  withheld the change object) | 'receiver_scope' (this receiver's own scope filter discarded
+     *  it). Different operator-visible causes with different fixes; collapsing them would repeat
+     *  the conflation this table exists to end. */
+    dropReason: text("drop_reason").notNull(),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    uniqueIndex("federation_unattached_change_identity").on(
+      table.orgId,
+      table.peerDomainId,
+      table.changeObjectId
+    ),
+    index("federation_unattached_change_org_state").on(table.orgId, table.lastState)
   ]
 );
 

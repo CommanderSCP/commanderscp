@@ -32,8 +32,13 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   Link: ({ children }: { children?: React.ReactNode }) => <a>{children}</a>
 }));
 
-const { BoardRow, BoardSummary, changeVisibilityUnknownOf, freezeVisibilityUnknownOf } =
-  await import("./service-board");
+const {
+  BoardAsOfLabel,
+  BoardRow,
+  BoardSummary,
+  changeVisibilityUnknownOf,
+  freezeVisibilityUnknownOf
+} = await import("./service-board");
 
 const ORIGIN_DOMAIN_ID = "2c1d3e4f-5a6b-4c8d-9e0f-1a2b3c4d5e6f";
 const REPLICA_CHANGE_ID = "5f6b4a2c-1d3e-4f8a-9b0c-2d4e6f8a0b1c";
@@ -199,5 +204,88 @@ describe("service board summary: an unassessable count is never dressed as a suc
     expect(freezeVisibilityUnknownOf({ unknownFields: ["rows[].activeFreeze"] })).toBe(true);
     expect(freezeVisibilityUnknownOf({ unknownFields: ["summary.stable"] })).toBe(false);
     expect(freezeVisibilityUnknownOf({ unknownFields: [] })).toBe(false);
+  });
+});
+
+/**
+ * DESIGN §13's "as of &lt;bundle/date&gt;" label, and its paired ban on *"presenting stale data as
+ * live status"*. §13 names the UI as the layer responsible for the label, so the rendering half
+ * needs the same PR-visible gate everything above does — the server can compute an honest `asOf` and
+ * a browser that never paints it puts the operator back exactly where they started.
+ */
+describe("service board as-of label: a snapshot is never painted as live status", () => {
+  const base = {
+    peerDomainId: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+    peerName: "commander-1",
+    at: "2026-07-25T11:59:55.000Z",
+    ageSeconds: 5,
+    expectedWithinSeconds: 60,
+    // NOT the cadence — the age at which `stale` actually flips (cadence × the server's grace
+    // factor). The two are different numbers and the tooltip must never present one as the other.
+    staleAfterSeconds: 120
+  };
+
+  it("renders nothing at all for a single-domain board — there is no upstream to label", () => {
+    expect(renderToStaticMarkup(<BoardAsOfLabel asOf={null} />)).toBe("");
+  });
+
+  it("a fresh upstream is a quiet timestamp, not a warning", () => {
+    const html = renderToStaticMarkup(
+      <BoardAsOfLabel asOf={{ ...base, via: "live-pull", stale: false }} />
+    );
+    expect(html).toContain("As of");
+    expect(html).not.toContain("STALE");
+    expect(html).toContain("commander-1");
+    // An always-shouting label trains an operator to ignore the one case that matters.
+    expect(html).not.toContain("text-amber-700");
+  });
+
+  it("an OVERDUE upstream says so in the label itself, not only in a tooltip", () => {
+    const html = renderToStaticMarkup(
+      <BoardAsOfLabel asOf={{ ...base, ageSeconds: 3600, via: "bundle", stale: true }} />
+    );
+    // Visible text, so it survives a reader who never hovers.
+    expect(html).toContain("STALE");
+    expect(html).toContain("text-amber-700");
+  });
+
+  /**
+   * THE TOOLTIP MUST NOT QUOTE THE CADENCE AS THE BOUND. `stale: false` covers ages well past one
+   * cadence (the server applies a grace factor), so the old wording — "Within <peer>'s effective
+   * sync cadence of 60s" — told the operator that 90-second-old data was inside a 60-second window.
+   * Wrong, and checkable against a clock, which is the worst kind of wrong for a freshness label.
+   */
+  it("a not-overdue reading OLDER than one cadence states the real threshold, not the cadence", () => {
+    const html = renderToStaticMarkup(
+      <BoardAsOfLabel asOf={{ ...base, ageSeconds: 90, via: "live-pull", stale: false }} />
+    );
+    // The number that actually governs the verdict.
+    expect(html).toContain("120s");
+    // ...and it is never claimed that 90s sits inside the 60s cadence.
+    expect(html).not.toContain("Within commander-1&#x27;s effective sync cadence");
+    expect(html).toMatch(/not counted late until 120s/);
+    // The cadence is still shown, named as the cadence rather than as the bound.
+    expect(html).toContain("effective sync cadence is 60s");
+  });
+
+  it("an AIR-GAPPED upstream (`stale: null`) still gets the label, and is never dressed as fresh", () => {
+    const html = renderToStaticMarkup(
+      <BoardAsOfLabel
+        asOf={{
+          ...base,
+          ageSeconds: 604_800,
+          via: "bundle",
+          expectedWithinSeconds: null,
+          staleAfterSeconds: null,
+          stale: null
+        }}
+      />
+    );
+    // §13's whole bounded guarantee for an air-gapped domain IS this line.
+    expect(html).toContain("As of");
+    expect(html).toContain("bundle import");
+    // `null` is not `false`: it must not be warned about, and it must not claim currency either.
+    expect(html).not.toContain("STALE");
+    expect(html).toContain("not live status");
   });
 });

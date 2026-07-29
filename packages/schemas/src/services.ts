@@ -133,6 +133,63 @@ export const ServiceBoardSummarySchema = z.object({
 });
 export type ServiceBoardSummary = z.infer<typeof ServiceBoardSummarySchema>;
 
+/** WHEN the upstream data behind this board last arrived, and how — DESIGN.md §13's
+ *  "as of &lt;bundle/date&gt;" label, which §13 pairs with an explicit ban: *"never presents stale data
+ *  as live status"*.
+ *
+ *  A board on a federated instance renders change objects that arrived over the sync journal. Without
+ *  this, nothing on the wire says whether they arrived thirty seconds ago or last quarter — and the
+ *  reader has no way to tell a live view from a snapshot. It names the LIMITING peer (the oldest
+ *  reading among the peers whose scope can carry change objects), because that is the one that bounds
+ *  what the whole board may claim.
+ *
+ *  - `at` — the `confirmedAt` of the newest confirmed inbound sync bundle from that peer, or null if
+ *    none has ever landed. Deliberately derived from bundle-transfer history rather than the live-pull
+ *    timestamps, so it is equally true on a connected instance and an air-gapped one (the pull columns
+ *    are NULL forever on an instance that never dials).
+ *  - `via` — `"live-pull"` (the scheduler dialled the peer), `"bundle"` (a file/pushed/inbox import —
+ *    the air-gap case §13 names), `"never"` (nothing has arrived), or `"unknown"` (the transfer
+ *    predates the column that records this and is not guessed at). Read from the transfer row, never
+ *    inferred from timestamps — "as of 3 days ago via bundle" is a healthy air-gapped domain and "as
+ *    of 3 days ago via a wedged poller" is an incident, so a wrong attribution is worse than none.
+ *  - `ageSeconds` — seconds since `at`, or since the peer was paired when nothing has ever arrived.
+ *  - `expectedWithinSeconds` — the peer's OWN effective pull cadence (frequent poll vs proven sparse
+ *    poke), or null when this instance schedules no pulls for that peer at all.
+ *  - `staleAfterSeconds` — the age at which `stale` actually flips to `true`: the cadence above WITH
+ *    the grace factor already applied, null exactly when `expectedWithinSeconds` is null. It is on
+ *    the wire because `expectedWithinSeconds` is NOT the threshold and a client that renders it as
+ *    one lies: `stale: false` covers ages well past one cadence, so "within its 60s cadence" is
+ *    false of a 90-second-old reading that is legitimately not stale. Clients render this; nothing
+ *    downstream re-derives the grace factor (see `federation/upstream-freshness.ts`).
+ *  - `stale` — `true`/`false` against that cadence **plus a grace factor** (a peer's age necessarily
+ *    exceeds its interval once per cycle; only a MISSED cycle is late — see
+ *    `federation/upstream-freshness.ts`'s `FRESHNESS_GRACE_FACTOR`). **`null` when
+ *    `expectedWithinSeconds` is null**: null is not "fresh", it means no schedule exists for the data
+ *    to be late against (an air-gapped peer, or an outpost seen from the commander), so the label
+ *    itself is the whole guarantee. A client must render null as "as of &lt;at&gt;", never as an
+ *    all-clear. A scheduled peer that has never delivered anything reads `true`, never `false` —
+ *    freshness is a claim about delivered data.
+ *
+ *  The peer reported is the one with the greatest `ageSeconds`, which is the board's actual freshness
+ *  BOUND. `stale` is a per-peer verdict against that peer's own schedule and is never used to order
+ *  peers against each other — doing so would let a barely-late connected peer mask an ancient
+ *  air-gapped one.
+ *
+ *  When `stale` is `true` the response's `unknownFields` additionally names `"summary.stable"` and
+ *  `"rows[].latestChangeId"`, for the same reason change-object blindness does: a newer change may
+ *  exist upstream that this instance has not been sent yet. */
+export const ServiceBoardAsOfSchema = z.object({
+  peerDomainId: z.string(),
+  peerName: z.string(),
+  at: z.string().datetime().nullable(),
+  via: z.enum(["live-pull", "bundle", "never", "unknown"]),
+  ageSeconds: z.number().int(),
+  expectedWithinSeconds: z.number().int().nullable(),
+  staleAfterSeconds: z.number().int().nullable(),
+  stale: z.boolean().nullable()
+});
+export type ServiceBoardAsOf = z.infer<typeof ServiceBoardAsOfSchema>;
+
 export const ServiceBoardResponseSchema = z.object({
   service: z.object({
     id: z.string().uuid(),
@@ -143,6 +200,10 @@ export const ServiceBoardResponseSchema = z.object({
   summary: ServiceBoardSummarySchema,
   /** An active freeze scoped directly to the SERVICE object (read-only), covering every component. */
   serviceFreeze: ServiceBoardFreezeSchema.nullable(),
+  /** DESIGN §13's "as of" label for the LIMITING upstream peer — see {@link ServiceBoardAsOfSchema}.
+   *  `null` exactly when no peer's scope can carry change objects (including the single-domain case,
+   *  where the board is a complete local observation and claiming an as-of would be theatre). */
+  asOf: ServiceBoardAsOfSchema.nullable(),
   /** BOARD-LEVEL unobservable fields, by dotted path (`"serviceFreeze"`, `"rows[].activeFreeze"`) —
    *  the ones no row can observe regardless of who drives its change, as opposed to
    *  {@link ServiceBoardRowSchema}'s per-row `unknownFields` (what THAT row's driving domain
