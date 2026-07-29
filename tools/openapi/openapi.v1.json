@@ -35943,7 +35943,7 @@
                                     }
                                   ]
                                 },
-                                "verifiedArtifactCount": {
+                                "authorizedArtifactCount": {
                                   "anyOf": [
                                     {
                                       "type": "integer",
@@ -35960,7 +35960,7 @@
                                 "state",
                                 "decisionId",
                                 "observedAt",
-                                "verifiedArtifactCount"
+                                "authorizedArtifactCount"
                               ],
                               "additionalProperties": false
                             },

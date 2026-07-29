@@ -347,10 +347,30 @@ export async function markChangeReconcileBlocked(
  * boundary segment its PER-CHANGE JOIN into the `bundle_transfers` ledger (which has no change
  * column; see `federation/boundary-bundle-ref.ts` for the full rationale).
  *
- * Deliberately NOT journalled: `bundle_transfers` rows are per-instance observational bookkeeping,
- * so a replica of this change on another domain must not inherit this domain's checksums — it
- * stamps whatever IT observed. Additive to whatever `sourceRef` already holds; no other key is
- * touched, and the value is a deduped list because one change may be exported to several peers.
+ * Additive to whatever `sourceRef` already holds; no other key is touched, and the value is a
+ * deduped list because one change may be exported to several peers.
+ *
+ * ## Journalling — what is actually true
+ *
+ * The intent is that a replica of this change on another domain does NOT inherit this domain's
+ * checksums (they are per-instance observational bookkeeping about THIS instance's
+ * `bundle_transfers` rows; the far side stamps whatever IT observed). Two stamp sites, two
+ * different stories:
+ *
+ * - THE EXPORT-SIDE STAMP (this function, called from `exportPromotionBundle` phase 4) genuinely
+ *   is not journalled — it is a bare `UPDATE changes`, and no `change_status` entry is appended
+ *   for it. Nothing leaves the instance.
+ * - THE IMPORT-SIDE STAMP is NOT exempt. `applyPromotionImport` puts the checksum into the
+ *   `sourceRef` it hands `proposeChange`, and `proposeChange` appends a `change_status` journal
+ *   entry whose payload carries `sourceRef` verbatim (see the `change_status` block above). So the
+ *   importing instance's stamp DOES ride the journal onward to any peer syncing `changes_only`.
+ *
+ * The consequence of that leak is nil today, and by construction rather than by luck: the
+ * `change_status` import path (`federation/import-repo.ts`) records the received status for the
+ * cross-domain view and never creates a local `changes` row from it, so no peer can ever grow a
+ * boundary segment out of a replicated stamp — `boundarySegment` only ever reads the `changes` row
+ * this instance minted itself. If a future change lets `change_status` materialize local change
+ * rows, the import-side stamp must be stripped there.
  */
 export async function stampBoundaryBundleChecksum(
   tx: TenantTx,
@@ -358,11 +378,23 @@ export async function stampBoundaryBundleChecksum(
   changeObjectId: string,
   checksum: string
 ): Promise<void> {
+  // `FOR UPDATE`. This is a read-modify-write of an opaque JSONB column, and the LIST shape exists
+  // precisely because one change can be exported to SEVERAL peers — concurrently, in the ordinary
+  // case (two air-gapped peers, two `exportPromotionBundle` calls). Under READ COMMITTED an
+  // unlocked SELECT lets both txs read the same pre-stamp `sourceRef`; the second then blocks on
+  // the row lock at UPDATE time but still writes from its STALE read, silently clobbering the
+  // first peer's checksum. The segment would then show one hop where two really happened — a
+  // real export erased from a read model whose whole job is to not overclaim. Locking on the read
+  // serializes the two stampers so each appends onto the other's committed result.
+  //
+  // `exportPromotionBundle` takes no per-change advisory lock (unlike reconcile), so this row lock
+  // is the only thing ordering them.
   const [row] = await tx
     .select({ sourceRef: changes.sourceRef })
     .from(changes)
     .where(and(eq(changes.orgId, orgId), eq(changes.objectId, changeObjectId)))
-    .limit(1);
+    .limit(1)
+    .for("update");
   if (!row) return; // change vanished (cancelled/purged mid-export) — nothing to decorate.
   const next = withBoundaryBundleChecksum(row.sourceRef, checksum);
   await tx

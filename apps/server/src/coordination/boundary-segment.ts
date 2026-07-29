@@ -71,9 +71,13 @@ function changeObjectIdOf(change: BoundarySegmentChange): string {
   return id;
 }
 
-/** How many authorized artifacts a pre-deploy verdict covered, read defensively out of its opaque
- *  `inputContext`. `null` — never 0 — when the shape is not what we expect, so a client can tell
- *  "no count available" from "a verdict over zero artifacts". */
+/** How many artifacts the verdict's AUTHORIZED SET held, read defensively out of the Decision's
+ *  opaque `inputContext`. `null` — never 0 — when the shape is not what we expect, so a client can
+ *  tell "no count available" from "a verdict over zero artifacts".
+ *
+ *  Note what this is NOT: on a `block` Decision the authorized set is the set the gate was ASKED to
+ *  check, and it still contains the artifacts that failed. Hence the name, and hence the caller
+ *  reports it only on `verified` — see the `refused` branch below. */
 function authorizedArtifactCount(decision: Decision): number | null {
   const raw = decision.inputContext.authorizedArtifacts;
   return Array.isArray(raw) ? raw.length : null;
@@ -144,7 +148,7 @@ export async function buildBoundarySegment(
       state: "not_reported",
       decisionId: null,
       observedAt: null,
-      verifiedArtifactCount: null
+      authorizedArtifactCount: null
     };
     unknownFields.push(VALIDATE_STATE_UNKNOWN);
   } else {
@@ -163,14 +167,22 @@ export async function buildBoundarySegment(
         state: "not_yet_verified",
         decisionId: null,
         observedAt: null,
-        verifiedArtifactCount: null
+        authorizedArtifactCount: null
       };
     } else {
+      const verified = latest.verdict === "allow";
       validate = {
-        state: latest.verdict === "allow" ? "verified" : "refused",
+        state: verified ? "verified" : "refused",
         decisionId: latest.id,
         observedAt: latest.createdAt,
-        verifiedArtifactCount: authorizedArtifactCount(latest)
+        // ONLY on a pass. The count comes from `inputContext.authorizedArtifacts` — the set the
+        // gate was ASKED to check — and on a `block` Decision that set still contains the artifacts
+        // that failed (absent bytes, bad signature). Reporting it on a refusal states a number of
+        // artifacts next to a refusal, which reads as "n verified anyway" while nothing may have
+        // verified at all. On `verified` the two sets coincide by construction: the gate returns
+        // `ok` only when EVERY authorized artifact passed. A refusal's artifact story is the block
+        // Decision's `failing` list, reachable via `decisionId`.
+        authorizedArtifactCount: verified ? authorizedArtifactCount(latest) : null
       };
     }
   }

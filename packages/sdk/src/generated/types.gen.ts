@@ -9358,7 +9358,7 @@ export type ExplainChangeResponses = {
                 state: 'verified' | 'refused' | 'not_yet_verified' | 'not_reported';
                 decisionId: string | null;
                 observedAt: string | null;
-                verifiedArtifactCount: number | null;
+                authorizedArtifactCount: number | null;
             };
             unknownFields: Array<string>;
         } | null;

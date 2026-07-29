@@ -329,8 +329,20 @@ export const BoundaryValidatePhaseSchema = z.object({
   /** The Decision behind `verified`/`refused` — every verdict is explainable (principle 6). */
   decisionId: z.string().uuid().nullable(),
   observedAt: z.string().datetime().nullable(),
-  /** How many authorized artifacts that verdict covered; null when there is no verdict. */
-  verifiedArtifactCount: z.number().int().nullable()
+  /** How many artifacts the verdict's AUTHORIZED SET held — the set the gate was asked to check,
+   *  read off the Decision's `inputContext.authorizedArtifacts`. Deliberately NOT named
+   *  "verified": on a `refused` verdict the authorized set still has entries and some or all of
+   *  them are precisely the ones that FAILED, so a "verified" count there would report unverified
+   *  artifacts as verified — the exact claim class this segment exists to prevent, on the API,
+   *  which is the parity surface (charter principle 3).
+   *
+   *  `null` when there is no verdict at all, AND on `refused`: a refusal's honest artifact story is
+   *  the block Decision's `failing` list, not a bare number that reads as progress. So a non-null
+   *  value here occurs only alongside `state: "verified"`, where authorized == verified by
+   *  construction (the gate returns `ok` only when every authorized artifact passed).
+   *  `null` — never 0 — is also what a malformed/absent `inputContext` yields, so a client can
+   *  distinguish "no count available" from "a verdict over zero artifacts". */
+  authorizedArtifactCount: z.number().int().nullable()
 });
 export type BoundaryValidatePhase = z.infer<typeof BoundaryValidatePhaseSchema>;
 

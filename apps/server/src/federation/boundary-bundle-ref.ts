@@ -34,8 +34,11 @@
  * ## What this is NOT
  *
  * It is not authority. The journal's own sequence/hash chain is what makes replication safe; this
- * key is read-only decoration for the boundary segment (and is deliberately NOT journalled — a
- * replica of a change sees no stamp, which is correct: this instance's ledger rows are its own).
+ * key is read-only decoration for the boundary segment: one instance's ledger rows are its own, so
+ * no peer should ever build a segment out of another's stamp. Exactly how far that holds is stated
+ * precisely on `changes-repo.ts::stampBoundaryBundleChecksum` — the export-side stamp is genuinely
+ * un-journalled, the IMPORT-side one does ride the `change_status` payload, and the reason that
+ * leak is harmless is a property of the `change_status` import path, not of this key.
  */
 
 /** The `sourceRef` key holding the checksums of the promotion bundles that carried this change. */

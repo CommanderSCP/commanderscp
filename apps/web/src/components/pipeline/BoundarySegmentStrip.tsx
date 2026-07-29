@@ -160,8 +160,8 @@ function ValidatePhase({
   // tired operator could read as "fine".
   const stateUnknown = isBoundaryUnknown(segment, "validate.state");
   const artifactDetail =
-    validate.verifiedArtifactCount !== null
-      ? `${validate.verifiedArtifactCount} authorized artifact${validate.verifiedArtifactCount === 1 ? "" : "s"}`
+    validate.authorizedArtifactCount !== null
+      ? `${validate.authorizedArtifactCount} authorized artifact${validate.authorizedArtifactCount === 1 ? "" : "s"}`
       : undefined;
 
   let badge: ReactNode;

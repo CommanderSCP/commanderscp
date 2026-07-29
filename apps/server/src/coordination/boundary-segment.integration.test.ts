@@ -30,7 +30,14 @@ import {
   createIsolatedDomain,
   type IsolatedDomain
 } from "../federation/test-support/isolated-domain.js";
-import { getChange, getChangeRow, proposeChange } from "./changes-repo.js";
+import { boundaryBundleChecksumsOf } from "../federation/boundary-bundle-ref.js";
+import {
+  getChange,
+  getChangeRow,
+  proposeChange,
+  stampBoundaryBundleChecksum
+} from "./changes-repo.js";
+import { listDecisionsForSubject } from "./decisions-repo.js";
 import { buildBoundarySegment } from "./boundary-segment.js";
 import { runPreDeployArtifactGate } from "./pre-deploy-gate.js";
 
@@ -83,6 +90,9 @@ function commanderNeverClaimsVerified(scenario: string, segment: BoundarySegment
 describe("M16.1 boundary segment: two federated domains (Testcontainers)", () => {
   let commander: IsolatedDomain;
   let outpost: IsolatedDomain;
+  /** A SECOND receiving peer. Exists only so the "one change, several peers" case — the case the
+   *  `boundaryBundleChecksums` LIST shape exists for — is testable at all (scenario 6). */
+  let outpostB: IsolatedDomain;
   let commanderSelf: FederationSelf;
   let commanderCosignPrivateKey: string;
 
@@ -111,12 +121,17 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
   beforeAll(async () => {
     commander = await createIsolatedDomain("m161commander");
     outpost = await createIsolatedDomain("m161outpost");
+    outpostB = await createIsolatedDomain("m161outpostb");
     commanderSelf = await withTenantTx(commander.db, commander.orgId, (tx) =>
       ensureFederationSelf(tx, commander.orgId)
     );
     await withTenantTx(outpost.db, outpost.orgId, (tx) => ensureFederationSelf(tx, outpost.orgId));
+    await withTenantTx(outpostB.db, outpostB.orgId, (tx) =>
+      ensureFederationSelf(tx, outpostB.orgId)
+    );
     await pair(commander, outpost, "outpost");
     await pair(outpost, commander, "commander");
+    await pair(commander, outpostB, "outpost");
     commanderCosignPrivateKey = (await ensureInstanceCosignKey(commander.db, commander.orgId))
       .privateKey;
   }, 180_000);
@@ -124,6 +139,7 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
   afterAll(async () => {
     await commander.close();
     await outpost.close();
+    await outpostB.close();
   });
 
   // -------------------------------------------------------------------------------------------
@@ -202,12 +218,12 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
     };
   }
 
-  /** Propose an APPROVED change in the commander that tracks one signed SBOM blob, and export it as
-   *  a promotion bundle to the outpost. (A `blob` is EXEMPT from the M17.3 E6 export scan gate — it
-   *  IS the scan's output — so the gate passes vacuously and no scan seeding is needed.) */
-  async function promoteBlobChange(): Promise<{
-    commanderChangeId: string;
-    bundle: PromotionBundle;
+  /** Propose an APPROVED change in the commander that tracks one signed SBOM blob — everything
+   *  {@link promoteBlobChange} does EXCEPT the export, so a test can drive the export itself (e.g.
+   *  to two peers at once). (A `blob` is EXEMPT from the M17.3 E6 export scan gate — it IS the
+   *  scan's output — so the gate passes vacuously and no scan seeding is needed.) */
+  async function approvedBlobChange(): Promise<{
+    changeId: string;
     blob: { bytes: Buffer; digest: string; signature: string };
   }> {
     const targetId = await createReplicatedTarget();
@@ -250,13 +266,27 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
       });
     });
 
+    return { changeId: change.id, blob };
+  }
+
+  /** {@link approvedBlobChange} + the export of it to `peer` as a promotion bundle. */
+  async function exportTo(peer: IsolatedDomain, changeId: string): Promise<PromotionBundle> {
     const outcome = await exportPromotionBundle(commander.db, {
       orgId: commander.orgId,
-      peerIdOrName: outpost.orgName,
-      changeIdOrUrn: change.id
+      peerIdOrName: peer.orgName,
+      changeIdOrUrn: changeId
     });
     if (outcome.refused) throw new Error(`unexpected export refusal: ${outcome.reason}`);
-    return { commanderChangeId: change.id, bundle: outcome.bundle, blob };
+    return outcome.bundle;
+  }
+
+  async function promoteBlobChange(): Promise<{
+    commanderChangeId: string;
+    bundle: PromotionBundle;
+    blob: { bytes: Buffer; digest: string; signature: string };
+  }> {
+    const { changeId, blob } = await approvedBlobChange();
+    return { commanderChangeId: changeId, bundle: await exportTo(outpost, changeId), blob };
   }
 
   const segmentAt = async (domain: IsolatedDomain, changeId: string) =>
@@ -340,7 +370,7 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
     expect(verified!.validate.state).toBe("verified");
     expect(verified!.validate.decisionId).toBe(gate.decisionId);
     expect(verified!.validate.observedAt).toEqual(expect.any(String));
-    expect(verified!.validate.verifiedArtifactCount).toBe(1);
+    expect(verified!.validate.authorizedArtifactCount).toBe(1);
     expect(verified!.unknownFields).toEqual([]); // the outpost can see everything it reports
 
     // THE CENTRAL CLAIM. A real verification just succeeded — at the OUTPOST. The commander has no
@@ -368,6 +398,22 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
     // Charter principle 6: the refusal is explainable — the Decision id is on the wire.
     expect(refused!.validate.decisionId).toBe(gate.decisionId);
     expect(refused!.transfer.state).toBe("received"); // the transfer really did happen
+
+    // THE COUNT IS NULL ON A REFUSAL. This promotion authorized exactly ONE artifact and ZERO were
+    // verified — the bytes were absent. The count is sourced from the Decision's
+    // `inputContext.authorizedArtifacts`, i.e. the set the gate was ASKED to check, which on a
+    // block still contains every artifact that failed. Reporting `1` beside a refusal states an
+    // artifact count where nothing verified, which is exactly the claim class this segment exists
+    // to prevent — and the API is the parity surface (charter principle 3), so a correct schema doc
+    // and a correct UI label do not excuse it. Suppressed at the source instead.
+    expect(refused!.validate.authorizedArtifactCount).toBeNull();
+    // ...and the refusal's real artifact story stays reachable, via the Decision the id points at.
+    const blockDecision = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      listDecisionsForSubject(tx, outpost.orgId, imported.localChangeObjectId)
+    ).then((ds) => ds.find((d) => d.id === gate.decisionId));
+    expect(blockDecision?.verdict).toBe("block");
+    expect((blockDecision?.inputContext.authorizedArtifacts as unknown[]).length).toBe(1);
+    expect((blockDecision?.inputContext.failing as unknown[]).length).toBe(1);
 
     commanderNeverClaimsVerified(
       "after the outpost REFUSED the artifacts",
@@ -398,6 +444,87 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
   }, 120_000);
 
   // -------------------------------------------------------------------------------------------
+  // (6) ONE CHANGE, SEVERAL PEERS — the case the checksum LIST shape exists for, CONCURRENTLY.
+  //
+  // `stampBoundaryBundleChecksum` is a read-modify-write of the opaque JSONB `changes.sourceRef`,
+  // and `exportPromotionBundle` takes no per-change advisory lock (unlike reconcile, which guards
+  // every change with `tryAcquireChangeCoordinationLock`). Under READ COMMITTED an UNLOCKED read
+  // lets two exporters both see the pre-stamp value; the second blocks on the row lock at UPDATE
+  // time but still writes from its stale snapshot, silently erasing the first peer's checksum.
+  // The segment would then show ONE hop where TWO real exports happened — a real transfer deleted
+  // from the read model whose entire purpose is to not overclaim, and a direct contradiction of
+  // `boundary-bundle-ref.ts`'s "Several peers => several checksums, hence a list."
+  // -------------------------------------------------------------------------------------------
+
+  it("two OVERLAPPING stamps of one change both survive — the second must not clobber the first", async () => {
+    // The deterministic form of the race, driven at the repo seam so the interleaving is exact
+    // rather than hoped for: tx1 stamps and STAYS OPEN holding the row's write lock while tx2
+    // starts. Under READ COMMITTED tx2's read returns the pre-tx1 committed value (`[]`) no matter
+    // when within this window it lands, so an UNLOCKED read makes the loss certain here, not
+    // probabilistic. `FOR UPDATE` instead parks tx2 AT THE READ until tx1 commits, after which it
+    // re-reads `[A]` and appends.
+    const { changeId } = await approvedBlobChange();
+    const CHECKSUM_A = `a${"0".repeat(63)}`;
+    const CHECKSUM_B = `b${"0".repeat(63)}`;
+
+    let second!: Promise<void>;
+    await withTenantTx(commander.db, commander.orgId, async (tx) => {
+      await stampBoundaryBundleChecksum(tx, commander.orgId, changeId, CHECKSUM_A);
+      second = withTenantTx(commander.db, commander.orgId, (tx2) =>
+        stampBoundaryBundleChecksum(tx2, commander.orgId, changeId, CHECKSUM_B)
+      );
+      // Long enough for tx2 to reach its read; tx1 does not commit until this resolves, so the
+      // window tx2 must land inside is bounded below by this sleep and not by scheduler luck.
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    });
+    await second;
+
+    const row = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      getChangeRow(tx, commander.orgId, changeId)
+    );
+    // BOTH, in order. Not `[CHECKSUM_B]` — that is the lost update.
+    expect(boundaryBundleChecksumsOf(row.sourceRef)).toEqual([CHECKSUM_A, CHECKSUM_B]);
+  }, 240_000);
+
+  it("exporting ONE change to TWO peers CONCURRENTLY keeps both real hops in the segment", async () => {
+    // The same race through the PRODUCTION path: two genuinely concurrent `exportPromotionBundle`
+    // calls for one change to two different air-gapped peers — the ordinary shape of a fan-out
+    // export, not a contrived one.
+    //
+    // WHAT THIS TEST IS AND IS NOT. It is the end-to-end net: it proves the two real exports really
+    // do compose through `exportPromotionBundle` -> `stampBoundaryBundleChecksum` and that the
+    // segment shows both hops. It is NOT the race detector — its interleaving is at the scheduler's
+    // mercy (verified: with the `FOR UPDATE` removed, THIS test still passed while the
+    // deterministic one above went red). The deterministic test is what pins the fix; this one
+    // pins the production wiring around it, and can only ever fail if something is genuinely wrong.
+    const { changeId } = await approvedBlobChange();
+    const [bundleA, bundleB] = await Promise.all([
+      exportTo(outpost, changeId),
+      exportTo(outpostB, changeId)
+    ]);
+    expect(bundleA.checksum).not.toBe(bundleB.checksum); // different peers ⇒ different bundles
+
+    const row = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      getChangeRow(tx, commander.orgId, changeId)
+    );
+    expect(boundaryBundleChecksumsOf(row.sourceRef).sort()).toEqual(
+      [bundleA.checksum, bundleB.checksum].sort()
+    );
+
+    // ...and therefore the SEGMENT reports both hops. This is the user-visible consequence: with
+    // one checksum lost, `listTransfersByChecksums` returns one row and the segment silently drops
+    // a real export.
+    const segment = await segmentAt(commander, changeId);
+    expect(segment!.transfer.state).toBe("exported");
+    expect(segment!.transfer.hops).toHaveLength(2);
+    expect(segment!.transfer.hops.map((h) => h.checksum).sort()).toEqual(
+      [bundleA.checksum, bundleB.checksum].sort()
+    );
+    expect(new Set(segment!.transfer.hops.map((h) => h.peerDomainId)).size).toBe(2);
+    commanderNeverClaimsVerified("after a concurrent fan-out export to two peers", segment!);
+  }, 240_000);
+
+  // -------------------------------------------------------------------------------------------
   // (5) THE DoD's EXPLICIT ASSERTION, restated over everything the suite observed.
   // -------------------------------------------------------------------------------------------
 
@@ -415,7 +542,7 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
     for (const { scenario, segment } of commanderSegmentsSeen) {
       expect(segment.validate.state, scenario).not.toBe("verified");
       expect(segment.validate.decisionId, scenario).toBeNull();
-      expect(segment.validate.verifiedArtifactCount, scenario).toBeNull();
+      expect(segment.validate.authorizedArtifactCount, scenario).toBeNull();
       expect(segment.unknownFields, scenario).toContain("validate.state");
       // The transfer half of the same rule: an exporting instance never claims the peer received it.
       expect(segment.transfer.hops.every((h) => h.status === "created"), scenario).toBe(true);

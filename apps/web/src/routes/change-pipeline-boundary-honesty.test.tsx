@@ -69,7 +69,7 @@ const commanderSegment: BoundarySegment = {
     state: "not_reported",
     decisionId: null,
     observedAt: null,
-    verifiedArtifactCount: null
+    authorizedArtifactCount: null
   },
   unknownFields: ["transfer.handoff", "validate.state"]
 };
@@ -93,7 +93,7 @@ const outpostVerifiedSegment: BoundarySegment = {
     state: "verified",
     decisionId: DECISION_ID,
     observedAt: "2026-07-29T10:06:00.000Z",
-    verifiedArtifactCount: 2
+    authorizedArtifactCount: 2
   },
   unknownFields: []
 };
@@ -107,18 +107,24 @@ const outpostPendingSegment: BoundarySegment = {
     state: "not_yet_verified",
     decisionId: null,
     observedAt: null,
-    verifiedArtifactCount: null
+    authorizedArtifactCount: null
   }
 };
 
-/** THE RECEIVING OUTPOST, verification refused (fail-closed block Decision). */
+/** THE RECEIVING OUTPOST, verification refused (fail-closed block Decision).
+ *
+ *  `authorizedArtifactCount` is `null` here because that is what the SERVER emits on a refusal —
+ *  the count is read off the Decision's authorized set, i.e. the set the gate was ASKED to check,
+ *  which on a block still contains the artifacts that FAILED. `boundary-segment.ts` suppresses it
+ *  rather than let a number sit beside a refusal reading as "n verified anyway". Pinned server-side
+ *  in `boundary-segment.integration.test.ts` scenario (3). */
 const outpostRefusedSegment: BoundarySegment = {
   ...outpostVerifiedSegment,
   validate: {
     state: "refused",
     decisionId: DECISION_ID,
     observedAt: "2026-07-29T10:06:00.000Z",
-    verifiedArtifactCount: 1
+    authorizedArtifactCount: null
   }
 };
 
@@ -200,6 +206,11 @@ describe("boundary segment: a real outpost verdict IS rendered, and the two neve
     expect(occurrences(html, 'data-testid="boundary-unknown"')).toBe(0);
     const validateStart = html.indexOf('data-testid="boundary-phase-validate"');
     expect(html.slice(validateStart)).not.toContain(SUCCESS_CLASS);
+    // NO ARTIFACT COUNT beside a refusal. The server sends `null` (see the fixture's note), so
+    // nothing here may render a count — and if a future server regressed to sending the authorized
+    // count on a block, the phrase "authorized artifact(s)" next to "verification refused" would
+    // read as a partial pass.
+    expect(html).not.toContain("authorized artifact");
   });
 });
 
