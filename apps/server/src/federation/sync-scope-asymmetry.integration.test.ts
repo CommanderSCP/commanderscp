@@ -489,6 +489,295 @@ describe("federation sync_scope asymmetry: refused fail-closed, diagnosed accura
 });
 
 /**
+ * R1 — THE ALREADY-WEDGED POPULATION (pre-M16 residual W1, follow-up fix). The PHASE 5-8 tests above
+ * all get to the wedged state via a scope TRANSITION (narrow → full), because that is how the fix in
+ * e40e569 issued the re-anchor permit. But every peer the shipped W1 bug actually wedged got there
+ * BEFORE that fix existed: its `sync_scope` already reads `full` (the operator widened it with the
+ * pre-fix code — that widen is HOW it wedged) and its cursor is anchorless. There is no transition
+ * left for that peer to make: `sync_scope` already says `full`. Under the transition-gated fix, the
+ * refusal message's own prescribed recovery (`scp federation pair <peer> --sync-scope full`) was a
+ * no-op — `previousScope.mode !== "full"` is false when the row already reads `full` — so the peer
+ * stayed wedged forever, byte-identical refusal and all.
+ *
+ * THIS SUITE constructs that exact population DIRECTLY (peer paired at `full` throughout — never
+ * narrowed, so there is genuinely no transition anywhere in this test's history — with an anchorless
+ * cursor forced in afterward, the same technique PHASE 8 above uses), then runs the prescribed
+ * recovery and asserts it actually works: the permit is issued and the peer's next run is accepted
+ * with a strictly re-anchored cursor. It also re-confirms the permit issued this way is not a hole:
+ * a re-signed bundle with a deleted middle entry is refused with the permit in force and again after
+ * it is consumed, and a run starting above cursor+1 is refused too.
+ */
+describe("federation sync_scope full re-pair (R1): the ALREADY-WEDGED population (no transition) is healed", () => {
+  let commander: IsolatedDomain;
+  let outpost: IsolatedDomain;
+  let selfCommander: FederationSelf;
+  let selfOutpost: FederationSelf;
+  let commanderPrivateKey: string;
+  let commanderPublicKey: string;
+  let outpostPublicKey: string;
+  let componentId: string;
+
+  const exportToOutpost = (): Promise<SyncBundle> =>
+    withTenantTx(commander.db, commander.orgId, (tx) =>
+      exportSyncBundle(tx, commander.orgId, outpost.orgName)
+    );
+  const importAtOutpost = (bundle: SyncBundle): Promise<ImportSyncBundleResult> =>
+    withTenantTx(outpost.db, outpost.orgId, (tx) => importSyncBundle(tx, outpost.orgId, bundle));
+  const outpostCursor = (): Promise<SyncCursor> =>
+    withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      getCursor(tx, outpost.orgId, selfCommander.domainId, selfCommander.domainId)
+    );
+  /** THE RECOVERY THE REFUSAL MESSAGE PRESCRIBES, verbatim: re-pair this peer with
+   *  `--sync-scope full`. The peer's row already says `full` — this call changes NOTHING about the
+   *  configured scope. It is exactly `packages/cli/src/cli.ts`'s `federation pair --sync-scope full`
+   *  from the outpost operator's seat. */
+  const rePairWithFull = (): Promise<unknown> =>
+    withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      pairPeer(tx, {
+        orgId: outpost.orgId,
+        domainId: selfCommander.domainId,
+        name: commander.orgName,
+        role: "commander",
+        publicKey: commanderPublicKey,
+        syncScope: { mode: "full" }
+      })
+    );
+  const resign = (bundle: SyncBundle, entries: SyncBundle["entries"]): SyncBundle => {
+    const checksum = computeBundleChecksum({ header: bundle.header, entries });
+    return {
+      ...bundle,
+      entries,
+      checksum,
+      bundleSignature: signBundleChecksum(commanderPrivateKey, checksum)
+    };
+  };
+  /** Same technique as the other suite's `thinAboveCursor`: delete a MIDDLE pending entry and
+   *  re-sign — indistinguishable, byte for byte, from a legitimately scope-narrowed sender. */
+  const thinAboveCursor = (bundle: SyncBundle, cursorSequence: number): SyncBundle => {
+    const pending = bundle.entries.filter((entry) => entry.sequence > cursorSequence);
+    expect(pending.length).toBeGreaterThan(2);
+    const removed = pending[1]!;
+    return resign(
+      bundle,
+      bundle.entries.filter((entry) => entry.sequence !== removed.sequence)
+    );
+  };
+  /** Delete the FIRST pending entry and re-sign, so the run this side is asked to apply starts at
+   *  `cursorSequence + 2`, not `cursorSequence + 1` — a different shape from a middle hole: the
+   *  break is at the run's own start, not somewhere inside it. */
+  const startAboveCursorPlusOne = (bundle: SyncBundle, cursorSequence: number): SyncBundle => {
+    const pending = bundle.entries.filter((entry) => entry.sequence > cursorSequence);
+    expect(pending.length).toBeGreaterThan(1);
+    const skipped = pending[0]!;
+    return resign(
+      bundle,
+      bundle.entries.filter((entry) => entry.sequence !== skipped.sequence)
+    );
+  };
+  const expectRefused = async (bundle: SyncBundle): Promise<ProblemError> =>
+    importAtOutpost(bundle).then(
+      () => {
+        throw new Error("expected this segment to be REFUSED, fail-closed");
+      },
+      (err: unknown) => {
+        if (!(err instanceof ProblemError)) throw err;
+        return err;
+      }
+    );
+  const proposeOnCommander = (requestId: string, name: string): Promise<string> =>
+    withTenantTx(commander.db, commander.orgId, async (tx) => {
+      const { change } = await proposeChange(tx, {
+        orgId: commander.orgId,
+        actorObjectId: commander.orgId,
+        requestId,
+        name,
+        targets: [componentId]
+      });
+      return change.id;
+    });
+
+  beforeAll(async () => {
+    commander = await createIsolatedDomain("wedgedPopCommander");
+    outpost = await createIsolatedDomain("wedgedPopOutpost");
+
+    selfCommander = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      ensureFederationSelf(tx, commander.orgId)
+    );
+    selfOutpost = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      ensureFederationSelf(tx, outpost.orgId)
+    );
+    const commanderKey = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      ensureInstanceKey(tx, commander.orgId)
+    );
+    commanderPublicKey = commanderKey.publicKey;
+    commanderPrivateKey = commanderKey.privateKey;
+    const outpostKey = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      ensureInstanceKey(tx, outpost.orgId)
+    );
+    outpostPublicKey = outpostKey.publicKey;
+
+    // Both sides paired at `full` from the very start — NEVER narrowed, so there is no transition
+    // anywhere in this test's history for the transition-gated fix to have keyed off.
+    await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      pairPeer(tx, {
+        orgId: outpost.orgId,
+        domainId: selfCommander.domainId,
+        name: commander.orgName,
+        role: "commander",
+        publicKey: commanderPublicKey,
+        syncScope: { mode: "full" }
+      })
+    );
+    await withTenantTx(commander.db, commander.orgId, (tx) =>
+      pairPeer(tx, {
+        orgId: commander.orgId,
+        domainId: selfOutpost.domainId,
+        name: outpost.orgName,
+        role: "outpost",
+        publicKey: outpostPublicKey,
+        syncScope: { mode: "full" }
+      })
+    );
+
+    componentId = await withTenantTx(commander.db, commander.orgId, async (tx) => {
+      const service = await createObject(tx, {
+        orgId: commander.orgId,
+        domainId: null,
+        typeId: "service",
+        actorObjectId: commander.orgId,
+        requestId: "wedged-pop-service",
+        name: "ledger-api"
+      });
+      const component = await createObject(tx, {
+        orgId: commander.orgId,
+        domainId: null,
+        typeId: "component",
+        actorObjectId: commander.orgId,
+        requestId: "wedged-pop-component",
+        name: "ledger-web"
+      });
+      await createRelationship(tx, {
+        orgId: commander.orgId,
+        actorObjectId: commander.orgId,
+        requestId: "wedged-pop-contains",
+        typeId: "contains",
+        fromId: service.id,
+        toId: component.id
+      });
+      return component.id;
+    });
+  }, 180_000);
+
+  afterAll(async () => {
+    await commander.close();
+    await outpost.close();
+  });
+
+  it("THE PREMISE: a genuine full↔full sync establishes a real anchor and a positive sequence", async () => {
+    const firstResult = await importAtOutpost(await exportToOutpost());
+    expect(firstResult.appliedEntries).toBeGreaterThan(0);
+    const cursor = await outpostCursor();
+    expect(cursor.sequence).toBeGreaterThan(0);
+    expect(cursor.rowHash).not.toBeNull();
+    expect(cursor.reanchorFromSeq).toBeNull();
+  });
+
+  it("FORCE THE ALREADY-WEDGED STATE directly: full sync_scope, anchorless cursor, no permit — with NO transition anywhere", async () => {
+    // Simulates exactly what the shipped W1 bug left behind, WITHOUT ever narrowing this peer's
+    // scope: this is the population the transition-gated fix could never reach, because there is no
+    // "previous non-full scope" for it to have transitioned from.
+    await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      tx
+        .update(syncCursors)
+        .set({ lastAppliedRowHash: null, reanchorFromSeq: null })
+        .where(
+          and(
+            eq(syncCursors.orgId, outpost.orgId),
+            eq(syncCursors.peerDomainId, selfCommander.domainId),
+            eq(syncCursors.originDomainId, selfCommander.domainId)
+          )
+        )
+    );
+    const cursor = await outpostCursor();
+    expect(cursor.sequence).toBeGreaterThan(0);
+    expect(cursor.rowHash).toBeNull();
+    expect(cursor.reanchorFromSeq).toBeNull();
+  });
+
+  it("THE REFUSAL, PRE-RECOVERY: the peer's next honest, contiguous run is refused fail-closed", async () => {
+    await proposeOnCommander("wedged-pop-change-1", "ledger rollout one");
+    const refusal = await expectRefused(await exportToOutpost());
+    expect(refusal.status).toBe(409);
+    const cursor = await outpostCursor();
+    // Refused: nothing applied, cursor unmoved.
+    expect(cursor.rowHash).toBeNull();
+  });
+
+  it("THE RECOVERY THE MESSAGE PRESCRIBES ACTUALLY WORKS: re-pairing at `full` (already `full`, no transition) issues the permit", async () => {
+    const cursorBefore = await outpostCursor();
+    expect(cursorBefore.reanchorFromSeq).toBeNull();
+
+    await rePairWithFull();
+
+    const cursorAfterRepair = await outpostCursor();
+    // THE DEFECT, MADE CONCRETE: under the transition-gated fix, this call is a no-op for issuance
+    // — `previousScope.mode !== "full"` is false because the row already read `full` before AND
+    // after this call — so `reanchorFromSeq` would stay `null` and the peer would remain wedged
+    // forever. R1 keys issuance off the RESULTING scope and the cursor's actual (anchorless) state
+    // instead, so the permit IS issued here.
+    expect(cursorAfterRepair.reanchorFromSeq).toBe(cursorBefore.sequence);
+    expect(cursorAfterRepair.sequence).toBe(cursorBefore.sequence);
+    expect(cursorAfterRepair.rowHash).toBeNull();
+  });
+
+  it("THE PERMIT IS STILL NOT A HOLE: a re-signed run with a middle entry deleted is refused even with the permit in force", async () => {
+    const cursor = await outpostCursor();
+    expect(cursor.reanchorFromSeq).toBe(cursor.sequence);
+
+    await proposeOnCommander("wedged-pop-change-2", "ledger rollout two");
+    await proposeOnCommander("wedged-pop-change-2b", "ledger rollout two-b");
+    const bundle = await exportToOutpost();
+
+    const thinned = await expectRefused(thinAboveCursor(bundle, cursor.sequence));
+    expect(thinned.status).toBe(409);
+    expect((thinned.detail ?? thinned.message)).toMatch(/is not gap-free/);
+    expect((thinned.detail ?? thinned.message).toLowerCase()).not.toContain("tamper");
+
+    const skewed = await expectRefused(startAboveCursorPlusOne(bundle, cursor.sequence));
+    expect(skewed.status).toBe(409);
+
+    // Neither malicious variant consumed the permit or moved the cursor — both were refused before
+    // anything was applied.
+    const cursorAfterAttacks = await outpostCursor();
+    expect(cursorAfterAttacks.reanchorFromSeq).toBe(cursor.sequence);
+    expect(cursorAfterAttacks.rowHash).toBeNull();
+  });
+
+  it("THE HONEST RUN IS ACCEPTED: the permit re-anchors the cursor and is consumed", async () => {
+    const cursorBefore = await outpostCursor();
+    const result = await importAtOutpost(await exportToOutpost());
+    expect(result.appliedEntries).toBeGreaterThan(0);
+
+    const cursorAfter = await outpostCursor();
+    expect(cursorAfter.rowHash).not.toBeNull();
+    expect(cursorAfter.sequence).toBe(result.lastAppliedSequence);
+    expect(cursorAfter.sequence).toBeGreaterThan(cursorBefore.sequence);
+    // ONE-SHOT: consumed by the very run it permitted.
+    expect(cursorAfter.reanchorFromSeq).toBeNull();
+  });
+
+  it("AND THE DELETION WINDOW STAYS CLOSED once the permit has been consumed", async () => {
+    await proposeOnCommander("wedged-pop-change-3", "ledger rollout three");
+    await proposeOnCommander("wedged-pop-change-3b", "ledger rollout three-b");
+    const cursor = await outpostCursor();
+    const thinned = await expectRefused(thinAboveCursor(await exportToOutpost(), cursor.sequence));
+    expect(thinned.status).toBe(409);
+    expect((thinned.detail ?? thinned.message)).toMatch(/is not gap-free/);
+    expect((thinned.detail ?? thinned.message)).toMatch(/a real anchor IS recorded for that peer/);
+  });
+});
+
+/**
  * WHAT THE STRICT CHECK BUYS, stated as tests. Each case re-signs the bundle after mutating it,
  * which is what makes it meaningful: an in-transit attacker cannot get this far (the bundle checksum
  * and signature cover `{header, entries}` and are verified first), so these model the residual
