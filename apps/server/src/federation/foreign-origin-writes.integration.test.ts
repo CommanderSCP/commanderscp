@@ -6,6 +6,7 @@ import { asTrustDomainId, type ExecutorType, type GraphObject } from "@scp/schem
 import {
   createTestOrg,
   listenTestServer,
+  waitUntil,
   type ListeningTestServer,
   type TestOrg
 } from "../test-support/harness.js";
@@ -33,6 +34,16 @@ import { createRelationship } from "../graph/relationships-repo.js";
  * `apps/web/src/lib/replica-origin.tsx` and its callers cites a test HERE by name; a gate with no
  * test here is a gate that must not exist.
  *
+ * PR #152 REVIEW FIX (E1): the change-lifecycle block below originally only measured accept/
+ * rollback against a foreign-origin change sitting in `proposed` — a state neither verb is even
+ * legal from (both answer the ordinary wrong-state 409 there, so the arms were indistinguishable
+ * from a broken fixture). `validating` is the ONE state `change-detail.tsx`'s `ACCEPTABLE_STATES`
+ * (line 42) offers Accept for, and the state the shipped enable-decision actually depends on — so
+ * the suite is now extended with a real reconcile loop (`withReconcileLoop`/`withEventRelay` below)
+ * to drive a foreign-origin change all the way to `validating` and measure accept/rollback
+ * SUCCEEDING there, not merely refusing identically. See "accept SUCCEEDS ... from 'validating'"
+ * and "rollback SUCCEEDS ... from 'validating'" near the end of this file.
+ *
  * HOW "GENUINELY FOREIGN" IS BUILT: `createObject`/`createRelationship` with a `federationImport`
  * context — the exact, and only, code path `federation/import-repo.ts` uses to land a peer's row
  * after signature/chain verification (`graph/objects-repo.ts`'s `FederationImportContext` doc:
@@ -48,7 +59,14 @@ describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIG
   const FOREIGN = asTrustDomainId(randomUUID());
 
   beforeAll(async () => {
-    server = await listenTestServer();
+    // withEventRelay + withReconcileLoop: the `validating` state is only reachable via the real
+    // reconcile loop (coordination/reconcile.ts) driving a change through its wave targets against
+    // the default fake-executor — see "accept/rollback SUCCEEDS ... from 'validating'" below.
+    server = await listenTestServer({
+      withEventRelay: true,
+      withReconcileLoop: true,
+      pluginHostOptions: { callTimeoutMs: 8_000, restartBackoffBaseMs: 50, maxRestartBackoffMs: 300 }
+    });
     org = await createTestOrg(server, "foreign-origin-writes");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
   });
@@ -229,6 +247,15 @@ describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIG
   // would produce. MEASURED RESULT: the transition verbs write the `changes` state-machine row and
   // never route through `updateObject`, so they are NOT refused. The UI gate is therefore reporting
   // an enforcement that does not exist.
+  //
+  // STATE COVERAGE (E1 fix): `cancel`/`accept`/`rollback` below run their FIRST measurement against
+  // a change in `proposed` — legal for cancel, but `accept` and `rollback` are not legal from
+  // `proposed` at all (transitions.ts), so both arms of those two tests are the ordinary wrong-
+  // state refusal and never observe an accept/rollback SUCCEEDING. `validating` is the only state
+  // `change-detail.tsx`'s `ACCEPTABLE_STATES` (line 42) offers Accept for, so it is the state the
+  // shipped enable-decision actually depends on. The two tests after `outcomeOf`'s definition drive
+  // a foreign-origin change to `validating` via the real reconcile loop and assert accept/rollback
+  // SUCCEED there — the measurement this suite was missing.
   // ---------------------------------------------------------------------------------------------
 
   /** Proposes a change in the ordinary way; `foreign` additionally makes its graph object
@@ -289,5 +316,53 @@ describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIG
     expect(foreign.status).toBe(local.status);
     expect(foreign.title).toBe(local.title);
     expect(`${foreign.title ?? ""} ${foreign.detail ?? ""}`).not.toContain("read-only replica");
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // E1 FIX — THE STATE THAT MATTERS. Drives a foreign-origin change all the way to `validating`
+  // (the real reconcile loop, the default fake-executor instance — see `coupling.integration.
+  // test.ts`'s "a change with no requires goes straight to validating" for the same pattern) and
+  // measures accept/rollback SUCCEEDING there, not merely refusing identically. This is what pins
+  // the shipped decision to leave `change-detail.tsx`'s Accept control ENABLED: a future server-
+  // side origin guard on the accept/rollback path would turn THESE two red, where the `proposed`-
+  // state tests above would not (both their arms are already 409s regardless of any such guard).
+  // -------------------------------------------------------------------------------------------
+
+  async function proposeForeignChangeAtValidating(label: string): Promise<string> {
+    const changeId = await proposeChange(label, { foreign: true });
+    await waitUntil(async () => (await admin.changes.get(changeId)).state === "validating" || undefined, {
+      describe: `change ${changeId} reaches 'validating'`,
+      timeoutMs: 20_000
+    });
+    // Re-confirm the flip survived the reconcile loop's own writes to this row.
+    expect((await admin.changes.get(changeId)).originDomainId).toBe(FOREIGN);
+    return changeId;
+  }
+
+  it("accept SUCCEEDS on a foreign-origin change once it reaches 'validating' — the state change-detail.tsx's Accept control is actually live for", async () => {
+    const changeId = await proposeForeignChangeAtValidating("accept-validating");
+
+    const accepted = await admin.changes.accept(changeId);
+
+    expect(accepted.state).toBe("accepted");
+  });
+
+  it("rollback SUCCEEDS on a foreign-origin change once it reaches 'validating'", async () => {
+    const changeId = await proposeForeignChangeAtValidating("rollback-validating");
+
+    // `POST /changes/:id/rollback` returns the NEW rollback Change it creates (rollback.ts:
+    // "creates and returns a NEW Change"), starting at `proposed` — it is not the original change
+    // mutated in place. The rollback change then auto-progresses with no human gate
+    // (reconcile.ts's `completeExecution`: "rollback changes need no human acceptance gate"),
+    // which is what drives the ORIGINAL foreign-origin change to `rolled_back` in the same
+    // transaction once the rollback change's own plan finishes.
+    const rollbackChange = await admin.changes.rollback(changeId, "measuring");
+    expect(rollbackChange.rollbackOfObjectId).toBe(changeId);
+
+    const original = await waitUntil(
+      async () => (await admin.changes.get(changeId)).state === "rolled_back" || undefined,
+      { describe: `change ${changeId} reaches 'rolled_back'`, timeoutMs: 20_000 }
+    );
+    expect(original).toBe(true);
   });
 });
