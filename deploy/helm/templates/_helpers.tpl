@@ -72,6 +72,22 @@ remembering to extend a hardcoded list of component names.
 commanderscp.io/autowire-hook: "true"
 {{- end -}}
 
+{{/*
+commanderscp.federationRole — validate + echo the federation role (commander|outpost|retrans).
+Mirrors `deploy/helm-bundled`'s helper of the SAME name (that chart's own doc comment) — but
+UNLIKE that one, this is not render-time-lint-only metadata: it's wired to `SCP_FEDERATION_ROLE`
+(commonEnv below), the REAL runtime knob `config.ts`'s `loadFederationRole` reads (M16.3 P3 — a
+`retrans` instance withholds the management SPA, `app.ts`). Rendering fails fast on a typo, same
+as the bundled chart's helper.
+*/}}
+{{- define "commanderscp.federationRole" -}}
+{{- $role := .Values.federationRole | default "commander" -}}
+{{- if not (has $role (list "commander" "outpost" "retrans")) -}}
+{{- fail (printf "federationRole must be one of commander|outpost|retrans, got %q" $role) -}}
+{{- end -}}
+{{- $role -}}
+{{- end -}}
+
 {{- define "commanderscp.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create -}}
 {{- default (include "commanderscp.fullname" .) .Values.serviceAccount.name -}}
@@ -144,6 +160,8 @@ since those three differ between the migrations Job and the api/worker Deploymen
   value: {{ .Values.bootstrap.adminUsername | quote }}
 - name: SCP_SEED_DEMO
   value: {{ .Values.seedDemo | quote }}
+- name: SCP_FEDERATION_ROLE
+  value: {{ include "commanderscp.federationRole" . | quote }}
 - name: SCP_EVENT_BUS_BACKEND
   value: {{ .Values.eventBus.backend | quote }}
 {{- if eq .Values.eventBus.backend "nats" }}

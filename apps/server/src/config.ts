@@ -32,6 +32,29 @@ export interface ServerConfig {
   pgBossDatabaseUrl: string;
   role: "all" | "api" | "worker";
   /**
+   * M16.3 P3 — the OPERATOR/install-time-declared federation role, `SCP_FEDERATION_ROLE`
+   * (`commander` the default when unset — matches `deploy/helm-bundled`'s `federationRole`
+   * default, and preserves every pre-M16.3 deployment's behavior byte-for-byte since no such env
+   * var existed before). This is DELIBERATELY NOT `self_domain.role`
+   * (`federation/self-repo.ts`'s `FederationSelf.role`): that value is per-ORG (DESIGN §4.1
+   * "kept org-scoped, not instance-wide" — self-repo.ts's own module doc), set lazily post-install
+   * via the federation API, and advisory (M15.4's `tools/helm-verify` doc comment: "the runtime
+   * `self_domain.role`... has no bearing on a Helm install-time value" — using it here would be
+   * exactly the runtime/install-time fork that M15.4 explicitly declined to create). SPA
+   * registration in `app.ts`, by contrast, happens ONCE at process boot, before any request (or
+   * tenant/org) context exists — there is no per-request org to look up a DB row for even if we
+   * wanted to. So this mirrors `role` above: an explicit, install-time, deployment-wide config
+   * value the operator sets (Helm's `federationRole` value on the MAIN chart, wired to this env
+   * var — `deploy/helm/templates/_helpers.tpl`), never inferred from tenant data.
+   *
+   * Used for exactly one thing today (P3): a `retrans` relay — "no local Gitea/registry, no
+   * executor coordination, no deploy machinery, no UI" (BUILD_AND_TEST.md M13.1) — must not serve
+   * the full management SPA at the most sensitive point in the topology (a CDS boundary). Every
+   * other value (`commander`/`outpost`/unset) preserves the pre-M16.3 unconditional-serve
+   * behavior.
+   */
+  federationRole: "commander" | "outpost" | "retrans";
+  /**
    * M17.5 (ADR-0016) — the INSTANCE OPERATOR's shared secret (`SCP_OPERATOR_TOKEN`). Authenticates
    * the one write surface that is deliberately NOT a tenant capability: authoring the
    * instance-scoped scan-requirement floors (`scan_requirement_floors` — platform + trust domain),
@@ -216,6 +239,21 @@ function loadEventBusConfig(env: NodeJS.ProcessEnv): ServerConfig["eventBus"] {
   return { backend, natsUrl };
 }
 
+/**
+ * `commander` (SCP_FEDERATION_ROLE unset) is the default — matches `deploy/helm-bundled`'s
+ * `federationRole` default (`templates/_helpers.tpl`) and every pre-M16.3 deployment, none of
+ * which set this env var, keeps serving the SPA exactly as before. An explicit invalid value fails
+ * loud at boot (mirrors `loadEventBusConfig`/`loadOidcConfig` above) rather than silently doing
+ * something an operator didn't ask for with a deployment-wide, security-relevant switch.
+ */
+function loadFederationRole(env: NodeJS.ProcessEnv): ServerConfig["federationRole"] {
+  const role = env.SCP_FEDERATION_ROLE ?? "commander";
+  if (role !== "commander" && role !== "outpost" && role !== "retrans") {
+    throw new Error(`SCP_FEDERATION_ROLE must be "commander", "outpost", or "retrans" (got "${role}")`);
+  }
+  return role;
+}
+
 function loadSecretsMasterKey(env: NodeJS.ProcessEnv): { key: Buffer; wasGenerated: boolean } {
   const raw = env.SCP_SECRETS_MASTER_KEY;
   if (raw) {
@@ -322,6 +360,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     pgBossDatabaseUrl:
       env.SCP_PGBOSS_DATABASE_URL ?? deriveRuntimeDatabaseUrl(databaseUrl, "scp_pgboss"),
     role: (env.SCP_ROLE as ServerConfig["role"] | undefined) ?? "all",
+    federationRole: loadFederationRole(env),
     bootstrapOrgName: env.SCP_BOOTSTRAP_ORG ?? "default",
     bootstrapAdminUsername: env.SCP_BOOTSTRAP_ADMIN_USERNAME ?? "admin",
     cookieSecret: env.SCP_COOKIE_SECRET ?? randomSecret(),
