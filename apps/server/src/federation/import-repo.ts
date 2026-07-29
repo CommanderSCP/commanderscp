@@ -582,8 +582,9 @@ function describeAnchorClause(anchor: AnchorFacts & { brokeAtRunStart: boolean }
       return (
         `(2) THIS SIDE'S ANCHOR: a real anchor IS recorded for that peer — the row hash of ` +
         `sequence ${anchor.sequence} — and the run does not continue from it. A scope change on ` +
-        `THIS side no longer strands a cursor (widening back to 'full' re-anchors it at the next ` +
-        `run), so also check whether the peer rebuilt, rewound or replayed its own journal. `
+        `THIS side no longer strands a cursor (re-pairing this peer at 'full' re-anchors an ` +
+        `anchorless one at the next run, whatever the scope was before that call), so also check ` +
+        `whether the peer rebuilt, rewound or replayed its own journal. `
       );
     case "genesis":
       return (
@@ -596,8 +597,9 @@ function describeAnchorClause(anchor: AnchorFacts & { brokeAtRunStart: boolean }
       return (
         `(2) THIS SIDE'S ANCHOR: none is recorded (the cursor sits at sequence ${anchor.sequence} ` +
         `with no row hash, which is what entries applied while THIS side was narrow leave behind), ` +
-        `and a one-shot re-anchor permit IS already in force for exactly that position from the ` +
-        `scope widen. The anchor comparison was therefore NOT what failed: the permit re-anchors, ` +
+        `and a one-shot re-anchor permit IS already in force for exactly that position from a local ` +
+        `re-pair of this peer at sync_scope 'full' (whatever the scope was set to before that call). ` +
+        `The anchor comparison was therefore NOT what failed: the permit re-anchors, ` +
         `it does not loosen anything else — the run must still begin at exactly sequence ` +
         `${anchor.sequence + 1} and be internally gap-free, and that is what it failed. `
       );

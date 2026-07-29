@@ -54,10 +54,10 @@ export async function getCursor(
  * ISSUE THE ONE-SHOT RE-ANCHOR PERMIT for every cursor of `peerDomainId` that currently holds NO
  * anchor (drizzle/0042). SECURITY-SENSITIVE — read that migration's header before changing this.
  *
- * CALLED FROM EXACTLY ONE PLACE: `pairPeer`, when the LOCAL operator widens this peer's own
- * `sync_scope` to `full`. That is a local, authenticated (`federation:write`) action on config that
- * is never carried on the wire, so no peer can induce it; nothing in an import, relay, inbox, poke
- * or pull path may ever call this.
+ * CALLED FROM EXACTLY ONE PLACE: `pairPeer`, whenever the LOCAL operator's call leaves this peer's
+ * own `sync_scope` at `full` — regardless of what it was set to before that call. That is a local,
+ * authenticated (`federation:write`) action on config that is never carried on the wire, so no peer
+ * can induce it; nothing in an import, relay, inbox, poke or pull path may ever call this.
  *
  * The predicate is the whole safety story. Only a cursor with `last_applied_row_hash IS NULL AND
  * last_applied_seq > 0` — an anchorless cursor left behind by this side's OWN narrow-scope
@@ -109,10 +109,11 @@ export async function maxAppliedSequenceForPeer(
  *  top of the entry-level idempotent-replay check the import path itself performs).
  *
  *  ALSO CONSUMES the one-shot re-anchor permit (drizzle/0042): any real advance clears it, so a
- *  permit covers exactly one accepted run and is re-issued only by another operator widen. Clearing
- *  it unconditionally (rather than only when `rowHash` is non-null) is what makes "one-shot" true in
- *  both directions — a receiver that is narrowed AGAIN before the permit is used advances with a
- *  null hash and must be re-permitted by a fresh widen at the NEW position. */
+ *  permit covers exactly one accepted run and is re-issued only by another `pairPeer` call that
+ *  again leaves this peer's `sync_scope` at `full`. Clearing it unconditionally (rather than only
+ *  when `rowHash` is non-null) is what makes "one-shot" true in both directions — a receiver that is
+ *  narrowed AGAIN before the permit is used advances with a null hash and must be re-permitted by a
+ *  fresh `pairPeer` call at the NEW position. */
 export async function advanceCursor(
   tx: TenantTx,
   orgId: string,

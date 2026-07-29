@@ -48,14 +48,17 @@ import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolat
  * leave the strict path comparing the peer's next, perfectly contiguous run against
  * JOURNAL_GENESIS_HASH, which it can never equal: the peer was wedged forever, by a SUPPORTED local
  * configuration change, and the message's prescribed recovery was inert. The fix is a ONE-SHOT
- * re-anchor permit written by `pairPeer` on the widen — a local, authenticated operator action on
- * config that never crosses the wire — which re-anchors the next run and relaxes NOTHING else. So:
+ * re-anchor permit `pairPeer` issues whenever the RESULTING `sync_scope` is `full` and the cursor is
+ * anchorless — regardless of what the scope was before that call — keyed to a local, authenticated
+ * operator action on config that never crosses the wire, which re-anchors the next run and relaxes
+ * NOTHING else. So:
  *  5. re-widening BOTH sides resumes sync and restores a real anchor (PHASE 5, PHASE 6);
  *  6. and the permit does not reopen the deletion window the owner chose to keep closed: a
  *     re-signed run with a middle entry removed is refused WITH the permit in force (PHASE 5a) and
  *     after it has been consumed (PHASE 7);
- *  7. an anchorless cursor with NO permit — which no supported operation produces any more — is
- *     described as what it is rather than as a stale anchor (PHASE 8, the W2 honesty fix).
+ *  7. an anchorless cursor with NO permit — a state the current code no longer leaves a `full`-scope
+ *     peer in on its own (PHASE 8 forces it directly to prove the message still describes it as
+ *     what it is, rather than as a stale anchor — the W2 honesty fix).
  */
 describe("federation sync_scope asymmetry: refused fail-closed, diagnosed accurately, recoverable (Testcontainers, two databases)", () => {
   let commander: IsolatedDomain;

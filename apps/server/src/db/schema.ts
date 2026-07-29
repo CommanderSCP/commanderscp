@@ -1188,18 +1188,20 @@ export const syncCursors = pgTable(
      *
      *  A receiver whose own `sync_scope` is narrow verifies sparse and advances this cursor with
      *  `last_applied_row_hash = NULL` (it never holds the tail entry's hash — the tail may be an
-     *  entry it was never shown). That is correct while it stays narrow. When the operator WIDENS
-     *  that peer back to `full`, the strict path has an anchorless cursor and no way to link the
-     *  peer's next, perfectly contiguous run to it — every subsequent import is refused forever
-     *  (the one-way ratchet). Setting this column to the CURRENT `last_applied_seq` permits the
-     *  next strict run to adopt its OWN first entry as the anchor, for that one cursor position
-     *  only. Everything else stays strict: the run must still begin at exactly
-     *  `last_applied_seq + 1`, be internally gap-free, and verify every rowHash and signature —
-     *  so a re-signed run with a deleted middle entry is still refused.
+     *  entry it was never shown). That is correct while it stays narrow. When a `pairPeer` call
+     *  leaves that peer's `sync_scope` at `full` — whatever it was set to before that call — while
+     *  this cursor is still anchorless, the strict path has no way to link the peer's next,
+     *  perfectly contiguous run to it — every subsequent import is refused forever (the one-way
+     *  ratchet). Setting this column to the CURRENT `last_applied_seq` permits the next strict run
+     *  to adopt its OWN first entry as the anchor, for that one cursor position only. Everything
+     *  else stays strict: the run must still begin at exactly `last_applied_seq + 1`, be internally
+     *  gap-free, and verify every rowHash and signature — so a re-signed run with a deleted middle
+     *  entry is still refused.
      *
      *  Consumed by the first `advanceCursor` that records real progress (which always writes a
-     *  real row hash on the strict path), and only re-issued by another operator widen. NOTHING a
-     *  peer sends can set it: no import/relay/poke path writes this column. */
+     *  real row hash on the strict path), and only re-issued by another `pairPeer` call that again
+     *  leaves this peer at `full` with an anchorless cursor. NOTHING a peer sends can set it: no
+     *  import/relay/poke path writes this column. */
     reanchorFromSeq: bigint("reanchor_from_seq", { mode: "number" }),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
