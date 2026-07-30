@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ServiceBoardRow, ServiceBoardSummary } from "@scp/sdk";
+import type { ServiceBoardAsOf, ServiceBoardRow, ServiceBoardSummary } from "@scp/sdk";
 
 /**
  * The RENDERING half of the service board's federation-honesty rule, pinned by a check that runs on
@@ -311,5 +311,40 @@ describe("service board as-of label: a snapshot is never painted as live status"
     // `null` is not `false`: it must not be warned about, and it must not claim currency either.
     expect(html).not.toContain("STALE");
     expect(html).toContain("not live status");
+  });
+
+  /**
+   * Y3(b) — THE PIN THE `isAbsent` FIX NEVER GOT.
+   *
+   * Round 3 changed `asOf.stale === null` to `isAbsent(asOf.stale)` here and reported it as
+   * mutation-proven. It was not: reverting it left the whole `apps/web` suite GREEN, because the
+   * air-gapped test above sets `stale: null` — the case that already worked. The case that did not
+   * is the key being ABSENT, which is what an older server sends and which the SDK never validates.
+   *
+   * MEASURED mutant output with `stale` omitted: the tooltip reads
+   *   "Not overdue: this data is 10s old and amer-prod is not counted late until 60s …"
+   * — the REASSURANCE branch. Nobody measured that freshness; with no `stale` verdict on the wire
+   * there is no basis for "not overdue" at all, and the honest branch (no pull schedule, so no
+   * cadence to be late against) is the one that must render.
+   */
+  it("an OMITTED `stale` takes the no-schedule branch, NEVER the not-overdue reassurance", () => {
+    const asOf: Partial<ServiceBoardAsOf> = {
+      ...base,
+      peerName: "amer-prod",
+      ageSeconds: 10,
+      staleAfterSeconds: 60,
+      via: "bundle"
+    };
+    delete asOf.stale;
+    const html = renderToStaticMarkup(<BoardAsOfLabel asOf={asOf as ServiceBoardAsOf} />);
+
+    // the honest branch
+    expect(html).toContain("no pull schedule");
+    expect(html).toContain("not live status");
+    // THE MUTANT'S OUTPUT — a freshness statement with nothing behind it
+    expect(html).not.toContain("Not overdue");
+    expect(html).not.toContain("not counted late until");
+    // and an absent verdict is still not a STALE warning either
+    expect(html).not.toContain("STALE");
   });
 });

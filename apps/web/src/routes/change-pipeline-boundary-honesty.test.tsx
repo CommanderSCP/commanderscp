@@ -260,3 +260,52 @@ describe("boundary segment: the wiring, by exact field name", () => {
     expect(html.slice(validateStart)).not.toContain(SUCCESS_CLASS);
   });
 });
+
+/**
+ * Y3(a) — THE PIN THE `isAbsent` FIX NEVER GOT.
+ *
+ * Round 3 changed `authorizedArtifactCount === null` to `isAbsent(...)` at
+ * `BoundarySegmentStrip.tsx:166` and reported it as mutation-proven. It was not: reverting it left
+ * the whole `apps/web` suite GREEN, because every fixture above sets the key to `null` — the case
+ * that already worked. The case that did not is the key being ABSENT, which is what a server
+ * predating the field actually sends and which the generated SDK does not validate away.
+ *
+ * MEASURED mutant output, inside the `signatures verified` phase card:
+ *   <p … title="undefined authorized artifacts">undefined authorized artifacts</p>
+ * — the literal word `undefined`, twice, once visible and once as a tooltip, beside a success badge.
+ */
+describe("Y3(a): an ABSENT authorizedArtifactCount prints no count, not the word `undefined`", () => {
+  /** The verified segment with the COUNT KEY DELETED — not nulled. */
+  function verifiedWithoutCountKey(): BoundarySegment {
+    const validate: Partial<BoundarySegment["validate"]> = { ...outpostVerifiedSegment.validate };
+    delete validate.authorizedArtifactCount;
+    return { ...outpostVerifiedSegment, validate: validate as BoundarySegment["validate"] };
+  }
+
+  it("renders the verified badge with NO artifact detail when the key is omitted", () => {
+    const html = render(verifiedWithoutCountKey());
+
+    // premise: this IS the success path, so the detail line is the only thing under test
+    expect(html).toContain("signatures verified");
+    // THE MUTANT: `=== null` lets `undefined` through into both the text and the `title`.
+    expect(html).not.toContain("undefined authorized artifact");
+    expect(html).not.toContain("undefined");
+  });
+
+  it("still renders a REAL count, correctly pluralised — the guard must not swallow the honest case", () => {
+    expect(render(outpostVerifiedSegment)).toContain("2 authorized artifacts");
+    expect(
+      render({
+        ...outpostVerifiedSegment,
+        validate: { ...outpostVerifiedSegment.validate, authorizedArtifactCount: 1 }
+      })
+    ).toContain("1 authorized artifact");
+    // 0 is an OBSERVATION (a verify that authorized nothing), not an absence: it must still print.
+    expect(
+      render({
+        ...outpostVerifiedSegment,
+        validate: { ...outpostVerifiedSegment.validate, authorizedArtifactCount: 0 }
+      })
+    ).toContain("0 authorized artifacts");
+  });
+});
