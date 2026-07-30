@@ -14,15 +14,23 @@ import { configDefaults, defineConfig } from "vitest/config";
  * a DOM environment added here first — no such test exists, and adding one is a deliberate choice,
  * not an accident.
  *
- * Its one real job: exclude `e2e/**` (apps/web/e2e, Playwright specs run only via
+ * Its one real job: exclude the PLAYWRIGHT SPECS (apps/web/e2e/*.spec.ts, run only via
  * `pnpm --filter @scp/web test:e2e` / playwright.config.ts) from Vitest's default
- * `**\/*.{test,spec}.*` include glob, which would otherwise also match `e2e/*.spec.ts` and crash
- * trying to run Playwright specs under the wrong test runner ("Playwright Test did not expect
- * test() to be called here") — a pre-existing bug (present before this step's changes, on every
- * prior `e2e/*.spec.ts` file already on this branch), not something newly introduced here.
+ * `**\/*.{test,spec}.*` include glob, which would otherwise also match them and crash trying to run
+ * Playwright specs under the wrong test runner ("Playwright Test did not expect test() to be called
+ * here") — a pre-existing bug (present before this step's changes, on every prior `e2e/*.spec.ts`
+ * file already on this branch), not something newly introduced here.
+ *
+ * NARROWED FROM `e2e/**` TO `e2e/**\/*.spec.ts` (M16.2 phase B, B4). The blanket exclusion also hid
+ * `e2e/*.test.ts`, so PURE test HELPERS living beside the specs — today
+ * `e2e/openapi-conformance.ts`, the matcher that decides whether a captured request path is a
+ * declared OpenAPI operation — had no way to be unit-tested in a job that runs on pull requests. The
+ * specs themselves are main-only, so an untested matcher there is a check nobody would notice
+ * silently accepting everything. `*.spec.ts` is the Playwright convention this directory already
+ * follows, and it is exactly what must not run under Vitest.
  */
 export default defineConfig({
   test: {
-    exclude: [...configDefaults.exclude, "e2e/**"]
+    exclude: [...configDefaults.exclude, "e2e/**/*.spec.ts"]
   }
 });
