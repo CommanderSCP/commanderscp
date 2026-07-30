@@ -41,7 +41,7 @@ import { decisionRowsTouched, preferIndexPlans } from "./test-support/decision-r
  * most: with `verdict` as a heap filter the backward walk runs over the change's ENTIRE history to
  * return nothing (measured on the 12M-row reproduction: 45.8 ms / 20,526 buffers fully cached for a
  * 200k-row history, and 25,162 ms / 417,398 buffers cold for a 414k-row one — WORSE than the
- * unbounded read it replaced). drizzle/0045's PARTIAL index (`… WHERE verdict = 'block'`) is what
+ * unbounded read it replaced). drizzle/0046's PARTIAL index (`… WHERE verdict = 'block'`) is what
  * makes it O(1): the descent finds no entry for that (org, subject) at all. MUTATION-PROVEN:
  * `DROP INDEX decisions_org_subject_block_created` takes that test from 1 row touched to 401.
  */
@@ -116,7 +116,7 @@ describe("service board: the per-row Decision read is bounded, not the change's 
 
     // THE HEALTHY CHANGE: an equally long history with NO `block` in it. Same seeding discipline,
     // different verdict — this is the shape a board asks about most often, and the one a
-    // verdict-filtered read answers by walking everything unless drizzle/0045 is there.
+    // verdict-filtered read answers by walking everything unless drizzle/0046 is there.
     const healthyService = await post("/api/v1/services", { name: "svc-board-bound-healthy" });
     const healthyComponent = await post("/api/v1/components", {
       name: "comp-board-bound-healthy",

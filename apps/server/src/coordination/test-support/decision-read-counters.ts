@@ -4,7 +4,7 @@ import type { TenantTx } from "../../db/tenant-tx.js";
 /**
  * THE MEASUREMENT INSTRUMENT the `decisions` read-bound suites share.
  *
- * Both bounds this PR ships (drizzle/0044 for the persist-on-change dedupe read, drizzle/0045 for
+ * Both bounds this PR ships (drizzle/0044 for the persist-on-change dedupe read, drizzle/0046 for
  * the service board's block probe) are INDEX properties: the query returns the same answer with or
  * without them, so no assertion on a return value can tell them apart. What changes is HOW MANY
  * ROWS Postgres touches to produce that answer, so that is what these suites measure — from
@@ -26,7 +26,7 @@ import type { TenantTx } from "../../db/tenant-tx.js";
  *
  * This is a TEST INSTRUMENT, never a production knob: no `SET`/hint of any kind exists in
  * `service-board.ts` or `decisions-repo.ts`, and the reason the production reads are fast is
- * drizzle/0044 and drizzle/0045 plus the `LIMIT`, not a session setting. `SET LOCAL` dies with the
+ * drizzle/0044 and drizzle/0046 plus the `LIMIT`, not a session setting. `SET LOCAL` dies with the
  * transaction.
  */
 export async function preferIndexPlans(tx: TenantTx): Promise<void> {

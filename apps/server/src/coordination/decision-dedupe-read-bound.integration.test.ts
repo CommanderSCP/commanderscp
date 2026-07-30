@@ -26,7 +26,7 @@ import { decisionRowsTouched, preferIndexPlans } from "./test-support/decision-r
  * of drizzle/0044 left all four new suites (4 files / 9 tests) GREEN. The migration that the whole
  * P1 round exists to add had no test, and losing it (a `schema.ts` edit, a drizzle-kit
  * regeneration, a hand-rolled migration squash) would silently restore the original pathology with
- * a green board. drizzle/0045 was already covered this way by
+ * a green board. drizzle/0046 was already covered this way by
  * `service-board-decision-read-bound.integration.test.ts`; this is the same instrument pointed at
  * the read 0044 covers.
  *

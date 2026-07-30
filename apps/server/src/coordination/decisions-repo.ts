@@ -145,12 +145,12 @@ export async function latestDecisionForSubjectKind(
  * JS scan (same ordering, same tiebreak, same row) and leaves nothing to keep in sync.
  *
  * WHY IT TAKES NO `verdict` PARAMETER. `block` is baked in so that this query's shape and
- * drizzle/0045's PARTIAL index (`… WHERE verdict = 'block'`) cannot drift apart. A generic
+ * drizzle/0046's PARTIAL index (`… WHERE verdict = 'block'`) cannot drift apart. A generic
  * verdict argument would let a future caller ask for `warn` and silently get the unindexed plan —
  * the very trap 0044 exists to close, re-opened one call site over.
  *
  * WHAT IS BOUNDED, AND BY WHAT. Rows RETURNED is exactly one, always — that is the memory and
- * serialization blow-up this removes. Rows EXAMINED is O(1) too, but ONLY because of drizzle/0045:
+ * serialization blow-up this removes. Rows EXAMINED is O(1) too, but ONLY because of drizzle/0046:
  * without it `verdict` is a heap filter on the backward walk of `decisions_org_subject`, and a
  * change that NEVER blocked — the common case on a healthy board — pays a walk over its ENTIRE
  * history to return nothing (measured on the 12M-row reproduction: 45.8 ms / 20,526 buffers fully
@@ -170,7 +170,7 @@ export async function latestBlockDecisionForSubject(
       and(
         eq(decisions.orgId, orgId),
         eq(decisions.subjectId, subjectId),
-        // Must stay a COMPILE-TIME CONSTANT ARGUMENT matching drizzle/0045's index predicate
+        // Must stay a COMPILE-TIME CONSTANT ARGUMENT matching drizzle/0046's index predicate
         // verbatim. NOT a SQL literal — drizzle emits `eq()`'s right-hand side as a BOUND PARAMETER
         // (`verdict = $3`), and that is fine here for a reason worth naming rather than assuming:
         // node-postgres issues unnamed extended-protocol statements (`grep -rn '\.prepare('` over

@@ -447,7 +447,7 @@ export async function buildServiceBoard(
     // 1.14 ms / 6 buffers for this one, same answer. See `latestBlockDecisionForSubject` for why it
     // is keyed on the verdict the board actually means rather than on a list of `kind`s that a future
     // eleventh block-writer would silently falsify — and why that only becomes an O(1) read with
-    // drizzle/0045's partial index behind it (without it, a change that never blocked pays a walk
+    // drizzle/0046's partial index behind it (without it, a change that never blocked pays a walk
     // over its whole history to return nothing).
     const [change, plan, blockDecision, approvals] = await Promise.all([
       getChange(tx, orgId, changeId),
