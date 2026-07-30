@@ -44,7 +44,7 @@ import type {
   UpdateFederationPeerRequest,
   SyncScope
 } from "@scp/schemas";
-import { DesiredStateManifestSchema } from "@scp/schemas";
+import { DesiredStateManifestSchema, OutpostTrustTierSchema } from "@scp/schemas";
 // Node-only hashing (`node:crypto`) — deliberately a separate subpath from `@scp/schemas`'
 // default entry, which `apps/web` also imports (browser build) — see audit-chain.ts's module doc.
 import { verifyAuditChain } from "@scp/schemas/audit-chain";
@@ -2825,6 +2825,15 @@ export function buildProgram(): Command {
     .command("outpost")
     .description("Commander-origin outpost config objects (trust tier) that sync down to the outpost");
 
+  // THE HELP TEXT IS DERIVED FROM THE SCHEMA, NOT RETYPED (review round 5, N1). The first cut of the
+  // tier enum was `commercial|fedramp-high|il5`; ADR-0022 widened it to the glossary's five members,
+  // and every OTHER site was corrected while these two option descriptions kept listing the old
+  // three — the only place an operator ever reads the list. An operator enrolling a GovCloud outpost
+  // was told no value existed for it, and pushed to either leave the tier unknown or assert
+  // `commercial`: the INVENTED POSTURE this milestone exists to prevent. Joining the enum's own
+  // members here makes that drift structurally impossible; `outpost-trust-tier-help.test.ts` pins it.
+  const TRUST_TIER_CHOICES = OutpostTrustTierSchema.options.join("|");
+
   outpostCmd
     .command("declare")
     .description("Declare the config object for an already-paired outpost peer")
@@ -2832,7 +2841,7 @@ export function buildProgram(): Command {
     .option("--name <name>", "display name for the config object (defaults to the peer's name)")
     .option(
       "--trust-tier <tier>",
-      "commercial|fedramp-high|il5 — an owner-ENTERED assertion; OMIT it and the tier stays honestly unknown (never defaulted)"
+      `${TRUST_TIER_CHOICES} — an owner-ENTERED assertion; OMIT it and the tier stays honestly unknown (never defaulted)`
     )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
@@ -2853,7 +2862,7 @@ export function buildProgram(): Command {
     .description("Edit an outpost's commander-origin config (absent flags PRESERVE)")
     .requiredOption("--peer <domainId>", "the outpost peer's trust-domain id")
     .option("--name <name>", "new display name")
-    .option("--trust-tier <tier>", "commercial|fedramp-high|il5")
+    .option("--trust-tier <tier>", TRUST_TIER_CHOICES)
     .option("--expected-version <n>", "optimistic-concurrency guard on the object's version")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
@@ -2899,6 +2908,42 @@ export function buildProgram(): Command {
       const client = await clientFromStoredCredentials(opts);
       const config = await client.federation.getOutpost(opts.peer);
       printResult(config, opts.output, (item) => outpostConfigRow(item as OutpostConfig));
+    });
+
+  // THE RECOVERY VERB, ON THE ONLY SURFACE ITS OPERATOR CAN REACH (review round 5, N2). Charter
+  // principle 3 is API -> SDK -> CLI -> IaC -> UI, and this verb exists precisely so somebody can
+  // UN-WEDGE a peer whose database holds duplicate `outpost` objects. That operator is the one person
+  // who cannot use the UI for it — the wedged peer is exactly what the UI fails to render — so of all
+  // the verbs this milestone added, `reconcile` is the one that most needs a command line.
+  outpostCmd
+    .command("reconcile")
+    .description(
+      "RECOVERY: restore the 1:1 peer<->config binding for a peer holding duplicate outpost config objects"
+    )
+    .requiredOption("--peer <domainId>", "the outpost peer's trust-domain id")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { peer: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.federation.reconcileOutpost(opts.peer);
+      if (opts.output === "json") {
+        printResult(result, opts.output, (item) => outpostConfigRow(item as OutpostConfig));
+        return;
+      }
+      // Table mode prints WHAT IT DID before the surviving row, because "adopted" and "removed" are
+      // the whole point of the call: a bare config row would look identical to `outpost show` and
+      // leave the operator unable to tell whether anything was cleaned up.
+      printResult([result.config], opts.output, (item) => outpostConfigRow(item as OutpostConfig));
+      console.log(
+        result.adoptedObjectId === null
+          ? "Adopted: nothing (an authoritative row already held the binding)"
+          : `Adopted: ${result.adoptedObjectId} (an unverified hand-filled shadow is now this domain's own object)`
+      );
+      console.log(
+        result.removedObjectIds.length === 0
+          ? "Removed: nothing (no surplus unverified shadows)"
+          : `Removed ${result.removedObjectIds.length} unverified shadow(s): ${result.removedObjectIds.join(", ")}`
+      );
     });
 
   federationCmd
