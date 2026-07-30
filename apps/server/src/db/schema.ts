@@ -500,7 +500,19 @@ export const decisions = pgTable(
   },
   (table) => [
     index("decisions_org_subject").on(table.orgId, table.subjectId, table.createdAt),
-    index("decisions_org_created").on(table.orgId, table.createdAt, table.id)
+    index("decisions_org_created").on(table.orgId, table.createdAt, table.id),
+    // The RECONCILE HOT PATH's exact shape (`decisions-repo.ts`'s `latestDecisionForSubjectKind`:
+    // org + subject + kind, newest first, LIMIT 1). Neither index above covers `kind`, so it is a
+    // HEAP FILTER and the scan walks every one of the subject's other-kind rows above the newest
+    // match — measured at 12M rows: 22.8 s / 402,430 buffers for a probe that returns NO row, 0.3 ms
+    // with this index (drizzle/0044 carries the full before/after EXPLAIN and the write cost).
+    // With `kind` in the key, every probe is one index descent whatever else the subject holds.
+    index("decisions_org_subject_kind_created").on(
+      table.orgId,
+      table.subjectId,
+      table.kind,
+      table.createdAt.desc()
+    )
   ]
 );
 

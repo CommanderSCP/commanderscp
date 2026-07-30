@@ -1,0 +1,135 @@
+-- ===========================================================================================
+-- MAKE THE PERSIST-ON-CHANGE DEDUPE READ A SINGLE INDEX PROBE — GUARANTEED, NOT PLANNER-DEPENDENT.
+--
+-- THE READ. `coordination/decisions-repo.ts`'s `latestDecisionForSubjectKind` is the write-side
+-- guard of `insertDecisionIfChanged`, and it runs on the reconcile hot path: once per ~2 s tick per
+-- parked change (measured 1.08M reads/day in the homelab deployment), plus once per campaign tick,
+-- once per federation-sync attempt, and once per pre-deploy artifact-verify idempotence check. Its
+-- shape is exact and fixed:
+--
+--     WHERE org_id = $1 AND subject_id = $2 AND kind = $3
+--     ORDER BY created_at DESC, id DESC
+--     LIMIT 1
+--
+-- NEITHER PRE-EXISTING INDEX COVERS `kind`: `decisions_org_subject` is
+-- (org_id, subject_id, created_at) and `decisions_org_created` is (org_id, created_at, id). `kind`
+-- is therefore a HEAP FILTER, and the plan is "walk this subject's Decisions newest-first, fetch
+-- each one, discard the ones of the wrong kind, stop at the first match". That walk is bounded by
+-- how many of the subject's rows of OTHER kinds sit above the newest row of the requested kind — i.e.
+-- by nothing at all.
+--
+-- MEASURED, at 12,006,000 rows / 11 GB, on a faithful reproduction of the live homelab distribution
+-- (29 change subjects x ~414k gate/block rows, both real indexes freshly built, VACUUM ANALYZEd,
+-- PostgreSQL 16.14). The subject probed below holds 396,758 `gate` rows:
+--
+--   (A) kind ABSENT for that subject — which is EVERY kind's FIRST `insertDecisionIfChanged` call,
+--       and every `wave_target`/`pre-deploy-artifact-verify` probe before the first one is written:
+--
+--         Limit  (cost=630498.17..630498.19 rows=1) (actual time=22785.499..22785.500 rows=0)
+--           ->  Index Scan Backward using decisions_org_subject on decisions
+--                 Index Cond: ((org_id = …) AND (subject_id = …))
+--                 Filter: (kind = 'wave_target'::text)
+--                 Rows Removed by Filter: 396761
+--                 Buffers: shared hit=2840 read=399590
+--         Execution Time: 22793.908 ms
+--
+--   (B) kind PRESENT but its newest row OLD — the `transition` / boundary-segment / pre-deploy shape
+--       (a change's transitions are written when it is created; the gate rows pile up after them):
+--
+--         Limit  (cost=630498.17..630498.19 rows=1) (actual time=23922.006..23922.007 rows=1)
+--           ->  Index Scan Backward using decisions_org_subject on decisions
+--                 Filter: (kind = 'transition'::text)
+--                 Rows Removed by Filter: 396758
+--                 Buffers: shared hit=2833 read=399596
+--         Execution Time: 23922.206 ms   (23,678.9 ms on the warm re-run — this is not a cold-cache
+--                                         artifact; 400k buffers do not stay resident)
+--
+-- 22.8 s and 23.9 s, ~402,400 buffers each, for a query that returns ONE ROW OR NONE — against a
+-- planner estimate whose LIMIT-1 shortcut priced it at 630,498 total for 1 row. This is the classic
+-- LIMIT + correlated-filter trap, and it is on the reconcile hot path.
+--
+-- WHAT THE ADVERSARIAL REVIEW PREDICTED, AND WHAT ACTUALLY REPRODUCED — stated plainly because the
+-- difference matters. The review predicted a DIFFERENT degenerate plan: an
+-- `Index Scan Backward using decisions_org_created` walking the ORG's whole newest-first stream with
+-- `Rows Removed by Filter: 500000` (348 ms, ~20,000 buffers, cost 17.04). On this reproduction that
+-- plan NEVER appeared. With `decisions_org_subject` available the planner chose it in all four
+-- regimes tested — post-fix single standing row / pre-fix 396k-row subject, x recent / receded behind
+-- 500,001 newer org rows — at 5-15 buffers and 0.007-0.5 ms. Nor is the org-stream plan the
+-- second choice: with `decisions_org_subject` dropped the planner picked a Parallel Seq Scan
+-- (5,684 ms, 1,200,601 buffers), because it correctly estimates that ~1 row matches and so cannot
+-- assume it will hit one early in the org stream. The review's mitigation ("the lens rated it
+-- PLAUSIBLE, not CONFIRMED") was the right call on that specific plan.
+--
+-- The CONCLUSION is unchanged and the fix is the same one: the read is not O(1) today, it is O(the
+-- subject's other-kind rows), and the confirmed cost of that is 22-24 s rather than the predicted
+-- 348 ms. The mechanism is the one the review named — `kind` being a filter instead of an index
+-- column.
+--
+-- AND THE FIX THIS SHIPS WITH MANUFACTURES THE ADJACENT SHAPE. Persist-on-change leaves each parked
+-- change holding exactly ONE standing gate row, which gets older every day while the dedupe read
+-- repeats every ~2 s. That case is measured above as fast today (0.007-0.018 ms), so it is not the
+-- emergency — but it is fast only because the planner happens to choose well, and every OTHER kind
+-- probed against a busy subject is already in the 22 s regime. A fix whose guarantee depends on the
+-- planner's estimate of a table it is reshaping is not a guarantee.
+--
+-- WHY THIS EXACT KEY. `(org_id, subject_id, kind, created_at DESC)` matches the predicate's three
+-- equality columns in order and then supplies the ordering column, so `kind` becomes part of the
+-- index CONDITION and `LIMIT 1` is one index descent plus one heap fetch, whatever else the subject
+-- or the org holds. Measured after this migration, same rows, same box:
+--
+--     (A) kind absent    22,793.908 ms / 402,430 buffers  ->    0.299 ms /   4 buffers
+--     (B) kind oldest    23,922.206 ms / 402,429 buffers  ->    0.007 ms /   5 buffers
+--     post-fix parked, standing row 500,001 rows behind the head:  0.007 ms / 5 buffers
+--     post-fix parked, standing row is the org's newest:           0.053 ms / 14 buffers
+--
+-- with `Index Cond: (org_id = … AND subject_id = … AND kind = …)` and NO `Rows Removed by Filter`
+-- line at all in every case. `created_at DESC` is written explicitly to mirror the query's ORDER BY;
+-- a btree can be scanned backward so ASC would work too, and the DESC spelling just makes the
+-- intended access forward-only. `id` is deliberately NOT in the key: it is only a tiebreak between
+-- rows sharing a timestamp, the heap row carries it anyway, and adding it would widen every entry
+-- for a case that cannot change which row `LIMIT 1` returns.
+--
+-- NO PLANNER TRICKERY. No hint, no `enable_seqscan`/`enable_indexscan` toggling, no `SET LOCAL`
+-- around the query, no `random_page_cost` tuning. Those either lie to the planner globally or make
+-- one call site's behavior depend on session state. An index keyed to the query's actual shape makes
+-- the good plan the CHEAPEST plan, which is the only kind of guarantee that survives a growing table
+-- and a future Postgres version.
+--
+-- THE WRITE COST, STATED HONESTLY — IT IS NOT SMALL. `decisions` is insert-only and insert-heavy, and
+-- this is a THIRD index on it. Measured on the same reproduction, 100,000 fresh rows per round,
+-- alternating so neither ordering is favoured by cache state:
+--
+--     WITH this index      2,246.8 ms and 1,739.7 ms   (mean 1,993 ms / 100k rows)
+--     WITHOUT it            872.1 ms and   967.3 ms   (mean   920 ms / 100k rows)
+--
+-- ~2.2x on a BULK insert: +10.7 microseconds of index maintenance per row. Index size 777 MB at
+-- 12,006,000 rows (vs 676 MB and 674 MB for the two existing ones); the initial build took 19.7 s.
+-- Two things make that a bulk-load figure rather than the production figure: a 100k-row single
+-- statement has no per-row commit, so index maintenance is nearly the whole cost, whereas production
+-- writes one Decision per reconcile transaction where WAL flush and commit dominate; and the
+-- entries land at scattered positions (one per subject) rather than appended.
+--
+-- WHY IT IS WORTH IT ANYWAY:
+--   * The fix this ships with cuts the insert RATE by ~1,079,875 rows/day (1.08M/day -> ~1/day per
+--     parked change). Three indexes on a stream that small costs far less in absolute terms than two
+--     indexes on the stream that existed yesterday.
+--   * The read it fixes runs at the same ~1.08M/day the writes used to, and unlike the writes it
+--     CANNOT be deduped away: every tick must ask "has anything changed?" or an arriving approval is
+--     never noticed. Trading 10.7 us per insert for the removal of a 22-second read is not close.
+--   * Growth is bounded by the same argument: the index only grows with rows actually written, and
+--     the fix is what stopped those growing at 1.08M/day.
+--
+-- IDEMPOTENT, AND NOT `CONCURRENTLY`. `CREATE INDEX IF NOT EXISTS` (the form every other index
+-- migration here uses) so re-running the forward-only set is a no-op. NOT `CONCURRENTLY`, because
+-- drizzle runs each migration inside a transaction and `CREATE INDEX CONCURRENTLY` cannot run in
+-- one. On an instance whose `decisions` table is already in the millions this statement therefore
+-- holds an ordinary `SHARE` lock for the duration of the build — WRITES to `decisions` block, reads
+-- do not — measured 19.7 s at 12M rows. The reconcile loop retries every tick and loses nothing,
+-- and the fix shipping alongside is what stops the table getting there in the first place. An
+-- operator who cannot take that window can create the index by hand with
+-- `CREATE INDEX CONCURRENTLY` under the same name BEFORE upgrading; the `IF NOT EXISTS` here then
+-- finds it and does nothing.
+-- ===========================================================================================
+
+CREATE INDEX IF NOT EXISTS "decisions_org_subject_kind_created"
+  ON "decisions" USING btree ("org_id", "subject_id", "kind", "created_at" DESC);
