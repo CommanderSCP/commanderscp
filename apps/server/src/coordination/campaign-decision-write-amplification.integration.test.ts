@@ -22,6 +22,10 @@ import { proposeCampaign } from "./campaign-repo.js";
 import { createObject, updateObject } from "../graph/objects-repo.js";
 import { castApprovalVote, listApprovalRequestsForChange } from "../governance/approvals-repo.js";
 import { getLatestCampaignPlan } from "./campaign-plan-service.js";
+import { compileAndPersistPlan } from "./plan-service.js";
+import { transitionChange } from "./transition.js";
+import { triggerCampaignRollback } from "./campaign-rollback.js";
+import type { GateDeps } from "./gates.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 
 /**
@@ -326,5 +330,119 @@ describe("Decision write amplification: the campaign reconciler persists ON CHAN
     expect(recordedErrors[0]).toContain(firstMissing);
     expect(recordedErrors[1]).toContain(secondMissing);
     expect(recordedErrors[0]).not.toBe(recordedErrors[1]);
+  });
+
+  /**
+   * U5 — THE OTHER PERSISTED `describeError` SITE ON THE CAMPAIGN SIDE (PR #153 review Q3):
+   * `campaign-rollback.ts`'s per-member catch.
+   *
+   * `triggerCampaignRollback` never aborts the batch — a member whose rollback is refused is
+   * recorded in `result.skipped[].reason`, which is BOTH returned to the operator by
+   * `POST /campaigns/{id}/rollback` AND persisted verbatim inside the campaign-level
+   * `rollback_trigger` Decision's `input_context.skipped`. It is the only account of why that member
+   * was not reverted. Every refusal `triggerRollback` raises is a `ProblemError` (`badRequest` for a
+   * non-rollbackable state or a change with no recorded targets, `notFound` from `getChangeRow`), so
+   * `err.message` recorded the bare HTTP title: three members skipped for three different reasons
+   * all read "Bad Request", in the returned payload and in the permanent record alike.
+   *
+   * Driven at the repo layer (the member change is walked to `executing` with the same manual
+   * transitions the rest of this suite uses) so the case is exact and needs no reconcile loop.
+   *
+   * MUTATION-PROVEN: reverting `campaign-rollback.ts`'s `describeError(err)` to
+   * `err instanceof Error ? err.message : String(err)` makes both assertions fail — the recorded
+   * reason collapses to "Bad Request".
+   */
+  it("U5: a member whose rollback is REFUSED records WHY, in the returned result and in the campaign's rollback_trigger Decision", async () => {
+    const org = await createTestOrg(server, "campaign-rollback-reason");
+    const owner = await createTestUser(server, org, [{ role: "Owner", scope: org.orgId }]);
+
+    const service = await inject(org, "/api/v1/services", { name: "svc-camp-rollback" });
+    const component = await inject(org, "/api/v1/components", {
+      name: "comp-camp-rollback",
+      service: service.id
+    });
+
+    const campaignObjectId = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const { campaign } = await proposeCampaign(tx, {
+        orgId: org.orgId,
+        actorObjectId: owner.objectId,
+        requestId: "campaign-rollback-reason-test",
+        name: "campaign-with-a-refusing-member",
+        targets: [component.id as string]
+      });
+      return campaign.id;
+    });
+
+    // Two ticks: the first compiles the plan and starts wave 0 (no policy, so its gate allows), the
+    // second is belt-and-braces for the member change actually existing.
+    await tick(org, 2);
+    const plan = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      getLatestCampaignPlan(tx, org.orgId, campaignObjectId)
+    );
+    const memberChangeObjectId = plan!.waves[0]!.targets[0]!.memberChangeObjectId;
+    expect(memberChangeObjectId).toBeTruthy();
+
+    const gateDeps: GateDeps = { sandbox, host };
+    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      // Walk it to `executing` — a ROLLBACK-ELIGIBLE state, so `triggerCampaignRollback`'s own
+      // state pre-check passes and the refusal has to come out of `triggerRollback` itself (which is
+      // the site under test; the pre-check's reasons are module-written strings, not forwarded ones).
+      await compileAndPersistPlan(tx, {
+        orgId: org.orgId,
+        changeObjectId: memberChangeObjectId!,
+        targetObjectIds: [component.id as string],
+        topologyObjectId: null,
+        topologyVersion: null
+      });
+      for (const toState of ["evaluated", "coordinated", "executing"] as const) {
+        await transitionChange(
+          tx,
+          {
+            orgId: org.orgId,
+            changeObjectId: memberChangeObjectId!,
+            toState,
+            actorObjectId: owner.objectId,
+            requestId: "campaign-rollback-reason-test"
+          },
+          gateDeps
+        );
+      }
+      // ...and leave it with NO recorded targets, the shape `rollback.ts` refuses with
+      // `badRequest("change '<id>' has no recorded targets to roll back")` — a `ProblemError` whose
+      // `message` is "Bad Request" and whose `detail` names the member.
+      await updateObject(tx, {
+        orgId: org.orgId,
+        typeId: "change",
+        actorObjectId: SYSTEM_ACTOR_ID,
+        requestId: "campaign-rollback-reason-test",
+        idOrUrn: memberChangeObjectId!,
+        properties: { targets: [] }
+      });
+    });
+
+    const result = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      triggerCampaignRollback(tx, {
+        orgId: org.orgId,
+        campaignObjectId,
+        actorObjectId: owner.objectId,
+        requestId: "campaign-rollback-reason-test",
+        reason: "test: revert this campaign"
+      })
+    );
+    expect(result.rolledBack).toHaveLength(0);
+    expect(result.skipped).toHaveLength(1);
+    // (a) THE RETURNED ACCOUNT — what the operator sees.
+    expect(result.skipped[0]!.reason).toContain(memberChangeObjectId!);
+    expect(result.skipped[0]!.reason).not.toBe("Bad Request");
+
+    // (b) THE PERSISTED ACCOUNT — the same text inside the campaign's `rollback_trigger` Decision,
+    // which is what `scp campaign explain` reads back long after the call returned.
+    const triggers = await decisionsOfKind(org, campaignObjectId, "rollback_trigger");
+    expect(triggers.ordinary).toHaveLength(1);
+    const persisted = (
+      triggers.ordinary[0]!.inputContext as { skipped: { reason: string }[] }
+    ).skipped;
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]!.reason).toContain(memberChangeObjectId!);
   });
 });

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
@@ -8,7 +9,7 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { changes, changeWaves, decisions } from "../db/schema.js";
+import { auditEvents, changes, changeWaves, decisions } from "../db/schema.js";
 import {
   CountingCelSandbox,
   distinctDecisionStatements,
@@ -450,5 +451,108 @@ describe("Decision write amplification: a parked wave gate persists ON CHANGE, n
     );
     expect(row!.state).toBe("executing");
     expect(row!.reconcileBlockedAt).toBeNull();
+  });
+
+  /**
+   * T5 — THE AUTO-CANCELLED CHANGE'S EPITAPH (PR #153 review Q3, `reconcile.ts`'s
+   * `advanceEvaluatedChanges`).
+   *
+   * When `compileAndPersistPlan` fails there is no retry and no next state: the reconciler
+   * auto-cancels the change and the `reason` it attaches is the ONLY explanation an operator will
+   * ever get for it, persisted twice — in the cancelling transition's Decision `input_context` and
+   * in the hash-chained audit event written in the same transaction. `plan-service.ts` throws
+   * `ProblemError`s (`notFound` for an unresolvable release-topology, `badRequest` for a cycle or a
+   * compiler refusal) whose `message` is the bare HTTP TITLE, so `err.message` made every such
+   * epitaph read "auto-cancelled: plan compilation failed — Not Found": it names neither the
+   * missing topology nor the cycle, and — since the audit event is immutable — it cannot be
+   * improved after the fact.
+   *
+   * MUTATION-PROVEN: reverting `reconcile.ts`'s `describeError(err)` to
+   * `err instanceof Error ? err.message : String(err)` fails both assertions below (the recorded
+   * reason becomes "auto-cancelled: plan compilation failed — Not Found").
+   */
+  it("T5: a change auto-cancelled by a failed plan compile records WHICH object was missing — in both its Decision and its audit event", async () => {
+    const service = await inject("/api/v1/services", { name: "svc-t5" });
+    const component = await inject("/api/v1/components", {
+      name: "comp-t5",
+      service: service.id
+    });
+
+    // The shape `plan-service.ts` refuses with `notFound`: the change carries a release-topology
+    // reference that no longer resolves (the topology object was deleted after the change was
+    // proposed — `proposeChange` validates it at propose time, so this is exactly how it arises).
+    // Written straight onto the `changes` row because that is where the reconciler reads it from.
+    const missingTopologyId = randomUUID();
+    const gateDeps: GateDeps = { sandbox, host };
+    const changeObjectId = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const { change } = await proposeChange(tx, {
+        orgId: org.orgId,
+        actorObjectId: org.orgId,
+        requestId: "decision-flood-test",
+        name: "change-t5",
+        targets: [component.id as string]
+      });
+      await transitionChange(
+        tx,
+        {
+          orgId: org.orgId,
+          changeObjectId: change.id,
+          toState: "evaluated",
+          actorObjectId: org.orgId,
+          requestId: "decision-flood-test"
+        },
+        gateDeps
+      );
+      await tx
+        .update(changes)
+        .set({ topologyObjectId: missingTopologyId })
+        .where(and(eq(changes.orgId, org.orgId), eq(changes.objectId, change.id)));
+      return change.id;
+    });
+
+    await tick(1);
+
+    const [row] = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(changes)
+        .where(and(eq(changes.orgId, org.orgId), eq(changes.objectId, changeObjectId)))
+    );
+    expect(row!.state).toBe("cancelled");
+
+    // (a) THE DECISION. `scp change explain`'s account of why this change is dead.
+    const transitions = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(decisions)
+        .where(
+          and(
+            eq(decisions.orgId, org.orgId),
+            eq(decisions.subjectId, changeObjectId),
+            eq(decisions.kind, "transition")
+          )
+        )
+        .orderBy(decisions.createdAt, decisions.id)
+    );
+    const cancelDecision = transitions.find(
+      (d) => (d.inputContext as { toState?: string }).toState === "cancelled"
+    );
+    expect(cancelDecision).toBeDefined();
+    const decisionReason = (cancelDecision!.inputContext as { reason: string }).reason;
+    expect(decisionReason).toContain(missingTopologyId);
+    expect(decisionReason).not.toBe("auto-cancelled: plan compilation failed — Not Found");
+
+    // (b) THE AUDIT EVENT — the permanent, hash-chained half of the epitaph, which carries the same
+    // text and can never be corrected later.
+    const events = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(auditEvents)
+        .where(and(eq(auditEvents.orgId, org.orgId), eq(auditEvents.subjectId, changeObjectId)))
+        .orderBy(auditEvents.seq)
+    );
+    const cancelEvent = events.find((e) => (e.reason ?? "").startsWith("auto-cancelled:"));
+    expect(cancelEvent).toBeDefined();
+    expect(cancelEvent!.reason).toContain(missingTopologyId);
   });
 });

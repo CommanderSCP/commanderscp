@@ -11,6 +11,7 @@ import { GenericContainer, type StartedTestContainer } from "testcontainers";
 import type { PromotionBundle } from "@scp/schemas";
 import { resolveCosign } from "@scp/cosign";
 import { withTenantTx } from "../db/tenant-tx.js";
+import { notFound } from "../errors.js";
 import { auditEvents, bundleTransfers, changes, decisions, federationInboxFiles } from "../db/schema.js";
 import { createObject } from "../graph/objects-repo.js";
 import { proposeChange, getChangeRow } from "../coordination/changes-repo.js";
@@ -1039,4 +1040,60 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
     expect(again.every((o) => o.outcome === "already-processed")).toBe(true);
     expect(await decisionCount(outpost)).toBe(decisionsBefore);
   }, 120_000);
+
+  /**
+   * PR #153 review Q3 — the tick's CONTAINMENT catch reports the throw's DETAIL, not its HTTP title.
+   *
+   * Every ANTICIPATED failure inside `processInboxFile` is already caught and turned into a
+   * refuse/defer outcome with its own text (the five `err.detail ?? err.message` sites above), so
+   * the outer catch in `inboxOrgTick` is reachable only by a throw from the db seam — which is
+   * precisely the case it exists for, and the case where the text matters most because nothing else
+   * describes what went wrong. An escaping `ProblemError`'s `message` is the bare HTTP title, so
+   * `err.message` reported every such containment as "Not Found" / "Conflict" in the `deferred`
+   * outcome an operator (or `scp federation inbox status`) reads.
+   *
+   * The fault is INJECTED at that seam, deliberately: it cannot be produced from a fixture, because
+   * every fixture-shaped failure is caught one layer down. The tick's FIRST transaction loads
+   * self+peers; everything after it belongs to per-file processing, so faulting from the second on
+   * makes exactly the per-file escape this pins — and proves the loop still contains it (it returns
+   * outcomes rather than throwing).
+   *
+   * MUTATION-PROVEN: reverting `inbox-loop.ts`'s `describeError(err)` to
+   * `err instanceof Error ? err.message : String(err)` makes the detail assertion fail
+   * ("Not Found").
+   */
+  it("Q3: a throw that ESCAPES processInboxFile is contained, and the deferred outcome carries its detail — not its HTTP title", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "scp-inbox-containment-"));
+    await writeFile(path.join(dir, `scp-relay-${randomUUID()}.tar.gz`), "bytes", "utf8");
+
+    const marker = randomUUID();
+    let transactions = 0;
+    const faultingDb = new Proxy(outpost.db as object, {
+      get(target, prop) {
+        if (prop === "transaction") {
+          return (...args: unknown[]) => {
+            transactions += 1;
+            if (transactions === 1) {
+              return (Reflect.get(target, prop) as (...a: unknown[]) => unknown).apply(target, args);
+            }
+            return Promise.reject(notFound(`inbox ledger unavailable while probing '${marker}'`));
+          };
+        }
+        const value = Reflect.get(target, prop);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+    }) as typeof outpost.db;
+
+    const outcomes = await inboxOrgTick(faultingDb, outpost.orgId, OUTPOST_MASTER_KEY, {
+      relayConfig: { ...outpostConfig(), inDir: dir }
+    });
+
+    expect(outcomes.length).toBeGreaterThan(0);
+    for (const outcome of outcomes) {
+      expect(outcome.outcome).toBe("deferred");
+      expect(outcome.detail).toContain(marker);
+      expect(outcome.detail).not.toBe("Not Found");
+    }
+    await rm(dir, { recursive: true, force: true });
+  }, 60_000);
 });

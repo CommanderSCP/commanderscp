@@ -790,6 +790,10 @@ export async function inboxOrgTick(
           // the text matters most. (Unlike the coordination sites, this `detail` is
           // observability-only — `InboxFileOutcome` is returned, never persisted — so no Decision
           // was being degraded here; the inconsistency was.)
+          //
+          // PINNED BY `inbox-loop.integration.test.ts`'s Q3 case, mutation-proven. That test injects
+          // the throw at the db seam on purpose: every fixture-shaped failure is caught one layer
+          // down, which is exactly why this catch is the unanticipated-throw path.
           detail: describeError(err),
           decisionId: null
         });

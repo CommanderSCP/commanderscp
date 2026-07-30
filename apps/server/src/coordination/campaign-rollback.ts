@@ -127,6 +127,9 @@ export async function triggerCampaignRollback(
       // `reason` is persisted verbatim in the `rollback_trigger` Decision's `input_context` below
       // and is the only account of why a member was NOT reverted; "Bad Request" against three
       // skipped members tells an operator nothing and makes three different faults identical.
+      //
+      // PINNED BY `campaign-decision-write-amplification.integration.test.ts`'s U5 (the returned
+      // result AND the persisted `input_context.skipped`), mutation-proven.
       result.skipped.push({
         originalChangeObjectId: memberChangeObjectId,
         reason: describeError(err)

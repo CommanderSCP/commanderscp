@@ -164,23 +164,43 @@ const CEL_CONTEXT_DUMP_MARKER = " context: ";
  * incident, with the persist-on-change fix fully in place. Measured over 15 consecutive ticks: two
  * consecutive 1,346-byte reason trees differing by TWO CHARACTERS, both inside the timestamp.
  *
- * NOTHING IS LOST, AND THE RECORD IMPROVES. The context is the INPUT, and every Decision already
- * stores it verbatim in `input_context`; the dump was a second, worse copy of it. Dropping it also
- * stops the whole CEL context (change / subject / graph / actor) being duplicated into
- * `reason_tree`, which `scp change explain` and the UI render far more widely than `input_context`.
+ * WHAT THE TRADE ACTUALLY IS — stated precisely, because an earlier draft of this comment claimed
+ * "nothing is lost: every Decision already stores the context verbatim in `input_context`", and that
+ * is MEASURABLY FALSE for the gate Decision this protects. `gate-orchestrator.ts` persists COUNTS
+ * and wave metadata (`matchedPolicyCount`, `effectivePolicyCount`, `firedPolicyCount`, plus the
+ * caller's `waveId`/`waveIndex`/`topologyObjectId`/`explicitGatesBound`); the CEL evaluation context
+ * built at `governance/evaluate.ts` (`change`/`subject`/`graph`/`actor`/`approvals`/
+ * `controlOutcomes`/`time`) is persisted NOWHERE. So the dump is dropped, not relocated.
+ *
+ * The trade is still right, for two reasons that do not depend on that false claim. First, the dump
+ * was the FLOOD: it is a per-tick-unstable restatement of inputs the Decision already summarizes,
+ * and `context.time` alone made every tick's reason tree a new statement. Second, the ACTIONABLE
+ * part survives verbatim — WHICH identifier failed to resolve, which is what an operator fixes the
+ * policy from; the values of the other fields never told them anything about a typo'd name.
+ * Dropping it also stops the whole CEL context being duplicated into `reason_tree`, which
+ * `scp change explain` and the UI render far more widely than `input_context`.
  *
  * NOT A SECURITY CHANGE. The timeout, the worker isolation, the static complexity checks and the
  * context-complexity checks are all untouched — this only rewrites the text of an already-failed
  * evaluation's error, on the way out.
  *
- * WHERE IT IS APPLIED, and why only there. Five sites in this file construct `{ok:false}`:
+ * WHERE IT IS APPLIED, and why only there. The other `{ok:false}` constructions in this file are
  * `checkContextComplexity`'s bounded messages, the two "CEL sandbox is stopped" constants,
  * `waitForReady`'s "did not become ready within Nms", the timeout path's "timed out after Nms", and
- * `failAllPending`'s worker-crash/exit/stopping messages. All of those are text THIS MODULE writes,
- * from constants and numbers. Only ONE site forwards text from elsewhere — the worker's `msg.error`
- * in `spawnWorker`'s message handler, which is cel-js's own exception, caught and posted back by
- * `cel-worker-entry.ts`. That is the one boundary the dump can cross, and the only one this wraps;
- * normalizing any of the others would be a no-op that looked like a fix.
+ * `failAllPending`'s worker-exit/stopping messages — all text THIS MODULE writes, from constants and
+ * numbers, so normalizing them would be a no-op that looked like a fix.
+ *
+ * TWO sites forward text from elsewhere, and only one of them needs this:
+ *  * `spawnWorker`'s message handler forwards the worker's `msg.error` — cel-js's own exception,
+ *    caught and posted back by `cel-worker-entry.ts`. That IS the boundary the context dump crosses,
+ *    and it is what this wraps.
+ *  * `worker.on("error")` forwards a foreign Node worker-`error`'s `.message` into
+ *    `failAllPending`, and it reaches the reason tree exactly the same way. Named here so a future
+ *    reader does not skip auditing it — but it is FORWARDED-BUT-BOUNDED, not a second flood:
+ *    `cel-worker-entry.ts` catches every evaluation error and posts it as `msg.error`, so cel-js
+ *    text never reaches the `error` EVENT, and a worker-level failure (spawn/module/thread) carries
+ *    no CEL context and is stable across ticks. Nothing to normalize; something to check if either
+ *    of those two facts ever changes.
  */
 export function normalizeCelWorkerError(error: string): string {
   const at = error.indexOf(CEL_CONTEXT_DUMP_MARKER);

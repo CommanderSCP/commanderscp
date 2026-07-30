@@ -225,6 +225,9 @@ async function advanceEvaluatedChanges(db: Db, orgId: string, gateDeps: GateDeps
           // transition's Decision and audit event, and it is the only explanation an operator ever
           // gets for a change that auto-cancelled. "auto-cancelled: plan compilation failed — Not
           // Found" names neither the missing topology nor the cycle. See `errors.ts`.
+          //
+          // PINNED BY `decision-write-amplification.integration.test.ts`'s T5 (both halves of the
+          // epitaph — the Decision and the audit event), mutation-proven.
           const message = describeError(err);
           await transitionChange(
             tx,
