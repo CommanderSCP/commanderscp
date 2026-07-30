@@ -2868,7 +2868,7 @@ export function buildProgram(): Command {
   // three — the only place an operator ever reads the list. An operator enrolling a GovCloud outpost
   // was told no value existed for it, and pushed to either leave the tier unknown or assert
   // `commercial`: the INVENTED POSTURE this milestone exists to prevent. Joining the enum's own
-  // members here makes that drift structurally impossible; `outpost-trust-tier-help.test.ts` pins it.
+  // members here makes that drift structurally impossible; `outpost-cli-surface.test.ts` pins it.
   const TRUST_TIER_CHOICES = OutpostTrustTierSchema.options.join("|");
 
   outpostCmd
