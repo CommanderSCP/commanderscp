@@ -266,20 +266,74 @@ describe("M16.2 H1: the hand-fill write door + wedge recovery (Testcontainers)",
     expect(patched.trustTier).toBe("govcloud");
   });
 
-  it("a manual shadow can NEVER override the commander's own asserted tier on /federation/status (was last-write-wins)", async () => {
+  /**
+   * N7 (review round 5) — AN ORDER-INDEPENDENT WITNESS FOR THE STATUS RANKING.
+   *
+   * The previous version of this test built ONE arrangement (shadow created LATER) and so pinned the
+   * ORDER, not the ranking: the lens showed it stayed GREEN with `status-repo.ts`'s `tierRank`
+   * collapsed to a constant AND `current.rank <= rank` flipped to `<`. Round 2 had already hardened
+   * the sibling RESOLUTION test after the same catch.
+   *
+   * Backdating alone does NOT fix it, and that is worth stating: with all ranks equal, `<=` is
+   * first-wins and `<` is last-wins, so ANY SINGLE arrangement is beaten by one of the two
+   * degradations. Only building BOTH arrangements makes the assertion order-independent —
+   * `il5` must win whether the shadow is the FIRST row or the LAST one in `(created_at, id)` order,
+   * which no tie-break rule can deliver and only a real local-origin-first preference can.
+   */
+  it("a manual shadow can NEVER override the commander's own asserted tier on /federation/status, whichever row comes first (was last-write-wins)", async () => {
+    // (a) shadow LAST in `(created_at, id)` order — the original wedge shape.
+    const later = await pairPeerViaApi("outpost");
+    await admin.federation.createOutpost({ peerDomainId: later, trustTier: "il5" });
+    await plantShadow(later, "commercial", `status-later-${later.slice(0, 8)}`);
+
+    // (b) shadow FIRST — backdated a day, so every naive ordering puts the hand-typed copy ahead of
+    // the commander's own object.
+    const earlier = await pairPeerViaApi("outpost");
+    await admin.federation.createOutpost({ peerDomainId: earlier, trustTier: "il5" });
+    const backdated = await plantShadow(
+      earlier,
+      "commercial",
+      `status-earlier-${earlier.slice(0, 8)}`
+    );
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(objects)
+        .set({ createdAt: new Date(Date.now() - 86_400_000) })
+        .where(eq(objects.id, backdated.id))
+    );
+
+    const status = await admin.federation.status();
+    for (const peer of [later, earlier]) {
+      const entry = status.peers.find((p) => p.peer.id === peer);
+      expect(entry?.trustTier, `peer ${peer} reported the shadow's tier`).toBe("il5");
+      expect(entry?.trustTierProvenance).toBe("declared");
+      expect(entry?.unknownFields ?? []).not.toContain("trustTier");
+    }
+  });
+
+  it("N4: a local-origin row that asserts NO tier SILENCES the field — a shadow's tier cannot fill the commander's silence, and the two read surfaces agree", async () => {
     const peer = await pairPeerViaApi("outpost");
-    await admin.federation.createOutpost({ peerDomainId: peer, trustTier: "il5" });
-    // The shadow is created LATER, so a last-write-wins Map over `listOutpostConfigs` (ordered by
-    // created_at) put IT in the map — a replica beating the authority. This ordering is the mutation
-    // witness for `status-repo.ts`'s ranking: with the rank collapsed to a constant, the later row wins
-    // and this test goes red.
-    await plantShadow(peer, "commercial", `status-${peer.slice(0, 8)}`);
+    // The commander's own object, DELIBERATELY tier-less: the operator has not decided a posture.
+    const legit = await admin.federation.createOutpost({ peerDomainId: peer });
+    expect(legit.trustTier).toBeNull();
+    // A hand-typed shadow that DOES carry a tier. Before the fix, `status-repo.ts` dropped tier-less
+    // rows BEFORE ranking, so the authority never entered the contest and this `il5` was rendered on
+    // the Overview as the commander's own posture.
+    await plantShadow(peer, "il5", `silence-${peer.slice(0, 8)}`);
 
     const status = await admin.federation.status();
     const entry = status.peers.find((p) => p.peer.id === peer);
-    expect(entry?.trustTier).toBe("il5");
-    expect(entry?.trustTierProvenance).toBe("declared");
-    expect(entry?.unknownFields ?? []).not.toContain("trustTier");
+    expect(entry?.trustTier ?? null).toBeNull();
+    expect(entry?.trustTierProvenance ?? null).toBeNull();
+    expect(entry?.unknownFields ?? []).toContain("trustTier");
+
+    // THE AGREEMENT, asserted directly: the two new read surfaces are the same question asked twice,
+    // and a UI that reads one and renders the other must not see two different answers.
+    const object = await admin.federation.getOutpost(peer);
+    expect(object.objectId).toBe(legit.objectId);
+    expect(object.originIsSelf).toBe(true);
+    expect(object.trustTier).toBe(entry?.trustTier ?? null);
+    expect(object.unknownFields).toContain("trustTier");
   });
 
   it("when the ONLY tier available is an unverified shadow, it is reported as `unverified` AND declared unknown", async () => {
@@ -381,21 +435,31 @@ describe("M16.2 H1: the hand-fill write door + wedge recovery (Testcontainers)",
       })
     );
 
+    // 409 CONFLICT, NOT 404 (review round 5, N3). The peer demonstrably HAS config — the GET below
+    // answers 200 at the same instant — so 404 was an acknowledged wrong code that told a
+    // status-keyed consumer "no outpost config" and HID the authority conflict on the very door H1
+    // added for recovery. The status is pinned here, not just the prose, because a UI keys on it.
     await expectApiError(
       admin.federation.reconcileOutpost(peer),
-      404,
+      409,
       /authoritative \(locally authored or a signature-verified replica\)/i
     );
+    // THE CONTRADICTION THAT MAKES 404 WRONG, asserted rather than argued.
+    const stillReadable = await admin.federation.getOutpost(peer);
+    expect(stillReadable.peerDomainId).toBe(peer);
     // Nothing removed: both rows survive, and the refusal says why.
     expect(await outpostRowsForPeer(peer)).toHaveLength(2);
   });
 
-  it("reconcile on a peer with no config object at all is a 404, not a silent success", async () => {
+  it("reconcile on a peer with no config object at all is a 404 — the ONE branch where the resource really is absent", async () => {
     const peer = await pairPeerViaApi("outpost");
     await expectApiError(
       admin.federation.reconcileOutpost(peer),
       404,
       /no outpost config object to reconcile/i
     );
+    // Pinned as the counterpart to the 409 above: the two refusals must not collapse onto one code,
+    // or a consumer can no longer tell "this peer has nothing" from "this peer has too much".
+    await expectApiError(admin.federation.getOutpost(peer), 404, /has no outpost config object/i);
   });
 });

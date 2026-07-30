@@ -247,6 +247,76 @@ describe("M16.2 E1: the `outpost` builtin object type + the authority split (Tes
   });
 
   // ==========================================================================================
+  // N6 (review round 5) — 'THE REQUEST BODIES ADMIT ONLY THE KNOWN FIELDS' IS A REFUSAL, NOT A STRIP.
+  //
+  // Measured before the fix: `POST /api/v1/federation/outposts` with an extra `somePhaseBProperty`
+  // answered 201 and stored `{trustTier, peerDomainId}` — zod's default object parse dropped the key.
+  // Nothing false was stored, so the honesty claim survived; but drizzle/0043, ADR-0022 and
+  // `outpost-binding.ts` all described a REFUSAL an operator never saw, and a NEWER CLIENT writing a
+  // phase-B property to an OLDER commander got a success and lost its field with no signal. That is a
+  // real hazard for a product whose premise is version skew across domains. Both bodies are now
+  // `z.strictObject`. The asymmetry with the JOURNAL is deliberate and is pinned by
+  // `outpost-config-sync.integration.test.ts`: strict at the operator's door, OPEN on the wire.
+  // ==========================================================================================
+
+  it("N6: an unknown property on CREATE is REFUSED (400), not silently stripped, and writes nothing", async () => {
+    const peer = await pairPeerViaApi("outpost");
+    const before = await outpostObjectRows();
+    await expectApiError(
+      admin.federation.createOutpost({
+        peerDomainId: peer,
+        trustTier: "commercial",
+        somePhaseBProperty: { nested: true }
+      } as never),
+      400,
+      /somePhaseBProperty|unrecognized|not allowed|additional/i
+    );
+    // The whole write is refused — no half-accepted object with the operator's field missing.
+    expect(await outpostObjectRows()).toHaveLength(before.length);
+    await expectApiError(admin.federation.getOutpost(peer), 404, /has no outpost config object/i);
+  });
+
+  it("N6: an unknown property on PATCH is REFUSED (400) — including `peerDomainId`, which the docs call not-patchable", async () => {
+    const peer = await pairPeerViaApi("outpost");
+    const created = await admin.federation.createOutpost({ peerDomainId: peer, trustTier: "il5" });
+    await expectApiError(
+      admin.federation.updateOutpost(peer, { somePhaseBProperty: "x" } as never),
+      400,
+      /somePhaseBProperty|unrecognized|not allowed|additional/i
+    );
+    // `peerDomainId` was previously accepted-and-dropped, which reads to a client as a successful
+    // re-bind. It is the object's identity, so saying so out loud is materially clearer.
+    await expectApiError(
+      admin.federation.updateOutpost(peer, { peerDomainId: randomUUID() } as never),
+      400,
+      /peerDomainId|unrecognized|not allowed|additional/i
+    );
+    // Neither refusal touched the object.
+    const after = await admin.federation.getOutpost(peer);
+    expect(after.objectId).toBe(created.objectId);
+    expect(after.version).toBe(created.version);
+    expect(after.trustTier).toBe("il5");
+  });
+
+  it("N6: an INVENTED tier is refused too — the enum is the API's, and it is exactly ADR-0022's five members", async () => {
+    const peer = await pairPeerViaApi("outpost");
+    await expectApiError(
+      admin.federation.createOutpost({ peerDomainId: peer, trustTier: "top-secret" } as never),
+      400,
+      /trustTier|invalid|expected/i
+    );
+    // Every member the glossary/ADR-0022 alignment settled on IS accepted — the same list the CLI
+    // help now derives from (`packages/cli/src/outpost-cli-surface.test.ts`), so a tier an operator
+    // is TOLD to type can never be one the API rejects.
+    for (const tier of ["commercial", "govcloud", "fedramp-high", "il5", "airgap"] as const) {
+      const p = await pairPeerViaApi("outpost");
+      const config = await admin.federation.createOutpost({ peerDomainId: p, trustTier: tier });
+      expect(config.trustTier).toBe(tier);
+      expect(config.unknownFields).toEqual([]);
+    }
+  });
+
+  // ==========================================================================================
   // THE AUTHORITY-SPLIT RULE, asserted in BOTH directions.
   // ==========================================================================================
 

@@ -12,7 +12,11 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { bundleTransfers, syncCursors } from "../db/schema.js";
 import { initFederationSelf } from "./self-repo.js";
 import { pairPeer } from "./peers-repo.js";
-import { recordBundleTransfer, lastSyncExportForPeer } from "./bundle-transfers-repo.js";
+import {
+  recordBundleTransfer,
+  lastConfirmedSyncImportAt,
+  lastSyncExportForPeer
+} from "./bundle-transfers-repo.js";
 import { getFederationStatus } from "./status-repo.js";
 
 /**
@@ -239,6 +243,59 @@ describe("M16.2 review round 4: federation status honesty (Testcontainers)", () 
     const entry = await statusFor(peer);
     expect(entry?.lastExportedThroughSequence).toBe(12);
     expect(entry?.unknownFields ?? []).not.toContain("lastExportedThroughSequence");
+  });
+
+  // ---------------------------------------------------------------------------------------
+  // N8 (review round 5) — THE SAME TRAP, IN THE HELPER H3 NOW MAKES TWO FIELDS DEPEND ON.
+  // ---------------------------------------------------------------------------------------
+
+  it("N8: one confirmed import/sync row with a NULL confirmed_at does not make the peer read 'never synced'", async () => {
+    const peer = await pairFresh({ baseUrl: "https://p.example.test" });
+    // A genuine, correctly-stamped confirmed sync import.
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      recordBundleTransfer(tx, {
+        orgId: org.orgId,
+        peerDomainId: peer,
+        direction: "import",
+        kind: "sync",
+        status: "confirmed",
+        checksum: "the-real-sync-bundle",
+        transport: "bundle"
+      })
+    );
+    // The trap: a row matching the SAME predicate whose `confirmed_at` is NULL. Postgres `DESC` is
+    // NULLS FIRST, so it sorted ahead of the real row and the `!row?.confirmedAt` bail below made
+    // BOTH `lastSyncedAt` and `lastSyncedBundleChecksum` read null — "never synced" and "bundle
+    // unknown" over a real sync. `recordBundleTransfer` cannot write this shape (it stamps
+    // `confirmed_at` whenever status is confirmed), so it is inserted directly — exactly as H9a's
+    // own test does, and for the same reason: an unreachable trap is the cheapest kind to disarm,
+    // and H3 has just made two more fields depend on this ordering.
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.insert(bundleTransfers).values({
+        id: randomUUID(),
+        orgId: org.orgId,
+        peerDomainId: peer,
+        direction: "import",
+        kind: "sync",
+        status: "confirmed",
+        sinceSequence: null,
+        throughSequence: null,
+        checksum: "null-confirmed-at-row",
+        transport: null,
+        confirmedAt: null
+      })
+    );
+
+    const found = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      lastConfirmedSyncImportAt(tx, org.orgId, peer)
+    );
+    expect(found?.checksum).toBe("the-real-sync-bundle");
+    expect(found?.at).toBeInstanceOf(Date);
+
+    const entry = await statusFor(peer);
+    expect(entry?.lastSyncedAt ?? null).not.toBeNull();
+    expect(entry?.lastSyncedBundleChecksum).toBe("the-real-sync-bundle");
+    expect(entry?.unknownFields ?? []).not.toContain("lastSyncedBundleChecksum");
   });
 
   it("nothing here disturbs the honest-null case: a bare peer declares every unobservable field", async () => {

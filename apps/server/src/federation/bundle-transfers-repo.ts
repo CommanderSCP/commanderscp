@@ -131,7 +131,15 @@ export async function lastConfirmedSyncImportAt(
         eq(bundleTransfers.status, "confirmed")
       )
     )
-    .orderBy(desc(bundleTransfers.confirmedAt))
+    // `NULLS LAST` is load-bearing here for exactly the reason it is in `lastSyncExportForPeer`
+    // (H9a), and this helper is the one H3 has since made TWO MORE fields depend on. Postgres `DESC`
+    // is NULLS FIRST, so a single confirmed import/sync row with a NULL `confirmed_at` sorted ahead
+    // of every genuinely-stamped one and the `!row?.confirmedAt` bail below reported BOTH
+    // `lastSyncedAt` AND `lastSyncedBundleChecksum` as null — the commander saying "never synced" and
+    // "bundle unknown" over a real, correctly-stamped sync import. `recordBundleTransfer` cannot
+    // write that row today, which is precisely the reachability argument this PR used to justify
+    // disarming the identical trap two files away (review round 5, N8).
+    .orderBy(sql`${bundleTransfers.confirmedAt} DESC NULLS LAST`)
     .limit(1);
   const row = rows[0];
   if (!row?.confirmedAt) return null;

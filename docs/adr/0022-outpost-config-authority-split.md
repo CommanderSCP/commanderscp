@@ -93,9 +93,13 @@ on an import path with no per-entry try/catch — so a closed schema makes every
 fail-closed version-skew hazard: the first time a newer commander adds a second declared-config property
 or a later tier, every outpost on an older migration set rejects that entry and **the whole sync bundle
 aborts**, wedging federation for that peer until upgrade. The strictness that matters is at the API,
-where it costs nothing: the request bodies admit only the known fields and the known tiers, so no
-operator can write either. An unrecognised tier is read as **no tier** and declared unknown, never
-coerced.
+where it costs nothing: the request bodies are `z.strictObject`, so an unknown property or an invented
+tier is **refused with 400** — not silently stripped. That distinction is load-bearing and was wrong in
+the first cut (review round 5, N6): a plain `z.object` DROPPED the unknown key and answered 201, so a
+newer client writing a phase-B property to an older commander got a success and lost its field with no
+signal. An unrecognised tier arriving on the JOURNAL is a different case and is read as **no tier** and
+declared unknown, never coerced — that asymmetry (strict at the operator's door, open on the wire) is
+the whole design.
 
 ## Consequences
 

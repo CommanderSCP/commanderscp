@@ -84,21 +84,35 @@ export async function getFederationStatus(
   // the authority. The projection now carries `originIsSelf`/`provenance`, so the winner is chosen the
   // same way `findOutpostConfigByPeer` chooses one: local-origin first, then a verified replica, then an
   // unverified shadow — and the winner's provenance rides out on the row so phase B can tell them apart.
+  //
+  // RANK FIRST, THEN READ THE WINNER'S TIER (review round 5, N4). The loop used to `continue` on a
+  // tier-less row BEFORE ranking, so the ranking only ever chose among rows that HAPPENED to carry a
+  // value — and a commander's own local-origin object that deliberately asserts NO tier lost to a
+  // hand-typed shadow that did. Measured: `/federation/status` reported `il5` / `unverified` for a
+  // peer whose `GET /v1/federation/outposts/{peer}` answered `trustTier: null, originIsSelf: true`
+  // at the same instant. ADR-0022 says the local-origin row WINS, full stop: A LOCAL-ORIGIN ROW'S
+  // SILENCE MUST SILENCE THE FIELD. Choosing the winner first and reading its tier afterwards is
+  // also exactly what `findOutpostConfigByPeer` does, which is why the two surfaces now agree by
+  // construction rather than by coincidence (`outpost-handfill-wedge` pins the agreement).
   const tierRank = (config: (typeof outpostConfigs)[number]): number =>
     config.originIsSelf ? 0 : config.provenance === "manual" ? 2 : 1;
-  const tierByPeer = new Map<
-    string,
-    { tier: OutpostTrustTier; rank: number; unverified: boolean }
-  >();
+  const winnerByPeer = new Map<string, { config: (typeof outpostConfigs)[number]; rank: number }>();
   for (const config of outpostConfigs) {
-    if (config.trustTier === null) continue;
     const rank = tierRank(config);
-    const current = tierByPeer.get(config.peerDomainId);
+    const current = winnerByPeer.get(config.peerDomainId);
+    // `<=` keeps the FIRST row of a tied class, matching `listOutpostConfigs`' deterministic
+    // `(created_at, id)` order and `byAuthority`'s stable sort.
     if (current !== undefined && current.rank <= rank) continue;
-    tierByPeer.set(config.peerDomainId, {
-      tier: config.trustTier,
-      rank,
-      unverified: config.provenance === "manual"
+    winnerByPeer.set(config.peerDomainId, { config, rank });
+  }
+  const tierByPeer = new Map<string, { tier: OutpostTrustTier; unverified: boolean }>();
+  for (const [peerDomainId, winner] of winnerByPeer) {
+    // The winner asserted nothing -> the field stays unknown for this peer. A lower-ranked row's
+    // value is NOT consulted as a fallback: that fallback is what invented the posture above.
+    if (winner.config.trustTier === null) continue;
+    tierByPeer.set(peerDomainId, {
+      tier: winner.config.trustTier,
+      unverified: winner.config.provenance === "manual"
     });
   }
 

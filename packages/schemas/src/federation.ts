@@ -256,10 +256,15 @@ export type PairPeerRequest = z.infer<typeof PairPeerRequestSchema>;
 //     side, never journaled, written only by pair/re-pair and the narrow PATCH below;
 //   * this OBJECT owns COMMANDER-DECLARED CONFIG (today `trustTier`) plus the `peerDomainId`
 //     binding: commander-origin, journaled, read-only at the outpost.
-// Neither can express the other's fields — the request bodies below carry no transport field, the
-// registered JSON Schema is `additionalProperties: false` over exactly `{peerDomainId, trustTier}`,
-// and `federation_peers` has no trust-tier column. See `federation/outpost-binding.ts` for the
-// normative statement and the tests that check it in both directions.
+// Neither can express the other's fields, and THE REQUEST BODIES BELOW ARE WHAT ENFORCES IT: they
+// carry no transport field of any kind and are the only operator-reachable write path, while
+// `federation_peers` has no trust-tier column. The REGISTERED JSON SCHEMA (drizzle/0043) is
+// deliberately NOT the enforcement — it is journaled and Ajv-validated on the RECEIVING side, so a
+// closed schema would turn every future property into a fail-closed version-skew hazard that aborts
+// whole sync bundles (review round 4, H7), and it accordingly carries neither `additionalProperties`
+// nor a tier enum. This comment used to claim otherwise (review round 5, N5). See
+// `federation/outpost-binding.ts` clause (3) for the normative statement and the tests that check it
+// in both directions.
 // -------------------------------------------------------------------------------------------
 
 /** An owner-ENTERED trust-posture assertion about an outpost — NOT derived, NOT negotiated with the
@@ -287,8 +292,19 @@ export const OutpostTrustTierSchema = z.enum([
 export type OutpostTrustTier = z.infer<typeof OutpostTrustTierSchema>;
 
 /** `POST /federation/outposts` — declare the commander-origin config object for an ALREADY-PAIRED
- *  outpost peer. Carries no transport field of any kind: the peer row is the authority for those. */
-export const CreateOutpostConfigRequestSchema = z.object({
+ *  outpost peer. Carries no transport field of any kind: the peer row is the authority for those.
+ *
+ *  `.strict()` IS THE REFUSAL THE DOCS ALREADY PROMISED (review round 5, N6). Zod's default object
+ *  parse SILENTLY STRIPS an unknown key, so `{peerDomainId, trustTier, somePhaseBProperty}` answered
+ *  **201** and stored `{trustTier, peerDomainId}` — nothing false was stored, but a NEWER CLIENT
+ *  writing a phase-B property to an OLDER commander got a success and watched its field vanish with
+ *  no signal. That is a real hazard for a federated product whose whole point is version skew across
+ *  domains, and drizzle/0043, ADR-0022 and `outpost-binding.ts` all described a refusal the operator
+ *  never saw. An unknown key is now an actionable **400** naming the key. This costs nothing in
+ *  forward-tolerance: the strictness is at the API, where an OPERATOR is typing; the REGISTERED JSON
+ *  SCHEMA stays open so a REPLICA from a newer authority is still stored rather than aborting a whole
+ *  sync bundle (H7 — that asymmetry is the entire design). */
+export const CreateOutpostConfigRequestSchema = z.strictObject({
   /** The paired peer this config is ABOUT (its trust-domain id = `federation_peers.id`). The peer
    *  row must already exist and hold role `outpost`; an unbound id is refused, and a second config
    *  object for the same peer conflicts. */
@@ -303,8 +319,13 @@ export const CreateOutpostConfigRequestSchema = z.object({
 export type CreateOutpostConfigRequest = z.infer<typeof CreateOutpostConfigRequestSchema>;
 
 /** `PATCH /federation/outposts/{peerDomainId}` — edit the commander-origin config. Absent means
- *  PRESERVE. `peerDomainId` is not patchable: the binding IS the object's identity. */
-export const UpdateOutpostConfigRequestSchema = z.object({
+ *  PRESERVE. `peerDomainId` is not patchable: the binding IS the object's identity.
+ *
+ *  `.strict()` for the same reason as the create body (review round 5, N6) — and it also makes the
+ *  "not patchable" sentence above ENFORCED rather than merely stated: sending `peerDomainId` here now
+ *  400s instead of being quietly dropped, which is a materially clearer answer for a client that
+ *  believed it was re-binding the object. */
+export const UpdateOutpostConfigRequestSchema = z.strictObject({
   name: z.string().min(1).max(200).optional(),
   trustTier: OutpostTrustTierSchema.optional(),
   /** Optimistic concurrency against the graph object's `version`, as elsewhere in the graph API. */
@@ -353,8 +374,11 @@ export type OutpostConfig = z.infer<typeof OutpostConfigSchema>;
 /** `POST /federation/outposts/{peerDomainId}/reconcile` — THE RECOVERY VERB (review round 4). Restores
  *  the 1:1 peer↔config binding for a peer whose database holds duplicates: keeps the authoritative row,
  *  ADOPTS an unverified hand-filled shadow when nothing authoritative survives (so entered config is not
- *  discarded), and soft-deletes the remaining shadows. Refuses (409-shaped `notFound` detail) rather than
- *  touch a signature-verified replica. See `federation/outposts-repo.ts`'s `reconcileOutpostConfig`. */
+ *  discarded), and soft-deletes the remaining shadows. Refuses with **409 Conflict** rather than touch a
+ *  signature-verified replica — the peer demonstrably HAS config on that path (`GET` answers 200 for it),
+ *  so a 404 would tell a status-keyed consumer "no outpost config" and hide the very authority conflict
+ *  this door exists to surface. 404 is reserved for the peer that genuinely has no rows at all.
+ *  See `federation/outposts-repo.ts`'s `reconcileOutpostConfig`. */
 export const OutpostConfigReconcileResultSchema = z.object({
   /** The single row that now holds the binding. */
   config: OutpostConfigSchema,

@@ -14,8 +14,15 @@
 -- `poke_mode`, scheduler timestamps: local, per-side, never journaled. This OBJECT is the SOLE
 -- authority for COMMANDER-DECLARED CONFIG about that outpost — today `trustTier` — plus the
 -- `peerDomainId` binding that anchors it to a paired peer row. Neither can express the other's
--- fields: `additionalProperties: false` over exactly `{peerDomainId, trustTier}` makes a transport
--- field UNREPRESENTABLE in this object, and there is no trust-tier column on `federation_peers`.
+-- fields: the create/update REQUEST BODIES (`CreateOutpostConfigRequestSchema` /
+-- `UpdateOutpostConfigRequestSchema`) carry no transport field of any kind and are the only
+-- operator-reachable write path — so no transport field is writable into this object — and there is
+-- no trust-tier column on `federation_peers`. NOTE (review round 5, N5): this clause used to claim
+-- `additionalProperties: false` over exactly `{peerDomainId, trustTier}` did the work. It does not,
+-- and it has not since H7: the registered schema below is DELIBERATELY OPEN and carries neither
+-- `additionalProperties` nor a tier enum (see the section 25 lines down, and the INSERT itself). The
+-- enforcement is at the API, where it costs nothing — naming a protection that no longer exists is
+-- worse than naming none.
 --
 -- `trustTier` is an owner-ENTERED assertion, never derived and never negotiated: until an operator
 -- sets one there is NO value (the key is absent — never blank, never defaulted to 'commercial').
@@ -38,10 +45,12 @@
 -- (0002/0007/0019 all leave theirs open), i.e. a new failure mode for no new protection.
 --
 -- The strictness that matters is at the API, where it costs nothing: the create/update request bodies
--- (`CreateOutpostConfigRequestSchema` / `UpdateOutpostConfigRequestSchema`) admit ONLY the known fields
--- and only the known tier members, so an OPERATOR still cannot write an unknown property or an invented
--- tier here. What the open schema buys is that a REPLICA from a newer authority is stored rather than
--- rejected, and `outposts-repo.ts` reads an unrecognised tier as NO tier — honestly declared unknown.
+-- (`CreateOutpostConfigRequestSchema` / `UpdateOutpostConfigRequestSchema`) are `z.strictObject`, so an
+-- unknown property or an invented tier is REFUSED WITH 400 — not silently stripped (review round 5, N6:
+-- a plain `z.object` DROPPED the key and answered 201, so a newer client writing a phase-B property to
+-- an older commander lost its field with no signal). What the open schema buys is that a REPLICA from a
+-- newer authority is stored rather than rejected, and `outposts-repo.ts` reads an unrecognised tier as
+-- NO tier — honestly declared unknown. Strict at the operator's door, open on the wire.
 -- Clause (3) of the authority-split rule (no transport field is representable in the object) is
 -- therefore enforced by the REQUEST BODIES, which carry no transport field at all, not by this schema.
 --

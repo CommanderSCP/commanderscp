@@ -39,7 +39,9 @@ import { badRequest, conflict } from "../errors.js";
  *  (3) NEITHER MAY EXPRESS THE OTHER'S FIELDS, structurally rather than by convention:
  *        * no transport field is REPRESENTABLE in the object — the create/update REQUEST BODIES
  *          (`CreateOutpostConfigRequestSchema`/`UpdateOutpostConfigRequestSchema`) carry no transport
- *          field of any kind, and they are the only operator-reachable write path. This is deliberately
+ *          field of any kind, they are `z.strictObject` so an unknown property is REFUSED WITH 400
+ *          rather than silently stripped (review round 5, N6), and they are the only operator-reachable
+ *          write path. This is deliberately
  *          NOT enforced by the registered JSON Schema: that schema is journaled and validated on the
  *          RECEIVING side, so making it closed would turn every future property into a fail-closed
  *          version-skew hazard that aborts whole sync bundles (review round 4, H7 — read drizzle/0043's

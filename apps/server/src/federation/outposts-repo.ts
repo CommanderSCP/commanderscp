@@ -8,7 +8,7 @@ import {
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects } from "../db/schema.js";
-import { notFound } from "../errors.js";
+import { conflict, notFound } from "../errors.js";
 import {
   createObject,
   deleteObject,
@@ -292,7 +292,14 @@ export async function reconcileOutpostConfig(
   const surplus = rows.slice(1);
   const unremovable = surplus.filter((o) => !isShadow(o));
   if (unremovable.length > 0) {
-    throw notFound(
+    // 409, NOT 404 (review round 5, N3). This branch fires when the peer DEMONSTRABLY HAS config —
+    // `GET /v1/federation/outposts/{peer}` answers 200 for the very same peer at the same instant —
+    // so answering 404 told a status-keyed consumer "no outpost config" and HID the authority
+    // conflict on the one door that exists to recover from it. The route's own response map already
+    // declared 409 and the schema comment already called this a "409-shaped notFound"; the code is
+    // now the shape it always described. 404 stays for the genuinely-no-rows branch above, which is
+    // the only branch where the resource really is absent.
+    throw conflict(
       `peer '${input.peerDomainId}' has ${rows.length} live outpost config objects and ${unremovable.length} of ` +
         `them are authoritative (locally authored or a signature-verified replica) — reconcile only removes ` +
         `UNVERIFIED hand-filled shadows, because adopting or deleting a verified replica would wedge that ` +
