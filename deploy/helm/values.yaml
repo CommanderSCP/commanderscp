@@ -13,6 +13,20 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+# Federation role of the instance this chart deploys (commander | outpost | retrans). SAME key
+# name and default as `deploy/helm-bundled`'s `federationRole` (that chart's own doc comment) —
+# an operator running both charts against one instance sets the identical value on each install.
+# Unlike the bundled chart's value (chart-render-time LINT metadata only, M15.4), THIS chart's
+# value is wired to a real runtime knob: `SCP_FEDERATION_ROLE` on the api/worker containers
+# (templates/_helpers.tpl's `commanderscp.commonEnv`), read by `config.ts`'s `loadFederationRole`.
+# M16.3 P3 is its one behavioral consumer today: `retrans` withholds the management SPA (`app.ts`)
+# — "no local Gitea/registry, no executor coordination, no deploy machinery, no UI"
+# (BUILD_AND_TEST.md M13.1). `commander`/`outpost` (and this default) preserve the unconditional
+# SPA-serving behavior every pre-M16.3 install already has. Invalid values are rejected at render
+# (see `commanderscp.federationRole` in templates/_helpers.tpl) — the SAME fail-fast validation
+# `deploy/helm-bundled` already applies to its own value.
+federationRole: commander
+
 serviceAccount:
   create: true
   name: ""

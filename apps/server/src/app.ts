@@ -251,42 +251,60 @@ export async function buildApp(
   // route per real file (e.g. `/assets/index-*.js`) instead of a dynamic wildcard — the SPA
   // client-side-routing fallback below handles everything else. `decorateReply: false` avoids
   // colliding with the `/static/` registration above, which already added `reply.sendFile`.
-  const webDistRoot = path.resolve(__dirname, "../../web/dist");
-  await app.register(fastifyStatic, {
-    root: webDistRoot,
-    prefix: "/",
-    wildcard: false,
-    decorateReply: false
-  });
+  //
+  // M16.3 P3 (owner decision 2026-07-29): a `role: retrans` relay MUST NOT serve this — the
+  // profile is "no local Gitea/registry, no executor coordination, no deploy machinery, no UI"
+  // (BUILD_AND_TEST.md M13.1), and a retrans sits at the most sensitive point in the topology (a
+  // CDS boundary). Gated on `deps.config.federationRole` — the install-time/deployment-wide axis
+  // (`config.ts`'s doc comment on `federationRole` explains why THIS axis, not `SCP_ROLE` and not
+  // the per-org `self_domain.role`, governs here). Every other value (the `commander`/`outpost`
+  // defaults every pre-M16.3 deployment already has) preserves the unconditional-serve behavior
+  // byte-for-byte.
+  if (deps.config.federationRole !== "retrans") {
+    const webDistRoot = path.resolve(__dirname, "../../web/dist");
+    await app.register(fastifyStatic, {
+      root: webDistRoot,
+      prefix: "/",
+      wildcard: false,
+      decorateReply: false
+    });
 
-  const webIndexHtmlPath = path.join(webDistRoot, "index.html");
-  let cachedIndexHtml: string | undefined;
+    const webIndexHtmlPath = path.join(webDistRoot, "index.html");
+    let cachedIndexHtml: string | undefined;
 
-  // Low-priority catch-all: find-my-way (Fastify's router) always prefers the exact/static
-  // routes @fastify/static just registered over this wildcard, for any request that lands here
-  // at all — so real built assets are served directly, and this only ever runs for SPA
-  // client-side routes (`/services`, `/graph/abc`, ...) that have no matching file on disk. The
-  // explicit `/api/`, `/static/`, `/healthz` guard is belt-and-braces on top of that route
-  // precedence, so an unmatched API path still 404s as JSON rather than getting served HTML.
-  app.get("/*", async (request, reply) => {
-    if (
-      request.url.startsWith("/api/") ||
-      request.url.startsWith("/static/") ||
-      request.url === "/healthz"
-    ) {
+    // Low-priority catch-all: find-my-way (Fastify's router) always prefers the exact/static
+    // routes @fastify/static just registered over this wildcard, for any request that lands here
+    // at all — so real built assets are served directly, and this only ever runs for SPA
+    // client-side routes (`/services`, `/graph/abc`, ...) that have no matching file on disk. The
+    // explicit `/api/`, `/static/`, `/healthz` guard is belt-and-braces on top of that route
+    // precedence, so an unmatched API path still 404s as JSON rather than getting served HTML.
+    app.get("/*", async (request, reply) => {
+      if (
+        request.url.startsWith("/api/") ||
+        request.url.startsWith("/static/") ||
+        request.url === "/healthz"
+      ) {
+        reply.callNotFound();
+        return;
+      }
+      try {
+        cachedIndexHtml ??= await readFile(webIndexHtmlPath, "utf8");
+      } catch {
+        reply
+          .status(503)
+          .send("Web UI is not built — run `pnpm --filter @scp/web build` (apps/web/dist missing).");
+        return;
+      }
+      reply.type("text/html").send(cachedIndexHtml);
+    });
+  } else {
+    // A retrans instance still needs the API (`/api/*`) and `/healthz` to work — only the UI/static
+    // surface is withheld. Anything that isn't `/api/*`/`/healthz` 404s as JSON here (never HTML),
+    // same shape the guarded catch-all above already used for a bad API path.
+    app.get("/*", async (request, reply) => {
       reply.callNotFound();
-      return;
-    }
-    try {
-      cachedIndexHtml ??= await readFile(webIndexHtmlPath, "utf8");
-    } catch {
-      reply
-        .status(503)
-        .send("Web UI is not built — run `pnpm --filter @scp/web build` (apps/web/dist missing).");
-      return;
-    }
-    reply.type("text/html").send(cachedIndexHtml);
-  });
+    });
+  }
 
   return app;
 }

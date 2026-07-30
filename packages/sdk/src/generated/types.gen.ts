@@ -8987,6 +8987,7 @@ export type ListChangesResponses = {
             };
             createdAt: string;
             updatedAt: string;
+            originDomainId?: string;
         }>;
         nextCursor: string | null;
     };
@@ -9093,6 +9094,7 @@ export type ProposeChangeResponses = {
         };
         createdAt: string;
         updatedAt: string;
+        originDomainId?: string;
     };
 };
 
@@ -9174,6 +9176,7 @@ export type GetChangeResponses = {
         };
         createdAt: string;
         updatedAt: string;
+        originDomainId?: string;
     };
 };
 
@@ -9256,6 +9259,7 @@ export type ExplainChangeResponses = {
             };
             createdAt: string;
             updatedAt: string;
+            originDomainId?: string;
         };
         plan: {
             id: string;
@@ -9457,6 +9461,7 @@ export type CancelChangeResponses = {
         };
         createdAt: string;
         updatedAt: string;
+        originDomainId?: string;
     };
 };
 
@@ -9552,6 +9557,7 @@ export type AcceptChangeResponses = {
         };
         createdAt: string;
         updatedAt: string;
+        originDomainId?: string;
     };
 };
 
@@ -9646,6 +9652,7 @@ export type RollbackChangeResponses = {
         };
         createdAt: string;
         updatedAt: string;
+        originDomainId?: string;
     };
 };
 
@@ -12744,6 +12751,7 @@ export type RollbackCampaignResponses = {
                 };
                 createdAt: string;
                 updatedAt: string;
+                originDomainId?: string;
             };
         }>;
         skipped: Array<{

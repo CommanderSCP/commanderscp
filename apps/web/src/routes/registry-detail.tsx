@@ -6,6 +6,14 @@ import { client } from "../lib/client";
 import { findRegistry, getEdgeClient, getOwnerClient, getRegistryClient } from "../lib/registries";
 import { registryDetailKey, registryListKey } from "../lib/query-client";
 import { useBasePathParam, useIdOrUrnParam } from "../lib/use-route-params";
+import {
+  ForeignOriginNotice,
+  isForeignOriginObject,
+  isMergeLoserBlocked,
+  isMoveBlocked,
+  replicaGuard,
+  useOwnDomainId
+} from "../lib/replica-origin";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -27,6 +35,7 @@ export function RegistryDetailPage(): React.JSX.Element {
   const idOrUrn = useIdOrUrnParam();
   const registry = findRegistry(basePath);
   const detailKey = registryDetailKey(basePath ?? "", idOrUrn ?? "");
+  const { domainId: ownDomainId } = useOwnDomainId();
 
   const objectQuery = useQuery({
     queryKey: detailKey,
@@ -67,14 +76,25 @@ export function RegistryDetailPage(): React.JSX.Element {
   }
 
   const object = objectQuery.data;
+  // M16.3 P2 (REMEASURED): is THIS object a read-only replica of another domain's config? It is
+  // used ONLY to render the provenance badge below — NOT to gate the cards. Measurement
+  // (`apps/server/src/federation/foreign-origin-writes.integration.test.ts`) showed the server
+  // accepts every write those cards offer against a foreign-origin object; the two writes it does
+  // refuse are keyed on a DIFFERENT row's origin (the `contains` edge, the merge loser), so each
+  // card derives its own gate from the row the server actually guards. See
+  // `lib/replica-origin.tsx`'s module doc for the full measured table.
+  const foreign = isForeignOriginObject(object.originDomainId, ownDomainId);
 
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-900" data-testid="object-name">
-            {object.name}
-          </h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-semibold text-slate-900" data-testid="object-name">
+              {object.name}
+            </h1>
+            {foreign && <ForeignOriginNotice originDomainId={object.originDomainId} />}
+          </div>
           <p className="font-mono text-xs text-slate-500">{object.urn}</p>
         </div>
         <div className="flex items-center gap-2">
@@ -125,7 +145,9 @@ export function RegistryDetailPage(): React.JSX.Element {
         </CardContent>
       </Card>
 
-      {registry.serviceMember && <ComponentServiceCard componentId={object.id} detailKey={detailKey} />}
+      {registry.serviceMember && (
+        <ComponentServiceCard componentId={object.id} detailKey={detailKey} />
+      )}
 
       {registry.ownable && (
         <Card>
@@ -189,6 +211,10 @@ export function RegistryDetailPage(): React.JSX.Element {
         </div>
       )}
 
+      {/* NOT gated on `foreign`: `foreign-origin-writes.integration.test.ts` measures PUT/DELETE/
+          PATCH `/executors/:idOrUrn/binding` all SUCCEEDING against a foreign-origin target. This is
+          the multi-region workflow (DESIGN.md §12.6) — an outpost binds its OWN local Argo CD to a
+          commander-origin deployment-target, then must be able to detach/relabel it. */}
       {(object.typeId === "component" || object.typeId === "deployment-target") && (
         <TargetBindingsCard targetId={object.id} detailKey={detailKey} />
       )}
@@ -219,6 +245,7 @@ function ComponentServiceCard({
 }): React.JSX.Element {
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState("");
+  const { domainId: ownDomainId } = useOwnDomainId();
 
   const containsQuery = useQuery({
     queryKey: [...detailKey, "service"],
@@ -229,8 +256,23 @@ function ComponentServiceCard({
     queryFn: () => client.services.list({ limit: 100 })
   });
 
-  const currentServiceId = containsQuery.data?.items[0]?.fromId;
+  const currentEdge = containsQuery.data?.items[0];
+  const currentServiceId = currentEdge?.fromId;
   const currentService = servicesQuery.data?.items.find((s) => s.id === currentServiceId);
+  // M16.3 P2 (REMEASURED) — the ONE gate here, and it is keyed on the `contains` EDGE, not on the
+  // component. `components-repo.ts`'s `setComponentService` soft-deletes the current edge before
+  // creating the new one, and `deleteRelationship` refuses a foreign-origin edge (409). An ASSIGN
+  // (no current edge) is a pure `createRelationship`, which never consults its endpoints' origins:
+  // `foreign-origin-writes.integration.test.ts` measures BOTH "ASSIGN ... SUCCEEDS even when the
+  // COMPONENT is foreign-origin" and "MOVE across a LOCALLY-originated contains edge SUCCEEDS even
+  // when the COMPONENT is foreign-origin", against "MOVE across a FOREIGN-ORIGIN contains edge
+  // 409s". Gating on the component's own origin (the first cut) blocked two writes the server
+  // accepts and missed the one it refuses.
+  const moveBlocked = isMoveBlocked(currentEdge, ownDomainId);
+  const moveGuard = replicaGuard(
+    moveBlocked,
+    "Moving this component would delete its current service edge, which `deleteRelationship` refuses here:"
+  );
 
   const setServiceMutation = useMutation({
     mutationFn: (serviceId: string) => client.components.setService(componentId, serviceId),
@@ -269,8 +311,8 @@ function ComponentServiceCard({
             <label htmlFor="assign-service" className="text-xs font-medium text-slate-600">
               {currentServiceId ? "Move to service" : "Assign to service"}
             </label>
-            <Select value={selected} onValueChange={setSelected}>
-              <SelectTrigger id="assign-service" data-testid="assign-service-select">
+            <Select value={selected} onValueChange={setSelected} disabled={moveBlocked}>
+              <SelectTrigger id="assign-service" data-testid="assign-service-select" {...moveGuard}>
                 <SelectValue placeholder="Select a service…" />
               </SelectTrigger>
               <SelectContent>
@@ -285,9 +327,10 @@ function ComponentServiceCard({
             </Select>
           </div>
           <Button
-            disabled={!selected || setServiceMutation.isPending}
+            disabled={moveBlocked || !selected || setServiceMutation.isPending}
             onClick={() => selected && setServiceMutation.mutate(selected)}
             data-testid="assign-service-submit"
+            title={moveGuard.title}
           >
             {setServiceMutation.isPending ? "Saving…" : currentServiceId ? "Move" : "Assign"}
           </Button>
@@ -306,6 +349,19 @@ function ComponentServiceCard({
  * A target's executor bindings (M12 P5c) — one per pipeline (infra/software). Lists each binding
  * with its module/instance and lets an operator DETACH it or RELABEL which pipeline it drives. This
  * is the UI half of the P5c binding primitives; creating a binding still lives on the Plugins page.
+ *
+ * DELIBERATELY UNGATED ON FEDERATION ORIGIN (M16.3 P2, remeasured). An executor binding is
+ * per-(org, target, type) LOCAL operational config: `db/schema.ts`'s `executor_bindings` has no
+ * `origin_domain_id` column, it is never carried in a federation journal, and
+ * `routes/executors.ts`'s PUT/DELETE/PATCH handlers check only `object:write` RBAC on the target —
+ * they never read the target's `originDomainId`. `apps/server/src/federation/
+ * foreign-origin-writes.integration.test.ts` measures all three SUCCEEDING against a genuinely
+ * foreign-origin target. Disabling them (the first cut of this milestone) broke the documented
+ * multi-region workflow — DESIGN.md §12.6 / BUILD_AND_TEST.md M15.6: "a region is a
+ * deployment-target ... its per-region Argo CD is an ordinary per-region executor binding", i.e. an
+ * outpost binding its OWN local Argo CD to a target that is commander-origin from where it sits.
+ * It was also internally inconsistent with `plugins.tsx`'s bind form, which creates bindings against
+ * any target with no origin gating at all: bind-but-never-detach.
  */
 function TargetBindingsCard({
   targetId,
@@ -418,6 +474,7 @@ function MergeComponentCard({
 }): React.JSX.Element {
   const queryClient = useQueryClient();
   const [loser, setLoser] = useState("");
+  const { domainId: ownDomainId } = useOwnDomainId();
 
   const componentsQuery = useQuery({
     queryKey: registryListKey("components"),
@@ -433,7 +490,20 @@ function MergeComponentCard({
     }
   });
 
-  const candidates = (componentsQuery.data?.items ?? []).filter((c) => c.id !== survivorId);
+  // M16.3 P2 (REMEASURED) — the ONE gate here, and it is keyed on the LOSER. `mergeComponents`
+  // soft-deletes the loser via `deleteObject`, whose single-writer guard 409s on a replica:
+  // `foreign-origin-writes.integration.test.ts`'s "merge 409s when the LOSER is foreign-origin".
+  // The SURVIVOR's origin is NOT gated — the only write against it is `repointExecutorBindingTarget`,
+  // an unguarded UPDATE of `executor_bindings`, and the same test measures "merge SUCCEEDS when the
+  // SURVIVOR is foreign-origin". A foreign-origin loser is rendered DISABLED + EXPLAINED rather than
+  // silently dropped from the list (the first cut filtered it out), so an operator can see the
+  // candidate and learn why it can't be folded in here.
+  const candidates = (componentsQuery.data?.items ?? [])
+    .filter((c) => c.id !== survivorId)
+    .map((c) => ({
+      ...c,
+      loserBlocked: isMergeLoserBlocked(c, ownDomainId)
+    }));
 
   return (
     <Card>
@@ -456,8 +526,18 @@ function MergeComponentCard({
               </SelectTrigger>
               <SelectContent>
                 {candidates.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>
-                    {c.name}
+                  <SelectItem
+                    key={c.id}
+                    value={c.id}
+                    data-testid={c.loserBlocked ? `merge-loser-blocked-${c.id}` : undefined}
+                    {...replicaGuard(
+                      c.loserBlocked,
+                      "Merging this component in would soft-delete it, which `deleteObject` refuses here:"
+                    )}
+                  >
+                    {/* A disabled Radix item is `pointer-events-none`, so its `title` tooltip is
+                        unreachable on hover — the reason has to be visible in the label itself. */}
+                    {c.loserBlocked ? `${c.name} — read-only replica, owned elsewhere` : c.name}
                   </SelectItem>
                 ))}
               </SelectContent>

@@ -49,7 +49,34 @@ export const ChangeSchema = z.object({
   watchdogFlaggedAt: z.string().datetime().nullable(),
   properties: z.record(z.string(), z.unknown()),
   createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime()
+  updatedAt: z.string().datetime(),
+  /**
+   * M16.3 P2 (additive) — the underlying graph object's `origin_domain_id` (`objects.
+   * origin_domain_id`, same field `GraphObjectSchema.originDomainId` carries for every other
+   * typed resource, and the SAME authoritative field `coordination/service-board.ts`'s
+   * `drivenHere`/`originDomainId` are already derived from — NOT `importedFromDomain` above,
+   * which is a narrower "which peer's promotion bundle did THIS import come through" stamp, set
+   * only on promotion-imported changes (federation/promotion-repo.ts), not the general
+   * single-writer-authority origin every object carries).
+   *
+   * `originDomainId` was missing from the wire `Change` shape entirely before this — the ONLY
+   * SDK-reachable domain-identity field on a change was `importedFromDomain`, which is null for
+   * every plain (non-promotion-bundle) federation-synced change, so a UI could not tell "this
+   * change is a read-only replica of another domain's change" from "this change was authored
+   * here" without it. `federation.self()` (`GET /federation/self`) already gives a caller its OWN
+   * domain id; comparing the two is what `apps/web`'s `isForeignOriginObject`
+   * (`apps/web/src/lib/replica-origin.tsx`) uses to render the `ForeignOriginNotice` provenance
+   * badge on `change-detail.tsx`. It is deliberately NOT used there to disable Accept/Rollback/
+   * Cancel: `apps/server/src/federation/foreign-origin-writes.integration.test.ts` measured the
+   * transition verbs answering a foreign-origin change identically to a local one in the same
+   * state (never a single-writer refusal, in `proposed` or in `validating`), so a client-side
+   * gate on this field would be simulating server enforcement that does not exist.
+   *
+   * Optional (not `.nullable()`) so it defaults to `undefined` — matching every other additive
+   * `/v1` field (CLAUDE.md: "every new field must be OPTIONAL") — rather than forcing every
+   * existing caller that builds a `Change`-shaped object by hand (tests, fixtures) to supply it.
+   */
+  originDomainId: z.string().uuid().optional()
 });
 export type Change = z.infer<typeof ChangeSchema>;
 

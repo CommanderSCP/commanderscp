@@ -1195,6 +1195,61 @@ function main(): void {
     console.log(`  negative case (default-deny as \`egress: []\`) correctly recognised as deny-all`);
   }
 
+  // M16.3 P3 — the MAIN chart's `federationRole` value must reach the api/worker containers as
+  // `SCP_FEDERATION_ROLE` (templates/_helpers.tpl's `commanderscp.commonEnv`), the runtime knob
+  // `config.ts`'s `loadFederationRole` reads to gate SPA registration (`app.ts`) off for a
+  // `retrans` relay. Unlike the M15.4 bundled-backend guardrail above (a render-time LINT only —
+  // that one is explicitly NOT runtime authority, per that block's own comment), THIS is asserting
+  // the actual wiring a live pod boots with: render the main chart with `federationRole=retrans`
+  // and check the env var landed, by name, on both Deployments' `scpd` containers. A regression
+  // that dropped this env var from `commonEnv` (or reverted app.ts's gate) would leave a retrans
+  // instance silently serving the SPA again — exactly the defect this milestone fixes — so this
+  // assertion is what keeps it caught at render time, permanently, in CI.
+  console.log("helm-verify: checking the main chart wires SCP_FEDERATION_ROLE through to api/worker...");
+  {
+    const roleLabel = "federation-role-runtime-env";
+    function scpFederationRoleEnvOf(docs: K8sDoc[], deploymentName: string): string | undefined {
+      const doc = docs.find((d) => d.kind === "Deployment" && d.metadata?.name === deploymentName);
+      const containers = podSpecOf(doc ?? ({} as K8sDoc))?.containers ?? [];
+      for (const c of containers) {
+        const found = c.env?.find((e) => e.name === "SCP_FEDERATION_ROLE");
+        if (found) return found.value;
+      }
+      return undefined;
+    }
+
+    // Same release name for both renders below (helm template doesn't require uniqueness across
+    // separate invocations) — `commanderscp.fullname` is a function of `.Release.Name`, so a
+    // differing release name would differ the Deployment name too and break the by-name lookup.
+    const releaseName = "verify-fedrole";
+
+    const defaultDocs = renderChart(releaseName, []);
+    const apiName = defaultDocs.find((d) => d.kind === "Deployment" && d.metadata?.name?.endsWith("-api"))
+      ?.metadata?.name;
+    const workerName = defaultDocs.find(
+      (d) => d.kind === "Deployment" && d.metadata?.name?.endsWith("-worker")
+    )?.metadata?.name;
+    assert(
+      !!apiName && scpFederationRoleEnvOf(defaultDocs, apiName) === "commander",
+      `[${roleLabel}] default render (federationRole unset) must carry SCP_FEDERATION_ROLE=commander on the api Deployment`
+    );
+    assert(
+      !!workerName && scpFederationRoleEnvOf(defaultDocs, workerName) === "commander",
+      `[${roleLabel}] default render (federationRole unset) must carry SCP_FEDERATION_ROLE=commander on the worker Deployment`
+    );
+
+    const retransDocs = renderChart(releaseName, ["--set", "federationRole=retrans"]);
+    assert(
+      scpFederationRoleEnvOf(retransDocs, apiName ?? "") === "retrans",
+      `[${roleLabel}] federationRole=retrans render must carry SCP_FEDERATION_ROLE=retrans on the api Deployment (the value app.ts gates SPA registration on)`
+    );
+    assert(
+      scpFederationRoleEnvOf(retransDocs, workerName ?? "") === "retrans",
+      `[${roleLabel}] federationRole=retrans render must carry SCP_FEDERATION_ROLE=retrans on the worker Deployment`
+    );
+    console.log(`  SCP_FEDERATION_ROLE present + correct on both Deployments for default and retrans renders`);
+  }
+
   // Size-regression guard: the MAIN chart's Helm release Secret must stay under Kubernetes' 1 MB
   // limit. Helm stores base64(gzip(whole chart)) in the release — a vendored backend manifest
   // creeping into deploy/helm would blow past 1 MB and break `helm install` outright (the M11

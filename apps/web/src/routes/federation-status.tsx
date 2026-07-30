@@ -10,6 +10,7 @@ import {
   TableHeader,
   TableRow
 } from "../components/ui/table";
+import { federationSelfKey } from "../lib/query-client";
 
 const federationStatusKey = ["federation", "status"];
 
@@ -56,7 +57,7 @@ function transferStatusBadge(status: string): React.JSX.Element {
  */
 export function FederationStatusPage(): React.JSX.Element {
   const selfQuery = useQuery({
-    queryKey: ["federation", "self"],
+    queryKey: federationSelfKey(),
     queryFn: () => client.federation.self()
   });
 

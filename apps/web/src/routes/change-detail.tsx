@@ -11,6 +11,7 @@ import type { ApprovalRequest } from "@scp/schemas";
 import { client } from "../lib/client";
 import { changeApprovalsKey, changeDetailKey, changeListKey } from "../lib/query-client";
 import { useIdParam } from "../lib/use-route-params";
+import { ForeignOriginNotice, isForeignOriginObject, useOwnDomainId } from "../lib/replica-origin";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge, type BadgeProps } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -266,6 +267,7 @@ export function ChangeDetailPage(): React.JSX.Element {
   const detailKey = changeDetailKey(id ?? "");
   const [cancelOpen, setCancelOpen] = useState(false);
   const [rollbackOpen, setRollbackOpen] = useState(false);
+  const { domainId: ownDomainId } = useOwnDomainId();
 
   const explainQuery = useQuery({
     queryKey: detailKey,
@@ -350,9 +352,28 @@ export function ChangeDetailPage(): React.JSX.Element {
   }
 
   const { change, plan, decisions, controlRuns, waitStatus } = explainQuery.data;
+  // These three gate ONLY on change STATE — whether the button is offered AT ALL for this lifecycle
+  // state.
+  //
+  // M16.3 P2 (REMEASURED): Accept/Rollback/Cancel are deliberately NOT additionally gated on the
+  // change's federation origin. `apps/server/src/federation/foreign-origin-writes.integration.test.ts`
+  // measures cancel SUCCEEDING on a foreign-origin change; accept/rollback answering one
+  // byte-identically to a local change in the same state when that state is `proposed` (same
+  // status, same problem title); AND — the state that actually matters, since `validating` is the
+  // only state `ACCEPTABLE_STATES` above offers Accept for — accept/rollback SUCCEEDING outright
+  // on a foreign-origin change once it reaches `validating`. The transition verbs write the
+  // `changes` state-machine row and never route through `updateObject`, so the single-writer guard
+  // is simply not on this path in any state. The first cut of this milestone disabled all three
+  // anyway, on an uncited claim that the server refuses them. Whether the server SHOULD refuse an
+  // accept on a change another domain drives is a real open question (`service-board.ts` already
+  // models `drivenHere`), but it is a SERVER decision — the UI must not simulate an enforcement
+  // that does not exist. Recorded as an out-of-scope finding in the PR body's "Out of scope —
+  // genuine server-side findings" section (finding (a): foreign-origin accept/rollback/cancel).
   const canCancel = CANCELLABLE_STATES.includes(change.state);
   const canAccept = ACCEPTABLE_STATES.includes(change.state);
   const canRollback = ROLLBACKABLE_STATES.includes(change.state);
+  // Provenance badge only — never a gate (see above).
+  const foreign = isForeignOriginObject(change.originDomainId, ownDomainId);
 
   return (
     <div className="flex flex-col gap-6">
@@ -366,6 +387,9 @@ export function ChangeDetailPage(): React.JSX.Element {
               {change.state}
             </Badge>
             {change.emergency && <Badge variant="destructive">Emergency</Badge>}
+            {foreign && change.originDomainId && (
+              <ForeignOriginNotice originDomainId={change.originDomainId} />
+            )}
           </div>
           <p className="text-sm text-slate-500">
             {change.sourceKind ? `Source: ${change.sourceKind}` : "No source kind"}
