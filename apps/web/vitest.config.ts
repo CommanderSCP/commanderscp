@@ -5,14 +5,22 @@ import { configDefaults, defineConfig } from "vitest/config";
  * same-directory `vitest.config.ts` in preference to `vite.config.ts` automatically, so this is
  * the whole of apps/web's Vitest configuration.
  *
- * DELIBERATELY still no plugins and no `environment` (the default Node one). The component tests
- * that do exist under `src/` (`routes/service-board-honesty.test.tsx`) render through
- * `react-dom/server`'s `renderToStaticMarkup` — a string, no DOM — so they need neither jsdom nor
- * `@vitejs/plugin-react`: `.tsx` is transformed by Vite's own esbuild honouring tsconfig's
+ * DELIBERATELY still no plugins, and the DEFAULT `environment` is still the Node one. Most component
+ * tests under `src/` (e.g. `routes/service-board-honesty.test.tsx`) render through
+ * `react-dom/server`'s `renderToStaticMarkup` — a string, no DOM — so they need neither a DOM library
+ * nor `@vitejs/plugin-react`: `.tsx` is transformed by Vite's own esbuild honouring tsconfig's
  * `"jsx": "react-jsx"`. That keeps them inside the existing "4. Unit tests" CI job with zero new
- * dependencies and zero new jobs. Anything needing real DOM APIs (events, layout, refs) would need
- * a DOM environment added here first — no such test exists, and adding one is a deliberate choice,
- * not an accident.
+ * jobs.
+ *
+ * A DOM ENVIRONMENT IS NOW AVAILABLE, PER FILE, AND THAT WAS A DELIBERATE CHOICE (M16.2 phase B,
+ * round 3). A string render CANNOT FIRE A HANDLER, so every behavioural guarantee on this branch had
+ * been pinned as an ATTRIBUTE or a LABEL rendered NEXT TO the handler — a second copy of the claim,
+ * free to diverge from it. It did: replacing `onReconcile(defaultKeep.objectId)` with
+ * `onReconcile(undefined)` in `routes/outpost-configuration.tsx` left the entire suite green while
+ * restoring exactly the bare destructive call that work existed to remove. `happy-dom` (the smaller
+ * of the two DOM libraries; a devDependency of `apps/web` only) fixes the cause: a test that needs
+ * real events opts in with a `// @vitest-environment happy-dom` docblock on its FIRST LINE and uses
+ * `src/test-support/render-dom.tsx`. No global default changes, so no existing test pays for it.
  *
  * Its one real job: exclude the PLAYWRIGHT SPECS (apps/web/e2e/*.spec.ts, run only via
  * `pnpm --filter @scp/web test:e2e` / playwright.config.ts) from Vitest's default
