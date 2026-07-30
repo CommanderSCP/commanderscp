@@ -56,6 +56,32 @@ function visibleText(html: string): string {
   return html.replace(/<[^>]*>/g, " ");
 }
 
+/**
+ * The markup of exactly ONE `data-testid`-tagged element, tags balanced.
+ *
+ * This exists because a whole-row `toContain` cannot tell WHICH cell satisfied it. The two sourceless
+ * cells are the always-taken branch of `SourcelessCell` (the server declares `appliedAtPeer` and
+ * `healthRollup` for every peer on every response), so an assertion that a cell's CONTENT is the
+ * unknown marker has to be scoped to that cell — otherwise a sibling cell's marker keeps it green
+ * while this one renders a fabricated reading.
+ */
+function elementByTestId(html: string, testId: string): string {
+  const attr = html.indexOf(`data-testid="${testId}"`);
+  expect(attr, `no element carries data-testid="${testId}"`).toBeGreaterThanOrEqual(0);
+  const open = html.lastIndexOf("<", attr);
+  const tag = /^<([a-zA-Z0-9-]+)/.exec(html.slice(open))?.[1];
+  if (!tag) throw new Error(`could not read the tag name for data-testid="${testId}"`);
+  const scan = new RegExp(`<${tag}(?=[\\s/>])|</${tag}>`, "g");
+  scan.lastIndex = open;
+  let depth = 0;
+  let match: RegExpExecArray | null;
+  while ((match = scan.exec(html)) !== null) {
+    depth += match[0].startsWith("</") ? -1 : 1;
+    if (depth === 0) return html.slice(open, match.index + match[0].length);
+  }
+  throw new Error(`unbalanced <${tag}> around data-testid="${testId}"`);
+}
+
 function renderRow(status: FederationPeerStatus): string {
   return renderToStaticMarkup(
     <table>
@@ -229,7 +255,7 @@ describe("outposts overview: no string claims the outpost has anything", () => {
     expect(html).not.toContain("bg-green-600");
   });
 
-  it("renders applied-at-peer and health as explicit unknowns, not blanks", () => {
+  it("renders applied-at-peer and health as explicit unknowns, not blanks — CONTENT, per cell", () => {
     const html = renderRow(caughtUp);
 
     expect(html).toContain('data-testid="outpost-appliedAtPeer"');
@@ -237,6 +263,24 @@ describe("outposts overview: no string claims the outpost has anything", () => {
     // Both DECLARED unknown by the server, so both take the unknown branch…
     expect(html).toContain('data-declared="unknown"');
     expect(html).not.toContain('data-declared="undeclared"');
+
+    // …and THIS is the half that actually bites. `status-repo.ts` pushes both field names into
+    // `unknownFields` for EVERY peer on EVERY response, so the declared branch is the ALWAYS-TAKEN
+    // one — yet asserting only the attributes above leaves the branch's rendered CONTENT entirely
+    // unpinned: swap `<UnknownHere/>` for the literal `healthy`, or for a `0`, and every attribute
+    // assertion still holds. Scope to each cell and pin what an operator READS.
+    for (const field of ["appliedAtPeer", "healthRollup"]) {
+      const cell = elementByTestId(html, `outpost-${field}`);
+      expect(cell, `${field} took the wrong branch`).toContain('data-declared="unknown"');
+      expect(cell, `${field} dropped the unknown marker`).toContain(
+        'data-testid="outpost-unknown"'
+      );
+      // The marker's own text, and nothing else — not a value, not a zero, not a blank.
+      expect(visibleText(cell).trim(), `${field} does not read as an unknown`).toBe("unknown here");
+      // Named explicitly because these are the two fabrications this cell invites: a health word, or
+      // a count that reads as "none outstanding".
+      expect(visibleText(cell)).not.toMatch(/healthy|degraded|applied|\d/);
+    }
   });
 
   it("an OLDER server that declares nothing still cannot make a never-exported peer look exported", () => {
