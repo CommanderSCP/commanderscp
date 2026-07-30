@@ -13337,6 +13337,222 @@ export type PairPeerResponses = {
 
 export type PairPeerResponse = PairPeerResponses[keyof PairPeerResponses];
 
+export type GetFederationPeerData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/federation/peers/{id}';
+};
+
+export type GetFederationPeerErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetFederationPeerError = GetFederationPeerErrors[keyof GetFederationPeerErrors];
+
+export type GetFederationPeerResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        name: string;
+        role: 'unset' | 'commander' | 'outpost' | 'retrans';
+        baseUrl: string | null;
+        syncScope: {
+            mode: 'full';
+        } | {
+            mode: 'policies_only';
+        } | {
+            mode: 'changes_only';
+        } | {
+            mode: 'status_only';
+        } | {
+            mode: 'custom';
+            labelSelector: {
+                [key: string]: string;
+            };
+        };
+        publicKey: string;
+        cosignPublicKey?: string | null;
+        deliveryTarget?: {
+            provider: string;
+            outDir?: string;
+            inDir?: string;
+            endpoint?: string;
+            bucket?: string;
+            outPrefix?: string;
+            inPrefix?: string;
+        } | null;
+        pokeMode?: boolean;
+        pairedAt: string;
+    };
+};
+
+export type GetFederationPeerResponse = GetFederationPeerResponses[keyof GetFederationPeerResponses];
+
+export type UpdateFederationPeerData = {
+    body: {
+        name?: string;
+        baseUrl?: string;
+        syncScope?: {
+            mode: 'full';
+        } | {
+            mode: 'policies_only';
+        } | {
+            mode: 'changes_only';
+        } | {
+            mode: 'status_only';
+        } | {
+            mode: 'custom';
+            labelSelector: {
+                [key: string]: string;
+            };
+        };
+        deliveryTarget?: {
+            provider: 'filesystem';
+            outDir?: string;
+            inDir?: string;
+        } | {
+            provider: 's3-compatible';
+            endpoint: string;
+            bucket: string;
+            outPrefix?: string;
+            inPrefix?: string;
+        } | null;
+        pokeMode?: boolean;
+    };
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/federation/peers/{id}';
+};
+
+export type UpdateFederationPeerErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpdateFederationPeerError = UpdateFederationPeerErrors[keyof UpdateFederationPeerErrors];
+
+export type UpdateFederationPeerResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        name: string;
+        role: 'unset' | 'commander' | 'outpost' | 'retrans';
+        baseUrl: string | null;
+        syncScope: {
+            mode: 'full';
+        } | {
+            mode: 'policies_only';
+        } | {
+            mode: 'changes_only';
+        } | {
+            mode: 'status_only';
+        } | {
+            mode: 'custom';
+            labelSelector: {
+                [key: string]: string;
+            };
+        };
+        publicKey: string;
+        cosignPublicKey?: string | null;
+        deliveryTarget?: {
+            provider: string;
+            outDir?: string;
+            inDir?: string;
+            endpoint?: string;
+            bucket?: string;
+            outPrefix?: string;
+            inPrefix?: string;
+        } | null;
+        pokeMode?: boolean;
+        pairedAt: string;
+    };
+};
+
+export type UpdateFederationPeerResponse = UpdateFederationPeerResponses[keyof UpdateFederationPeerResponses];
+
 export type GetFederationStatusData = {
     body?: never;
     path?: never;
@@ -13383,6 +13599,7 @@ export type GetFederationStatusResponses = {
             publicKey: string;
             cosignPublicKey?: string | null;
         } | null;
+        ownJournalTail?: number | null;
         peers: Array<{
             peer: {
                 id: string;
@@ -13423,6 +13640,14 @@ export type GetFederationStatusResponses = {
             lastPullSuccessAt?: string | null;
             lastPokeReceivedAt?: string | null;
             effectiveCadence?: 'poke' | 'poll';
+            lastExportedThroughSequence?: number | null;
+            lastExportedAt?: string | null;
+            lastExportedBundleChecksum?: string | null;
+            lastSyncedBundleChecksum?: string | null;
+            pendingExportEntryCount?: number | null;
+            trustTier?: 'commercial' | 'fedramp-high' | 'il5' | null;
+            connectivity?: 'connected' | 'air-gap' | null;
+            unknownFields?: Array<string>;
             recentTransfers: Array<{
                 id: string;
                 peerDomainId: string;
@@ -14391,6 +14616,326 @@ export type HandFillObjectResponses = {
 };
 
 export type HandFillObjectResponse = HandFillObjectResponses[keyof HandFillObjectResponses];
+
+export type ListOutpostConfigsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/federation/outposts';
+};
+
+export type ListOutpostConfigsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListOutpostConfigsError = ListOutpostConfigsErrors[keyof ListOutpostConfigsErrors];
+
+export type ListOutpostConfigsResponses = {
+    /**
+     * Success
+     */
+    200: Array<{
+        objectId: string;
+        urn: string;
+        name: string;
+        peerDomainId: string;
+        trustTier: 'commercial' | 'fedramp-high' | 'il5' | null;
+        originDomainId: string;
+        revision: number;
+        version: number;
+        unknownFields: Array<string>;
+        createdAt: string;
+        updatedAt: string;
+    }>;
+};
+
+export type ListOutpostConfigsResponse = ListOutpostConfigsResponses[keyof ListOutpostConfigsResponses];
+
+export type CreateOutpostConfigData = {
+    body: {
+        peerDomainId: string;
+        name?: string;
+        trustTier?: 'commercial' | 'fedramp-high' | 'il5';
+    };
+    path?: never;
+    query?: never;
+    url: '/federation/outposts';
+};
+
+export type CreateOutpostConfigErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateOutpostConfigError = CreateOutpostConfigErrors[keyof CreateOutpostConfigErrors];
+
+export type CreateOutpostConfigResponses = {
+    /**
+     * Success
+     */
+    201: {
+        objectId: string;
+        urn: string;
+        name: string;
+        peerDomainId: string;
+        trustTier: 'commercial' | 'fedramp-high' | 'il5' | null;
+        originDomainId: string;
+        revision: number;
+        version: number;
+        unknownFields: Array<string>;
+        createdAt: string;
+        updatedAt: string;
+    };
+};
+
+export type CreateOutpostConfigResponse = CreateOutpostConfigResponses[keyof CreateOutpostConfigResponses];
+
+export type GetOutpostConfigData = {
+    body?: never;
+    path: {
+        peerDomainId: string;
+    };
+    query?: never;
+    url: '/federation/outposts/{peerDomainId}';
+};
+
+export type GetOutpostConfigErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetOutpostConfigError = GetOutpostConfigErrors[keyof GetOutpostConfigErrors];
+
+export type GetOutpostConfigResponses = {
+    /**
+     * Success
+     */
+    200: {
+        objectId: string;
+        urn: string;
+        name: string;
+        peerDomainId: string;
+        trustTier: 'commercial' | 'fedramp-high' | 'il5' | null;
+        originDomainId: string;
+        revision: number;
+        version: number;
+        unknownFields: Array<string>;
+        createdAt: string;
+        updatedAt: string;
+    };
+};
+
+export type GetOutpostConfigResponse = GetOutpostConfigResponses[keyof GetOutpostConfigResponses];
+
+export type UpdateOutpostConfigData = {
+    body: {
+        name?: string;
+        trustTier?: 'commercial' | 'fedramp-high' | 'il5';
+        expectedVersion?: number;
+    };
+    path: {
+        peerDomainId: string;
+    };
+    query?: never;
+    url: '/federation/outposts/{peerDomainId}';
+};
+
+export type UpdateOutpostConfigErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    412: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpdateOutpostConfigError = UpdateOutpostConfigErrors[keyof UpdateOutpostConfigErrors];
+
+export type UpdateOutpostConfigResponses = {
+    /**
+     * Success
+     */
+    200: {
+        objectId: string;
+        urn: string;
+        name: string;
+        peerDomainId: string;
+        trustTier: 'commercial' | 'fedramp-high' | 'il5' | null;
+        originDomainId: string;
+        revision: number;
+        version: number;
+        unknownFields: Array<string>;
+        createdAt: string;
+        updatedAt: string;
+    };
+};
+
+export type UpdateOutpostConfigResponse = UpdateOutpostConfigResponses[keyof UpdateOutpostConfigResponses];
 
 export type ListPluginManifestsData = {
     body?: never;

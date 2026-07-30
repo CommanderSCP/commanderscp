@@ -13,8 +13,12 @@ import {
   ImportBundleRequestSchema,
   ImportResultSchema,
   InitFederationRequestSchema,
+  CreateOutpostConfigRequestSchema,
+  OutpostConfigSchema,
   PairPeerRequestSchema,
   ProblemSchema,
+  UpdateFederationPeerRequestSchema,
+  UpdateOutpostConfigRequestSchema,
   PromotionBundleSchema,
   RelayBuildRequestSchema,
   RelayBuildResponseSchema,
@@ -34,8 +38,15 @@ import {
   pairPeer,
   listPeers,
   getPeerByIdOrName,
-  markPokeReceived
+  markPokeReceived,
+  updatePeerTransport
 } from "../federation/peers-repo.js";
+import {
+  createOutpostConfig,
+  getOutpostConfigByPeer,
+  listOutpostConfigs,
+  updateOutpostConfig
+} from "../federation/outposts-repo.js";
 import {
   assertDeliveryTargetRooted,
   assertOutboundDeliverable,
@@ -251,6 +262,105 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         });
       });
       reply.status(201).send(peer);
+    }
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // M16.2 phase A (E4) — GET + the NARROW, STRUCTURALLY KEYLESS PATCH for one peer.
+  //
+  // WHY THESE EXIST. Before this increment the ONLY peer write was `POST /federation/peers`, whose
+  // body REQUIRES `publicKey` and treats a different value as a KEY ROTATION that supersedes the
+  // current key window and hard-revokes the old key. A Settings form that read a peer, changed a
+  // base URL and re-paired would silently rotate that peer's trust anchor the moment it dropped or
+  // mangled the key — an entire class of UI-caused trust-anchor rotations. `UpdateFederationPeerRequestSchema`
+  // admits NO key material and no `role`, so this route CANNOT rotate, supersede or revoke a key: the
+  // capability is absent from the contract, not merely unused by the handler.
+  //
+  // EVERY PAIR-TIME GUARD IS RE-APPLIED HERE. A new write door that skips the old door's validation
+  // is the bypass class this project has hit before (the governance-owned-type invariant). The census
+  // and each guard's disposition live on `updatePeerTransport` in `federation/peers-repo.ts`; the two
+  // that need route-level work are the delivery-target ALLOWLIST (below, same call as pairing) and the
+  // poke/mTLS + re-anchor guards (inside the repo, over the MERGED post-write tuple).
+  // -----------------------------------------------------------------------------------------
+
+  typed.route({
+    method: "GET",
+    url: "/api/v1/federation/peers/:id",
+    schema: {
+      params: z.object({ id: z.string().min(1) }),
+      response: {
+        200: FederationPeerSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "getFederationPeer",
+        summary: "Read one paired federation peer (by trust-domain id or name)",
+        tags: ["federation"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const peer = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:read",
+          scopeObjectId: auth.orgId
+        });
+        return getPeerByIdOrName(tx, auth.orgId, request.params.id);
+      });
+      reply.status(200).send(peer);
+    }
+  });
+
+  typed.route({
+    method: "PATCH",
+    url: "/api/v1/federation/peers/:id",
+    schema: {
+      params: z.object({ id: z.string().min(1) }),
+      body: UpdateFederationPeerRequestSchema,
+      response: {
+        200: FederationPeerSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "updateFederationPeer",
+        summary:
+          "Update a peer's transport settings ONLY (name/baseUrl/syncScope/deliveryTarget/pokeMode) — carries no key material and can never rotate a peer key",
+        tags: ["federation"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const peer = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:write",
+          scopeObjectId: auth.orgId
+        });
+        // GUARD G4, re-applied verbatim from the pair route: a per-peer deliveryTarget must sit
+        // inside the operator-declared allowlists (SCP_DELIVERY_ROOTS / SCP_DELIVERY_S3_ENDPOINTS)
+        // or it is never stored. Same call, same fail-closed 400 — a PATCH must not be a way to
+        // smuggle in an out-of-root drop directory or an un-allowlisted S3 endpoint.
+        assertDeliveryTargetRooted(request.body.deliveryTarget);
+        const existing = await getPeerByIdOrName(tx, auth.orgId, request.params.id);
+        return updatePeerTransport(tx, {
+          orgId: auth.orgId,
+          domainId: existing.id,
+          ...request.body
+        });
+      });
+      reply.status(200).send(peer);
     }
   });
 
@@ -953,6 +1063,172 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         });
       });
       reply.status(201).send(object);
+    }
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // M16.2 phase A (E1) — `outpost` GRAPH-OBJECT config: the commander-authored declared config that
+  // SYNCS DOWN (nothing written on a `federation_peers` row can, since the journal has no peer-shaped
+  // entry kind). Read `federation/outpost-binding.ts` for the authority split between the two halves.
+  //
+  // GATED ON `federation:write`/`federation:read`, NOT plain `object:write`. That is deliberate and is
+  // why the generic `/objects/outpost` door is refused outright (`routes/objects-generic.ts`): a side
+  // door with a weaker permission on the same rows is exactly the governance-owned-type bypass this
+  // codebase already paid for once.
+  // -----------------------------------------------------------------------------------------
+
+  typed.route({
+    method: "POST",
+    url: "/api/v1/federation/outposts",
+    schema: {
+      body: CreateOutpostConfigRequestSchema,
+      response: {
+        201: OutpostConfigSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema,
+        409: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "createOutpostConfig",
+        summary:
+          "Declare an already-paired outpost's commander-origin config object (trust tier) — syncs down as a read-only replica",
+        tags: ["federation"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const config = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:write",
+          scopeObjectId: auth.orgId
+        });
+        return createOutpostConfig(tx, {
+          orgId: auth.orgId,
+          actorObjectId: auth.subjectObjectId,
+          requestId: request.id,
+          peerDomainId: request.body.peerDomainId,
+          ...(request.body.name !== undefined ? { name: request.body.name } : {}),
+          ...(request.body.trustTier !== undefined ? { trustTier: request.body.trustTier } : {})
+        });
+      });
+      reply.status(201).send(config);
+    }
+  });
+
+  typed.route({
+    method: "GET",
+    url: "/api/v1/federation/outposts",
+    schema: {
+      response: { 200: z.array(OutpostConfigSchema), 401: ProblemSchema, 403: ProblemSchema }
+    },
+    config: {
+      openapi: {
+        operationId: "listOutpostConfigs",
+        summary: "List every outpost config object (commander-origin declared config)",
+        tags: ["federation"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const configs = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:read",
+          scopeObjectId: auth.orgId
+        });
+        return listOutpostConfigs(tx, auth.orgId);
+      });
+      reply.status(200).send(configs);
+    }
+  });
+
+  typed.route({
+    method: "GET",
+    url: "/api/v1/federation/outposts/:peerDomainId",
+    schema: {
+      params: z.object({ peerDomainId: z.string().uuid() }),
+      response: {
+        200: OutpostConfigSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "getOutpostConfig",
+        summary: "Read one outpost's config object, resolved through its peer binding",
+        tags: ["federation"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const config = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:read",
+          scopeObjectId: auth.orgId
+        });
+        return getOutpostConfigByPeer(tx, auth.orgId, request.params.peerDomainId);
+      });
+      reply.status(200).send(config);
+    }
+  });
+
+  typed.route({
+    method: "PATCH",
+    url: "/api/v1/federation/outposts/:peerDomainId",
+    schema: {
+      params: z.object({ peerDomainId: z.string().uuid() }),
+      body: UpdateOutpostConfigRequestSchema,
+      response: {
+        200: OutpostConfigSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema,
+        409: ProblemSchema,
+        412: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "updateOutpostConfig",
+        summary:
+          "Edit an outpost's commander-origin config (absent means preserve) — refused with 409 on an instance holding it as a replica",
+        tags: ["federation"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const config = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:write",
+          scopeObjectId: auth.orgId
+        });
+        return updateOutpostConfig(tx, {
+          orgId: auth.orgId,
+          actorObjectId: auth.subjectObjectId,
+          requestId: request.id,
+          peerDomainId: request.params.peerDomainId,
+          ...(request.body.name !== undefined ? { name: request.body.name } : {}),
+          ...(request.body.trustTier !== undefined ? { trustTier: request.body.trustTier } : {}),
+          ...(request.body.expectedVersion !== undefined
+            ? { expectedVersion: request.body.expectedVersion }
+            : {})
+        });
+      });
+      reply.status(200).send(config);
     }
   });
 }

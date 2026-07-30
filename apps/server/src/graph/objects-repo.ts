@@ -18,6 +18,10 @@ import { validateProperties } from "./property-validation.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { eventBus } from "../events/event-bus.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
+import {
+  assertOutpostPeerBinding,
+  isPeerBoundObjectType
+} from "../federation/outpost-binding.js";
 import { appendJournalEntry } from "../federation/journal-repo.js";
 import type { JournalEntryKind } from "@scp/schemas";
 import { canonicalJson } from "../util/canonical-json.js";
@@ -154,6 +158,14 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   const domainId = await resolveDomainId(tx, input.orgId, input.domainId);
 
   const id = input.id ?? uuidv7();
+
+  // M16.2 phase A (E1) — clause (4) of the authority-split rule, at the ONE choke point every LOCAL
+  // write door funnels through (see `federation/outpost-binding.ts` for the rule and for why it is
+  // here and not per-route). Skipped for `federationImport`: a replica's `peerDomainId` names the
+  // RECEIVING instance's own domain, which is never one of its own peers.
+  if (!input.federationImport && isPeerBoundObjectType(input.typeId)) {
+    await assertOutpostPeerBinding(tx, { orgId: input.orgId, objectId: id, properties });
+  }
   const urn = input.urn ?? deriveUrn(input.orgId, input.typeId, input.name);
   const version = 1;
   const contentHash = computeObjectContentHash({
@@ -433,6 +445,17 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
   const nextProperties = (input.properties ?? existing.properties) as Record<string, unknown>;
   const nextLabels = (input.labels ?? existing.labels) as Record<string, unknown>;
   validateProperties(type.propertySchema, nextProperties, type.id);
+
+  // M16.2 phase A (E1) — the UPDATE half of the same choke point (see `createObject` above). An
+  // update that rewrites `properties` must not be able to re-point the binding at an unpaired peer,
+  // at a non-outpost peer, or at a peer another object already claims.
+  if (!input.federationImport && isPeerBoundObjectType(input.typeId)) {
+    await assertOutpostPeerBinding(tx, {
+      orgId: input.orgId,
+      objectId: existing.id,
+      properties: nextProperties
+    });
+  }
 
   const nextName = input.name ?? existing.name;
   const nextDomainId = input.domainId === undefined ? existing.domainId : input.domainId;

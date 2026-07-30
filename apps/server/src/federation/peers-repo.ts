@@ -375,6 +375,135 @@ export async function pairPeer(tx: TenantTx, input: PairPeerInput): Promise<Fede
   return toPeerRow(row, input.publicKey, nextCosign);
 }
 
+export interface UpdatePeerTransportInput {
+  orgId: string;
+  /** TRUST sense (ADR-0021 D4) — the EXISTING peer's own federation identity. Never patchable: the
+   *  identity IS the row, and "changing" it would be pairing a different peer. */
+  domainId: TrustDomainId;
+  name?: string;
+  baseUrl?: string;
+  syncScope?: SyncScope;
+  /** Tri-state, identical to `pairPeer`'s: absent PRESERVES, an object SETS, explicit `null` CLEARS. */
+  deliveryTarget?: DeliveryTarget | null;
+  /** Absent PRESERVES, `true`/`false` SETS. A per-side LOCAL flag — never a control over the peer's
+   *  own flag (ADR-0009; the owner's "this side only" semantics are unchanged by this route). */
+  pokeMode?: boolean;
+}
+
+/**
+ * M16.2 phase A (E4) — `PATCH /v1/federation/peers/{id}`: the NARROW, TRANSPORT-ONLY peer write.
+ *
+ * SECURITY-CRITICAL, AND THE WHOLE REASON IT EXISTS. `pairPeer` is a re-pair: `publicKey` is REQUIRED
+ * in its body, a DIFFERENT value is a KEY ROTATION that supersedes the current key window and
+ * hard-revokes the old key at the applied-sequence anchor, and `name`/`role` are overwritten
+ * unconditionally. A Settings form built on it rotates a peer's TRUST ANCHOR the first time it drops
+ * or mangles the key. This function touches `federation_peers` ONLY — there is no reference to
+ * `federationPeerKeys` anywhere in its body, and its input type has no field that could carry key
+ * material — so no call, however malformed, can open, close or supersede a key window.
+ *
+ * ============================================================================================
+ * PAIR-TIME GUARD CENSUS — every validation `POST /federation/peers` performs, and how this path
+ * accounts for it. A new write door that silently skips the old door's checks is the bypass class
+ * this project has already been bitten by, so each one is listed and dispositioned, not assumed.
+ * ============================================================================================
+ *  G1 requireAuth ....................... RE-APPLIED (route handler, identical call).
+ *  G2 authorize `federation:write` @ org . RE-APPLIED (route handler, identical call).
+ *  G3 self-pair refusal ("cannot pair this domain with itself") .... N/A BY CONSTRUCTION: this route
+ *     resolves an EXISTING `federation_peers` row and never inserts. An instance is never its own
+ *     peer (`initFederationSelf` writes `federation_self`, not a peer row), so the id cannot resolve
+ *     to self — an attempt 404s at `getPeerByIdOrName` before this function is reached.
+ *  G4 `assertDeliveryTargetRooted` (SCP_DELIVERY_ROOTS / SCP_DELIVERY_S3_ENDPOINTS allowlists)
+ *     ..................................... RE-APPLIED at the route, the same call pairing makes, so
+ *     an out-of-root drop directory or an un-allowlisted S3 endpoint is refused before storage.
+ *  G5 body schema validation (name length, `baseUrl` is a URL, `syncScope` union, `deliveryTarget`
+ *     strict union incl. absolute traversal-free dirs / relative traversal-free prefixes / bare
+ *     bucket, `pokeMode` boolean) ......... RE-APPLIED: `UpdateFederationPeerRequestSchema` reuses the
+ *     very same `SyncScopeSchema`/`DeliveryTargetSchema` members and the same `z.string().url()`.
+ *  G6 `trustDomainIdFromWire` boundary .... N/A: no wire domain id is accepted here. The brand comes
+ *     from the RESOLVED existing row, which is stronger than validating an input.
+ *  G7 M14.1/M14.3 poke-mode ⇒ https/mTLS baseUrl guard, over the EFFECTIVE POST-WRITE TUPLE
+ *     ..................................... RE-APPLIED BELOW, and it MUST be: this route's fields merge
+ *     with exactly the same opposite rules the re-pair path has (baseUrl: request wins when present;
+ *     pokeMode: existing wins when absent), so keying it off the request alone would check a different
+ *     tuple than the one persisted — the M14.3 hole verbatim. All four shapes stay unrepresentable:
+ *     explicit poke on http, explicit poke with no baseUrl at all, an omitted pokeMode that preserves
+ *     `true` while downgrading baseUrl to http, and a no-op patch on an already-bad row.
+ *  G8 `permitCursorReanchor` when the RESULTING syncScope is `full` .... RE-APPLIED BELOW. Widening a
+ *     peer to `full` through this route must heal an anchorless cursor exactly as widening it through
+ *     a re-pair does; otherwise the documented recovery ("set the scope to full") would work on one
+ *     route and silently wedge the peer forever on the other.
+ *  G9 key-window rotation/superseding ..... DELIBERATELY ABSENT — the point of this route. No key
+ *     material is representable in the input, and no `federationPeerKeys` write exists here, so the
+ *     capability is structurally missing rather than conditionally skipped.
+ *  G10 tri-state PRESERVE semantics for `deliveryTarget`/`pokeMode`/`cosignPublicKey`
+ *     ..................................... RE-APPLIED for the two transport fields (absent preserves;
+ *     `deliveryTarget: null` clears). `cosignPublicKey` is key material — see G9 — and is preserved
+ *     untouched because nothing here writes the key window at all.
+ *  G11 unconditional `name`/`role` overwrite .... INTENTIONALLY NARROWED: `name` is patched only when
+ *     supplied, and `role` is NOT patchable at all. A peer's federation role is an identity-level
+ *     assertion made at pairing (it decides whether this side pulls FROM or exports TO the peer, and
+ *     which validation the boundary applies); a settings form must not be able to flip it. Changing a
+ *     role remains a deliberate re-pair.
+ * ============================================================================================
+ */
+export async function updatePeerTransport(
+  tx: TenantTx,
+  input: UpdatePeerTransportInput
+): Promise<FederationPeerRow> {
+  const existingRows = await tx
+    .select()
+    .from(federationPeers)
+    .where(and(eq(federationPeers.orgId, input.orgId), eq(federationPeers.id, input.domainId)))
+    .limit(1);
+  const existing = existingRows[0];
+  if (!existing) {
+    throw notFound(
+      `federation peer '${input.domainId}' not found — pair it first with 'scp federation pair'`
+    );
+  }
+
+  // G7 (M14.1/M14.3), re-applied over the EFFECTIVE POST-WRITE TUPLE — the same computation
+  // `pairPeer` performs, for the same reason: the two fields merge with OPPOSITE rules, so only the
+  // merged pair says what will actually be stored.
+  const effectivePokeMode = input.pokeMode !== undefined ? input.pokeMode : existing.pokeMode;
+  const effectiveBaseUrl = input.baseUrl !== undefined ? input.baseUrl : existing.baseUrl;
+  if (effectivePokeMode && !federationPeerRequiresMtls(effectiveBaseUrl)) {
+    throw badRequest(
+      "poke-mode requires an mTLS/https peer — the poke must authenticate the caller as the enrolled commander"
+    );
+  }
+
+  const effectiveSyncScope = input.syncScope ?? (existing.syncScope as SyncScope);
+
+  const [row] = await tx
+    .update(federationPeers)
+    .set({
+      name: input.name ?? existing.name,
+      baseUrl: input.baseUrl ?? existing.baseUrl,
+      syncScope: effectiveSyncScope,
+      deliveryTarget:
+        input.deliveryTarget !== undefined ? input.deliveryTarget : existing.deliveryTarget,
+      pokeMode: effectivePokeMode
+    })
+    .where(and(eq(federationPeers.orgId, input.orgId), eq(federationPeers.id, input.domainId)))
+    .returning();
+  if (!row) throw new Error("updatePeerTransport: failed to update peer");
+
+  // G8, re-applied: keyed off the RESULTING scope and the cursor's actual state (never off the
+  // transition) for exactly the reasons `pairPeer`'s long note gives — `permitCursorReanchor` only
+  // touches a cursor that is genuinely anchorless, so calling it whenever this peer ends up at `full`
+  // is safe and idempotent, and re-declaring `full` heals an already-wedged peer.
+  if (effectiveSyncScope.mode === "full") {
+    await permitCursorReanchor(tx, input.orgId, input.domainId);
+  }
+
+  // The key window is READ, never written — the returned view must still carry the peer's registered
+  // keys, and reading them here (rather than reconstructing them) is what makes it impossible for
+  // this function to report a key it did not leave exactly as it found.
+  const key = await currentPeerKeyRow(tx, input.orgId, input.domainId);
+  return toPeerRow(row, key?.publicKey ?? "", key?.cosignPublicKey ?? null);
+}
+
 export async function listPeers(tx: TenantTx, orgId: string): Promise<FederationPeerRow[]> {
   const rows = await tx.select().from(federationPeers).where(eq(federationPeers.orgId, orgId));
   const out: FederationPeerRow[] = [];
@@ -383,6 +512,26 @@ export async function listPeers(tx: TenantTx, orgId: string): Promise<Federation
     out.push(toPeerRow(row, key?.publicKey ?? "", key?.cosignPublicKey ?? null));
   }
   return out;
+}
+
+/** The peer row for a trust-domain id, or `null` when this org has no such peer — the NON-throwing
+ *  counterpart of `getPeerByIdOrName`, for callers that must not turn "no such peer" into their own
+ *  404 because a LATER, more specific guard owns that refusal (M16.2 E1: `outposts-repo.ts` uses this
+ *  purely to default a display name, and lets the peer-binding guard produce the authoritative 400). */
+export async function findPeerByDomainId(
+  tx: TenantTx,
+  orgId: string,
+  peerDomainId: TrustDomainId
+): Promise<FederationPeerRow | null> {
+  const rows = await tx
+    .select()
+    .from(federationPeers)
+    .where(and(eq(federationPeers.orgId, orgId), eq(federationPeers.id, peerDomainId)))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  const key = await currentPeerKeyRow(tx, orgId, row.id);
+  return toPeerRow(row, key?.publicKey ?? "", key?.cosignPublicKey ?? null);
 }
 
 /** Resolves a peer by its domain id OR its human name (CLI/route ergonomics — mirrors

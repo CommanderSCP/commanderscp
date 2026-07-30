@@ -190,6 +190,13 @@ import {
   refreshScanDb as refreshScanDbRequest,
   loadScanDb as loadScanDbRequest,
   pairPeer as pairPeerRequest,
+  // M16.2 phase A — E4's narrow peer read/PATCH and E1's `outpost` config object.
+  getFederationPeer as getFederationPeerRequest,
+  updateFederationPeer as updateFederationPeerRequest,
+  createOutpostConfig as createOutpostConfigRequest,
+  listOutpostConfigs as listOutpostConfigsRequest,
+  getOutpostConfig as getOutpostConfigRequest,
+  updateOutpostConfig as updateOutpostConfigRequest,
   getFederationStatus as getFederationStatusRequest,
   exportSyncBundle as exportSyncBundleRequest,
   exportPromotionBundle as exportPromotionBundleRequest,
@@ -314,6 +321,11 @@ import type {
   LoadScanDbRequest,
   LoadScanDbResponse,
   PairPeerRequest,
+  // M16.2 phase A — the narrow peer PATCH (E4) + the `outpost` config object (E1).
+  UpdateFederationPeerRequest,
+  CreateOutpostConfigRequest,
+  UpdateOutpostConfigRequest,
+  OutpostConfig,
   FederationStatusResponse,
   ExportJournalRequest,
   SyncBundle,
@@ -1626,6 +1638,53 @@ export class ScpClient {
     },
     pair: async (req: PairPeerRequest): Promise<FederationPeer> => {
       const result = await pairPeerRequest({ client: this.client, body: req });
+      return unwrap(result);
+    },
+    /** M16.2 phase A (E4) — read one peer (by trust-domain id or name). */
+    getPeer: async (id: string): Promise<FederationPeer> => {
+      const result = await getFederationPeerRequest({ client: this.client, path: { id } });
+      return unwrap(result);
+    },
+    /** M16.2 phase A (E4) — the NARROW peer update: transport settings only. Carries NO key material,
+     *  so it cannot rotate, supersede or revoke a peer key — unlike `pair`, where a different
+     *  `publicKey` IS a rotation. Every field is absent-means-preserve; `deliveryTarget: null` clears.
+     *  Every pair-time guard still fires (poke-mode⇒mTLS over the merged tuple, the delivery-target
+     *  allowlists, the `full`-scope cursor re-anchor). */
+    updatePeer: async (id: string, req: UpdateFederationPeerRequest): Promise<FederationPeer> => {
+      const result = await updateFederationPeerRequest({
+        client: this.client,
+        path: { id },
+        body: req
+      });
+      return unwrap(result);
+    },
+    /** M16.2 phase A (E1) — declare an already-paired outpost's commander-origin config object. It
+     *  syncs DOWN to that outpost as a read-only replica (a peer ROW never can — the journal has no
+     *  peer-shaped entry kind). */
+    createOutpost: async (req: CreateOutpostConfigRequest): Promise<OutpostConfig> => {
+      const result = await createOutpostConfigRequest({ client: this.client, body: req });
+      return unwrap(result);
+    },
+    listOutposts: async (): Promise<OutpostConfig[]> => {
+      const result = await listOutpostConfigsRequest({ client: this.client });
+      return unwrap(result);
+    },
+    getOutpost: async (peerDomainId: string): Promise<OutpostConfig> => {
+      const result = await getOutpostConfigRequest({ client: this.client, path: { peerDomainId } });
+      return unwrap(result);
+    },
+    /** Absent means PRESERVE; there is deliberately no clear-to-unknown verb for `trustTier` in
+     *  phase A. On an instance holding the object as a REPLICA this is refused with 409 by the
+     *  existing single-writer guard — the commander is the only writer. */
+    updateOutpost: async (
+      peerDomainId: string,
+      req: UpdateOutpostConfigRequest
+    ): Promise<OutpostConfig> => {
+      const result = await updateOutpostConfigRequest({
+        client: this.client,
+        path: { peerDomainId },
+        body: req
+      });
       return unwrap(result);
     },
     status: async (): Promise<FederationStatusResponse> => {

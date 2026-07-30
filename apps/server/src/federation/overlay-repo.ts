@@ -4,6 +4,7 @@ import { badRequest, forbidden } from "../errors.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { createRelationship, listRelationships } from "../graph/relationships-repo.js";
 import { isServiceMemberObjectType } from "../graph/service-member-types.js";
+import { isPeerBoundObjectType } from "./outpost-binding.js";
 
 /**
  * Shared-authority overlays (DESIGN.md §13 "review decision — resolved"): "two domains never
@@ -82,6 +83,17 @@ export async function createOverlay(
       `object type '${input.overlayTypeId}' must belong to a service and cannot be created via an ` +
         `overlay — use the strict typed route (/api/v1/${input.overlayTypeId}s), which requires a ` +
         `service and writes the containment edge atomically`
+    );
+  }
+
+  // M16.2 phase A (E1), same reasoning one type further: an `outpost` object is commander-authored
+  // federation config gated on `federation:write`, while this route checks `object:write`. The peer
+  // BINDING would still be enforced (the choke point lives in `graph/objects-repo.ts`), but the
+  // PERMISSION would be the weaker one — the exact mismatch the governance block above exists for.
+  if (isPeerBoundObjectType(input.overlayTypeId)) {
+    throw forbidden(
+      `object type '${input.overlayTypeId}' is commander-authored federation config and cannot be ` +
+        `created via an overlay — use /api/v1/federation/outposts, which enforces 'federation:write'`
     );
   }
 

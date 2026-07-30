@@ -154,6 +154,50 @@ export async function listTransfersByChecksums(
   return rows.map(toBundleTransfer);
 }
 
+/**
+ * M16.2 phase A (E3) — THE PENDING-EXPORT HIGH-WATER MARK for one peer: the highest
+ * `through_sequence` over the SYNC EXPORT rows this instance has written for it, plus the identity of
+ * that bundle (its Ed25519 `checksum`) and when it was produced here.
+ *
+ * This is the strongest statement a commander can honestly make about a peer's sync progress, and it
+ * is deliberately ONE-SIDED. `sync_cursors` records only what WE applied FROM a peer; `export-repo.ts`
+ * ships only this domain's own entries, so a return bundle cannot carry our sequences back; and this
+ * ledger has no production UPDATE path, so an export row is inserted `created` and never advances.
+ * Nothing here means "the peer applied it" — only "we put it on the wire". A field named for
+ * application at the peer would be fabrication; that is future increment M16.4's work.
+ *
+ * `null` when this instance has never exported a sync bundle to the peer — never `0`, which a reader
+ * would take for "synced through the beginning". Ordered by `through_sequence DESC` rather than
+ * `created_at` because a later resume-from-cursor export can legitimately cover a lower range, and the
+ * question asked here is "how far have we ever exported?".
+ */
+export async function lastSyncExportForPeer(
+  tx: TenantTx,
+  orgId: string,
+  peerDomainId: TrustDomainId
+): Promise<{ throughSequence: number; checksum: string | null; createdAt: Date } | null> {
+  const rows = await tx
+    .select({
+      throughSequence: bundleTransfers.throughSequence,
+      checksum: bundleTransfers.checksum,
+      createdAt: bundleTransfers.createdAt
+    })
+    .from(bundleTransfers)
+    .where(
+      and(
+        eq(bundleTransfers.orgId, orgId),
+        eq(bundleTransfers.peerDomainId, peerDomainId),
+        eq(bundleTransfers.direction, "export"),
+        eq(bundleTransfers.kind, "sync")
+      )
+    )
+    .orderBy(desc(bundleTransfers.throughSequence))
+    .limit(1);
+  const row = rows[0];
+  if (!row || row.throughSequence === null) return null;
+  return { throughSequence: row.throughSequence, checksum: row.checksum, createdAt: row.createdAt };
+}
+
 export async function listRecentTransfers(
   tx: TenantTx,
   orgId: string,

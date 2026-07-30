@@ -244,6 +244,117 @@ export const PairPeerRequestSchema = z.object({
 });
 export type PairPeerRequest = z.infer<typeof PairPeerRequestSchema>;
 
+// -------------------------------------------------------------------------------------------
+// M16.2 phase A (E1) — THE `outpost` GRAPH OBJECT: commander-authored declared config about one
+// outpost, which SYNCS DOWN because it is an ordinary graph object (`object_upsert`) and nothing
+// written on a `federation_peers` ROW can ever reach a peer (the journal admits 9 entry kinds, none
+// peer-shaped, and `peers-repo.ts` never appends one).
+//
+// THE AUTHORITY SPLIT — 'outpost' now exists twice, and each half owns disjoint fields:
+//   * the `federation_peers` ROW owns TRANSPORT IDENTITY AND REACHABILITY (trust-domain id, keys,
+//     `baseUrl`, `syncScope`, `deliveryTarget`, `pokeMode`, scheduler timestamps): local to this
+//     side, never journaled, written only by pair/re-pair and the narrow PATCH below;
+//   * this OBJECT owns COMMANDER-DECLARED CONFIG (today `trustTier`) plus the `peerDomainId`
+//     binding: commander-origin, journaled, read-only at the outpost.
+// Neither can express the other's fields — the request bodies below carry no transport field, the
+// registered JSON Schema is `additionalProperties: false` over exactly `{peerDomainId, trustTier}`,
+// and `federation_peers` has no trust-tier column. See `federation/outpost-binding.ts` for the
+// normative statement and the tests that check it in both directions.
+// -------------------------------------------------------------------------------------------
+
+/** An owner-ENTERED trust-posture assertion about an outpost — NOT derived, NOT negotiated with the
+ *  outpost, and NOT connectivity. Extendable (new members are additive on a request union and are a
+ *  new enum member on the response, which is why every response field carrying it is nullable and
+ *  optional). CONNECTIVITY IS DELIBERATELY ABSENT: whether an outpost is air-gapped is a fact about
+ *  its transport (`baseUrl`/`deliveryTarget`) and is derived separately — folding it in here would
+ *  make one field mean two different things. Until an operator sets a tier there is NO value: the
+ *  property is ABSENT from the object, never blank and never defaulted to `commercial`. */
+export const OutpostTrustTierSchema = z.enum(["commercial", "fedramp-high", "il5"]);
+export type OutpostTrustTier = z.infer<typeof OutpostTrustTierSchema>;
+
+/** `POST /federation/outposts` — declare the commander-origin config object for an ALREADY-PAIRED
+ *  outpost peer. Carries no transport field of any kind: the peer row is the authority for those. */
+export const CreateOutpostConfigRequestSchema = z.object({
+  /** The paired peer this config is ABOUT (its trust-domain id = `federation_peers.id`). The peer
+   *  row must already exist and hold role `outpost`; an unbound id is refused, and a second config
+   *  object for the same peer conflicts. */
+  peerDomainId: z.string().uuid(),
+  /** Display name for the config object. Defaults to the peer's own name. The object's URN is
+   *  derived from `peerDomainId`, never from this, so renaming can never fork the binding. */
+  name: z.string().min(1).max(200).optional(),
+  /** Optional at creation ON PURPOSE — an operator who has not decided the tier yet must be able to
+   *  create the object without one being invented for them. */
+  trustTier: OutpostTrustTierSchema.optional()
+});
+export type CreateOutpostConfigRequest = z.infer<typeof CreateOutpostConfigRequestSchema>;
+
+/** `PATCH /federation/outposts/{peerDomainId}` — edit the commander-origin config. Absent means
+ *  PRESERVE. `peerDomainId` is not patchable: the binding IS the object's identity. */
+export const UpdateOutpostConfigRequestSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  trustTier: OutpostTrustTierSchema.optional(),
+  /** Optimistic concurrency against the graph object's `version`, as elsewhere in the graph API. */
+  expectedVersion: z.number().int().positive().optional()
+});
+export type UpdateOutpostConfigRequest = z.infer<typeof UpdateOutpostConfigRequestSchema>;
+
+/** The read view of one `outpost` config object. A projection of the underlying graph object — the
+ *  object itself remains readable through the ordinary graph reads. */
+export const OutpostConfigSchema = z.object({
+  /** The graph object's id — the SAME id the replica carries at the outpost. */
+  objectId: z.string().uuid(),
+  urn: z.string(),
+  name: z.string(),
+  peerDomainId: z.string().uuid(),
+  /** `null` when the operator has never asserted one. Always accompanied by `"trustTier"` in
+   *  `unknownFields` — an absent tier is an honest unknown, never `commercial`. */
+  trustTier: OutpostTrustTierSchema.nullable(),
+  /** The graph object's authoritative origin domain (single-writer authority). On the commander this
+   *  is the commander's own trust domain; on the outpost holding the replica it is the COMMANDER's,
+   *  which is exactly why the outpost's own writes to it are refused. */
+  originDomainId: z.string().uuid(),
+  revision: z.number().int(),
+  version: z.number().int(),
+  /** Which of this row's fields are NOT observations (the `ServiceBoardRow.unknownFields` contract).
+   *  `"trustTier"` appears whenever no tier has been asserted. */
+  unknownFields: z.array(z.string()),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+});
+export type OutpostConfig = z.infer<typeof OutpostConfigSchema>;
+
+// -------------------------------------------------------------------------------------------
+// M16.2 phase A (E4) — THE NARROW PEER PATCH. `POST /federation/peers` (pair/re-pair) is the only
+// peer write there was, and it is a FOOTGUN for a settings form: `publicKey` is REQUIRED there, and
+// a DIFFERENT value is treated as a KEY ROTATION that supersedes the current key window and
+// hard-revokes the old key (sequence-anchored, `peers-repo.ts`). A UI that round-trips a peer and
+// re-pairs it therefore rotates the peer's trust anchor whenever it drops or mangles the key.
+//
+// This request body admits NO KEY MATERIAL AT ALL — not `publicKey`, not `cosignPublicKey` — so the
+// PATCH route is STRUCTURALLY incapable of rotating, superseding or revoking a peer key. `role` is
+// likewise absent: a peer's federation role is an identity-level assertion established at pairing,
+// not a settings-form field. Every field is optional and ABSENT MEANS PRESERVE (the same tri-state
+// discipline re-pair uses); `deliveryTarget: null` explicitly CLEARS back to the instance-env
+// fallback. Key rotation stays exactly where it was — a deliberate re-pair.
+// -------------------------------------------------------------------------------------------
+
+export const UpdateFederationPeerRequestSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  /** Tri-state: absent PRESERVES, a URL SETS. There is deliberately no "clear to null" — an
+   *  effective poke-mode peer must keep an https/mTLS base URL (the M14.1/M14.3 guard, re-applied
+   *  on this path over the MERGED post-write tuple). */
+  baseUrl: z.string().url().optional(),
+  syncScope: SyncScopeSchema.optional(),
+  /** Tri-state, mirroring re-pair: absent PRESERVES, an object SETS/REPLACES, explicit `null`
+   *  CLEARS to the instance-env fallback. Re-checked against the operator allowlists
+   *  (`SCP_DELIVERY_ROOTS` / `SCP_DELIVERY_S3_ENDPOINTS`) before it is ever stored. */
+  deliveryTarget: DeliveryTargetSchema.nullable().optional(),
+  /** Per-side LOCAL flag (ADR-0009) — on a commander it means "this side may poke that peer"; it is
+   *  NOT a control over the outpost's own flag and never syncs anywhere. Absent PRESERVES. */
+  pokeMode: z.boolean().optional()
+});
+export type UpdateFederationPeerRequest = z.infer<typeof UpdateFederationPeerRequestSchema>;
+
 export const FederationPeerSchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
@@ -316,12 +427,73 @@ export const FederationPeerStatusSchema = z.object({
    *  Reports `"poll"` for a pokeMode peer that has never been poked (D2), when this instance has no
    *  outbound client-cert material (D4), and while the peer's last pull failed (the reconnect leg). */
   effectiveCadence: z.enum(["poke", "poll"]).optional(),
+  // -----------------------------------------------------------------------------------------
+  // M16.2 phase A (E3) — PENDING-VS-APPLIED, HONESTLY. Every field below is optional/additive and
+  // nullable ("no observation"), and every NAME says what it MEASURES.
+  //
+  // THE ONE-SIDED DERIVATION (the reason there is no `appliedAtPeer` field here, and never will be
+  // until M16.4 builds one): `sync_cursors` records only what WE applied FROM a peer, never what a
+  // peer applied FROM US; `export-repo.ts` ships only this domain's own entries, so a return bundle
+  // cannot carry our sequences back; and `bundle_transfers` has no production UPDATE path, so every
+  // EXPORT row is inserted `created` and never advances. The strongest honest commander-side
+  // statement is therefore PENDING-EXPORT — "this much of my own journal has not been put into a
+  // bundle addressed to that peer yet" — which says NOTHING about what the peer applied. A field
+  // named for application at the peer would be a fabrication, so there isn't one.
+  // -----------------------------------------------------------------------------------------
+  /** The highest `throughSequence` of any SYNC EXPORT bundle this instance has produced for this
+   *  peer. `null` = never exported to this peer — deliberately NOT `0`, which would read as "synced
+   *  up to the beginning". Measures WHAT WE PUT ON THE WIRE, never what the peer accepted. */
+  lastExportedThroughSequence: z.number().int().nullable().optional(),
+  /** When that highest export bundle was produced HERE (`bundle_transfers.created_at`). Not a
+   *  handoff time and not an apply time — this side's own export timestamp. */
+  lastExportedAt: z.string().datetime().nullable().optional(),
+  /** The Ed25519 CHECKSUM of that export bundle — the only stable per-bundle identifier this system
+   *  has (M16.1 established it as the per-change join handle). This is what an honest
+   *  "as of ⟨bundle⟩" label names on the EXPORT side. `null` on a pre-M16.1 ledger row. */
+  lastExportedBundleChecksum: z.string().nullable().optional(),
+  /** The checksum of the last CONFIRMED INBOUND sync bundle — the "as of ⟨bundle⟩" identifier that
+   *  goes with `lastSyncedAt` (same ledger row, so the two always agree). `null` when no confirmed
+   *  import exists, or when that row predates checksum recording; either way it is declared in
+   *  `unknownFields` rather than rendered as a bundle name. */
+  lastSyncedBundleChecksum: z.string().nullable().optional(),
+  /** How many of THIS domain's own journal entries have never been carried in an export bundle
+   *  addressed to this peer: `ownJournalTail - lastExportedThroughSequence`, floored at 0. `null`
+   *  when it cannot be derived (nothing exported yet). NOT a count of anything the peer failed to
+   *  apply — the peer may have applied everything, or nothing; this side cannot tell. */
+  pendingExportEntryCount: z.number().int().nullable().optional(),
+  /** M16.2 phase A (E1) — the `trustTier` asserted on this peer's `outpost` GRAPH OBJECT, resolved
+   *  through the `peerDomainId` binding. `null` when no `outpost` object exists for the peer or when
+   *  its operator never asserted a tier — NEVER defaulted to a tier (there is no source for one),
+   *  and always accompanied by `"trustTier"` in `unknownFields`. */
+  trustTier: OutpostTrustTierSchema.nullable().optional(),
+  /** DERIVED reachability, kept strictly separate from `trustTier` (owner decision): `"connected"`
+   *  when the peer has an https/mTLS-capable `baseUrl` this side can dial, `"air-gap"` when it has
+   *  no dialable base URL but does have a configured `deliveryTarget` (a file/object channel), and
+   *  `null` when neither is configured — which is a peer with no transport at all, not a peer known
+   *  to be air-gapped, so it is declared unknown rather than guessed. */
+  connectivity: z.enum(["connected", "air-gap"]).optional().nullable(),
+  /** The fields of THIS peer-status row whose values this instance CANNOT OBSERVE, by name — the
+   *  same honesty contract `ServiceBoardRowSchema.unknownFields` established. A listed field still
+   *  carries its null/zero on the wire for shape stability, but that value is NOT an observation and
+   *  a client must render it as unknown, never as a clean reading.
+   *
+   *  Optional for additivity; an old SDK simply never sees it. Names that appear here include
+   *  `"trustTier"` (never asserted), `"connectivity"` (no transport configured),
+   *  `"lastSyncedBundleChecksum"`/`"lastExportedBundleChecksum"` (no identified bundle),
+   *  `"pendingExportEntryCount"` (nothing exported yet), and `"healthRollup"` — a promised Overview
+   *  field with NO source in this codebase at all, hence ABSENT from the schema and named here so a
+   *  UI cannot mistake its absence for "healthy". */
+  unknownFields: z.array(z.string()).optional(),
   recentTransfers: z.array(BundleTransferSchema)
 });
 export type FederationPeerStatus = z.infer<typeof FederationPeerStatusSchema>;
 
 export const FederationStatusResponseSchema = z.object({
   self: FederationSelfSchema.nullable(),
+  /** M16.2 phase A (E3) — the tail sequence of THIS domain's OWN journal (0 when it has authored
+   *  nothing). The denominator every `lastExportedThroughSequence` is read against; one value per
+   *  instance, not per peer. Optional/additive. */
+  ownJournalTail: z.number().int().nullable().optional(),
   peers: z.array(FederationPeerStatusSchema)
 });
 export type FederationStatusResponse = z.infer<typeof FederationStatusResponseSchema>;

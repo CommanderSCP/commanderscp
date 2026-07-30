@@ -16,6 +16,7 @@ import {
 } from "../graph/objects-repo.js";
 import { createRelationship, deleteRelationship, listRelationships } from "../graph/relationships-repo.js";
 import { isGovernanceManagedObjectType } from "../governance/governance-managed-types.js";
+import { isPeerBoundObjectType } from "../federation/outpost-binding.js";
 import { isSystemManagedRelationshipType } from "../graph/system-managed-relationships.js";
 import { assertPolicyScopeWithinAuthority } from "../governance/policy-scope-authz.js";
 import { assertCampaignTargetsWithinAuthority } from "../coordination/campaign-scope-authz.js";
@@ -335,9 +336,19 @@ export interface ObjectResolution {
 /** `object:write` for every ordinary type; `policy:write` for the governance-owned `policy`/
  *  `control` types — mirrors `routes/typed-registries.ts`'s `writePermission` gate so the IaC
  *  apply path can never authorize a governance-object write with a weaker permission than the
- *  typed `/policies`/`/controls` routes require (security fast-follow after PR #9). */
+ *  typed `/policies`/`/controls` routes require (security fast-follow after PR #9).
+ *
+ *  M16.2 phase A (E1) adds the same treatment for the peer-bound `outpost` type: its own routes
+ *  (`/api/v1/federation/outposts`) require `federation:write`, so a manifest declaring an `outpost`
+ *  object must clear the SAME bar rather than the weaker `object:write` — otherwise `POST /plans` +
+ *  `.../apply` would be a third door into commander-authored federation config with the wrong gate,
+ *  exactly the shape the governance carve-out above was written to close. The 1:1 peer BINDING needs
+ *  no work here: it is enforced inside `graph/objects-repo.ts`, which this path calls
+ *  (`federation/outpost-binding.ts` explains the single-choke-point choice). */
 function writePermissionFor(typeId: string): Permission {
-  return isGovernanceManagedObjectType(typeId) ? "policy:write" : "object:write";
+  if (isGovernanceManagedObjectType(typeId)) return "policy:write";
+  if (isPeerBoundObjectType(typeId)) return "federation:write";
+  return "object:write";
 }
 
 /**

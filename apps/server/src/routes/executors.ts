@@ -54,9 +54,10 @@ import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
-import { badRequest, notFound } from "../errors.js";
+import { badRequest, forbidden, notFound } from "../errors.js";
 import { validateProperties } from "../graph/property-validation.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { isPeerBoundObjectType } from "../federation/outpost-binding.js";
 import { containmentDomainIdFromWire } from "../domain-id-edge.js";
 import { createRelationship } from "../graph/relationships-repo.js";
 import {
@@ -872,6 +873,20 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           permission: "object:write",
           scopeObjectId: auth.orgId
         });
+
+        // M16.2 phase A (E1) — this is a free-form-`typeId` write door checking only `object:write`,
+        // so it must not become a way to write commander-authored federation config, whose own routes
+        // require `federation:write`. Nothing discovers federation topology (no executor plugin knows
+        // about peers), so refusing the type costs nothing real and closes the permission mismatch.
+        // The peer BINDING is separately enforced inside `graph/objects-repo.ts` for every door.
+        for (const proposedObject of request.body.proposal.objects) {
+          if (isPeerBoundObjectType(proposedObject.typeId)) {
+            throw forbidden(
+              `discovery proposals may not create '${proposedObject.typeId}' objects — commander-authored ` +
+                `federation config is written only through /api/v1/federation/outposts ('federation:write')`
+            );
+          }
+        }
 
         const urnToId = new Map<string, string>();
         const nameToId = new Map<string, string>();

@@ -38,6 +38,10 @@ import type {
   FederationPeer,
   FederationStatusResponse,
   ImportBundleRequest,
+  // M16.2 phase A — the `outpost` config object (E1) + the narrow peer PATCH (E4).
+  OutpostConfig,
+  OutpostTrustTier,
+  UpdateFederationPeerRequest,
   SyncScope
 } from "@scp/schemas";
 import { DesiredStateManifestSchema } from "@scp/schemas";
@@ -266,9 +270,45 @@ function printFederationStatus(status: FederationStatusResponse, output: OutputF
             ? "poke*"
             : "poll",
       lastPull: p.lastPullSuccessAt ?? p.lastPullAttemptAt ?? "never",
+      // M16.2 phase A (E3) — PENDING-EXPORT, never pending-apply. "N pending" counts THIS domain's own
+      // journal entries not yet carried in any bundle addressed to the peer; it says NOTHING about what
+      // the peer applied (this side cannot observe that — see the schema's note and `unknownFields`).
+      // `?` is printed whenever the field is declared unknown, so a null never reads as "nothing
+      // pending"/"synced".
+      pendingExport:
+        p.pendingExportEntryCount === null || p.pendingExportEntryCount === undefined
+          ? "?"
+          : `${p.pendingExportEntryCount} pending`,
+      // The owner-ENTERED trust tier from the peer's `outpost` object, or "?" when never asserted
+      // (F3: there is no source for a default, so the CLI must not print one).
+      trustTier: p.trustTier ?? "?",
+      // DERIVED from transport, deliberately separate from the tier; "?" when no transport at all.
+      connectivity: p.connectivity ?? "?",
       recentTransfers: String(p.recentTransfers.length)
     };
   });
+  // The honest-unknown declaration, surfaced rather than silently dropped by the table above.
+  for (const p of status.peers) {
+    const unknown = p.unknownFields ?? [];
+    if (unknown.length > 0) {
+      console.log(`  ${p.peer.name}: not observable here — ${unknown.join(", ")}`);
+    }
+  }
+}
+
+/** M16.2 phase A (E1) — one `outpost` config object as a table row. `trustTier` prints "?" when the
+ *  operator has never asserted one; `origin` distinguishes a commander's own authored object from the
+ *  read-only REPLICA an outpost holds of it. */
+function outpostConfigRow(o: OutpostConfig): Record<string, string> {
+  return {
+    peerDomainId: o.peerDomainId,
+    name: o.name,
+    trustTier: o.trustTier ?? "?",
+    originDomainId: o.originDomainId,
+    revision: String(o.revision),
+    version: String(o.version),
+    notObservable: o.unknownFields.join(", ") || "-"
+  };
 }
 
 // -------------------------------------------------------------------------------------
@@ -2657,6 +2697,201 @@ export function buildProgram(): Command {
         printResult(peer, opts.output, (item) => peerRow(item as FederationPeer));
       }
     );
+
+  // -----------------------------------------------------------------------------------------
+  // M16.2 phase A (E4) — `scp federation peer-update`: the NARROW, TRANSPORT-ONLY peer edit.
+  //
+  // DELIBERATELY A SEPARATE COMMAND FROM `pair`, not a flag on it. `pair` is a re-pair: it REQUIRES
+  // `--public-key`, and a different value there is a KEY ROTATION that supersedes the peer's current
+  // key window and hard-revokes the old key. This command takes no key flag at all, so "I just want to
+  // fix the base URL" can never become a trust-anchor rotation. Rotating a key remains an explicit
+  // `scp federation pair --public-key <new>`.
+  // -----------------------------------------------------------------------------------------
+  federationCmd
+    .command("peer-update")
+    .description(
+      "Update a peer's TRANSPORT settings only (name/base URL/sync scope/delivery target/poke-mode) — never key material"
+    )
+    .argument("<idOrName>", "the peer's trust-domain id or name")
+    .option("--name <name>", "a new display name for the peer")
+    .option("--base-url-of-peer <url>", "the peer's API base URL")
+    .option("--sync-scope <mode>", "full|policies_only|changes_only|status_only")
+    .option("--delivery-out-dir <dir>", "SERVER-side absolute outbound drop directory")
+    .option("--delivery-in-dir <dir>", "SERVER-side absolute inbound intake directory")
+    .option("--delivery-s3-endpoint <url>", "S3(-compatible) endpoint — operator-allowlisted")
+    .option("--delivery-s3-bucket <bucket>", "S3 bucket for channel artifacts")
+    .option("--delivery-s3-out-prefix <prefix>", "S3 key prefix for outbound drops")
+    .option("--delivery-s3-in-prefix <prefix>", "S3 key prefix for the inbound inbox")
+    .option("--clear-delivery-target", "clear the peer's DeliveryTarget (instance-env fallback)")
+    .option("--poke-mode", "enable poke-mode (requires an https/mTLS peer base URL)")
+    .option("--no-poke-mode", "disable poke-mode (poll-mode)")
+    .option("--base-url <url>", "this domain's own API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        idOrName: string,
+        opts: BaseCliOpts & {
+          name?: string;
+          baseUrlOfPeer?: string;
+          syncScope?: string;
+          deliveryOutDir?: string;
+          deliveryInDir?: string;
+          deliveryS3Endpoint?: string;
+          deliveryS3Bucket?: string;
+          deliveryS3OutPrefix?: string;
+          deliveryS3InPrefix?: string;
+          clearDeliveryTarget?: boolean;
+          pokeMode?: boolean;
+        }
+      ) => {
+        const hasFs = Boolean(opts.deliveryOutDir || opts.deliveryInDir);
+        const hasS3 = Boolean(
+          opts.deliveryS3Endpoint ||
+            opts.deliveryS3Bucket ||
+            opts.deliveryS3OutPrefix ||
+            opts.deliveryS3InPrefix
+        );
+        if (opts.clearDeliveryTarget && (hasFs || hasS3)) {
+          throw new Error("--clear-delivery-target cannot be combined with any --delivery-* flag");
+        }
+        if (hasFs && hasS3) {
+          throw new Error(
+            "a DeliveryTarget is one provider: use EITHER --delivery-out-dir/--delivery-in-dir (filesystem) OR the --delivery-s3-* flags"
+          );
+        }
+        if (hasS3 && !(opts.deliveryS3Endpoint && opts.deliveryS3Bucket)) {
+          throw new Error(
+            "the s3-compatible DeliveryTarget requires BOTH --delivery-s3-endpoint and --delivery-s3-bucket"
+          );
+        }
+        const client = await clientFromStoredCredentials(opts);
+        const deliveryTarget: DeliveryTarget | null | undefined = opts.clearDeliveryTarget
+          ? null
+          : hasS3
+            ? {
+                provider: "s3-compatible",
+                endpoint: opts.deliveryS3Endpoint as string,
+                bucket: opts.deliveryS3Bucket as string,
+                ...(opts.deliveryS3OutPrefix ? { outPrefix: opts.deliveryS3OutPrefix } : {}),
+                ...(opts.deliveryS3InPrefix ? { inPrefix: opts.deliveryS3InPrefix } : {})
+              }
+            : hasFs
+              ? {
+                  provider: "filesystem",
+                  ...(opts.deliveryOutDir ? { outDir: opts.deliveryOutDir } : {}),
+                  ...(opts.deliveryInDir ? { inDir: opts.deliveryInDir } : {})
+                }
+              : undefined;
+        // Absent means PRESERVE on every field — the same tri-state the API applies, so a partial
+        // edit can never blank a setting the operator did not mention.
+        const req: UpdateFederationPeerRequest = {
+          ...(opts.name !== undefined ? { name: opts.name } : {}),
+          ...(opts.baseUrlOfPeer !== undefined ? { baseUrl: opts.baseUrlOfPeer } : {}),
+          ...(opts.syncScope !== undefined ? { syncScope: { mode: opts.syncScope } as SyncScope } : {}),
+          ...(deliveryTarget !== undefined ? { deliveryTarget } : {}),
+          ...(opts.pokeMode !== undefined ? { pokeMode: opts.pokeMode } : {})
+        };
+        const peer = await client.federation.updatePeer(idOrName, req);
+        printResult(peer, opts.output, (item) => peerRow(item as FederationPeer));
+      }
+    );
+
+  federationCmd
+    .command("peer")
+    .description("Show one paired federation peer")
+    .argument("<idOrName>", "the peer's trust-domain id or name")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrName: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const peer = await client.federation.getPeer(idOrName);
+      printResult(peer, opts.output, (item) => peerRow(item as FederationPeer));
+    });
+
+  // -----------------------------------------------------------------------------------------
+  // M16.2 phase A (E1) — `outpost` config objects: the commander-authored declared config that SYNCS
+  // DOWN (a peer ROW never can — the journal has no peer-shaped entry kind). Commander-side commands;
+  // on an outpost these read the local read-only replica, and a write there is refused with 409.
+  // -----------------------------------------------------------------------------------------
+  const outpostCmd = federationCmd
+    .command("outpost")
+    .description("Commander-origin outpost config objects (trust tier) that sync down to the outpost");
+
+  outpostCmd
+    .command("declare")
+    .description("Declare the config object for an already-paired outpost peer")
+    .requiredOption("--peer <domainId>", "the paired outpost peer's trust-domain id")
+    .option("--name <name>", "display name for the config object (defaults to the peer's name)")
+    .option(
+      "--trust-tier <tier>",
+      "commercial|fedramp-high|il5 — an owner-ENTERED assertion; OMIT it and the tier stays honestly unknown (never defaulted)"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (opts: BaseCliOpts & { peer: string; name?: string; trustTier?: OutpostTrustTier }) => {
+        const client = await clientFromStoredCredentials(opts);
+        const config = await client.federation.createOutpost({
+          peerDomainId: opts.peer,
+          ...(opts.name !== undefined ? { name: opts.name } : {}),
+          ...(opts.trustTier !== undefined ? { trustTier: opts.trustTier } : {})
+        });
+        printResult(config, opts.output, (item) => outpostConfigRow(item as OutpostConfig));
+      }
+    );
+
+  outpostCmd
+    .command("set")
+    .description("Edit an outpost's commander-origin config (absent flags PRESERVE)")
+    .requiredOption("--peer <domainId>", "the outpost peer's trust-domain id")
+    .option("--name <name>", "new display name")
+    .option("--trust-tier <tier>", "commercial|fedramp-high|il5")
+    .option("--expected-version <n>", "optimistic-concurrency guard on the object's version")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          peer: string;
+          name?: string;
+          trustTier?: OutpostTrustTier;
+          expectedVersion?: string;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const config = await client.federation.updateOutpost(opts.peer, {
+          ...(opts.name !== undefined ? { name: opts.name } : {}),
+          ...(opts.trustTier !== undefined ? { trustTier: opts.trustTier } : {}),
+          ...(opts.expectedVersion !== undefined
+            ? { expectedVersion: Number(opts.expectedVersion) }
+            : {})
+        });
+        printResult(config, opts.output, (item) => outpostConfigRow(item as OutpostConfig));
+      }
+    );
+
+  outpostCmd
+    .command("list")
+    .description("List every outpost config object known here")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const configs = await client.federation.listOutposts();
+      printResult(configs, opts.output, (item) => outpostConfigRow(item as OutpostConfig));
+    });
+
+  outpostCmd
+    .command("show")
+    .description("Show one outpost's config object, resolved through its peer binding")
+    .requiredOption("--peer <domainId>", "the outpost peer's trust-domain id")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { peer: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const config = await client.federation.getOutpost(opts.peer);
+      printResult(config, opts.output, (item) => outpostConfigRow(item as OutpostConfig));
+    });
 
   federationCmd
     .command("peers")
