@@ -7,7 +7,7 @@ import type {
   ServiceBoardWave
 } from "@scp/sdk";
 import { client } from "../lib/client";
-import { isAbsent } from "../lib/absent";
+import { declaredUnknowns, isAbsent } from "../lib/absent";
 import { serviceBoardKey } from "../lib/query-client";
 import { useIdParam } from "../lib/use-route-params";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -45,7 +45,7 @@ function WhyLink({ changeId, decisionId }: { changeId: string; decisionId: strin
  *  `ServiceBoardRow.unknownFields`) — as opposed to observed-and-empty. The two must never render
  *  the same way: an unobservable field is an honest UNKNOWN, not a clean bill of health. */
 function isUnknown(row: ServiceBoardRow, field: string): boolean {
-  return row.unknownFields.includes(field);
+  return declaredUnknowns(row).includes(field);
 }
 
 /** The honest-unknown marker. Deliberately NOT the muted dash used for observed-and-empty, and
@@ -267,11 +267,11 @@ export function changeVisibilityUnknownOf(board: { unknownFields: string[] }): b
   //       local — which is what catches the SENDING side being the narrow one;
   //   (3) the upstream this board depends on is overdue by its own sync cadence.
   // Which one it is shows in the "as of" line (3) and the row-level markers (1, 2).
-  return board.unknownFields.includes("summary.stable");
+  return declaredUnknowns(board).includes("summary.stable");
 }
 
 export function freezeVisibilityUnknownOf(board: { unknownFields: string[] }): boolean {
-  return board.unknownFields.includes("rows[].activeFreeze");
+  return declaredUnknowns(board).includes("rows[].activeFreeze");
 }
 
 /**

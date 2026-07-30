@@ -274,6 +274,30 @@ describe("boundary segment: the wiring, by exact field name", () => {
  *   <p … title="undefined authorized artifacts">undefined authorized artifacts</p>
  * — the literal word `undefined`, twice, once visible and once as a tooltip, beside a success badge.
  */
+/**
+ * Y4 — THE X7 CLASS, CLOSED FOR `unknownFields` ITSELF. `isBoundaryUnknown` dereferenced
+ * `segment.unknownFields` bare; the field is required-not-optional and the SDK validates nothing, so
+ * a server that omits the honesty list threw inside the strip and took the change page with it.
+ * `declaredUnknowns` reads it as "nothing declared unobservable" — additive honesty on top of a
+ * working page, rather than no page.
+ */
+describe("Y4: a segment with NO unknownFields key renders instead of throwing", () => {
+  function withoutUnknownFields(segment: BoundarySegment): BoundarySegment {
+    const copy: Partial<BoundarySegment> = { ...segment };
+    delete copy.unknownFields;
+    return copy as BoundarySegment;
+  }
+
+  it("renders the strip, and claims nothing unknown", () => {
+    const html = render(withoutUnknownFields(outpostVerifiedSegment));
+    expect(html).toContain("signatures verified");
+  });
+
+  it("isBoundaryUnknown answers false rather than throwing", () => {
+    expect(isBoundaryUnknown(withoutUnknownFields(commanderSegment), "validate.state")).toBe(false);
+  });
+});
+
 describe("Y3(a): an ABSENT authorizedArtifactCount prints no count, not the word `undefined`", () => {
   /** The verified segment with the COUNT KEY DELETED — not nulled. */
   function verifiedWithoutCountKey(): BoundarySegment {

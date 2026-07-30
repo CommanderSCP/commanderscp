@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { BoundarySegment } from "@scp/sdk";
 import { Badge } from "../ui/badge";
-import { isAbsent } from "../../lib/absent";
+import { declaredUnknowns, isAbsent } from "../../lib/absent";
 
 /**
  * M16.1 — THE UNIVERSAL BOUNDARY SEGMENT, rendered (ADR-0011; vocabulary fixed by ADR-0021 D6).
@@ -36,7 +36,7 @@ import { isAbsent } from "../../lib/absent";
  *  observed-and-negative. The two must never render the same way. Mirrors `service-board.tsx`'s
  *  `isUnknown` deliberately: one honesty pattern in this codebase, not two. */
 export function isBoundaryUnknown(segment: BoundarySegment, field: string): boolean {
-  return segment.unknownFields.includes(field);
+  return declaredUnknowns(segment).includes(field);
 }
 
 /** The honest-unknown marker — same visual language as the board's `UnknownHere`: dashed amber,

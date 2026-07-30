@@ -239,3 +239,67 @@ describe("peer settings: the rendered form", () => {
     expect(problemDetail("odd")).toBe("odd");
   });
 });
+
+/**
+ * Y4 — THE X7 CLASS, CLOSED FOR `syncScope`.
+ *
+ * `syncScope` is required-not-optional on `FederationPeer` and the SDK validates no response, so
+ * `peer.syncScope.mode` was a bare dereference of a promise nothing enforces at runtime — the same
+ * read that white-screened the outposts pages. Here it would kill the Settings card, which is the
+ * only door an operator has to fix the peer whose response is malformed.
+ *
+ * The guard must not become the OTHER failure: substituting a default mode would tell the operator
+ * the peer exports everything, and — since the patch builder omits an UNCHANGED mode — a form left
+ * alone would keep whatever the real scope is while displaying a different one.
+ */
+describe("Y4: a peer whose response omits `syncScope` neither crashes nor invents a scope", () => {
+  /** A peer with the `syncScope` KEY DELETED, as a server predating the field would send it. */
+  function peerWithoutSyncScope(): FederationPeer {
+    const peer: Partial<FederationPeer> = peerFixture();
+    delete peer.syncScope;
+    return peer as FederationPeer;
+  }
+
+  it("renders the Settings card instead of throwing", () => {
+    const peer = peerWithoutSyncScope();
+    const html = renderToStaticMarkup(<PeerSettingsCard peer={peer} onSave={() => {}} />);
+
+    expect(html).toContain('data-testid="peer-sync-scope-select"');
+    // and it says so in words rather than picking a mode
+    expect(html).toContain("not reported by this server");
+  });
+
+  it("NEVER paints an unreported scope as `full`", () => {
+    const html = renderToStaticMarkup(
+      <PeerSettingsCard peer={peerWithoutSyncScope()} onSave={() => {}} />
+    );
+    // `full` is still offered as a CHOICE; what is forbidden is it being the SELECTED value.
+    expect(html).not.toMatch(/<option[^>]*selected[^>]*>full</);
+  });
+
+  it("an untouched form over an unreported scope is still NOT a write", () => {
+    const peer = peerWithoutSyncScope();
+    const patch = peerSettingsPatch(peer, draftFromPeer(peer));
+    expect(patch).toEqual({});
+    // in particular the marker must never be sent as a mode
+    expect(patch.syncScope).toBeUndefined();
+  });
+
+  it("but an operator who PICKS a mode over an unreported one does write it", () => {
+    const peer = peerWithoutSyncScope();
+    const patch = peerSettingsPatch(peer, {
+      ...draftFromPeer(peer),
+      syncScopeMode: "status_only"
+    });
+    expect(patch.syncScope).toEqual({ mode: "status_only" });
+  });
+
+  it("a REPORTED scope still round-trips unchanged — the guard must not swallow the honest case", () => {
+    const peer = peerFixture({ syncScope: { mode: "policies_only" } });
+    expect(draftFromPeer(peer).syncScopeMode).toBe("policies_only");
+    expect(peerSettingsPatch(peer, draftFromPeer(peer))).toEqual({});
+    expect(
+      peerSettingsPatch(peer, { ...draftFromPeer(peer), syncScopeMode: "full" }).syncScope
+    ).toEqual({ mode: "full" });
+  });
+});

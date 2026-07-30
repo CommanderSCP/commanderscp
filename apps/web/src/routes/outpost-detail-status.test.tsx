@@ -102,10 +102,14 @@ describe("OutpostStatusCard: a missing key must not white-screen the detail page
           recentTransfers: [
             {
               id: "11111111-2222-4333-8444-555555555555",
+              peerDomainId: PEER_ID,
               direction: "export",
-              kind: "journal",
+              kind: "sync",
               status: "created",
-              createdAt: "2026-07-02T00:00:00.000Z"
+              sinceSequence: null,
+              throughSequence: 12,
+              createdAt: "2026-07-02T00:00:00.000Z",
+              confirmedAt: null
             }
           ]
         })}

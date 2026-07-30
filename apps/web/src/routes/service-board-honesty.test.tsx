@@ -229,6 +229,34 @@ describe("service board summary: an unassessable count is never dressed as a suc
     expect(freezeVisibilityUnknownOf({ unknownFields: ["summary.stable"] })).toBe(false);
     expect(freezeVisibilityUnknownOf({ unknownFields: [] })).toBe(false);
   });
+
+  /**
+   * Y4 — THE X7 CLASS, CLOSED FOR `unknownFields` ITSELF.
+   *
+   * Every predicate above reads `…unknownFields.includes(field)`. `unknownFields` is
+   * required-not-optional on both `ServiceBoardRow` and the board response, and the generated SDK
+   * validates nothing, so a server that omits the honesty list made the read a TypeError — and this
+   * one is not scoped to a cell: it is called from `BoardRow`, so it takes the WHOLE board down.
+   *
+   * `declaredUnknowns` returns `[]` for an absent list. That is the pre-honesty-work reading (every
+   * field renders as observed) and it is deliberately the lesser evil: a blank page tells the
+   * operator nothing at all, and the honest-unknown markers are additive on top of a working board.
+   */
+  it("a row with NO unknownFields key renders instead of killing the board", () => {
+    const row: Partial<ServiceBoardRow> = baseRow("no-honesty-list");
+    delete row.unknownFields;
+    const html = renderRow(row as ServiceBoardRow);
+
+    expect(html).toContain("no-honesty-list");
+    // nothing is claimed unknown, because nothing was declared unknown
+    expect(html).not.toContain('data-testid="board-unknown"');
+  });
+
+  it("the two board-level predicates treat an ABSENT list as no declaration, not as a crash", () => {
+    const board = {} as { unknownFields: string[] };
+    expect(changeVisibilityUnknownOf(board)).toBe(false);
+    expect(freezeVisibilityUnknownOf(board)).toBe(false);
+  });
 });
 
 /**

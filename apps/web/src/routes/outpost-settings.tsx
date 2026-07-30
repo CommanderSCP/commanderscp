@@ -57,10 +57,32 @@ export const SETTABLE_SYNC_SCOPE_MODES = [
   "status_only"
 ] as const;
 
+/**
+ * THE PEER'S CURRENT SYNC-SCOPE MODE, or `undefined` when the server did not send `syncScope` (Y4).
+ *
+ * `syncScope` is required-not-optional on `FederationPeer` and the generated SDK validates no
+ * response, so `peer.syncScope.mode` was a bare dereference of a field nothing enforces at runtime —
+ * the SAME read that white-screened the outposts pages, and here it would kill the Settings form
+ * (and with it the only door an operator has to fix the peer).
+ *
+ * `undefined` RATHER THAN A DEFAULT, deliberately. Substituting `"full"` would be the fabrication
+ * class this whole branch exists to remove: it would tell the operator the peer exports everything,
+ * and — because the patch builder omits an UNCHANGED mode — a form left alone would silently keep
+ * whatever the real scope is while displaying a different one. An unknown mode is unknown.
+ */
+export function peerSyncScopeMode(peer: FederationPeer): SyncScope["mode"] | undefined {
+  return (peer.syncScope as SyncScope | undefined)?.mode;
+}
+
+/** The select's value when the server never told us the current mode. Not a mode — the empty string
+ *  cannot be sent, and `peerSettingsPatch` refuses to build a `syncScope` from it. */
+export const SYNC_SCOPE_UNREPORTED = "" as const;
+
 export interface PeerSettingsDraft {
   name: string;
   baseUrl: string;
-  syncScopeMode: SyncScope["mode"];
+  /** `""` ⇒ the server did not report a scope and the operator has not chosen one. */
+  syncScopeMode: SyncScope["mode"] | typeof SYNC_SCOPE_UNREPORTED;
   outDir: string;
   inDir: string;
   /** Explicit, because `deliveryTarget: null` is the only CLEAR verb the contract has and inferring
@@ -82,7 +104,7 @@ export function draftFromPeer(peer: FederationPeer): PeerSettingsDraft {
   return {
     name: peer.name,
     baseUrl: peer.baseUrl ?? "",
-    syncScopeMode: peer.syncScope.mode,
+    syncScopeMode: peerSyncScopeMode(peer) ?? SYNC_SCOPE_UNREPORTED,
     outDir: deliveryDir(peer, "outDir"),
     inDir: deliveryDir(peer, "inDir"),
     clearDeliveryTarget: false
@@ -114,7 +136,13 @@ export function peerSettingsPatch(
   // must keep an https base URL), so an emptied box means "leave it alone", not "unset it".
   if (baseUrl.length > 0 && baseUrl !== (peer.baseUrl ?? "")) patch.baseUrl = baseUrl;
 
-  if (draft.syncScopeMode !== peer.syncScope.mode && draft.syncScopeMode !== "custom") {
+  // `custom` is not settable here (no label-selector editor), and `""` is not a mode at all — it is
+  // the marker for "the server did not report one", so it must never become a write.
+  if (
+    draft.syncScopeMode !== peerSyncScopeMode(peer) &&
+    draft.syncScopeMode !== "custom" &&
+    draft.syncScopeMode !== SYNC_SCOPE_UNREPORTED
+  ) {
     patch.syncScope = { mode: draft.syncScopeMode };
   }
 
@@ -218,10 +246,15 @@ export function PeerSettingsCard({
   const [draft, setDraft] = useState<PeerSettingsDraft>(() => draftFromPeer(peer));
   const patch = peerSettingsPatch(peer, draft);
   const nothingToSave = Object.keys(patch).length === 0;
-  const modeOptions: SyncScope["mode"][] =
-    peer.syncScope.mode === "custom"
-      ? ["custom", ...SETTABLE_SYNC_SCOPE_MODES]
-      : [...SETTABLE_SYNC_SCOPE_MODES];
+  const currentMode = peerSyncScopeMode(peer);
+  // An UNREPORTED scope gets a leading non-mode option so the select has something honest to show.
+  // It is not offered as a choice the operator can save back: `peerSettingsPatch` refuses it.
+  const modeOptions: (SyncScope["mode"] | typeof SYNC_SCOPE_UNREPORTED)[] =
+    currentMode === undefined
+      ? [SYNC_SCOPE_UNREPORTED, ...SETTABLE_SYNC_SCOPE_MODES]
+      : currentMode === "custom"
+        ? ["custom", ...SETTABLE_SYNC_SCOPE_MODES]
+        : [...SETTABLE_SYNC_SCOPE_MODES];
 
   return (
     <Card>
@@ -280,7 +313,7 @@ export function PeerSettingsCard({
               >
                 {modeOptions.map((mode) => (
                   <option key={mode} value={mode}>
-                    {mode}
+                    {mode === SYNC_SCOPE_UNREPORTED ? "not reported by this server" : mode}
                   </option>
                 ))}
               </select>
