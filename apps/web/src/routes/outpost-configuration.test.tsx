@@ -181,6 +181,34 @@ describe("trust tier: absent until set, and never defaulted", () => {
     );
   });
 
+  it("treats an ABSENT tier key exactly like a null one — no empty badge, no orphan select", () => {
+    // `OutpostConfigSchema.trustTier` is required-nullable, but the generated SDK does NOT validate
+    // responses at runtime (it returns `response.json()` under a TypeScript type), so a server that
+    // omits the key hands this component `undefined`. Keyed on `=== null`, that fell through to the
+    // VALUE branch and rendered an empty `<Badge>` with no `data-trust-tier` attribute — a blank
+    // standing in for an unknown — while the select, initialised with `?? ""`, showed a value no
+    // option carried.
+    const noKey = configFixture();
+    delete (noKey as { trustTier?: unknown }).trustTier;
+
+    const html = renderToStaticMarkup(
+      <TrustTierCard
+        config={noKey as OutpostConfig}
+        ownDomainId={OWN_DOMAIN}
+        onSave={() => {}}
+        onReconcile={() => {}}
+      />
+    );
+
+    expect(html).toContain('data-trust-tier="unknown"');
+    expect(html).toContain("unknown here");
+    // The placeholder is offered (nothing is asserted) and IS the selected option, so the control
+    // cannot silently settle on the first enum member.
+    expect(html).toContain("— not set —");
+    expect(tagWithAttr(html, 'selected=""')).toContain('value=""');
+    expect(html).not.toContain('data-tier-unverified=');
+  });
+
   it("does not offer the placeholder once a tier IS set — there is no clear-to-unknown verb", () => {
     const html = renderToStaticMarkup(
       <TrustTierCard

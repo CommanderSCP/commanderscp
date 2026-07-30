@@ -15,7 +15,7 @@ import { isForeignOriginObject, replicaGuard, useOwnDomainId } from "../lib/repl
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
-import { UnknownHere } from "./outposts";
+import { isAbsent, UnknownHere } from "./outposts";
 import { problemDetail } from "./outpost-settings";
 
 /**
@@ -198,7 +198,13 @@ export function TrustTierCard({
         <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
           Current trust tier
         </span>
-        {config.trustTier === null ? (
+        {/* `isAbsent`, not `=== null`: `OutpostConfigSchema.trustTier` is required-nullable, but the
+            generated SDK does not validate responses at runtime, so a server that omits the key hands
+            this component `undefined` — and `<Badge>{undefined}</Badge>` is an EMPTY BADGE with no
+            `data-trust-tier` attribute, i.e. a blank standing in for an unknown. Three lines above,
+            the select's own initial state already reads this field with `??`; this makes the two
+            agree. */}
+        {isAbsent(config.trustTier) ? (
           <span data-testid="config-tier-current" data-trust-tier="unknown">
             <UnknownHere
               title={
@@ -264,7 +270,7 @@ export function TrustTierCard({
           {/* Offered ONLY while nothing is asserted: phase A has no clear-to-unknown verb, so an
               already-set tier cannot be un-asserted from here and the placeholder must not pretend
               otherwise. It is `disabled` so it can never be SUBMITTED as a value. */}
-          {config.trustTier === null && (
+          {isAbsent(config.trustTier) && (
             <option value="" disabled>
               — not set —
             </option>

@@ -72,6 +72,26 @@ export function UnknownHere({ title, label = "unknown here" }: { title: string; 
   );
 }
 
+/**
+ * ABSENT — `null` OR `undefined`, never one of the two.
+ *
+ * THE BUG THIS EXISTS TO MAKE UNREPEATABLE. Almost every federated reading on this page is
+ * `.nullable().optional()` (`packages/schemas/src/federation.ts`), so BOTH absent values are legal on
+ * the wire, and the generated SDK does NO runtime response validation — it hands back
+ * `response.json()` under a TypeScript type — so a key an older or newer server simply omits arrives
+ * as `undefined` whatever its schema says. A strict `=== null` check therefore guards one of two
+ * legal absences and lets the other reach the renderer, where an absent NUMBER prints as an empty
+ * string inside otherwise-confident copy: `"⟨nothing⟩ of this domain's own journal entries not yet
+ * put on the wire"` reads as "nothing pending". That is a blank standing in for an unknown, which is
+ * exactly what this file's rule at the top forbids.
+ *
+ * The string-valued cells are safe by accident (`!checksum` catches both); this makes the numeric and
+ * enum-valued ones safe on purpose, in one place, so the next such field cannot be half-guarded.
+ */
+export function isAbsent(value: unknown): boolean {
+  return value === null || value === undefined;
+}
+
 export function formatDateTime(value: string | null | undefined): string {
   if (!value) return "never";
   return new Date(value).toLocaleString();
@@ -232,14 +252,12 @@ export function InboundSyncCell({ status }: { status: FederationPeerStatus }): R
  */
 export function PendingExportCell({ status }: { status: FederationPeerStatus }): React.JSX.Element {
   // BELT AND BRACES, and not decoration. `unknownFields` is OPTIONAL on the wire (additivity), so an
-  // older server sends a NULL sequence and declares nothing — and keying only on the declaration
+  // older server sends an ABSENT sequence and declares nothing — and keying only on the declaration
   // would then render "exported through #" with an empty number, i.e. paint a peer that was never
-  // exported to as one that was. The value's own absence is checked too. (`InboundSyncCell` above
-  // already does this for the checksum; this cell was the outlier.)
+  // exported to as one that was. The value's own absence is checked too, in BOTH its legal forms.
   const neverExported =
     isPeerUnknown(status, "lastExportedThroughSequence") ||
-    status.lastExportedThroughSequence === null ||
-    status.lastExportedThroughSequence === undefined;
+    isAbsent(status.lastExportedThroughSequence);
   if (neverExported) {
     return (
       <div data-testid="outpost-export" data-export-state="none-recorded">
@@ -262,10 +280,19 @@ export function PendingExportCell({ status }: { status: FederationPeerStatus }):
         {formatDateTime(status.lastExportedAt)}
       </div>
       <div className="mt-1 text-xs text-slate-600">
-        {backlogUnknown || status.pendingExportEntryCount === null ? (
+        {backlogUnknown || isAbsent(status.pendingExportEntryCount) ? (
           <UnknownHere
             label="backlog unknown"
-            title="Nothing has been exported to this peer yet, so a pending-export backlog cannot be derived."
+            title={
+              // The reason must be one that can be TRUE HERE. This branch is only reachable after
+              // `neverExported` returned FALSE — something HAS been exported to this peer — so the
+              // old copy ("nothing has been exported yet") explained the marker with the one fact
+              // this code path rules out. What is actually true is narrower: the count is absent or
+              // the server declared it unobservable.
+              "This side has exported to this peer, but no pending-export backlog is available: the " +
+              "server did not report a count, or declared it one it cannot observe. It is NOT a " +
+              "statement that nothing is pending."
+            }
           />
         ) : (
           <span data-testid="outpost-export-backlog">

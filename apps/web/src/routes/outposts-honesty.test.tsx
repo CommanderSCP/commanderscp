@@ -303,6 +303,52 @@ describe("outposts overview: no string claims the outpost has anything", () => {
     expect(html).not.toContain("healthy");
   });
 
+  it("an ABSENT (not null) backlog count is an unknown, never a blank number", () => {
+    // `pendingExportEntryCount` is `.nullable().OPTIONAL()`, so `undefined` is as legal on the wire as
+    // `null` — and the generated SDK does no runtime response validation, so a key a server omits
+    // arrives here as `undefined` whatever the schema says. Keying the guard on `=== null` alone let
+    // that value through and rendered
+    //   `<span data-testid="outpost-export-backlog"> of this domain's own journal entries…</span>`
+    // — an EMPTY number inside confident copy, reading as "nothing pending".
+    const exported = basePeer({
+      lastExportedThroughSequence: 42,
+      lastExportedAt: "2026-07-29T10:00:00.000Z",
+      lastExportedBundleChecksum: "c0ffee1234567890abcdef",
+      unknownFields: []
+    });
+    delete (exported as { pendingExportEntryCount?: number | null }).pendingExportEntryCount;
+
+    const html = renderToStaticMarkup(<PendingExportCell status={exported} />);
+
+    // PREMISE: this really is the exported branch, so the backlog line is reached at all.
+    expect(html).toContain('data-export-state="exported-handoff-unknown"');
+    expect(html).toContain("exported through #42");
+    // THE GUARANTEE: an unknown marker, and no half-rendered backlog sentence.
+    expect(html).toContain('data-testid="outpost-unknown"');
+    expect(html).not.toContain('data-testid="outpost-export-backlog"');
+    expect(visibleText(html)).not.toContain("not yet put on the wire");
+  });
+
+  it("the backlog-unknown marker does not explain itself with a reason this branch rules out", () => {
+    // The marker is only reachable AFTER `neverExported` returned false — i.e. something HAS been
+    // exported to this peer — so copy blaming "nothing has been exported yet" states, as the reason,
+    // the one fact this code path has already excluded.
+    const html = renderToStaticMarkup(
+      <PendingExportCell
+        status={basePeer({
+          lastExportedThroughSequence: 42,
+          lastExportedAt: "2026-07-29T10:00:00.000Z",
+          pendingExportEntryCount: null,
+          unknownFields: ["pendingExportEntryCount"]
+        })}
+      />
+    );
+    expect(html).toContain("backlog unknown");
+    expect(html).not.toMatch(/Nothing has been exported to this peer yet/);
+    // …and it still must not read as a reassurance about the backlog itself.
+    expect(visibleText(html)).not.toMatch(/nothing is pending|no backlog|caught up/i);
+  });
+
   it("a peer NEVER exported to reports 'no export recorded', never a zero", () => {
     const html = renderToStaticMarkup(<PendingExportCell status={basePeer()} />);
     expect(html).toContain('data-export-state="none-recorded"');
