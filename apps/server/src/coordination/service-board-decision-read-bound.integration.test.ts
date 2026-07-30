@@ -6,10 +6,11 @@ import {
   type TestOrg,
   type TestServer
 } from "../test-support/harness.js";
-import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
+import { withTenantTx } from "../db/tenant-tx.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { proposeChange } from "./changes-repo.js";
 import { buildServiceBoard } from "./service-board.js";
+import { decisionRowsTouched, preferIndexPlans } from "./test-support/decision-read-counters.js";
 
 /**
  * THE BOUND ON THE BOARD'S DECISION READ (adversarial review of PR #153, P3).
@@ -151,35 +152,6 @@ describe("service board: the per-row Decision read is bounded, not the change's 
   afterAll(async () => {
     await server.close();
   });
-
-  /**
-   * MAKE A 400-ROW TABLE CHOOSE THE PLAN A 12,000,000-ROW ONE WOULD. On a table this small a
-   * sequential scan is genuinely the cheapest plan for either read, so both would report "all rows
-   * touched" and the counter could not tell a `LIMIT 1` probe from a full history fetch. Disabling
-   * seq scans FOR THIS TRANSACTION ONLY makes the plan shape match production, where the index is
-   * chosen because the table is large — which is the regime the bound exists for.
-   *
-   * This is a MEASUREMENT INSTRUMENT in a test, never a production knob: no `SET`/hint of any kind
-   * exists in `service-board.ts` or `decisions-repo.ts`, and the reason the production read is fast
-   * is drizzle/0044's index plus the `LIMIT`, not a session setting. `SET LOCAL` dies with the
-   * transaction.
-   */
-  async function preferIndexPlans(tx: TenantTx): Promise<void> {
-    await tx.execute(sql`SET LOCAL enable_seqscan = off`);
-  }
-
-  /** Index entries returned + sequential-scan rows read for `decisions` IN THIS TRANSACTION. */
-  async function decisionRowsTouched(tx: TenantTx): Promise<number> {
-    const rows = await tx.execute(sql`
-      SELECT
-        COALESCE(
-          (SELECT sum(pg_stat_get_xact_tuples_returned(indexrelid))
-             FROM pg_index WHERE indrelid = 'decisions'::regclass), 0)
-        + pg_stat_get_xact_tuples_returned('decisions'::regclass) AS touched
-    `);
-    const first = (rows as unknown as { rows: Array<{ touched: string | number }> }).rows[0];
-    return Number(first?.touched ?? 0);
-  }
 
   it("reads O(1) rows out of `decisions` per board row, whatever the change's history holds — and still reports the LATEST block", async () => {
     const { board, touched, seeded } = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
