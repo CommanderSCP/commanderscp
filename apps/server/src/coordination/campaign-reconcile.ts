@@ -7,7 +7,7 @@ import { badRequest } from "../errors.js";
 import { getObjectByIdOrUrnAnyType, updateObject } from "../graph/objects-repo.js";
 import type { GateDeps } from "./gates.js";
 import { evaluateWaveGate } from "./gates.js";
-import { insertDecision } from "./decisions-repo.js";
+import { insertDecisionIfChanged } from "./decisions-repo.js";
 import { proposeChange, typeOf } from "./changes-repo.js";
 import { createRelationship } from "../graph/relationships-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
@@ -145,9 +145,16 @@ async function reconcileOneCampaign(
       // A cycle, an unknown target, or a topology/dependency conflict. Unlike a Change (which
       // auto-cancels), a campaign has no 'cancelled' state to move to — record why and retry next
       // tick (self-heals if e.g. the offending depends_on edge is later removed).
+      //
+      // PERSIST-ON-CHANGE (`decisions-repo.ts`'s `insertDecisionIfChanged`): "retry next tick"
+      // means a PERMANENT compile fault — a cycle, a deleted target — re-fails identically 43,200
+      // times a day, and this wrote one row for each. The retry itself is unchanged (the
+      // self-healing above depends on it); only the identical restatement is suppressed. A
+      // DIFFERENT error message is a different fault and still writes, so the record always shows
+      // what is currently wrong.
       const message = err instanceof Error ? err.message : String(err);
       await withTenantTx(db, orgId, (tx) =>
-        insertDecision(tx, {
+        insertDecisionIfChanged(tx, {
           orgId,
           kind: "plan_diff",
           subjectId: campaignObjectId,
@@ -217,7 +224,16 @@ async function reconcileOneCampaign(
         },
         gateDeps
       );
-      await insertDecision(tx, {
+      // PERSIST-ON-CHANGE — the same guard the change-side wave gate uses, and needed here MORE,
+      // not less: this branch deliberately RE-INCLUDES `blocked` in its guard (so an operator
+      // satisfying the policy unblocks the campaign on the next tick), which means
+      // `markCampaignWaveBlocked` does NOT stop re-evaluation the way `markWaveRunning` stops it on
+      // the allow path. A campaign parked on an approval therefore re-evaluated — and, before this,
+      // re-WROTE — its unchanged block verdict once per 1 s tick, forever. Prod carries 0 of these
+      // rows only because `campaign_plans` is currently empty; the shape is identical to the
+      // measured 1.44 GB/day change-side flood (`decisions-repo.ts`'s `insertDecisionIfChanged`).
+      // Evaluation cadence is untouched; only the identical restatement is suppressed.
+      const recorded = await insertDecisionIfChanged(tx, {
         orgId,
         kind: "gate",
         subjectId: campaignObjectId,
@@ -226,13 +242,16 @@ async function reconcileOneCampaign(
         reasonTree: gate.reasonTree
       });
       if (gate.verdict === "block") {
+        // Still marked blocked every tick (an idempotent status write, not an append) so
+        // `getCampaignStatus` keeps reporting the truth, and the outcome still carries a resolvable
+        // `decision_id` — the FIRST block's row when this tick merely restated it.
         await markCampaignWaveBlocked(tx, orgId, activeWave.id);
-        return "blocked" as const;
+        return { kind: "blocked", decisionId: recorded.decision.id } as const;
       }
       await markCampaignWaveRunning(tx, orgId, activeWave.id);
-      return "running" as const;
+      return { kind: "running" } as const;
     });
-    if (gateOutcome === "blocked") return;
+    if (gateOutcome.kind === "blocked") return;
   }
 
   let allTerminal = true;

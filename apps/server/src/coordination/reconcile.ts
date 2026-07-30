@@ -41,7 +41,7 @@ import { appendAuditEvent } from "../audit/audit-repo.js";
 import { tryAcquireTriggerClaimLock } from "./trigger-claim-lock.js";
 import { tryAcquireChangeCoordinationLock } from "./change-coordination-lock.js";
 import { evaluateWaveGate } from "./gates.js";
-import { insertDecision } from "./decisions-repo.js";
+import { insertDecision, insertDecisionIfChanged } from "./decisions-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import { DEFAULT_EXECUTOR_INSTANCE_ID, DEFAULT_EXECUTOR_MODULE } from "./executor-config.js";
 import {
@@ -567,7 +567,10 @@ async function reconcileExecutingChange(
     // race for one coherent single-flight story across all four).
     const gateLock = await tryAcquireChangeCoordinationLock(db, change.objectId);
     if (!gateLock) return; // another tick/replica is genuinely evaluating this wave's gate right now — retry next tick.
-    let gateOutcome: "blocked" | "running" | "already-progressed";
+    let gateOutcome:
+      | { kind: "blocked"; decisionId: string }
+      | { kind: "running" }
+      | { kind: "already-progressed" };
     try {
       gateOutcome = await withTenantTx(db, orgId, async (tx) => {
         // Fresh re-check, still under the lock — a racing tick may have already evaluated this
@@ -576,7 +579,7 @@ async function reconcileExecutingChange(
         // insert a SECOND Decision for the same wave — this is the "lost the race" no-op, not a
         // re-evaluation, exactly like advanceEvaluatedChanges's fresh re-check above.
         const freshStatus = await getWaveStatus(tx, orgId, activeWave.id);
-        if (freshStatus !== "pending") return "already-progressed" as const;
+        if (freshStatus !== "pending") return { kind: "already-progressed" } as const;
 
         const gate = await evaluateWaveGate(
           tx,
@@ -591,7 +594,21 @@ async function reconcileExecutingChange(
           },
           gateDeps
         );
-        await insertDecision(tx, {
+        // PERSIST-ON-CHANGE, not write-every-tick (THE production disk-growth bug — see
+        // `decisions-repo.ts`'s `insertDecisionIfChanged` for the measurement). The evaluation
+        // above still runs on EVERY tick, deliberately and unchanged: a wave parked on a
+        // `requireApprovals` effect is unblocked by a human approving somewhere else entirely, and
+        // re-evaluating here is the ONLY thing that notices. But this branch returns "blocked"
+        // without advancing the wave, so the wave stays `pending`, the change stays `executing`
+        // (never parked — parking it would stop it being re-served and nothing would resume it),
+        // and `listChangeRowsInStates` hands it straight back on the next tick. Before this guard
+        // every one of those ticks appended a byte-identical restatement of an unchanged verdict:
+        // ~43,200 rows/day/change, measured at 1.44 GB/day across 25 parked changes in the homelab
+        // deployment. The verdict, its inputs, and its reason tree are all still recorded the
+        // FIRST time, and again the moment ANY of them differ (gate newly allowed, a different
+        // policy firing, a changed target/approval set) — which is exactly when there is something
+        // new to explain.
+        const recorded = await insertDecisionIfChanged(tx, {
           orgId,
           kind: "gate",
           subjectId: change.objectId,
@@ -603,16 +620,23 @@ async function reconcileExecutingChange(
           },
           reasonTree: gate.reasonTree
         });
-        if (gate.verdict === "block") return "blocked" as const;
+        // The blocked outcome carries the STANDING Decision's id — the first block's row when this
+        // tick merely restated it — so a suppressed duplicate never degrades explainability to a
+        // null `decision_id` (charter principle 6).
+        if (gate.verdict === "block") {
+          return { kind: "blocked", decisionId: recorded.decision.id } as const;
+        }
         await markWaveRunning(tx, orgId, activeWave.id);
-        return "running" as const;
+        return { kind: "running" } as const;
       });
     } finally {
       await gateLock.release();
     }
-    // "blocked": M3's seam always allows — kept honest for M4. "already-progressed": a racing
-    // tick already handled this wave's gate; next tick sees its result and proceeds normally.
-    if (gateOutcome !== "running") return;
+    // "blocked": the wave stays `pending` and this change is re-served (and re-evaluated) next
+    // tick — `gateOutcome.decisionId` is the standing block Decision an operator can resolve with
+    // `scp decision get` / `scp change explain`. "already-progressed": a racing tick already
+    // handled this wave's gate; next tick sees its result and proceeds normally.
+    if (gateOutcome.kind !== "running") return;
   }
 
   // Unified target reconciliation: every non-terminal target gets either a trigger attempt

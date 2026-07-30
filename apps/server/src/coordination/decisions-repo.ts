@@ -120,6 +120,105 @@ export async function latestDecisionForSubjectKind(
   return rows[0] ? toDecision(rows[0]) : undefined;
 }
 
+/**
+ * Canonical, key-order-independent JSON for the CONTENT comparison {@link restatesDecision} makes.
+ *
+ * Both halves of that comparison must normalize identically or suppression silently never fires:
+ * the stored side comes back out of `jsonb` (Postgres does NOT preserve the author's key order —
+ * it stores an object's keys in its own internal order), while the candidate side is a freshly
+ * built JS object literal whose key order follows the source code. A plain `JSON.stringify` of the
+ * two therefore differs for byte-identical content. Round-tripping through JSON first also erases
+ * the remaining representational differences between "about to be inserted" and "read back":
+ * `undefined`-valued keys (dropped on insert, so absent on read) and `Date` values (serialized to
+ * an ISO string on insert, read back as that string).
+ *
+ * Array ORDER is preserved deliberately — it is meaningful in every Decision context this compares
+ * (a failing-artifact list, a freeze-override list), and `jsonb` preserves it too, so a reordered
+ * array is a genuinely different input set and MUST write a new row.
+ */
+function canonicalJson(value: unknown): string {
+  const sortKeys = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(sortKeys);
+    if (v !== null && typeof v === "object") {
+      const src = v as Record<string, unknown>;
+      const out: Record<string, unknown> = {};
+      for (const key of Object.keys(src).sort()) out[key] = sortKeys(src[key]);
+      return out;
+    }
+    return v;
+  };
+  return JSON.stringify(sortKeys(JSON.parse(JSON.stringify(value ?? null))));
+}
+
+/**
+ * True when `candidate` says EXACTLY what `previous` already says — same verdict over the same
+ * inputs with the same reasoning. Content-keyed, never identity-keyed: "we already wrote a
+ * Decision for this subject" is NOT a reason to suppress (a gate that newly passes, a different
+ * policy firing, or a changed input set all differ here and all write a new row).
+ *
+ * Exported for direct unit testing: this predicate is the entire safety property of
+ * {@link insertDecisionIfChanged}, and its most plausible failure mode (a normalization slip that
+ * makes every comparison unequal) would restore the unbounded write with no visible symptom.
+ */
+export function restatesDecision(previous: Decision, candidate: InsertDecisionInput): boolean {
+  return (
+    previous.verdict === candidate.verdict &&
+    canonicalJson(previous.inputContext) === canonicalJson(candidate.inputContext) &&
+    canonicalJson(previous.reasonTree) === canonicalJson(candidate.reasonTree)
+  );
+}
+
+/** The outcome of a {@link insertDecisionIfChanged} call — always a resolvable Decision. */
+export interface RecordedDecision {
+  /** The Decision now standing on the record: the freshly inserted row, or the existing row this
+   *  verdict merely restated. NEVER null — every caller still has a `decision_id` to hand out
+   *  (charter principle 6: a blocked response always carries one). */
+  decision: Decision;
+  /** False when this verdict was already the LATEST one on the record and nothing was written. */
+  created: boolean;
+}
+
+/**
+ * PERSIST-ON-CHANGE: record this verdict only if it differs from the latest Decision of the same
+ * `kind` about the same subject. The write-side guard for every Decision writer that re-evaluates
+ * on a TIMER rather than on an event.
+ *
+ * WHY (measured, live homelab, 2026-07-29/30): `decisions` had reached 12,327,844 rows / 15 GB,
+ * growing ~1.08M rows (~1.44 GB) per day. 99.99% of it was ONE writer — `coordination/reconcile.ts`'s
+ * wave gate — restating an unchanged `block` verdict once per 2 s tick for each of 25 changes parked
+ * on a `requireApprovals` policy awaiting a human. In one sampled hour, 39,175 `gate`/`block` rows
+ * collapsed to 25 distinct `(subject_id, input_context, reason_tree)` tuples: 99.94% of them were
+ * byte-identical restatements, ~1,567x duplication. Nothing was learnable from row 2 onward.
+ *
+ * WHAT THIS DOES NOT DO: it does not slow, skip, or cache EVALUATION. Callers still evaluate on
+ * every tick — that is how a newly-arrived approval, a lifted freeze, or a control that has since
+ * passed is noticed at all — and the moment the verdict or its inputs differ, a new row lands. Only
+ * the redundant WRITE is suppressed. (`governance/gate-orchestrator.ts`'s `prewarmGovernanceForChange`
+ * already states this same rule for its own per-tick work: "a change sitting in `validating` for
+ * hours would otherwise pollute the Decision log with one redundant 'still blocked' entry per ~1s
+ * tick".)
+ *
+ * AUDITABILITY IS PRESERVED (charter principle 6): the FIRST statement of a verdict always
+ * persists, `scp change explain` still reconstructs the whole chain from it, and a suppressed
+ * restatement returns the EXISTING row so the caller's `decision_id` is stable and never null.
+ * A caller that pairs the Decision with a hash-chained audit event must suppress that event on the
+ * same condition (`created === false`) — appending an audit event for a tick where nothing changed
+ * would make the chain assert an occurrence that did not occur.
+ *
+ * "LATEST, not any" (the subtlety `pre-deploy-gate.ts` documents and `boundary-segment.ts`'s
+ * latest-verdict-wins read depends on): comparing against the most recent Decision only. An older
+ * matching row can therefore never shadow a differing later one — block, then allow, then block
+ * again writes three rows, in that order, because each differs from the one before it.
+ */
+export async function insertDecisionIfChanged(
+  tx: TenantTx,
+  input: InsertDecisionInput
+): Promise<RecordedDecision> {
+  const previous = await latestDecisionForSubjectKind(tx, input.orgId, input.subjectId, input.kind);
+  if (previous && restatesDecision(previous, input)) return { decision: previous, created: false };
+  return { decision: await insertDecision(tx, input), created: true };
+}
+
 /** All decisions ever made about one subject (a change, most commonly), oldest first. */
 export async function listDecisionsForSubject(
   tx: TenantTx,
