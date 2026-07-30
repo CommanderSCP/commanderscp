@@ -3,11 +3,11 @@ import { orgs } from "../db/schema.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import type { CelSandbox } from "../governance/cel-sandbox.js";
-import { badRequest } from "../errors.js";
+import { badRequest, describeError } from "../errors.js";
 import { getObjectByIdOrUrnAnyType, updateObject } from "../graph/objects-repo.js";
 import type { GateDeps } from "./gates.js";
 import { evaluateWaveGate } from "./gates.js";
-import { insertDecision } from "./decisions-repo.js";
+import { insertDecisionIfChanged } from "./decisions-repo.js";
 import { proposeChange, typeOf } from "./changes-repo.js";
 import { createRelationship } from "../graph/relationships-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
@@ -145,9 +145,26 @@ async function reconcileOneCampaign(
       // A cycle, an unknown target, or a topology/dependency conflict. Unlike a Change (which
       // auto-cancels), a campaign has no 'cancelled' state to move to — record why and retry next
       // tick (self-heals if e.g. the offending depends_on edge is later removed).
-      const message = err instanceof Error ? err.message : String(err);
+      //
+      // PERSIST-ON-CHANGE (`decisions-repo.ts`'s `insertDecisionIfChanged`): "retry next tick"
+      // means a PERMANENT compile fault — a cycle, a deleted target — re-fails identically 43,200
+      // times a day, and this wrote one row for each. The retry itself is unchanged (the
+      // self-healing above depends on it); only the identical restatement is suppressed. A
+      // DIFFERENT error message is a different fault and still writes, so the record always shows
+      // what is currently wrong.
+      //
+      // ...WHICH IS EXACTLY WHY THIS USES `describeError` AND NOT `err.message`. Everything thrown
+      // in the block above is a `ProblemError`: `getObjectByIdOrUrnAnyType` throws `notFound`, the
+      // topology check throws `badRequest`, `compileAndPersistCampaignPlan` throws `notFound`/
+      // `badRequest` via `plan-service.ts`. Their `message` is the bare HTTP TITLE — an
+      // unresolvable target and a non-release-topology `topologyObjectId` record as "Not Found" and
+      // "Bad Request", naming neither the object nor the reason. Worse, post-dedupe TWO DIFFERENT
+      // unresolvable targets both collapse to `{ error: "Not Found" }`, so the second is suppressed
+      // as a restatement and the operator keeps reading a Decision about the wrong fault. `detail`
+      // is what makes different faults look different (see `errors.ts`'s `describeError`).
+      const message = describeError(err);
       await withTenantTx(db, orgId, (tx) =>
-        insertDecision(tx, {
+        insertDecisionIfChanged(tx, {
           orgId,
           kind: "plan_diff",
           subjectId: campaignObjectId,
@@ -217,7 +234,16 @@ async function reconcileOneCampaign(
         },
         gateDeps
       );
-      await insertDecision(tx, {
+      // PERSIST-ON-CHANGE — the same guard the change-side wave gate uses, and needed here MORE,
+      // not less: this branch deliberately RE-INCLUDES `blocked` in its guard (so an operator
+      // satisfying the policy unblocks the campaign on the next tick), which means
+      // `markCampaignWaveBlocked` does NOT stop re-evaluation the way `markWaveRunning` stops it on
+      // the allow path. A campaign parked on an approval therefore re-evaluated — and, before this,
+      // re-WROTE — its unchanged block verdict once per 1 s tick, forever. Prod carries 0 of these
+      // rows only because `campaign_plans` is currently empty; the shape is identical to the
+      // measured 1.44 GB/day change-side flood (`decisions-repo.ts`'s `insertDecisionIfChanged`).
+      // Evaluation cadence is untouched; only the identical restatement is suppressed.
+      const recorded = await insertDecisionIfChanged(tx, {
         orgId,
         kind: "gate",
         subjectId: campaignObjectId,
@@ -226,13 +252,31 @@ async function reconcileOneCampaign(
         reasonTree: gate.reasonTree
       });
       if (gate.verdict === "block") {
+        // Still marked blocked every tick (an idempotent status write, not an append) so
+        // `getCampaignStatus` keeps reporting the truth, and the outcome still carries a resolvable
+        // `decision_id` — the FIRST block's row when this tick merely restated it. `firstBlock`
+        // carries `insertDecisionIfChanged`'s `created` flag so the log line below fires once per
+        // distinct block rather than once per 1 s tick (see reconcile.ts's twin).
         await markCampaignWaveBlocked(tx, orgId, activeWave.id);
-        return "blocked" as const;
+        return {
+          kind: "blocked",
+          decisionId: recorded.decision.id,
+          firstBlock: recorded.created
+        } as const;
       }
       await markCampaignWaveRunning(tx, orgId, activeWave.id);
-      return "running" as const;
+      return { kind: "running" } as const;
     });
-    if (gateOutcome === "blocked") return;
+    if (gateOutcome.kind === "blocked") {
+      // SURFACE the standing block's id — once, on the tick that persisted it. It was previously
+      // returned and read by nobody but the `=== "blocked"` test on the next line.
+      if (gateOutcome.firstBlock) {
+        console.info(
+          `[campaign-reconcile] org ${orgId} campaign ${campaignObjectId} wave ${activeWave.waveIndex} blocked by governance — decision ${gateOutcome.decisionId} (scp decision get ${gateOutcome.decisionId}); re-evaluated every tick until it clears`
+        );
+      }
+      return;
+    }
   }
 
   let allTerminal = true;

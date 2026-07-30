@@ -2,12 +2,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   CEL_MAX_CONTEXT_BYTES,
   CEL_MAX_CONTEXT_DEPTH,
+  CEL_MAX_ERROR_LENGTH,
   CEL_MAX_EXPRESSION_LENGTH,
   CEL_MAX_NESTING_DEPTH,
   CelSandbox,
   CelSandboxError,
   checkContextComplexity,
-  checkStaticComplexity
+  checkStaticComplexity,
+  normalizeCelWorkerError
 } from "./cel-sandbox.js";
 
 /**
@@ -99,6 +101,69 @@ describe("CelSandbox (layer 2: worker-thread isolation)", () => {
     const sandbox = makeSandbox();
     const result = await sandbox.evaluate("process.env.SECRET == 'x'", {});
     expect(result.ok).toBe(false);
+  });
+
+  // ---------------------------------------------------------------------------------------
+  // THE ERROR TEXT DEPENDS ON THE FAULT, NEVER ON THE CONTEXT (PR #153 review Q2).
+  //
+  // cel-js serializes the WHOLE evaluation context into its identifier-resolution errors, and
+  // `governance/evaluate.ts` puts a per-evaluation `time` snapshot in that context and then
+  // persists the resulting string into every gate Decision's reason tree. Left alone, a single
+  // typo'd policy condition — a PERMANENT operator error that never self-heals — made the reason
+  // tree differ on every ~2 s reconcile tick, so `insertDecisionIfChanged` correctly wrote a new
+  // row every tick and the gate returned to ~43,200 rows/day/change: the original 1.44 GB/day
+  // incident, with the persist-on-change fix fully in place.
+  //
+  // These two tests are the ones a cel-js version bump must break rather than silently regress:
+  // the first pins the message END TO END through a real worker (so a reworded upstream error is
+  // caught), the second pins the invariant that matters (context values, above all `time`, never
+  // appear).
+  // ---------------------------------------------------------------------------------------
+  it("an unevaluable identifier yields the DIAGNOSIS only — cel-js's serialized context dump is stripped", async () => {
+    const sandbox = makeSandbox();
+    const result = await sandbox.evaluate("change.typoed == true", {
+      change: { emergency: false },
+      time: "2026-07-30T12:00:00.000Z"
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // Exact, not a regex: this is the whole string a Decision's reason tree now stores.
+      expect(result.error).toBe('Identifier "typoed" not found in context');
+    }
+  });
+
+  it("the error text for the SAME fault is byte-identical across evaluations whose context differs only in `time`", async () => {
+    const sandbox = makeSandbox();
+    const at = async (time: string) =>
+      sandbox.evaluate("change.typoed == true", { change: { emergency: false }, time });
+
+    const first = await at("2026-07-30T12:00:00.000Z");
+    const second = await at("2026-07-30T12:00:02.000Z");
+    expect(first.ok).toBe(false);
+    expect(second.ok).toBe(false);
+    if (!first.ok && !second.ok) {
+      // THE PROPERTY THE DEDUPE DEPENDS ON. Before the fix these differed inside the embedded
+      // timestamp — two 1,346-byte strings, two characters apart — which is exactly enough for
+      // `restatesDecision` to (correctly) call it a new verdict and append a row.
+      expect(second.error).toBe(first.error);
+      expect(first.error).not.toContain("2026-07-30T12:00:00.000Z");
+      expect(first.error).not.toContain("emergency");
+    }
+  });
+
+  it("truncates an unrecognized over-long worker error rather than putting an unbounded blob in every Decision", () => {
+    // No context-dump marker, so the SIZE bound is what applies — the backstop for a future cel-js
+    // message this module does not recognize. (Called directly: producing a >512-char cel-js error
+    // through a real worker would take a pathological expression the static checks reject first.)
+    const long = `CelParseError: ${"x".repeat(CEL_MAX_ERROR_LENGTH * 2)}`;
+    const normalized = normalizeCelWorkerError(long);
+    expect(normalized.length).toBeLessThanOrEqual(CEL_MAX_ERROR_LENGTH + "… (truncated)".length);
+    expect(normalized.startsWith("CelParseError: ")).toBe(true);
+  });
+
+  it("leaves an error that carries no context dump exactly as cel-js wrote it", () => {
+    const parseError = "Given CEL expression is invalid";
+    expect(normalizeCelWorkerError(parseError)).toBe(parseError);
   });
 
   // ---------------------------------------------------------------------------------------

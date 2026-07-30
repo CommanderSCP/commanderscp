@@ -98,7 +98,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { orgs } from "../db/schema.js";
 import { ProblemError } from "../errors.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
-import { insertDecision } from "../coordination/decisions-repo.js";
+import { insertDecisionIfChanged } from "../coordination/decisions-repo.js";
 import { ensureFederationSelf } from "./self-repo.js";
 import {
   claimPeerPull,
@@ -370,13 +370,33 @@ export function resetFederationCertWarningDedupe(): void {
   lastCertResolveWarningAt = 0;
 }
 
-/** Records a block Decision + hash-chained audit event for a refused/failed pull, in one tx. */
+/**
+ * Records a block Decision + hash-chained audit event for a refused/failed pull, in one tx.
+ *
+ * PERSIST-ON-CHANGE (`coordination/decisions-repo.ts`'s `insertDecisionIfChanged`): every refusal
+ * reachable from here is a STANDING condition, not an event — an mTLS-required peer with no
+ * client-cert material configured, or a dialer that refuses that peer — and nothing anywhere marks
+ * the peer "already refused". The sweep re-attempts it on the default 60 s cadence, so before this
+ * guard a single misconfigured peer appended 1,440 identical Decisions AND 1,440 identical
+ * hash-chained audit events per day, indefinitely. The re-attempt is deliberately unchanged: it is
+ * how a rotated-in cert or a repaired peer is noticed, and the FIRST refusal — plus the first
+ * refusal with any DIFFERENT reason — is still fully recorded and audited.
+ *
+ * The audit event is suppressed on exactly the same condition as the Decision, never independently:
+ * appending a `federation.sync.refused` event for a tick where nothing changed would make the
+ * hash-chain assert an occurrence that did not occur (and `scp audit verify` cannot be repaired
+ * afterwards by deleting rows). Same pairing `coordination/pre-deploy-gate.ts`'s idempotent pass
+ * path uses.
+ *
+ * Returns the standing Decision's id either way — a suppressed restatement still hands the caller a
+ * resolvable `decision_id` for the peer's `refused` outcome (charter principle 6), never null.
+ */
 async function recordSyncBlock(
   db: Db,
   args: { orgId: string; peer: FederationPeerRow; reason: string }
 ): Promise<string> {
   return withTenantTx(db, args.orgId, async (tx) => {
-    const decision = await insertDecision(tx, {
+    const recorded = await insertDecisionIfChanged(tx, {
       orgId: args.orgId,
       kind: FEDERATION_SYNC_DECISION_KIND,
       subjectId: args.peer.id,
@@ -388,16 +408,17 @@ async function recordSyncBlock(
       },
       reasonTree: { summary: args.reason }
     });
+    if (!recorded.created) return recorded.decision.id;
     await appendAuditEvent(tx, {
       orgId: args.orgId,
       actorId: FEDERATION_IMPORT_ACTOR_ID,
       action: "federation.sync.refused",
       subjectId: args.peer.id,
       reason: `federation sync from commander '${args.peer.name}' refused: ${args.reason}`,
-      decisionId: decision.id,
+      decisionId: recorded.decision.id,
       requestId: `federation-sync:${args.peer.id}:${uuidv7()}`
     });
-    return decision.id;
+    return recorded.decision.id;
   });
 }
 

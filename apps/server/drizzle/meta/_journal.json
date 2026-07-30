@@ -311,10 +311,24 @@
       "breakpoints": true
     },
     {
+      "idx": 44,
+      "version": "7",
+      "when": 1786900000000,
+      "tag": "0044_decisions_subject_kind_index",
+      "breakpoints": true
+    },
+    {
       "idx": 45,
       "version": "7",
       "when": 1787000000000,
       "tag": "0045_federation_peer_name_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1787100000000,
+      "tag": "0046_decisions_block_probe_index",
       "breakpoints": true
     }
   ]

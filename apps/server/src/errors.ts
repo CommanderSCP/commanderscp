@@ -63,6 +63,34 @@ export function requestTimeout(detail?: string): ProblemError {
   return new ProblemError(408, "Request Timeout", { detail });
 }
 
+/**
+ * THE HUMAN-READABLE TEXT OF ANY THROWN VALUE — the one thing to record in a Decision, a control
+ * run, an audit payload, or an operator-facing outcome.
+ *
+ * WHY THIS EXISTS RATHER THAN `err instanceof Error ? err.message : String(err)` (PR #153 review
+ * Q3). {@link ProblemError} is constructed `(status, title, opts)` and passes the TITLE to
+ * `super()`, so `err.message` on one of these is the bare HTTP title — `"Not Found"`,
+ * `"Bad Request"`, `"Conflict"` — while everything informative (WHICH object, WHY it was refused)
+ * lives in `detail`. Two consequences, both real and both measured on this branch:
+ *
+ *  1. EXPLAINABILITY (charter principle 6). A Decision recording `{ error: "Not Found" }` names
+ *     neither the offending object nor the reason. `scp change explain` shows the operator an HTTP
+ *     status word.
+ *  2. AND, SINCE PERSIST-ON-CHANGE, SUPPRESSION. `insertDecisionIfChanged` compares CONTENT, so two
+ *     genuinely DIFFERENT faults that both collapse to `"Not Found"` produce a byte-identical
+ *     `input_context` — and the second one is correctly suppressed as a restatement. The operator
+ *     keeps reading a Decision about the fault that is no longer the problem. Recording `detail`
+ *     restores the discrimination the dedupe needs: different faults say different things, so they
+ *     write different rows.
+ *
+ * Falls back to `message` for a `ProblemError` with no `detail`, then to `Error.message`, then to
+ * `String(err)` — so it is a drop-in for the idiom it replaces and never returns `undefined`.
+ */
+export function describeError(err: unknown): string {
+  if (err instanceof ProblemError) return err.detail ?? err.message;
+  return err instanceof Error ? err.message : String(err);
+}
+
 export function toProblem(request: FastifyRequest, err: ProblemError): Problem {
   return {
     type: err.type,

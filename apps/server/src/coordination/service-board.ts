@@ -10,7 +10,7 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { traverse } from "../graph/traverse.js";
 import { getChange } from "./changes-repo.js";
 import { getLatestPlanForChange } from "./plan-service.js";
-import { listDecisionsForSubject } from "./decisions-repo.js";
+import { latestBlockDecisionForSubject } from "./decisions-repo.js";
 import { listApprovalRequestsForChange } from "../governance/approvals-repo.js";
 import { listFreezes, type FreezeRow } from "../governance/freezes-repo.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
@@ -259,7 +259,14 @@ function toFreeze(f: FreezeRow): ServiceBoardFreeze {
 }
 
 /** The states in which a change is genuinely rolling (in-flight) rather than settled. */
-const IN_FLIGHT = new Set(["proposed", "evaluated", "coordinated", "waiting", "executing", "validating"]);
+const IN_FLIGHT = new Set([
+  "proposed",
+  "evaluated",
+  "coordinated",
+  "waiting",
+  "executing",
+  "validating"
+]);
 
 export async function buildServiceBoard(
   tx: TenantTx,
@@ -340,7 +347,11 @@ export async function buildServiceBoard(
   const now = Date.now();
   const activeFreezeByScope = new Map<string, FreezeRow>();
   for (const f of allFreezes) {
-    if (f.startsAt.getTime() <= now && f.endsAt.getTime() > now && !activeFreezeByScope.has(f.scopeObjectId)) {
+    if (
+      f.startsAt.getTime() <= now &&
+      f.endsAt.getTime() > now &&
+      !activeFreezeByScope.has(f.scopeObjectId)
+    ) {
       activeFreezeByScope.set(f.scopeObjectId, f);
     }
   }
@@ -428,16 +439,30 @@ export async function buildServiceBoard(
       continue;
     }
 
-    const [change, plan, decisions, approvals] = await Promise.all([
+    // BOUNDED (was `listDecisionsForSubject`: every Decision ever recorded about this change, no
+    // `kind` filter, no `LIMIT`, once PER BOARD ROW). The board consumes exactly one Decision — the
+    // latest `block`, whose id it hands the operator below — and on the live instance each of the 29
+    // changes carried ~425,000 rows, so one board render pulled hundreds of thousands of rows per row
+    // of the board. Measured at 12M rows: 26,547 ms / 399,596 buffers for the old read against
+    // 1.14 ms / 6 buffers for this one, same answer. See `latestBlockDecisionForSubject` for why it
+    // is keyed on the verdict the board actually means rather than on a list of `kind`s that a future
+    // eleventh block-writer would silently falsify — and why that only becomes an O(1) read with
+    // drizzle/0046's partial index behind it (without it, a change that never blocked pays a walk
+    // over its whole history to return nothing).
+    const [change, plan, blockDecision, approvals] = await Promise.all([
       getChange(tx, orgId, changeId),
       getLatestPlanForChange(tx, orgId, changeId),
-      listDecisionsForSubject(tx, orgId, changeId),
+      latestBlockDecisionForSubject(tx, orgId, changeId),
       listApprovalRequestsForChange(tx, orgId, changeId)
     ]);
 
     const waves = plan?.waves ?? [];
     const boardWaves: ServiceBoardWave[] = waves.map((w) => {
-      const kinds = [...new Map(w.targets.map((t) => [`${t.category}::${t.type}`, { category: t.category, type: t.type }])).values()];
+      const kinds = [
+        ...new Map(
+          w.targets.map((t) => [`${t.category}::${t.type}`, { category: t.category, type: t.type }])
+        ).values()
+      ];
       return {
         waveIndex: w.waveIndex,
         name: w.name,
@@ -458,8 +483,7 @@ export async function buildServiceBoard(
     const hasFailedWave = waves.some(
       (w) => w.status === "failed" || w.targets.some((t) => FAILED_STATUSES.has(t.status))
     );
-    const blockDecision = [...decisions].reverse().find((d) => d.verdict === "block") ?? null;
-    const isBlocked = hasFailedWave || blockDecision !== null;
+    const isBlocked = hasFailedWave || blockDecision !== undefined;
     const awaitingApproval = approvals.some((a) => a.status !== "satisfied");
 
     rows.push({
@@ -471,7 +495,7 @@ export async function buildServiceBoard(
       waves: boardWaves,
       attention: {
         blocked: isBlocked,
-        decisionId: isBlocked ? blockDecision?.id ?? null : null,
+        decisionId: isBlocked ? (blockDecision?.id ?? null) : null,
         awaitingApproval,
         emergency: change.emergency
       },

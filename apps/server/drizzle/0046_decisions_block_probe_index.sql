@@ -1,0 +1,73 @@
+-- ===========================================================================================
+-- BOUND THE SERVICE BOARD'S DECISION READ THE SAME WAY 0044 BOUNDS THE RECONCILE ONE — BY MAKING
+-- THE GOOD PLAN THE ONLY PLAN, NOT BY HOPING FOR IT.
+--
+-- THE READ. `coordination/decisions-repo.ts`'s `latestBlockDecisionForSubject`, called once PER
+-- BOARD ROW by `service-board.ts` for the latest change of every component on the board:
+--
+--     WHERE org_id = $1 AND subject_id = $2 AND verdict = 'block'
+--     ORDER BY created_at DESC, id DESC
+--     LIMIT 1
+--
+-- It replaced an unbounded `listDecisionsForSubject` (every Decision ever recorded about the change,
+-- no filter, no LIMIT, materialized as JS objects) — that part is a strict win and is already
+-- measured in this PR. But keyed on `verdict`, it lands in EXACTLY the trap 0044 was written for:
+-- no index carries `verdict`, so `verdict = 'block'` is a HEAP FILTER on the backward walk of
+-- `decisions_org_subject`, and the walk runs until it finds a block — or, IF THE CHANGE NEVER
+-- BLOCKED, over the change's ENTIRE history to return nothing.
+--
+-- THAT IS THE COMMON CASE, NOT THE EDGE CASE. Most changes on a board are healthy and have never
+-- recorded a block; "no block" is the answer the board wants most of the time, and it was the answer
+-- that cost the most to compute. MEASURED on the same 12,006,000-row / 10 GB reproduction as 0044
+-- (29 subjects x ~414k rows, PostgreSQL 16.14), probing a change with a 200,000-row history and NO
+-- `block` row in it:
+--
+--     Limit  (cost=3.29..3.84 rows=1) (actual time=45.753..45.753 rows=0)
+--       ->  Index Scan Backward using decisions_org_subject on decisions
+--             Index Cond: ((org_id = …) AND (subject_id = …))
+--             Filter: (verdict = 'block'::text)
+--             Rows Removed by Filter: 200000
+--             Buffers: shared hit=20526
+--     Execution Time: 45.773 ms
+--
+-- 45.8 ms and 20,526 buffers to return NO ROW, with every one of those buffers already in cache —
+-- that figure is pure CPU. The cold equivalent on a 414,000-row subject measured 25,162 ms and
+-- 417,398 buffers, which is WORSE than the unbounded read it replaced (15,163 ms / 419,314 buffers),
+-- because the unbounded read at least stops when it has read the subject's rows once, in physical
+-- order, while this one pays the same walk to discard everything. Per board row.
+--
+-- THE FIX. A PARTIAL index over the block rows only, keyed on the equality columns and then the
+-- ordering column. `verdict = 'block'` moves out of the filter and into the index PREDICATE, so:
+--   * a change that HAS blocked: one index descent to its newest block entry, LIMIT 1 stops there;
+--   * a change that has NEVER blocked: the descent finds no entry for that (org, subject) at all and
+--     returns immediately — the 200,000 rows are not in this index to be walked.
+-- Measured after this migration, same rows, same box:
+--
+--     never blocked, 200k-row history   45.773 ms / 20,526 buffers  ->  0.070 ms / 13 buffers
+--                                       Rows Removed by Filter: 200000  ->  no Filter line at all
+--     blocked, 414k-row history          1.613 ms /     16 buffers  ->  0.340 ms /  6 buffers
+--     parked change, 500k rows behind    0.152 ms      (already a probe; unchanged)
+--
+-- WHY PARTIAL AND NOT `(org_id, subject_id, verdict, created_at DESC)`. `block` is the only verdict
+-- this query is ever issued with — `latestBlockDecisionForSubject` takes no verdict parameter, so
+-- the predicate cannot drift away from the index. A full four-column index would additionally store
+-- an entry for every `allow`/`warn`/`escalate` Decision ever written, which is the overwhelming
+-- majority of the table on a healthy instance, to serve a query that never asks for them.
+--
+-- THE WRITE COST. Smaller than 0044's, and for a reason worth stating: a partial index is only
+-- MAINTAINED for rows matching its predicate. Every insert pays one predicate evaluation
+-- (`verdict = 'block'`, a comparison on a value already in hand); only block-verdict inserts pay an
+-- actual index entry. On a post-fix instance that is ~1 row/day per parked change, because
+-- persist-on-change is what stopped blocks being restated 43,200 times a day. Size on the
+-- reproduction — where the seeded distribution is deliberately block-heavy, i.e. the WORST case for
+-- this index — is 676 MB at 12M rows, built in 12.4 s under the same ordinary `SHARE` lock 0044
+-- takes (drizzle runs migrations in a transaction, so not `CONCURRENTLY`; an operator who cannot
+-- take the window can pre-create it by hand under the same name and `IF NOT EXISTS` will find it).
+--
+-- NO PLANNER TRICKERY HERE EITHER: no hint, no `enable_seqscan` toggling, no session state. The
+-- board's read is now a single index probe because the index matches its shape.
+-- ===========================================================================================
+
+CREATE INDEX IF NOT EXISTS "decisions_org_subject_block_created"
+  ON "decisions" USING btree ("org_id", "subject_id", "created_at" DESC)
+  WHERE "verdict" = 'block';

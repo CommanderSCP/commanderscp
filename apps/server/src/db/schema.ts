@@ -500,7 +500,29 @@ export const decisions = pgTable(
   },
   (table) => [
     index("decisions_org_subject").on(table.orgId, table.subjectId, table.createdAt),
-    index("decisions_org_created").on(table.orgId, table.createdAt, table.id)
+    index("decisions_org_created").on(table.orgId, table.createdAt, table.id),
+    // The RECONCILE HOT PATH's exact shape (`decisions-repo.ts`'s `latestDecisionForSubjectKind`:
+    // org + subject + kind, newest first, LIMIT 1). Neither index above covers `kind`, so it is a
+    // HEAP FILTER and the scan walks every one of the subject's other-kind rows above the newest
+    // match — measured at 12M rows: 22.8 s / 402,430 buffers for a probe that returns NO row, 0.3 ms
+    // with this index (drizzle/0044 carries the full before/after EXPLAIN and the write cost).
+    // With `kind` in the key, every probe is one index descent whatever else the subject holds.
+    index("decisions_org_subject_kind_created").on(
+      table.orgId,
+      table.subjectId,
+      table.kind,
+      table.createdAt.desc()
+    ),
+    // The SERVICE BOARD's shape (`decisions-repo.ts`'s `latestBlockDecisionForSubject`, once per
+    // board row): org + subject + the latest `block`. PARTIAL, because `block` is the only verdict
+    // that query is ever issued with — so `verdict` becomes the index PREDICATE rather than a heap
+    // filter, and a change that NEVER blocked (the common case) is answered by an index descent that
+    // finds nothing instead of a walk over its whole history. Measured at 12M rows: 45.8 ms /
+    // 20,526 buffers fully cached to return NO row, 0.070 ms / 13 buffers with this index
+    // (drizzle/0046 carries the full before/after EXPLAIN and the write cost).
+    index("decisions_org_subject_block_created")
+      .on(table.orgId, table.subjectId, table.createdAt.desc())
+      .where(sql`${table.verdict} = 'block'`)
   ]
 );
 

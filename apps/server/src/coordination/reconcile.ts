@@ -41,7 +41,8 @@ import { appendAuditEvent } from "../audit/audit-repo.js";
 import { tryAcquireTriggerClaimLock } from "./trigger-claim-lock.js";
 import { tryAcquireChangeCoordinationLock } from "./change-coordination-lock.js";
 import { evaluateWaveGate } from "./gates.js";
-import { insertDecision } from "./decisions-repo.js";
+import { insertDecision, insertDecisionIfChanged } from "./decisions-repo.js";
+import { describeError } from "../errors.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import { DEFAULT_EXECUTOR_INSTANCE_ID, DEFAULT_EXECUTOR_MODULE } from "./executor-config.js";
 import {
@@ -216,7 +217,18 @@ async function advanceEvaluatedChanges(db: Db, orgId: string, gateDeps: GateDeps
           // compile attempt, so either both roll back together or the cancel commits clean. Safe
           // to treat any error here as a genuine compilation failure — the lock above already
           // ruled out "lost a concurrent race" as the cause.
-          const message = err instanceof Error ? err.message : String(err);
+          //
+          // `describeError`, not `err.message`: `compileAndPersistPlan` throws `notFound`/
+          // `badRequest` (`plan-service.ts`) and `transitionChange` throws `notFound`
+          // (`transition.ts`), all `ProblemError`s whose `message` is only the HTTP TITLE. The
+          // reason below is the change's PERMANENT epitaph — it is written into the cancelling
+          // transition's Decision and audit event, and it is the only explanation an operator ever
+          // gets for a change that auto-cancelled. "auto-cancelled: plan compilation failed — Not
+          // Found" names neither the missing topology nor the cycle. See `errors.ts`.
+          //
+          // PINNED BY `decision-write-amplification.integration.test.ts`'s T5 (both halves of the
+          // epitaph — the Decision and the audit event), mutation-proven.
+          const message = describeError(err);
           await transitionChange(
             tx,
             {
@@ -567,7 +579,15 @@ async function reconcileExecutingChange(
     // race for one coherent single-flight story across all four).
     const gateLock = await tryAcquireChangeCoordinationLock(db, change.objectId);
     if (!gateLock) return; // another tick/replica is genuinely evaluating this wave's gate right now — retry next tick.
-    let gateOutcome: "blocked" | "running" | "already-progressed";
+    let gateOutcome:
+      // `firstBlock` is `insertDecisionIfChanged`'s `created` flag: true only on the tick that
+      // actually PERSISTED this block, false on every tick that merely restated it. It is what makes
+      // the log line below fire ONCE per distinct block instead of once per ~2 s tick — the same
+      // persist-on-change discipline applied to the log stream, which would otherwise reproduce the
+      // very flood this PR fixes, in a different sink.
+      | { kind: "blocked"; decisionId: string; firstBlock: boolean }
+      | { kind: "running" }
+      | { kind: "already-progressed" };
     try {
       gateOutcome = await withTenantTx(db, orgId, async (tx) => {
         // Fresh re-check, still under the lock — a racing tick may have already evaluated this
@@ -576,7 +596,7 @@ async function reconcileExecutingChange(
         // insert a SECOND Decision for the same wave — this is the "lost the race" no-op, not a
         // re-evaluation, exactly like advanceEvaluatedChanges's fresh re-check above.
         const freshStatus = await getWaveStatus(tx, orgId, activeWave.id);
-        if (freshStatus !== "pending") return "already-progressed" as const;
+        if (freshStatus !== "pending") return { kind: "already-progressed" } as const;
 
         const gate = await evaluateWaveGate(
           tx,
@@ -591,7 +611,21 @@ async function reconcileExecutingChange(
           },
           gateDeps
         );
-        await insertDecision(tx, {
+        // PERSIST-ON-CHANGE, not write-every-tick (THE production disk-growth bug — see
+        // `decisions-repo.ts`'s `insertDecisionIfChanged` for the measurement). The evaluation
+        // above still runs on EVERY tick, deliberately and unchanged: a wave parked on a
+        // `requireApprovals` effect is unblocked by a human approving somewhere else entirely, and
+        // re-evaluating here is the ONLY thing that notices. But this branch returns "blocked"
+        // without advancing the wave, so the wave stays `pending`, the change stays `executing`
+        // (never parked — parking it would stop it being re-served and nothing would resume it),
+        // and `listChangeRowsInStates` hands it straight back on the next tick. Before this guard
+        // every one of those ticks appended a byte-identical restatement of an unchanged verdict:
+        // ~43,200 rows/day/change, measured at 1.44 GB/day across 25 parked changes in the homelab
+        // deployment. The verdict, its inputs, and its reason tree are all still recorded the
+        // FIRST time, and again the moment ANY of them differ (gate newly allowed, a different
+        // policy firing, a changed target/approval set) — which is exactly when there is something
+        // new to explain.
+        const recorded = await insertDecisionIfChanged(tx, {
           orgId,
           kind: "gate",
           subjectId: change.objectId,
@@ -603,16 +637,37 @@ async function reconcileExecutingChange(
           },
           reasonTree: gate.reasonTree
         });
-        if (gate.verdict === "block") return "blocked" as const;
+        // The blocked outcome carries the STANDING Decision's id — the first block's row when this
+        // tick merely restated it — so a suppressed duplicate never degrades explainability to a
+        // null `decision_id` (charter principle 6).
+        if (gate.verdict === "block") {
+          return {
+            kind: "blocked",
+            decisionId: recorded.decision.id,
+            firstBlock: recorded.created
+          } as const;
+        }
         await markWaveRunning(tx, orgId, activeWave.id);
-        return "running" as const;
+        return { kind: "running" } as const;
       });
     } finally {
       await gateLock.release();
     }
-    // "blocked": M3's seam always allows — kept honest for M4. "already-progressed": a racing
-    // tick already handled this wave's gate; next tick sees its result and proceeds normally.
-    if (gateOutcome !== "running") return;
+    // "blocked": the wave stays `pending` and this change is re-served (and re-evaluated) next tick.
+    // `decisionId` is the standing block Decision an operator resolves with `scp decision get` /
+    // `scp change explain`, and it is SURFACED HERE — logged exactly once, on the tick that actually
+    // persisted the block. Before this it was carried in the outcome and read by nobody: the only
+    // consumer was the `!== "running"` test below, so a comment promising the operator an id was
+    // describing a channel that carried nothing (the id they actually see comes from the service
+    // board's own latest-block read). Gated on `firstBlock` for the same reason the Decision itself
+    // is: a change parked for a week is one line, not 302,400.
+    // "already-progressed": a racing tick already handled this wave's gate; next tick sees its result.
+    if (gateOutcome.kind === "blocked" && gateOutcome.firstBlock) {
+      console.info(
+        `[reconcile] org ${orgId} change ${change.objectId} wave ${activeWave.waveIndex} blocked by governance — decision ${gateOutcome.decisionId} (scp decision get ${gateOutcome.decisionId}); re-evaluated every tick until it clears`
+      );
+    }
+    if (gateOutcome.kind !== "running") return;
   }
 
   // Unified target reconciliation: every non-terminal target gets either a trigger attempt
