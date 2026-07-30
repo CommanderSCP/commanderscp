@@ -27,7 +27,11 @@ import { reconcileOrgTick } from "./reconcile.js";
 import { getSharedCelSandbox } from "../governance/cel-sandbox.js";
 import { createInMemoryFakeHost } from "./test-support/fake-plugin-host.js";
 import { pairPeer } from "../federation/peers-repo.js";
-import { PRE_DEPLOY_ARTIFACT_VERIFY_DECISION_KIND } from "./pre-deploy-gate.js";
+import {
+  PRE_DEPLOY_ARTIFACT_VERIFY_DECISION_KIND,
+  PRE_DEPLOY_ARTIFACT_VERIFY_PASSED_AUDIT_ACTION,
+  runPreDeployArtifactGate
+} from "./pre-deploy-gate.js";
 import { asTrustDomainId } from "@scp/schemas";
 import { TrustDomainId } from "@scp/schemas";
 
@@ -298,7 +302,14 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
    *  verified `promotionManifest` + typed `artifacts[]` authorized set, `importedFromDomain` set. */
   async function proposeImportedChange(
     artifacts: ArtifactRef[],
-    opts: { fromDomain?: TrustDomainId; withManifest?: boolean } = {}
+    opts: {
+      fromDomain?: TrustDomainId;
+      withManifest?: boolean;
+      /** Cross-change prerequisite KEYS (M12 P4B), pinned at this change's own component so they
+       *  are resolvable but unprovided — i.e. permanently unsatisfied, which parks the change in
+       *  `waiting`. Used only by the per-tick-flood test. */
+      requiresKeys?: string[];
+    } = {}
   ): Promise<{ changeId: string; componentId: string }> {
     const component = await createTestComponent(admin, {
       name: `m174b-${randomUUID().slice(0, 8)}`
@@ -323,6 +334,9 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
             ? { promotionManifest: { artifacts: artifacts.map((a) => ({ type: a.type, digest: a.digest })) } }
             : {})
         },
+        ...(opts.requiresKeys
+          ? { requires: opts.requiresKeys.map((key) => ({ key, at: component.id })) }
+          : {}),
         importedFromDomain: fromDomain
       })
     );
@@ -358,6 +372,11 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.select().from(auditEvents).where(eq(auditEvents.subjectId, changeId))
     ).then((rows) => rows.filter((e) => e.action === "change.pre_deploy.artifact_verify.blocked"));
+  /** M16.1 (I2) — the PASSING verify's audit action, the `.blocked` action's sibling. */
+  const passAuditFor = (changeId: string) =>
+    withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(auditEvents).where(eq(auditEvents.subjectId, changeId))
+    ).then((rows) => rows.filter((e) => e.action === PRE_DEPLOY_ARTIFACT_VERIFY_PASSED_AUDIT_ACTION));
 
   /** The three fail-closed invariants every BLOCK case must satisfy. */
   async function expectBlocked(changeId: string, componentId: string): Promise<{ decisionId: string; reason: string }> {
@@ -419,7 +438,24 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(targets).toHaveLength(1);
     expect(["triggered", "observing", "succeeded"]).toContain(targets[0]!.status);
     expect(targets[0]!.executorPluginId).toBe("fake-executor");
-    expect(await gateDecisionsFor(changeId)).toHaveLength(0); // no block anywhere
+
+    // M16.1 (I2) — a PASSING verify now PERSISTS its verdict (it wrote nothing at all before, so
+    // "verified" was indistinguishable from "never gated"). Exactly one Decision, verdict `allow`,
+    // never a block, with the verified artifact set pinned in its inputs (charter principle 6)...
+    const gateDecisions = await gateDecisionsFor(changeId);
+    expect(gateDecisions).toHaveLength(1);
+    expect(gateDecisions[0]!.verdict).toBe("allow");
+    expect(
+      (gateDecisions[0]!.inputContext as { authorizedArtifacts?: { digest: string }[] })
+        .authorizedArtifacts?.map((a) => a.digest).sort()
+    ).toEqual([image.digest, blob.digest].sort());
+    expect(await gateAuditFor(changeId)).toHaveLength(0); // ...and NOT the `.blocked` action.
+
+    // ...and a hash-chained `.passed` audit event in the same tx carries that decision_id.
+    const passAudit = await passAuditFor(changeId);
+    expect(passAudit).toHaveLength(1);
+    expect(passAudit[0]!.decisionId).toBe(gateDecisions[0]!.id);
+    expect(passAudit[0]!.rowHash).toEqual(expect.any(String));
   }, 120_000);
 
   // ---------------------------------------------------------------------------------------------
@@ -659,6 +695,10 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(["triggered", "observing", "succeeded"]).toContain(targets[0]!.status);
     expect(await gateDecisionsFor(change.id)).toHaveLength(0);
     expect(await gateAuditFor(change.id)).toHaveLength(0);
+    // M16.1 (I2) — THE VACUOUS EXIT MUST STAY SILENT. No verification ran here (the gate returned
+    // before looking at anything), so an `allow` Decision or a `.passed` audit event would assert a
+    // verification that never happened — the worst failure mode of the I2 change.
+    expect(await passAuditFor(change.id)).toHaveLength(0);
   }, 60_000);
 
   it("SCOPE (e2): a PRE-MANIFEST imported change (no promotionManifest on sourceRef) deploys ungated — back-compat", async () => {
@@ -678,5 +718,152 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     const targets = await waveTargetsFor(componentId);
     expect(["triggered", "observing", "succeeded"]).toContain(targets[0]!.status);
     expect(await gateDecisionsFor(changeId)).toHaveLength(0);
+    expect(await passAuditFor(changeId)).toHaveLength(0); // M16.1 (I2) — vacuous exit stays silent.
   }, 60_000);
+
+  it("SCOPE (e3): a METADATA-ONLY promotion (manifest, ZERO artifacts) deploys ungated and records NOTHING", async () => {
+    // M16.1 (I2)'s second vacuous exit, and the sharper of the two: this change IS a verified
+    // cross-boundary promotion — it carries `promotionManifest` and came from a peer WITH a
+    // registered cosign key — it simply has no substantive bytes to verify (config/policy-only).
+    // `runPreDeployArtifactGate` returns on `artifacts.length === 0` before any cosign runs.
+    // An `allow` Decision here would read, in the boundary segment and in the audit log, exactly
+    // like a change whose artifacts were fetched and cryptographically verified. Nothing was.
+    const { changeId, componentId } = await proposeImportedChange([]);
+
+    await tick();
+
+    const row = await changeRow(changeId);
+    expect(row.state).toBe("executing");
+    expect(row.reconcileBlockedAt).toBeNull();
+    const targets = await waveTargetsFor(componentId);
+    expect(["triggered", "observing", "succeeded"]).toContain(targets[0]!.status);
+    expect(await gateDecisionsFor(changeId)).toHaveLength(0);
+    expect(await gateAuditFor(changeId)).toHaveLength(0);
+    expect(await passAuditFor(changeId)).toHaveLength(0);
+  }, 60_000);
+
+  // ---------------------------------------------------------------------------------------------
+  // THE PER-TICK FLOOD (M16.1 review B5). A change parked in `waiting` on an outstanding
+  // cross-change prerequisite is re-swept EVERY tick, and `advanceWaitingChanges` runs this gate on
+  // each one (defence-in-depth: `waiting -> executing` is a second edge into execution). Before I2
+  // a passing verify wrote nothing, so that was free. Persisting the pass made every tick a new
+  // `allow` Decision + a new hash-chained `.passed` audit event, for as long as the wait lasts —
+  // the very "Decision per tick" flood `advanceWaitingChanges`'s own doc comment forbids, arriving
+  // through a different door, and an audit chain asserting fresh events where nothing happened.
+  //
+  // (Unreachable in production today ONLY because `applyPromotionImport` strips `requires`, which
+  // is a coincidence and precisely why that call site is labelled defence-in-depth. This test
+  // constructs the shape directly rather than relying on that coincidence to stay true.)
+  // ---------------------------------------------------------------------------------------------
+  it("re-ticking a WAITING manifest-carrying change records the pass ONCE, not once per tick", async () => {
+    const image = await pushImage("scp/waiting-img", "waiting");
+    signImage(image.ref, exporterKey.keyPath);
+
+    // Gated shape (verified manifest + one real artifact) AND an unsatisfiable prerequisite, so it
+    // parks in `waiting` and is re-swept indefinitely instead of leaving for `executing`.
+    const { changeId } = await proposeImportedChange(
+      [{ type: "oci", digest: image.digest, location: image.ref, signatureRef: "registry-attached" }],
+      { requiresKeys: [`never-provided-${randomUUID().slice(0, 8)}`] }
+    );
+
+    // Tick 1: the gate runs on the `coordinated` edge (allow recorded), then the change parks.
+    await tick();
+    expect((await changeRow(changeId)).state).toBe("waiting");
+    const afterFirst = await gateDecisionsFor(changeId);
+    expect(afterFirst).toHaveLength(1);
+    expect(afterFirst[0]!.verdict).toBe("allow");
+    expect(await passAuditFor(changeId)).toHaveLength(1);
+
+    // Ticks 2 and 3: the WAITING sweep re-runs the gate. The verify itself still runs (the gate
+    // stays fail-closed against bytes that vanish mid-wait) — but the verdict is unchanged over an
+    // unchanged authorized set, so nothing new is recorded.
+    await tick();
+    await tick();
+
+    expect((await changeRow(changeId)).state).toBe("waiting"); // still parked, still re-swept
+    const afterThird = await gateDecisionsFor(changeId);
+    expect(afterThird).toHaveLength(1);
+    expect(afterThird[0]!.id).toBe(afterFirst[0]!.id); // the SAME row, not a fresh identical one
+    expect(await passAuditFor(changeId)).toHaveLength(1);
+    expect(await gateAuditFor(changeId)).toHaveLength(0); // and never a block
+
+    // The verdict the gate REPORTS is still the real one — suppressing the duplicate write must not
+    // suppress the decision_id callers (and the boundary segment) rely on.
+    const row = await changeRow(changeId);
+    const gate = await runPreDeployArtifactGate(server.deps.db, org.orgId, row);
+    expect(gate.blocked).toBe(false);
+    expect(gate.decisionId).toBe(afterFirst[0]!.id);
+    expect(await gateDecisionsFor(changeId)).toHaveLength(1);
+  }, 120_000);
+
+  // ---------------------------------------------------------------------------------------------
+  // THE OTHER HALF OF THE B5 IDEMPOTENCE GUARD (M16.1 review D1). The suppression above is keyed on
+  // BOTH `previous?.verdict === "allow"` AND the authorized-artifact-SET-KEY comparing equal
+  // (`decisionArtifactSetKey(previous.inputContext) === artifactSetKey(verifiedArtifacts)`) —
+  // never on the verdict alone. A change whose authorized artifact set CHANGES between two gate
+  // runs over the SAME change row (e.g. a re-promotion landing before the change leaves
+  // `coordinated`) is a DIFFERENT statement from the first allow, over a set that was never
+  // verified before, and must be recorded as its own Decision + `.passed` audit event — not
+  // shadowed by the earlier allow's decision_id. If it were shadowed, `boundary-segment.ts`'s
+  // latest-verdict read would report `verified` for image B's artifact set on the strength of a
+  // verify that only ever looked at image A: the fabricated-pass class M16.1 (I2) exists to rule
+  // out, reached through the fix for B5.
+  // ---------------------------------------------------------------------------------------------
+  it("a REWRITTEN authorized artifact set on the same change row gets its OWN Decision, not the stale allow's id", async () => {
+    const imageA = await pushImage("scp/rewrite-a-img", "rewrite-a");
+    signImage(imageA.ref, exporterKey.keyPath);
+    const imageB = await pushImage("scp/rewrite-b-img", "rewrite-b");
+    signImage(imageB.ref, exporterKey.keyPath);
+    expect(imageB.digest).not.toBe(imageA.digest);
+
+    const { changeId } = await proposeImportedChange([
+      { type: "oci", digest: imageA.digest, location: imageA.ref, signatureRef: "registry-attached" }
+    ]);
+
+    // First gate run: authorized set = { imageA }. Persists allow #1.
+    const first = await runPreDeployArtifactGate(server.deps.db, org.orgId, await changeRow(changeId));
+    expect(first.blocked).toBe(false);
+    expect(first.decisionId).toEqual(expect.any(String));
+
+    // The authorized set CHANGES on the SAME change row — model a re-promotion directly by
+    // rewriting `sourceRef.artifacts` + `promotionManifest` to a DIFFERENT, still-authentic image.
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(changes)
+        .set({
+          sourceRef: {
+            promotedFromDomain: exporterDomainId,
+            artifactDigests: [imageB.digest],
+            artifacts: [{ type: "oci", digest: imageB.digest, location: imageB.ref, signatureRef: "registry-attached" }],
+            promotionManifest: { artifacts: [{ type: "oci", digest: imageB.digest }] }
+          }
+        })
+        .where(eq(changes.objectId, changeId))
+    );
+
+    // Second gate run: authorized set = { imageB } now. Must NOT return the first allow's id.
+    const second = await runPreDeployArtifactGate(server.deps.db, org.orgId, await changeRow(changeId));
+    expect(second.blocked).toBe(false);
+    expect(second.decisionId).toEqual(expect.any(String));
+    expect(second.decisionId).not.toBe(first.decisionId); // a NEW verdict — the stale allow must not shadow it.
+
+    // Exactly two gate Decisions exist for this change, both `allow`, never a `block`.
+    const gateDecisions = await gateDecisionsFor(changeId);
+    expect(gateDecisions).toHaveLength(2);
+    expect(gateDecisions.every((d) => d.verdict === "allow")).toBe(true);
+    expect(await gateAuditFor(changeId)).toHaveLength(0);
+
+    // The second Decision's inputs are pinned to imageB's authorized set (charter principle 6) —
+    // proof the second verify actually ran over the new set rather than replaying the first's.
+    const secondDecision = gateDecisions.find((d) => d.id === second.decisionId);
+    expect(secondDecision).toBeDefined();
+    expect(
+      (secondDecision!.inputContext as { authorizedArtifacts?: { digest: string }[] })
+        .authorizedArtifacts?.map((a) => a.digest)
+    ).toEqual([imageB.digest]);
+
+    // And exactly two `.passed` audit events — a fresh one for the second, genuinely-new verdict,
+    // not a re-use of the first's.
+    expect(await passAuditFor(changeId)).toHaveLength(2);
+  }, 120_000);
 });

@@ -9342,6 +9342,26 @@ export type ExplainChangeResponses = {
             }>;
             malformed?: Array<unknown>;
         } | null;
+        boundarySegment?: {
+            transfer: {
+                state: 'exported' | 'received' | 'not_observed';
+                hops: Array<{
+                    direction: 'export' | 'import';
+                    status: 'created' | 'submitted' | 'confirmed';
+                    peerDomainId: string;
+                    checksum: string | null;
+                    observedAt: string;
+                }>;
+                observedAt: string | null;
+            };
+            validate: {
+                state: 'verified' | 'refused' | 'not_yet_verified' | 'not_reported';
+                decisionId: string | null;
+                observedAt: string | null;
+                authorizedArtifactCount: number | null;
+            };
+            unknownFields: Array<string>;
+        } | null;
     };
 };
 
@@ -13403,6 +13423,7 @@ export type GetFederationStatusResponses = {
                 status: 'created' | 'submitted' | 'confirmed';
                 sinceSequence: number | null;
                 throughSequence: number | null;
+                checksum?: string | null;
                 createdAt: string;
                 confirmedAt: string | null;
             }>;

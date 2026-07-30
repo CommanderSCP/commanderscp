@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { Decision } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -91,6 +91,33 @@ export async function listDecisions(
     items: page.map(toDecision),
     nextCursor: hasMore && last ? encodeCursor({ createdAt: last.createdAt, id: last.id }) : null
   };
+}
+
+/**
+ * The MOST RECENT decision of one `kind` about one subject, or `undefined`. A targeted single-row
+ * read for callers on the reconcile hot path that must not pull a change's whole Decision history
+ * every tick just to ask "did I already record this verdict?" (see `pre-deploy-gate.ts`'s
+ * idempotence check). `kind` is the caller's own constant, never user input.
+ *
+ * "Most recent" matches {@link listDecisionsForSubject}'s ordering exactly (`createdAt`, then `id`
+ * as the tiebreak for rows sharing a timestamp), so the answer here is the same row that read model
+ * — and `coordination/boundary-segment.ts`'s "latest verdict wins" — would call latest.
+ */
+export async function latestDecisionForSubjectKind(
+  tx: TenantTx,
+  orgId: string,
+  subjectId: string,
+  kind: string
+): Promise<Decision | undefined> {
+  const rows = await tx
+    .select()
+    .from(decisions)
+    .where(
+      and(eq(decisions.orgId, orgId), eq(decisions.subjectId, subjectId), eq(decisions.kind, kind))
+    )
+    .orderBy(desc(decisions.createdAt), desc(decisions.id))
+    .limit(1);
+  return rows[0] ? toDecision(rows[0]) : undefined;
 }
 
 /** All decisions ever made about one subject (a change, most commonly), oldest first. */

@@ -1,15 +1,28 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { BundleTransfer, TrustDomainId } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { bundleTransfers } from "../db/schema.js";
 
 /**
- * Bundle-transfer tracking (DESIGN.md §13: "export created -> transfer submitted -> confirmed when
- * a returned bundle carries the outpost's import cursor"). Purely observational bookkeeping —
- * never consulted for authority/idempotency decisions (the journal's own sequence/hash chain is
- * what makes replication safe); this just gives the commander UI/CLI something to show for an
- * air-gapped peer's outstanding handoffs.
+ * Bundle-transfer tracking (DESIGN.md §13). Purely observational bookkeeping — never consulted for
+ * authority/idempotency decisions (the journal's own sequence/hash chain is what makes replication
+ * safe); this just gives the commander UI/CLI something to show for an air-gapped peer's
+ * outstanding handoffs.
+ *
+ * PER-HOP AND INSERT-ONLY (doc corrected 2026-07-29, M16.1). This is NOT a lifecycle: no production
+ * path updates a row — this module exposes no update, and the only `update(bundleTransfers)` in the
+ * tree is a test fixture backdating `confirmed_at`
+ * (`coordination/service-board-staleness.integration.test.ts`). One row per `.scpbundle` an instance
+ * produced or consumed, in THAT instance's own database:
+ *   `created`   — the EXPORTER, on producing a bundle (export-repo, exportPromotionBundle).
+ *   `submitted` — a RETRANS only, for its onward drop (retrans-relay).
+ *   `confirmed` — the RECEIVER, on a successful import (import-repo, applyPromotionImport,
+ *                 retrans-relay's inbound hop).
+ * CONSEQUENCE: in the commander's own database an export can only ever read `created`, so the
+ * commander may say "exported" and MUST declare the handoff unknown — see
+ * `coordination/boundary-segment.ts`. The DESIGN §13 aspiration ("confirmed when a returned bundle
+ * carries the outpost's import cursor") is UNBUILT and named there as future increment M16.4.
  */
 
 function toBundleTransfer(row: typeof bundleTransfers.$inferSelect): BundleTransfer {
@@ -21,6 +34,8 @@ function toBundleTransfer(row: typeof bundleTransfers.$inferSelect): BundleTrans
     status: row.status as "created" | "submitted" | "confirmed",
     sinceSequence: row.sinceSequence,
     throughSequence: row.throughSequence,
+    // M16.1 (I1): the per-change join handle (see `boundary-bundle-ref.ts`). Additive on the wire.
+    checksum: row.checksum,
     createdAt: row.createdAt.toISOString(),
     confirmedAt: row.confirmedAt?.toISOString() ?? null
   };
@@ -117,6 +132,26 @@ export async function lastConfirmedSyncImportAt(
     at: row.confirmedAt,
     transport: row.transport === "live-pull" || row.transport === "bundle" ? row.transport : null
   };
+}
+
+/**
+ * M16.1 (I1) — every ledger row whose bundle checksum is one of `checksums`: the PER-CHANGE cut of
+ * this per-hop ledger, reached through the stamp `federation/boundary-bundle-ref.ts` writes onto a
+ * change's `sourceRef`. Ordered oldest-first so a caller reads the hops in the order they happened.
+ * An empty input (a change that never crossed a boundary) short-circuits to `[]` without a query.
+ */
+export async function listTransfersByChecksums(
+  tx: TenantTx,
+  orgId: string,
+  checksums: string[]
+): Promise<BundleTransfer[]> {
+  if (checksums.length === 0) return [];
+  const rows = await tx
+    .select()
+    .from(bundleTransfers)
+    .where(and(eq(bundleTransfers.orgId, orgId), inArray(bundleTransfers.checksum, checksums)))
+    .orderBy(asc(bundleTransfers.createdAt));
+  return rows.map(toBundleTransfer);
 }
 
 export async function listRecentTransfers(

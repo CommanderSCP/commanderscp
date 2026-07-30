@@ -261,13 +261,113 @@ export const ChangeWaitStatusSchema = z.object({
 });
 export type ChangeWaitStatus = z.infer<typeof ChangeWaitStatusSchema>;
 
+// -------------------------------------------------------------------------------------------
+// M16.1 — THE UNIVERSAL BOUNDARY SEGMENT (ADR-0011; ADR-0021 D6 vocabulary).
+//
+// A boundary SEGMENT of the component pipeline, composed of two boundary PHASES — *transferred*
+// and *validated*. NOT a "stage" (a stage is a deployment PLACE, `<domain>[-<location>]-<env>`) and
+// NOT a "wave" (a wave is the set of stages advanced at once). The segment renders REAL local
+// observations plus an explicit not-yet-verified/not-reported state, NEVER a fabricated pass, and
+// it DRIVES NOTHING (coordinate-not-execute — this is Layer-B observe-enrichment, ADR-0008,
+// applied to the federation boundary rather than to an executor).
+// -------------------------------------------------------------------------------------------
+
+/** One observed hop of the bundle-transfer ledger that carried this change (`bundle_transfers`).
+ *  Every field is a row this instance actually wrote — the ledger is INSERT-only and per-instance,
+ *  so these are strictly THIS side's observations of the handoff, never the far side's. */
+export const BoundaryTransferHopSchema = z.object({
+  direction: z.enum(["export", "import"]),
+  status: z.enum(["created", "submitted", "confirmed"]),
+  /** The peer this hop was recorded against (TRUST sense, ADR-0021 D4). */
+  peerDomainId: z.string().uuid(),
+  /** The bundle's Ed25519 checksum — the value that joins this hop to the change (M16.1 I1). */
+  checksum: z.string().nullable(),
+  observedAt: z.string().datetime()
+});
+export type BoundaryTransferHop = z.infer<typeof BoundaryTransferHopSchema>;
+
+/** The TRANSFERRED phase.
+ *
+ *  `exported` — this instance produced a promotion bundle for this change. It is the ONLY transfer
+ *  statement an exporting instance can truthfully make: `bundle_transfers` has no UPDATE anywhere
+ *  in the tree, and every `submitted`/`confirmed` row is written by a LATER hop's own database. So
+ *  an exporting instance's row is and stays `created`, and whether the peer ever received the
+ *  bundle is UNOBSERVABLE here — declared in `unknownFields` as `transfer.handoff`, never rendered
+ *  as a delivered/confirmed handoff.
+ *
+ *  `received` — this instance imported and applied a promotion bundle for this change (a genuine
+ *  local observation: the row is written in the same tx as the import).
+ *
+ *  `not_observed` — no ledger row here names any bundle that carried this change. */
+export const BoundaryTransferPhaseSchema = z.object({
+  state: z.enum(["exported", "received", "not_observed"]),
+  hops: z.array(BoundaryTransferHopSchema),
+  /** When this instance observed the most recent hop; null when `not_observed`. */
+  observedAt: z.string().datetime().nullable()
+});
+export type BoundaryTransferPhase = z.infer<typeof BoundaryTransferPhaseSchema>;
+
+/** The VALIDATED phase — the signature + scan-attestation verify at the RECEIVING outpost
+ *  (ADR-0011: universal, commercial included), read from the M17.4(b) pre-deploy artifact-verify
+ *  Decision this instance persisted.
+ *
+ *  `verified`   — an `allow` Decision of kind `pre-deploy-artifact-verify` exists HERE: a real
+ *                 per-artifact cosign verification ran locally and every authorized artifact was
+ *                 present and authentic. (Only recordable since M16.1 I2 — a passing verify used
+ *                 to write nothing at all.)
+ *  `refused`    — a `block` Decision exists here; `decisionId` carries the "why" (principle 6).
+ *  `not_yet_verified` — this instance RECEIVED the change and its verify has not produced a verdict
+ *                 yet (or had nothing to verify — a metadata-only promotion deliberately records
+ *                 no verdict rather than a vacuous pass). An honest absence, not a failure.
+ *  `not_reported` — this instance is NOT the receiving side. Validation happens at the receiving
+ *                 outpost and there is NO data path carrying its outcome back: federation journal
+ *                 entry kinds are lifecycle/graph-shaped, none is verification-shaped, and audit
+ *                 segments are discarded on import. The exporting instance therefore says exactly
+ *                 that, and `unknownFields` names `validate.state`. It is never `verified` here. */
+export const BoundaryValidatePhaseSchema = z.object({
+  state: z.enum(["verified", "refused", "not_yet_verified", "not_reported"]),
+  /** The Decision behind `verified`/`refused` — every verdict is explainable (principle 6). */
+  decisionId: z.string().uuid().nullable(),
+  observedAt: z.string().datetime().nullable(),
+  /** How many artifacts the verdict's AUTHORIZED SET held — the set the gate was asked to check,
+   *  read off the Decision's `inputContext.authorizedArtifacts`. Deliberately NOT named
+   *  "verified": on a `refused` verdict the authorized set still has entries and some or all of
+   *  them are precisely the ones that FAILED, so a "verified" count there would report unverified
+   *  artifacts as verified — the exact claim class this segment exists to prevent, on the API,
+   *  which is the parity surface (charter principle 3).
+   *
+   *  `null` when there is no verdict at all, AND on `refused`: a refusal's honest artifact story is
+   *  the block Decision's `failing` list, not a bare number that reads as progress. So a non-null
+   *  value here occurs only alongside `state: "verified"`, where authorized == verified by
+   *  construction (the gate returns `ok` only when every authorized artifact passed).
+   *  `null` — never 0 — is also what a malformed/absent `inputContext` yields, so a client can
+   *  distinguish "no count available" from "a verdict over zero artifacts". */
+  authorizedArtifactCount: z.number().int().nullable()
+});
+export type BoundaryValidatePhase = z.infer<typeof BoundaryValidatePhaseSchema>;
+
+/** The two-phase boundary segment for one change. `unknownFields` follows the established honesty
+ *  shape (`ServiceBoardRowSchema.unknownFields`): every listed dotted path still carries its zero
+ *  value on the wire for shape stability, but that zero is NOT an observation and a client must not
+ *  render it as one. */
+export const BoundarySegmentSchema = z.object({
+  transfer: BoundaryTransferPhaseSchema,
+  validate: BoundaryValidatePhaseSchema,
+  unknownFields: z.array(z.string())
+});
+export type BoundarySegment = z.infer<typeof BoundarySegmentSchema>;
+
 export const ChangeExplainResponseSchema = z.object({
   change: ChangeSchema,
   plan: ChangePlanSchema.nullable(),
   decisions: z.array(DecisionSchema),
   controlRuns: z.array(ControlRunSchema),
   /** Cross-change coupling status (M12 P4B): null when the change declared no `requires`. */
-  waitStatus: ChangeWaitStatusSchema.nullable()
+  waitStatus: ChangeWaitStatusSchema.nullable(),
+  /** M16.1 — the boundary segment. `null` for a change that has NOT crossed a domain boundary:
+   *  absent, deliberately not a fabricated empty pass. Optional/additive within /v1 — a pre-M16.1
+   *  SDK reading a new response is unaffected, and an old server's response is valid here. */
+  boundarySegment: BoundarySegmentSchema.nullable().optional()
 });
 export type ChangeExplainResponse = z.infer<typeof ChangeExplainResponseSchema>;
 

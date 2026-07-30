@@ -280,6 +280,13 @@ export const BundleTransferSchema = z.object({
   status: BundleTransferStatusSchema,
   sinceSequence: z.number().int().nullable(),
   throughSequence: z.number().int().nullable(),
+  /** M16.1 (I1) — the `.scpbundle`'s Ed25519 checksum, the ONLY per-change handle this ledger has
+   *  (it carries no change/component column). A promotion bundle is 1:1 with a change, and both
+   *  the exporting and the receiving instance stamp this same value onto that change's `sourceRef`
+   *  (`federation/boundary-bundle-ref.ts`), which is how the boundary segment answers "which
+   *  transfers carried THIS change?". Optional/additive — absent for a pre-M16.1 SDK's reads and
+   *  null on a row recorded without one. Observational only; never authority. */
+  checksum: z.string().nullable().optional(),
   createdAt: z.string().datetime(),
   confirmedAt: z.string().datetime().nullable()
 });
