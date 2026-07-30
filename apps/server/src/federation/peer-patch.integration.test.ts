@@ -160,6 +160,57 @@ describe("M16.2 E4: PATCH /federation/peers/{id} — transport only, never key m
     expect(await liveKeyWindowCount(domainId)).toBe(1);
   });
 
+  /**
+   * M16.2 phase B (B2) — THE SAME DoD, OVER THE WHOLE SETTINGS-FORM SAVE.
+   *
+   * The case above patches ONE field. A settings form does not: it saves every transport field the
+   * operator can see, in one request, and it is the multi-field save an implementer is tempted to
+   * build on `POST /federation/peers` ("just send the peer back") — which is the re-pair that
+   * rotates the trust anchor. So the field set the UI can actually send
+   * (`apps/web/src/routes/outpost-settings.tsx`'s `PEER_SETTINGS_PATCH_KEYS`, plus `pokeMode`, which
+   * B3's configuration card sends through this same door) is exercised here as one body, against a
+   * real database.
+   *
+   * `deliveryTarget` is deliberately NOT in this body: `SCP_DELIVERY_ROOTS` is unset on this test
+   * server, so every per-peer directory is refused before storage — which is its own case, "GUARD
+   * G4" below. A refusal writes nothing, so it could not exercise this one anyway.
+   */
+  it("B2: the WHOLE settings-form save (name+baseUrl+syncScope+pokeMode at once) leaves federation_peer_keys byte-identical", async () => {
+    const { domainId, publicKey } = await pairFresh({
+      baseUrl: "https://outpost-form.example.test",
+      syncScope: { mode: "full" }
+    });
+    const before = await keyWindows(domainId);
+    expect(before).toHaveLength(1);
+    expect(before[0]?.publicKey).toBe(publicKey);
+    expect(before[0]?.supersededAt).toBeNull();
+
+    const saved = await admin.federation.updatePeer(domainId, {
+      name: "amer-prod-renamed",
+      baseUrl: "https://outpost-form-2.example.test",
+      syncScope: { mode: "status_only" },
+      pokeMode: true
+    });
+
+    // PREMISE — every field really was written, so the key assertions below are over a save that
+    // actually did something.
+    expect(saved.name).toBe("amer-prod-renamed");
+    expect(saved.baseUrl).toBe("https://outpost-form-2.example.test");
+    expect(saved.syncScope).toEqual({ mode: "status_only" });
+    expect(saved.pokeMode).toBe(true);
+    expect(saved.role).toBe("outpost"); // …and role is untouched by a settings save.
+    expect(saved.publicKey).toBe(publicKey);
+
+    const after = await keyWindows(domainId);
+    // NO NEW KEY-WINDOW ROW, and the existing row's `superseded_at` still NULL — i.e. the old key was
+    // not revoked, which is the whole claim.
+    expect(after).toEqual(before);
+    expect(after).toHaveLength(1);
+    expect(after[0]?.supersededAt).toBeNull();
+    expect(after[0]?.supersededAtSequence).toBeNull();
+    expect(await liveKeyWindowCount(domainId)).toBe(1);
+  });
+
   it("NON-VACUITY CONTROL: the very same assertions DO catch the rotation a re-pair performs", async () => {
     // Without this control, "the key window is unchanged" could be passing because nothing in the
     // suite is capable of changing it. A re-pair with a DIFFERENT public key must move exactly the

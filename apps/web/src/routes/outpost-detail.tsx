@@ -15,6 +15,7 @@ import {
   formatDateTime,
   roleBadge
 } from "./outposts";
+import { PeerSettingsSection } from "./outpost-settings";
 
 /**
  * `/federation/outposts/$peerDomainId` — M16.2 phase B, one outpost.
@@ -158,6 +159,7 @@ export function OutpostDetailPage(): React.JSX.Element {
         </p>
       )}
       {status && <OutpostStatusCard status={status} />}
+      {status && <PeerSettingsSection peer={status.peer} />}
     </div>
   );
 }
