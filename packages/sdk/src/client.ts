@@ -362,7 +362,8 @@ import type {
   BackfillSourceMappingsResponse,
   ServiceBoardResponse
 } from "@scp/schemas";
-import { ScpApiError } from "./errors.js";
+import { ScpApiError, ScpResponseValidationError } from "./errors.js";
+import { installResponseValidationErrors } from "./response-validation.js";
 
 export interface ScpClientOptions {
   /** e.g. http://localhost:8080/api/v1 */
@@ -378,6 +379,10 @@ interface ApiResult<TData> {
 
 function unwrap<TData>(result: ApiResult<TData>): TData {
   if (result.error !== undefined) {
+    // ADR-0023 — a 2xx body that doesn't match the OpenAPI contract already carries the operation
+    // and the offending field(s); wrapping it in a generic `ScpApiError` would destroy exactly the
+    // diagnosis it exists to provide.
+    if (result.error instanceof ScpResponseValidationError) throw result.error;
     const problem = result.error as { title?: string; status?: number } & Record<string, unknown>;
     throw new ScpApiError(problem.title ?? "CommanderSCP API error", {
       status: typeof problem.status === "number" ? problem.status : result.response?.status,
@@ -397,6 +402,7 @@ function unwrap<TData>(result: ApiResult<TData>): TData {
  * incorrectly reject it. */
 function unwrapVoid(result: ApiResult<unknown>): void {
   if (result.error !== undefined) {
+    if (result.error instanceof ScpResponseValidationError) throw result.error;
     const problem = result.error as { title?: string; status?: number } & Record<string, unknown>;
     throw new ScpApiError(problem.title ?? "CommanderSCP API error", {
       status: typeof problem.status === "number" ? problem.status : result.response?.status,
@@ -552,6 +558,10 @@ export class ScpClient {
         auth: () => this.token
       })
     );
+    // ADR-0023 — every generated operation carries a `responseValidator`; this turns a rejection
+    // from any of them into one `ScpResponseValidationError` naming operation + field. Registered
+    // once, on the single client every operation flows through, so no call site can miss it.
+    installResponseValidationErrors(this.client);
   }
 
   setToken(token: string | undefined): void {

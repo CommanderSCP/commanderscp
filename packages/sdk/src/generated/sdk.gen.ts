@@ -3,6 +3,7 @@
 import { client } from './client.gen.js';
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client/index.js';
 import type { AcceptChangeData, AcceptChangeErrors, AcceptChangeResponses, AcceptDiscoveryProposalData, AcceptDiscoveryProposalErrors, AcceptDiscoveryProposalResponses, AddComponentConsumesData, AddComponentConsumesErrors, AddComponentConsumesResponses, AddComponentDependsOnData, AddComponentDependsOnErrors, AddComponentDependsOnResponses, AddComponentOwnerData, AddComponentOwnerErrors, AddComponentOwnerResponses, AddDeploymentTargetOwnerData, AddDeploymentTargetOwnerErrors, AddDeploymentTargetOwnerResponses, AddDomainOwnerData, AddDomainOwnerErrors, AddDomainOwnerResponses, AddInitiativeCampaignData, AddInitiativeCampaignErrors, AddInitiativeCampaignResponses, AddServiceConsumesData, AddServiceConsumesErrors, AddServiceConsumesResponses, AddServiceDependsOnData, AddServiceDependsOnErrors, AddServiceDependsOnResponses, AddServiceOwnerData, AddServiceOwnerErrors, AddServiceOwnerResponses, ApplyPlanData, ApplyPlanErrors, ApplyPlanResponses, ApproveDeviceAuthData, ApproveDeviceAuthErrors, ApproveDeviceAuthResponses, BackfillSourceMappingsData, BackfillSourceMappingsErrors, BackfillSourceMappingsResponses, BuildRelayTarballData, BuildRelayTarballErrors, BuildRelayTarballResponses, CancelChangeData, CancelChangeErrors, CancelChangeResponses, CastApprovalVoteData, CastApprovalVoteErrors, CastApprovalVoteResponses, CreateComponentData, CreateComponentErrors, CreateComponentResponses, CreateControlData, CreateControlErrors, CreateControlResponses, CreateDeploymentTargetData, CreateDeploymentTargetErrors, CreateDeploymentTargetResponses, CreateDomainData, CreateDomainErrors, CreateDomainResponses, CreateFreezeData, CreateFreezeErrors, CreateFreezeResponses, CreateGroupData, CreateGroupErrors, CreateGroupResponses, CreateObjectData, CreateObjectErrors, CreateObjectResponses, CreateObjectTypeData, CreateObjectTypeErrors, CreateObjectTypeResponses, CreateOutpostConfigData, CreateOutpostConfigErrors, CreateOutpostConfigResponses, CreateOverlayData, CreateOverlayErrors, CreateOverlayResponses, CreatePatData, CreatePatErrors, CreatePatResponses, CreatePlanData, CreatePlanErrors, CreatePlanResponses, CreatePolicyData, CreatePolicyErrors, CreatePolicyResponses, CreateRelationshipData, CreateRelationshipErrors, CreateRelationshipResponses, CreateRelationshipTypeData, CreateRelationshipTypeErrors, CreateRelationshipTypeResponses, CreateServiceAccountData, CreateServiceAccountErrors, CreateServiceAccountResponses, CreateServiceData, CreateServiceErrors, CreateServiceObjectData, CreateServiceObjectErrors, CreateServiceObjectForOrgData, CreateServiceObjectForOrgErrors, CreateServiceObjectForOrgResponses, CreateServiceObjectResponses, CreateServiceResponses, CreateSourceMappingData, CreateSourceMappingErrors, CreateSourceMappingResponses, CreateTeamData, CreateTeamErrors, CreateTeamResponses, CreateUserData, CreateUserErrors, CreateUserResponses, DeleteComponentData, DeleteComponentErrors, DeleteComponentResponses, DeleteControlData, DeleteControlErrors, DeleteControlResponses, DeleteDeploymentTargetData, DeleteDeploymentTargetErrors, DeleteDeploymentTargetResponses, DeleteDomainData, DeleteDomainErrors, DeleteDomainResponses, DeleteExecutorBindingData, DeleteExecutorBindingErrors, DeleteExecutorBindingResponses, DeleteGroupData, DeleteGroupErrors, DeleteGroupResponses, DeleteNotificationBindingData, DeleteNotificationBindingErrors, DeleteNotificationBindingResponses, DeleteObjectData, DeleteObjectErrors, DeleteObjectResponses, DeletePolicyData, DeletePolicyErrors, DeletePolicyResponses, DeleteRelationshipData, DeleteRelationshipErrors, DeleteRelationshipResponses, DeleteSecretData, DeleteSecretErrors, DeleteSecretResponses, DeleteServiceAccountData, DeleteServiceAccountErrors, DeleteServiceAccountResponses, DeleteServiceData, DeleteServiceErrors, DeleteServiceResponses, DeleteTeamData, DeleteTeamErrors, DeleteTeamResponses, DeleteUserData, DeleteUserErrors, DeleteUserResponses, ExplainCampaignData, ExplainCampaignErrors, ExplainCampaignResponses, ExplainChangeData, ExplainChangeErrors, ExplainChangeResponses, ExportPromotionBundleData, ExportPromotionBundleErrors, ExportPromotionBundleResponses, ExportSyncBundleData, ExportSyncBundleErrors, ExportSyncBundleResponses, FederationPokeData, FederationPokeErrors, FederationPokeResponses, GetApprovalData, GetApprovalErrors, GetApprovalResponses, GetAuthConfigData, GetAuthConfigResponses, GetCampaignData, GetCampaignErrors, GetCampaignResponses, GetChangeData, GetChangeErrors, GetChangeResponses, GetComponentData, GetComponentErrors, GetComponentResponses, GetControlData, GetControlErrors, GetControlResponses, GetCurrentUserData, GetCurrentUserErrors, GetCurrentUserResponses, GetDecisionData, GetDecisionErrors, GetDecisionResponses, GetDeploymentTargetData, GetDeploymentTargetErrors, GetDeploymentTargetResponses, GetDomainData, GetDomainErrors, GetDomainResponses, GetExecutorBindingData, GetExecutorBindingErrors, GetExecutorBindingResponses, GetFederationPeerData, GetFederationPeerErrors, GetFederationPeerResponses, GetFederationSelfData, GetFederationSelfErrors, GetFederationSelfResponses, GetFederationStatusData, GetFederationStatusErrors, GetFederationStatusResponses, GetFreezeData, GetFreezeErrors, GetFreezeResponses, GetGroupData, GetGroupErrors, GetGroupResponses, GetInitiativeData, GetInitiativeErrors, GetInitiativeResponses, GetMergedOverlayViewData, GetMergedOverlayViewErrors, GetMergedOverlayViewResponses, GetObjectData, GetObjectErrors, GetObjectHealthData, GetObjectHealthErrors, GetObjectHealthResponses, GetObjectResponses, GetOutpostConfigData, GetOutpostConfigErrors, GetOutpostConfigResponses, GetPlanData, GetPlanErrors, GetPlanResponses, GetPolicyData, GetPolicyErrors, GetPolicyResponses, GetRegionalExecutorsData, GetRegionalExecutorsErrors, GetRegionalExecutorsResponses, GetRelationshipData, GetRelationshipErrors, GetRelationshipResponses, GetScanDbStalenessPolicyData, GetScanDbStalenessPolicyErrors, GetScanDbStalenessPolicyResponses, GetScanDbStatusData, GetScanDbStatusErrors, GetScanDbStatusResponses, GetServiceAccountData, GetServiceAccountErrors, GetServiceAccountResponses, GetServiceBoardData, GetServiceBoardErrors, GetServiceBoardResponses, GetServiceData, GetServiceErrors, GetServiceResponses, GetTeamData, GetTeamErrors, GetTeamResponses, GetUserData, GetUserErrors, GetUserResponses, GraphHealthData, GraphHealthErrors, GraphHealthResponses, GraphQueryData, GraphQueryErrors, GraphQueryResponses, GraphSubgraphData, GraphSubgraphErrors, GraphSubgraphResponses, GraphTraverseData, GraphTraverseErrors, GraphTraverseResponses, HandFillObjectData, HandFillObjectErrors, HandFillObjectResponses, ImportBundleData, ImportBundleErrors, ImportBundleResponses, ImportRelayTarballData, ImportRelayTarballErrors, ImportRelayTarballResponses, IngestChangeSourceWebhookData, IngestChangeSourceWebhookErrors, IngestChangeSourceWebhookResponses, InitFederationData, InitFederationErrors, InitFederationResponses, ListApprovalsData, ListApprovalsErrors, ListApprovalsResponses, ListApprovalVotesData, ListApprovalVotesErrors, ListApprovalVotesResponses, ListAuditEventsData, ListAuditEventsErrors, ListAuditEventsResponses, ListCampaignsData, ListCampaignsErrors, ListCampaignsResponses, ListChangeControlRunsData, ListChangeControlRunsErrors, ListChangeControlRunsResponses, ListChangesData, ListChangesErrors, ListChangesResponses, ListComponentConsumesData, ListComponentConsumesErrors, ListComponentConsumesResponses, ListComponentDependsOnData, ListComponentDependsOnErrors, ListComponentDependsOnResponses, ListComponentOwnersData, ListComponentOwnersErrors, ListComponentOwnersResponses, ListComponentsData, ListComponentsErrors, ListComponentsResponses, ListControlsData, ListControlsErrors, ListControlsResponses, ListDecisionsData, ListDecisionsErrors, ListDecisionsResponses, ListDeploymentTargetOwnersData, ListDeploymentTargetOwnersErrors, ListDeploymentTargetOwnersResponses, ListDeploymentTargetsData, ListDeploymentTargetsErrors, ListDeploymentTargetsResponses, ListDomainOwnersData, ListDomainOwnersErrors, ListDomainOwnersResponses, ListDomainsData, ListDomainsErrors, ListDomainsResponses, ListExecutorBindingsData, ListExecutorBindingsErrors, ListExecutorBindingsResponses, ListFederationPeersData, ListFederationPeersErrors, ListFederationPeersResponses, ListFreezesData, ListFreezesErrors, ListFreezesResponses, ListGroupsData, ListGroupsErrors, ListGroupsResponses, ListInitiativesData, ListInitiativesErrors, ListInitiativesResponses, ListInstanceScanFloorsData, ListInstanceScanFloorsErrors, ListInstanceScanFloorsResponses, ListNotificationBindingsData, ListNotificationBindingsErrors, ListNotificationBindingsResponses, ListObjectsData, ListObjectsErrors, ListObjectsResponses, ListObjectTypesData, ListObjectTypesErrors, ListObjectTypesResponses, ListOutpostConfigsData, ListOutpostConfigsErrors, ListOutpostConfigsResponses, ListPatsData, ListPatsErrors, ListPatsResponses, ListPluginManifestsData, ListPluginManifestsErrors, ListPluginManifestsResponses, ListPolicysData, ListPolicysErrors, ListPolicysResponses, ListRelationshipsData, ListRelationshipsErrors, ListRelationshipsResponses, ListRelationshipTypesData, ListRelationshipTypesErrors, ListRelationshipTypesResponses, ListScannerAssignmentsData, ListScannerAssignmentsErrors, ListScannerAssignmentsResponses, ListSecretKeysData, ListSecretKeysErrors, ListSecretKeysResponses, ListServiceAccountsData, ListServiceAccountsErrors, ListServiceAccountsResponses, ListServiceConsumesData, ListServiceConsumesErrors, ListServiceConsumesResponses, ListServiceDependsOnData, ListServiceDependsOnErrors, ListServiceDependsOnResponses, ListServiceObjectsData, ListServiceObjectsErrors, ListServiceObjectsForOrgData, ListServiceObjectsForOrgErrors, ListServiceObjectsForOrgResponses, ListServiceObjectsResponses, ListServiceOwnersData, ListServiceOwnersErrors, ListServiceOwnersResponses, ListServicesData, ListServicesErrors, ListServicesResponses, ListSourceMappingsData, ListSourceMappingsErrors, ListSourceMappingsResponses, ListTeamsData, ListTeamsErrors, ListTeamsResponses, ListUsersData, ListUsersErrors, ListUsersResponses, LoadScanDbData, LoadScanDbErrors, LoadScanDbResponses, LoginData, LoginErrors, LoginResponses, LogoutData, LogoutErrors, LogoutResponses, MergeComponentsData, MergeComponentsErrors, MergeComponentsResponses, PairPeerData, PairPeerErrors, PairPeerResponses, PolicyEvaluateData, PolicyEvaluateErrors, PolicyEvaluateResponses, PollDeviceAuthTokenData, PollDeviceAuthTokenErrors, PollDeviceAuthTokenResponses, ProposeCampaignData, ProposeCampaignErrors, ProposeCampaignResponses, ProposeChangeData, ProposeChangeErrors, ProposeChangeResponses, ProposeInitiativeData, ProposeInitiativeErrors, ProposeInitiativeResponses, PushObjectHealthData, PushObjectHealthErrors, PushObjectHealthResponses, PutChangeSourceWebhookSecretData, PutChangeSourceWebhookSecretErrors, PutChangeSourceWebhookSecretResponses, PutControlBindingData, PutControlBindingErrors, PutControlBindingResponses, PutExecutorBindingData, PutExecutorBindingErrors, PutExecutorBindingResponses, PutInstanceScanFloorData, PutInstanceScanFloorErrors, PutInstanceScanFloorResponses, PutNotificationBindingData, PutNotificationBindingErrors, PutNotificationBindingResponses, PutScanDbStalenessPolicyData, PutScanDbStalenessPolicyErrors, PutScanDbStalenessPolicyResponses, PutScannerAssignmentData, PutScannerAssignmentErrors, PutScannerAssignmentResponses, PutSecretData, PutSecretErrors, PutSecretResponses, ReconcileOutpostConfigData, ReconcileOutpostConfigErrors, ReconcileOutpostConfigResponses, RefreshScanDbData, RefreshScanDbErrors, RefreshScanDbResponses, RemoveComponentConsumesData, RemoveComponentConsumesErrors, RemoveComponentConsumesResponses, RemoveComponentDependsOnData, RemoveComponentDependsOnErrors, RemoveComponentDependsOnResponses, RemoveComponentOwnerData, RemoveComponentOwnerErrors, RemoveComponentOwnerResponses, RemoveDeploymentTargetOwnerData, RemoveDeploymentTargetOwnerErrors, RemoveDeploymentTargetOwnerResponses, RemoveDomainOwnerData, RemoveDomainOwnerErrors, RemoveDomainOwnerResponses, RemoveServiceConsumesData, RemoveServiceConsumesErrors, RemoveServiceConsumesResponses, RemoveServiceDependsOnData, RemoveServiceDependsOnErrors, RemoveServiceDependsOnResponses, RemoveServiceOwnerData, RemoveServiceOwnerErrors, RemoveServiceOwnerResponses, ReportChangeSourceData, ReportChangeSourceErrors, ReportChangeSourceResponses, RepurposeExecutorBindingData, RepurposeExecutorBindingErrors, RepurposeExecutorBindingResponses, RevokePatData, RevokePatErrors, RevokePatResponses, RollbackCampaignData, RollbackCampaignErrors, RollbackCampaignResponses, RollbackChangeData, RollbackChangeErrors, RollbackChangeResponses, RunDiscoveryData, RunDiscoveryErrors, RunDiscoveryResponses, SetComponentServiceData, SetComponentServiceErrors, SetComponentServiceResponses, StartDeviceAuthData, StartDeviceAuthResponses, UpdateComponentData, UpdateComponentErrors, UpdateComponentResponses, UpdateControlData, UpdateControlErrors, UpdateControlResponses, UpdateDeploymentTargetData, UpdateDeploymentTargetErrors, UpdateDeploymentTargetResponses, UpdateDomainData, UpdateDomainErrors, UpdateDomainResponses, UpdateFederationPeerData, UpdateFederationPeerErrors, UpdateFederationPeerResponses, UpdateGroupData, UpdateGroupErrors, UpdateGroupResponses, UpdateObjectData, UpdateObjectErrors, UpdateObjectResponses, UpdateOutpostConfigData, UpdateOutpostConfigErrors, UpdateOutpostConfigResponses, UpdatePolicyData, UpdatePolicyErrors, UpdatePolicyResponses, UpdateServiceAccountData, UpdateServiceAccountErrors, UpdateServiceAccountResponses, UpdateServiceData, UpdateServiceErrors, UpdateServiceResponses, UpdateTeamData, UpdateTeamErrors, UpdateTeamResponses, UpdateUserData, UpdateUserErrors, UpdateUserResponses, UpsertComponentByUrnData, UpsertComponentByUrnErrors, UpsertComponentByUrnResponses, UpsertControlByUrnData, UpsertControlByUrnErrors, UpsertControlByUrnResponses, UpsertDeploymentTargetByUrnData, UpsertDeploymentTargetByUrnErrors, UpsertDeploymentTargetByUrnResponses, UpsertDomainByUrnData, UpsertDomainByUrnErrors, UpsertDomainByUrnResponses, UpsertGroupByUrnData, UpsertGroupByUrnErrors, UpsertGroupByUrnResponses, UpsertObjectByUrnData, UpsertObjectByUrnErrors, UpsertObjectByUrnResponses, UpsertPolicyByUrnData, UpsertPolicyByUrnErrors, UpsertPolicyByUrnResponses, UpsertServiceAccountByUrnData, UpsertServiceAccountByUrnErrors, UpsertServiceAccountByUrnResponses, UpsertServiceByUrnData, UpsertServiceByUrnErrors, UpsertServiceByUrnResponses, UpsertTeamByUrnData, UpsertTeamByUrnErrors, UpsertTeamByUrnResponses, UpsertUserByUrnData, UpsertUserByUrnErrors, UpsertUserByUrnResponses } from './types.gen.js';
+import { zAcceptChangeResponse, zAcceptDiscoveryProposalResponse, zAddComponentConsumesResponse, zAddComponentDependsOnResponse, zAddComponentOwnerResponse, zAddDeploymentTargetOwnerResponse, zAddDomainOwnerResponse, zAddInitiativeCampaignResponse, zAddServiceConsumesResponse, zAddServiceDependsOnResponse, zAddServiceOwnerResponse, zApplyPlanResponse, zApproveDeviceAuthResponse, zBackfillSourceMappingsResponse, zBuildRelayTarballResponse, zCancelChangeResponse, zCastApprovalVoteResponse, zCreateComponentResponse, zCreateControlResponse, zCreateDeploymentTargetResponse, zCreateDomainResponse, zCreateFreezeResponse, zCreateGroupResponse, zCreateObjectResponse, zCreateObjectTypeResponse, zCreateOutpostConfigResponse, zCreateOverlayResponse, zCreatePatResponse, zCreatePlanResponse, zCreatePolicyResponse, zCreateRelationshipResponse, zCreateRelationshipTypeResponse, zCreateServiceAccountResponse, zCreateServiceObjectForOrgResponse, zCreateServiceObjectResponse, zCreateServiceResponse, zCreateSourceMappingResponse, zCreateTeamResponse, zCreateUserResponse, zDeleteComponentResponse, zDeleteControlResponse, zDeleteDeploymentTargetResponse, zDeleteDomainResponse, zDeleteExecutorBindingResponse, zDeleteGroupResponse, zDeleteNotificationBindingResponse, zDeleteObjectResponse, zDeletePolicyResponse, zDeleteRelationshipResponse, zDeleteSecretResponse, zDeleteServiceAccountResponse, zDeleteServiceResponse, zDeleteTeamResponse, zDeleteUserResponse, zExplainCampaignResponse, zExplainChangeResponse, zExportPromotionBundleResponse, zExportSyncBundleResponse, zFederationPokeResponse, zGetApprovalResponse, zGetAuthConfigResponse, zGetCampaignResponse, zGetChangeResponse, zGetComponentResponse, zGetControlResponse, zGetCurrentUserResponse, zGetDecisionResponse, zGetDeploymentTargetResponse, zGetDomainResponse, zGetExecutorBindingResponse, zGetFederationPeerResponse, zGetFederationSelfResponse, zGetFederationStatusResponse, zGetFreezeResponse, zGetGroupResponse, zGetInitiativeResponse, zGetMergedOverlayViewResponse, zGetObjectHealthResponse, zGetObjectResponse, zGetOutpostConfigResponse, zGetPlanResponse, zGetPolicyResponse, zGetRegionalExecutorsResponse, zGetRelationshipResponse, zGetScanDbStalenessPolicyResponse, zGetScanDbStatusResponse, zGetServiceAccountResponse, zGetServiceBoardResponse, zGetServiceResponse, zGetTeamResponse, zGetUserResponse, zGraphHealthResponse, zGraphQueryResponse, zGraphSubgraphResponse, zGraphTraverseResponse, zHandFillObjectResponse, zImportBundleResponse, zImportRelayTarballResponse, zIngestChangeSourceWebhookResponse, zInitFederationResponse, zListApprovalsResponse, zListApprovalVotesResponse, zListAuditEventsResponse, zListCampaignsResponse, zListChangeControlRunsResponse, zListChangesResponse, zListComponentConsumesResponse, zListComponentDependsOnResponse, zListComponentOwnersResponse, zListComponentsResponse, zListControlsResponse, zListDecisionsResponse, zListDeploymentTargetOwnersResponse, zListDeploymentTargetsResponse, zListDomainOwnersResponse, zListDomainsResponse, zListExecutorBindingsResponse, zListFederationPeersResponse, zListFreezesResponse, zListGroupsResponse, zListInitiativesResponse, zListInstanceScanFloorsResponse, zListNotificationBindingsResponse, zListObjectsResponse, zListObjectTypesResponse, zListOutpostConfigsResponse, zListPatsResponse, zListPluginManifestsResponse, zListPolicysResponse, zListRelationshipsResponse, zListRelationshipTypesResponse, zListScannerAssignmentsResponse, zListSecretKeysResponse, zListServiceAccountsResponse, zListServiceConsumesResponse, zListServiceDependsOnResponse, zListServiceObjectsForOrgResponse, zListServiceObjectsResponse, zListServiceOwnersResponse, zListServicesResponse, zListSourceMappingsResponse, zListTeamsResponse, zListUsersResponse, zLoadScanDbResponse, zLoginResponse, zLogoutResponse, zMergeComponentsResponse, zPairPeerResponse, zPolicyEvaluateResponse, zPollDeviceAuthTokenResponse, zProposeCampaignResponse, zProposeChangeResponse, zProposeInitiativeResponse, zPushObjectHealthResponse, zPutChangeSourceWebhookSecretResponse, zPutControlBindingResponse, zPutExecutorBindingResponse, zPutInstanceScanFloorResponse, zPutNotificationBindingResponse, zPutScanDbStalenessPolicyResponse, zPutScannerAssignmentResponse, zPutSecretResponse, zReconcileOutpostConfigResponse, zRefreshScanDbResponse, zRemoveComponentConsumesResponse, zRemoveComponentDependsOnResponse, zRemoveComponentOwnerResponse, zRemoveDeploymentTargetOwnerResponse, zRemoveDomainOwnerResponse, zRemoveServiceConsumesResponse, zRemoveServiceDependsOnResponse, zRemoveServiceOwnerResponse, zReportChangeSourceResponse, zRepurposeExecutorBindingResponse, zRevokePatResponse, zRollbackCampaignResponse, zRollbackChangeResponse, zRunDiscoveryResponse, zSetComponentServiceResponse, zStartDeviceAuthResponse, zUpdateComponentResponse, zUpdateControlResponse, zUpdateDeploymentTargetResponse, zUpdateDomainResponse, zUpdateFederationPeerResponse, zUpdateGroupResponse, zUpdateObjectResponse, zUpdateOutpostConfigResponse, zUpdatePolicyResponse, zUpdateServiceAccountResponse, zUpdateServiceResponse, zUpdateTeamResponse, zUpdateUserResponse, zUpsertComponentByUrnResponse, zUpsertControlByUrnResponse, zUpsertDeploymentTargetByUrnResponse, zUpsertDomainByUrnResponse, zUpsertGroupByUrnResponse, zUpsertObjectByUrnResponse, zUpsertPolicyByUrnResponse, zUpsertServiceAccountByUrnResponse, zUpsertServiceByUrnResponse, zUpsertTeamByUrnResponse, zUpsertUserByUrnResponse } from './zod.gen.js';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -22,6 +23,7 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
  * Exchange local-auth credentials for a bearer token
  */
 export const login = <ThrowOnError extends boolean = false>(options: Options<LoginData, ThrowOnError>): RequestResult<LoginResponses, LoginErrors, ThrowOnError> => (options.client ?? client).post<LoginResponses, LoginErrors, ThrowOnError>({
+    responseValidator: async (data) => await zLoginResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/auth/login',
     ...options,
@@ -35,6 +37,7 @@ export const login = <ThrowOnError extends boolean = false>(options: Options<Log
  * The calling user's own identity — how the Web UI discovers its session
  */
 export const getCurrentUser = <ThrowOnError extends boolean = false>(options?: Options<GetCurrentUserData, ThrowOnError>): RequestResult<GetCurrentUserResponses, GetCurrentUserErrors, ThrowOnError> => (options?.client ?? client).get<GetCurrentUserResponses, GetCurrentUserErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetCurrentUserResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/auth/me',
     ...options
@@ -44,6 +47,7 @@ export const getCurrentUser = <ThrowOnError extends boolean = false>(options?: O
  * End the calling session (no-op for PAT-authenticated calls) and clear the session cookie
  */
 export const logout = <ThrowOnError extends boolean = false>(options?: Options<LogoutData, ThrowOnError>): RequestResult<LogoutResponses, LogoutErrors, ThrowOnError> => (options?.client ?? client).post<LogoutResponses, LogoutErrors, ThrowOnError>({
+    responseValidator: async (data) => await zLogoutResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/auth/logout',
     ...options
@@ -53,6 +57,7 @@ export const logout = <ThrowOnError extends boolean = false>(options?: Options<L
  * Public auth configuration — which login methods this server offers
  */
 export const getAuthConfig = <ThrowOnError extends boolean = false>(options?: Options<GetAuthConfigData, ThrowOnError>): RequestResult<GetAuthConfigResponses, unknown, ThrowOnError> => (options?.client ?? client).get<GetAuthConfigResponses, unknown, ThrowOnError>({
+    responseValidator: async (data) => await zGetAuthConfigResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/auth/config',
     ...options
@@ -62,6 +67,7 @@ export const getAuthConfig = <ThrowOnError extends boolean = false>(options?: Op
  * List the calling user's own Personal Access Tokens (metadata only)
  */
 export const listPats = <ThrowOnError extends boolean = false>(options?: Options<ListPatsData, ThrowOnError>): RequestResult<ListPatsResponses, ListPatsErrors, ThrowOnError> => (options?.client ?? client).get<ListPatsResponses, ListPatsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListPatsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/auth/pats',
     ...options
@@ -71,6 +77,7 @@ export const listPats = <ThrowOnError extends boolean = false>(options?: Options
  * Create a Personal Access Token (the token is shown once, at creation)
  */
 export const createPat = <ThrowOnError extends boolean = false>(options: Options<CreatePatData, ThrowOnError>): RequestResult<CreatePatResponses, CreatePatErrors, ThrowOnError> => (options.client ?? client).post<CreatePatResponses, CreatePatErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreatePatResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/auth/pats',
     ...options,
@@ -84,6 +91,7 @@ export const createPat = <ThrowOnError extends boolean = false>(options: Options
  * Revoke a Personal Access Token owned by the calling user
  */
 export const revokePat = <ThrowOnError extends boolean = false>(options: Options<RevokePatData, ThrowOnError>): RequestResult<RevokePatResponses, RevokePatErrors, ThrowOnError> => (options.client ?? client).delete<RevokePatResponses, RevokePatErrors, ThrowOnError>({
+    responseValidator: async (data) => await zRevokePatResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/auth/pats/{id}',
     ...options
@@ -93,6 +101,7 @@ export const revokePat = <ThrowOnError extends boolean = false>(options: Options
  * Start a device authorization request (RFC 8628-shaped, SCP-hosted)
  */
 export const startDeviceAuth = <ThrowOnError extends boolean = false>(options?: Options<StartDeviceAuthData, ThrowOnError>): RequestResult<StartDeviceAuthResponses, unknown, ThrowOnError> => (options?.client ?? client).post<StartDeviceAuthResponses, unknown, ThrowOnError>({
+    responseValidator: async (data) => await zStartDeviceAuthResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/auth/device/start',
     ...options
@@ -102,6 +111,7 @@ export const startDeviceAuth = <ThrowOnError extends boolean = false>(options?: 
  * Approve a pending device authorization request (browser-authenticated human)
  */
 export const approveDeviceAuth = <ThrowOnError extends boolean = false>(options: Options<ApproveDeviceAuthData, ThrowOnError>): RequestResult<ApproveDeviceAuthResponses, ApproveDeviceAuthErrors, ThrowOnError> => (options.client ?? client).post<ApproveDeviceAuthResponses, ApproveDeviceAuthErrors, ThrowOnError>({
+    responseValidator: async (data) => await zApproveDeviceAuthResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/auth/device/approve',
     ...options,
@@ -115,6 +125,7 @@ export const approveDeviceAuth = <ThrowOnError extends boolean = false>(options:
  * Poll for the device authorization result (RFC 8628 token endpoint shape)
  */
 export const pollDeviceAuthToken = <ThrowOnError extends boolean = false>(options: Options<PollDeviceAuthTokenData, ThrowOnError>): RequestResult<PollDeviceAuthTokenResponses, PollDeviceAuthTokenErrors, ThrowOnError> => (options.client ?? client).post<PollDeviceAuthTokenResponses, PollDeviceAuthTokenErrors, ThrowOnError>({
+    responseValidator: async (data) => await zPollDeviceAuthTokenResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/auth/device/token',
     ...options,
@@ -128,6 +139,7 @@ export const pollDeviceAuthToken = <ThrowOnError extends boolean = false>(option
  * List service objects
  */
 export const listServiceObjects = <ThrowOnError extends boolean = false>(options?: Options<ListServiceObjectsData, ThrowOnError>): RequestResult<ListServiceObjectsResponses, ListServiceObjectsErrors, ThrowOnError> => (options?.client ?? client).get<ListServiceObjectsResponses, ListServiceObjectsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListServiceObjectsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/objects/service',
     ...options
@@ -137,6 +149,7 @@ export const listServiceObjects = <ThrowOnError extends boolean = false>(options
  * Register a service object
  */
 export const createServiceObject = <ThrowOnError extends boolean = false>(options: Options<CreateServiceObjectData, ThrowOnError>): RequestResult<CreateServiceObjectResponses, CreateServiceObjectErrors, ThrowOnError> => (options.client ?? client).post<CreateServiceObjectResponses, CreateServiceObjectErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreateServiceObjectResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/objects/service',
     ...options,
@@ -150,6 +163,7 @@ export const createServiceObject = <ThrowOnError extends boolean = false>(option
  * List service objects (explicit org path override)
  */
 export const listServiceObjectsForOrg = <ThrowOnError extends boolean = false>(options: Options<ListServiceObjectsForOrgData, ThrowOnError>): RequestResult<ListServiceObjectsForOrgResponses, ListServiceObjectsForOrgErrors, ThrowOnError> => (options.client ?? client).get<ListServiceObjectsForOrgResponses, ListServiceObjectsForOrgErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListServiceObjectsForOrgResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/orgs/{org}/objects/service',
     ...options
@@ -159,6 +173,7 @@ export const listServiceObjectsForOrg = <ThrowOnError extends boolean = false>(o
  * Register a service object (explicit org path override)
  */
 export const createServiceObjectForOrg = <ThrowOnError extends boolean = false>(options: Options<CreateServiceObjectForOrgData, ThrowOnError>): RequestResult<CreateServiceObjectForOrgResponses, CreateServiceObjectForOrgErrors, ThrowOnError> => (options.client ?? client).post<CreateServiceObjectForOrgResponses, CreateServiceObjectForOrgErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreateServiceObjectForOrgResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/orgs/{org}/objects/service',
     ...options,
@@ -172,6 +187,7 @@ export const createServiceObjectForOrg = <ThrowOnError extends boolean = false>(
  * List object types (built-in + org-defined)
  */
 export const listObjectTypes = <ThrowOnError extends boolean = false>(options?: Options<ListObjectTypesData, ThrowOnError>): RequestResult<ListObjectTypesResponses, ListObjectTypesErrors, ThrowOnError> => (options?.client ?? client).get<ListObjectTypesResponses, ListObjectTypesErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListObjectTypesResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/type-registry/object-types',
     ...options
@@ -181,6 +197,7 @@ export const listObjectTypes = <ThrowOnError extends boolean = false>(options?: 
  * Register a custom object type
  */
 export const createObjectType = <ThrowOnError extends boolean = false>(options: Options<CreateObjectTypeData, ThrowOnError>): RequestResult<CreateObjectTypeResponses, CreateObjectTypeErrors, ThrowOnError> => (options.client ?? client).post<CreateObjectTypeResponses, CreateObjectTypeErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreateObjectTypeResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/type-registry/object-types',
     ...options,
@@ -194,6 +211,7 @@ export const createObjectType = <ThrowOnError extends boolean = false>(options: 
  * List relationship types (built-in + org-defined)
  */
 export const listRelationshipTypes = <ThrowOnError extends boolean = false>(options?: Options<ListRelationshipTypesData, ThrowOnError>): RequestResult<ListRelationshipTypesResponses, ListRelationshipTypesErrors, ThrowOnError> => (options?.client ?? client).get<ListRelationshipTypesResponses, ListRelationshipTypesErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListRelationshipTypesResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/type-registry/relationship-types',
     ...options
@@ -203,6 +221,7 @@ export const listRelationshipTypes = <ThrowOnError extends boolean = false>(opti
  * Register a custom relationship type
  */
 export const createRelationshipType = <ThrowOnError extends boolean = false>(options: Options<CreateRelationshipTypeData, ThrowOnError>): RequestResult<CreateRelationshipTypeResponses, CreateRelationshipTypeErrors, ThrowOnError> => (options.client ?? client).post<CreateRelationshipTypeResponses, CreateRelationshipTypeErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreateRelationshipTypeResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/type-registry/relationship-types',
     ...options,
@@ -216,6 +235,7 @@ export const createRelationshipType = <ThrowOnError extends boolean = false>(opt
  * List graph objects of a type
  */
 export const listObjects = <ThrowOnError extends boolean = false>(options: Options<ListObjectsData, ThrowOnError>): RequestResult<ListObjectsResponses, ListObjectsErrors, ThrowOnError> => (options.client ?? client).get<ListObjectsResponses, ListObjectsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListObjectsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/objects/{type}',
     ...options
@@ -225,6 +245,7 @@ export const listObjects = <ThrowOnError extends boolean = false>(options: Optio
  * Create a graph object
  */
 export const createObject = <ThrowOnError extends boolean = false>(options: Options<CreateObjectData, ThrowOnError>): RequestResult<CreateObjectResponses, CreateObjectErrors, ThrowOnError> => (options.client ?? client).post<CreateObjectResponses, CreateObjectErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreateObjectResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/objects/{type}',
     ...options,
@@ -238,6 +259,7 @@ export const createObject = <ThrowOnError extends boolean = false>(options: Opti
  * Soft-delete a graph object
  */
 export const deleteObject = <ThrowOnError extends boolean = false>(options: Options<DeleteObjectData, ThrowOnError>): RequestResult<DeleteObjectResponses, DeleteObjectErrors, ThrowOnError> => (options.client ?? client).delete<DeleteObjectResponses, DeleteObjectErrors, ThrowOnError>({
+    responseValidator: async (data) => await zDeleteObjectResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/objects/{type}/{idOrUrn}',
     ...options
@@ -247,6 +269,7 @@ export const deleteObject = <ThrowOnError extends boolean = false>(options: Opti
  * Get a graph object by id or URN
  */
 export const getObject = <ThrowOnError extends boolean = false>(options: Options<GetObjectData, ThrowOnError>): RequestResult<GetObjectResponses, GetObjectErrors, ThrowOnError> => (options.client ?? client).get<GetObjectResponses, GetObjectErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetObjectResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/objects/{type}/{idOrUrn}',
     ...options
@@ -256,6 +279,7 @@ export const getObject = <ThrowOnError extends boolean = false>(options: Options
  * Partially update a graph object
  */
 export const updateObject = <ThrowOnError extends boolean = false>(options: Options<UpdateObjectData, ThrowOnError>): RequestResult<UpdateObjectResponses, UpdateObjectErrors, ThrowOnError> => (options.client ?? client).patch<UpdateObjectResponses, UpdateObjectErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpdateObjectResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/objects/{type}/{idOrUrn}',
     ...options,
@@ -269,6 +293,7 @@ export const updateObject = <ThrowOnError extends boolean = false>(options: Opti
  * Idempotent upsert-by-URN
  */
 export const upsertObjectByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertObjectByUrnData, ThrowOnError>): RequestResult<UpsertObjectByUrnResponses, UpsertObjectByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertObjectByUrnResponses, UpsertObjectByUrnErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpsertObjectByUrnResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/objects/{type}/{urn}',
     ...options,
@@ -282,6 +307,7 @@ export const upsertObjectByUrn = <ThrowOnError extends boolean = false>(options:
  * List relationships
  */
 export const listRelationships = <ThrowOnError extends boolean = false>(options?: Options<ListRelationshipsData, ThrowOnError>): RequestResult<ListRelationshipsResponses, ListRelationshipsErrors, ThrowOnError> => (options?.client ?? client).get<ListRelationshipsResponses, ListRelationshipsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListRelationshipsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/relationships',
     ...options
@@ -291,6 +317,7 @@ export const listRelationships = <ThrowOnError extends boolean = false>(options?
  * Create a relationship
  */
 export const createRelationship = <ThrowOnError extends boolean = false>(options: Options<CreateRelationshipData, ThrowOnError>): RequestResult<CreateRelationshipResponses, CreateRelationshipErrors, ThrowOnError> => (options.client ?? client).post<CreateRelationshipResponses, CreateRelationshipErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreateRelationshipResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/relationships',
     ...options,
@@ -304,6 +331,7 @@ export const createRelationship = <ThrowOnError extends boolean = false>(options
  * Soft-delete a relationship
  */
 export const deleteRelationship = <ThrowOnError extends boolean = false>(options: Options<DeleteRelationshipData, ThrowOnError>): RequestResult<DeleteRelationshipResponses, DeleteRelationshipErrors, ThrowOnError> => (options.client ?? client).delete<DeleteRelationshipResponses, DeleteRelationshipErrors, ThrowOnError>({
+    responseValidator: async (data) => await zDeleteRelationshipResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/relationships/{id}',
     ...options
@@ -313,6 +341,7 @@ export const deleteRelationship = <ThrowOnError extends boolean = false>(options
  * Get a relationship by id
  */
 export const getRelationship = <ThrowOnError extends boolean = false>(options: Options<GetRelationshipData, ThrowOnError>): RequestResult<GetRelationshipResponses, GetRelationshipErrors, ThrowOnError> => (options.client ?? client).get<GetRelationshipResponses, GetRelationshipErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetRelationshipResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/relationships/{id}',
     ...options
@@ -322,6 +351,7 @@ export const getRelationship = <ThrowOnError extends boolean = false>(options: O
  * List domains objects
  */
 export const listDomains = <ThrowOnError extends boolean = false>(options?: Options<ListDomainsData, ThrowOnError>): RequestResult<ListDomainsResponses, ListDomainsErrors, ThrowOnError> => (options?.client ?? client).get<ListDomainsResponses, ListDomainsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListDomainsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/domains',
     ...options
@@ -331,6 +361,7 @@ export const listDomains = <ThrowOnError extends boolean = false>(options?: Opti
  * Create a domains object
  */
 export const createDomain = <ThrowOnError extends boolean = false>(options: Options<CreateDomainData, ThrowOnError>): RequestResult<CreateDomainResponses, CreateDomainErrors, ThrowOnError> => (options.client ?? client).post<CreateDomainResponses, CreateDomainErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreateDomainResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/domains',
     ...options,
@@ -344,6 +375,7 @@ export const createDomain = <ThrowOnError extends boolean = false>(options: Opti
  * Soft-delete a domains object
  */
 export const deleteDomain = <ThrowOnError extends boolean = false>(options: Options<DeleteDomainData, ThrowOnError>): RequestResult<DeleteDomainResponses, DeleteDomainErrors, ThrowOnError> => (options.client ?? client).delete<DeleteDomainResponses, DeleteDomainErrors, ThrowOnError>({
+    responseValidator: async (data) => await zDeleteDomainResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/domains/{idOrUrn}',
     ...options
@@ -353,6 +385,7 @@ export const deleteDomain = <ThrowOnError extends boolean = false>(options: Opti
  * Get a domains object by id or URN
  */
 export const getDomain = <ThrowOnError extends boolean = false>(options: Options<GetDomainData, ThrowOnError>): RequestResult<GetDomainResponses, GetDomainErrors, ThrowOnError> => (options.client ?? client).get<GetDomainResponses, GetDomainErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetDomainResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/domains/{idOrUrn}',
     ...options
@@ -362,6 +395,7 @@ export const getDomain = <ThrowOnError extends boolean = false>(options: Options
  * Partially update a domains object
  */
 export const updateDomain = <ThrowOnError extends boolean = false>(options: Options<UpdateDomainData, ThrowOnError>): RequestResult<UpdateDomainResponses, UpdateDomainErrors, ThrowOnError> => (options.client ?? client).patch<UpdateDomainResponses, UpdateDomainErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpdateDomainResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/domains/{idOrUrn}',
     ...options,
@@ -375,6 +409,7 @@ export const updateDomain = <ThrowOnError extends boolean = false>(options: Opti
  * Idempotent upsert-by-URN for a domains object
  */
 export const upsertDomainByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertDomainByUrnData, ThrowOnError>): RequestResult<UpsertDomainByUrnResponses, UpsertDomainByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertDomainByUrnResponses, UpsertDomainByUrnErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpsertDomainByUrnResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/domains/{urn}',
     ...options,
@@ -388,6 +423,7 @@ export const upsertDomainByUrn = <ThrowOnError extends boolean = false>(options:
  * List services objects
  */
 export const listServices = <ThrowOnError extends boolean = false>(options?: Options<ListServicesData, ThrowOnError>): RequestResult<ListServicesResponses, ListServicesErrors, ThrowOnError> => (options?.client ?? client).get<ListServicesResponses, ListServicesErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListServicesResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/services',
     ...options
@@ -397,6 +433,7 @@ export const listServices = <ThrowOnError extends boolean = false>(options?: Opt
  * Create a services object
  */
 export const createService = <ThrowOnError extends boolean = false>(options: Options<CreateServiceData, ThrowOnError>): RequestResult<CreateServiceResponses, CreateServiceErrors, ThrowOnError> => (options.client ?? client).post<CreateServiceResponses, CreateServiceErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreateServiceResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/services',
     ...options,
@@ -410,6 +447,7 @@ export const createService = <ThrowOnError extends boolean = false>(options: Opt
  * Soft-delete a services object
  */
 export const deleteService = <ThrowOnError extends boolean = false>(options: Options<DeleteServiceData, ThrowOnError>): RequestResult<DeleteServiceResponses, DeleteServiceErrors, ThrowOnError> => (options.client ?? client).delete<DeleteServiceResponses, DeleteServiceErrors, ThrowOnError>({
+    responseValidator: async (data) => await zDeleteServiceResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/services/{idOrUrn}',
     ...options
@@ -419,6 +457,7 @@ export const deleteService = <ThrowOnError extends boolean = false>(options: Opt
  * Get a services object by id or URN
  */
 export const getService = <ThrowOnError extends boolean = false>(options: Options<GetServiceData, ThrowOnError>): RequestResult<GetServiceResponses, GetServiceErrors, ThrowOnError> => (options.client ?? client).get<GetServiceResponses, GetServiceErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetServiceResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/services/{idOrUrn}',
     ...options
@@ -428,6 +467,7 @@ export const getService = <ThrowOnError extends boolean = false>(options: Option
  * Partially update a services object
  */
 export const updateService = <ThrowOnError extends boolean = false>(options: Options<UpdateServiceData, ThrowOnError>): RequestResult<UpdateServiceResponses, UpdateServiceErrors, ThrowOnError> => (options.client ?? client).patch<UpdateServiceResponses, UpdateServiceErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpdateServiceResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/services/{idOrUrn}',
     ...options,
@@ -441,6 +481,7 @@ export const updateService = <ThrowOnError extends boolean = false>(options: Opt
  * Idempotent upsert-by-URN for a services object
  */
 export const upsertServiceByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertServiceByUrnData, ThrowOnError>): RequestResult<UpsertServiceByUrnResponses, UpsertServiceByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertServiceByUrnResponses, UpsertServiceByUrnErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpsertServiceByUrnResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/services/{urn}',
     ...options,
@@ -454,6 +495,7 @@ export const upsertServiceByUrn = <ThrowOnError extends boolean = false>(options
  * List deployment targets objects
  */
 export const listDeploymentTargets = <ThrowOnError extends boolean = false>(options?: Options<ListDeploymentTargetsData, ThrowOnError>): RequestResult<ListDeploymentTargetsResponses, ListDeploymentTargetsErrors, ThrowOnError> => (options?.client ?? client).get<ListDeploymentTargetsResponses, ListDeploymentTargetsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListDeploymentTargetsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/deployment-targets',
     ...options
@@ -463,6 +505,7 @@ export const listDeploymentTargets = <ThrowOnError extends boolean = false>(opti
  * Create a deployment targets object
  */
 export const createDeploymentTarget = <ThrowOnError extends boolean = false>(options: Options<CreateDeploymentTargetData, ThrowOnError>): RequestResult<CreateDeploymentTargetResponses, CreateDeploymentTargetErrors, ThrowOnError> => (options.client ?? client).post<CreateDeploymentTargetResponses, CreateDeploymentTargetErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreateDeploymentTargetResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/deployment-targets',
     ...options,
@@ -476,6 +519,7 @@ export const createDeploymentTarget = <ThrowOnError extends boolean = false>(opt
  * Soft-delete a deployment targets object
  */
 export const deleteDeploymentTarget = <ThrowOnError extends boolean = false>(options: Options<DeleteDeploymentTargetData, ThrowOnError>): RequestResult<DeleteDeploymentTargetResponses, DeleteDeploymentTargetErrors, ThrowOnError> => (options.client ?? client).delete<DeleteDeploymentTargetResponses, DeleteDeploymentTargetErrors, ThrowOnError>({
+    responseValidator: async (data) => await zDeleteDeploymentTargetResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/deployment-targets/{idOrUrn}',
     ...options
@@ -485,6 +529,7 @@ export const deleteDeploymentTarget = <ThrowOnError extends boolean = false>(opt
  * Get a deployment targets object by id or URN
  */
 export const getDeploymentTarget = <ThrowOnError extends boolean = false>(options: Options<GetDeploymentTargetData, ThrowOnError>): RequestResult<GetDeploymentTargetResponses, GetDeploymentTargetErrors, ThrowOnError> => (options.client ?? client).get<GetDeploymentTargetResponses, GetDeploymentTargetErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetDeploymentTargetResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/deployment-targets/{idOrUrn}',
     ...options
@@ -494,6 +539,7 @@ export const getDeploymentTarget = <ThrowOnError extends boolean = false>(option
  * Partially update a deployment targets object
  */
 export const updateDeploymentTarget = <ThrowOnError extends boolean = false>(options: Options<UpdateDeploymentTargetData, ThrowOnError>): RequestResult<UpdateDeploymentTargetResponses, UpdateDeploymentTargetErrors, ThrowOnError> => (options.client ?? client).patch<UpdateDeploymentTargetResponses, UpdateDeploymentTargetErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpdateDeploymentTargetResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/deployment-targets/{idOrUrn}',
     ...options,
@@ -507,6 +553,7 @@ export const updateDeploymentTarget = <ThrowOnError extends boolean = false>(opt
  * Idempotent upsert-by-URN for a deployment targets object
  */
 export const upsertDeploymentTargetByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertDeploymentTargetByUrnData, ThrowOnError>): RequestResult<UpsertDeploymentTargetByUrnResponses, UpsertDeploymentTargetByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertDeploymentTargetByUrnResponses, UpsertDeploymentTargetByUrnErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpsertDeploymentTargetByUrnResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/deployment-targets/{urn}',
     ...options,
@@ -520,6 +567,7 @@ export const upsertDeploymentTargetByUrn = <ThrowOnError extends boolean = false
  * List teams objects
  */
 export const listTeams = <ThrowOnError extends boolean = false>(options?: Options<ListTeamsData, ThrowOnError>): RequestResult<ListTeamsResponses, ListTeamsErrors, ThrowOnError> => (options?.client ?? client).get<ListTeamsResponses, ListTeamsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListTeamsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/teams',
     ...options
@@ -529,6 +577,7 @@ export const listTeams = <ThrowOnError extends boolean = false>(options?: Option
  * Create a teams object
  */
 export const createTeam = <ThrowOnError extends boolean = false>(options: Options<CreateTeamData, ThrowOnError>): RequestResult<CreateTeamResponses, CreateTeamErrors, ThrowOnError> => (options.client ?? client).post<CreateTeamResponses, CreateTeamErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreateTeamResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/teams',
     ...options,
@@ -542,6 +591,7 @@ export const createTeam = <ThrowOnError extends boolean = false>(options: Option
  * Soft-delete a teams object
  */
 export const deleteTeam = <ThrowOnError extends boolean = false>(options: Options<DeleteTeamData, ThrowOnError>): RequestResult<DeleteTeamResponses, DeleteTeamErrors, ThrowOnError> => (options.client ?? client).delete<DeleteTeamResponses, DeleteTeamErrors, ThrowOnError>({
+    responseValidator: async (data) => await zDeleteTeamResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/teams/{idOrUrn}',
     ...options
@@ -551,6 +601,7 @@ export const deleteTeam = <ThrowOnError extends boolean = false>(options: Option
  * Get a teams object by id or URN
  */
 export const getTeam = <ThrowOnError extends boolean = false>(options: Options<GetTeamData, ThrowOnError>): RequestResult<GetTeamResponses, GetTeamErrors, ThrowOnError> => (options.client ?? client).get<GetTeamResponses, GetTeamErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetTeamResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/teams/{idOrUrn}',
     ...options
@@ -560,6 +611,7 @@ export const getTeam = <ThrowOnError extends boolean = false>(options: Options<G
  * Partially update a teams object
  */
 export const updateTeam = <ThrowOnError extends boolean = false>(options: Options<UpdateTeamData, ThrowOnError>): RequestResult<UpdateTeamResponses, UpdateTeamErrors, ThrowOnError> => (options.client ?? client).patch<UpdateTeamResponses, UpdateTeamErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpdateTeamResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/teams/{idOrUrn}',
     ...options,
@@ -573,6 +625,7 @@ export const updateTeam = <ThrowOnError extends boolean = false>(options: Option
  * Idempotent upsert-by-URN for a teams object
  */
 export const upsertTeamByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertTeamByUrnData, ThrowOnError>): RequestResult<UpsertTeamByUrnResponses, UpsertTeamByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertTeamByUrnResponses, UpsertTeamByUrnErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpsertTeamByUrnResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/teams/{urn}',
     ...options,
@@ -586,6 +639,7 @@ export const upsertTeamByUrn = <ThrowOnError extends boolean = false>(options: O
  * List groups objects
  */
 export const listGroups = <ThrowOnError extends boolean = false>(options?: Options<ListGroupsData, ThrowOnError>): RequestResult<ListGroupsResponses, ListGroupsErrors, ThrowOnError> => (options?.client ?? client).get<ListGroupsResponses, ListGroupsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListGroupsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/groups',
     ...options
@@ -595,6 +649,7 @@ export const listGroups = <ThrowOnError extends boolean = false>(options?: Optio
  * Create a groups object
  */
 export const createGroup = <ThrowOnError extends boolean = false>(options: Options<CreateGroupData, ThrowOnError>): RequestResult<CreateGroupResponses, CreateGroupErrors, ThrowOnError> => (options.client ?? client).post<CreateGroupResponses, CreateGroupErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreateGroupResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/groups',
     ...options,
@@ -608,6 +663,7 @@ export const createGroup = <ThrowOnError extends boolean = false>(options: Optio
  * Soft-delete a groups object
  */
 export const deleteGroup = <ThrowOnError extends boolean = false>(options: Options<DeleteGroupData, ThrowOnError>): RequestResult<DeleteGroupResponses, DeleteGroupErrors, ThrowOnError> => (options.client ?? client).delete<DeleteGroupResponses, DeleteGroupErrors, ThrowOnError>({
+    responseValidator: async (data) => await zDeleteGroupResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/groups/{idOrUrn}',
     ...options
@@ -617,6 +673,7 @@ export const deleteGroup = <ThrowOnError extends boolean = false>(options: Optio
  * Get a groups object by id or URN
  */
 export const getGroup = <ThrowOnError extends boolean = false>(options: Options<GetGroupData, ThrowOnError>): RequestResult<GetGroupResponses, GetGroupErrors, ThrowOnError> => (options.client ?? client).get<GetGroupResponses, GetGroupErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetGroupResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/groups/{idOrUrn}',
     ...options
@@ -626,6 +683,7 @@ export const getGroup = <ThrowOnError extends boolean = false>(options: Options<
  * Partially update a groups object
  */
 export const updateGroup = <ThrowOnError extends boolean = false>(options: Options<UpdateGroupData, ThrowOnError>): RequestResult<UpdateGroupResponses, UpdateGroupErrors, ThrowOnError> => (options.client ?? client).patch<UpdateGroupResponses, UpdateGroupErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpdateGroupResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/groups/{idOrUrn}',
     ...options,
@@ -639,6 +697,7 @@ export const updateGroup = <ThrowOnError extends boolean = false>(options: Optio
  * Idempotent upsert-by-URN for a groups object
  */
 export const upsertGroupByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertGroupByUrnData, ThrowOnError>): RequestResult<UpsertGroupByUrnResponses, UpsertGroupByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertGroupByUrnResponses, UpsertGroupByUrnErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpsertGroupByUrnResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/groups/{urn}',
     ...options,
@@ -652,6 +711,7 @@ export const upsertGroupByUrn = <ThrowOnError extends boolean = false>(options: 
  * List users objects
  */
 export const listUsers = <ThrowOnError extends boolean = false>(options?: Options<ListUsersData, ThrowOnError>): RequestResult<ListUsersResponses, ListUsersErrors, ThrowOnError> => (options?.client ?? client).get<ListUsersResponses, ListUsersErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListUsersResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/users',
     ...options
@@ -661,6 +721,7 @@ export const listUsers = <ThrowOnError extends boolean = false>(options?: Option
  * Create a users object
  */
 export const createUser = <ThrowOnError extends boolean = false>(options: Options<CreateUserData, ThrowOnError>): RequestResult<CreateUserResponses, CreateUserErrors, ThrowOnError> => (options.client ?? client).post<CreateUserResponses, CreateUserErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreateUserResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/users',
     ...options,
@@ -674,6 +735,7 @@ export const createUser = <ThrowOnError extends boolean = false>(options: Option
  * Soft-delete a users object
  */
 export const deleteUser = <ThrowOnError extends boolean = false>(options: Options<DeleteUserData, ThrowOnError>): RequestResult<DeleteUserResponses, DeleteUserErrors, ThrowOnError> => (options.client ?? client).delete<DeleteUserResponses, DeleteUserErrors, ThrowOnError>({
+    responseValidator: async (data) => await zDeleteUserResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/users/{idOrUrn}',
     ...options
@@ -683,6 +745,7 @@ export const deleteUser = <ThrowOnError extends boolean = false>(options: Option
  * Get a users object by id or URN
  */
 export const getUser = <ThrowOnError extends boolean = false>(options: Options<GetUserData, ThrowOnError>): RequestResult<GetUserResponses, GetUserErrors, ThrowOnError> => (options.client ?? client).get<GetUserResponses, GetUserErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetUserResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/users/{idOrUrn}',
     ...options
@@ -692,6 +755,7 @@ export const getUser = <ThrowOnError extends boolean = false>(options: Options<G
  * Partially update a users object
  */
 export const updateUser = <ThrowOnError extends boolean = false>(options: Options<UpdateUserData, ThrowOnError>): RequestResult<UpdateUserResponses, UpdateUserErrors, ThrowOnError> => (options.client ?? client).patch<UpdateUserResponses, UpdateUserErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpdateUserResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/users/{idOrUrn}',
     ...options,
@@ -705,6 +769,7 @@ export const updateUser = <ThrowOnError extends boolean = false>(options: Option
  * Idempotent upsert-by-URN for a users object
  */
 export const upsertUserByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertUserByUrnData, ThrowOnError>): RequestResult<UpsertUserByUrnResponses, UpsertUserByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertUserByUrnResponses, UpsertUserByUrnErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpsertUserByUrnResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/users/{urn}',
     ...options,
@@ -718,6 +783,7 @@ export const upsertUserByUrn = <ThrowOnError extends boolean = false>(options: O
  * List service accounts objects
  */
 export const listServiceAccounts = <ThrowOnError extends boolean = false>(options?: Options<ListServiceAccountsData, ThrowOnError>): RequestResult<ListServiceAccountsResponses, ListServiceAccountsErrors, ThrowOnError> => (options?.client ?? client).get<ListServiceAccountsResponses, ListServiceAccountsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListServiceAccountsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/service-accounts',
     ...options
@@ -727,6 +793,7 @@ export const listServiceAccounts = <ThrowOnError extends boolean = false>(option
  * Create a service accounts object
  */
 export const createServiceAccount = <ThrowOnError extends boolean = false>(options: Options<CreateServiceAccountData, ThrowOnError>): RequestResult<CreateServiceAccountResponses, CreateServiceAccountErrors, ThrowOnError> => (options.client ?? client).post<CreateServiceAccountResponses, CreateServiceAccountErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreateServiceAccountResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/service-accounts',
     ...options,
@@ -740,6 +807,7 @@ export const createServiceAccount = <ThrowOnError extends boolean = false>(optio
  * Soft-delete a service accounts object
  */
 export const deleteServiceAccount = <ThrowOnError extends boolean = false>(options: Options<DeleteServiceAccountData, ThrowOnError>): RequestResult<DeleteServiceAccountResponses, DeleteServiceAccountErrors, ThrowOnError> => (options.client ?? client).delete<DeleteServiceAccountResponses, DeleteServiceAccountErrors, ThrowOnError>({
+    responseValidator: async (data) => await zDeleteServiceAccountResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/service-accounts/{idOrUrn}',
     ...options
@@ -749,6 +817,7 @@ export const deleteServiceAccount = <ThrowOnError extends boolean = false>(optio
  * Get a service accounts object by id or URN
  */
 export const getServiceAccount = <ThrowOnError extends boolean = false>(options: Options<GetServiceAccountData, ThrowOnError>): RequestResult<GetServiceAccountResponses, GetServiceAccountErrors, ThrowOnError> => (options.client ?? client).get<GetServiceAccountResponses, GetServiceAccountErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetServiceAccountResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/service-accounts/{idOrUrn}',
     ...options
@@ -758,6 +827,7 @@ export const getServiceAccount = <ThrowOnError extends boolean = false>(options:
  * Partially update a service accounts object
  */
 export const updateServiceAccount = <ThrowOnError extends boolean = false>(options: Options<UpdateServiceAccountData, ThrowOnError>): RequestResult<UpdateServiceAccountResponses, UpdateServiceAccountErrors, ThrowOnError> => (options.client ?? client).patch<UpdateServiceAccountResponses, UpdateServiceAccountErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpdateServiceAccountResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/service-accounts/{idOrUrn}',
     ...options,
@@ -771,6 +841,7 @@ export const updateServiceAccount = <ThrowOnError extends boolean = false>(optio
  * Idempotent upsert-by-URN for a service accounts object
  */
 export const upsertServiceAccountByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertServiceAccountByUrnData, ThrowOnError>): RequestResult<UpsertServiceAccountByUrnResponses, UpsertServiceAccountByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertServiceAccountByUrnResponses, UpsertServiceAccountByUrnErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpsertServiceAccountByUrnResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/service-accounts/{urn}',
     ...options,
@@ -784,6 +855,7 @@ export const upsertServiceAccountByUrn = <ThrowOnError extends boolean = false>(
  * List component objects
  */
 export const listComponents = <ThrowOnError extends boolean = false>(options?: Options<ListComponentsData, ThrowOnError>): RequestResult<ListComponentsResponses, ListComponentsErrors, ThrowOnError> => (options?.client ?? client).get<ListComponentsResponses, ListComponentsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListComponentsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/components',
     ...options
@@ -793,6 +865,7 @@ export const listComponents = <ThrowOnError extends boolean = false>(options?: O
  * Create a component in a service (strict — the component and its containment edge are written atomically)
  */
 export const createComponent = <ThrowOnError extends boolean = false>(options: Options<CreateComponentData, ThrowOnError>): RequestResult<CreateComponentResponses, CreateComponentErrors, ThrowOnError> => (options.client ?? client).post<CreateComponentResponses, CreateComponentErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreateComponentResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/components',
     ...options,
@@ -806,6 +879,7 @@ export const createComponent = <ThrowOnError extends boolean = false>(options: O
  * Soft-delete a component
  */
 export const deleteComponent = <ThrowOnError extends boolean = false>(options: Options<DeleteComponentData, ThrowOnError>): RequestResult<DeleteComponentResponses, DeleteComponentErrors, ThrowOnError> => (options.client ?? client).delete<DeleteComponentResponses, DeleteComponentErrors, ThrowOnError>({
+    responseValidator: async (data) => await zDeleteComponentResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/components/{idOrUrn}',
     ...options
@@ -815,6 +889,7 @@ export const deleteComponent = <ThrowOnError extends boolean = false>(options: O
  * Get a component by id or URN
  */
 export const getComponent = <ThrowOnError extends boolean = false>(options: Options<GetComponentData, ThrowOnError>): RequestResult<GetComponentResponses, GetComponentErrors, ThrowOnError> => (options.client ?? client).get<GetComponentResponses, GetComponentErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetComponentResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/components/{idOrUrn}',
     ...options
@@ -824,6 +899,7 @@ export const getComponent = <ThrowOnError extends boolean = false>(options: Opti
  * Partially update a component
  */
 export const updateComponent = <ThrowOnError extends boolean = false>(options: Options<UpdateComponentData, ThrowOnError>): RequestResult<UpdateComponentResponses, UpdateComponentErrors, ThrowOnError> => (options.client ?? client).patch<UpdateComponentResponses, UpdateComponentErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpdateComponentResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/components/{idOrUrn}',
     ...options,
@@ -837,6 +913,7 @@ export const updateComponent = <ThrowOnError extends boolean = false>(options: O
  * Idempotent upsert-by-URN for a component (create branch requires a service)
  */
 export const upsertComponentByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertComponentByUrnData, ThrowOnError>): RequestResult<UpsertComponentByUrnResponses, UpsertComponentByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertComponentByUrnResponses, UpsertComponentByUrnErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpsertComponentByUrnResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/components/{urn}',
     ...options,
@@ -850,6 +927,7 @@ export const upsertComponentByUrn = <ThrowOnError extends boolean = false>(optio
  * Assign or move a component into a service (idempotent; atomic move — the old and new containment edges swap in one transaction)
  */
 export const setComponentService = <ThrowOnError extends boolean = false>(options: Options<SetComponentServiceData, ThrowOnError>): RequestResult<SetComponentServiceResponses, SetComponentServiceErrors, ThrowOnError> => (options.client ?? client).put<SetComponentServiceResponses, SetComponentServiceErrors, ThrowOnError>({
+    responseValidator: async (data) => await zSetComponentServiceResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/components/{idOrUrn}/service',
     ...options,
@@ -863,6 +941,7 @@ export const setComponentService = <ThrowOnError extends boolean = false>(option
  * Merge another (freshly-imported, binding-only) component into this one — moves its executor bindings here and soft-deletes it
  */
 export const mergeComponents = <ThrowOnError extends boolean = false>(options: Options<MergeComponentsData, ThrowOnError>): RequestResult<MergeComponentsResponses, MergeComponentsErrors, ThrowOnError> => (options.client ?? client).post<MergeComponentsResponses, MergeComponentsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zMergeComponentsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/components/{idOrUrn}/merge',
     ...options,
@@ -876,6 +955,7 @@ export const mergeComponents = <ThrowOnError extends boolean = false>(options: O
  * The service release board — its components, each's latest change per-wave status, and a releasing/blocked/stable summary
  */
 export const getServiceBoard = <ThrowOnError extends boolean = false>(options: Options<GetServiceBoardData, ThrowOnError>): RequestResult<GetServiceBoardResponses, GetServiceBoardErrors, ThrowOnError> => (options.client ?? client).get<GetServiceBoardResponses, GetServiceBoardErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetServiceBoardResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/services/{idOrUrn}/board',
     ...options
@@ -885,6 +965,7 @@ export const getServiceBoard = <ThrowOnError extends boolean = false>(options: O
  * List direct owners of a domains object
  */
 export const listDomainOwners = <ThrowOnError extends boolean = false>(options: Options<ListDomainOwnersData, ThrowOnError>): RequestResult<ListDomainOwnersResponses, ListDomainOwnersErrors, ThrowOnError> => (options.client ?? client).get<ListDomainOwnersResponses, ListDomainOwnersErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListDomainOwnersResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/domains/{idOrUrn}/owners',
     ...options
@@ -894,6 +975,7 @@ export const listDomainOwners = <ThrowOnError extends boolean = false>(options: 
  * Add an owner to a domains object
  */
 export const addDomainOwner = <ThrowOnError extends boolean = false>(options: Options<AddDomainOwnerData, ThrowOnError>): RequestResult<AddDomainOwnerResponses, AddDomainOwnerErrors, ThrowOnError> => (options.client ?? client).post<AddDomainOwnerResponses, AddDomainOwnerErrors, ThrowOnError>({
+    responseValidator: async (data) => await zAddDomainOwnerResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/domains/{idOrUrn}/owners',
     ...options,
@@ -907,6 +989,7 @@ export const addDomainOwner = <ThrowOnError extends boolean = false>(options: Op
  * Remove an owner from a domains object
  */
 export const removeDomainOwner = <ThrowOnError extends boolean = false>(options: Options<RemoveDomainOwnerData, ThrowOnError>): RequestResult<RemoveDomainOwnerResponses, RemoveDomainOwnerErrors, ThrowOnError> => (options.client ?? client).delete<RemoveDomainOwnerResponses, RemoveDomainOwnerErrors, ThrowOnError>({
+    responseValidator: async (data) => await zRemoveDomainOwnerResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/domains/{idOrUrn}/owners/{ownerIdOrUrn}',
     ...options
@@ -916,6 +999,7 @@ export const removeDomainOwner = <ThrowOnError extends boolean = false>(options:
  * List direct owners of a services object
  */
 export const listServiceOwners = <ThrowOnError extends boolean = false>(options: Options<ListServiceOwnersData, ThrowOnError>): RequestResult<ListServiceOwnersResponses, ListServiceOwnersErrors, ThrowOnError> => (options.client ?? client).get<ListServiceOwnersResponses, ListServiceOwnersErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListServiceOwnersResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/services/{idOrUrn}/owners',
     ...options
@@ -925,6 +1009,7 @@ export const listServiceOwners = <ThrowOnError extends boolean = false>(options:
  * Add an owner to a services object
  */
 export const addServiceOwner = <ThrowOnError extends boolean = false>(options: Options<AddServiceOwnerData, ThrowOnError>): RequestResult<AddServiceOwnerResponses, AddServiceOwnerErrors, ThrowOnError> => (options.client ?? client).post<AddServiceOwnerResponses, AddServiceOwnerErrors, ThrowOnError>({
+    responseValidator: async (data) => await zAddServiceOwnerResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/services/{idOrUrn}/owners',
     ...options,
@@ -938,6 +1023,7 @@ export const addServiceOwner = <ThrowOnError extends boolean = false>(options: O
  * Remove an owner from a services object
  */
 export const removeServiceOwner = <ThrowOnError extends boolean = false>(options: Options<RemoveServiceOwnerData, ThrowOnError>): RequestResult<RemoveServiceOwnerResponses, RemoveServiceOwnerErrors, ThrowOnError> => (options.client ?? client).delete<RemoveServiceOwnerResponses, RemoveServiceOwnerErrors, ThrowOnError>({
+    responseValidator: async (data) => await zRemoveServiceOwnerResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/services/{idOrUrn}/owners/{ownerIdOrUrn}',
     ...options
@@ -947,6 +1033,7 @@ export const removeServiceOwner = <ThrowOnError extends boolean = false>(options
  * List direct owners of a components object
  */
 export const listComponentOwners = <ThrowOnError extends boolean = false>(options: Options<ListComponentOwnersData, ThrowOnError>): RequestResult<ListComponentOwnersResponses, ListComponentOwnersErrors, ThrowOnError> => (options.client ?? client).get<ListComponentOwnersResponses, ListComponentOwnersErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListComponentOwnersResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/components/{idOrUrn}/owners',
     ...options
@@ -956,6 +1043,7 @@ export const listComponentOwners = <ThrowOnError extends boolean = false>(option
  * Add an owner to a components object
  */
 export const addComponentOwner = <ThrowOnError extends boolean = false>(options: Options<AddComponentOwnerData, ThrowOnError>): RequestResult<AddComponentOwnerResponses, AddComponentOwnerErrors, ThrowOnError> => (options.client ?? client).post<AddComponentOwnerResponses, AddComponentOwnerErrors, ThrowOnError>({
+    responseValidator: async (data) => await zAddComponentOwnerResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/components/{idOrUrn}/owners',
     ...options,
@@ -969,6 +1057,7 @@ export const addComponentOwner = <ThrowOnError extends boolean = false>(options:
  * Remove an owner from a components object
  */
 export const removeComponentOwner = <ThrowOnError extends boolean = false>(options: Options<RemoveComponentOwnerData, ThrowOnError>): RequestResult<RemoveComponentOwnerResponses, RemoveComponentOwnerErrors, ThrowOnError> => (options.client ?? client).delete<RemoveComponentOwnerResponses, RemoveComponentOwnerErrors, ThrowOnError>({
+    responseValidator: async (data) => await zRemoveComponentOwnerResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/components/{idOrUrn}/owners/{ownerIdOrUrn}',
     ...options
@@ -978,6 +1067,7 @@ export const removeComponentOwner = <ThrowOnError extends boolean = false>(optio
  * List direct owners of a deployment targets object
  */
 export const listDeploymentTargetOwners = <ThrowOnError extends boolean = false>(options: Options<ListDeploymentTargetOwnersData, ThrowOnError>): RequestResult<ListDeploymentTargetOwnersResponses, ListDeploymentTargetOwnersErrors, ThrowOnError> => (options.client ?? client).get<ListDeploymentTargetOwnersResponses, ListDeploymentTargetOwnersErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListDeploymentTargetOwnersResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/deployment-targets/{idOrUrn}/owners',
     ...options
@@ -987,6 +1077,7 @@ export const listDeploymentTargetOwners = <ThrowOnError extends boolean = false>
  * Add an owner to a deployment targets object
  */
 export const addDeploymentTargetOwner = <ThrowOnError extends boolean = false>(options: Options<AddDeploymentTargetOwnerData, ThrowOnError>): RequestResult<AddDeploymentTargetOwnerResponses, AddDeploymentTargetOwnerErrors, ThrowOnError> => (options.client ?? client).post<AddDeploymentTargetOwnerResponses, AddDeploymentTargetOwnerErrors, ThrowOnError>({
+    responseValidator: async (data) => await zAddDeploymentTargetOwnerResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/deployment-targets/{idOrUrn}/owners',
     ...options,
@@ -1000,6 +1091,7 @@ export const addDeploymentTargetOwner = <ThrowOnError extends boolean = false>(o
  * Remove an owner from a deployment targets object
  */
 export const removeDeploymentTargetOwner = <ThrowOnError extends boolean = false>(options: Options<RemoveDeploymentTargetOwnerData, ThrowOnError>): RequestResult<RemoveDeploymentTargetOwnerResponses, RemoveDeploymentTargetOwnerErrors, ThrowOnError> => (options.client ?? client).delete<RemoveDeploymentTargetOwnerResponses, RemoveDeploymentTargetOwnerErrors, ThrowOnError>({
+    responseValidator: async (data) => await zRemoveDeploymentTargetOwnerResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/deployment-targets/{idOrUrn}/owners/{ownerIdOrUrn}',
     ...options
@@ -1009,6 +1101,7 @@ export const removeDeploymentTargetOwner = <ThrowOnError extends boolean = false
  * List direct outgoing 'consumes' edges from a services object
  */
 export const listServiceConsumes = <ThrowOnError extends boolean = false>(options: Options<ListServiceConsumesData, ThrowOnError>): RequestResult<ListServiceConsumesResponses, ListServiceConsumesErrors, ThrowOnError> => (options.client ?? client).get<ListServiceConsumesResponses, ListServiceConsumesErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListServiceConsumesResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/services/{idOrUrn}/consumes',
     ...options
@@ -1018,6 +1111,7 @@ export const listServiceConsumes = <ThrowOnError extends boolean = false>(option
  * Add a 'consumes' edge from a services object
  */
 export const addServiceConsumes = <ThrowOnError extends boolean = false>(options: Options<AddServiceConsumesData, ThrowOnError>): RequestResult<AddServiceConsumesResponses, AddServiceConsumesErrors, ThrowOnError> => (options.client ?? client).post<AddServiceConsumesResponses, AddServiceConsumesErrors, ThrowOnError>({
+    responseValidator: async (data) => await zAddServiceConsumesResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/services/{idOrUrn}/consumes',
     ...options,
@@ -1031,6 +1125,7 @@ export const addServiceConsumes = <ThrowOnError extends boolean = false>(options
  * Remove a 'consumes' edge from a services object
  */
 export const removeServiceConsumes = <ThrowOnError extends boolean = false>(options: Options<RemoveServiceConsumesData, ThrowOnError>): RequestResult<RemoveServiceConsumesResponses, RemoveServiceConsumesErrors, ThrowOnError> => (options.client ?? client).delete<RemoveServiceConsumesResponses, RemoveServiceConsumesErrors, ThrowOnError>({
+    responseValidator: async (data) => await zRemoveServiceConsumesResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/services/{idOrUrn}/consumes/{targetIdOrUrn}',
     ...options
@@ -1040,6 +1135,7 @@ export const removeServiceConsumes = <ThrowOnError extends boolean = false>(opti
  * List direct outgoing 'depends_on' edges from a services object
  */
 export const listServiceDependsOn = <ThrowOnError extends boolean = false>(options: Options<ListServiceDependsOnData, ThrowOnError>): RequestResult<ListServiceDependsOnResponses, ListServiceDependsOnErrors, ThrowOnError> => (options.client ?? client).get<ListServiceDependsOnResponses, ListServiceDependsOnErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListServiceDependsOnResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/services/{idOrUrn}/depends-on',
     ...options
@@ -1049,6 +1145,7 @@ export const listServiceDependsOn = <ThrowOnError extends boolean = false>(optio
  * Add a 'depends_on' edge from a services object
  */
 export const addServiceDependsOn = <ThrowOnError extends boolean = false>(options: Options<AddServiceDependsOnData, ThrowOnError>): RequestResult<AddServiceDependsOnResponses, AddServiceDependsOnErrors, ThrowOnError> => (options.client ?? client).post<AddServiceDependsOnResponses, AddServiceDependsOnErrors, ThrowOnError>({
+    responseValidator: async (data) => await zAddServiceDependsOnResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/services/{idOrUrn}/depends-on',
     ...options,
@@ -1062,6 +1159,7 @@ export const addServiceDependsOn = <ThrowOnError extends boolean = false>(option
  * Remove a 'depends_on' edge from a services object
  */
 export const removeServiceDependsOn = <ThrowOnError extends boolean = false>(options: Options<RemoveServiceDependsOnData, ThrowOnError>): RequestResult<RemoveServiceDependsOnResponses, RemoveServiceDependsOnErrors, ThrowOnError> => (options.client ?? client).delete<RemoveServiceDependsOnResponses, RemoveServiceDependsOnErrors, ThrowOnError>({
+    responseValidator: async (data) => await zRemoveServiceDependsOnResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/services/{idOrUrn}/depends-on/{targetIdOrUrn}',
     ...options
@@ -1071,6 +1169,7 @@ export const removeServiceDependsOn = <ThrowOnError extends boolean = false>(opt
  * List direct outgoing 'consumes' edges from a components object
  */
 export const listComponentConsumes = <ThrowOnError extends boolean = false>(options: Options<ListComponentConsumesData, ThrowOnError>): RequestResult<ListComponentConsumesResponses, ListComponentConsumesErrors, ThrowOnError> => (options.client ?? client).get<ListComponentConsumesResponses, ListComponentConsumesErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListComponentConsumesResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/components/{idOrUrn}/consumes',
     ...options
@@ -1080,6 +1179,7 @@ export const listComponentConsumes = <ThrowOnError extends boolean = false>(opti
  * Add a 'consumes' edge from a components object
  */
 export const addComponentConsumes = <ThrowOnError extends boolean = false>(options: Options<AddComponentConsumesData, ThrowOnError>): RequestResult<AddComponentConsumesResponses, AddComponentConsumesErrors, ThrowOnError> => (options.client ?? client).post<AddComponentConsumesResponses, AddComponentConsumesErrors, ThrowOnError>({
+    responseValidator: async (data) => await zAddComponentConsumesResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/components/{idOrUrn}/consumes',
     ...options,
@@ -1093,6 +1193,7 @@ export const addComponentConsumes = <ThrowOnError extends boolean = false>(optio
  * Remove a 'consumes' edge from a components object
  */
 export const removeComponentConsumes = <ThrowOnError extends boolean = false>(options: Options<RemoveComponentConsumesData, ThrowOnError>): RequestResult<RemoveComponentConsumesResponses, RemoveComponentConsumesErrors, ThrowOnError> => (options.client ?? client).delete<RemoveComponentConsumesResponses, RemoveComponentConsumesErrors, ThrowOnError>({
+    responseValidator: async (data) => await zRemoveComponentConsumesResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/components/{idOrUrn}/consumes/{targetIdOrUrn}',
     ...options
@@ -1102,6 +1203,7 @@ export const removeComponentConsumes = <ThrowOnError extends boolean = false>(op
  * List direct outgoing 'depends_on' edges from a components object
  */
 export const listComponentDependsOn = <ThrowOnError extends boolean = false>(options: Options<ListComponentDependsOnData, ThrowOnError>): RequestResult<ListComponentDependsOnResponses, ListComponentDependsOnErrors, ThrowOnError> => (options.client ?? client).get<ListComponentDependsOnResponses, ListComponentDependsOnErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListComponentDependsOnResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/components/{idOrUrn}/depends-on',
     ...options
@@ -1111,6 +1213,7 @@ export const listComponentDependsOn = <ThrowOnError extends boolean = false>(opt
  * Add a 'depends_on' edge from a components object
  */
 export const addComponentDependsOn = <ThrowOnError extends boolean = false>(options: Options<AddComponentDependsOnData, ThrowOnError>): RequestResult<AddComponentDependsOnResponses, AddComponentDependsOnErrors, ThrowOnError> => (options.client ?? client).post<AddComponentDependsOnResponses, AddComponentDependsOnErrors, ThrowOnError>({
+    responseValidator: async (data) => await zAddComponentDependsOnResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/components/{idOrUrn}/depends-on',
     ...options,
@@ -1124,6 +1227,7 @@ export const addComponentDependsOn = <ThrowOnError extends boolean = false>(opti
  * Remove a 'depends_on' edge from a components object
  */
 export const removeComponentDependsOn = <ThrowOnError extends boolean = false>(options: Options<RemoveComponentDependsOnData, ThrowOnError>): RequestResult<RemoveComponentDependsOnResponses, RemoveComponentDependsOnErrors, ThrowOnError> => (options.client ?? client).delete<RemoveComponentDependsOnResponses, RemoveComponentDependsOnErrors, ThrowOnError>({
+    responseValidator: async (data) => await zRemoveComponentDependsOnResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/components/{idOrUrn}/depends-on/{targetIdOrUrn}',
     ...options
@@ -1133,6 +1237,7 @@ export const removeComponentDependsOn = <ThrowOnError extends boolean = false>(o
  * Run a named graph query
  */
 export const graphQuery = <ThrowOnError extends boolean = false>(options: Options<GraphQueryData, ThrowOnError>): RequestResult<GraphQueryResponses, GraphQueryErrors, ThrowOnError> => (options.client ?? client).get<GraphQueryResponses, GraphQueryErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGraphQueryResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/graph/query/{name}',
     ...options
@@ -1142,6 +1247,7 @@ export const graphQuery = <ThrowOnError extends boolean = false>(options: Option
  * Bounded generic graph traversal
  */
 export const graphTraverse = <ThrowOnError extends boolean = false>(options: Options<GraphTraverseData, ThrowOnError>): RequestResult<GraphTraverseResponses, GraphTraverseErrors, ThrowOnError> => (options.client ?? client).get<GraphTraverseResponses, GraphTraverseErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGraphTraverseResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/graph/traverse',
     ...options
@@ -1151,6 +1257,7 @@ export const graphTraverse = <ThrowOnError extends boolean = false>(options: Opt
  * Induced-subgraph edges over an object-id set
  */
 export const graphSubgraph = <ThrowOnError extends boolean = false>(options: Options<GraphSubgraphData, ThrowOnError>): RequestResult<GraphSubgraphResponses, GraphSubgraphErrors, ThrowOnError> => (options.client ?? client).post<GraphSubgraphResponses, GraphSubgraphErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGraphSubgraphResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/graph/subgraph',
     ...options,
@@ -1164,6 +1271,7 @@ export const graphSubgraph = <ThrowOnError extends boolean = false>(options: Opt
  * List audit events (chain order)
  */
 export const listAuditEvents = <ThrowOnError extends boolean = false>(options?: Options<ListAuditEventsData, ThrowOnError>): RequestResult<ListAuditEventsResponses, ListAuditEventsErrors, ThrowOnError> => (options?.client ?? client).get<ListAuditEventsResponses, ListAuditEventsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListAuditEventsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/audit-events',
     ...options
@@ -1173,6 +1281,7 @@ export const listAuditEvents = <ThrowOnError extends boolean = false>(options?: 
  * Compute a desired-state diff against the graph and persist it as a plan
  */
 export const createPlan = <ThrowOnError extends boolean = false>(options: Options<CreatePlanData, ThrowOnError>): RequestResult<CreatePlanResponses, CreatePlanErrors, ThrowOnError> => (options.client ?? client).post<CreatePlanResponses, CreatePlanErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreatePlanResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/plans',
     ...options,
@@ -1186,6 +1295,7 @@ export const createPlan = <ThrowOnError extends boolean = false>(options: Option
  * Get a plan by id
  */
 export const getPlan = <ThrowOnError extends boolean = false>(options: Options<GetPlanData, ThrowOnError>): RequestResult<GetPlanResponses, GetPlanErrors, ThrowOnError> => (options.client ?? client).get<GetPlanResponses, GetPlanErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetPlanResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/plans/{id}',
     ...options
@@ -1195,6 +1305,7 @@ export const getPlan = <ThrowOnError extends boolean = false>(options: Options<G
  * Apply a pending plan transactionally (create/update/delete objects + relationships)
  */
 export const applyPlan = <ThrowOnError extends boolean = false>(options: Options<ApplyPlanData, ThrowOnError>): RequestResult<ApplyPlanResponses, ApplyPlanErrors, ThrowOnError> => (options.client ?? client).post<ApplyPlanResponses, ApplyPlanErrors, ThrowOnError>({
+    responseValidator: async (data) => await zApplyPlanResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/plans/{id}/apply',
     ...options
@@ -1204,6 +1315,7 @@ export const applyPlan = <ThrowOnError extends boolean = false>(options: Options
  * List changes
  */
 export const listChanges = <ThrowOnError extends boolean = false>(options?: Options<ListChangesData, ThrowOnError>): RequestResult<ListChangesResponses, ListChangesErrors, ThrowOnError> => (options?.client ?? client).get<ListChangesResponses, ListChangesErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListChangesResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/changes',
     ...options
@@ -1213,6 +1325,7 @@ export const listChanges = <ThrowOnError extends boolean = false>(options?: Opti
  * Propose a Change against one or more targets (entry point of the lifecycle)
  */
 export const proposeChange = <ThrowOnError extends boolean = false>(options: Options<ProposeChangeData, ThrowOnError>): RequestResult<ProposeChangeResponses, ProposeChangeErrors, ThrowOnError> => (options.client ?? client).post<ProposeChangeResponses, ProposeChangeErrors, ThrowOnError>({
+    responseValidator: async (data) => await zProposeChangeResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/changes',
     ...options,
@@ -1226,6 +1339,7 @@ export const proposeChange = <ThrowOnError extends boolean = false>(options: Opt
  * Get a change by id
  */
 export const getChange = <ThrowOnError extends boolean = false>(options: Options<GetChangeData, ThrowOnError>): RequestResult<GetChangeResponses, GetChangeErrors, ThrowOnError> => (options.client ?? client).get<GetChangeResponses, GetChangeErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetChangeResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/changes/{id}',
     ...options
@@ -1235,6 +1349,7 @@ export const getChange = <ThrowOnError extends boolean = false>(options: Options
  * The change, its compiled plan (if any), and every Decision made about it
  */
 export const explainChange = <ThrowOnError extends boolean = false>(options: Options<ExplainChangeData, ThrowOnError>): RequestResult<ExplainChangeResponses, ExplainChangeErrors, ThrowOnError> => (options.client ?? client).get<ExplainChangeResponses, ExplainChangeErrors, ThrowOnError>({
+    responseValidator: async (data) => await zExplainChangeResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/changes/{id}/explain',
     ...options
@@ -1244,6 +1359,7 @@ export const explainChange = <ThrowOnError extends boolean = false>(options: Opt
  * Cancel a change
  */
 export const cancelChange = <ThrowOnError extends boolean = false>(options: Options<CancelChangeData, ThrowOnError>): RequestResult<CancelChangeResponses, CancelChangeErrors, ThrowOnError> => (options.client ?? client).post<CancelChangeResponses, CancelChangeErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCancelChangeResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/changes/{id}/cancel',
     ...options,
@@ -1257,6 +1373,7 @@ export const cancelChange = <ThrowOnError extends boolean = false>(options: Opti
  * Accept a change out of `validating` — the human approval gate before `accepted`
  */
 export const acceptChange = <ThrowOnError extends boolean = false>(options: Options<AcceptChangeData, ThrowOnError>): RequestResult<AcceptChangeResponses, AcceptChangeErrors, ThrowOnError> => (options.client ?? client).post<AcceptChangeResponses, AcceptChangeErrors, ThrowOnError>({
+    responseValidator: async (data) => await zAcceptChangeResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/changes/{id}/accept',
     ...options,
@@ -1270,6 +1387,7 @@ export const acceptChange = <ThrowOnError extends boolean = false>(options: Opti
  * Manually trigger a rollback of a change — creates and returns a NEW Change (linked via rollbackOfObjectId) that executes through the same plan/wave machinery
  */
 export const rollbackChange = <ThrowOnError extends boolean = false>(options: Options<RollbackChangeData, ThrowOnError>): RequestResult<RollbackChangeResponses, RollbackChangeErrors, ThrowOnError> => (options.client ?? client).post<RollbackChangeResponses, RollbackChangeErrors, ThrowOnError>({
+    responseValidator: async (data) => await zRollbackChangeResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/changes/{id}/rollback',
     ...options,
@@ -1283,6 +1401,7 @@ export const rollbackChange = <ThrowOnError extends boolean = false>(options: Op
  * List Decision records
  */
 export const listDecisions = <ThrowOnError extends boolean = false>(options?: Options<ListDecisionsData, ThrowOnError>): RequestResult<ListDecisionsResponses, ListDecisionsErrors, ThrowOnError> => (options?.client ?? client).get<ListDecisionsResponses, ListDecisionsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListDecisionsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/decisions',
     ...options
@@ -1292,6 +1411,7 @@ export const listDecisions = <ThrowOnError extends boolean = false>(options?: Op
  * Get a Decision record by id
  */
 export const getDecision = <ThrowOnError extends boolean = false>(options: Options<GetDecisionData, ThrowOnError>): RequestResult<GetDecisionResponses, GetDecisionErrors, ThrowOnError> => (options.client ?? client).get<GetDecisionResponses, GetDecisionErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetDecisionResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/decisions/{id}',
     ...options
@@ -1301,6 +1421,7 @@ export const getDecision = <ThrowOnError extends boolean = false>(options: Optio
  * Persist a raw source-event payload (persist-then-process — coordination/webhook-processor.ts turns it into a Change on the next reconcile tick)
  */
 export const ingestChangeSourceWebhook = <ThrowOnError extends boolean = false>(options: Options<IngestChangeSourceWebhookData, ThrowOnError>): RequestResult<IngestChangeSourceWebhookResponses, IngestChangeSourceWebhookErrors, ThrowOnError> => (options.client ?? client).post<IngestChangeSourceWebhookResponses, IngestChangeSourceWebhookErrors, ThrowOnError>({
+    responseValidator: async (data) => await zIngestChangeSourceWebhookResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/change-sources/{sourceKind}/webhook',
     ...options,
@@ -1314,6 +1435,7 @@ export const ingestChangeSourceWebhook = <ThrowOnError extends boolean = false>(
  * Report a typed plan/apply result (DESIGN §12 Mode 1) — a first-party, PAT-authenticated, persist-then-process ingress; the typed counterpart to the raw /webhook route
  */
 export const reportChangeSource = <ThrowOnError extends boolean = false>(options: Options<ReportChangeSourceData, ThrowOnError>): RequestResult<ReportChangeSourceResponses, ReportChangeSourceErrors, ThrowOnError> => (options.client ?? client).post<ReportChangeSourceResponses, ReportChangeSourceErrors, ThrowOnError>({
+    responseValidator: async (data) => await zReportChangeSourceResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/change-sources/{sourceKind}/report',
     ...options,
@@ -1327,6 +1449,7 @@ export const reportChangeSource = <ThrowOnError extends boolean = false>(options
  * Configure (or rotate) this org+sourceKind's webhook HMAC signing secret
  */
 export const putChangeSourceWebhookSecret = <ThrowOnError extends boolean = false>(options: Options<PutChangeSourceWebhookSecretData, ThrowOnError>): RequestResult<PutChangeSourceWebhookSecretResponses, PutChangeSourceWebhookSecretErrors, ThrowOnError> => (options.client ?? client).put<PutChangeSourceWebhookSecretResponses, PutChangeSourceWebhookSecretErrors, ThrowOnError>({
+    responseValidator: async (data) => await zPutChangeSourceWebhookSecretResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/change-sources/{sourceKind}/webhook-secret',
     ...options,
@@ -1340,6 +1463,7 @@ export const putChangeSourceWebhookSecret = <ThrowOnError extends boolean = fals
  * List source_mappings for one source kind
  */
 export const listSourceMappings = <ThrowOnError extends boolean = false>(options: Options<ListSourceMappingsData, ThrowOnError>): RequestResult<ListSourceMappingsResponses, ListSourceMappingsErrors, ThrowOnError> => (options.client ?? client).get<ListSourceMappingsResponses, ListSourceMappingsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListSourceMappingsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/change-sources/{sourceKind}/mappings',
     ...options
@@ -1349,6 +1473,7 @@ export const listSourceMappings = <ThrowOnError extends boolean = false>(options
  * Bind a repo/path pattern for this source kind to a component (DESIGN §9.2 correlation)
  */
 export const createSourceMapping = <ThrowOnError extends boolean = false>(options: Options<CreateSourceMappingData, ThrowOnError>): RequestResult<CreateSourceMappingResponses, CreateSourceMappingErrors, ThrowOnError> => (options.client ?? client).post<CreateSourceMappingResponses, CreateSourceMappingErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreateSourceMappingResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/change-sources/{sourceKind}/mappings',
     ...options,
@@ -1362,6 +1487,7 @@ export const createSourceMapping = <ThrowOnError extends boolean = false>(option
  * List policies objects
  */
 export const listPolicys = <ThrowOnError extends boolean = false>(options?: Options<ListPolicysData, ThrowOnError>): RequestResult<ListPolicysResponses, ListPolicysErrors, ThrowOnError> => (options?.client ?? client).get<ListPolicysResponses, ListPolicysErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListPolicysResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/policies',
     ...options
@@ -1371,6 +1497,7 @@ export const listPolicys = <ThrowOnError extends boolean = false>(options?: Opti
  * Create a policies object
  */
 export const createPolicy = <ThrowOnError extends boolean = false>(options: Options<CreatePolicyData, ThrowOnError>): RequestResult<CreatePolicyResponses, CreatePolicyErrors, ThrowOnError> => (options.client ?? client).post<CreatePolicyResponses, CreatePolicyErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreatePolicyResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/policies',
     ...options,
@@ -1384,6 +1511,7 @@ export const createPolicy = <ThrowOnError extends boolean = false>(options: Opti
  * Soft-delete a policies object
  */
 export const deletePolicy = <ThrowOnError extends boolean = false>(options: Options<DeletePolicyData, ThrowOnError>): RequestResult<DeletePolicyResponses, DeletePolicyErrors, ThrowOnError> => (options.client ?? client).delete<DeletePolicyResponses, DeletePolicyErrors, ThrowOnError>({
+    responseValidator: async (data) => await zDeletePolicyResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/policies/{idOrUrn}',
     ...options
@@ -1393,6 +1521,7 @@ export const deletePolicy = <ThrowOnError extends boolean = false>(options: Opti
  * Get a policies object by id or URN
  */
 export const getPolicy = <ThrowOnError extends boolean = false>(options: Options<GetPolicyData, ThrowOnError>): RequestResult<GetPolicyResponses, GetPolicyErrors, ThrowOnError> => (options.client ?? client).get<GetPolicyResponses, GetPolicyErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetPolicyResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/policies/{idOrUrn}',
     ...options
@@ -1402,6 +1531,7 @@ export const getPolicy = <ThrowOnError extends boolean = false>(options: Options
  * Partially update a policies object
  */
 export const updatePolicy = <ThrowOnError extends boolean = false>(options: Options<UpdatePolicyData, ThrowOnError>): RequestResult<UpdatePolicyResponses, UpdatePolicyErrors, ThrowOnError> => (options.client ?? client).patch<UpdatePolicyResponses, UpdatePolicyErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpdatePolicyResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/policies/{idOrUrn}',
     ...options,
@@ -1415,6 +1545,7 @@ export const updatePolicy = <ThrowOnError extends boolean = false>(options: Opti
  * Idempotent upsert-by-URN for a policies object
  */
 export const upsertPolicyByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertPolicyByUrnData, ThrowOnError>): RequestResult<UpsertPolicyByUrnResponses, UpsertPolicyByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertPolicyByUrnResponses, UpsertPolicyByUrnErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpsertPolicyByUrnResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/policies/{urn}',
     ...options,
@@ -1428,6 +1559,7 @@ export const upsertPolicyByUrn = <ThrowOnError extends boolean = false>(options:
  * List controls objects
  */
 export const listControls = <ThrowOnError extends boolean = false>(options?: Options<ListControlsData, ThrowOnError>): RequestResult<ListControlsResponses, ListControlsErrors, ThrowOnError> => (options?.client ?? client).get<ListControlsResponses, ListControlsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListControlsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/controls',
     ...options
@@ -1437,6 +1569,7 @@ export const listControls = <ThrowOnError extends boolean = false>(options?: Opt
  * Create a controls object
  */
 export const createControl = <ThrowOnError extends boolean = false>(options: Options<CreateControlData, ThrowOnError>): RequestResult<CreateControlResponses, CreateControlErrors, ThrowOnError> => (options.client ?? client).post<CreateControlResponses, CreateControlErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreateControlResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/controls',
     ...options,
@@ -1450,6 +1583,7 @@ export const createControl = <ThrowOnError extends boolean = false>(options: Opt
  * Soft-delete a controls object
  */
 export const deleteControl = <ThrowOnError extends boolean = false>(options: Options<DeleteControlData, ThrowOnError>): RequestResult<DeleteControlResponses, DeleteControlErrors, ThrowOnError> => (options.client ?? client).delete<DeleteControlResponses, DeleteControlErrors, ThrowOnError>({
+    responseValidator: async (data) => await zDeleteControlResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/controls/{idOrUrn}',
     ...options
@@ -1459,6 +1593,7 @@ export const deleteControl = <ThrowOnError extends boolean = false>(options: Opt
  * Get a controls object by id or URN
  */
 export const getControl = <ThrowOnError extends boolean = false>(options: Options<GetControlData, ThrowOnError>): RequestResult<GetControlResponses, GetControlErrors, ThrowOnError> => (options.client ?? client).get<GetControlResponses, GetControlErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetControlResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/controls/{idOrUrn}',
     ...options
@@ -1468,6 +1603,7 @@ export const getControl = <ThrowOnError extends boolean = false>(options: Option
  * Partially update a controls object
  */
 export const updateControl = <ThrowOnError extends boolean = false>(options: Options<UpdateControlData, ThrowOnError>): RequestResult<UpdateControlResponses, UpdateControlErrors, ThrowOnError> => (options.client ?? client).patch<UpdateControlResponses, UpdateControlErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpdateControlResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/controls/{idOrUrn}',
     ...options,
@@ -1481,6 +1617,7 @@ export const updateControl = <ThrowOnError extends boolean = false>(options: Opt
  * Idempotent upsert-by-URN for a controls object
  */
 export const upsertControlByUrn = <ThrowOnError extends boolean = false>(options: Options<UpsertControlByUrnData, ThrowOnError>): RequestResult<UpsertControlByUrnResponses, UpsertControlByUrnErrors, ThrowOnError> => (options.client ?? client).put<UpsertControlByUrnResponses, UpsertControlByUrnErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpsertControlByUrnResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/controls/{urn}',
     ...options,
@@ -1494,6 +1631,7 @@ export const upsertControlByUrn = <ThrowOnError extends boolean = false>(options
  * Bind a Control to a ControlPlugin instance (DESIGN §10.2 — swapping the impl changes only this)
  */
 export const putControlBinding = <ThrowOnError extends boolean = false>(options: Options<PutControlBindingData, ThrowOnError>): RequestResult<PutControlBindingResponses, PutControlBindingErrors, ThrowOnError> => (options.client ?? client).put<PutControlBindingResponses, PutControlBindingErrors, ThrowOnError>({
+    responseValidator: async (data) => await zPutControlBindingResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/controls/{idOrUrn}/binding',
     ...options,
@@ -1507,6 +1645,7 @@ export const putControlBinding = <ThrowOnError extends boolean = false>(options:
  * List control run outcomes + evidence for a change (DESIGN §10.2/§10.4)
  */
 export const listChangeControlRuns = <ThrowOnError extends boolean = false>(options: Options<ListChangeControlRunsData, ThrowOnError>): RequestResult<ListChangeControlRunsResponses, ListChangeControlRunsErrors, ThrowOnError> => (options.client ?? client).get<ListChangeControlRunsResponses, ListChangeControlRunsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListChangeControlRunsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/changes/{idOrUrn}/control-runs',
     ...options
@@ -1516,6 +1655,7 @@ export const listChangeControlRuns = <ThrowOnError extends boolean = false>(opti
  * List approval requests, optionally filtered by change
  */
 export const listApprovals = <ThrowOnError extends boolean = false>(options?: Options<ListApprovalsData, ThrowOnError>): RequestResult<ListApprovalsResponses, ListApprovalsErrors, ThrowOnError> => (options?.client ?? client).get<ListApprovalsResponses, ListApprovalsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListApprovalsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/approvals',
     ...options
@@ -1525,6 +1665,7 @@ export const listApprovals = <ThrowOnError extends boolean = false>(options?: Op
  * Get an approval request by id
  */
 export const getApproval = <ThrowOnError extends boolean = false>(options: Options<GetApprovalData, ThrowOnError>): RequestResult<GetApprovalResponses, GetApprovalErrors, ThrowOnError> => (options.client ?? client).get<GetApprovalResponses, GetApprovalErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetApprovalResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/approvals/{id}',
     ...options
@@ -1534,6 +1675,7 @@ export const getApproval = <ThrowOnError extends boolean = false>(options: Optio
  * List votes cast on an approval request
  */
 export const listApprovalVotes = <ThrowOnError extends boolean = false>(options: Options<ListApprovalVotesData, ThrowOnError>): RequestResult<ListApprovalVotesResponses, ListApprovalVotesErrors, ThrowOnError> => (options.client ?? client).get<ListApprovalVotesResponses, ListApprovalVotesErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListApprovalVotesResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/approvals/{id}/votes',
     ...options
@@ -1543,6 +1685,7 @@ export const listApprovalVotes = <ThrowOnError extends boolean = false>(options:
  * Cast a vote on an approval request (DESIGN §10.2 — N-of-M quorum, one vote per subject, always self-attested)
  */
 export const castApprovalVote = <ThrowOnError extends boolean = false>(options: Options<CastApprovalVoteData, ThrowOnError>): RequestResult<CastApprovalVoteResponses, CastApprovalVoteErrors, ThrowOnError> => (options.client ?? client).post<CastApprovalVoteResponses, CastApprovalVoteErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCastApprovalVoteResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/approvals/{id}/votes',
     ...options,
@@ -1556,6 +1699,7 @@ export const castApprovalVote = <ThrowOnError extends boolean = false>(options: 
  * List freeze windows
  */
 export const listFreezes = <ThrowOnError extends boolean = false>(options?: Options<ListFreezesData, ThrowOnError>): RequestResult<ListFreezesResponses, ListFreezesErrors, ThrowOnError> => (options?.client ?? client).get<ListFreezesResponses, ListFreezesErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListFreezesResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/freezes',
     ...options
@@ -1565,6 +1709,7 @@ export const listFreezes = <ThrowOnError extends boolean = false>(options?: Opti
  * Declare a freeze window over a scope (DESIGN §10.3)
  */
 export const createFreeze = <ThrowOnError extends boolean = false>(options: Options<CreateFreezeData, ThrowOnError>): RequestResult<CreateFreezeResponses, CreateFreezeErrors, ThrowOnError> => (options.client ?? client).post<CreateFreezeResponses, CreateFreezeErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreateFreezeResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/freezes',
     ...options,
@@ -1578,6 +1723,7 @@ export const createFreeze = <ThrowOnError extends boolean = false>(options: Opti
  * Get a freeze by id
  */
 export const getFreeze = <ThrowOnError extends boolean = false>(options: Options<GetFreezeData, ThrowOnError>): RequestResult<GetFreezeResponses, GetFreezeErrors, ThrowOnError> => (options.client ?? client).get<GetFreezeResponses, GetFreezeErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetFreezeResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/freezes/{id}',
     ...options
@@ -1587,6 +1733,7 @@ export const getFreeze = <ThrowOnError extends boolean = false>(options: Options
  * Dry-run governance evaluation for a change — verdict + reason tree, no transition attempted
  */
 export const policyEvaluate = <ThrowOnError extends boolean = false>(options: Options<PolicyEvaluateData, ThrowOnError>): RequestResult<PolicyEvaluateResponses, PolicyEvaluateErrors, ThrowOnError> => (options.client ?? client).post<PolicyEvaluateResponses, PolicyEvaluateErrors, ThrowOnError>({
+    responseValidator: async (data) => await zPolicyEvaluateResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/policy-evaluate',
     ...options,
@@ -1600,6 +1747,7 @@ export const policyEvaluate = <ThrowOnError extends boolean = false>(options: Op
  * List the instance-scoped scan-requirement floors (platform + trust domain) that bind every org on this deployment (ADR-0016)
  */
 export const listInstanceScanFloors = <ThrowOnError extends boolean = false>(options?: Options<ListInstanceScanFloorsData, ThrowOnError>): RequestResult<ListInstanceScanFloorsResponses, ListInstanceScanFloorsErrors, ThrowOnError> => (options?.client ?? client).get<ListInstanceScanFloorsResponses, ListInstanceScanFloorsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListInstanceScanFloorsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/instance/scan-floors',
     ...options
@@ -1609,6 +1757,7 @@ export const listInstanceScanFloors = <ThrowOnError extends boolean = false>(opt
  * Author an instance-scoped scan-requirement floor (operator token required — these bind every org on the deployment; ADR-0016)
  */
 export const putInstanceScanFloor = <ThrowOnError extends boolean = false>(options: Options<PutInstanceScanFloorData, ThrowOnError>): RequestResult<PutInstanceScanFloorResponses, PutInstanceScanFloorErrors, ThrowOnError> => (options.client ?? client).put<PutInstanceScanFloorResponses, PutInstanceScanFloorErrors, ThrowOnError>({
+    responseValidator: async (data) => await zPutInstanceScanFloorResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/instance/scan-floors/{tier}',
     ...options,
@@ -1622,6 +1771,7 @@ export const putInstanceScanFloor = <ThrowOnError extends boolean = false>(optio
  * List the instance-scoped scanner assignments (executor Type -> managed scan methods) that bind every org on this deployment (ADR-0020)
  */
 export const listScannerAssignments = <ThrowOnError extends boolean = false>(options?: Options<ListScannerAssignmentsData, ThrowOnError>): RequestResult<ListScannerAssignmentsResponses, ListScannerAssignmentsErrors, ThrowOnError> => (options?.client ?? client).get<ListScannerAssignmentsResponses, ListScannerAssignmentsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListScannerAssignmentsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/instance/scanner-assignments',
     ...options
@@ -1631,6 +1781,7 @@ export const listScannerAssignments = <ThrowOnError extends boolean = false>(opt
  * Assign managed scan methods to an executor Type (operator token required — these bind every org on the deployment; ADR-0020)
  */
 export const putScannerAssignment = <ThrowOnError extends boolean = false>(options: Options<PutScannerAssignmentData, ThrowOnError>): RequestResult<PutScannerAssignmentResponses, PutScannerAssignmentErrors, ThrowOnError> => (options.client ?? client).put<PutScannerAssignmentResponses, PutScannerAssignmentErrors, ThrowOnError>({
+    responseValidator: async (data) => await zPutScannerAssignmentResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/instance/scanner-assignments',
     ...options,
@@ -1644,6 +1795,7 @@ export const putScannerAssignment = <ThrowOnError extends boolean = false>(optio
  * Get the commander's managed-scan vulnerability-DB status — presence, age, source (baked|refreshed|operator-loaded), schema compatibility, staleness, and the active thresholds (ADR-0020)
  */
 export const getScanDbStatus = <ThrowOnError extends boolean = false>(options?: Options<GetScanDbStatusData, ThrowOnError>): RequestResult<GetScanDbStatusResponses, GetScanDbStatusErrors, ThrowOnError> => (options?.client ?? client).get<GetScanDbStatusResponses, GetScanDbStatusErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetScanDbStatusResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/instance/scan-db',
     ...options
@@ -1653,6 +1805,7 @@ export const getScanDbStatus = <ThrowOnError extends boolean = false>(options?: 
  * Get the instance-scoped scanner-DB staleness policy (soft/hard max age) that binds every org on this deployment (ADR-0020)
  */
 export const getScanDbStalenessPolicy = <ThrowOnError extends boolean = false>(options?: Options<GetScanDbStalenessPolicyData, ThrowOnError>): RequestResult<GetScanDbStalenessPolicyResponses, GetScanDbStalenessPolicyErrors, ThrowOnError> => (options?.client ?? client).get<GetScanDbStalenessPolicyResponses, GetScanDbStalenessPolicyErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetScanDbStalenessPolicyResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/instance/scan-db/staleness-policy',
     ...options
@@ -1662,6 +1815,7 @@ export const getScanDbStalenessPolicy = <ThrowOnError extends boolean = false>(o
  * Author the instance-scoped scanner-DB staleness policy (operator token required — it binds every org; null resets a bound to the built-in default; ADR-0020)
  */
 export const putScanDbStalenessPolicy = <ThrowOnError extends boolean = false>(options: Options<PutScanDbStalenessPolicyData, ThrowOnError>): RequestResult<PutScanDbStalenessPolicyResponses, PutScanDbStalenessPolicyErrors, ThrowOnError> => (options.client ?? client).put<PutScanDbStalenessPolicyResponses, PutScanDbStalenessPolicyErrors, ThrowOnError>({
+    responseValidator: async (data) => await zPutScanDbStalenessPolicyResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/instance/scan-db/staleness-policy',
     ...options,
@@ -1675,6 +1829,7 @@ export const putScanDbStalenessPolicy = <ThrowOnError extends boolean = false>(o
  * Refresh the managed-scan vulnerability DB from the upstream OCI registry (connected operator action; allowlisted skopeo pull + atomic swap + schema-compat assertion; ADR-0020)
  */
 export const refreshScanDb = <ThrowOnError extends boolean = false>(options: Options<RefreshScanDbData, ThrowOnError>): RequestResult<RefreshScanDbResponses, RefreshScanDbErrors, ThrowOnError> => (options.client ?? client).post<RefreshScanDbResponses, RefreshScanDbErrors, ThrowOnError>({
+    responseValidator: async (data) => await zRefreshScanDbResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/instance/scan-db/refresh',
     ...options,
@@ -1688,6 +1843,7 @@ export const refreshScanDb = <ThrowOnError extends boolean = false>(options: Opt
  * Load a cosign-signed vulnerability-DB blob into the cache (air-gap operator action; digest-bound + detached-signature verify BEFORE accept, then atomic swap; ADR-0020)
  */
 export const loadScanDb = <ThrowOnError extends boolean = false>(options: Options<LoadScanDbData, ThrowOnError>): RequestResult<LoadScanDbResponses, LoadScanDbErrors, ThrowOnError> => (options.client ?? client).post<LoadScanDbResponses, LoadScanDbErrors, ThrowOnError>({
+    responseValidator: async (data) => await zLoadScanDbResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/instance/scan-db/load',
     ...options,
@@ -1701,6 +1857,7 @@ export const loadScanDb = <ThrowOnError extends boolean = false>(options: Option
  * List campaigns
  */
 export const listCampaigns = <ThrowOnError extends boolean = false>(options?: Options<ListCampaignsData, ThrowOnError>): RequestResult<ListCampaignsResponses, ListCampaignsErrors, ThrowOnError> => (options?.client ?? client).get<ListCampaignsResponses, ListCampaignsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListCampaignsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/campaigns',
     ...options
@@ -1710,6 +1867,7 @@ export const listCampaigns = <ThrowOnError extends boolean = false>(options?: Op
  * Propose a Campaign coordinating one member Change per target, wave by wave
  */
 export const proposeCampaign = <ThrowOnError extends boolean = false>(options: Options<ProposeCampaignData, ThrowOnError>): RequestResult<ProposeCampaignResponses, ProposeCampaignErrors, ThrowOnError> => (options.client ?? client).post<ProposeCampaignResponses, ProposeCampaignErrors, ThrowOnError>({
+    responseValidator: async (data) => await zProposeCampaignResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/campaigns',
     ...options,
@@ -1723,6 +1881,7 @@ export const proposeCampaign = <ThrowOnError extends boolean = false>(options: O
  * Get a campaign by id (status is derived live)
  */
 export const getCampaign = <ThrowOnError extends boolean = false>(options: Options<GetCampaignData, ThrowOnError>): RequestResult<GetCampaignResponses, GetCampaignErrors, ThrowOnError> => (options.client ?? client).get<GetCampaignResponses, GetCampaignErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetCampaignResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/campaigns/{id}',
     ...options
@@ -1732,6 +1891,7 @@ export const getCampaign = <ThrowOnError extends boolean = false>(options: Optio
  * The campaign, its compiled plan (member Changes resolved), and every Decision made about it
  */
 export const explainCampaign = <ThrowOnError extends boolean = false>(options: Options<ExplainCampaignData, ThrowOnError>): RequestResult<ExplainCampaignResponses, ExplainCampaignErrors, ThrowOnError> => (options.client ?? client).get<ExplainCampaignResponses, ExplainCampaignErrors, ThrowOnError>({
+    responseValidator: async (data) => await zExplainCampaignResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/campaigns/{id}/explain',
     ...options
@@ -1741,6 +1901,7 @@ export const explainCampaign = <ThrowOnError extends boolean = false>(options: O
  * Roll back every currently-eligible (executing/validating/accepted) member Change of a campaign — each becomes its own new rollback Change
  */
 export const rollbackCampaign = <ThrowOnError extends boolean = false>(options: Options<RollbackCampaignData, ThrowOnError>): RequestResult<RollbackCampaignResponses, RollbackCampaignErrors, ThrowOnError> => (options.client ?? client).post<RollbackCampaignResponses, RollbackCampaignErrors, ThrowOnError>({
+    responseValidator: async (data) => await zRollbackCampaignResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/campaigns/{id}/rollback',
     ...options,
@@ -1754,6 +1915,7 @@ export const rollbackCampaign = <ThrowOnError extends boolean = false>(options: 
  * List initiatives
  */
 export const listInitiatives = <ThrowOnError extends boolean = false>(options?: Options<ListInitiativesData, ThrowOnError>): RequestResult<ListInitiativesResponses, ListInitiativesErrors, ThrowOnError> => (options?.client ?? client).get<ListInitiativesResponses, ListInitiativesErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListInitiativesResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/initiatives',
     ...options
@@ -1763,6 +1925,7 @@ export const listInitiatives = <ThrowOnError extends boolean = false>(options?: 
  * Propose an Initiative grouping one or more Campaigns
  */
 export const proposeInitiative = <ThrowOnError extends boolean = false>(options: Options<ProposeInitiativeData, ThrowOnError>): RequestResult<ProposeInitiativeResponses, ProposeInitiativeErrors, ThrowOnError> => (options.client ?? client).post<ProposeInitiativeResponses, ProposeInitiativeErrors, ThrowOnError>({
+    responseValidator: async (data) => await zProposeInitiativeResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/initiatives',
     ...options,
@@ -1776,6 +1939,7 @@ export const proposeInitiative = <ThrowOnError extends boolean = false>(options:
  * Get an initiative with its member campaigns and traversal-derived roll-up status
  */
 export const getInitiative = <ThrowOnError extends boolean = false>(options: Options<GetInitiativeData, ThrowOnError>): RequestResult<GetInitiativeResponses, GetInitiativeErrors, ThrowOnError> => (options.client ?? client).get<GetInitiativeResponses, GetInitiativeErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetInitiativeResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/initiatives/{id}',
     ...options
@@ -1785,6 +1949,7 @@ export const getInitiative = <ThrowOnError extends boolean = false>(options: Opt
  * Add a member campaign to an initiative
  */
 export const addInitiativeCampaign = <ThrowOnError extends boolean = false>(options: Options<AddInitiativeCampaignData, ThrowOnError>): RequestResult<AddInitiativeCampaignResponses, AddInitiativeCampaignErrors, ThrowOnError> => (options.client ?? client).post<AddInitiativeCampaignResponses, AddInitiativeCampaignErrors, ThrowOnError>({
+    responseValidator: async (data) => await zAddInitiativeCampaignResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/initiatives/{id}/campaigns',
     ...options,
@@ -1798,6 +1963,7 @@ export const addInitiativeCampaign = <ThrowOnError extends boolean = false>(opti
  * Designate this domain's federation role (commander|outpost|retrans)
  */
 export const initFederation = <ThrowOnError extends boolean = false>(options: Options<InitFederationData, ThrowOnError>): RequestResult<InitFederationResponses, InitFederationErrors, ThrowOnError> => (options.client ?? client).post<InitFederationResponses, InitFederationErrors, ThrowOnError>({
+    responseValidator: async (data) => await zInitFederationResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/federation/init',
     ...options,
@@ -1811,6 +1977,7 @@ export const initFederation = <ThrowOnError extends boolean = false>(options: Op
  * This domain's own federation identity + public key (for out-of-band pairing)
  */
 export const getFederationSelf = <ThrowOnError extends boolean = false>(options?: Options<GetFederationSelfData, ThrowOnError>): RequestResult<GetFederationSelfResponses, GetFederationSelfErrors, ThrowOnError> => (options?.client ?? client).get<GetFederationSelfResponses, GetFederationSelfErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetFederationSelfResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/federation/self',
     ...options
@@ -1820,6 +1987,7 @@ export const getFederationSelf = <ThrowOnError extends boolean = false>(options?
  * List paired federation peers
  */
 export const listFederationPeers = <ThrowOnError extends boolean = false>(options?: Options<ListFederationPeersData, ThrowOnError>): RequestResult<ListFederationPeersResponses, ListFederationPeersErrors, ThrowOnError> => (options?.client ?? client).get<ListFederationPeersResponses, ListFederationPeersErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListFederationPeersResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/federation/peers',
     ...options
@@ -1829,6 +1997,7 @@ export const listFederationPeers = <ThrowOnError extends boolean = false>(option
  * Pair (or update) a federation peer domain — always initiated from this side
  */
 export const pairPeer = <ThrowOnError extends boolean = false>(options: Options<PairPeerData, ThrowOnError>): RequestResult<PairPeerResponses, PairPeerErrors, ThrowOnError> => (options.client ?? client).post<PairPeerResponses, PairPeerErrors, ThrowOnError>({
+    responseValidator: async (data) => await zPairPeerResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/federation/peers',
     ...options,
@@ -1842,6 +2011,7 @@ export const pairPeer = <ThrowOnError extends boolean = false>(options: Options<
  * Read one paired federation peer (by trust-domain id or name)
  */
 export const getFederationPeer = <ThrowOnError extends boolean = false>(options: Options<GetFederationPeerData, ThrowOnError>): RequestResult<GetFederationPeerResponses, GetFederationPeerErrors, ThrowOnError> => (options.client ?? client).get<GetFederationPeerResponses, GetFederationPeerErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetFederationPeerResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/federation/peers/{id}',
     ...options
@@ -1851,6 +2021,7 @@ export const getFederationPeer = <ThrowOnError extends boolean = false>(options:
  * Update a peer's transport settings ONLY (name/baseUrl/syncScope/deliveryTarget/pokeMode) — carries no key material and can never rotate a peer key
  */
 export const updateFederationPeer = <ThrowOnError extends boolean = false>(options: Options<UpdateFederationPeerData, ThrowOnError>): RequestResult<UpdateFederationPeerResponses, UpdateFederationPeerErrors, ThrowOnError> => (options.client ?? client).patch<UpdateFederationPeerResponses, UpdateFederationPeerErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpdateFederationPeerResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/federation/peers/{id}',
     ...options,
@@ -1864,6 +2035,7 @@ export const updateFederationPeer = <ThrowOnError extends boolean = false>(optio
  * Cross-domain status: every peer, this side's sync freshness, bundle-transfer history
  */
 export const getFederationStatus = <ThrowOnError extends boolean = false>(options?: Options<GetFederationStatusData, ThrowOnError>): RequestResult<GetFederationStatusResponses, GetFederationStatusErrors, ThrowOnError> => (options?.client ?? client).get<GetFederationStatusResponses, GetFederationStatusErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetFederationStatusResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/federation/status',
     ...options
@@ -1873,6 +2045,7 @@ export const getFederationStatus = <ThrowOnError extends boolean = false>(option
  * Export a signed .scpbundle of journal entries since a cursor (scp federation export)
  */
 export const exportSyncBundle = <ThrowOnError extends boolean = false>(options: Options<ExportSyncBundleData, ThrowOnError>): RequestResult<ExportSyncBundleResponses, ExportSyncBundleErrors, ThrowOnError> => (options.client ?? client).post<ExportSyncBundleResponses, ExportSyncBundleErrors, ThrowOnError>({
+    responseValidator: async (data) => await zExportSyncBundleResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/federation/exports',
     ...options,
@@ -1886,6 +2059,7 @@ export const exportSyncBundle = <ThrowOnError extends boolean = false>(options: 
  * Export a Promotion Bundle for a Change (change + evidence + attestations)
  */
 export const exportPromotionBundle = <ThrowOnError extends boolean = false>(options: Options<ExportPromotionBundleData, ThrowOnError>): RequestResult<ExportPromotionBundleResponses, ExportPromotionBundleErrors, ThrowOnError> => (options.client ?? client).post<ExportPromotionBundleResponses, ExportPromotionBundleErrors, ThrowOnError>({
+    responseValidator: async (data) => await zExportPromotionBundleResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/federation/exports/promotion',
     ...options,
@@ -1899,6 +2073,7 @@ export const exportPromotionBundle = <ThrowOnError extends boolean = false>(opti
  * Verify + apply a .scpbundle (sync or promotion) — fail-closed on any signature/chain check
  */
 export const importBundle = <ThrowOnError extends boolean = false>(options: Options<ImportBundleData, ThrowOnError>): RequestResult<ImportBundleResponses, ImportBundleErrors, ThrowOnError> => (options.client ?? client).post<ImportBundleResponses, ImportBundleErrors, ThrowOnError>({
+    responseValidator: async (data) => await zImportBundleResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/federation/imports',
     ...options,
@@ -1912,6 +2087,7 @@ export const importBundle = <ThrowOnError extends boolean = false>(options: Opti
  * Retrans validate-then-relay: pull + validate the authorized artifact bytes and build the signed relay tarball (role: retrans)
  */
 export const buildRelayTarball = <ThrowOnError extends boolean = false>(options: Options<BuildRelayTarballData, ThrowOnError>): RequestResult<BuildRelayTarballResponses, BuildRelayTarballErrors, ThrowOnError> => (options.client ?? client).post<BuildRelayTarballResponses, BuildRelayTarballErrors, ThrowOnError>({
+    responseValidator: async (data) => await zBuildRelayTarballResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/federation/relay',
     ...options,
@@ -1925,6 +2101,7 @@ export const buildRelayTarball = <ThrowOnError extends boolean = false>(options:
  * Destination side of the retrans relay: verify the signed tarball and push its artifacts into the local registry by digest (+ re-inspect)
  */
 export const importRelayTarball = <ThrowOnError extends boolean = false>(options: Options<ImportRelayTarballData, ThrowOnError>): RequestResult<ImportRelayTarballResponses, ImportRelayTarballErrors, ThrowOnError> => (options.client ?? client).post<ImportRelayTarballResponses, ImportRelayTarballErrors, ThrowOnError>({
+    responseValidator: async (data) => await zImportRelayTarballResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/federation/relay/import',
     ...options,
@@ -1938,6 +2115,7 @@ export const importRelayTarball = <ThrowOnError extends boolean = false>(options
  * Contentless, mTLS-authenticated wake signal from an enrolled commander/upstream — pull now (poke-mode)
  */
 export const federationPoke = <ThrowOnError extends boolean = false>(options?: Options<FederationPokeData, ThrowOnError>): RequestResult<FederationPokeResponses, FederationPokeErrors, ThrowOnError> => (options?.client ?? client).post<FederationPokeResponses, FederationPokeErrors, ThrowOnError>({
+    responseValidator: async (data) => await zFederationPokeResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/federation/poke',
     ...options
@@ -1947,6 +2125,7 @@ export const federationPoke = <ThrowOnError extends boolean = false>(options?: O
  * Create a local overlay annotating a (possibly foreign-origin) base object
  */
 export const createOverlay = <ThrowOnError extends boolean = false>(options: Options<CreateOverlayData, ThrowOnError>): RequestResult<CreateOverlayResponses, CreateOverlayErrors, ThrowOnError> => (options.client ?? client).post<CreateOverlayResponses, CreateOverlayErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreateOverlayResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/federation/overlays',
     ...options,
@@ -1960,6 +2139,7 @@ export const createOverlay = <ThrowOnError extends boolean = false>(options: Opt
  * Read-time merge of a base object with its local overlays
  */
 export const getMergedOverlayView = <ThrowOnError extends boolean = false>(options: Options<GetMergedOverlayViewData, ThrowOnError>): RequestResult<GetMergedOverlayViewResponses, GetMergedOverlayViewErrors, ThrowOnError> => (options.client ?? client).get<GetMergedOverlayViewResponses, GetMergedOverlayViewErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetMergedOverlayViewResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/federation/overlays/{idOrUrn}',
     ...options
@@ -1969,6 +2149,7 @@ export const getMergedOverlayView = <ThrowOnError extends boolean = false>(optio
  * Manually enter a commander-origin object as an unverified shadow copy (air-gapped, no bundle transport)
  */
 export const handFillObject = <ThrowOnError extends boolean = false>(options: Options<HandFillObjectData, ThrowOnError>): RequestResult<HandFillObjectResponses, HandFillObjectErrors, ThrowOnError> => (options.client ?? client).post<HandFillObjectResponses, HandFillObjectErrors, ThrowOnError>({
+    responseValidator: async (data) => await zHandFillObjectResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/federation/hand-fill',
     ...options,
@@ -1982,6 +2163,7 @@ export const handFillObject = <ThrowOnError extends boolean = false>(options: Op
  * List every outpost config object (commander-origin declared config)
  */
 export const listOutpostConfigs = <ThrowOnError extends boolean = false>(options?: Options<ListOutpostConfigsData, ThrowOnError>): RequestResult<ListOutpostConfigsResponses, ListOutpostConfigsErrors, ThrowOnError> => (options?.client ?? client).get<ListOutpostConfigsResponses, ListOutpostConfigsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListOutpostConfigsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/federation/outposts',
     ...options
@@ -1991,6 +2173,7 @@ export const listOutpostConfigs = <ThrowOnError extends boolean = false>(options
  * Declare an already-paired outpost's commander-origin config object (trust tier) — syncs down as a read-only replica
  */
 export const createOutpostConfig = <ThrowOnError extends boolean = false>(options: Options<CreateOutpostConfigData, ThrowOnError>): RequestResult<CreateOutpostConfigResponses, CreateOutpostConfigErrors, ThrowOnError> => (options.client ?? client).post<CreateOutpostConfigResponses, CreateOutpostConfigErrors, ThrowOnError>({
+    responseValidator: async (data) => await zCreateOutpostConfigResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/federation/outposts',
     ...options,
@@ -2004,6 +2187,7 @@ export const createOutpostConfig = <ThrowOnError extends boolean = false>(option
  * Read one outpost's config object, resolved through its peer binding
  */
 export const getOutpostConfig = <ThrowOnError extends boolean = false>(options: Options<GetOutpostConfigData, ThrowOnError>): RequestResult<GetOutpostConfigResponses, GetOutpostConfigErrors, ThrowOnError> => (options.client ?? client).get<GetOutpostConfigResponses, GetOutpostConfigErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetOutpostConfigResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/federation/outposts/{peerDomainId}',
     ...options
@@ -2013,6 +2197,7 @@ export const getOutpostConfig = <ThrowOnError extends boolean = false>(options: 
  * Edit an outpost's commander-origin config (absent means preserve) — refused with 409 on an instance holding it as a replica
  */
 export const updateOutpostConfig = <ThrowOnError extends boolean = false>(options: Options<UpdateOutpostConfigData, ThrowOnError>): RequestResult<UpdateOutpostConfigResponses, UpdateOutpostConfigErrors, ThrowOnError> => (options.client ?? client).patch<UpdateOutpostConfigResponses, UpdateOutpostConfigErrors, ThrowOnError>({
+    responseValidator: async (data) => await zUpdateOutpostConfigResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/federation/outposts/{peerDomainId}',
     ...options,
@@ -2026,6 +2211,7 @@ export const updateOutpostConfig = <ThrowOnError extends boolean = false>(option
  * RECOVERY: restore the 1:1 peer↔config binding for a peer holding duplicate outpost config objects (adopts an unverified hand-filled shadow, removes the rest; ?keep=<objectId> chooses the survivor and may drop a row this domain authored; ?ifClaimant=<objectId>:<version> refuses with 412 if the claimants changed since they were previewed)
  */
 export const reconcileOutpostConfig = <ThrowOnError extends boolean = false>(options: Options<ReconcileOutpostConfigData, ThrowOnError>): RequestResult<ReconcileOutpostConfigResponses, ReconcileOutpostConfigErrors, ThrowOnError> => (options.client ?? client).post<ReconcileOutpostConfigResponses, ReconcileOutpostConfigErrors, ThrowOnError>({
+    responseValidator: async (data) => await zReconcileOutpostConfigResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/federation/outposts/{peerDomainId}/reconcile',
     ...options
@@ -2035,6 +2221,7 @@ export const reconcileOutpostConfig = <ThrowOnError extends boolean = false>(opt
  * Every bundled plugin's {id, kind, version, configSchema} — the source a config form is generated from
  */
 export const listPluginManifests = <ThrowOnError extends boolean = false>(options?: Options<ListPluginManifestsData, ThrowOnError>): RequestResult<ListPluginManifestsResponses, ListPluginManifestsErrors, ThrowOnError> => (options?.client ?? client).get<ListPluginManifestsResponses, ListPluginManifestsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListPluginManifestsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/plugins/manifests',
     ...options
@@ -2044,6 +2231,7 @@ export const listPluginManifests = <ThrowOnError extends boolean = false>(option
  * Delete a secret by key
  */
 export const deleteSecret = <ThrowOnError extends boolean = false>(options: Options<DeleteSecretData, ThrowOnError>): RequestResult<DeleteSecretResponses, DeleteSecretErrors, ThrowOnError> => (options.client ?? client).delete<DeleteSecretResponses, DeleteSecretErrors, ThrowOnError>({
+    responseValidator: async (data) => await zDeleteSecretResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/secrets/{key}',
     ...options
@@ -2053,6 +2241,7 @@ export const deleteSecret = <ThrowOnError extends boolean = false>(options: Opti
  * Store (or rotate) an encrypted secret value by key
  */
 export const putSecret = <ThrowOnError extends boolean = false>(options: Options<PutSecretData, ThrowOnError>): RequestResult<PutSecretResponses, PutSecretErrors, ThrowOnError> => (options.client ?? client).put<PutSecretResponses, PutSecretErrors, ThrowOnError>({
+    responseValidator: async (data) => await zPutSecretResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/secrets/{key}',
     ...options,
@@ -2066,6 +2255,7 @@ export const putSecret = <ThrowOnError extends boolean = false>(options: Options
  * List configured secret KEYS for this org (never values)
  */
 export const listSecretKeys = <ThrowOnError extends boolean = false>(options?: Options<ListSecretKeysData, ThrowOnError>): RequestResult<ListSecretKeysResponses, ListSecretKeysErrors, ThrowOnError> => (options?.client ?? client).get<ListSecretKeysResponses, ListSecretKeysErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListSecretKeysResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/secrets',
     ...options
@@ -2075,6 +2265,7 @@ export const listSecretKeys = <ThrowOnError extends boolean = false>(options?: O
  * Delete a target's executor binding for one type (default: configuration)
  */
 export const deleteExecutorBinding = <ThrowOnError extends boolean = false>(options: Options<DeleteExecutorBindingData, ThrowOnError>): RequestResult<DeleteExecutorBindingResponses, DeleteExecutorBindingErrors, ThrowOnError> => (options.client ?? client).delete<DeleteExecutorBindingResponses, DeleteExecutorBindingErrors, ThrowOnError>({
+    responseValidator: async (data) => await zDeleteExecutorBindingResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/executors/{idOrUrn}/binding',
     ...options
@@ -2084,6 +2275,7 @@ export const deleteExecutorBinding = <ThrowOnError extends boolean = false>(opti
  * Get a target's configured executor binding for one type (default: configuration)
  */
 export const getExecutorBinding = <ThrowOnError extends boolean = false>(options: Options<GetExecutorBindingData, ThrowOnError>): RequestResult<GetExecutorBindingResponses, GetExecutorBindingErrors, ThrowOnError> => (options.client ?? client).get<GetExecutorBindingResponses, GetExecutorBindingErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetExecutorBindingResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/executors/{idOrUrn}/binding',
     ...options
@@ -2093,6 +2285,7 @@ export const getExecutorBinding = <ThrowOnError extends boolean = false>(options
  * Relabel which pipeline (routing type) a target's executor binding drives
  */
 export const repurposeExecutorBinding = <ThrowOnError extends boolean = false>(options: Options<RepurposeExecutorBindingData, ThrowOnError>): RequestResult<RepurposeExecutorBindingResponses, RepurposeExecutorBindingErrors, ThrowOnError> => (options.client ?? client).patch<RepurposeExecutorBindingResponses, RepurposeExecutorBindingErrors, ThrowOnError>({
+    responseValidator: async (data) => await zRepurposeExecutorBindingResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/executors/{idOrUrn}/binding',
     ...options,
@@ -2106,6 +2299,7 @@ export const repurposeExecutorBinding = <ThrowOnError extends boolean = false>(o
  * Bind a Component/DeploymentTarget to a configured ExecutorPlugin instance
  */
 export const putExecutorBinding = <ThrowOnError extends boolean = false>(options: Options<PutExecutorBindingData, ThrowOnError>): RequestResult<PutExecutorBindingResponses, PutExecutorBindingErrors, ThrowOnError> => (options.client ?? client).put<PutExecutorBindingResponses, PutExecutorBindingErrors, ThrowOnError>({
+    responseValidator: async (data) => await zPutExecutorBindingResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/executors/{idOrUrn}/binding',
     ...options,
@@ -2119,6 +2313,7 @@ export const putExecutorBinding = <ThrowOnError extends boolean = false>(options
  * List every executor binding (all types) configured for a target
  */
 export const listExecutorBindings = <ThrowOnError extends boolean = false>(options: Options<ListExecutorBindingsData, ThrowOnError>): RequestResult<ListExecutorBindingsResponses, ListExecutorBindingsErrors, ThrowOnError> => (options.client ?? client).get<ListExecutorBindingsResponses, ListExecutorBindingsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListExecutorBindingsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/executors/{idOrUrn}/bindings',
     ...options
@@ -2128,6 +2323,7 @@ export const listExecutorBindings = <ThrowOnError extends boolean = false>(optio
  * Read + validate a prod environment's per-region Argo CD set (region -> argocd binding)
  */
 export const getRegionalExecutors = <ThrowOnError extends boolean = false>(options: Options<GetRegionalExecutorsData, ThrowOnError>): RequestResult<GetRegionalExecutorsResponses, GetRegionalExecutorsErrors, ThrowOnError> => (options.client ?? client).get<GetRegionalExecutorsResponses, GetRegionalExecutorsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetRegionalExecutorsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/environments/{environment}/regional-executors',
     ...options
@@ -2137,6 +2333,7 @@ export const getRegionalExecutors = <ThrowOnError extends boolean = false>(optio
  * Remove a notification channel
  */
 export const deleteNotificationBinding = <ThrowOnError extends boolean = false>(options: Options<DeleteNotificationBindingData, ThrowOnError>): RequestResult<DeleteNotificationBindingResponses, DeleteNotificationBindingErrors, ThrowOnError> => (options.client ?? client).delete<DeleteNotificationBindingResponses, DeleteNotificationBindingErrors, ThrowOnError>({
+    responseValidator: async (data) => await zDeleteNotificationBindingResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/notifications/bindings/{instanceId}',
     ...options
@@ -2146,6 +2343,7 @@ export const deleteNotificationBinding = <ThrowOnError extends boolean = false>(
  * Configure (or update) a notification channel — an org may configure more than one
  */
 export const putNotificationBinding = <ThrowOnError extends boolean = false>(options: Options<PutNotificationBindingData, ThrowOnError>): RequestResult<PutNotificationBindingResponses, PutNotificationBindingErrors, ThrowOnError> => (options.client ?? client).put<PutNotificationBindingResponses, PutNotificationBindingErrors, ThrowOnError>({
+    responseValidator: async (data) => await zPutNotificationBindingResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/notifications/bindings/{instanceId}',
     ...options,
@@ -2159,6 +2357,7 @@ export const putNotificationBinding = <ThrowOnError extends boolean = false>(opt
  * List this org's configured notification channels
  */
 export const listNotificationBindings = <ThrowOnError extends boolean = false>(options?: Options<ListNotificationBindingsData, ThrowOnError>): RequestResult<ListNotificationBindingsResponses, ListNotificationBindingsErrors, ThrowOnError> => (options?.client ?? client).get<ListNotificationBindingsResponses, ListNotificationBindingsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zListNotificationBindingsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/notifications/bindings',
     ...options
@@ -2168,6 +2367,7 @@ export const listNotificationBindings = <ThrowOnError extends boolean = false>(o
  * Run a DiscoveryPlugin scan — returns a PROPOSAL only, nothing is written to the graph
  */
 export const runDiscovery = <ThrowOnError extends boolean = false>(options: Options<RunDiscoveryData, ThrowOnError>): RequestResult<RunDiscoveryResponses, RunDiscoveryErrors, ThrowOnError> => (options.client ?? client).post<RunDiscoveryResponses, RunDiscoveryErrors, ThrowOnError>({
+    responseValidator: async (data) => await zRunDiscoveryResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/discovery/run',
     ...options,
@@ -2181,6 +2381,7 @@ export const runDiscovery = <ThrowOnError extends boolean = false>(options: Opti
  * EXPLICITLY accept a discovery proposal — the only path that commits discovered objects/relationships
  */
 export const acceptDiscoveryProposal = <ThrowOnError extends boolean = false>(options: Options<AcceptDiscoveryProposalData, ThrowOnError>): RequestResult<AcceptDiscoveryProposalResponses, AcceptDiscoveryProposalErrors, ThrowOnError> => (options.client ?? client).post<AcceptDiscoveryProposalResponses, AcceptDiscoveryProposalErrors, ThrowOnError>({
+    responseValidator: async (data) => await zAcceptDiscoveryProposalResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/discovery/accept',
     ...options,
@@ -2194,6 +2395,7 @@ export const acceptDiscoveryProposal = <ThrowOnError extends boolean = false>(op
  * Backfill source_mappings onto already-imported components (matches a discovery proposal's mappings to existing components by name)
  */
 export const backfillSourceMappings = <ThrowOnError extends boolean = false>(options: Options<BackfillSourceMappingsData, ThrowOnError>): RequestResult<BackfillSourceMappingsResponses, BackfillSourceMappingsErrors, ThrowOnError> => (options.client ?? client).post<BackfillSourceMappingsResponses, BackfillSourceMappingsErrors, ThrowOnError>({
+    responseValidator: async (data) => await zBackfillSourceMappingsResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/discovery/backfill-source-mappings',
     ...options,
@@ -2207,6 +2409,7 @@ export const backfillSourceMappings = <ThrowOnError extends boolean = false>(opt
  * Get the latest pushed health of a graph object
  */
 export const getObjectHealth = <ThrowOnError extends boolean = false>(options: Options<GetObjectHealthData, ThrowOnError>): RequestResult<GetObjectHealthResponses, GetObjectHealthErrors, ThrowOnError> => (options.client ?? client).get<GetObjectHealthResponses, GetObjectHealthErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGetObjectHealthResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/objects/{type}/{idOrUrn}/health',
     ...options
@@ -2216,6 +2419,7 @@ export const getObjectHealth = <ThrowOnError extends boolean = false>(options: O
  * Push the latest health of a graph object (idempotent upsert)
  */
 export const pushObjectHealth = <ThrowOnError extends boolean = false>(options: Options<PushObjectHealthData, ThrowOnError>): RequestResult<PushObjectHealthResponses, PushObjectHealthErrors, ThrowOnError> => (options.client ?? client).put<PushObjectHealthResponses, PushObjectHealthErrors, ThrowOnError>({
+    responseValidator: async (data) => await zPushObjectHealthResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/objects/{type}/{idOrUrn}/health',
     ...options,
@@ -2229,6 +2433,7 @@ export const pushObjectHealth = <ThrowOnError extends boolean = false>(options: 
  * Batch latest-health over an object-id set (graph node join)
  */
 export const graphHealth = <ThrowOnError extends boolean = false>(options: Options<GraphHealthData, ThrowOnError>): RequestResult<GraphHealthResponses, GraphHealthErrors, ThrowOnError> => (options.client ?? client).post<GraphHealthResponses, GraphHealthErrors, ThrowOnError>({
+    responseValidator: async (data) => await zGraphHealthResponse.parseAsync(data),
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/graph/health',
     ...options,
