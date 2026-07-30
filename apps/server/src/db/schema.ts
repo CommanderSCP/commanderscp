@@ -512,7 +512,17 @@ export const decisions = pgTable(
       table.subjectId,
       table.kind,
       table.createdAt.desc()
-    )
+    ),
+    // The SERVICE BOARD's shape (`decisions-repo.ts`'s `latestBlockDecisionForSubject`, once per
+    // board row): org + subject + the latest `block`. PARTIAL, because `block` is the only verdict
+    // that query is ever issued with — so `verdict` becomes the index PREDICATE rather than a heap
+    // filter, and a change that NEVER blocked (the common case) is answered by an index descent that
+    // finds nothing instead of a walk over its whole history. Measured at 12M rows: 45.8 ms /
+    // 20,526 buffers fully cached to return NO row, 0.070 ms / 13 buffers with this index
+    // (drizzle/0045 carries the full before/after EXPLAIN and the write cost).
+    index("decisions_org_subject_block_created")
+      .on(table.orgId, table.subjectId, table.createdAt.desc())
+      .where(sql`${table.verdict} = 'block'`)
   ]
 );
 

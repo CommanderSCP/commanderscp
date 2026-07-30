@@ -34,6 +34,15 @@ import { buildServiceBoard } from "./service-board.js";
  * MUTATION-PROVEN: restoring `listDecisionsForSubject` + the JS `.reverse().find(...)` in
  * `service-board.ts` takes the measured count from 2 rows to 401 (every Decision this change holds)
  * and fails this test.
+ *
+ * AND THE CASE THAT BOUNDING ON `verdict` ALONE DOES NOT COVER — the second test below. A change
+ * that has NEVER blocked is the COMMON case on a healthy board, and it is the one that cost the
+ * most: with `verdict` as a heap filter the backward walk runs over the change's ENTIRE history to
+ * return nothing (measured on the 12M-row reproduction: 45.8 ms / 20,526 buffers fully cached for a
+ * 200k-row history, and 25,162 ms / 417,398 buffers cold for a 414k-row one — WORSE than the
+ * unbounded read it replaced). drizzle/0045's PARTIAL index (`… WHERE verdict = 'block'`) is what
+ * makes it O(1): the descent finds no entry for that (org, subject) at all. MUTATION-PROVEN:
+ * `DROP INDEX decisions_org_subject_block_created` takes that test from 1 row touched to 401.
  */
 describe("service board: the per-row Decision read is bounded, not the change's whole history", () => {
   let server: TestServer;
@@ -41,6 +50,10 @@ describe("service board: the per-row Decision read is bounded, not the change's 
   let serviceId: string;
   let componentId: string;
   let changeObjectId: string;
+  /** A SECOND service/component/change whose long history contains no `block` at all. */
+  let healthyServiceId: string;
+  let healthyComponentId: string;
+  let healthyChangeObjectId: string;
 
   /** Enough that an unbounded read is unmistakable, small enough to seed quickly. */
   const SEEDED_DECISIONS = 400;
@@ -95,6 +108,40 @@ describe("service board: the per-row Decision read is bounded, not the change's 
         SELECT gen_random_uuid(), ${org.orgId}::uuid, 'gate', ${changeObjectId}::uuid, 'block',
                jsonb_build_object('waveIndex', 0, 'tick', i),
                jsonb_build_object('summary', 'blocked by 1 required policy (tick ' || i || ')'),
+               now() + (i * interval '2 seconds')
+        FROM generate_series(1, ${SEEDED_DECISIONS}) i
+      `);
+    });
+
+    // THE HEALTHY CHANGE: an equally long history with NO `block` in it. Same seeding discipline,
+    // different verdict — this is the shape a board asks about most often, and the one a
+    // verdict-filtered read answers by walking everything unless drizzle/0045 is there.
+    const healthyService = await post("/api/v1/services", { name: "svc-board-bound-healthy" });
+    const healthyComponent = await post("/api/v1/components", {
+      name: "comp-board-bound-healthy",
+      service: healthyService.id
+    });
+    healthyServiceId = healthyService.id as string;
+    healthyComponentId = healthyComponent.id as string;
+
+    healthyChangeObjectId = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const { change } = await proposeChange(tx, {
+        orgId: org.orgId,
+        actorObjectId: org.orgId,
+        requestId: "board-decision-bound-healthy",
+        name: "change-board-bound-healthy",
+        targets: [healthyComponentId]
+      });
+      return change.id;
+    });
+
+    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      await tx.execute(sql`
+        INSERT INTO decisions (id, org_id, kind, subject_id, verdict, input_context, reason_tree, created_at)
+        SELECT gen_random_uuid(), ${org.orgId}::uuid, 'pre-deploy-artifact-verify',
+               ${healthyChangeObjectId}::uuid, 'allow',
+               jsonb_build_object('waveIndex', 0, 'tick', i),
+               jsonb_build_object('summary', 'artifact verified (tick ' || i || ')'),
                now() + (i * interval '2 seconds')
         FROM generate_series(1, ${SEEDED_DECISIONS}) i
       `);
@@ -165,6 +212,31 @@ describe("service board: the per-row Decision read is bounded, not the change's 
     // components, while the unbounded read charges every Decision the change holds (measured 401 for
     // SEEDED_DECISIONS=400 plus the change's `transition` row — once PER BOARD ROW).
     expect(touched).toBeGreaterThan(0);
+    expect(touched).toBeLessThanOrEqual(10);
+    expect(touched).toBeLessThan(SEEDED_DECISIONS);
+  });
+
+  it("reads O(1) rows for a change that NEVER blocked, whose whole history it would otherwise have to walk to say so", async () => {
+    const { board, touched } = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const service = await getObjectByIdOrUrnAnyType(tx, org.orgId, healthyServiceId);
+      await preferIndexPlans(tx);
+      const before = await decisionRowsTouched(tx);
+      const built = await buildServiceBoard(tx, org.orgId, service);
+      const after = await decisionRowsTouched(tx);
+      return { board: built, touched: after - before };
+    });
+
+    // (a) CORRECTNESS FIRST — "no block" must still be reported as no block.
+    const row = board.rows.find((r) => r.component.id === healthyComponentId);
+    expect(row?.latestChangeId).toBe(healthyChangeObjectId);
+    expect(row?.attention.blocked).toBe(false);
+    expect(row?.attention.decisionId).toBeNull();
+
+    // (b) THE BOUND, which here is the WHOLE POINT: answering "nothing blocked this" must not cost
+    // the change's history. Measured 1 (the partial index holds no entry for this subject, so the
+    // descent stops at the first non-matching one). Dropping
+    // `decisions_org_subject_block_created` takes this to 401 — every row, discarded by a heap
+    // filter, to return `undefined`.
     expect(touched).toBeLessThanOrEqual(10);
     expect(touched).toBeLessThan(SEEDED_DECISIONS);
   });

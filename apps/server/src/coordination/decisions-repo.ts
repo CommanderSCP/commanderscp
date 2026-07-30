@@ -121,8 +121,8 @@ export async function latestDecisionForSubjectKind(
 }
 
 /**
- * The MOST RECENT decision carrying one `verdict` about one subject, or `undefined` — the same
- * single-row shape as {@link latestDecisionForSubjectKind}, keyed on the verdict instead of the kind.
+ * The MOST RECENT `block` decision about one subject, or `undefined` — the same single-row shape as
+ * {@link latestDecisionForSubjectKind}, keyed on the verdict the service board actually consumes.
  *
  * WHY THIS EXISTS (the board read that was pathological on the live instance). `service-board.ts`
  * needs exactly one thing out of a change's Decision history: the latest `block`, whose id it hands
@@ -134,28 +134,34 @@ export async function latestDecisionForSubjectKind(
  * JS objects PER BOARD ROW. That read is pre-existing (it predates the persist-on-change fix and is
  * not caused by it), but it is the same table and the same incident, and the fix does not bound it.
  *
- * WHY KEYED ON VERDICT AND NOT ON A LIST OF KINDS. "The latest block" is what the board consumes;
- * it does not consume any particular `kind`. Ten distinct kinds can currently record a `block`
- * against a change subject — `gate`, `wave_target`, `transition`, `pre-deploy-artifact-verify`, the
- * three `retrans-relay-*` kinds, `promotion-export-scan-gate`, `promotion-import-manifest-verify`
- * and `policy_evaluate_dry_run` — and enumerating them here would put a census in the read path that a
- * future eleventh writer silently falsifies: the board would quietly stop reporting `blocked` for
- * the one kind nobody remembered to add, with no test to notice. Filtering on the thing the board
- * actually means keeps the answer BYTE-IDENTICAL to the old JS scan (same ordering, same tiebreak,
- * same row) while reading one row instead of all of them, and leaves nothing to keep in sync.
+ * WHY KEYED ON THE VERDICT AND NOT ON A LIST OF KINDS. "The latest block" is what the board
+ * consumes; it does not consume any particular `kind`. Ten distinct kinds can currently record a
+ * `block` against a change subject — `gate`, `wave_target`, `transition`,
+ * `pre-deploy-artifact-verify`, the three `retrans-relay-*` kinds, `promotion-export-scan-gate`,
+ * `promotion-import-manifest-verify` and `policy_evaluate_dry_run` — and enumerating them here would
+ * put a census in the read path that a future eleventh writer silently falsifies: the board would
+ * quietly stop reporting `blocked` for the one kind nobody remembered to add, with no test to
+ * notice. Filtering on the thing the board actually means keeps the answer BYTE-IDENTICAL to the old
+ * JS scan (same ordering, same tiebreak, same row) and leaves nothing to keep in sync.
  *
- * WHAT IS AND IS NOT BOUNDED. Rows RETURNED is exactly one, always — that is the memory and
- * serialization blow-up this removes. Rows EXAMINED is bounded by however many of the subject's own
- * Decisions are NEWER than its latest block (the backward walk of `decisions_org_subject` stops at
- * the first match), which is 1 for every parked change and small for every other shape once
- * persist-on-change stops the same verdict being restated thousands of times. It is NOT bounded by
- * the org's or the subject's total row count, which is what the old read was bounded by.
+ * WHY IT TAKES NO `verdict` PARAMETER. `block` is baked in so that this query's shape and
+ * drizzle/0045's PARTIAL index (`… WHERE verdict = 'block'`) cannot drift apart. A generic
+ * verdict argument would let a future caller ask for `warn` and silently get the unindexed plan —
+ * the very trap 0044 exists to close, re-opened one call site over.
+ *
+ * WHAT IS BOUNDED, AND BY WHAT. Rows RETURNED is exactly one, always — that is the memory and
+ * serialization blow-up this removes. Rows EXAMINED is O(1) too, but ONLY because of drizzle/0045:
+ * without it `verdict` is a heap filter on the backward walk of `decisions_org_subject`, and a
+ * change that NEVER blocked — the common case on a healthy board — pays a walk over its ENTIRE
+ * history to return nothing (measured on the 12M-row reproduction: 45.8 ms / 20,526 buffers fully
+ * cached for a 200k-row history, 25,162 ms / 417,398 buffers cold for a 414k-row one, i.e. WORSE
+ * than the unbounded read it replaced). With the partial index the descent finds no entry for that
+ * (org, subject) and returns immediately: 0.070 ms / 13 buffers, no `Filter` line.
  */
-export async function latestDecisionForSubjectVerdict(
+export async function latestBlockDecisionForSubject(
   tx: TenantTx,
   orgId: string,
-  subjectId: string,
-  verdict: string
+  subjectId: string
 ): Promise<Decision | undefined> {
   const rows = await tx
     .select()
@@ -164,7 +170,10 @@ export async function latestDecisionForSubjectVerdict(
       and(
         eq(decisions.orgId, orgId),
         eq(decisions.subjectId, subjectId),
-        eq(decisions.verdict, verdict)
+        // Must stay a LITERAL matching drizzle/0045's index predicate verbatim — a bound parameter
+        // here would still use the partial index (the planner proves the implication from the
+        // constant at plan time), but a non-`block` value would not, and nothing would say so.
+        eq(decisions.verdict, "block")
       )
     )
     .orderBy(desc(decisions.createdAt), desc(decisions.id))
