@@ -36,22 +36,37 @@ import { badRequest, conflict } from "../errors.js";
  *      `POST/PATCH /v1/federation/outposts…`, and — for a future IaC manifest — the plan-apply path,
  *      which resolves `federation:write` for this type rather than plain `object:write`.
  *
- *  (3) NEITHER MAY EXPRESS THE OTHER'S FIELDS, structurally rather than by convention:
- *        * no transport field is REPRESENTABLE in the object — the create/update REQUEST BODIES
- *          (`CreateOutpostConfigRequestSchema`/`UpdateOutpostConfigRequestSchema`) carry no transport
- *          field of any kind, they are `z.strictObject` so an unknown property is REFUSED WITH 400
- *          rather than silently stripped (review round 5, N6), and they are the only operator-reachable
- *          write path. This is deliberately
- *          NOT enforced by the registered JSON Schema: that schema is journaled and validated on the
- *          RECEIVING side, so making it closed would turn every future property into a fail-closed
- *          version-skew hazard that aborts whole sync bundles (review round 4, H7 — read drizzle/0043's
- *          header before tightening it);
- *        * no declared-config field is REPRESENTABLE on the peer row — there is no trust-tier column,
- *          and the PATCH body admits only `{name, baseUrl, syncScope, deliveryTarget, pokeMode}`.
- *      Consequence, and the shape the tests assert in BOTH directions: a config write leaves
- *      `federation_peers`/`federation_peer_keys` untouched and appends exactly one journal entry; a
- *      transport write leaves the object's `version`/`revision` untouched and appends NO journal
- *      entry at all (F1 — peer state cannot ride the journal, by construction).
+ *  (3) NEITHER MAY EXPRESS THE OTHER'S FIELDS — enforced by TWO DIFFERENT MECHANISMS ON THE TWO WRITE
+ *      DOORS CLAUSE (2) NAMES, not by any structural unrepresentability of the stored object (review
+ *      round 6, M2 — the previous wording of this clause claimed exactly that structural guarantee, and
+ *      it was false: the IaC plan-apply door clause (2) itself names is the second door, it does NOT go
+ *      through the request bodies below, and it CAN store a transport-shaped key):
+ *        * THE OPERATOR-TYPING DOOR — `POST/PATCH /v1/federation/outposts…` — carries no transport
+ *          field of any kind: the request bodies (`CreateOutpostConfigRequestSchema`/
+ *          `UpdateOutpostConfigRequestSchema`) are `z.strictObject`, so an unknown property (including a
+ *          transport-shaped one) is REFUSED WITH 400 rather than silently stripped (review round 5, N6).
+ *          This is what actually stops an OPERATOR from typing a transport field into the object; it is
+ *          NOT a claim about the IaC door below.
+ *        * THE IaC PLAN-APPLY DOOR does not go through those request bodies. The registered JSON Schema
+ *          for `outpost` is deliberately OPEN (review round 4, H7 — read drizzle/0043's header before
+ *          tightening it: that schema is journaled and validated on the RECEIVING side, so closing it
+ *          would turn every future property into a fail-closed version-skew hazard that aborts whole
+ *          sync bundles), so a plan-apply manifest CAN store a `baseUrl`/`trustTier`-shaped key under an
+ *          `outpost` object's properties and pass validation — MEASURED (review round 6, M2), not merely
+ *          possible. What stops that from being a privilege escalation is NOT unrepresentability: it is
+ *          (a) the IaC door resolves the same `federation:write` an operator-typed write does (no
+ *          broader grant reaches it), (b) the 1:1 peer-binding guard in clause (4) still fires against
+ *          it exactly as it does against any other write, and (c) whatever lands in `properties` is
+ *          INERT — every transport read (the exporter, the puller, the poke sender, every signature
+ *          verification) reads ONLY the peer row, never the object's `properties`, so a smuggled
+ *          `baseUrl` is stored but never consulted.
+ *        * no declared-config field is REPRESENTABLE on the peer row — there IS a structural guarantee
+ *          in this direction: there is no trust-tier column, and the PATCH body admits only
+ *          `{name, baseUrl, syncScope, deliveryTarget, pokeMode}`.
+ *      Consequence, and the shape the tests assert in BOTH directions: a config write through the
+ *      operator-typing door leaves `federation_peers`/`federation_peer_keys` untouched and appends
+ *      exactly one journal entry; a transport write leaves the object's `version`/`revision` untouched
+ *      and appends NO journal entry at all (F1 — peer state cannot ride the journal, by construction).
  *
  *  (4) THE PEER ROW IS THE ANCHOR; THE BINDING IS 1:1 AND OBJECT→PEER ONLY. An `outpost` object must
  *      name an already-paired peer that holds role `outpost` (an unbound `peerDomainId` is a 400); a
