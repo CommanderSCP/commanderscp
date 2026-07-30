@@ -54,6 +54,21 @@ import { clientFromStoredCredentials, resolveLoginBaseUrl } from "./client-facto
 import { promptLine } from "./prompt.js";
 import { printResult, type OutputFormat } from "./output.js";
 
+/**
+ * ABSENT — `null` OR `undefined`, never one of the two.
+ *
+ * The generated SDK does NO runtime response validation (it returns `response.json()` under a
+ * TypeScript type), so a key an older or newer server OMITS arrives as `undefined` whatever the
+ * schema says — `.nullable()` without `.optional()` buys nothing at runtime. A strict `=== null`
+ * therefore guards ONE of two legal absences and lets the other through to a printer, where it
+ * becomes the literal string `undefined`, a crash on `.toFixed(…)`, or — worst — the CONFIDENT
+ * branch of a ternary whose other branch was the honest one. `apps/web/src/lib/absent.ts` is the
+ * same rule for the browser half; this is the CLI's copy, because the two share no runtime.
+ */
+function isAbsent(value: unknown): value is null | undefined {
+  return value === null || value === undefined;
+}
+
 function parseJsonOption(
   value: string | undefined,
   flag: string
@@ -187,7 +202,7 @@ function campaignDetailRow(c: Campaign): Record<string, string> {
     description: c.description ?? "",
     targets: c.targets.join(", "),
     topologyObjectId: c.topologyObjectId ?? "",
-    topologyVersion: c.topologyVersion !== null ? String(c.topologyVersion) : "",
+    topologyVersion: isAbsent(c.topologyVersion) ? "" : String(c.topologyVersion),
     createdAt: c.createdAt,
     updatedAt: c.updatedAt
   };
@@ -257,8 +272,9 @@ function printFederationStatus(status: FederationStatusResponse, output: OutputF
       peer: `${p.peer.name} (${p.peer.id})`,
       role: p.peer.role,
       // DESIGN §13: air-gapped peers are explicitly "as of <bundle/date>", never presented as live.
-      syncedThrough:
-        p.lastAppliedSequence !== null ? `seq ${p.lastAppliedSequence}` : "never synced",
+      syncedThrough: isAbsent(p.lastAppliedSequence)
+        ? "never synced"
+        : `seq ${p.lastAppliedSequence}`,
       asOf: p.lastSyncedAt ?? "never",
       // M14.4 (ADR-0009) — the cadence ACTUALLY in force, next to the raw flag on `federation peers`.
       // "poke*" flags a divergence worth looking at: the peer is configured for poke-mode but the
@@ -276,19 +292,17 @@ function printFederationStatus(status: FederationStatusResponse, output: OutputF
       // the peer applied (this side cannot observe that — see the schema's note and `unknownFields`).
       // `?` is printed whenever the field is declared unknown, so a null never reads as "nothing
       // pending"/"synced".
-      pendingExport:
-        p.pendingExportEntryCount === null || p.pendingExportEntryCount === undefined
-          ? "?"
-          : `${p.pendingExportEntryCount} pending`,
+      pendingExport: isAbsent(p.pendingExportEntryCount)
+        ? "?"
+        : `${p.pendingExportEntryCount} pending`,
       // The owner-ENTERED trust tier from the peer's `outpost` object, or "?" when never asserted
       // (F3: there is no source for a default, so the CLI must not print one). An UNVERIFIED
       // hand-filled claim is suffixed rather than printed bare — it is not a commander assertion.
-      trustTier:
-        p.trustTier === null || p.trustTier === undefined
-          ? "?"
-          : p.trustTierProvenance === "unverified"
-            ? `${p.trustTier} (unverified)`
-            : p.trustTier,
+      trustTier: isAbsent(p.trustTier)
+        ? "?"
+        : p.trustTierProvenance === "unverified" || (p.unknownFields ?? []).includes("trustTier")
+          ? `${p.trustTier} (unverified)`
+          : p.trustTier,
       // The CONFIGURED transport channel, deliberately separate from the tier and NEVER a reachability
       // claim ("dialable" means a dialable URL is configured; `lastPull` above is the observation).
       // "?" when no transport is configured, or when one is configured that federation refuses to dial.
@@ -331,7 +345,7 @@ function outpostConfigRow(o: OutpostConfig): Record<string, string> {
  *  rather than only via the command's `--keep` help text. */
 export function formatReconcileResultLines(result: OutpostConfigReconcileResult): string[] {
   const lines: string[] = [
-    result.adoptedObjectId === null
+    isAbsent(result.adoptedObjectId)
       ? "Adopted: nothing (an authoritative row already held the binding)"
       : `Adopted: ${result.adoptedObjectId} (an unverified hand-filled shadow is now this domain's own object)`
   ];
@@ -2236,10 +2250,10 @@ export function buildProgram(): Command {
         return {
           tier: item.tier,
           origin: item.origin,
-          maxCritical: item.maxCritical === null ? "-" : String(item.maxCritical),
-          maxHigh: item.maxHigh === null ? "-" : String(item.maxHigh),
-          maxMedium: item.maxMedium === null ? "-" : String(item.maxMedium),
-          maxLow: item.maxLow === null ? "-" : String(item.maxLow),
+          maxCritical: isAbsent(item.maxCritical) ? "-" : String(item.maxCritical),
+          maxHigh: isAbsent(item.maxHigh) ? "-" : String(item.maxHigh),
+          maxMedium: isAbsent(item.maxMedium) ? "-" : String(item.maxMedium),
+          maxLow: isAbsent(item.maxLow) ? "-" : String(item.maxLow),
           note: item.note ?? ""
         };
       });
@@ -2420,7 +2434,7 @@ export function buildProgram(): Command {
         return {
           present: String(s.present),
           source: s.source,
-          ageHours: s.ageHours === null ? "(unknown)" : s.ageHours.toFixed(1),
+          ageHours: isAbsent(s.ageHours) ? "(unknown)" : s.ageHours.toFixed(1),
           schemaCompatible: String(s.schemaCompatible),
           staleness: s.staleness,
           thresholdFired: s.thresholdFired,

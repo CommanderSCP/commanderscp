@@ -15,7 +15,8 @@ import { isForeignOriginObject, replicaGuard, useOwnDomainId } from "../lib/repl
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
-import { isAbsent, UnknownHere } from "./outposts";
+import { isAbsent } from "../lib/absent";
+import { UnknownHere } from "./outposts";
 import { problemDetail } from "./outpost-settings";
 
 /**
@@ -219,21 +220,37 @@ export function TrustTierCard({
 }): React.JSX.Element {
   const [tier, setTier] = useState<string>(config.trustTier ?? "");
   const foreign = isConfigForeign(config, ownDomainId);
-  // `provenance === "manual"` ALONE, not `foreign && …`. A `"manual"` row IS an unverified hand-filled
-  // shadow by the schema's own definition (`"manual"` for a hand-filled shadow, `null` for anything a
-  // signature verified or this domain authored) — its origin adds nothing. Worse, `isConfigForeign`
-  // answers FALSE while `ownDomainId` is still loading and the server omitted `originIsSelf`: that is
-  // deliberately the right answer for a WRITE gate (never fabricate a block on a write the server
-  // would accept) and the wrong one for a DISPLAY discriminator. Conjoining them meant that during
-  // the load window a hand-typed shadow rendered `data-tier-unverified="false"` — a manual claim
-  // presented as this domain's authority, which is what phase A round 4 exists to prevent.
-  const unverifiedShadow = config.provenance === "manual";
+  // `?? []` — `unknownFields` is required-not-optional by `OutpostConfigSchema`, and the generated SDK
+  // validates NO response, so a server that omits the key made this dereference throw a TypeError and
+  // BLANK THE WHOLE PANEL. Under the very response shape the guard below exists for, that is worse
+  // than the unknown it was meant to render: fail loud beats fail dishonest, but a white screen is
+  // neither. "Nothing declared" is the same reading `isPeerUnknown` gives an older server.
+  const tierUnknown = (config.unknownFields ?? []).includes("trustTier");
+  // TWO INDEPENDENT SIGNALS FOR ONE FACT, OR'd — the same fix `outposts.tsx`'s `TrustTierCell` got,
+  // applied to the file whose own commit is titled "guard both, everywhere" and which had been given
+  // only the ownDomainId-load half of it.
+  //
+  //   * `provenance === "manual"` ALONE, not `foreign && …`. A `"manual"` row IS an unverified
+  //     hand-filled shadow by the schema's own definition — its origin adds nothing. Worse,
+  //     `isConfigForeign` answers FALSE while `ownDomainId` is still loading and the server omitted
+  //     `originIsSelf`: deliberately the right answer for a WRITE gate (never fabricate a block on a
+  //     write the server would accept) and the wrong one for a DISPLAY discriminator.
+  //   * A TIER THAT RIDES THE WIRE WHILE THE SERVER DECLARES IT UNOBSERVABLE. `toOutpostConfig`
+  //     pushes `"trustTier"` into `unknownFields` in exactly two cases: no tier at all, or
+  //     `provenance === "manual"`. So a config that HAS a tier and declares it unknown IS the shadow
+  //     case — with the OPTIONAL `provenance` key merely omitted (`.nullable().optional()`, and the
+  //     SDK does not validate). MEASURED: keyed on provenance alone, such a row rendered
+  //     BYTE-IDENTICAL to a signature-verified replica of the same tier — `data-tier-unverified="false"`,
+  //     no shadow notice. `!isAbsent(config.trustTier) &&` is load-bearing and is what keeps this from
+  //     over-blocking: an ordinary locally-authored config with NO tier yet also declares `trustTier`
+  //     unknown, and must stay fully editable — that is the whole declare-then-set flow.
+  const declaredUnverifiedTier = !isAbsent(config.trustTier) && tierUnknown;
+  const unverifiedShadow = config.provenance === "manual" || declaredUnverifiedTier;
   // …and the edit control follows, for the same row, on a MEASURED refusal rather than on caution:
   // `outpost-handfill-wedge.integration.test.ts` measures PATCH answering 409 when the only row is an
   // unverified hand-filled shadow. Offering an enabled control that the server will refuse is the
   // mirror-image defect of blocking one it would accept.
   const guard = replicaGuard(foreign || unverifiedShadow, CONFIG_WRITE_REFUSAL);
-  const tierUnknown = config.unknownFields.includes("trustTier");
 
   return (
     <div className="flex flex-col gap-3" data-testid="trust-tier-card">
@@ -263,7 +280,11 @@ export function TrustTierCard({
             data-tier-unverified={String(unverifiedShadow)}
           >
             <Badge variant={unverifiedShadow ? "outline" : "secondary"}>{config.trustTier}</Badge>
-            {tierUnknown && unverifiedShadow && (
+            {/* `unverifiedShadow` ALONE. It used to be `tierUnknown && unverifiedShadow`, which meant
+                the visible "unverified" word was withheld whenever the server declared nothing —
+                leaving only an attribute and a badge variant to carry the whole distinction. Whenever
+                the value is rendered as unverified, an operator READS that it is. */}
+            {unverifiedShadow && (
               <span className="ml-2">
                 <UnknownHere
                   label="unverified"
@@ -579,6 +600,21 @@ export function ReconcileOutcome({
 }: {
   result: OutpostConfigReconcileResult;
 }): React.JSX.Element {
+  // `isAbsent`, not `=== null` / `!== null` — the SAME schema class this file already fixed for
+  // `config.trustTier`, left half-guarded here. `adoptedObjectId` is required-nullable and the SDK
+  // validates no response, so `undefined` is reachable. MEASURED with `adoptedObjectId: undefined`:
+  // `!== null` was TRUE, so the panel emitted
+  //   `<p data-testid="reconcile-adopted">Adopted <code></code> as this domain's own configuration —
+  //    it journals down to the outpost from now on.</p>`
+  // — an EMPTY element inside a confident claim about a journaling side-effect — while the `=== null`
+  // mirror below simultaneously suppressed the honest `reconcile-removed-none` branch, so the panel
+  // reported an adoption that did not happen AND withheld the statement that nothing did.
+  const adopted = isAbsent(result.adoptedObjectId) ? null : result.adoptedObjectId;
+  // …and the two id lists are required-not-optional, dereferenced for `.length` four times: a server
+  // that omits either one threw a TypeError over the whole outcome panel, i.e. the operator saw
+  // NOTHING about a destructive verb that had just run.
+  const removedShadows = result.removedShadowObjectIds ?? [];
+  const removedLocal = result.removedLocalObjectIds ?? [];
   return (
     <div
       className="rounded border border-slate-300 bg-white p-3 text-sm"
@@ -587,35 +623,31 @@ export function ReconcileOutcome({
       <p>
         The binding now resolves to <code>{result.config.objectId}</code>.
       </p>
-      {result.adoptedObjectId !== null && (
+      {adopted !== null && (
         <p className="mt-2 text-slate-700" data-testid="reconcile-adopted">
-          Adopted <code>{result.adoptedObjectId}</code> as this domain&apos;s own configuration — it
-          journals down to the outpost from now on.
+          Adopted <code>{adopted}</code> as this domain&apos;s own configuration — it journals down
+          to the outpost from now on.
         </p>
       )}
-      {result.removedShadowObjectIds.length > 0 && (
+      {removedShadows.length > 0 && (
         <p className="mt-2 text-slate-700" data-testid="reconcile-removed-shadows">
-          Removed {result.removedShadowObjectIds.length} unverified hand-filled shadow
-          {result.removedShadowObjectIds.length === 1 ? "" : "s"} —{" "}
-          <strong>a local cleanup only</strong>; this domain never authored them, so nothing rode
-          the journal and nothing downstream saw it.
+          Removed {removedShadows.length} unverified hand-filled shadow
+          {removedShadows.length === 1 ? "" : "s"} — <strong>a local cleanup only</strong>; this
+          domain never authored them, so nothing rode the journal and nothing downstream saw it.
         </p>
       )}
-      {result.removedLocalObjectIds.length > 0 && (
+      {removedLocal.length > 0 && (
         <p
           className="mt-2 rounded border border-red-300 bg-red-50 p-2 text-red-800"
           data-testid="reconcile-removed-local"
         >
-          Removed {result.removedLocalObjectIds.length} configuration object
-          {result.removedLocalObjectIds.length === 1 ? "" : "s"}{" "}
-          <strong>this domain authored</strong> — an ordinary journaled tombstone that{" "}
-          <strong>PROPAGATES downstream</strong>: the outpost will drop its replica on the next
-          sync.
+          Removed {removedLocal.length} configuration object
+          {removedLocal.length === 1 ? "" : "s"} <strong>this domain authored</strong> — an ordinary
+          journaled tombstone that <strong>PROPAGATES downstream</strong>: the outpost will drop its
+          replica on the next sync.
         </p>
       )}
-      {result.removedShadowObjectIds.length === 0 &&
-        result.removedLocalObjectIds.length === 0 &&
-        result.adoptedObjectId === null && (
+      {removedShadows.length === 0 && removedLocal.length === 0 && adopted === null && (
           <p className="mt-2 text-slate-600" data-testid="reconcile-removed-none">
             Nothing needed removing.
           </p>

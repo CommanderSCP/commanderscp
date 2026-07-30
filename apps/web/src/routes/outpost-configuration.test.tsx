@@ -299,6 +299,124 @@ describe("trust tier: an unverified shadow is named, not overwritten", () => {
     expect(tagWithAttr(html, 'data-testid="config-tier-save"')).toContain("read-only replica");
   });
 
+  /**
+   * ROUND 3 — W3 WAS APPLIED ONE FILE OVER AND NOT HERE.
+   *
+   * `outposts.tsx`'s `TrustTierCell` was fixed to OR the two signals the server emits for this one
+   * case; `TrustTierCard` still decided declared-vs-unverified from `provenance` ALONE. But
+   * `toOutpostConfig` (`outposts-repo.ts`) pushes `"trustTier"` into `unknownFields` in exactly two
+   * cases — no tier at all, or `provenance === "manual"` — so a config that HAS a tier and declares
+   * it unknown IS the shadow case, and `OutpostConfigSchema.provenance` is
+   * `.nullable().optional()`, so a well-formed response may simply omit the key.
+   *
+   * MEASURED before the fix: this config rendered BYTE-IDENTICAL to a signature-verified replica of
+   * the same tier — `data-tier-unverified="false"`, no shadow notice, edit control offered.
+   */
+  it("a tier the server DECLARES unknown is unverified even with the provenance key omitted", () => {
+    const noProvenance = shadowFixture({ trustTier: "commercial" });
+    delete (noProvenance as { provenance?: unknown }).provenance;
+    // PREMISE: the ONLY signal left is the declaration.
+    expect(noProvenance.provenance).toBeUndefined();
+    expect(noProvenance.unknownFields).toContain("trustTier");
+
+    const html = renderToStaticMarkup(
+      <TrustTierCard
+        config={noProvenance}
+        ownDomainId={OWN_DOMAIN}
+        onSave={() => {}}
+        onReconcile={() => {}}
+      />
+    );
+    // The comparison that actually bites: a signature-verified replica of the SAME tier, which is a
+    // value this domain may legitimately show as an assertion.
+    const verified = renderToStaticMarkup(
+      <TrustTierCard
+        config={replicaFixture({ trustTier: "commercial", unknownFields: [] })}
+        ownDomainId={OWN_DOMAIN}
+        onSave={() => {}}
+        onReconcile={() => {}}
+      />
+    );
+
+    expect(html).not.toBe(verified);
+    expect(html).toContain('data-tier-unverified="true"');
+    expect(html).not.toContain('data-tier-unverified="false"');
+    expect(visibleText(html)).toContain("unverified");
+    expect(html).toContain('data-testid="config-unverified-shadow-notice"');
+    // PREMISE, so this cannot pass by the verified case having regressed into an unverified one:
+    // a replica whose tier the server does NOT declare unknown is still shown as an assertion.
+    expect(verified).toContain('data-tier-unverified="false"');
+    expect(verified).not.toContain('data-testid="config-unverified-shadow-notice"');
+  });
+
+  it("the OTHER direction: a manual shadow whose declaration is missing still READS as unverified", () => {
+    // The mirror of the test above, and it is not symmetric bookkeeping: the visible "unverified"
+    // word was rendered behind `tierUnknown && unverifiedShadow`, so an older server that sends
+    // `provenance: "manual"` but declares nothing left an operator with only an ATTRIBUTE and a
+    // badge VARIANT to tell a hand-typed claim from this domain's own assertion — neither of which
+    // anybody reads. Whenever the value is shown as unverified, it must SAY so.
+    const undeclared = shadowFixture({ trustTier: "commercial", unknownFields: [] });
+    expect(undeclared.provenance).toBe("manual");
+    expect(undeclared.unknownFields).toHaveLength(0);
+
+    const html = renderToStaticMarkup(
+      <TrustTierCard
+        config={undeclared}
+        ownDomainId={OWN_DOMAIN}
+        onSave={() => {}}
+        onReconcile={() => {}}
+      />
+    );
+    expect(html).toContain('data-tier-unverified="true"');
+    // THE HALF THAT WAS MISSING: the rendered text, not the attribute beside it.
+    expect(visibleText(html)).toContain("unverified");
+    expect(html).toContain('data-testid="outpost-unknown"');
+  });
+
+  it("NO OVER-BLOCKING: an ordinary local config with no tier yet stays fully editable", () => {
+    // The guard rail on the fix above. A locally-authored config with NO tier ALSO declares
+    // `trustTier` unknown (`if (trustTier === null) unknownFields.push("trustTier")`), and it is the
+    // ordinary declare-then-set flow — so keying the unverified/edit-gate on the declaration ALONE
+    // would disable the very control this milestone exists to offer. `!isAbsent(config.trustTier)`
+    // is what keeps the two apart, and this is what fails if it is dropped.
+    const fresh = configFixture();
+    expect(fresh.trustTier).toBeNull();
+    expect(fresh.unknownFields).toContain("trustTier");
+
+    const html = renderToStaticMarkup(
+      <TrustTierCard
+        config={fresh}
+        ownDomainId={OWN_DOMAIN}
+        onSave={() => {}}
+        onReconcile={() => {}}
+      />
+    );
+    expect(html).toContain('data-trust-tier="unknown"');
+    expect(html).not.toContain('data-testid="config-unverified-shadow-notice"');
+    expect(tagWithAttr(html, 'data-testid="config-tier-select"')).not.toContain("disabled");
+    expect(tagWithAttr(html, 'data-testid="config-tier-save"')).not.toContain("read-only replica");
+  });
+
+  it("survives a response that omits unknownFields — an unknown, never a blank panel", () => {
+    // `unknownFields` is required-not-optional and the SDK validates no response, so
+    // `config.unknownFields.includes(...)` threw a TypeError and BLANKED THE WHOLE CARD — under the
+    // very response shape the guards here exist for. Fail loud beats fail dishonest; a white screen
+    // is neither.
+    const noDeclaration = configFixture({ trustTier: "il5" });
+    delete (noDeclaration as { unknownFields?: unknown }).unknownFields;
+
+    const html = renderToStaticMarkup(
+      <TrustTierCard
+        config={noDeclaration as OutpostConfig}
+        ownDomainId={OWN_DOMAIN}
+        onSave={() => {}}
+        onReconcile={() => {}}
+      />
+    );
+    expect(html).toContain('data-trust-tier="il5"');
+    expect(html).toContain('data-testid="config-tier-select"');
+  });
+
   it("isConfigForeign prefers the server's own originIsSelf and never fabricates a block", () => {
     expect(isConfigForeign(configFixture(), OWN_DOMAIN)).toBe(false);
     expect(isConfigForeign(shadowFixture(), OWN_DOMAIN)).toBe(true);
@@ -581,6 +699,51 @@ describe("reconcile: the two removal outcomes are never one bucket", () => {
     };
     const html = renderToStaticMarkup(<ReconcileOutcome result={adopted} />);
     expect(html).toContain('data-testid="reconcile-adopted"');
+    expect(html).not.toContain('data-testid="reconcile-removed-local"');
+    expect(html).not.toContain('data-testid="reconcile-removed-shadows"');
+  });
+
+  /**
+   * ROUND 3 — THE SAME `=== null` HALF-GUARD, IN THE FILE WHOSE COMMIT IS TITLED "guard both,
+   * everywhere". `adoptedObjectId` is required-nullable and the SDK validates no response.
+   *
+   * MEASURED with `adoptedObjectId: undefined`, BOTH mirrors misfired at once:
+   *   * `!== null` was TRUE, so the panel emitted `<p data-testid="reconcile-adopted">Adopted
+   *     <code></code> as this domain's own configuration — it journals down to the outpost from now
+   *     on.</p>` — an EMPTY element inside a confident claim about a journaling side-effect; and
+   *   * `=== null` was FALSE, so the honest `reconcile-removed-none` branch was suppressed.
+   * The operator was told an adoption happened AND denied the statement that nothing did.
+   */
+  it("an ABSENT adoptedObjectId claims no adoption — and does not suppress 'nothing removed'", () => {
+    const absent = {
+      config: configFixture({ trustTier: "il5" }),
+      removedShadowObjectIds: [],
+      removedLocalObjectIds: []
+    } as unknown as OutpostConfigReconcileResult;
+    // The KEY IS MISSING, which is what an omitting server actually sends.
+    expect("adoptedObjectId" in absent).toBe(false);
+
+    const html = renderToStaticMarkup(<ReconcileOutcome result={absent} />);
+    expect(html).not.toContain('data-testid="reconcile-adopted"');
+    expect(visibleText(html)).not.toMatch(/Adopted\s+as this domain/);
+    expect(visibleText(html)).not.toMatch(/journals down to the outpost/);
+    // The other mirror: the honest branch is reached.
+    expect(html).toContain('data-testid="reconcile-removed-none"');
+    expect(visibleText(html)).toContain("Nothing needed removing");
+  });
+
+  it("survives a response that omits the removed-id arrays — an outcome, never a blank panel", () => {
+    // Both arrays are required-not-optional and are dereferenced four times for `.length`, so an
+    // omitting server threw a TypeError over the WHOLE outcome panel — i.e. the operator saw nothing
+    // at all about a destructive verb that had just run.
+    const bare = {
+      config: configFixture({ trustTier: "il5" }),
+      adoptedObjectId: null
+    } as unknown as OutpostConfigReconcileResult;
+
+    const html = renderToStaticMarkup(<ReconcileOutcome result={bare} />);
+    expect(html).toContain('data-testid="reconcile-result"');
+    expect(html).toContain('data-testid="reconcile-removed-none"');
     expect(html).not.toContain('data-testid="reconcile-removed-local"');
     expect(html).not.toContain('data-testid="reconcile-removed-shadows"');
   });

@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import type { BundleTransfer, FederationPeerStatus } from "@scp/schemas";
 import { client } from "../lib/client";
+import { isAbsent } from "../lib/absent";
 import { federationStatusKey } from "../lib/query-client";
 import { Badge } from "../components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
@@ -72,25 +73,10 @@ export function UnknownHere({ title, label = "unknown here" }: { title: string; 
   );
 }
 
-/**
- * ABSENT — `null` OR `undefined`, never one of the two.
- *
- * THE BUG THIS EXISTS TO MAKE UNREPEATABLE. Almost every federated reading on this page is
- * `.nullable().optional()` (`packages/schemas/src/federation.ts`), so BOTH absent values are legal on
- * the wire, and the generated SDK does NO runtime response validation — it hands back
- * `response.json()` under a TypeScript type — so a key an older or newer server simply omits arrives
- * as `undefined` whatever its schema says. A strict `=== null` check therefore guards one of two
- * legal absences and lets the other reach the renderer, where an absent NUMBER prints as an empty
- * string inside otherwise-confident copy: `"⟨nothing⟩ of this domain's own journal entries not yet
- * put on the wire"` reads as "nothing pending". That is a blank standing in for an unknown, which is
- * exactly what this file's rule at the top forbids.
- *
- * The string-valued cells are safe by accident (`!checksum` catches both); this makes the numeric and
- * enum-valued ones safe on purpose, in one place, so the next such field cannot be half-guarded.
- */
-export function isAbsent(value: unknown): boolean {
-  return value === null || value === undefined;
-}
+/** ABSENT — `null` OR `undefined`. Moved to `lib/absent.ts` in round 3 so every route shares ONE
+ *  guard instead of re-deriving the half-guarded `=== null` form; re-exported here because this file
+ *  is where the rule was written down and where its callers look for it. */
+export { isAbsent };
 
 export function formatDateTime(value: string | null | undefined): string {
   if (!value) return "never";
@@ -117,6 +103,32 @@ export function roleBadge(role: string): React.JSX.Element {
       {role}
     </Badge>
   );
+}
+
+export type TierMark =
+  { tier: "unknown"; provenance: "none" } | { tier: string; provenance: "declared" | "unverified" };
+
+/**
+ * THE TIER CLAIM AND ITS QUALIFIER, DERIVED ONCE (round 3, the X4 census miss).
+ *
+ * `data-trust-tier` is a CLAIM, and this suite's own stated rule is that the forbidden thing is the
+ * claim — the rendered word AND the machine-readable attribute. The ROW carried a bare
+ * `data-trust-tier={status.trustTier ?? "unknown"}` with no qualifier beside it, so an unverified
+ * hand-typed peer and a commander-declared one produced a BYTE-IDENTICAL
+ * `<tr … data-trust-tier="commercial">` — and the row attribute is exactly what an E2E selector or
+ * any other DOM consumer keys on. The cell inside had been fixed; the row had not, because the
+ * census walked the components rather than the attributes.
+ *
+ * So both read this. A qualifier that is computed in one place cannot be applied in one place and
+ * forgotten in the other.
+ */
+export function trustTierMark(status: FederationPeerStatus): TierMark {
+  const tier = status.trustTier ?? null;
+  if (tier === null) return { tier: "unknown", provenance: "none" };
+  // TWO INDEPENDENT SIGNALS FOR ONE FACT — see `TrustTierCell` below for why they are OR'd.
+  const unverified =
+    (status.trustTierProvenance ?? null) === "unverified" || isPeerUnknown(status, "trustTier");
+  return { tier, provenance: unverified ? "unverified" : "declared" };
 }
 
 /**
@@ -159,8 +171,8 @@ export function TrustTierCell({ status }: { status: FederationPeerStatus }): Rea
   // provenance alone dropped such a row through to the declared badge below, rendering a hand-typed
   // claim BYTE-IDENTICAL to a commander assertion. That is the fabrication phase A round 4 existed to
   // fix, with the honest signal already on the wire and unread. So: OR them.
-  const declaredUnknown = isPeerUnknown(status, "trustTier");
-  if (provenance === "unverified" || declaredUnknown) {
+  const mark = trustTierMark(status);
+  if (mark.provenance === "unverified") {
     return (
       <span data-testid="outpost-tier" data-trust-tier={tier} data-tier-provenance="unverified">
         <span
@@ -418,11 +430,16 @@ export function RecentTransfersCell({
  *  that runs on every PR, not only by the main-only Playwright suite. */
 export function OutpostRow({ status }: { status: FederationPeerStatus }): React.JSX.Element {
   const { peer } = status;
+  // THE ROW'S OWN CLAIM CARRIES ITS OWN QUALIFIER. `data-trust-tier` here used to be bare, so an
+  // unverified peer and a declared one produced byte-identical row markup even after the CELL
+  // learned to tell them apart. Both now read `trustTierMark`, so they cannot disagree.
+  const mark = trustTierMark(status);
   return (
     <TableRow
       data-testid="outpost-row"
       data-peer-id={peer.id}
-      data-trust-tier={status.trustTier ?? "unknown"}
+      data-trust-tier={mark.tier}
+      data-tier-provenance={mark.provenance}
       data-transport-mode={status.transportMode ?? "unknown"}
     >
       <TableCell>
@@ -467,7 +484,13 @@ export function OutpostRow({ status }: { status: FederationPeerStatus }): React.
         />
       </TableCell>
       <TableCell>
-        <RecentTransfersCell transfers={status.recentTransfers} />
+        {/* `?? []` — FAIL LOUD IS BETTER THAN FAIL DISHONEST, but a WHITE SCREEN is neither.
+            `recentTransfers` is required-not-optional by the schema, and the SDK validates no
+            response, so a server that omits it made `transfers.length` throw a TypeError that took
+            the ENTIRE page down — including every honest unknown on every other row. An empty
+            ledger renders "none recorded here", which is already the truthful reading of "this
+            side has no transfer rows to show". */}
+        <RecentTransfersCell transfers={status.recentTransfers ?? []} />
       </TableCell>
     </TableRow>
   );

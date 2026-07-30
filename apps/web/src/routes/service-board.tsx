@@ -7,6 +7,7 @@ import type {
   ServiceBoardWave
 } from "@scp/sdk";
 import { client } from "../lib/client";
+import { isAbsent } from "../lib/absent";
 import { serviceBoardKey } from "../lib/query-client";
 import { useIdParam } from "../lib/use-route-params";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -309,7 +310,7 @@ export function BoardAsOfLabel({ asOf }: { asOf: ServiceBoardAsOf | null }): Rea
       title={
         asOf.stale === true
           ? `Overdue: nothing has arrived from ${asOf.peerName} for ${asOf.ageSeconds}s, past the ${asOf.staleAfterSeconds}s after which a sync cycle counts as missed (its effective sync cadence is ${asOf.expectedWithinSeconds}s, plus the grace a healthy peer needs — data is always at least one cadence old by the time the next import lands). This board may not reflect changes already in flight upstream.`
-          : asOf.stale === null
+          : isAbsent(asOf.stale)
             ? `This instance runs no pull schedule for ${asOf.peerName}, so there is no cadence for this data to be late against. It is last-known state as of the bundle named here — not live status (DESIGN §13).`
             : `Not overdue: this data is ${asOf.ageSeconds}s old and ${asOf.peerName} is not counted late until ${asOf.staleAfterSeconds}s (its effective sync cadence is ${asOf.expectedWithinSeconds}s, plus the grace a healthy peer needs — data is always at least one cadence old by the time the next import lands).`
       }

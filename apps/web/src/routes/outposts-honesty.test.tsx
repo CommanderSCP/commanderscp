@@ -37,7 +37,8 @@ const {
   TransportCell,
   PendingExportCell,
   isPeerUnknown,
-  isOutpostPeer
+  isOutpostPeer,
+  trustTierMark
 } = await import("./outposts");
 
 const PEER_ID = "0e0a1b2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c";
@@ -220,6 +221,80 @@ describe("outposts overview: an unasserted trust tier is never a tier", () => {
     expect(declared).toContain('data-tier-provenance="declared"');
     expect(visibleText(declared)).not.toContain("unverified");
   });
+
+  /**
+   * THE ROW ATTRIBUTE, WHICH THE PREVIOUS ROUND'S CENSUS WALKED PAST (round 3).
+   *
+   * Every test above renders `<TrustTierCell>` DIRECTLY, so `<OutpostRow>`'s own
+   * `data-trust-tier` was asserted for no tier case at all — and it was bare
+   * (`status.trustTier ?? "unknown"`), with no provenance qualifier beside it. This suite's own
+   * stated rule (top of this file) is that the forbidden thing is the CLAIM: the rendered word AND
+   * the machine-readable `data-*` attribute. So an unverified peer and a declared one emitted a
+   * BYTE-IDENTICAL `<tr … data-trust-tier="commercial">`, which is exactly what an E2E selector or
+   * any other DOM consumer keys on.
+   */
+  it("the ROW's machine-readable tier claim carries its qualifier, not just the cell's", () => {
+    const unverifiedRow = renderRow(
+      basePeer({
+        trustTier: "commercial",
+        trustTierProvenance: "unverified",
+        unknownFields: ["trustTier", "healthRollup", "appliedAtPeer"]
+      })
+    );
+    const declaredRow = renderRow(
+      basePeer({
+        trustTier: "commercial",
+        trustTierProvenance: "declared",
+        unknownFields: ["healthRollup", "appliedAtPeer"]
+      })
+    );
+
+    const rowTag = (html: string): string => {
+      const at = html.indexOf('data-testid="outpost-row"');
+      return html.slice(html.lastIndexOf("<", at), html.indexOf(">", at) + 1);
+    };
+
+    // PREMISE: both rows really do carry the same tier, so the difference below is the qualifier
+    // and not a difference in the value.
+    expect(rowTag(unverifiedRow)).toContain('data-trust-tier="commercial"');
+    expect(rowTag(declaredRow)).toContain('data-trust-tier="commercial"');
+    // THE GUARANTEE: the ROW TAG ITSELF distinguishes them.
+    expect(rowTag(unverifiedRow)).not.toBe(rowTag(declaredRow));
+    expect(rowTag(unverifiedRow)).toContain('data-tier-provenance="unverified"');
+    expect(rowTag(declaredRow)).toContain('data-tier-provenance="declared"');
+    // …and a peer with NO tier says so on the row too, rather than carrying an enum member.
+    expect(rowTag(renderRow(basePeer()))).toContain('data-trust-tier="unknown"');
+    expect(rowTag(renderRow(basePeer()))).toContain('data-tier-provenance="none"');
+  });
+
+  it("the row and the cell read ONE derivation — they cannot disagree", () => {
+    // `trustTierMark` is the single source both consume. Asserted as a function so a future edit
+    // that reintroduces a second, bare copy of the claim in either place has to fight this too.
+    const noProvenance = basePeer({
+      trustTier: "govcloud",
+      unknownFields: ["trustTier", "healthRollup", "appliedAtPeer"]
+    });
+    delete (noProvenance as { trustTierProvenance?: unknown }).trustTierProvenance;
+
+    expect(trustTierMark(basePeer())).toEqual({ tier: "unknown", provenance: "none" });
+    expect(trustTierMark(noProvenance)).toEqual({ tier: "govcloud", provenance: "unverified" });
+    expect(
+      trustTierMark(
+        basePeer({
+          trustTier: "govcloud",
+          trustTierProvenance: "declared",
+          unknownFields: ["healthRollup", "appliedAtPeer"]
+        })
+      )
+    ).toEqual({ tier: "govcloud", provenance: "declared" });
+
+    // …and the ROW paints exactly what that derivation says, for the provenance-omitted case which
+    // is the one the previous round's fix was about.
+    const html = renderRow(noProvenance);
+    const at = html.indexOf('data-testid="outpost-row"');
+    const rowTag = html.slice(html.lastIndexOf("<", at), html.indexOf(">", at) + 1);
+    expect(rowTag).toContain('data-tier-provenance="unverified"');
+  });
 });
 
 describe("outposts overview: absent transport is not an air-gap posture", () => {
@@ -362,6 +437,30 @@ describe("outposts overview: no string claims the outpost has anything", () => {
     expect(visibleText(html)).not.toContain("not yet put on the wire");
   });
 
+  it("an ABSENT (not null) exported sequence is 'no export recorded', never 'through # on never'", () => {
+    // THE GUARD THAT ORIGINATED THIS WHOLE CLASS, LEFT HALF-PINNED. `lastExportedThroughSequence` is
+    // `.nullable().OPTIONAL()`, but no test ever gave it `undefined` — only `null` and `42` — so
+    // reverting `isAbsent(...)` to `=== null` kept the suite green while the mutant rendered
+    //   `<div data-export-state="exported-handoff-unknown">exported through # on never</div>`
+    // — the exact fabrication the guard exists to prevent, and worse than the null case because it
+    // asserts an export event with no sequence and no date. Its sibling `pendingExportEntryCount`
+    // was pinned for BOTH absent forms; this is the other half.
+    const absentSequence = basePeer({ unknownFields: [] });
+    delete (absentSequence as { lastExportedThroughSequence?: number | null })
+      .lastExportedThroughSequence;
+    // `unknownFields: []` is load-bearing: with the declaration present, `isPeerUnknown` alone would
+    // carry this branch and the value guard would go untested exactly as before.
+    expect(isPeerUnknown(absentSequence, "lastExportedThroughSequence")).toBe(false);
+
+    const html = renderToStaticMarkup(<PendingExportCell status={absentSequence} />);
+
+    expect(html).toContain('data-export-state="none-recorded"');
+    expect(html).toContain("no export recorded");
+    expect(html).not.toContain('data-export-state="exported-handoff-unknown"');
+    expect(visibleText(html)).not.toContain("exported through");
+    expect(visibleText(html)).not.toContain("on never");
+  });
+
   it("the backlog-unknown marker does not explain itself with a reason this branch rules out", () => {
     // The marker is only reachable AFTER `neverExported` returned false — i.e. something HAS been
     // exported to this peer — so copy blaming "nothing has been exported yet" states, as the reason,
@@ -377,9 +476,35 @@ describe("outposts overview: no string claims the outpost has anything", () => {
       />
     );
     expect(html).toContain("backlog unknown");
-    expect(html).not.toMatch(/Nothing has been exported to this peer yet/);
+    // THE REASON ITSELF, scoped to the marker's own tooltip and matched LOOSELY. The previous form
+    // (`not.toMatch(/Nothing has been exported to this peer yet/)`) pinned one exact sentence, so
+    // restoring the untrue explanation in any other wording — "Nothing has been exported yet, so
+    // there is no pending-export backlog." — left the suite green. This PR's own thesis is that the
+    // COPY IS THE GUARANTEE, so the copy is what is asserted.
+    const marker = elementByTestId(html, "outpost-unknown");
+    const title = /title="([^"]*)"/.exec(marker)?.[1] ?? "";
+    expect(title, "the marker explains itself").not.toBe("");
+    expect(title).not.toMatch(/nothing has been exported/i);
+    expect(title).not.toMatch(/no export/i);
+    // PREMISE: it does still give the reason that IS true here.
+    expect(title).toMatch(/did not report a count|cannot observe/i);
     // …and it still must not read as a reassurance about the backlog itself.
     expect(visibleText(html)).not.toMatch(/nothing is pending|no backlog|caught up/i);
+  });
+
+  it("a row survives a response that omits recentTransfers — an unknown, never a white screen", () => {
+    // FAIL LOUD BEATS FAIL DISHONEST, BUT A WHITE SCREEN IS NEITHER. `recentTransfers` is
+    // required-not-optional and the SDK validates no response, so a server that omits it made
+    // `transfers.length` throw a TypeError that took down the ENTIRE table — every honest unknown on
+    // every other row with it, which is strictly worse than the fabrication these tests forbid.
+    const noTransfers = basePeer();
+    delete (noTransfers as { recentTransfers?: unknown }).recentTransfers;
+
+    const html = renderRow(noTransfers as FederationPeerStatus);
+    expect(html).toContain('data-testid="outpost-transfers-none"');
+    // …and the rest of the row is still rendered honestly rather than half-torn-down.
+    expect(html).toContain('data-trust-tier="unknown"');
+    expect(html).toContain('data-testid="outpost-export"');
   });
 
   it("a peer NEVER exported to reports 'no export recorded', never a zero", () => {
