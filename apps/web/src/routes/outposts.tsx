@@ -151,15 +151,28 @@ export function TrustTierCell({ status }: { status: FederationPeerStatus }): Rea
     );
   }
 
-  if (provenance === "unverified") {
+  // TWO INDEPENDENT SIGNALS FOR ONE FACT, and the honest branch is whichever fires. The server sets
+  // `trustTierProvenance: "unverified"` AND pushes `"trustTier"` into `unknownFields` for exactly this
+  // case (`status-repo.ts`: `if (trustTier === null || tier?.unverified === true)`; the pairing is
+  // documented on the schema field). `trustTierProvenance` is `.nullable().optional()`, so a response
+  // that carries the TIER and the DECLARATION but omits the provenance is well-formed — and keying on
+  // provenance alone dropped such a row through to the declared badge below, rendering a hand-typed
+  // claim BYTE-IDENTICAL to a commander assertion. That is the fabrication phase A round 4 existed to
+  // fix, with the honest signal already on the wire and unread. So: OR them.
+  const declaredUnknown = isPeerUnknown(status, "trustTier");
+  if (provenance === "unverified" || declaredUnknown) {
     return (
       <span data-testid="outpost-tier" data-trust-tier={tier} data-tier-provenance="unverified">
         <span
           className="inline-flex items-center gap-1 rounded border border-dashed border-amber-400 bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-800"
           title={
-            `'${tier}' comes from an UNVERIFIED hand-filled shadow copy, not from this instance's own ` +
-            "assertion and not from a signature-verified replica. Reconcile the outpost's config to adopt " +
-            "or replace it before relying on this value."
+            provenance === "unverified"
+              ? `'${tier}' comes from an UNVERIFIED hand-filled shadow copy, not from this instance's own ` +
+                "assertion and not from a signature-verified replica. Reconcile the outpost's config to adopt " +
+                "or replace it before relying on this value."
+              : `'${tier}' rides the wire, but the server declared this field one it cannot observe, so it is ` +
+                "NOT an assertion this instance stands behind. Reconcile the outpost's config before relying " +
+                "on this value."
           }
           data-testid="outpost-tier-unverified"
         >

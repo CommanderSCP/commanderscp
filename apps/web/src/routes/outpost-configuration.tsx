@@ -188,8 +188,20 @@ export function TrustTierCard({
 }): React.JSX.Element {
   const [tier, setTier] = useState<string>(config.trustTier ?? "");
   const foreign = isConfigForeign(config, ownDomainId);
-  const unverifiedShadow = foreign && config.provenance === "manual";
-  const guard = replicaGuard(foreign, CONFIG_WRITE_REFUSAL);
+  // `provenance === "manual"` ALONE, not `foreign && …`. A `"manual"` row IS an unverified hand-filled
+  // shadow by the schema's own definition (`"manual"` for a hand-filled shadow, `null` for anything a
+  // signature verified or this domain authored) — its origin adds nothing. Worse, `isConfigForeign`
+  // answers FALSE while `ownDomainId` is still loading and the server omitted `originIsSelf`: that is
+  // deliberately the right answer for a WRITE gate (never fabricate a block on a write the server
+  // would accept) and the wrong one for a DISPLAY discriminator. Conjoining them meant that during
+  // the load window a hand-typed shadow rendered `data-tier-unverified="false"` — a manual claim
+  // presented as this domain's authority, which is what phase A round 4 exists to prevent.
+  const unverifiedShadow = config.provenance === "manual";
+  // …and the edit control follows, for the same row, on a MEASURED refusal rather than on caution:
+  // `outpost-handfill-wedge.integration.test.ts` measures PATCH answering 409 when the only row is an
+  // unverified hand-filled shadow. Offering an enabled control that the server will refuse is the
+  // mirror-image defect of blocking one it would accept.
+  const guard = replicaGuard(foreign || unverifiedShadow, CONFIG_WRITE_REFUSAL);
   const tierUnknown = config.unknownFields.includes("trustTier");
 
   return (

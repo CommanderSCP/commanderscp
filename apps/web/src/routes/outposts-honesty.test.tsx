@@ -187,6 +187,39 @@ describe("outposts overview: an unasserted trust tier is never a tier", () => {
     // The declared badge must NOT carry the unverified marker, in the other direction.
     expect(declared).not.toContain("unverified");
   });
+  it("an UNVERIFIED tier with NO provenance field still never renders as a commander assertion", () => {
+    // `status-repo.ts` emits TWO signals for this one case — `trustTierProvenance: "unverified"` AND
+    // `"trustTier"` in `unknownFields` — and `trustTierProvenance` is `.nullable().optional()`, so a
+    // response carrying the tier and the declaration but not the provenance is well-formed. Keyed on
+    // provenance alone, such a row fell through to the DECLARED badge and was byte-identical to a
+    // tier this commander actually asserted.
+    const noProvenance = basePeer({
+      trustTier: "commercial",
+      unknownFields: ["trustTier", "healthRollup", "appliedAtPeer"]
+    });
+    delete (noProvenance as { trustTierProvenance?: unknown }).trustTierProvenance;
+
+    const html = renderToStaticMarkup(<TrustTierCell status={noProvenance} />);
+    const declared = renderToStaticMarkup(
+      <TrustTierCell
+        status={basePeer({
+          trustTier: "commercial",
+          trustTierProvenance: "declared",
+          unknownFields: ["healthRollup", "appliedAtPeer"]
+        })}
+      />
+    );
+
+    expect(html).not.toBe(declared);
+    expect(html).toContain('data-tier-provenance="unverified"');
+    expect(html).toContain('data-testid="outpost-tier-unverified"');
+    expect(html).not.toContain('data-testid="outpost-tier-declared"');
+    expect(visibleText(html)).toContain("unverified");
+    // PREMISE, so this cannot pass by the declared case having regressed instead: the genuinely
+    // declared tier still renders as a plain commander assertion.
+    expect(declared).toContain('data-tier-provenance="declared"');
+    expect(visibleText(declared)).not.toContain("unverified");
+  });
 });
 
 describe("outposts overview: absent transport is not an air-gap posture", () => {

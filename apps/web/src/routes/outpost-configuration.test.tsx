@@ -266,6 +266,38 @@ describe("trust tier: an unverified shadow is named, not overwritten", () => {
     expect(tagWithAttr(html, 'data-testid="config-tier-save"')).not.toContain("read-only replica");
   });
 
+  it("a shadow is still a shadow while ownDomainId is LOADING — no authority, no enabled edit", () => {
+    // THE WINDOW: `originIsSelf` absent (an older server) and `ownDomainId` not yet resolved.
+    // `isConfigForeign` answers FALSE there BY DESIGN — never fabricate a block on a write the server
+    // would accept — so gating the unverified marker on `foreign && provenance === "manual"` made a
+    // hand-typed shadow render `data-tier-unverified="false"` with an ENABLED edit control: a manual
+    // claim presented as this domain's own authority, for as long as the query took.
+    const loading = shadowFixture({ originIsSelf: undefined });
+    expect(isConfigForeign(loading, undefined), "the premise: origin is undecidable here").toBe(
+      false
+    );
+
+    const html = renderToStaticMarkup(
+      <TrustTierCard
+        config={loading}
+        ownDomainId={undefined}
+        onSave={() => {}}
+        onReconcile={() => {}}
+      />
+    );
+
+    // `provenance: "manual"` IS the statement — the schema defines it as a hand-filled shadow — and it
+    // does not depend on a value still in flight.
+    expect(html).toContain('data-tier-unverified="true"');
+    expect(html).not.toContain('data-tier-unverified="false"');
+    expect(visibleText(html)).toContain("unverified");
+    expect(html).toContain('data-testid="config-unverified-shadow-notice"');
+    // The edit control mirrors the MEASURED 409 for a hand-filled shadow, rather than being offered
+    // and refused.
+    expect(tagWithAttr(html, 'data-testid="config-tier-select"')).toContain('disabled=""');
+    expect(tagWithAttr(html, 'data-testid="config-tier-save"')).toContain("read-only replica");
+  });
+
   it("isConfigForeign prefers the server's own originIsSelf and never fabricates a block", () => {
     expect(isConfigForeign(configFixture(), OWN_DOMAIN)).toBe(false);
     expect(isConfigForeign(shadowFixture(), OWN_DOMAIN)).toBe(true);
