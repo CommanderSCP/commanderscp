@@ -3,10 +3,11 @@ import { listenTestServer, type ListeningTestServer } from "../test-support/harn
 
 /**
  * M16.3 P3 (owner decision 2026-07-29) — "a retrans must not serve the SPA"
- * (BUILD_AND_TEST.md:469: the retrans profile is "no local Gitea/registry, no executor
- * coordination, no deploy machinery, no UI"). Before this suite (and the `app.ts`/`config.ts`
- * change it pins), SPA registration was UNCONDITIONAL — a `role: retrans` relay served the full
- * management UI at the most sensitive point in the topology (a CDS boundary).
+ * (BUILD_AND_TEST.md M13.1 — cited by MILESTONE, not by line number, since that file shifts under
+ * every milestone that lands: the retrans deployment profile is "no local Gitea/registry, no
+ * executor coordination, no deploy machinery, no UI"). Before this suite (and the `app.ts`/
+ * `config.ts` change it pins), SPA registration was UNCONDITIONAL — a `role: retrans` relay served
+ * the full management UI at the most sensitive point in the topology (a CDS boundary).
  *
  * WHICH ROLE AXIS GOVERNS, and why (see `config.ts`'s doc comment on `ServerConfig.federationRole`
  * for the full reasoning): this gates on `SCP_FEDERATION_ROLE` — a NEW, install-time/deployment-
