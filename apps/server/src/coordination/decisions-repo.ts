@@ -170,9 +170,21 @@ export async function latestBlockDecisionForSubject(
       and(
         eq(decisions.orgId, orgId),
         eq(decisions.subjectId, subjectId),
-        // Must stay a LITERAL matching drizzle/0045's index predicate verbatim — a bound parameter
-        // here would still use the partial index (the planner proves the implication from the
-        // constant at plan time), but a non-`block` value would not, and nothing would say so.
+        // Must stay a COMPILE-TIME CONSTANT ARGUMENT matching drizzle/0045's index predicate
+        // verbatim. NOT a SQL literal — drizzle emits `eq()`'s right-hand side as a BOUND PARAMETER
+        // (`verdict = $3`), and that is fine here for a reason worth naming rather than assuming:
+        // node-postgres issues unnamed extended-protocol statements (`grep -rn '\.prepare('` over
+        // this repo finds ZERO call sites), so PostgreSQL always builds a CUSTOM plan with the
+        // parameter's value in hand and can prove `$3 = 'block'` implies the partial index's
+        // predicate. MEASURED: 0.021 ms / 4 buffers, index used.
+        //
+        // THE CAVEAT, NAMED: under `plan_cache_mode = force_generic_plan` (or a genuinely prepared
+        // statement whose generic plan wins) the planner has no value to reason from, cannot prove
+        // the implication, and falls back — measured 26.4 ms / 20,519 buffers with
+        // `Rows Removed by Filter: 200000`. Nothing in this codebase creates that situation today.
+        // What the constant buys is that every plan is a CUSTOM plan over a value the planner can
+        // see; a `verdict` PARAMETER on this function's signature would let a caller pass `warn`,
+        // which the partial index cannot serve at all, and nothing would say so.
         eq(decisions.verdict, "block")
       )
     )

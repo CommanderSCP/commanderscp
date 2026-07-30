@@ -95,27 +95,41 @@
 -- the good plan the CHEAPEST plan, which is the only kind of guarantee that survives a growing table
 -- and a future Postgres version.
 --
--- THE WRITE COST, STATED HONESTLY — IT IS NOT SMALL. `decisions` is insert-only and insert-heavy, and
--- this is a THIRD index on it. Measured on the same reproduction, 100,000 fresh rows per round,
--- alternating so neither ordering is favoured by cache state:
+-- THE WRITE COST, STATED HONESTLY — AND RE-MEASURED, BECAUSE THE FIRST NUMBERS WERE PESSIMISTIC.
+-- `decisions` is insert-only and insert-heavy, and this is a THIRD index on it. Measured on the same
+-- reproduction, 100,000 fresh rows per round, alternating so neither ordering is favoured by cache
+-- state:
 --
---     WITH this index      2,246.8 ms and 1,739.7 ms   (mean 1,993 ms / 100k rows)
---     WITHOUT it            872.1 ms and   967.3 ms   (mean   920 ms / 100k rows)
+--     WITH this index      1,377 ms / 100k rows
+--     WITHOUT it           1,020 ms / 100k rows
 --
--- ~2.2x on a BULK insert: +10.7 microseconds of index maintenance per row. Index size 777 MB at
--- 12,006,000 rows (vs 676 MB and 674 MB for the two existing ones); the initial build took 19.7 s.
--- Two things make that a bulk-load figure rather than the production figure: a 100k-row single
--- statement has no per-row commit, so index maintenance is nearly the whole cost, whereas production
--- writes one Decision per reconcile transaction where WAL flush and commit dominate; and the
--- entries land at scattered positions (one per subject) rather than appended.
+-- 1.35x on a BULK insert: +3.6 microseconds of index maintenance per row. (An earlier round of this
+-- same measurement reported 2.2x and +10.7 us/row; an independent re-run, alternated, same shape,
+-- did not reproduce it — the first figure was inflated by cache state the alternation was supposed
+-- to cancel. The corrected numbers are recorded here so a future reader deciding whether to add a
+-- FOURTH index does not over-weight the write side.)
 --
--- WHY IT IS WORTH IT ANYWAY:
+-- AND ON THE PRODUCTION SHAPE, WHICH IS THE ONE THAT ACTUALLY GOVERNS: a bulk 100k-row statement has
+-- no per-row commit, so index maintenance is nearly the whole cost — whereas production writes ONE
+-- Decision per reconcile transaction, where WAL flush and commit dominate. Measured with pgbench,
+-- one INSERT per transaction:
+--
+--     WITH this index      0.212 ms / transaction
+--     WITHOUT it           0.201 ms / transaction
+--
+-- ~5%: +11 microseconds per transaction. That is the figure to reason from.
+--
+-- Index size 777 MB at 12,006,000 rows (vs 676 MB and 674 MB for the two existing ones); the
+-- initial build took 19.7 s.
+--
+-- WHY IT IS WORTH IT — the conclusion is unchanged, and strengthened:
 --   * The fix this ships with cuts the insert RATE by ~1,079,875 rows/day (1.08M/day -> ~1/day per
 --     parked change). Three indexes on a stream that small costs far less in absolute terms than two
 --     indexes on the stream that existed yesterday.
 --   * The read it fixes runs at the same ~1.08M/day the writes used to, and unlike the writes it
 --     CANNOT be deduped away: every tick must ask "has anything changed?" or an arriving approval is
---     never noticed. Trading 10.7 us per insert for the removal of a 22-second read is not close.
+--     never noticed. Trading 11 us per insert TRANSACTION for the removal of a 22-second read is not
+--     close.
 --   * Growth is bounded by the same argument: the index only grows with rows actually written, and
 --     the fix is what stopped those growing at 1.08M/day.
 --
