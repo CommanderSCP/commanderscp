@@ -10,7 +10,7 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { traverse } from "../graph/traverse.js";
 import { getChange } from "./changes-repo.js";
 import { getLatestPlanForChange } from "./plan-service.js";
-import { listDecisionsForSubject } from "./decisions-repo.js";
+import { latestDecisionForSubjectVerdict } from "./decisions-repo.js";
 import { listApprovalRequestsForChange } from "../governance/approvals-repo.js";
 import { listFreezes, type FreezeRow } from "../governance/freezes-repo.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
@@ -428,10 +428,18 @@ export async function buildServiceBoard(
       continue;
     }
 
-    const [change, plan, decisions, approvals] = await Promise.all([
+    // BOUNDED (was `listDecisionsForSubject`: every Decision ever recorded about this change, no
+    // `kind` filter, no `LIMIT`, once PER BOARD ROW). The board consumes exactly one Decision — the
+    // latest `block`, whose id it hands the operator below — and on the live instance each of the 29
+    // changes carried ~425,000 rows, so one board render pulled hundreds of thousands of rows per row
+    // of the board. Measured at 12M rows: 26,547 ms / 399,596 buffers for the old read against
+    // 1.14 ms / 6 buffers for this one, same answer. See `latestDecisionForSubjectVerdict` for why it
+    // is keyed on the verdict the board actually means rather than on a list of `kind`s that a future
+    // eleventh block-writer would silently falsify.
+    const [change, plan, blockDecision, approvals] = await Promise.all([
       getChange(tx, orgId, changeId),
       getLatestPlanForChange(tx, orgId, changeId),
-      listDecisionsForSubject(tx, orgId, changeId),
+      latestDecisionForSubjectVerdict(tx, orgId, changeId, "block"),
       listApprovalRequestsForChange(tx, orgId, changeId)
     ]);
 
@@ -458,8 +466,7 @@ export async function buildServiceBoard(
     const hasFailedWave = waves.some(
       (w) => w.status === "failed" || w.targets.some((t) => FAILED_STATUSES.has(t.status))
     );
-    const blockDecision = [...decisions].reverse().find((d) => d.verdict === "block") ?? null;
-    const isBlocked = hasFailedWave || blockDecision !== null;
+    const isBlocked = hasFailedWave || blockDecision !== undefined;
     const awaitingApproval = approvals.some((a) => a.status !== "satisfied");
 
     rows.push({

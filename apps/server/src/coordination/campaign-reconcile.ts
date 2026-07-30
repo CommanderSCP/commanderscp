@@ -244,14 +244,29 @@ async function reconcileOneCampaign(
       if (gate.verdict === "block") {
         // Still marked blocked every tick (an idempotent status write, not an append) so
         // `getCampaignStatus` keeps reporting the truth, and the outcome still carries a resolvable
-        // `decision_id` — the FIRST block's row when this tick merely restated it.
+        // `decision_id` — the FIRST block's row when this tick merely restated it. `firstBlock`
+        // carries `insertDecisionIfChanged`'s `created` flag so the log line below fires once per
+        // distinct block rather than once per 1 s tick (see reconcile.ts's twin).
         await markCampaignWaveBlocked(tx, orgId, activeWave.id);
-        return { kind: "blocked", decisionId: recorded.decision.id } as const;
+        return {
+          kind: "blocked",
+          decisionId: recorded.decision.id,
+          firstBlock: recorded.created
+        } as const;
       }
       await markCampaignWaveRunning(tx, orgId, activeWave.id);
       return { kind: "running" } as const;
     });
-    if (gateOutcome.kind === "blocked") return;
+    if (gateOutcome.kind === "blocked") {
+      // SURFACE the standing block's id — once, on the tick that persisted it. It was previously
+      // returned and read by nobody but the `=== "blocked"` test on the next line.
+      if (gateOutcome.firstBlock) {
+        console.info(
+          `[campaign-reconcile] org ${orgId} campaign ${campaignObjectId} wave ${activeWave.waveIndex} blocked by governance — decision ${gateOutcome.decisionId} (scp decision get ${gateOutcome.decisionId}); re-evaluated every tick until it clears`
+        );
+      }
+      return;
+    }
   }
 
   let allTerminal = true;

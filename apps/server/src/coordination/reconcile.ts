@@ -568,7 +568,12 @@ async function reconcileExecutingChange(
     const gateLock = await tryAcquireChangeCoordinationLock(db, change.objectId);
     if (!gateLock) return; // another tick/replica is genuinely evaluating this wave's gate right now — retry next tick.
     let gateOutcome:
-      | { kind: "blocked"; decisionId: string }
+      // `firstBlock` is `insertDecisionIfChanged`'s `created` flag: true only on the tick that
+      // actually PERSISTED this block, false on every tick that merely restated it. It is what makes
+      // the log line below fire ONCE per distinct block instead of once per ~2 s tick — the same
+      // persist-on-change discipline applied to the log stream, which would otherwise reproduce the
+      // very flood this PR fixes, in a different sink.
+      | { kind: "blocked"; decisionId: string; firstBlock: boolean }
       | { kind: "running" }
       | { kind: "already-progressed" };
     try {
@@ -624,7 +629,11 @@ async function reconcileExecutingChange(
         // tick merely restated it — so a suppressed duplicate never degrades explainability to a
         // null `decision_id` (charter principle 6).
         if (gate.verdict === "block") {
-          return { kind: "blocked", decisionId: recorded.decision.id } as const;
+          return {
+            kind: "blocked",
+            decisionId: recorded.decision.id,
+            firstBlock: recorded.created
+          } as const;
         }
         await markWaveRunning(tx, orgId, activeWave.id);
         return { kind: "running" } as const;
@@ -632,10 +641,20 @@ async function reconcileExecutingChange(
     } finally {
       await gateLock.release();
     }
-    // "blocked": the wave stays `pending` and this change is re-served (and re-evaluated) next
-    // tick — `gateOutcome.decisionId` is the standing block Decision an operator can resolve with
-    // `scp decision get` / `scp change explain`. "already-progressed": a racing tick already
-    // handled this wave's gate; next tick sees its result and proceeds normally.
+    // "blocked": the wave stays `pending` and this change is re-served (and re-evaluated) next tick.
+    // `decisionId` is the standing block Decision an operator resolves with `scp decision get` /
+    // `scp change explain`, and it is SURFACED HERE — logged exactly once, on the tick that actually
+    // persisted the block. Before this it was carried in the outcome and read by nobody: the only
+    // consumer was the `!== "running"` test below, so a comment promising the operator an id was
+    // describing a channel that carried nothing (the id they actually see comes from the service
+    // board's own latest-block read). Gated on `firstBlock` for the same reason the Decision itself
+    // is: a change parked for a week is one line, not 302,400.
+    // "already-progressed": a racing tick already handled this wave's gate; next tick sees its result.
+    if (gateOutcome.kind === "blocked" && gateOutcome.firstBlock) {
+      console.info(
+        `[reconcile] org ${orgId} change ${change.objectId} wave ${activeWave.waveIndex} blocked by governance — decision ${gateOutcome.decisionId} (scp decision get ${gateOutcome.decisionId}); re-evaluated every tick until it clears`
+      );
+    }
     if (gateOutcome.kind !== "running") return;
   }
 

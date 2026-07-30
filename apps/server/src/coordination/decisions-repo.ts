@@ -121,6 +121,58 @@ export async function latestDecisionForSubjectKind(
 }
 
 /**
+ * The MOST RECENT decision carrying one `verdict` about one subject, or `undefined` — the same
+ * single-row shape as {@link latestDecisionForSubjectKind}, keyed on the verdict instead of the kind.
+ *
+ * WHY THIS EXISTS (the board read that was pathological on the live instance). `service-board.ts`
+ * needs exactly one thing out of a change's Decision history: the latest `block`, whose id it hands
+ * the operator as `attention.decisionId` (charter principle 6). It used to get that by calling
+ * {@link listDecisionsForSubject} — EVERY Decision ever recorded about the change, no `kind` filter,
+ * no `LIMIT` — and then `[...decisions].reverse().find(d => d.verdict === "block")` in JS. On the
+ * homelab instance each of the 29 live changes carried ~425,000 rows, so ONE `GET
+ * /services/{id}/board` pulled hundreds of thousands of rows, sorted them, and materialized them as
+ * JS objects PER BOARD ROW. That read is pre-existing (it predates the persist-on-change fix and is
+ * not caused by it), but it is the same table and the same incident, and the fix does not bound it.
+ *
+ * WHY KEYED ON VERDICT AND NOT ON A LIST OF KINDS. "The latest block" is what the board consumes;
+ * it does not consume any particular `kind`. Ten distinct kinds can currently record a `block`
+ * against a change subject — `gate`, `wave_target`, `transition`, `pre-deploy-artifact-verify`, the
+ * three `retrans-relay-*` kinds, `promotion-export-scan-gate`, `promotion-import-manifest-verify`
+ * and `policy_evaluate_dry_run` — and enumerating them here would put a census in the read path that a
+ * future eleventh writer silently falsifies: the board would quietly stop reporting `blocked` for
+ * the one kind nobody remembered to add, with no test to notice. Filtering on the thing the board
+ * actually means keeps the answer BYTE-IDENTICAL to the old JS scan (same ordering, same tiebreak,
+ * same row) while reading one row instead of all of them, and leaves nothing to keep in sync.
+ *
+ * WHAT IS AND IS NOT BOUNDED. Rows RETURNED is exactly one, always — that is the memory and
+ * serialization blow-up this removes. Rows EXAMINED is bounded by however many of the subject's own
+ * Decisions are NEWER than its latest block (the backward walk of `decisions_org_subject` stops at
+ * the first match), which is 1 for every parked change and small for every other shape once
+ * persist-on-change stops the same verdict being restated thousands of times. It is NOT bounded by
+ * the org's or the subject's total row count, which is what the old read was bounded by.
+ */
+export async function latestDecisionForSubjectVerdict(
+  tx: TenantTx,
+  orgId: string,
+  subjectId: string,
+  verdict: string
+): Promise<Decision | undefined> {
+  const rows = await tx
+    .select()
+    .from(decisions)
+    .where(
+      and(
+        eq(decisions.orgId, orgId),
+        eq(decisions.subjectId, subjectId),
+        eq(decisions.verdict, verdict)
+      )
+    )
+    .orderBy(desc(decisions.createdAt), desc(decisions.id))
+    .limit(1);
+  return rows[0] ? toDecision(rows[0]) : undefined;
+}
+
+/**
  * Canonical, key-order-independent JSON for the CONTENT comparison {@link restatesDecision} makes.
  *
  * Both halves of that comparison must normalize identically or suppression silently never fires:

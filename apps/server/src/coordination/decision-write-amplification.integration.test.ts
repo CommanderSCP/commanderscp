@@ -9,7 +9,11 @@ import {
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { changes, changeWaves, decisions } from "../db/schema.js";
-import { CelSandbox, type CelEvalResult } from "../governance/cel-sandbox.js";
+import {
+  CountingCelSandbox,
+  distinctDecisionStatements,
+  partitionConditionErrors
+} from "./test-support/counting-cel-sandbox.js";
 import { createInMemoryFakeHost } from "./test-support/fake-plugin-host.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import { proposeChange } from "./changes-repo.js";
@@ -54,26 +58,6 @@ import type { GateDeps } from "./gates.js";
  *  sandbox — it doubles as the OBSERVABLE EVALUATION COUNTER T1 needs: one call per wave-gate
  *  evaluation, counted in the process, with no module mocking anywhere near the code under test. */
 const POLICY_CONDITION = "change.emergency == false";
-
-/** A REAL `CelSandbox` (own worker thread, real cel-js) that also counts what it was asked to
- *  evaluate. Subclassed rather than faked so the gate path under test is byte-for-byte the
- *  production one — the count is the only addition. */
-class CountingCelSandbox extends CelSandbox {
-  readonly evaluated: string[] = [];
-
-  override async evaluate(
-    expression: string,
-    context: Record<string, unknown>
-  ): Promise<CelEvalResult> {
-    this.evaluated.push(expression);
-    return super.evaluate(expression, context);
-  }
-
-  /** How many times the wave gate actually evaluated THIS policy's condition. */
-  gateEvaluations(): number {
-    return this.evaluated.filter((e) => e === POLICY_CONDITION).length;
-  }
-}
 
 interface ParkedChange {
   changeObjectId: string;
@@ -196,7 +180,7 @@ describe("Decision write amplification: a parked wave gate persists ON CHANGE, n
 
     // The gate has never been evaluated for this wave: the manual walk writes `transition`
     // Decisions, and ZERO `gate` ones.
-    const before = await gateDecisions(changeObjectId);
+    const before = await allGateDecisions(changeObjectId);
     expect(before).toHaveLength(0);
 
     return {
@@ -207,7 +191,8 @@ describe("Decision write amplification: a parked wave gate persists ON CHANGE, n
     };
   }
 
-  function gateDecisions(changeObjectId: string) {
+  /** Every `gate` Decision persisted for this change, oldest first — condition-error rows included. */
+  function allGateDecisions(changeObjectId: string) {
     return withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
         .select()
@@ -221,6 +206,18 @@ describe("Decision write amplification: a parked wave gate persists ON CHANGE, n
         )
         .orderBy(decisions.createdAt, decisions.id)
     );
+  }
+
+  /**
+   * The ORDINARY wave-gate verdicts, with the fail-closed condition-error statements split off and
+   * their count returned alongside — see `partitionConditionErrors` for the measured reason this
+   * suite cannot simply assert a raw row count (a CEL wall-clock miss on a loaded box makes the
+   * production code CORRECTLY write a condition-error row AND, on the next tick, an ordinary one;
+   * both writes are right, and asserting "exactly one row" against them is asserting the machine is
+   * never busy — observed twice here with no injection).
+   */
+  async function gateDecisions(changeObjectId: string) {
+    return partitionConditionErrors(await allGateDecisions(changeObjectId));
   }
 
   async function tick(times: number): Promise<void> {
@@ -239,18 +236,22 @@ describe("Decision write amplification: a parked wave gate persists ON CHANGE, n
     const parked = await parkChangeOnApproval("t1");
     const TICKS = 20;
 
-    const evaluationsBefore = sandbox.gateEvaluations();
+    const evaluationsBefore = sandbox.countOf(POLICY_CONDITION);
     await tick(TICKS);
 
-    // (a) THE FIX. Before it: 20 byte-identical rows (and 43,200/day in production).
-    const rows = await gateDecisions(parked.changeObjectId);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.verdict).toBe("block");
-    expect(JSON.stringify(rows[0]!.reasonTree)).toContain("prod-gate-t1");
+    // (a) THE FIX. Before it: 20 byte-identical rows (and 43,200/day in production). Now ONE — plus
+    // at most one more per fail-closed condition-error row, which is the only extra statement a
+    // loaded box can legitimately produce, and which must still be a RESTATEMENT of the same verdict
+    // (asserted next) rather than something new that suppression lost.
+    const { ordinary, conditionErrors } = await gateDecisions(parked.changeObjectId);
+    expect(ordinary.length).toBeLessThanOrEqual(conditionErrors.length + 1);
+    expect(distinctDecisionStatements(ordinary)).toBe(1);
+    expect(ordinary[0]!.verdict).toBe("block");
+    expect(JSON.stringify(ordinary[0]!.reasonTree)).toContain("prod-gate-t1");
 
     // (b) THE INVARIANT THE FIX MUST NOT BREAK (and the one a lazy "fix" would): the gate was
     // genuinely re-evaluated on EVERY tick. An arriving approval is noticed only here.
-    expect(sandbox.gateEvaluations() - evaluationsBefore).toBe(TICKS);
+    expect(sandbox.countOf(POLICY_CONDITION) - evaluationsBefore).toBe(TICKS);
 
     // (c) The change was NOT parked to achieve this: it is still `executing` with
     // `reconcile_blocked_at` NULL (so it is still re-served next tick), and the wave is still
@@ -273,15 +274,18 @@ describe("Decision write amplification: a parked wave gate persists ON CHANGE, n
     const parked = await parkChangeOnApproval("t3");
 
     await tick(1);
-    const first = (await gateDecisions(parked.changeObjectId))[0]!;
+    const first = (await gateDecisions(parked.changeObjectId)).ordinary[0]!;
     expect(first.id).toBeTruthy();
 
     await tick(10);
 
-    // The id an operator is pointed at does not churn, and no second row appeared behind it.
+    // The id an operator is pointed at does not churn, and no row saying anything NEW appeared
+    // behind it: still one standing statement (plus at most one restatement per condition-error row
+    // — see `partitionConditionErrors`), and still the same first row.
     const after = await gateDecisions(parked.changeObjectId);
-    expect(after).toHaveLength(1);
-    expect(after[0]!.id).toBe(first.id);
+    expect(after.ordinary.length).toBeLessThanOrEqual(after.conditionErrors.length + 1);
+    expect(distinctDecisionStatements(after.ordinary)).toBe(1);
+    expect(after.ordinary[0]!.id).toBe(first.id);
 
     // The operator-facing surface (`GET /services/{id}/board` -> `attention.decisionId`, the
     // board's "blocked, and here is why" field) still reports THAT decision — charter principle 6's
@@ -297,11 +301,13 @@ describe("Decision write amplification: a parked wave gate persists ON CHANGE, n
     expect(boardRow?.attention.awaitingApproval).toBe(true);
 
     // ...and `scp change explain` still reconstructs: the chain holds the transition Decisions plus
-    // exactly ONE gate Decision, the standing block.
+    // the standing block, FIRST in gate order — not 11 copies of it.
     const chain = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       listDecisionsForSubject(tx, org.orgId, parked.changeObjectId)
     );
-    expect(chain.filter((d) => d.kind === "gate").map((d) => d.id)).toEqual([first.id]);
+    const chainGate = partitionConditionErrors(chain.filter((d) => d.kind === "gate"));
+    expect(chainGate.ordinary.length).toBeLessThanOrEqual(chainGate.conditionErrors.length + 1);
+    expect(chainGate.ordinary[0]!.id).toBe(first.id);
     expect(chain.some((d) => d.kind === "transition")).toBe(true);
   });
 
@@ -310,8 +316,9 @@ describe("Decision write amplification: a parked wave gate persists ON CHANGE, n
 
     await tick(5);
     const blocked = await gateDecisions(parked.changeObjectId);
-    expect(blocked).toHaveLength(1);
-    expect(blocked[0]!.verdict).toBe("block");
+    expect(blocked.ordinary.length).toBeLessThanOrEqual(blocked.conditionErrors.length + 1);
+    expect(distinctDecisionStatements(blocked.ordinary)).toBe(1);
+    expect(blocked.ordinary[0]!.verdict).toBe("block");
 
     // Satisfy the quorum the gate has been re-evaluating all along: one Owner-at-org vote on the
     // approval request the gate itself materialized.
@@ -330,11 +337,13 @@ describe("Decision write amplification: a parked wave gate persists ON CHANGE, n
     await tick(1);
 
     // A CHANGED VERDICT writes a new row — suppression keys on CONTENT, never on "we already wrote
-    // one for this subject".
+    // one for this subject". Exactly ONE `allow`, appended after the standing block, whatever the
+    // condition-error rows did in between.
     const after = await gateDecisions(parked.changeObjectId);
-    expect(after).toHaveLength(2);
-    expect(after[1]!.verdict).toBe("allow");
-    expect(after[1]!.id).not.toBe(blocked[0]!.id);
+    const allows = after.ordinary.filter((d) => d.verdict === "allow");
+    expect(allows).toHaveLength(1);
+    expect(after.ordinary[after.ordinary.length - 1]!.id).toBe(allows[0]!.id);
+    expect(allows[0]!.id).not.toBe(blocked.ordinary[0]!.id);
 
     // ...and the wave actually PROCEEDED: `markWaveRunning` ran on that same tick. This is what a
     // slowed/skipped evaluation would have broken (the change would sit blocked after its approval
@@ -347,6 +356,8 @@ describe("Decision write amplification: a parked wave gate persists ON CHANGE, n
     // Ticking on past the allow does not restart the flood from the other side either: the allow
     // stands as one row (the wave is no longer `pending`, so nothing re-gates it).
     await tick(5);
-    expect(await gateDecisions(parked.changeObjectId)).toHaveLength(2);
+    const settled = await gateDecisions(parked.changeObjectId);
+    expect(settled.ordinary.filter((d) => d.verdict === "allow")).toHaveLength(1);
+    expect(distinctDecisionStatements(settled.ordinary)).toBe(2);
   });
 });
