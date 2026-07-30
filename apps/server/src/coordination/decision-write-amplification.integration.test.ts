@@ -12,6 +12,7 @@ import { changes, changeWaves, decisions } from "../db/schema.js";
 import {
   CountingCelSandbox,
   distinctDecisionStatements,
+  isConditionErrorReasonTree,
   partitionConditionErrors
 } from "./test-support/counting-cel-sandbox.js";
 import { createInMemoryFakeHost } from "./test-support/fake-plugin-host.js";
@@ -58,6 +59,19 @@ import type { GateDeps } from "./gates.js";
  *  sandbox — it doubles as the OBSERVABLE EVALUATION COUNTER T1 needs: one call per wave-gate
  *  evaluation, counted in the process, with no module mocking anywhere near the code under test. */
 const POLICY_CONDITION = "change.emergency == false";
+
+/**
+ * A CEL condition that CANNOT BE EVALUATED — a typo'd identifier, the shape of a renamed label or a
+ * field that no longer exists. Deliberately a RESOLUTION failure, not a parse failure: cel-js's
+ * parse errors carry no context, while its identifier-resolution error serializes the ENTIRE
+ * evaluation context into the message (`Identifier "…" not found in context: {…}`) — and that
+ * context carries `time`, a fresh snapshot per evaluation. This is the exact fault T4 pins.
+ *
+ * It is also a PERMANENT operator error: nothing about a later tick makes `change.typoed` resolve,
+ * so unlike a CEL timeout (bounded, intermittent, and correctly written each time it flips) this
+ * one restates identically forever — which is precisely why it must collapse to one row.
+ */
+const BROKEN_POLICY_CONDITION = "change.typoed == true";
 
 interface ParkedChange {
   changeObjectId: string;
@@ -110,8 +124,16 @@ describe("Decision write amplification: a parked wave gate persists ON CHANGE, n
    * manual (proposed -> evaluated -> coordinated -> executing, the edges `gates.ts` documents as
    * always-allow) so the very first `reconcileOrgTick` below is the first thing that has ever
    * evaluated this wave's gate.
+   *
+   * `condition` defaults to the prod-shaped one; T4 passes {@link BROKEN_POLICY_CONDITION} to park
+   * the change on a required contributor that cannot be EVALUATED instead of one that is unmet.
+   * Both park identically — a fail-closed condition error fires the group and blocks exactly like
+   * an unsatisfied `requireApprovals` effect does.
    */
-  async function parkChangeOnApproval(label: string): Promise<ParkedChange> {
+  async function parkChangeOnApproval(
+    label: string,
+    condition: string = POLICY_CONDITION
+  ): Promise<ParkedChange> {
     const service = await inject("/api/v1/services", { name: `svc-${label}` });
     const component = await inject("/api/v1/components", {
       name: `comp-${label}`,
@@ -123,7 +145,7 @@ describe("Decision write amplification: a parked wave gate persists ON CHANGE, n
       properties: {
         scope: { objectRef: component.id as string },
         enforcement: "required",
-        condition: POLICY_CONDITION,
+        condition,
         effects: [{ requireApprovals: { count: 1, fromRole: "Owner", scope: "organization" } }]
       }
     });
@@ -359,5 +381,74 @@ describe("Decision write amplification: a parked wave gate persists ON CHANGE, n
     const settled = await gateDecisions(parked.changeObjectId);
     expect(settled.ordinary.filter((d) => d.verdict === "allow")).toHaveLength(1);
     expect(distinctDecisionStatements(settled.ordinary)).toBe(2);
+  });
+
+  /**
+   * T4 — THE FAULT THAT RESTORED THE WHOLE BUG WITH THE FIX IN PLACE (PR #153 review Q2).
+   *
+   * A policy whose CEL condition cannot be EVALUATED — a typo'd identifier, a renamed label, a
+   * field that no longer exists — is a PERMANENT operator error that never self-heals. cel-js's
+   * identifier-resolution error serialized the ENTIRE evaluation context into its message, and
+   * `governance/evaluate.ts` puts a fresh `time` snapshot in that context, so the string
+   * `evaluate.ts` persists into the reason tree (twice: as `conditionError`, and inside the
+   * fail-closed `conditionError` effect's `detail.error`) DIFFERED ON EVERY TICK. Persist-on-change
+   * then did exactly what it promises — wrote a genuinely new verdict — and the gate went straight
+   * back to ~43,200 rows/day/change. Measured before the fix: 15 consecutive writes, two
+   * consecutive 1,346-byte reason trees differing by TWO CHARACTERS, both inside the timestamp.
+   *
+   * `cel-sandbox.ts`'s `normalizeCelWorkerError` keeps the diagnosis and drops the dump. Nothing is
+   * lost: the context IS the input and every Decision already stores it verbatim in `input_context`.
+   *
+   * DISTINCT FROM the bounded intermittent CEL-TIMEOUT residual, which is correct behaviour and is
+   * why this suite everywhere asserts a bound rather than a raw count (see
+   * `partitionConditionErrors`): a timeout flips between two genuinely different verdicts and each
+   * flip is worth a row. An unevaluable identifier never flips.
+   *
+   * MUTATION-PROVEN: reverting the normalization (forwarding cel-js's `msg.error` verbatim) takes
+   * this from 1 permanent-fault row to 15 and fails both assertions below.
+   */
+  it("T4: a policy whose CEL condition CANNOT BE EVALUATED writes ONE gate Decision over 15 ticks, not one per tick", async () => {
+    const parked = await parkChangeOnApproval("t4", BROKEN_POLICY_CONDITION);
+    const TICKS = 15;
+
+    const evaluationsBefore = sandbox.countOf(BROKEN_POLICY_CONDITION);
+    await tick(TICKS);
+
+    const rows = await allGateDecisions(parked.changeObjectId);
+    // Split off the CEL-TIMEOUT statements the same way the rest of the suite does — a timeout says
+    // something genuinely different from "this identifier does not resolve", and a loaded box may
+    // legitimately produce one. What must not grow is the PERMANENT fault's statement.
+    const timedOut = rows.filter((r) => JSON.stringify(r.reasonTree).includes("timed out after"));
+    const permanent = rows.filter((r) => !timedOut.includes(r));
+
+    // (a) THE FIX. Before it: 15 rows, one per tick, forever. `<= timedOut.length + 1` is the same
+    // load-independent bound T1/T2/T3 use; on a healthy run timedOut is empty and this is exactly 1.
+    expect(permanent.length).toBeLessThanOrEqual(timedOut.length + 1);
+    expect(distinctDecisionStatements(permanent)).toBe(1);
+    expect(permanent[0]!.verdict).toBe("block");
+
+    // (b) FAIL-CLOSED IS UNCHANGED — this is still the synthetic condition-error statement that
+    // blocks, not a policy that quietly stopped applying because its condition was broken.
+    expect(isConditionErrorReasonTree(permanent[0]!.reasonTree)).toBe(true);
+
+    // (c) THE DIAGNOSIS SURVIVED, THE CONTEXT DUMP DID NOT — an operator can still see WHICH
+    // identifier is wrong (charter principle 6), and `input_context` still holds the inputs.
+    const reasonTree = JSON.stringify(permanent[0]!.reasonTree);
+    expect(reasonTree).toContain('Identifier \\"typoed\\" not found in context');
+    expect(reasonTree).not.toContain("not found in context:"); // cel-js's dump always follows this
+
+    // (d) THE INVARIANT THE FIX MUST NOT BREAK: the gate is still evaluated on every tick. A broken
+    // condition is fixed by editing the POLICY, and only a re-evaluation notices that edit.
+    expect(sandbox.countOf(BROKEN_POLICY_CONDITION) - evaluationsBefore).toBe(TICKS);
+
+    // (e) ...and the change was not parked/wedged to achieve any of it.
+    const [row] = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(changes)
+        .where(and(eq(changes.orgId, org.orgId), eq(changes.objectId, parked.changeObjectId)))
+    );
+    expect(row!.state).toBe("executing");
+    expect(row!.reconcileBlockedAt).toBeNull();
   });
 });

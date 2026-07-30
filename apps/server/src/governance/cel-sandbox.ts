@@ -136,6 +136,65 @@ export type CelEvalResult =
   | { ok: true; value: unknown }
   | { ok: false; error: string };
 
+/** Upper bound on any error string this sandbox returns. Nothing this module GENERATES comes close
+ *  (they are short constants); the bound exists for the one error class it FORWARDS — cel-js's own
+ *  exception text, whose length is not this module's to control. Generous vs. any real diagnosis. */
+export const CEL_MAX_ERROR_LENGTH = 512;
+
+/**
+ * cel-js embeds the ENTIRE evaluation context, `JSON.stringify`d, in its identifier-resolution
+ * errors (`cel-js@0.3.1/dist/visitor.js:329-341`: `Identifier "x" not found in context: {…}` and
+ * `Cannot obtain "x" from non-object context: …`). Both spellings put the dump after `" context: "`,
+ * which is what this cuts at.
+ */
+const CEL_CONTEXT_DUMP_MARKER = " context: ";
+
+/**
+ * KEEP THE DIAGNOSIS, DROP THE CONTEXT DUMP — the error text this sandbox returns must depend only
+ * on the FAULT, never on the evaluation context.
+ *
+ * WHY THIS IS NOT COSMETIC (measured; PR #153 review Q2). A policy whose CEL condition cannot be
+ * evaluated — a typo'd identifier, a renamed label, a field that no longer exists — is a PERMANENT
+ * operator error that never self-heals. `governance/evaluate.ts` persists this string into the
+ * reason tree twice (as `conditionError` and, for a required contributor, inside the fail-closed
+ * `conditionError` effect's `detail.error`), and the context cel-js dumps into it carries
+ * `context.time`, a fresh ISO snapshot per evaluation. So the reason tree differed on every ~2 s
+ * reconcile tick, `insertDecisionIfChanged` correctly saw a genuinely new verdict every time, and
+ * the gate went straight back to ~43,200 Decision rows/day/change — the ORIGINAL 1.44 GB/day
+ * incident, with the persist-on-change fix fully in place. Measured over 15 consecutive ticks: two
+ * consecutive 1,346-byte reason trees differing by TWO CHARACTERS, both inside the timestamp.
+ *
+ * NOTHING IS LOST, AND THE RECORD IMPROVES. The context is the INPUT, and every Decision already
+ * stores it verbatim in `input_context`; the dump was a second, worse copy of it. Dropping it also
+ * stops the whole CEL context (change / subject / graph / actor) being duplicated into
+ * `reason_tree`, which `scp change explain` and the UI render far more widely than `input_context`.
+ *
+ * NOT A SECURITY CHANGE. The timeout, the worker isolation, the static complexity checks and the
+ * context-complexity checks are all untouched — this only rewrites the text of an already-failed
+ * evaluation's error, on the way out.
+ *
+ * WHERE IT IS APPLIED, and why only there. Five sites in this file construct `{ok:false}`:
+ * `checkContextComplexity`'s bounded messages, the two "CEL sandbox is stopped" constants,
+ * `waitForReady`'s "did not become ready within Nms", the timeout path's "timed out after Nms", and
+ * `failAllPending`'s worker-crash/exit/stopping messages. All of those are text THIS MODULE writes,
+ * from constants and numbers. Only ONE site forwards text from elsewhere — the worker's `msg.error`
+ * in `spawnWorker`'s message handler, which is cel-js's own exception, caught and posted back by
+ * `cel-worker-entry.ts`. That is the one boundary the dump can cross, and the only one this wraps;
+ * normalizing any of the others would be a no-op that looked like a fix.
+ */
+export function normalizeCelWorkerError(error: string): string {
+  const at = error.indexOf(CEL_CONTEXT_DUMP_MARKER);
+  // Keep the trailing "context" — "…not found in context" reads as the diagnosis it is.
+  const diagnosis = at === -1 ? error : error.slice(0, at + CEL_CONTEXT_DUMP_MARKER.length - 2);
+  // A SIZE bound, not a stability guarantee: the cut above is what makes the string stable, and
+  // `governance/cel-sandbox.test.ts` pins cel-js's actual message so a version bump that reworded
+  // it turns RED instead of silently restoring the flood. This only stops an unrecognized future
+  // message from putting an unbounded blob in every Decision's reason tree.
+  return diagnosis.length > CEL_MAX_ERROR_LENGTH
+    ? `${diagnosis.slice(0, CEL_MAX_ERROR_LENGTH)}… (truncated)`
+    : diagnosis;
+}
+
 interface PendingCall {
   resolve(result: CelEvalResult): void;
   timer: NodeJS.Timeout;
@@ -217,7 +276,14 @@ export class CelSandbox {
         if (!pending) return; // late response to an already-timed-out call — drop it.
         entry.pending.delete(msg.id);
         clearTimeout(pending.timer);
-        pending.resolve(msg.ok ? { ok: true, value: msg.value } : { ok: false, error: msg.error });
+        // THE ONE BOUNDARY THAT CARRIES TEXT THIS MODULE DID NOT WRITE — cel-js's own exception
+        // message, which embeds the whole evaluation context (see `normalizeCelWorkerError`, and
+        // PR #153 review Q2 for the flood it otherwise restores).
+        pending.resolve(
+          msg.ok
+            ? { ok: true, value: msg.value }
+            : { ok: false, error: normalizeCelWorkerError(msg.error) }
+        );
       }
     );
 
