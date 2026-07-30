@@ -16,6 +16,7 @@ import {
   roleBadge
 } from "./outposts";
 import { PeerSettingsSection } from "./outpost-settings";
+import { OutpostConfigurationSection } from "./outpost-configuration";
 
 /**
  * `/federation/outposts/$peerDomainId` — M16.2 phase B, one outpost.
@@ -160,6 +161,7 @@ export function OutpostDetailPage(): React.JSX.Element {
       )}
       {status && <OutpostStatusCard status={status} />}
       {status && <PeerSettingsSection peer={status.peer} />}
+      {status && <OutpostConfigurationSection status={status} />}
     </div>
   );
 }
