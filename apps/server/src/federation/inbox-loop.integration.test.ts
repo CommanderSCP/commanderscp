@@ -1074,7 +1074,10 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
           return (...args: unknown[]) => {
             transactions += 1;
             if (transactions === 1) {
-              return (Reflect.get(target, prop) as (...a: unknown[]) => unknown).apply(target, args);
+              return (Reflect.get(target, prop) as (...a: unknown[]) => unknown).apply(
+                target,
+                args
+              );
             }
             return Promise.reject(notFound(`inbox ledger unavailable while probing '${marker}'`));
           };

@@ -439,9 +439,8 @@ describe("Decision write amplification: the campaign reconciler persists ON CHAN
     // which is what `scp campaign explain` reads back long after the call returned.
     const triggers = await decisionsOfKind(org, campaignObjectId, "rollback_trigger");
     expect(triggers.ordinary).toHaveLength(1);
-    const persisted = (
-      triggers.ordinary[0]!.inputContext as { skipped: { reason: string }[] }
-    ).skipped;
+    const persisted = (triggers.ordinary[0]!.inputContext as { skipped: { reason: string }[] })
+      .skipped;
     expect(persisted).toHaveLength(1);
     expect(persisted[0]!.reason).toContain(memberChangeObjectId!);
   });
