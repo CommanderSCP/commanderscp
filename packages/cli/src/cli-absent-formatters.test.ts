@@ -1,14 +1,20 @@
 import { describe, expect, it } from "vitest";
 import type {
   Campaign,
+  FederationPeer,
   FederationStatusResponse,
   InstanceScanFloor,
+  OutpostConfig,
+  OutpostConfigReconcileResult,
   ScanDbStatus
 } from "@scp/schemas";
 import {
   campaignDetailRow,
   federationStatusRow,
+  formatReconcileResultLines,
   instanceScanFloorRow,
+  outpostConfigRow,
+  peerRow,
   scanDbStatusRow
 } from "./cli.js";
 
@@ -272,5 +278,149 @@ describe("scanDbStatusRow: an unknown DB age must not kill the command", () => {
     expect(scanDbStatusRow(baseScanDbStatus({ ageHours: 4.25 })).ageHours).toBe("4.3");
     expect(scanDbStatusRow(baseScanDbStatus({ ageHours: 0 })).ageHours).toBe("0.0");
     expect(scanDbStatusRow(baseScanDbStatus({ ageHours: null })).ageHours).toBe("(unknown)");
+  });
+});
+
+// -------------------------------------------------------------------------------------
+// ROUND 5 (Z2/Z3/Z4) — THE CLI TWINS OF GUARDS THE WEB SIDE ALREADY TOOK.
+//
+// Each of the three below is the SAME required-not-optional field, off the SAME endpoint, as a
+// web-side site fixed in an earlier round; each was left bare on the CLI half, and each lived in a
+// MODULE-PRIVATE function so no test could have caught it. `peerRow` and `outpostConfigRow` are now
+// exported for that reason — round 4's Y2 finding restated: a guard no test can invoke is a guard
+// nothing holds in place.
+// -------------------------------------------------------------------------------------
+
+function basePeer(overrides: Partial<FederationPeer> = {}): FederationPeer {
+  return {
+    id: PEER_ID,
+    name: "amer-prod",
+    role: "outpost",
+    baseUrl: "https://outpost.example.net",
+    syncScope: { mode: "full" },
+    publicKey: "AAAA",
+    cosignPublicKey: null,
+    deliveryTarget: null,
+    pokeMode: false,
+    pairedAt: "2026-07-01T00:00:00.000Z",
+    ...overrides
+  } as FederationPeer;
+}
+
+function baseOutpostConfig(overrides: Partial<OutpostConfig> = {}): OutpostConfig {
+  return {
+    objectId: "33333333-4444-4555-8666-777777777777",
+    urn: `urn:scp:outpost:${PEER_ID}`,
+    name: "amer-prod",
+    peerDomainId: PEER_ID,
+    trustTier: null,
+    originDomainId: "aa11bb22-cc33-4d44-8e55-ff6677889900",
+    originIsSelf: true,
+    provenance: null,
+    revision: 1,
+    version: 1,
+    unknownFields: ["trustTier"],
+    createdAt: "2026-07-01T00:00:00.000Z",
+    updatedAt: "2026-07-01T00:00:00.000Z",
+    ...overrides
+  } as OutpostConfig;
+}
+
+function baseReconcile(
+  overrides: Partial<OutpostConfigReconcileResult> = {}
+): OutpostConfigReconcileResult {
+  return {
+    config: baseOutpostConfig(),
+    adoptedObjectId: null,
+    removedShadowObjectIds: [],
+    removedLocalObjectIds: [],
+    ...overrides
+  } as OutpostConfigReconcileResult;
+}
+
+// cli.ts — peerRow.syncScope (Z2)
+describe("peerRow: a peer whose response omits `syncScope` must not kill `scp federation peers`", () => {
+  it("prints `?` instead of throwing on `.mode`", () => {
+    // THE MUTANT: `p.syncScope.mode` throws `TypeError: Cannot read properties of undefined
+    // (reading 'mode')` while building the FIRST row, so the command prints NO table at all — not a
+    // degraded one. `syncScope` is required-not-optional on `FederationPeerSchema` and the generated
+    // SDK validates no response; this is the same field `outpost-settings.tsx` guards on the web.
+    const peer: Partial<FederationPeer> = basePeer();
+    delete peer.syncScope;
+    expect(() => peerRow(peer as FederationPeer)).not.toThrow();
+    expect(peerRow(peer as FederationPeer).syncScope).toBe("?");
+  });
+
+  it("never SUBSTITUTES a default scope — `?` is not `full`", () => {
+    const peer: Partial<FederationPeer> = basePeer();
+    delete peer.syncScope;
+    // "full" would tell the operator this peer exports everything on no evidence at all.
+    expect(peerRow(peer as FederationPeer).syncScope).not.toBe("full");
+  });
+
+  it("still prints a real mode, and the other columns, when the server sends one", () => {
+    const row = peerRow(basePeer({ syncScope: { mode: "status_only" } }));
+    expect(row.syncScope).toBe("status_only");
+    expect(row.name).toBe("amer-prod");
+    expect(row.poke).toBe("poll");
+  });
+});
+
+// cli.ts — outpostConfigRow.unknownFields (Z3)
+describe("outpostConfigRow: an omitted `unknownFields` must not kill six commands", () => {
+  it("prints `-` instead of throwing on `.join`", () => {
+    // THE MUTANT: `o.unknownFields.join(", ")` throws `TypeError: … reading 'join'`. `unknownFields`
+    // is required-not-optional on `OutpostConfigSchema`; its web twin took `?? []` last round.
+    const config: Partial<OutpostConfig> = baseOutpostConfig();
+    delete config.unknownFields;
+    expect(() => outpostConfigRow(config as OutpostConfig)).not.toThrow();
+    expect(outpostConfigRow(config as OutpostConfig).notObservable).toBe("-");
+  });
+
+  it("still lists the real not-observable fields when the server sends them", () => {
+    expect(outpostConfigRow(baseOutpostConfig()).notObservable).toBe("trustTier");
+    expect(outpostConfigRow(baseOutpostConfig({ unknownFields: [] })).notObservable).toBe("-");
+  });
+});
+
+// cli.ts — formatReconcileResultLines removal buckets (Z4)
+describe("formatReconcileResultLines: the report of a DESTRUCTIVE verb must survive a missing key", () => {
+  for (const key of ["removedShadowObjectIds", "removedLocalObjectIds"] as const) {
+    it(`an OMITTED ${key} still produces a report instead of throwing`, () => {
+      // THE MUTANT: bare `.length` throws, and the operator — who has just run a destructive,
+      // downstream-propagating reconcile — is told NOTHING about the deletes that already happened
+      // and already journaled.
+      const result: Partial<OutpostConfigReconcileResult> = baseReconcile();
+      delete result[key];
+      expect(() =>
+        formatReconcileResultLines(result as OutpostConfigReconcileResult)
+      ).not.toThrow();
+      expect(formatReconcileResultLines(result as OutpostConfigReconcileResult)[0]).toContain(
+        "Adopted:"
+      );
+    });
+  }
+
+  it("an omitted shadow bucket still reports the LOCAL deletes, with their own wording", () => {
+    const result: Partial<OutpostConfigReconcileResult> = baseReconcile({
+      removedLocalObjectIds: ["44444444-5555-4666-8777-888888888888"]
+    });
+    delete result.removedShadowObjectIds;
+    const lines = formatReconcileResultLines(result as OutpostConfigReconcileResult);
+    // the propagating-tombstone wording is the whole point of the two buckets being separate
+    expect(lines.join("\n")).toContain("WILL propagate to the outpost");
+    expect(lines.join("\n")).toContain("44444444-5555-4666-8777-888888888888");
+    expect(lines.join("\n")).not.toContain("unverified shadow(s)");
+  });
+
+  it("an omitted local bucket still reports the SHADOW cleanup, with its own wording", () => {
+    const result: Partial<OutpostConfigReconcileResult> = baseReconcile({
+      removedShadowObjectIds: ["55555555-6666-4777-8888-999999999999"]
+    });
+    delete result.removedLocalObjectIds;
+    const lines = formatReconcileResultLines(result as OutpostConfigReconcileResult);
+    expect(lines.join("\n")).toContain("unverified shadow(s)");
+    expect(lines.join("\n")).toContain("invisible to the outpost");
+    expect(lines.join("\n")).not.toContain("WILL propagate to the outpost");
   });
 });

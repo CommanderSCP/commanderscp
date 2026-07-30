@@ -102,9 +102,7 @@ function parseList(value: string | undefined): string[] | undefined {
  *  SAME format on `scp change propose` and `scp change-source report`). Split on the LAST '@' so a
  *  URN (which contains ':' but not '@') survives; a missing/empty half is a clear error, not a
  *  silent drop. */
-function parseRequiresFlag(
-  value: string | undefined
-): { key: string; at: string }[] | undefined {
+function parseRequiresFlag(value: string | undefined): { key: string; at: string }[] | undefined {
   if (value === undefined) return undefined;
   return value.split(",").map((entry) => {
     const at = entry.slice(entry.lastIndexOf("@") + 1).trim();
@@ -228,13 +226,30 @@ function initiativeRow(i: Initiative): Record<string, string> {
 // M6 Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN.md §13) — row formatters.
 // -------------------------------------------------------------------------------------
 
-function peerRow(p: FederationPeer): Record<string, string> {
+/**
+ * One paired peer as a `scp federation peers` table row.
+ *
+ * EXPORTED, like `federationStatusRow` beside it and for the same reason (round 4, Y2): a guard no
+ * test can invoke is a guard nothing holds in place. This function was module-private, so the
+ * `?.mode ?? "?"` below could be reverted without a single test noticing.
+ *
+ * `syncScope` is required-not-optional on `FederationPeerSchema` and the generated SDK validates NO
+ * response at runtime, so `p.syncScope.mode` was a bare dereference of a promise about the server —
+ * the EXACT field `outpost-settings.tsx`'s `peerSyncScopeMode` guards on the web side (its doc
+ * comment states the rule). MEASURED here: `TypeError: Cannot read properties of undefined (reading
+ * 'mode')`, thrown while building the FIRST row, so `scp federation peers` printed no table at all.
+ *
+ * `"?"` RATHER THAN `"full"`, deliberately, and matching `transport` below: substituting a default
+ * would tell the operator this peer exports everything on no evidence whatsoever. An unknown scope
+ * is unknown.
+ */
+export function peerRow(p: FederationPeer): Record<string, string> {
   return {
     id: p.id,
     name: p.name,
     role: p.role,
     baseUrl: p.baseUrl ?? "",
-    syncScope: p.syncScope.mode,
+    syncScope: (p.syncScope as SyncScope | undefined)?.mode ?? "?",
     // M17.3 (E5) — whether this peer's cosign VERIFICATION key is registered (from pairing). Presence
     // only in the table; the full PEM is in `--output json`. A peer paired before E5 shows "none".
     cosign: p.cosignPublicKey ? "registered" : "none",
@@ -344,10 +359,25 @@ export function federationStatusRow(
   };
 }
 
-/** M16.2 phase A (E1) — one `outpost` config object as a table row. `trustTier` prints "?" when the
- *  operator has never asserted one; `origin` distinguishes a commander's own authored object from the
- *  read-only REPLICA an outpost holds of it. */
-function outpostConfigRow(o: OutpostConfig): Record<string, string> {
+/**
+ * M16.2 phase A (E1) — one `outpost` config object as a table row. `trustTier` prints "?" when the
+ * operator has never asserted one; `origin` distinguishes a commander's own authored object from the
+ * read-only REPLICA an outpost holds of it.
+ *
+ * EXPORTED for the reason given on `peerRow`: this was module-private, so the `?? []` below was
+ * unreachable by any test.
+ *
+ * `unknownFields` is required-not-optional (`packages/schemas/src/federation.ts` `OutpostConfigSchema`)
+ * and the SDK validates no response, so `o.unknownFields.join(", ")` was bare. MEASURED: `TypeError:
+ * Cannot read properties of undefined (reading 'join')`. Its web twin at `outpost-configuration.tsx`
+ * took the `?? []` last round and IS pinned; this half was not fixed even though the PR body claimed
+ * the field "closed as a class". Blast radius is SIX commands (`cli.ts` ~2963/2993/3005/3017/3044/3050).
+ *
+ * `?? []` collapses to the same `"-"` an EMPTY `unknownFields` prints — and that is the honest
+ * reading either way: this side has nothing to report as not-observable. It is NOT a claim that every
+ * field is observable, which is why the column is headed "notObservable" and not "observable".
+ */
+export function outpostConfigRow(o: OutpostConfig): Record<string, string> {
   return {
     peerDomainId: o.peerDomainId,
     name: o.name,
@@ -355,7 +385,7 @@ function outpostConfigRow(o: OutpostConfig): Record<string, string> {
     originDomainId: o.originDomainId,
     revision: String(o.revision),
     version: String(o.version),
-    notObservable: o.unknownFields.join(", ") || "-"
+    notObservable: (o.unknownFields ?? []).join(", ") || "-"
   };
 }
 
@@ -409,29 +439,43 @@ export function scanDbStatusRow(s: ScanDbStatus): Record<string, string> {
  *  outpost. Collapsing the two into one "unverified shadow(s)" sentence (the N9-era bug this fixes) told
  *  an operator who had just deleted their own config, and pushed that delete to the outpost, that they
  *  had merely cleaned up a stray copy. Exported so the CLI surface test can pin the wording gap directly
- *  rather than only via the command's `--keep` help text. */
+ *  rather than only via the command's `--keep` help text.
+ *
+ *  `?? []` ON BOTH BUCKETS (Z4). Both are required-not-optional on `OutpostConfigReconcileResultSchema`
+ *  and the SDK validates no response, so both were bare `.length`/`.join` reads. MEASURED: `TypeError:
+ *  Cannot read properties of undefined (reading 'length')`. This is the WORST place in the CLI for it —
+ *  the operator has just run a DESTRUCTIVE, DOWNSTREAM-PROPAGATING verb and the throw kills the entire
+ *  report of what it did, so they are told NOTHING about deletes that already happened and already
+ *  journaled. The web twin (`outpost-configuration.tsx`) took this guard last round for exactly that
+ *  reason; the CLI half was left bare.
+ *
+ *  Absence degrades to "Removed: nothing (no surplus rows)" only when BOTH are empty-or-absent, which is
+ *  the same line an all-empty result already printed. That is a reporting gap, not a fabrication: it says
+ *  nothing about what the server did, and the server's own JSON is one `--output json` away. */
 export function formatReconcileResultLines(result: OutpostConfigReconcileResult): string[] {
+  const removedShadowObjectIds = result.removedShadowObjectIds ?? [];
+  const removedLocalObjectIds = result.removedLocalObjectIds ?? [];
   const lines: string[] = [
     isAbsent(result.adoptedObjectId)
       ? "Adopted: nothing (an authoritative row already held the binding)"
       : `Adopted: ${result.adoptedObjectId} (an unverified hand-filled shadow is now this domain's own object)`
   ];
-  if (result.removedShadowObjectIds.length === 0 && result.removedLocalObjectIds.length === 0) {
+  if (removedShadowObjectIds.length === 0 && removedLocalObjectIds.length === 0) {
     lines.push("Removed: nothing (no surplus rows)");
     return lines;
   }
-  if (result.removedShadowObjectIds.length > 0) {
+  if (removedShadowObjectIds.length > 0) {
     lines.push(
-      `Removed ${result.removedShadowObjectIds.length} unverified shadow(s) (hand-typed copies this ` +
+      `Removed ${removedShadowObjectIds.length} unverified shadow(s) (hand-typed copies this ` +
         `domain never authored — a purely local cleanup, invisible to the outpost): ` +
-        `${result.removedShadowObjectIds.join(", ")}`
+        `${removedShadowObjectIds.join(", ")}`
     );
   }
-  if (result.removedLocalObjectIds.length > 0) {
+  if (removedLocalObjectIds.length > 0) {
     lines.push(
-      `Deleted ${result.removedLocalObjectIds.length} row(s) THIS DOMAIN AUTHORED to resolve a --keep ` +
+      `Deleted ${removedLocalObjectIds.length} row(s) THIS DOMAIN AUTHORED to resolve a --keep ` +
         `conflict (an ordinary journaled tombstone — this WILL propagate to the outpost): ` +
-        `${result.removedLocalObjectIds.join(", ")}`
+        `${removedLocalObjectIds.join(", ")}`
     );
   }
   return lines;
@@ -574,7 +618,8 @@ function printApplyResult(plan: Plan, summary: PlanDiffSummary, output: OutputFo
  */
 function printWaitStatusBody(waitStatus: ChangeWaitStatus | null, standalone: boolean): void {
   if (!waitStatus) {
-    if (standalone) console.log("(no coupled-pipeline prerequisites — this change declared no `requires`)");
+    if (standalone)
+      console.log("(no coupled-pipeline prerequisites — this change declared no `requires`)");
     return;
   }
   const outstanding = waitStatus.requirements.filter((r) => !r.satisfied).length;
@@ -599,7 +644,9 @@ function printWaitStatusBody(waitStatus: ChangeWaitStatus | null, standalone: bo
     }
   }
   if (waitStatus.malformed && waitStatus.malformed.length > 0) {
-    console.log(`  malformed requires entries (unsatisfiable — fix and re-propose): ${JSON.stringify(waitStatus.malformed)}`);
+    console.log(
+      `  malformed requires entries (unsatisfiable — fix and re-propose): ${JSON.stringify(waitStatus.malformed)}`
+    );
   }
 }
 
@@ -834,7 +881,10 @@ function registerTypedResourceCrud(
     .description(`Create a ${name}`)
     .requiredOption("--name <name>", `${name} name`);
   if (opts?.serviceOption) {
-    registerCmd.requiredOption("--service <idOrUrn>", `owning service id or URN (a ${name} belongs to a service)`);
+    registerCmd.requiredOption(
+      "--service <idOrUrn>",
+      `owning service id or URN (a ${name} belongs to a service)`
+    );
   }
   registerCmd
     .option("--id <uuid>", "client-suppliable UUIDv7 id")
@@ -948,7 +998,10 @@ function registerTypedResourceCrud(
     // Optional here (not required): the server needs `--service` only on the CREATE branch (a URN
     // that doesn't exist yet); updating an existing component ignores it (re-assignment is P5b's
     // move verb). Omitting it while creating gets a clear 400 from the server.
-    upsertCmd.option("--service <idOrUrn>", "owning service id or URN (required when this URN is new)");
+    upsertCmd.option(
+      "--service <idOrUrn>",
+      "owning service id or URN (required when this URN is new)"
+    );
   }
   upsertCmd
     .option("--properties <json>", "JSON object")
@@ -958,7 +1011,12 @@ function registerTypedResourceCrud(
     .action(
       async (
         urn: string,
-        cmdOpts: BaseCliOpts & { name: string; service?: string; properties?: string; labels?: string }
+        cmdOpts: BaseCliOpts & {
+          name: string;
+          service?: string;
+          properties?: string;
+          labels?: string;
+        }
       ) => {
         const client = await clientFromStoredCredentials(cmdOpts);
         const result = await resourceOf(client).upsertByUrn(urn, {
@@ -1546,7 +1604,9 @@ export function buildProgram(): Command {
   // binding-type collision (relabel one first via `scp executor repurpose`).
   componentCmd
     .command("merge <survivorIdOrUrn>")
-    .description("Merge another component into this one (moves its executor bindings, soft-deletes it)")
+    .description(
+      "Merge another component into this one (moves its executor bindings, soft-deletes it)"
+    )
     .requiredOption("--loser <idOrUrn>", "the component to merge in and soft-delete (id or URN)")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
@@ -2322,9 +2382,15 @@ export function buildProgram(): Command {
     .description(
       "Author an instance-scoped scan-requirement floor (OPERATOR ONLY — requires SCP_OPERATOR_TOKEN; a floor may only ever TIGHTEN what orgs below it can pass)"
     )
-    .requiredOption("--tier <tier>", "platform|trust-domain (the partition tier, not the intra-org containment domain)")
+    .requiredOption(
+      "--tier <tier>",
+      "platform|trust-domain (the partition tier, not the intra-org containment domain)"
+    )
     .option("--origin <origin>", "local|federated", "local")
-    .option("--max-critical <n>", "ceiling on CRITICAL findings (omit to leave unset — unset never means 0)")
+    .option(
+      "--max-critical <n>",
+      "ceiling on CRITICAL findings (omit to leave unset — unset never means 0)"
+    )
     .option("--max-high <n>", "ceiling on HIGH findings")
     .option("--max-medium <n>", "ceiling on MEDIUM findings")
     .option("--max-low <n>", "ceiling on LOW findings")
@@ -2358,7 +2424,8 @@ export function buildProgram(): Command {
         const num = (v: string | undefined): number | undefined => {
           if (v === undefined) return undefined;
           const n = Number(v);
-          if (!Number.isInteger(n) || n < 0) throw new Error(`expected a non-negative integer, got '${v}'`);
+          if (!Number.isInteger(n) || n < 0)
+            throw new Error(`expected a non-negative integer, got '${v}'`);
           return n;
         };
         const client = await clientFromStoredCredentials(opts);
@@ -2436,7 +2503,14 @@ export function buildProgram(): Command {
             "SCP_OPERATOR_TOKEN is not set — scanner assignments bind every org on the deployment, so authoring one requires the deployment operator token, not your tenant login."
           );
         }
-        const validTypes = ["image", "rpm", "deb", "npm", "infrastructure", "configuration"] as const;
+        const validTypes = [
+          "image",
+          "rpm",
+          "deb",
+          "npm",
+          "infrastructure",
+          "configuration"
+        ] as const;
         if (!(validTypes as readonly string[]).includes(opts.type)) {
           throw new Error(`--type must be one of ${validTypes.join("|")} (got '${opts.type}')`);
         }
@@ -2481,7 +2555,9 @@ export function buildProgram(): Command {
 
   scanDbCmd
     .command("status")
-    .description("Show the DB's presence, age, source (baked|refreshed|operator-loaded), schema compatibility, staleness, and active thresholds")
+    .description(
+      "Show the DB's presence, age, source (baked|refreshed|operator-loaded), schema compatibility, staleness, and active thresholds"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(async (opts: BaseCliOpts) => {
@@ -2492,7 +2568,9 @@ export function buildProgram(): Command {
 
   const stalenessCmd = scanDbCmd
     .command("staleness-policy")
-    .description("The instance-scoped soft/hard max-age policy (owner decision 2026-07-24 — a company applies its own rules)");
+    .description(
+      "The instance-scoped soft/hard max-age policy (owner decision 2026-07-24 — a company applies its own rules)"
+    );
 
   stalenessCmd
     .command("get")
@@ -2515,9 +2593,17 @@ export function buildProgram(): Command {
 
   stalenessCmd
     .command("set")
-    .description("Author the staleness policy (OPERATOR ONLY — SCP_OPERATOR_TOKEN; omit a bound to reset it to the built-in default)")
-    .option("--soft-max-age-hours <n>", "soft max age in hours (WARN beyond this); omit to reset to default")
-    .option("--hard-max-age-hours <n>", "hard max age in hours (FAIL CLOSED beyond this); omit to reset to default")
+    .description(
+      "Author the staleness policy (OPERATOR ONLY — SCP_OPERATOR_TOKEN; omit a bound to reset it to the built-in default)"
+    )
+    .option(
+      "--soft-max-age-hours <n>",
+      "soft max age in hours (WARN beyond this); omit to reset to default"
+    )
+    .option(
+      "--hard-max-age-hours <n>",
+      "hard max age in hours (FAIL CLOSED beyond this); omit to reset to default"
+    )
     .option("--note <text>", "optional note")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
@@ -2534,7 +2620,8 @@ export function buildProgram(): Command {
         const parseHours = (v: string | undefined, flag: string): number | null => {
           if (v === undefined) return null;
           const n = Number(v);
-          if (!Number.isInteger(n) || n <= 0) throw new Error(`${flag} must be a positive integer (got '${v}')`);
+          if (!Number.isInteger(n) || n <= 0)
+            throw new Error(`${flag} must be a positive integer (got '${v}')`);
           return n;
         };
         const client = await clientFromStoredCredentials(opts);
@@ -2560,26 +2647,40 @@ export function buildProgram(): Command {
 
   scanDbCmd
     .command("refresh")
-    .description("Connected refresh — skopeo-pull the upstream OCI trivy-db into the cache (OPERATOR ONLY — SCP_OPERATOR_TOKEN; allowlisted, atomic swap, schema-compat asserted)")
+    .description(
+      "Connected refresh — skopeo-pull the upstream OCI trivy-db into the cache (OPERATOR ONLY — SCP_OPERATOR_TOKEN; allowlisted, atomic swap, schema-compat asserted)"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(async (opts: BaseCliOpts) => {
       const operatorToken = process.env.SCP_OPERATOR_TOKEN;
       if (!operatorToken) {
-        throw new Error("SCP_OPERATOR_TOKEN is not set — refreshing the deployment's scan DB is an operator action.");
+        throw new Error(
+          "SCP_OPERATOR_TOKEN is not set — refreshing the deployment's scan DB is an operator action."
+        );
       }
       const client = await clientFromStoredCredentials(opts);
       const result = await client.scanDb.refresh(operatorToken);
       printResult(result, opts.output, (raw) => {
         const r = raw as typeof result;
-        return { refreshed: String(r.refreshed), source: r.status.source, ageHours: String(r.status.ageHours), detail: r.detail };
+        return {
+          refreshed: String(r.refreshed),
+          source: r.status.source,
+          ageHours: String(r.status.ageHours),
+          detail: r.detail
+        };
       });
     });
 
   scanDbCmd
     .command("load")
-    .description("Air-gap load — verify + install a cosign-signed DB blob from server-local paths (OPERATOR ONLY — SCP_OPERATOR_TOKEN; digest-bound + detached-signature verify before accept)")
-    .requiredOption("--file <path>", "server-local path to the DB blob (tar of the trivy cache db/ dir)")
+    .description(
+      "Air-gap load — verify + install a cosign-signed DB blob from server-local paths (OPERATOR ONLY — SCP_OPERATOR_TOKEN; digest-bound + detached-signature verify before accept)"
+    )
+    .requiredOption(
+      "--file <path>",
+      "server-local path to the DB blob (tar of the trivy cache db/ dir)"
+    )
     .requiredOption("--sig <path>", "server-local path to the cosign detached signature")
     .requiredOption("--pubkey <path>", "server-local path to the operator's cosign public key PEM")
     .option("--digest <sha256>", "optional sha256:<hex> the blob bytes must hash to")
@@ -2591,7 +2692,9 @@ export function buildProgram(): Command {
       ) => {
         const operatorToken = process.env.SCP_OPERATOR_TOKEN;
         if (!operatorToken) {
-          throw new Error("SCP_OPERATOR_TOKEN is not set — loading a scan DB across the air gap is an operator action.");
+          throw new Error(
+            "SCP_OPERATOR_TOKEN is not set — loading a scan DB across the air gap is an operator action."
+          );
         }
         const client = await clientFromStoredCredentials(opts);
         const result = await client.scanDb.load(
@@ -2605,7 +2708,12 @@ export function buildProgram(): Command {
         );
         printResult(result, opts.output, (raw) => {
           const r = raw as typeof result;
-          return { loaded: String(r.loaded), source: r.status.source, ageHours: String(r.status.ageHours), detail: r.detail };
+          return {
+            loaded: String(r.loaded),
+            source: r.status.source,
+            ageHours: String(r.status.ageHours),
+            detail: r.detail
+          };
         });
       }
     );
@@ -2635,11 +2743,13 @@ export function buildProgram(): Command {
     .requiredOption("--role <role>", "commander|outpost|retrans")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
-    .action(async (opts: BaseCliOpts & { name: string; role: "commander" | "outpost" | "retrans" }) => {
-      const client = await clientFromStoredCredentials(opts);
-      const result = await client.federation.init({ name: opts.name, role: opts.role });
-      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
-    });
+    .action(
+      async (opts: BaseCliOpts & { name: string; role: "commander" | "outpost" | "retrans" }) => {
+        const client = await clientFromStoredCredentials(opts);
+        const result = await client.federation.init({ name: opts.name, role: opts.role });
+        printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+      }
+    );
 
   federationCmd
     .command("self")
@@ -2703,9 +2813,18 @@ export function buildProgram(): Command {
       "--delivery-s3-endpoint <url>",
       "S3(-compatible) endpoint for the peer's DeliveryTarget (e.g. https://minio:9000) — operator-allowlisted"
     )
-    .option("--delivery-s3-bucket <bucket>", "S3 bucket channel artifacts are put into / listed from")
-    .option("--delivery-s3-out-prefix <prefix>", "S3 key prefix for outbound drops (default: bucket root)")
-    .option("--delivery-s3-in-prefix <prefix>", "S3 key prefix for the inbound inbox (default: bucket root)")
+    .option(
+      "--delivery-s3-bucket <bucket>",
+      "S3 bucket channel artifacts are put into / listed from"
+    )
+    .option(
+      "--delivery-s3-out-prefix <prefix>",
+      "S3 key prefix for outbound drops (default: bucket root)"
+    )
+    .option(
+      "--delivery-s3-in-prefix <prefix>",
+      "S3 key prefix for the inbound inbox (default: bucket root)"
+    )
     .option(
       "--clear-delivery-target",
       "clear the peer's DeliveryTarget (fall back to the instance env dirs)"
@@ -2747,14 +2866,12 @@ export function buildProgram(): Command {
         const hasFs = Boolean(opts.deliveryOutDir || opts.deliveryInDir);
         const hasS3 = Boolean(
           opts.deliveryS3Endpoint ||
-            opts.deliveryS3Bucket ||
-            opts.deliveryS3OutPrefix ||
-            opts.deliveryS3InPrefix
+          opts.deliveryS3Bucket ||
+          opts.deliveryS3OutPrefix ||
+          opts.deliveryS3InPrefix
         );
         if (opts.clearDeliveryTarget && (hasFs || hasS3)) {
-          throw new Error(
-            "--clear-delivery-target cannot be combined with any --delivery-* flag"
-          );
+          throw new Error("--clear-delivery-target cannot be combined with any --delivery-* flag");
         }
         if (hasFs && hasS3) {
           throw new Error(
@@ -2852,9 +2969,9 @@ export function buildProgram(): Command {
         const hasFs = Boolean(opts.deliveryOutDir || opts.deliveryInDir);
         const hasS3 = Boolean(
           opts.deliveryS3Endpoint ||
-            opts.deliveryS3Bucket ||
-            opts.deliveryS3OutPrefix ||
-            opts.deliveryS3InPrefix
+          opts.deliveryS3Bucket ||
+          opts.deliveryS3OutPrefix ||
+          opts.deliveryS3InPrefix
         );
         if (opts.clearDeliveryTarget && (hasFs || hasS3)) {
           throw new Error("--clear-delivery-target cannot be combined with any --delivery-* flag");
@@ -2892,7 +3009,9 @@ export function buildProgram(): Command {
         const req: UpdateFederationPeerRequest = {
           ...(opts.name !== undefined ? { name: opts.name } : {}),
           ...(opts.baseUrlOfPeer !== undefined ? { baseUrl: opts.baseUrlOfPeer } : {}),
-          ...(opts.syncScope !== undefined ? { syncScope: { mode: opts.syncScope } as SyncScope } : {}),
+          ...(opts.syncScope !== undefined
+            ? { syncScope: { mode: opts.syncScope } as SyncScope }
+            : {}),
           ...(deliveryTarget !== undefined ? { deliveryTarget } : {}),
           ...(opts.pokeMode !== undefined ? { pokeMode: opts.pokeMode } : {})
         };
@@ -2920,7 +3039,9 @@ export function buildProgram(): Command {
   // -----------------------------------------------------------------------------------------
   const outpostCmd = federationCmd
     .command("outpost")
-    .description("Commander-origin outpost config objects (trust tier) that sync down to the outpost");
+    .description(
+      "Commander-origin outpost config objects (trust tier) that sync down to the outpost"
+    );
 
   // THE HELP TEXT IS DERIVED FROM THE SCHEMA, NOT RETYPED (review round 5, N1). The first cut of the
   // tier enum was `commercial|fedramp-high|il5`; ADR-0022 widened it to the glossary's five members,
@@ -3083,7 +3204,9 @@ export function buildProgram(): Command {
     )
     .option("--base-url <url>", "API base URL override")
     .action(
-      async (opts: BaseCliOpts & { peer: string; since?: string; out?: string; deliver?: boolean }) => {
+      async (
+        opts: BaseCliOpts & { peer: string; since?: string; out?: string; deliver?: boolean }
+      ) => {
         if (!opts.out && !opts.deliver) {
           throw new Error("provide --out <file>, --deliver, or both");
         }
@@ -3119,7 +3242,9 @@ export function buildProgram(): Command {
     )
     .option("--base-url <url>", "API base URL override")
     .action(
-      async (opts: BaseCliOpts & { peer: string; change: string; out?: string; deliver?: boolean }) => {
+      async (
+        opts: BaseCliOpts & { peer: string; change: string; out?: string; deliver?: boolean }
+      ) => {
         if (!opts.out && !opts.deliver) {
           throw new Error("provide --out <file>, --deliver, or both");
         }
@@ -3173,7 +3298,10 @@ export function buildProgram(): Command {
     .description(
       "Validate-then-relay an imported promotion's artifact bytes into a signed tarball (retrans role only; fail-closed)"
     )
-    .requiredOption("--change <idOrUrn>", "the LOCAL imported change (from `scp federation import`)")
+    .requiredOption(
+      "--change <idOrUrn>",
+      "the LOCAL imported change (from `scp federation import`)"
+    )
     // M13.2a (§13.2) — the outbound drop resolves through the named DESTINATION peer's
     // DeliveryTarget; omitted, it resolves through the instance env (SCP_RELAY_OUT_DIR) as before.
     .option(
@@ -3379,11 +3507,16 @@ export function buildProgram(): Command {
 
   connectCmd
     .command("argocd")
-    .description("Register an existing Argo CD server (stores the token, creates an execution-system)")
+    .description(
+      "Register an existing Argo CD server (stores the token, creates an execution-system)"
+    )
     .requiredOption("--url <url>", "Argo CD API server base URL, e.g. https://argocd.example.com")
     .requiredOption("--token <token>", "an Argo CD API token (scoped per your Argo CD RBAC)")
     .option("--name <name>", "name for the execution-system object", "argocd")
-    .option("--token-key <key>", "secrets-store key to hold the token (default: <name>-argocd-token)")
+    .option(
+      "--token-key <key>",
+      "secrets-store key to hold the token (default: <name>-argocd-token)"
+    )
     .option("--no-validate", "skip the best-effort connectivity check")
     .option(
       "--allow-internal-egress",
@@ -3416,12 +3549,16 @@ export function buildProgram(): Command {
               headers: { authorization: `Bearer ${opts.token}` }
             });
             if (!res.ok) {
-              console.warn(`WARN: Argo CD ${serverUrl}/api/version returned HTTP ${res.status} — registering anyway`);
+              console.warn(
+                `WARN: Argo CD ${serverUrl}/api/version returned HTTP ${res.status} — registering anyway`
+              );
             } else {
               console.log(`Connectivity to ${serverUrl}: OK`);
             }
           } catch (err) {
-            console.warn(`WARN: could not reach ${serverUrl} (${String(err)}) — registering anyway`);
+            console.warn(
+              `WARN: could not reach ${serverUrl} (${String(err)}) — registering anyway`
+            );
           }
         }
 
@@ -3438,10 +3575,18 @@ export function buildProgram(): Command {
           },
           { idempotencyKey: randomUUID() }
         );
-        console.log(`Registered execution-system '${opts.name}' (${created.id}). Token stored as secret '${tokenKey}'.`);
-        console.log(`Next: scp discovery run --module argocd-discovery --instance-id ${opts.name} \\`);
-        console.log(`        --config '{"serverUrl":"${serverUrl}","tokenSecretKey":"${tokenKey}","executionSystemId":"${created.id}"}' \\`);
-        console.log(`        --secret-refs '{"${tokenKey}":"${tokenKey}"}'   # then: scp discovery accept <proposalId>`);
+        console.log(
+          `Registered execution-system '${opts.name}' (${created.id}). Token stored as secret '${tokenKey}'.`
+        );
+        console.log(
+          `Next: scp discovery run --module argocd-discovery --instance-id ${opts.name} \\`
+        );
+        console.log(
+          `        --config '{"serverUrl":"${serverUrl}","tokenSecretKey":"${tokenKey}","executionSystemId":"${created.id}"}' \\`
+        );
+        console.log(
+          `        --secret-refs '{"${tokenKey}":"${tokenKey}"}'   # then: scp discovery accept <proposalId>`
+        );
         printResult(created, opts.output, (item) => objectRow(item as GraphObject));
       }
     );
@@ -3452,7 +3597,9 @@ export function buildProgram(): Command {
 
   executorCmd
     .command("bind <idOrUrn>")
-    .description("Bind a Component/DeploymentTarget to an ExecutorPlugin instance or execution-system")
+    .description(
+      "Bind a Component/DeploymentTarget to an ExecutorPlugin instance or execution-system"
+    )
     .option(
       "--module <module>",
       "plugin module: github|gitea|gitlab|argocd|terraform|managed-iac (inline binding)"
@@ -3510,11 +3657,9 @@ export function buildProgram(): Command {
                 pluginModule: opts.module,
                 pluginInstanceId: opts.instanceId,
                 config: parseJsonOption(opts.config, "--config") as
-                  | Record<string, unknown>
-                  | undefined,
+                  Record<string, unknown> | undefined,
                 secretRefs: parseJsonOption(opts.secretRefs, "--secret-refs") as
-                  | Record<string, string>
-                  | undefined,
+                  Record<string, string> | undefined,
                 allowedHosts: parseList(opts.allowedHosts),
                 externalRef: opts.targetRef,
                 type: opts.type
@@ -3563,15 +3708,15 @@ export function buildProgram(): Command {
   executorCmd
     .command("repurpose <idOrUrn>")
     .description("Relabel which pipeline (routing Type, ADR-0007) a target's binding drives")
-    .requiredOption("--to <type>", "the new routing Type: image|rpm|deb|npm|infrastructure|configuration")
+    .requiredOption(
+      "--to <type>",
+      "the new routing Type: image|rpm|deb|npm|infrastructure|configuration"
+    )
     .option("--from <type>", "the binding's current routing Type (default: configuration)")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(
-      async (
-        idOrUrn: string,
-        opts: BaseCliOpts & { to: ExecutorType; from?: ExecutorType }
-      ) => {
+      async (idOrUrn: string, opts: BaseCliOpts & { to: ExecutorType; from?: ExecutorType }) => {
         const client = await clientFromStoredCredentials(opts);
         const result = await client.executors.repurposeBinding(idOrUrn, opts.to, opts.from);
         printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
@@ -3767,7 +3912,9 @@ export function buildProgram(): Command {
   // creates NO objects — matches its sourceMappings to existing components by name. Idempotent.
   discoveryCmd
     .command("backfill-mappings")
-    .description("Backfill source_mappings onto already-imported components from a discovery proposal")
+    .description(
+      "Backfill source_mappings onto already-imported components from a discovery proposal"
+    )
     .requiredOption(
       "--proposal <path-or-json>",
       "a file path to (or literal JSON of) a proposal from `discovery run` (its sourceMappings are used)"
@@ -3794,9 +3941,15 @@ export function buildProgram(): Command {
     .command("create-mapping <sourceKind>")
     .description("Map a source (repo/path globs) to a component so its releases correlate")
     .requiredOption("--component <idOrUrn>", "the component this source's events belong to")
-    .option("--repo <pattern>", "repo glob (e.g. a GitHub repo URL/slug) — matched against the event's repo")
+    .option(
+      "--repo <pattern>",
+      "repo glob (e.g. a GitHub repo URL/slug) — matched against the event's repo"
+    )
     .option("--path <pattern>", "path glob within the repo")
-    .option("--type <type>", "routing Type (ADR-0007): image|rpm|deb|npm|infrastructure|configuration (default: configuration)")
+    .option(
+      "--type <type>",
+      "routing Type (ADR-0007): image|rpm|deb|npm|infrastructure|configuration (default: configuration)"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(
@@ -3871,11 +4024,26 @@ export function buildProgram(): Command {
     // M17.2 (ADR-0015 §5) — a REFERENCE to the build-time SBOM the pipeline's own Trivy step emitted
     // and cosign-signed. SCP stores the reference, NEVER the document: do not pipe the SBOM itself.
     .option("--sbom-format <format>", "SBOM reference: cyclonedx|spdx (required to record an SBOM)")
-    .option("--sbom-digest <digest>", "SBOM reference: the SBOM DOCUMENT's own sha256 digest (not the artifact's)")
-    .option("--sbom-location <uri>", "SBOM reference: where the document lives (OCI referrer ref / URI)")
-    .option("--sbom-spec-version <version>", "SBOM reference: format spec version (e.g. 1.5, SPDX-2.3)")
-    .option("--sbom-media-type <type>", "SBOM reference: media type (e.g. application/vnd.cyclonedx+json)")
-    .option("--sbom-signature-ref <ref>", "SBOM reference: the ORIGIN cosign signature ref (SCP never signs)")
+    .option(
+      "--sbom-digest <digest>",
+      "SBOM reference: the SBOM DOCUMENT's own sha256 digest (not the artifact's)"
+    )
+    .option(
+      "--sbom-location <uri>",
+      "SBOM reference: where the document lives (OCI referrer ref / URI)"
+    )
+    .option(
+      "--sbom-spec-version <version>",
+      "SBOM reference: format spec version (e.g. 1.5, SPDX-2.3)"
+    )
+    .option(
+      "--sbom-media-type <type>",
+      "SBOM reference: media type (e.g. application/vnd.cyclonedx+json)"
+    )
+    .option(
+      "--sbom-signature-ref <ref>",
+      "SBOM reference: the ORIGIN cosign signature ref (SCP never signs)"
+    )
     .option("--sbom-scanner <name>", "SBOM reference: which external tool produced it (e.g. trivy)")
     .option("--sbom-scanner-version <version>", "SBOM reference: that tool's version")
     .option("--sbom-generated-at <iso8601>", "SBOM reference: when the producer emitted it")
@@ -3908,7 +4076,9 @@ export function buildProgram(): Command {
         const client = await clientFromStoredCredentials(opts);
         const validStatuses = ["planned", "applied", "errored", "discarded"] as const;
         if (!(validStatuses as readonly string[]).includes(opts.status)) {
-          throw new Error(`--status must be one of ${validStatuses.join("|")} (got '${opts.status}')`);
+          throw new Error(
+            `--status must be one of ${validStatuses.join("|")} (got '${opts.status}')`
+          );
         }
         const planJson = opts.planJson
           ? JSON.parse(await readFile(opts.planJson, "utf8"))
