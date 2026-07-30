@@ -168,12 +168,25 @@ export function FederationStatusPage(): React.JSX.Element {
                       <TableCell>{lastAppliedSequence ?? "—"}</TableCell>
                       <TableCell>{formatDateTime(lastSyncedAt)}</TableCell>
                       <TableCell>
-                        {recentTransfers.length === 0 && (
+                        {/* `?? []` — the THIRD site of the identical defect, off the identical
+                            `client.federation.status()` call already guarded at `outposts.tsx`
+                            and `outpost-detail.tsx`. `recentTransfers` is required-not-optional by
+                            `FederationPeerStatusSchema` and the generated SDK validates NO
+                            response at runtime, so one peer whose key the server omits threw
+                            `TypeError: Cannot read properties of undefined (reading 'length')`
+                            out of `.map` — and because that throw escapes the whole page body,
+                            MEASURED `container.innerHTML.length === 0`: `/federation` painted
+                            NOTHING, including the rows of every well-formed peer. `outposts.tsx`
+                            sends the operator here by name ("see Federation status"), so the
+                            landing page they are directed to was the one that white-screened. An
+                            empty ledger renders "none", the truthful reading of "this side has no
+                            transfer rows to show". */}
+                        {(recentTransfers ?? []).length === 0 && (
                           <span className="text-sm text-slate-400">none</span>
                         )}
-                        {recentTransfers.length > 0 && (
+                        {(recentTransfers ?? []).length > 0 && (
                           <div className="flex flex-col gap-1">
-                            {recentTransfers.slice(0, 5).map((transfer) => (
+                            {(recentTransfers ?? []).slice(0, 5).map((transfer) => (
                               <div key={transfer.id} className="flex items-center gap-1.5 text-xs">
                                 <Badge variant="outline" className="capitalize">
                                   {transfer.direction}
