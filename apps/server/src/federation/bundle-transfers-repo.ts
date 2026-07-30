@@ -10,9 +10,11 @@ import { bundleTransfers } from "../db/schema.js";
  * safe); this just gives the commander UI/CLI something to show for an air-gapped peer's
  * outstanding handoffs.
  *
- * PER-HOP AND INSERT-ONLY (doc corrected 2026-07-29, M16.1). This is NOT a lifecycle: a row is
- * never updated, and there is no `update(bundleTransfers)` anywhere in the tree. One row per
- * `.scpbundle` an instance produced or consumed, in THAT instance's own database:
+ * PER-HOP AND INSERT-ONLY (doc corrected 2026-07-29, M16.1). This is NOT a lifecycle: no production
+ * path updates a row — this module exposes no update, and the only `update(bundleTransfers)` in the
+ * tree is a test fixture backdating `confirmed_at`
+ * (`coordination/service-board-staleness.integration.test.ts`). One row per `.scpbundle` an instance
+ * produced or consumed, in THAT instance's own database:
  *   `created`   — the EXPORTER, on producing a bundle (export-repo, exportPromotionBundle).
  *   `submitted` — a RETRANS only, for its onward drop (retrans-relay).
  *   `confirmed` — the RECEIVER, on a successful import (import-repo, applyPromotionImport,

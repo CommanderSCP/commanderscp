@@ -18,15 +18,19 @@
  * ## The three honesty rules this file exists to enforce
  *
  * **R1 — an exporting instance can only ever say "exported".** `bundle_transfers` is INSERT-only:
- * there is no `update(bundleTransfers)` anywhere in the tree, and every `submitted`/`confirmed` row
- * is written by a *later hop's own database* (a retrans's onward drop writes `submitted`; a
- * receiver's import writes `confirmed`). So in the COMMANDER's own database an export row is and
- * stays `created`. Rendering "submitted" or "confirmed" from the exporting side would be
- * fabrication; the handoff is declared unknown instead (`transfer.handoff`).
+ * no production path `update`s a transfer row (the only `update(bundleTransfers)` in the tree is a
+ * test fixture backdating `confirmed_at` in `service-board-staleness.integration.test.ts`), and
+ * every `submitted`/`confirmed` row is written by a *later hop's own database* (a retrans's onward
+ * drop writes `submitted`; a receiver's import writes `confirmed`). So in the COMMANDER's own
+ * database an export row is and stays `created`. Rendering "submitted" or "confirmed" from the
+ * exporting side would be fabrication; the handoff is declared unknown instead
+ * (`transfer.handoff`).
  *
  * **R2 — the exporting instance has NO data path to the receiver's validation outcome.** Federation
- * journal entry kinds are graph/lifecycle-shaped (none is verification-shaped), `change_status`
- * payloads carry lifecycle only, and imported `audit_segment` entries are discarded. Adding a
+ * journal entry kinds are graph/lifecycle-shaped and none is verification-shaped; `change_status`
+ * payloads carry lifecycle + the change's opaque `sourceRef` (`changes-repo.ts`'s propose-time
+ * payload passes `sourceRef` verbatim — the leak this branch's own B6 note documents), and no field
+ * of either is verification-shaped; and imported `audit_segment` entries are discarded. Adding a
  * verification-outcome journal kind was REJECTED (it is a bundle-format change). The commander
  * therefore reports `not_reported` — "outcome not reported back" — and names `validate.state` in
  * `unknownFields`. {@link buildBoundarySegment} makes `verified` STRUCTURALLY UNREACHABLE on that

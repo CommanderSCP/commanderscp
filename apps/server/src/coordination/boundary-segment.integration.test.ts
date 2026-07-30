@@ -73,9 +73,10 @@ const commanderSegmentsSeen: { scenario: string; segment: BoundarySegment }[] = 
  * validate phase as verified.
  *
  * The commander physically cannot know: validation happens at the receiving outpost, and no
- * federation journal entry kind carries a verification outcome back (`change_status` payloads are
- * lifecycle-only, and imported `audit_segment` entries are discarded on import). So the only honest
- * answers are `not_reported` plus a `validate.state` entry in `unknownFields`.
+ * federation journal entry kind carries a verification outcome back (a `change_status` payload
+ * carries lifecycle plus the change's opaque `sourceRef`, no field of which is verification-shaped,
+ * and imported `audit_segment` entries are discarded on import). So the only honest answers are
+ * `not_reported` plus a `validate.state` entry in `unknownFields`.
  */
 function commanderNeverClaimsVerified(scenario: string, segment: BoundarySegment): void {
   commanderSegmentsSeen.push({ scenario, segment });

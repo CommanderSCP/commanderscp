@@ -1213,8 +1213,9 @@ export const syncCursors = pgTable(
 /** Bundle-transfer tracking (DESIGN §13). One row per `.scpbundle` this side produced or consumed.
  *  PER-HOP AND INSERT-ONLY — never a lifecycle (doc corrected 2026-07-29, M16.1): `created` is
  *  written by the exporter, `submitted` only by a retrans's onward drop, `confirmed` only by the
- *  receiver, each in its OWN database, and no row is ever updated. See `bundle-transfers-repo.ts`
- *  for the full note and the UNBUILT return-path confirmation (future increment M16.4). */
+ *  receiver, each in its OWN database, and no production path ever updates a row. See
+ *  `bundle-transfers-repo.ts` for the full note (including the one test-fixture update) and the
+ *  UNBUILT return-path confirmation (future increment M16.4). */
 export const bundleTransfers = pgTable(
   "bundle_transfers",
   {
