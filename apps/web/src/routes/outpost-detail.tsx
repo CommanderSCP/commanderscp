@@ -120,7 +120,14 @@ export function OutpostStatusCard({ status }: { status: FederationPeerStatus }):
             Recent transfers (last 5 recorded here)
           </div>
           <div className="mt-2">
-            <RecentTransfersCell transfers={status.recentTransfers} />
+            {/* `?? []` — the SAME guard `outposts.tsx` carries at the identical call, for the same
+                measured reason. `recentTransfers` is required-not-optional by the schema and the
+                SDK validates no response, so a server that omits the key made `transfers.length`
+                throw a TypeError. Here that is strictly worse than on the overview: this card is
+                the FIRST child of the per-outpost page, so the throw white-screened Status AND
+                Settings AND Configuration together. An empty ledger renders "none recorded here",
+                which is the truthful reading of "this side has no transfer rows to show". */}
+            <RecentTransfersCell transfers={status.recentTransfers ?? []} />
           </div>
         </div>
       </CardContent>
