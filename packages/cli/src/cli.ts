@@ -41,6 +41,8 @@ import type {
   // M13.2/M13.3b — the two scan surfaces whose table rows are now exported formatters (Y2).
   InstanceScanFloor,
   ScanDbStatus,
+  RefreshScanDbResponse,
+  LoadScanDbResponse,
   // M16.2 phase A — the `outpost` config object (E1) + the narrow peer PATCH (E4).
   OutpostConfig,
   OutpostConfigReconcileResult,
@@ -263,11 +265,25 @@ export function peerRow(p: FederationPeer): Record<string, string> {
   };
 }
 
-function printFederationStatus(status: FederationStatusResponse, output: OutputFormat): void {
+/**
+ * `scp federation status` in table form. EXPORTED for the reason given on `peerRow`.
+ *
+ * `peers` is required-not-optional on `FederationStatusResponseSchema` and the SDK validates no
+ * response — the LAST unguarded consumer of that field (Z5). `outposts.tsx` reads it as
+ * `statusQuery.data?.peers ?? []` and `outpost-detail.tsx` passes `data?.peers` into a function that
+ * accepts `undefined`; this and `federation-status.tsx` were the two that did not. "No paired peers."
+ * is the honest degradation: it says this side has no peer rows to show, which is exactly what an
+ * absent list means here.
+ */
+export function printFederationStatus(
+  status: FederationStatusResponse,
+  output: OutputFormat
+): void {
   if (output === "json") {
     console.log(JSON.stringify(status, null, 2));
     return;
   }
+  const peers = status.peers ?? [];
   console.log(
     status.self
       ? `Self: ${status.self.name} (${status.self.domainId}) role=${status.self.role}`
@@ -283,15 +299,15 @@ function printFederationStatus(status: FederationStatusResponse, output: OutputF
         : "Cosign verification key: not yet provisioned"
     );
   }
-  if (status.peers.length === 0) {
+  if (peers.length === 0) {
     console.log("No paired peers.");
     return;
   }
-  printResult(status.peers, "table", (item) =>
+  printResult(peers, "table", (item) =>
     federationStatusRow(item as FederationStatusResponse["peers"][number])
   );
   // The honest-unknown declaration, surfaced rather than silently dropped by the table above.
-  for (const p of status.peers) {
+  for (const p of peers) {
     const unknown = p.unknownFields ?? [];
     if (unknown.length > 0) {
       console.log(`  ${p.peer.name}: not observable here — ${unknown.join(", ")}`);
@@ -429,6 +445,35 @@ export function scanDbStatusRow(s: ScanDbStatus): Record<string, string> {
     softMaxAgeHours: String(s.activeSoftMaxAgeHours),
     hardMaxAgeHours: String(s.activeHardMaxAgeHours)
   };
+}
+
+/**
+ * `scp scan-db refresh` / `scp scan-db load` outcome as a table row — LIFTED OUT of the two
+ * `.action()` closures it was duplicated inside, and exported, for the reason given on
+ * `scanDbStatusRow`.
+ *
+ * THE TWIN ONE COMMAND OVER (Z5). `scanDbStatusRow` guards `ageHours` because absence there is both
+ * dishonest and FATAL; the identical read in these two closures was `String(r.status.ageHours)`,
+ * left bare — so an omitted key printed the literal `undefined` in the age column of a SECURITY
+ * cache, and an omitted `status` object threw over the report of a load that had already happened.
+ * Same shape as Z4: the verb ran, and only the telling of it died.
+ *
+ * `"(unknown)"`, not `0` and not blank: an unknown age is precisely the state a staleness gate
+ * cannot clear.
+ */
+export function scanDbOutcomeRow(
+  outcome: RefreshScanDbResponse | LoadScanDbResponse
+): Record<string, string> {
+  const status = outcome.status as ScanDbStatus | undefined;
+  const row: Record<string, string> = {};
+  // The verb column keeps its own name on each command — "refreshed" and "loaded" are different
+  // claims (a connected upstream pull vs an operator-carried signed blob) and must not be merged.
+  if ("loaded" in outcome) row.loaded = String((outcome as LoadScanDbResponse).loaded);
+  else row.refreshed = String((outcome as RefreshScanDbResponse).refreshed);
+  row.source = status?.source ?? "(unknown)";
+  row.ageHours = isAbsent(status?.ageHours) ? "(unknown)" : String(status.ageHours);
+  row.detail = outcome.detail ?? "";
+  return row;
 }
 
 /** `scp federation outpost reconcile`'s "what happened" lines (review round 6, M1). The two removal
@@ -2661,15 +2706,7 @@ export function buildProgram(): Command {
       }
       const client = await clientFromStoredCredentials(opts);
       const result = await client.scanDb.refresh(operatorToken);
-      printResult(result, opts.output, (raw) => {
-        const r = raw as typeof result;
-        return {
-          refreshed: String(r.refreshed),
-          source: r.status.source,
-          ageHours: String(r.status.ageHours),
-          detail: r.detail
-        };
-      });
+      printResult(result, opts.output, (raw) => scanDbOutcomeRow(raw as typeof result));
     });
 
   scanDbCmd
@@ -2706,15 +2743,7 @@ export function buildProgram(): Command {
           },
           operatorToken
         );
-        printResult(result, opts.output, (raw) => {
-          const r = raw as typeof result;
-          return {
-            loaded: String(r.loaded),
-            source: r.status.source,
-            ageHours: String(r.status.ageHours),
-            detail: r.detail
-          };
-        });
+        printResult(result, opts.output, (raw) => scanDbOutcomeRow(raw as typeof result));
       }
     );
 

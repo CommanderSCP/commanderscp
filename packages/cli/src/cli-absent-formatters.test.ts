@@ -15,6 +15,8 @@ import {
   instanceScanFloorRow,
   outpostConfigRow,
   peerRow,
+  printFederationStatus,
+  scanDbOutcomeRow,
   scanDbStatusRow
 } from "./cli.js";
 
@@ -422,5 +424,104 @@ describe("formatReconcileResultLines: the report of a DESTRUCTIVE verb must surv
     expect(lines.join("\n")).toContain("unverified shadow(s)");
     expect(lines.join("\n")).toContain("invisible to the outpost");
     expect(lines.join("\n")).not.toContain("WILL propagate to the outpost");
+  });
+});
+
+// cli.ts — printFederationStatus.peers (Z5)
+describe("printFederationStatus: an omitted `peers` list must not kill `scp federation status`", () => {
+  /** Capture stdout for one call. */
+  function capture(fn: () => void): string {
+    const out: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => {
+      out.push(args.map(String).join(" "));
+    };
+    try {
+      fn();
+    } finally {
+      console.log = original;
+    }
+    return out.join("\n");
+  }
+
+  const selfBlock = {
+    self: {
+      domainId: "aa11bb22-cc33-4d44-8e55-ff6677889900",
+      name: "hq",
+      role: "commander" as const,
+      publicKey: "AAAA",
+      cosignPublicKey: null
+    }
+  };
+
+  it("prints the empty reading instead of throwing on `peers.length`", () => {
+    // THE MUTANT: `status.peers.length` throws `TypeError: … reading 'length'`, so the command
+    // reports NOTHING — not even the self identity it already printed two lines earlier.
+    // `outposts.tsx` has read this field as `data?.peers ?? []` since round 3; this was the twin.
+    const response = { ...selfBlock } as unknown as FederationStatusResponse;
+    let text = "";
+    expect(() => {
+      text = capture(() => printFederationStatus(response, "table"));
+    }).not.toThrow();
+    expect(text).toContain("No paired peers.");
+    // and the self line above it survives
+    expect(text).toContain("Self: hq");
+  });
+
+  it("still prints the peer table when the server sends the list", () => {
+    const response = {
+      ...selfBlock,
+      peers: [basePeerStatus()]
+    } as unknown as FederationStatusResponse;
+    const text = capture(() => printFederationStatus(response, "table"));
+    expect(text).toContain("amer-prod");
+    expect(text).not.toContain("No paired peers.");
+  });
+});
+
+// cli.ts — scanDbOutcomeRow (Z5): the twin ONE COMMAND OVER of `scanDbStatusRow`
+describe("scanDbOutcomeRow: `scp scan-db refresh`/`load` must not print `undefined` for a DB age", () => {
+  it("an OMITTED ageHours reads `(unknown)`, never the literal `undefined`", () => {
+    // THE FABRICATION: `String(r.status.ageHours)` — the exact read `scanDbStatusRow` already
+    // guards, left bare in the two `.action()` closures one command over. `undefined` in the age
+    // column of a SECURITY cache is not a null result, it is a wrong one.
+    const row = scanDbOutcomeRow({
+      refreshed: true,
+      status: without(baseScanDbStatus(), "ageHours"),
+      detail: "ok"
+    } as never);
+    expect(row.ageHours).toBe("(unknown)");
+    expect(row.ageHours).not.toContain("undefined");
+    expect(row.ageHours).not.toBe("0");
+  });
+
+  it("an OMITTED `status` object reports the outcome instead of throwing over it", () => {
+    // Same shape as Z4: the refresh ALREADY HAPPENED; only the telling of it died.
+    const outcome = { refreshed: true, detail: "swapped" } as never;
+    expect(() => scanDbOutcomeRow(outcome)).not.toThrow();
+    const row = scanDbOutcomeRow(outcome);
+    expect(row.refreshed).toBe("true");
+    expect(row.source).toBe("(unknown)");
+    expect(row.ageHours).toBe("(unknown)");
+  });
+
+  it("keeps the two verbs' column names distinct — `refreshed` and `loaded` are different claims", () => {
+    const refreshed = scanDbOutcomeRow({
+      refreshed: false,
+      status: baseScanDbStatus(),
+      detail: "no-op"
+    } as never);
+    const loaded = scanDbOutcomeRow({
+      loaded: true,
+      status: baseScanDbStatus(),
+      detail: "verified"
+    } as never);
+    expect(refreshed.refreshed).toBe("false");
+    expect(refreshed.loaded).toBeUndefined();
+    expect(loaded.loaded).toBe("true");
+    expect(loaded.refreshed).toBeUndefined();
+    // a real age still prints
+    expect(loaded.ageHours).toBe("4.25");
+    expect(loaded.source).toBe("refreshed");
   });
 });

@@ -99,9 +99,10 @@ function peerWithoutTransfersKey(
   return peer as FederationPeerStatus;
 }
 
-/** Render the page against a fresh, retry-free QueryClient and let both queries settle. */
-async function renderPage(peers: FederationPeerStatus[]) {
-  statusMock.mockResolvedValue({ peers });
+/** Render the page against a fresh, retry-free QueryClient and let both queries settle. `peers`
+ *  is passed straight through, so `undefined` here means the response OMITTED the key. */
+async function renderPage(peers: FederationPeerStatus[] | undefined) {
+  statusMock.mockResolvedValue(peers === undefined ? {} : { peers });
   selfMock.mockResolvedValue(selfFixture());
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } }
@@ -188,6 +189,40 @@ describe("/federation: one peer missing `recentTransfers` must not take the page
 
     expect(rendered.html()).toContain("export");
     expect(rendered.html()).toContain("confirmed");
+    rendered.unmount();
+  });
+});
+
+describe("/federation: an omitted `peers` list must not take the page down either (Z5)", () => {
+  it("renders the empty reading instead of throwing on `peers.length`", async () => {
+    // THE CRASH THIS PINS: `statusQuery.data && statusQuery.data.peers.length === 0` throws
+    // `TypeError: Cannot read properties of undefined (reading 'length')` the moment the query
+    // resolves a body without the key. `outposts.tsx` has read this as `data?.peers ?? []` since
+    // round 3; this page was the twin one file over that never got it.
+    const rendered = await renderPage(undefined);
+
+    expect(rendered.container.innerHTML.length).toBeGreaterThan(0);
+    expect(rendered.html()).toContain("No peers paired yet");
+    // and the identity card above it survives
+    expect(rendered.html()).toContain("hq");
+    rendered.unmount();
+  });
+
+  it("an omitted list is NOT reported while still loading — the two states stay distinct", async () => {
+    // `?? []` alone would have made a still-fetching page claim "No peers paired yet". The guard
+    // keeps `peersLoaded` separate so the loading placeholder still wins.
+    statusMock.mockReturnValue(new Promise(() => {}));
+    selfMock.mockResolvedValue(selfFixture());
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } }
+    });
+    const rendered = render(
+      <QueryClientProvider client={queryClient}>
+        <FederationStatusPage />
+      </QueryClientProvider>
+    );
+    expect(rendered.html()).toContain("Loading…");
+    expect(rendered.html()).not.toContain("No peers paired yet");
     rendered.unmount();
   });
 });

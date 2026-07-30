@@ -71,6 +71,16 @@ export function FederationStatusPage(): React.JSX.Element {
   // response.
   const notInitialized = selfQuery.data?.role === "unset";
 
+  // `?? []` — the LAST unguarded consumer of `FederationStatusResponse.peers` (Z5). `peers` is
+  // required-not-optional and the SDK validates no response; `outposts.tsx` already reads it as
+  // `statusQuery.data?.peers ?? []` and `outpost-detail.tsx` passes `data?.peers` into a function
+  // that accepts `undefined` — this page and `printFederationStatus` were the two that did not.
+  // `statusQuery.data && data.peers.length` therefore threw once the query resolved a body without
+  // the key. `peersLoaded` keeps the loaded-vs-loading distinction the two branches below need,
+  // which a bare `?? []` would have collapsed into "no peers paired yet" while still fetching.
+  const peers = statusQuery.data?.peers ?? [];
+  const peersLoaded = statusQuery.data !== undefined;
+
   return (
     <div className="flex flex-col gap-6">
       <div>
@@ -139,13 +149,13 @@ export function FederationStatusPage(): React.JSX.Element {
         </CardHeader>
         <CardContent>
           {statusQuery.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
-          {statusQuery.data && statusQuery.data.peers.length === 0 && (
+          {peersLoaded && peers.length === 0 && (
             <p className="text-sm text-slate-500">
               No peers paired yet. Run{" "}
               <code className="rounded bg-slate-100 px-1 py-0.5">scp federation pair</code>.
             </p>
           )}
-          {statusQuery.data && statusQuery.data.peers.length > 0 && (
+          {peersLoaded && peers.length > 0 && (
             <Table>
               <TableHeader>
                 <TableRow>
@@ -157,18 +167,17 @@ export function FederationStatusPage(): React.JSX.Element {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {statusQuery.data.peers.map(
-                  ({ peer, lastAppliedSequence, lastSyncedAt, recentTransfers }) => (
-                    <TableRow key={peer.id} data-testid={`federation-peer-${peer.id}`}>
-                      <TableCell>
-                        <div className="font-medium text-slate-900">{peer.name}</div>
-                        <div className="font-mono text-xs text-slate-500">{peer.id}</div>
-                      </TableCell>
-                      <TableCell>{roleBadge(peer.role)}</TableCell>
-                      <TableCell>{lastAppliedSequence ?? "—"}</TableCell>
-                      <TableCell>{formatDateTime(lastSyncedAt)}</TableCell>
-                      <TableCell>
-                        {/* `?? []` — the THIRD site of the identical defect, off the identical
+                {peers.map(({ peer, lastAppliedSequence, lastSyncedAt, recentTransfers }) => (
+                  <TableRow key={peer.id} data-testid={`federation-peer-${peer.id}`}>
+                    <TableCell>
+                      <div className="font-medium text-slate-900">{peer.name}</div>
+                      <div className="font-mono text-xs text-slate-500">{peer.id}</div>
+                    </TableCell>
+                    <TableCell>{roleBadge(peer.role)}</TableCell>
+                    <TableCell>{lastAppliedSequence ?? "—"}</TableCell>
+                    <TableCell>{formatDateTime(lastSyncedAt)}</TableCell>
+                    <TableCell>
+                      {/* `?? []` — the THIRD site of the identical defect, off the identical
                             `client.federation.status()` call already guarded at `outposts.tsx`
                             and `outpost-detail.tsx`. `recentTransfers` is required-not-optional by
                             `FederationPeerStatusSchema` and the generated SDK validates NO
@@ -181,29 +190,28 @@ export function FederationStatusPage(): React.JSX.Element {
                             landing page they are directed to was the one that white-screened. An
                             empty ledger renders "none", the truthful reading of "this side has no
                             transfer rows to show". */}
-                        {(recentTransfers ?? []).length === 0 && (
-                          <span className="text-sm text-slate-400">none</span>
-                        )}
-                        {(recentTransfers ?? []).length > 0 && (
-                          <div className="flex flex-col gap-1">
-                            {(recentTransfers ?? []).slice(0, 5).map((transfer) => (
-                              <div key={transfer.id} className="flex items-center gap-1.5 text-xs">
-                                <Badge variant="outline" className="capitalize">
-                                  {transfer.direction}
-                                </Badge>
-                                <span className="text-slate-500">{transfer.kind}</span>
-                                {transferStatusBadge(transfer.status)}
-                                <span className="text-slate-400">
-                                  {formatDateTime(transfer.createdAt)}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  )
-                )}
+                      {(recentTransfers ?? []).length === 0 && (
+                        <span className="text-sm text-slate-400">none</span>
+                      )}
+                      {(recentTransfers ?? []).length > 0 && (
+                        <div className="flex flex-col gap-1">
+                          {(recentTransfers ?? []).slice(0, 5).map((transfer) => (
+                            <div key={transfer.id} className="flex items-center gap-1.5 text-xs">
+                              <Badge variant="outline" className="capitalize">
+                                {transfer.direction}
+                              </Badge>
+                              <span className="text-slate-500">{transfer.kind}</span>
+                              {transferStatusBadge(transfer.status)}
+                              <span className="text-slate-400">
+                                {formatDateTime(transfer.createdAt)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
               </TableBody>
             </Table>
           )}
