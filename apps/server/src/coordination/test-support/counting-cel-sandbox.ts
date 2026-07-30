@@ -1,4 +1,8 @@
-import { CelSandbox, type CelEvalResult, type CelSandboxOptions } from "../../governance/cel-sandbox.js";
+import {
+  CelSandbox,
+  type CelEvalResult,
+  type CelSandboxOptions
+} from "../../governance/cel-sandbox.js";
 import type { PolicyEvaluationEntry } from "../../governance/evaluate.js";
 
 /**
@@ -142,8 +146,6 @@ export function distinctDecisionStatements(rows: DecisionContentRow[]): number {
     return v;
   };
   return new Set(
-    rows.map((r) =>
-      JSON.stringify(sortKeys({ v: r.verdict, i: r.inputContext, t: r.reasonTree }))
-    )
+    rows.map((r) => JSON.stringify(sortKeys({ v: r.verdict, i: r.inputContext, t: r.reasonTree })))
   ).size;
 }

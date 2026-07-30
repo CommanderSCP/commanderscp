@@ -135,27 +135,23 @@ describe("service board: the per-row Decision read is bounded, not the change's 
   }
 
   it("reads O(1) rows out of `decisions` per board row, whatever the change's history holds — and still reports the LATEST block", async () => {
-    const { board, touched, seeded } = await withTenantTx(
-      server.deps.db,
-      org.orgId,
-      async (tx) => {
-        // The row the board must report: the newest `block` for this change.
-        const latest = await tx.execute(sql`
+    const { board, touched, seeded } = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      // The row the board must report: the newest `block` for this change.
+      const latest = await tx.execute(sql`
           SELECT id FROM decisions
            WHERE org_id = ${org.orgId}::uuid AND subject_id = ${changeObjectId}::uuid
              AND verdict = 'block'
            ORDER BY created_at DESC, id DESC LIMIT 1
         `);
-        const seededId = (latest as unknown as { rows: Array<{ id: string }> }).rows[0]!.id;
+      const seededId = (latest as unknown as { rows: Array<{ id: string }> }).rows[0]!.id;
 
-        const service = await getObjectByIdOrUrnAnyType(tx, org.orgId, serviceId);
-        await preferIndexPlans(tx);
-        const before = await decisionRowsTouched(tx);
-        const built = await buildServiceBoard(tx, org.orgId, service);
-        const after = await decisionRowsTouched(tx);
-        return { board: built, touched: after - before, seeded: seededId };
-      }
-    );
+      const service = await getObjectByIdOrUrnAnyType(tx, org.orgId, serviceId);
+      await preferIndexPlans(tx);
+      const before = await decisionRowsTouched(tx);
+      const built = await buildServiceBoard(tx, org.orgId, service);
+      const after = await decisionRowsTouched(tx);
+      return { board: built, touched: after - before, seeded: seededId };
+    });
 
     // (a) CORRECTNESS FIRST — bounding the read must not change the answer.
     const row = board.rows.find((r) => r.component.id === componentId);
