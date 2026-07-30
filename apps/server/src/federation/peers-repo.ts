@@ -428,8 +428,14 @@ export interface UpdatePeerTransportInput {
  * accounts for it. A new write door that silently skips the old door's checks is the bypass class
  * this project has already been bitten by, so each one is listed and dispositioned, not assumed.
  * ============================================================================================
- *  G1 requireAuth ....................... RE-APPLIED (route handler, identical call).
- *  G2 authorize `federation:write` @ org . RE-APPLIED (route handler, identical call).
+ *  G1 requireAuth ....................... RE-APPLIED (route handler, identical call), and WITNESSED:
+ *     `peer-patch.integration.test.ts` asserts 401 for an anonymous call.
+ *  G2 authorize `federation:write` @ org . RE-APPLIED (route handler, identical call), and WITNESSED
+ *     BY BEHAVIOUR since review round 4 (H2): `outposts-rbac.integration.test.ts` drives this route with
+ *     an actor holding `object:write` but NOT `federation:write` and asserts 403 + an unchanged row —
+ *     mutation-proven by deleting this route's `authorize` block. Before that, the census row was true
+ *     of the code and UNPROVEN by the suite: every `authorize` block in this milestone could be deleted
+ *     with the whole federation suite still green.
  *  G3 self-pair refusal ("cannot pair this domain with itself") .... N/A BY CONSTRUCTION: this route
  *     resolves an EXISTING `federation_peers` row and never inserts. An instance is never its own
  *     peer (`initFederationSelf` writes `federation_self`, not a peer row), so the id cannot resolve

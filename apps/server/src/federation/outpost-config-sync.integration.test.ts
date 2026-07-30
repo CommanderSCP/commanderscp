@@ -265,4 +265,76 @@ describe("M16.2 E2: commander-origin outpost config syncs down as a read-only re
       /role 'commander', not 'outpost'/i
     );
   });
+
+  /**
+   * REVIEW ROUND 4 (H7) — FORWARD-TOLERANCE OF THE JOURNALED TYPE, decided before the second property
+   * lands rather than after.
+   *
+   * `outpost` is validated with Ajv against the REGISTERED type on the RECEIVING side, and the
+   * `object_upsert` import branch has no try/catch — so a rejected entry aborts THE WHOLE SYNC BUNDLE,
+   * not just that entry. With the first cut's `additionalProperties: false` (and a closed `trustTier`
+   * enum) that made every future addition a fail-closed version-skew hazard: the moment phase B added a
+   * second declared-config property, every outpost still on the older migration set would have wedged
+   * federation for that peer until upgraded.
+   *
+   * This test IS the decision, in executable form. The commander writes an `outpost` object carrying
+   * BOTH an unknown property and a tier this build has never heard of — exactly what a newer commander
+   * produces — and the outpost imports the bundle WHOLE. The property-level strictness that matters is
+   * unaffected: the API request bodies still admit only the known fields and known tiers (proved in
+   * `outpost-object.integration.test.ts`), so no operator can write either of these through a route.
+   */
+  it("H7: an outpost entry carrying an UNKNOWN property and an UNKNOWN tier imports WITHOUT aborting the bundle", async () => {
+    const replica = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      findOutpostConfigByPeer(tx, outpost.orgId, outpostSelf.domainId)
+    );
+    expect(replica).not.toBeNull();
+
+    // A NEWER commander's write: a second declared-config property plus a tier from a later vocabulary.
+    // Written through the repo because this build's request schema deliberately cannot express it —
+    // which is the whole point of the scenario.
+    await withTenantTx(commander.db, commander.orgId, (tx) =>
+      updateObject(tx, {
+        orgId: commander.orgId,
+        typeId: "outpost",
+        actorObjectId: commander.orgId,
+        requestId: "h7-newer-commander",
+        idOrUrn: replica!.objectId,
+        properties: {
+          peerDomainId: outpostSelf.domainId,
+          trustTier: "a-tier-this-build-has-never-heard-of",
+          somePhaseBProperty: { nested: true }
+        }
+      })
+    );
+    // A SECOND, ordinary entry rides the same bundle. If the outpost entry aborted the import, this
+    // one would never land — which is what makes "the bundle survived" a claim about the BUNDLE and
+    // not just about one row.
+    await withTenantTx(commander.db, commander.orgId, (tx) =>
+      updateOutpostConfig(tx, {
+        orgId: commander.orgId,
+        actorObjectId: commander.orgId,
+        requestId: "h7-companion-edit",
+        peerDomainId: outpostSelf.domainId,
+        name: "renamed-in-the-same-bundle"
+      })
+    );
+
+    await syncDown();
+
+    const after = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      getObjectByIdOrUrnAnyType(tx, outpost.orgId, replica!.objectId)
+    );
+    // The unknown property was STORED, not rejected — an older receiver keeps a newer authority's data
+    // verbatim rather than dropping or refusing it.
+    expect(after.properties.somePhaseBProperty).toEqual({ nested: true });
+    expect(after.name).toBe("renamed-in-the-same-bundle");
+
+    // …and the unrecognised tier is read as NO tier and DECLARED unknown, never guessed at or coerced
+    // to `commercial`. An invented posture is precisely what this milestone exists to prevent.
+    const view = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      findOutpostConfigByPeer(tx, outpost.orgId, outpostSelf.domainId)
+    );
+    expect(view?.trustTier).toBeNull();
+    expect(view?.unknownFields).toContain("trustTier");
+  });
 });

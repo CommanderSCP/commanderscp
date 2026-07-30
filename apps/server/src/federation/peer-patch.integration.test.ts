@@ -349,7 +349,14 @@ describe("M16.2 E4: PATCH /federation/peers/{id} — transport only, never key m
     expect(patched.pairedAt).toBe(before.pairedAt);
   });
 
-  it("G1/G2: the PATCH is authenticated and requires federation:write; an unknown peer is 404", async () => {
+  // TITLE CORRECTED IN REVIEW ROUND 4 (H2). This case used to be titled "…requires federation:write"
+  // while asserting only 401 (anonymous) and 404 (unknown peer) — BOTH of which still fire with the
+  // route's `authorize(...)` block deleted, so the title described the code and the assertions pinned
+  // nothing. The permission gate is now witnessed for real, on THIS route and the five others this
+  // milestone added, by `outposts-rbac.integration.test.ts` (an `object:write` actor without
+  // `federation:write`, mutation-proven route by route). What is left here is what this file can
+  // honestly claim: authentication, and that a PATCH never conjures a peer row.
+  it("G1: the PATCH is AUTHENTICATED (401 anonymous), and an unknown peer is a 404 that creates nothing", async () => {
     const { domainId } = await pairFresh();
 
     const anonymous = await server.app.inject({
