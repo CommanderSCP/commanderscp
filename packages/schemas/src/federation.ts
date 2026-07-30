@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ProblemSchema } from "./common.js";
 
 /**
  * M6 Federation wire contract (DESIGN.md §13, BUILD_AND_TEST.md §8 M6) — Zod schemas/types only.
@@ -371,6 +372,76 @@ export const OutpostConfigSchema = z.object({
 });
 export type OutpostConfig = z.infer<typeof OutpostConfigSchema>;
 
+/**
+ * THE RECONCILE PRECONDITION TOKEN — one `objectId:version` pair per live claimant the caller
+ * PREVIEWED, sent as the repeatable `?ifClaimant=` query parameter (optimistic concurrency).
+ *
+ * WHY A PAIR AND NOT A BARE ID. Reconcile's outcome is derived from the set of live `outpost` rows
+ * bound to one peer, read INSIDE the write transaction — i.e. after whatever the caller previewed.
+ * Three things can change in that window and all three change the outcome:
+ *   * a claimant APPEARS — a new id enters the set (a locally-authored row can then outrank the
+ *     shadow the operator meant to adopt, silently DROPPING their entered value);
+ *   * a claimant DISAPPEARS — an id leaves the set (soft-deleted elsewhere);
+ *   * a claimant's ORIGIN/PROVENANCE CHANGES — the id is UNCHANGED, so ids alone are blind to it,
+ *     yet a shadow adopted in the meantime is no longer a shadow and no longer ranks last.
+ * `version` catches the third: every writer of `objects` that can restamp `originDomainId` or clear
+ * `provenance` bumps `version` unconditionally (`graph/objects-repo.ts` — adoption is `updateObject`
+ * with `existing.version + 1`). `revision` would NOT do: it is AUTHOR-assigned on the import path,
+ * so it is not locally monotone.
+ *
+ * Both halves are already on {@link OutpostConfigSchema}, so the token is constructible from exactly
+ * the array `GET /federation/outposts` returned — no second fetch, no new read-side field, and the
+ * request stays CHECKABLE against the preview that was rendered beside it (which an opaque digest or
+ * a server-minted ETag would not be).
+ */
+export const OUTPOST_CLAIMANT_TOKEN_PATTERN =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}:[1-9][0-9]*$/;
+
+export const OutpostClaimantTokenSchema = z
+  .string()
+  .regex(
+    OUTPOST_CLAIMANT_TOKEN_PATTERN,
+    "expected '<objectId>:<version>', e.g. 3f1b…-…:4 (the objectId and version of one previewed claimant)"
+  );
+
+/** `?ifClaimant=a:1&ifClaimant=b:2`. A SINGLE occurrence parses as a bare string in every Node
+ *  query parser, so both shapes are normalized before validation (same trick as
+ *  `stringArrayQueryParam`, kept local because the element type is not a bare string). */
+export const OutpostIfClaimantQuerySchema = z.preprocess(
+  (v) => (v === undefined || v === null ? undefined : Array.isArray(v) ? v : [v]),
+  z.array(OutpostClaimantTokenSchema)
+);
+
+export interface OutpostClaimantToken {
+  objectId: string;
+  version: number;
+}
+
+/** `{ objectId, version }` -> `"<objectId>:<version>"`. Accepts any object carrying those two
+ *  fields, which is exactly what `GET /federation/outposts` hands back. */
+export function formatOutpostClaimantToken(claimant: OutpostClaimantToken): string {
+  return `${claimant.objectId}:${claimant.version}`;
+}
+
+/** The whole token set for ONE peer, derived from a `listOutposts()` response. Order is irrelevant
+ *  (the server compares SETS), but it is kept stable here so a rendered preview and the request it
+ *  produces read the same way. */
+export function outpostClaimantTokens(
+  configs: readonly OutpostConfig[],
+  peerDomainId: string
+): string[] {
+  return configs
+    .filter((c) => c.peerDomainId === peerDomainId)
+    .map((c) => formatOutpostClaimantToken(c));
+}
+
+/** Inverse of {@link formatOutpostClaimantToken}. The string is already regex-validated by
+ *  {@link OutpostClaimantTokenSchema} at the route edge, so this never has to report a parse error. */
+export function parseOutpostClaimantToken(token: string): OutpostClaimantToken {
+  const at = token.lastIndexOf(":");
+  return { objectId: token.slice(0, at), version: Number(token.slice(at + 1)) };
+}
+
 /** `POST /federation/outposts/{peerDomainId}/reconcile` — THE RECOVERY VERB (review round 4). Restores
  *  the 1:1 peer↔config binding for a peer whose database holds duplicates: keeps the authoritative row,
  *  ADOPTS an unverified hand-filled shadow when nothing authoritative survives (so entered config is not
@@ -413,6 +484,30 @@ export const OutpostConfigReconcileResultSchema = z.object({
   removedLocalObjectIds: z.array(z.string().uuid())
 });
 export type OutpostConfigReconcileResult = z.infer<typeof OutpostConfigReconcileResultSchema>;
+
+/**
+ * THE STALE-PRECONDITION REFUSAL BODY — `412 Precondition Failed` from
+ * `POST /federation/outposts/{peer}/reconcile` when the `?ifClaimant=` set does not match the live
+ * claimants read inside the transaction.
+ *
+ * 412, NOT A SECOND 409. The 409 on this route is the AUTHORITY CONFLICT and it is PERMANENT until
+ * the operator chooses differently (`?keep=`); staleness is TRANSIENT and retryable after a
+ * re-preview. Collapsing both onto one status turns "choose differently" into "look again, then
+ * press the same button" — and consumers here key on status alone. 412 is also already the house's
+ * optimistic-concurrency refusal (`updateObject`'s `expectedVersion`). NOT 428: the precondition is
+ * optional by design, so the server must never demand one.
+ *
+ * `claimants` IS THE POINT. A bare refusal would force a second read and open a second window; the
+ * refusal carries the FRESH claimant list so a caller re-renders a real preview from the same
+ * response, then re-issues with a fresh token. It is an RFC 9457 extension member, like the
+ * in-house `decision_id`. */
+export const OutpostReconcileStaleProblemSchema = ProblemSchema.extend({
+  /** Every live `outpost` config row bound to the peer AT THE MOMENT OF REFUSAL, most authoritative
+   *  first — the same projection `GET /federation/outposts` returns, so a caller can re-derive the
+   *  token from it directly. */
+  claimants: z.array(OutpostConfigSchema)
+});
+export type OutpostReconcileStaleProblem = z.infer<typeof OutpostReconcileStaleProblemSchema>;
 
 // -------------------------------------------------------------------------------------------
 // M16.2 phase A (E4) — THE NARROW PEER PATCH. `POST /federation/peers` (pair/re-pair) is the only

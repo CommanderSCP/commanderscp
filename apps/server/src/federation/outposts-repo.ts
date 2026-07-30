@@ -1,14 +1,16 @@
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import {
   asTrustDomainId,
+  formatOutpostClaimantToken,
   type GraphObject,
+  type OutpostClaimantToken,
   type OutpostConfig,
   type OutpostConfigReconcileResult,
   type OutpostTrustTier
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects } from "../db/schema.js";
-import { badRequest, conflict, notFound } from "../errors.js";
+import { badRequest, conflict, notFound, preconditionFailed } from "../errors.js";
 import {
   createObject,
   deleteObject,
@@ -248,6 +250,88 @@ export async function getOutpostConfigByPeer(
 }
 
 /**
+ * THE OPTIMISTIC-CONCURRENCY PRECONDITION on the recovery door — `?ifClaimant=<objectId>:<version>`,
+ * one per live claimant the caller PREVIEWED, compared as an ORDER-INSENSITIVE SET against the rows
+ * read inside this transaction.
+ *
+ * THE DEFECT IT CLOSES. Reconcile derives its outcome — which row survives, which are removed,
+ * whether the operator's hand-entered shadow is ADOPTED or DISCARDED — from the claimant set as it
+ * is at write time. A caller decides to press the button from a set it read EARLIER. When those
+ * disagree, the caller's stated intent and the server's action silently diverge, and the divergence
+ * is not visible in the 200 that comes back:
+ *   * a LOCALLY-AUTHORED row that appeared since the preview outranks the shadow in `byAuthority`,
+ *     so a bare "adopt this shadow" call keeps that row instead and the operator's entered value is
+ *     DROPPED with no preview and no mention;
+ *   * naming the shadow with `?keep=` in that same situation is not a fix, it is the OTHER failure:
+ *     the concurrent locally-authored row becomes surplus and is soft-deleted, which for a row THIS
+ *     domain authored is an ordinary JOURNALED TOMBSTONE that PROPAGATES DOWNSTREAM to the outpost.
+ * One arm discards the operator's input, the other propagates a delete they never saw. Neither is a
+ * refusal, so neither can be reviewed. The precondition converts both into a 412 the caller can act
+ * on, and the refusal carries the FRESH claimant list so the re-preview costs no extra round trip
+ * and opens no second window.
+ *
+ * NOTHING IS WRITTEN ON A MISMATCH — this runs before every `deleteObject`/`updateObject` on the
+ * path, so a refusal removes nothing, adopts nothing and journals nothing.
+ *
+ * AN OMITTED TOKEN PROCEEDS UNCHECKED — exactly today's behaviour. That is forced by API additivity
+ * (`/v1` is additive-only; a required precondition would break every existing caller) and it is the
+ * right PROTOCOL default. It is NOT a licence for a client to omit it: both first-party surfaces
+ * (the UI panel and `scp federation outpost reconcile`) always send one unless the operator
+ * explicitly asks them not to.
+ */
+function assertClaimantsUnchanged(
+  peerDomainId: string,
+  live: readonly GraphObject[],
+  previewed: readonly OutpostClaimantToken[],
+  selfDomainId: string
+): void {
+  const liveById = new Map(live.map((o) => [o.id, o]));
+  const previewedById = new Map(previewed.map((c) => [c.objectId, c]));
+  const appeared = live.filter((o) => !previewedById.has(o.id));
+  const disappeared = previewed.filter((c) => !liveById.has(c.objectId));
+  const changed = previewed.filter((c) => {
+    const row = liveById.get(c.objectId);
+    return row !== undefined && row.version !== c.version;
+  });
+  if (appeared.length === 0 && disappeared.length === 0 && changed.length === 0) return;
+
+  // The detail NAMES WHAT CHANGED, computed from token-vs-reality. "A second configuration appeared"
+  // is a sentence an operator can act on; "precondition failed" is not.
+  const parts: string[] = [];
+  if (appeared.length > 0) {
+    parts.push(
+      `${appeared.length} appeared (${appeared.map((o) => formatOutpostClaimantToken({ objectId: o.id, version: o.version })).join(", ")})`
+    );
+  }
+  if (disappeared.length > 0) {
+    parts.push(
+      `${disappeared.length} disappeared (${disappeared.map((c) => c.objectId).join(", ")})`
+    );
+  }
+  if (changed.length > 0) {
+    parts.push(
+      `${changed.length} changed since the preview (${changed
+        .map((c) => `${c.objectId}: version ${c.version} -> ${liveById.get(c.objectId)!.version}`)
+        .join(
+          ", "
+        )}) — a claimant whose version moved may have changed ORIGIN or PROVENANCE, which ` +
+        `changes which row reconcile keeps`
+    );
+  }
+  throw preconditionFailed(
+    `the live outpost config claimants for peer '${peerDomainId}' are not the ones this call was ` +
+      `previewed against: ${parts.join("; ")}. NOTHING was adopted, removed or journaled. Re-read the ` +
+      `claimants (they are on this response), review what reconcile would now do, and re-issue with a ` +
+      `fresh ?ifClaimant= set.`,
+    {
+      extensions: {
+        claimants: byAuthority([...live], selfDomainId).map((o) => toOutpostConfig(o, selfDomainId))
+      }
+    }
+  );
+}
+
+/**
  * THE RECOVERY DOOR (review round 4) — `POST /v1/federation/outposts/{peerDomainId}/reconcile`.
  *
  * WHY IT EXISTS. Before the hand-fill narrowing, `POST /v1/federation/hand-fill` could plant a second
@@ -299,13 +383,24 @@ export async function reconcileOutpostConfig(
     /** Which live row for this peer should SURVIVE. Absent = the most authoritative one
      *  (`byAuthority`), i.e. the default behaviour is exactly as before. */
     keepObjectId?: string;
+    /** The claimant set this call was PREVIEWED against (`?ifClaimant=<objectId>:<version>`).
+     *  Absent = proceed unchecked, which is exactly the pre-existing behaviour — see
+     *  {@link assertClaimantsUnchanged} for why the default has to be that and why no first-party
+     *  surface relies on it. */
+    ifClaimants?: readonly OutpostClaimantToken[];
   }
 ): Promise<OutpostConfigReconcileResult> {
   const self = await ensureFederationSelf(tx, input.orgId);
-  const rows = byAuthority(
-    await listOutpostObjectsForPeer(tx, input.orgId, input.peerDomainId),
-    self.domainId
-  );
+  const live = await listOutpostObjectsForPeer(tx, input.orgId, input.peerDomainId);
+  // FIRST — before the 404, before the `keep` 400, and before anything is written. A world that
+  // changed under the caller is a 412 on EVERY branch, including "they all vanished": answering 404
+  // there would tell the operator to declare a fresh config when what actually happened is that the
+  // rows they were looking at are gone. 404 stays the answer for the unchecked call, which is the
+  // only branch where the resource is genuinely, and uncontroversially, absent.
+  if (input.ifClaimants !== undefined) {
+    assertClaimantsUnchanged(input.peerDomainId, live, input.ifClaimants, self.domainId);
+  }
+  const rows = byAuthority(live, self.domainId);
   if (rows.length === 0) {
     throw notFound(
       `peer '${input.peerDomainId}' has no outpost config object to reconcile — declare one with POST /v1/federation/outposts`
@@ -347,7 +442,9 @@ export async function reconcileOutpostConfig(
       `peer '${input.peerDomainId}' has ${rows.length} live outpost config objects and ${unremovable.length} of ` +
         `them are signature-verified replicas this domain did not author (${unremovable
           .map((o) => o.id)
-          .join(", ")}) — reconcile never deletes one, because that would make the next real import a ` +
+          .join(
+            ", "
+          )}) — reconcile never deletes one, because that would make the next real import a ` +
         `single-writer violation and wedge this peer's sync. Reconcile removes UNVERIFIED hand-filled ` +
         `shadows, and — with ?keep=<objectId> — rows THIS domain authored. If the verified replica is the ` +
         `one that should survive, re-run with ?keep=${unremovable[0]!.id}`

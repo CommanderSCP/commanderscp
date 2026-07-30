@@ -16,6 +16,9 @@ import {
   CreateOutpostConfigRequestSchema,
   OutpostConfigReconcileResultSchema,
   OutpostConfigSchema,
+  OutpostIfClaimantQuerySchema,
+  OutpostReconcileStaleProblemSchema,
+  parseOutpostClaimantToken,
   PairPeerRequestSchema,
   ProblemSchema,
   UpdateFederationPeerRequestSchema,
@@ -1253,22 +1256,36 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     schema: {
       params: z.object({ peerDomainId: z.string().uuid() }),
       /** N9 — a QUERY parameter rather than a body, so the default call is unchanged and needs no
-       *  body at all. Names the row that should SURVIVE; absent keeps the most authoritative one. */
-      querystring: z.object({ keep: z.string().uuid().optional() }),
+       *  body at all. Names the row that should SURVIVE; absent keeps the most authoritative one.
+       *
+       *  `ifClaimant` is the OPTIMISTIC-CONCURRENCY PRECONDITION, repeatable, one
+       *  `<objectId>:<version>` per claimant the caller previewed. Same wire form as `keep` for the
+       *  same reason: the default call stays body-free and unchanged. Absent = proceed unchecked
+       *  (additivity forces that default — see `assertClaimantsUnchanged`). */
+      querystring: z.object({
+        keep: z.string().uuid().optional(),
+        ifClaimant: OutpostIfClaimantQuerySchema.optional()
+      }),
       response: {
         200: OutpostConfigReconcileResultSchema,
         400: ProblemSchema,
         401: ProblemSchema,
         403: ProblemSchema,
         404: ProblemSchema,
-        409: ProblemSchema
+        409: ProblemSchema,
+        /** The ONLY 412 this route can produce is the stale-claimant refusal (`updateObject`'s
+         *  `expectedVersion` 412 is unreachable here — reconcile never passes one), so the fresh
+         *  `claimants` list is a REQUIRED member rather than an optional one a caller has to test
+         *  for. Declaring it is also what lets it through: the zod serializer strips every member a
+         *  response schema does not name, extension members included. */
+        412: OutpostReconcileStaleProblemSchema
       }
     },
     config: {
       openapi: {
         operationId: "reconcileOutpostConfig",
         summary:
-          "RECOVERY: restore the 1:1 peer↔config binding for a peer holding duplicate outpost config objects (adopts an unverified hand-filled shadow, removes the rest; ?keep=<objectId> chooses the survivor and may drop a row this domain authored)",
+          "RECOVERY: restore the 1:1 peer↔config binding for a peer holding duplicate outpost config objects (adopts an unverified hand-filled shadow, removes the rest; ?keep=<objectId> chooses the survivor and may drop a row this domain authored; ?ifClaimant=<objectId>:<version> refuses with 412 if the claimants changed since they were previewed)",
         tags: ["federation"]
       }
     },
@@ -1286,7 +1303,13 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
           actorObjectId: auth.subjectObjectId,
           requestId: request.id,
           peerDomainId: request.params.peerDomainId,
-          ...(request.query.keep !== undefined ? { keepObjectId: request.query.keep } : {})
+          ...(request.query.keep !== undefined ? { keepObjectId: request.query.keep } : {}),
+          // ABSENT means unchecked; a present token is always non-empty, because a query parameter
+          // repeated zero times IS absence — "I previewed no claimants" is not expressible on this
+          // wire, and a peer with no claimants has nothing to reconcile anyway (404).
+          ...(request.query.ifClaimant !== undefined
+            ? { ifClaimants: request.query.ifClaimant.map(parseOutpostClaimantToken) }
+            : {})
         });
       });
       reply.status(200).send(result);

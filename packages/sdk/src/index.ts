@@ -14,7 +14,8 @@ export type {
   GraphQueryParams,
   TraverseParams
 } from "./client.js";
-export { ScpApiError } from "./errors.js";
+export { ScpApiError, reconcileStaleClaimants } from "./errors.js";
+export type { ProblemWithExtensions } from "./errors.js";
 
 export type {
   CreateServiceObjectData,

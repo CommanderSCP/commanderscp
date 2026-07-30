@@ -7,17 +7,38 @@ export class ProblemError extends Error {
   readonly type: string;
   readonly detail?: string;
   readonly decisionId?: string;
+  /**
+   * RFC 9457 EXTENSION MEMBERS — refusal-specific fields serialized alongside the six fixed ones.
+   *
+   * WHY THIS EXISTS. Every refusal in this server is a thrown `ProblemError` funnelled through the
+   * single `setErrorHandler` (app.ts) into {@link toProblem}, which emitted exactly six fields — so
+   * a refusal whose whole value is the DATA it carries had nowhere to put it, and the zod
+   * serializer strips anything a route's response schema does not declare. `decision_id` is the
+   * in-house precedent for an extension member; this generalizes it rather than adding a second
+   * bespoke field per refusal.
+   *
+   * A member only reaches the wire if the ROUTE declares it for that status (e.g.
+   * `412: OutpostReconcileStaleProblemSchema`) — the serializer is still the contract, so an
+   * undeclared extension is dropped, not smuggled out.
+   */
+  readonly extensions?: Readonly<Record<string, unknown>>;
 
   constructor(
     status: number,
     title: string,
-    opts: { type?: string; detail?: string; decisionId?: string } = {}
+    opts: {
+      type?: string;
+      detail?: string;
+      decisionId?: string;
+      extensions?: Readonly<Record<string, unknown>>;
+    } = {}
   ) {
     super(title);
     this.status = status;
     this.type = opts.type ?? "about:blank";
     this.detail = opts.detail;
     this.decisionId = opts.decisionId;
+    this.extensions = opts.extensions;
   }
 }
 
@@ -43,8 +64,14 @@ export function conflict(detail?: string, opts: { decisionId?: string } = {}): P
   return new ProblemError(409, "Conflict", { detail, decisionId: opts.decisionId });
 }
 
-export function preconditionFailed(detail?: string): ProblemError {
-  return new ProblemError(412, "Precondition Failed", { detail });
+/** `extensions` carries the refusal-specific payload an optimistic-concurrency 412 needs to be
+ *  actionable in ONE round trip — e.g. reconcile's fresh `claimants` list, so the caller re-renders
+ *  a real preview instead of opening a second staleness window re-reading it. */
+export function preconditionFailed(
+  detail?: string,
+  opts: { extensions?: Readonly<Record<string, unknown>> } = {}
+): ProblemError {
+  return new ProblemError(412, "Precondition Failed", { detail, extensions: opts.extensions });
 }
 
 export function unprocessable(detail?: string): ProblemError {
@@ -91,8 +118,14 @@ export function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export function toProblem(request: FastifyRequest, err: ProblemError): Problem {
+/** The six fixed members FIRST, extensions spread UNDER them: an extension member can never
+ *  overwrite `status`, `title` or `instance`, whatever a caller of `ProblemError` passes. */
+export function toProblem(
+  request: FastifyRequest,
+  err: ProblemError
+): Problem & Record<string, unknown> {
   return {
+    ...err.extensions,
     type: err.type,
     title: err.message,
     status: err.status,
