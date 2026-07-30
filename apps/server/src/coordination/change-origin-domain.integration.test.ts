@@ -15,8 +15,8 @@ import {
  * SDK-reachable domain-identity field on a `Change` was `importedFromDomain` (promotion-bundle
  * provenance only — null for every non-promotion change), so there was no SDK-reachable way for
  * `apps/web` to compare a change's authoritative origin against this instance's own domain, which
- * is what `change-detail.tsx`'s Accept/Rollback/Cancel gating (`apps/web/src/lib/replica-
- * origin.ts`) needs. Proves it's populated with the SAME authoritative value every other typed
+ * is what `change-detail.tsx`'s `ForeignOriginNotice` provenance badge (`apps/web/src/lib/replica-
+ * origin.tsx`) needs. Proves it's populated with the SAME authoritative value every other typed
  * resource's `GraphObjectSchema.originDomainId` already carries — the real HTTP + SDK round trip,
  * not a unit tautology.
  *

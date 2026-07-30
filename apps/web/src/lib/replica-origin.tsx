@@ -41,7 +41,9 @@ import { federationSelfKey } from "./query-client";
  *
  * HOW THE UI LEARNS "OWN DOMAIN": `GET /federation/self` (SDK: `client.federation.self()`) returns
  * `{domainId, name, role, publicKey}` for THIS instance — an SDK-reachable mechanism that already
- * existed (M6/M9.3) but was never consumed by the web app.
+ * existed (M6/M9.3) and was already consumed by `routes/federation-status.tsx`'s read-only status
+ * page. This milestone is the first place the response's `domainId` field drives anything beyond
+ * display — gating writes and labeling provenance below.
  */
 export function useOwnDomainId(): { domainId: string | undefined; isLoading: boolean } {
   const q = useQuery({
