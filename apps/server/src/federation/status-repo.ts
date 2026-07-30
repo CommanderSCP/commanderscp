@@ -4,7 +4,11 @@ import { ensureFederationSelf } from "./self-repo.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
 import { listPeers, type FederationPeerRow } from "./peers-repo.js";
 import { getCursor } from "./cursors-repo.js";
-import { lastSyncExportForPeer, listRecentTransfers } from "./bundle-transfers-repo.js";
+import {
+  lastConfirmedSyncImportAt,
+  lastSyncExportForPeer,
+  listRecentTransfers
+} from "./bundle-transfers-repo.js";
 import { ownJournalTail } from "./journal-repo.js";
 import { listOutpostConfigs } from "./outposts-repo.js";
 import { federationPeerRequiresMtls } from "./federation-outbound.js";
@@ -25,22 +29,30 @@ import { federationClientCertsUsable, peerSyncCadence } from "./federation-sync.
  */
 
 /**
- * DERIVED reachability — a fact about TRANSPORT, kept strictly out of `trustTier` (owner decision:
- * one field meaning both trust posture and reachability would mean neither).
+ * THE CONFIGURED TRANSPORT CHANNEL — a fact about CONFIG, kept strictly out of `trustTier` (owner
+ * decision: one field meaning both trust posture and reachability would mean neither) AND strictly out
+ * of OBSERVATION (review round 4: the label used to say `"connected"`, which is a claim this instance
+ * cannot derive from config at all).
  *
- *  - `"connected"` — the peer has an https/mTLS-capable base URL this side can dial. Uses the SAME
- *    predicate the sender and the M14.1 pair-time guard use (`federationPeerRequiresMtls`), so the
- *    label can never disagree with what the transport actually does.
- *  - `"air-gap"` — no dialable base URL, but a configured `deliveryTarget`: a file/object channel an
+ *  - `"dialable"` — an https/mTLS-capable base URL is CONFIGURED, so this side MAY dial the peer. It
+ *    does NOT say the peer has ever been reached: that is `lastPullAttemptAt`/`lastPullSuccessAt` and
+ *    `effectiveCadence`, in the same row, which do reflect failure. Uses the SAME predicate the sender
+ *    and the M14.1 pair-time guard use (`federationPeerRequiresMtls`), so the label can never disagree
+ *    with what the transport would actually do.
+ *  - `"air-gap"` — NO base URL at all, and a configured `deliveryTarget`: a file/object channel an
  *    operator (or a CDS) carries. That IS the air-gapped topology.
- *  - `null` — neither. NOT "air-gapped": a peer with no base URL and no delivery target has no
- *    transport configured at all, which is a misconfiguration, not a posture. Declared unknown.
- *
- * A plain-http base URL is deliberately not `"connected"`: federation refuses to dial it with the
- * bearer, so calling it connected would describe a link that cannot carry a sync.
+ *  - `null` — not honestly derivable, in TWO cases, both declared unknown:
+ *      * no base URL and no delivery target — no transport configured at all, a misconfiguration
+ *        rather than a posture (it is emphatically NOT "air-gapped");
+ *      * a base URL federation REFUSES to dial (plain http). A peer with `http://` plus a
+ *        deliveryTarget used to read `"air-gap"` — labelling a configured, non-air-gapped topology
+ *        air-gapped because its URL was rejected. Two contradictory transport statements is a
+ *        misconfiguration to surface, not a posture to infer.
  */
-function deriveConnectivity(peer: FederationPeerRow): "connected" | "air-gap" | null {
-  if (federationPeerRequiresMtls(peer.baseUrl)) return "connected";
+function deriveTransportMode(peer: FederationPeerRow): "dialable" | "air-gap" | null {
+  if (federationPeerRequiresMtls(peer.baseUrl)) return "dialable";
+  // A base URL is set but is not one federation will dial: refuse to reinterpret it as air-gap.
+  if (peer.baseUrl !== null && peer.baseUrl.length > 0) return null;
   if (peer.deliveryTarget !== null) return "air-gap";
   return null;
 }
@@ -66,9 +78,28 @@ export async function getFederationStatus(
   // split — `outpost-binding.ts`). Resolved through the `peerDomainId` binding; a peer with no object,
   // or an object whose operator never asserted a tier, yields NO tier and is declared unknown.
   const outpostConfigs = await listOutpostConfigs(tx, orgId);
-  const trustTierByPeer = new Map<string, OutpostTrustTier>();
+  // AUTHORITY, NOT LAST-WRITE-WINS (review round 4). This used to be a plain `Map.set` loop over the
+  // list, so with two rows bound to one peer the LAST one seen won — and a `provenance:'manual'` shadow
+  // could silently OVERRIDE the commander's own asserted tier on the Overview, a hand-typed copy beating
+  // the authority. The projection now carries `originIsSelf`/`provenance`, so the winner is chosen the
+  // same way `findOutpostConfigByPeer` chooses one: local-origin first, then a verified replica, then an
+  // unverified shadow — and the winner's provenance rides out on the row so phase B can tell them apart.
+  const tierRank = (config: (typeof outpostConfigs)[number]): number =>
+    config.originIsSelf ? 0 : config.provenance === "manual" ? 2 : 1;
+  const tierByPeer = new Map<
+    string,
+    { tier: OutpostTrustTier; rank: number; unverified: boolean }
+  >();
   for (const config of outpostConfigs) {
-    if (config.trustTier !== null) trustTierByPeer.set(config.peerDomainId, config.trustTier);
+    if (config.trustTier === null) continue;
+    const rank = tierRank(config);
+    const current = tierByPeer.get(config.peerDomainId);
+    if (current !== undefined && current.rank <= rank) continue;
+    tierByPeer.set(config.peerDomainId, {
+      tier: config.trustTier,
+      rank,
+      unverified: config.provenance === "manual"
+    });
   }
 
   const peerStatuses = await Promise.all(
@@ -77,13 +108,20 @@ export async function getFederationStatus(
       // with `originId === peer.id` is "how caught up am I on this peer's own history."
       const cursor = await getCursor(tx, orgId, peer.id, peer.id);
       const transfers = await listRecentTransfers(tx, orgId, peer.id, 5);
-      const lastConfirmed = transfers.find((t) => t.status === "confirmed");
+      // THE CORRECTLY-FILTERED INBOUND ANCHOR (review round 4). `lastSyncedAt`/`lastSyncedBundleChecksum`
+      // used to be read off `listRecentTransfers(...).find(t => t.status === 'confirmed')` — ANY
+      // direction, ANY kind, over the last 5 rows. A confirmed import/PROMOTION row (exactly what
+      // `promotion-repo.ts` writes on every accepted promotion bundle) therefore satisfied it, and the
+      // field documented as "the last confirmed INBOUND SYNC bundle" reported a PROMOTION checksum for a
+      // peer no sync bundle had ever arrived from. `lastConfirmedSyncImportAt` is the helper that has
+      // always had the right predicate (`direction='import' AND kind='sync' AND status='confirmed'`) and
+      // an index shaped for it; both fields now come off that ONE row, so they cannot disagree.
+      const lastSyncImport = await lastConfirmedSyncImportAt(tx, orgId, peer.id);
       const lastExport = await lastSyncExportForPeer(tx, orgId, peer.id);
-      const trustTier = trustTierByPeer.get(peer.id) ?? null;
-      const connectivity = deriveConnectivity(peer);
-      // The "as of ⟨bundle⟩" identifier for the INBOUND side, read off the SAME ledger row
-      // `lastSyncedAt` comes from so the timestamp and the bundle name can never disagree.
-      const lastSyncedBundleChecksum = lastConfirmed?.checksum ?? null;
+      const tier = tierByPeer.get(peer.id);
+      const trustTier = tier?.tier ?? null;
+      const transportMode = deriveTransportMode(peer);
+      const lastSyncedBundleChecksum = lastSyncImport?.checksum ?? null;
       const pendingExportEntryCount =
         lastExport === null ? null : Math.max(0, tail.sequence - lastExport.throughSequence);
 
@@ -91,10 +129,14 @@ export async function getFederationStatus(
       // reader would otherwise mistake for an observation.
       const unknownFields: string[] = [];
       // No operator has asserted a tier (or there is no `outpost` object for this peer at all).
-      // `trustTier` has no other source in this codebase — it is entered, never derived.
-      if (trustTier === null) unknownFields.push("trustTier");
-      // No transport configured at all: not observable as connected OR air-gapped.
-      if (connectivity === null) unknownFields.push("connectivity");
+      // `trustTier` has no other source in this codebase — it is entered, never derived. An UNVERIFIED
+      // hand-filled claim is listed too: the value rides the wire for shape stability, but it is not an
+      // assertion this instance can stand behind, so a UI must render it as unknown rather than as a
+      // commander assertion (`trustTierProvenance` says which case it is).
+      if (trustTier === null || tier?.unverified === true) unknownFields.push("trustTier");
+      // Either no transport is configured at all, or a base URL is configured that federation refuses to
+      // dial — in both cases the channel is not honestly derivable. See `deriveTransportMode`.
+      if (transportMode === null) unknownFields.push("transportMode");
       // A confirmed import exists but predates checksum recording (or none exists) — either way there
       // is no bundle to name, so an "as of ⟨bundle⟩" label has nothing to render.
       if (lastSyncedBundleChecksum === null) unknownFields.push("lastSyncedBundleChecksum");
@@ -119,7 +161,7 @@ export async function getFederationStatus(
       return {
         peer,
         lastAppliedSequence: cursor.sequence > 0 ? cursor.sequence : null,
-        lastSyncedAt: lastConfirmed?.confirmedAt ?? null,
+        lastSyncedAt: lastSyncImport?.at.toISOString() ?? null,
         // M14.4 (S7, ADR-0009) — the live-pull FRESHNESS + the cadence actually in force. These are
         // what an operator needs to answer "is this peer sparse, and is that intentional?":
         //   * lastPullAttemptAt / lastPullSuccessAt — an attempt WITHOUT a later success is a peer in
@@ -141,7 +183,16 @@ export async function getFederationStatus(
         lastSyncedBundleChecksum,
         pendingExportEntryCount,
         trustTier,
-        connectivity,
+        /** WHOSE assertion the tier above is: `"declared"` = authoritative for this instance (its own
+         *  local-origin object on a commander, or the signature-verified commander replica on an
+         *  outpost); `"unverified"` = a hand-filled `provenance:'manual'` shadow. `null` = no tier. */
+        trustTierProvenance:
+          tier === undefined
+            ? null
+            : tier.unverified
+              ? ("unverified" as const)
+              : ("declared" as const),
+        transportMode,
         unknownFields,
         recentTransfers: transfers
       };

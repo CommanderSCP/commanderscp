@@ -1783,11 +1783,16 @@ describe("M14.1 Federation: per-peer poke-mode (Testcontainers)", () => {
     name?: string;
     domainId?: TrustDomainId;
   }) {
+    const domainId = input.domainId ?? peerSelf.domainId;
     return withTenantTx(commander.db, commander.orgId, (tx) =>
       pairPeer(tx, {
         orgId: commander.orgId,
-        domainId: input.domainId ?? peerSelf.domainId,
-        name: input.name ?? "poke-peer",
+        domainId,
+        // PER-PEER NAME. These cases pair several DISTINCT peers inside one org, and drizzle/0045 makes
+        // `(org_id, name)` unique — a peer NAME identifies a peer on every route that accepts one, so two
+        // peers may no longer share one. Deriving the name from the domain id keeps each re-pair of the
+        // SAME peer stable (a re-pair must still hit the same row) while keeping distinct peers distinct.
+        name: input.name ?? `poke-peer-${domainId.slice(0, 8)}`,
         role: "outpost",
         publicKey: peerKeyPublic,
         ...(input.baseUrl !== undefined ? { baseUrl: input.baseUrl } : {}),

@@ -3,6 +3,7 @@ import {
   asTrustDomainId,
   type GraphObject,
   type OutpostConfig,
+  type OutpostConfigReconcileResult,
   type OutpostTrustTier
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -10,12 +11,14 @@ import { objects } from "../db/schema.js";
 import { notFound } from "../errors.js";
 import {
   createObject,
+  deleteObject,
   getObjectByIdOrUrn,
   toGraphObject,
   updateObject
 } from "../graph/objects-repo.js";
 import { deriveUrn } from "../graph/urn.js";
 import { findPeerByDomainId } from "./peers-repo.js";
+import { ensureFederationSelf } from "./self-repo.js";
 
 /**
  * M16.2 phase A (E1) — the commander-side write/read surface for `outpost` GRAPH OBJECTS: the
@@ -41,20 +44,50 @@ export function outpostConfigUrn(orgId: string, peerDomainId: string): string {
   return deriveUrn(orgId, OUTPOST_OBJECT_TYPE_ID, peerDomainId);
 }
 
+/** The tiers THIS build understands. Deliberately a local list rather than the registered JSON
+ *  Schema's: the registered type keeps `trustTier` an OPEN string so a bundle carrying a tier a newer
+ *  commander invented cannot abort an older outpost's import (see drizzle/0043's header). An
+ *  unrecognised tier therefore reads as NO tier here — honestly declared unknown, never guessed at. */
+const KNOWN_TRUST_TIERS: ReadonlySet<string> = new Set([
+  "commercial",
+  "govcloud",
+  "fedramp-high",
+  "il5",
+  "airgap"
+]);
+
 function readTrustTier(properties: Record<string, unknown>): OutpostTrustTier | null {
   const value = properties.trustTier;
   // NEVER DEFAULTED. `trustTier` has no source anywhere but this property, so an absent value stays
   // absent all the way to the wire (`null`) and is declared in `unknownFields` — a blank or a
-  // fabricated `commercial` would be an assertion no operator ever made.
-  return value === "commercial" || value === "fedramp-high" || value === "il5" ? value : null;
+  // fabricated `commercial` would be an assertion no operator ever made. The same is true of a tier
+  // this build does not recognise: reporting it as `commercial` would invent a posture.
+  return typeof value === "string" && KNOWN_TRUST_TIERS.has(value)
+    ? (value as OutpostTrustTier)
+    : null;
 }
 
-/** Projects the underlying graph object into the API's read view, carrying the honest-unknown
- *  declaration (`unknownFields`) the rest of this codebase already uses. */
-export function toOutpostConfig(object: GraphObject): OutpostConfig {
+/**
+ * Projects the underlying graph object into the API's read view, carrying the honest-unknown
+ * declaration (`unknownFields`) the rest of this codebase already uses.
+ *
+ * `selfDomainId` is REQUIRED (review round 4): without origin-vs-self and `provenance` on the wire, a
+ * consumer cannot tell a commander's own asserted config from an unverified hand-filled shadow claiming
+ * a foreign origin, and would render the latter as the former. `originDomainId` alone does not answer
+ * it — a reader would have to know this instance's own domain id to compare against.
+ */
+export function toOutpostConfig(object: GraphObject, selfDomainId: string): OutpostConfig {
   const properties = object.properties;
   const trustTier = readTrustTier(properties);
   const peerDomainId = typeof properties.peerDomainId === "string" ? properties.peerDomainId : "";
+  const originIsSelf = object.originDomainId === selfDomainId;
+  const unknownFields: string[] = [];
+  if (trustTier === null) unknownFields.push("trustTier");
+  // An UNVERIFIED shadow's tier is not an assertion this instance can stand behind: it was typed in by
+  // hand and no signed bundle has confirmed it. The value still rides the wire for shape stability, and
+  // is declared here so a UI renders it as unknown rather than as a commander assertion — the exact
+  // `ServiceBoardRow.unknownFields` contract.
+  else if (object.provenance === "manual") unknownFields.push("trustTier");
   return {
     objectId: object.id,
     urn: object.urn,
@@ -62,9 +95,11 @@ export function toOutpostConfig(object: GraphObject): OutpostConfig {
     peerDomainId,
     trustTier,
     originDomainId: object.originDomainId,
+    originIsSelf,
+    provenance: object.provenance ?? null,
     revision: object.revision,
     version: object.version,
-    unknownFields: trustTier === null ? ["trustTier"] : [],
+    unknownFields,
     createdAt: object.createdAt,
     updatedAt: object.updatedAt
   };
@@ -93,6 +128,7 @@ export async function createOutpostConfig(
   tx: TenantTx,
   input: CreateOutpostConfigInput
 ): Promise<OutpostConfig> {
+  const self = await ensureFederationSelf(tx, input.orgId);
   const peer = await findPeerByDomainId(tx, input.orgId, asTrustDomainId(input.peerDomainId));
   const object = await createObject(tx, {
     orgId: input.orgId,
@@ -111,13 +147,14 @@ export async function createOutpostConfig(
       ...(input.trustTier !== undefined ? { trustTier: input.trustTier } : {})
     }
   });
-  return toOutpostConfig(object);
+  return toOutpostConfig(object, self.domainId);
 }
 
 /** Every `outpost` config object in this org, oldest first. Includes the read-only REPLICA an outpost
  *  holds of its own config (that instance's `originDomainId` names the commander) — the projection
  *  makes the difference legible rather than hiding it. */
 export async function listOutpostConfigs(tx: TenantTx, orgId: string): Promise<OutpostConfig[]> {
+  const self = await ensureFederationSelf(tx, orgId);
   const rows = await tx
     .select()
     .from(objects)
@@ -128,18 +165,25 @@ export async function listOutpostConfigs(tx: TenantTx, orgId: string): Promise<O
         isNull(objects.deletedAt)
       )
     )
-    .orderBy(asc(objects.createdAt));
-  return rows.map((row) => toOutpostConfig(toGraphObject(row)));
+    .orderBy(asc(objects.createdAt), asc(objects.id));
+  return rows.map((row) => toOutpostConfig(toGraphObject(row), self.domainId));
 }
 
-/** The config object bound to `peerDomainId`, or `null` when the peer has none. Resolved through the
- *  BINDING (the JSONB property), not through the URN, so it still resolves for a replica whose URN
- *  was derived in the commander's org. */
-export async function findOutpostConfigByPeer(
+/**
+ * Every LIVE `outpost` object bound to `peerDomainId`, in a TOTALLY DETERMINISTIC order.
+ *
+ * The binding is meant to be 1:1 and `assertOutpostPeerBinding` keeps it that way going forward, but a
+ * database can still HOLD a duplicate — one left behind by the hand-fill door before it was narrowed
+ * (review round 4), or by any future write door. `(created_at, id)` makes the order total: `created_at`
+ * alone is not unique inside one transaction, and an ORDER-BY-less `LIMIT 1` (what this used to be) made
+ * `GET`/`PATCH /v1/federation/outposts/{peer}` resolve NONDETERMINISTICALLY and land on whichever copy
+ * Postgres happened to return — including a foreign-origin one, which then 409'd as a "read-only replica".
+ */
+async function listOutpostObjectsForPeer(
   tx: TenantTx,
   orgId: string,
   peerDomainId: string
-): Promise<OutpostConfig | null> {
+): Promise<GraphObject[]> {
   const rows = await tx
     .select()
     .from(objects)
@@ -151,9 +195,42 @@ export async function findOutpostConfigByPeer(
         sql`${objects.properties} ->> 'peerDomainId' = ${peerDomainId}`
       )
     )
-    .limit(1);
+    .orderBy(asc(objects.createdAt), asc(objects.id));
+  return rows.map(toGraphObject);
+}
+
+/**
+ * Which of several rows bound to one peer is the AUTHORITY, most-authoritative first:
+ *   1. LOCAL-ORIGIN — this instance authored it. On a commander that is the operator's own declaration,
+ *      and it must win over anything else: the commander is the single writer for outpost config in its
+ *      own domain, so a foreign or hand-typed copy can never outrank it.
+ *   2. A VERIFIED REPLICA (foreign origin, `provenance` NULL) — signature/chain-checked on import. This
+ *      is the authoritative row on an OUTPOST, where the commander is the author.
+ *   3. An UNVERIFIED SHADOW (`provenance = 'manual'`) — hand-typed, confirmed by nothing. Last.
+ * Ties inside a class keep the caller's deterministic `(created_at, id)` order.
+ */
+function byAuthority(rows: GraphObject[], selfDomainId: string): GraphObject[] {
+  const rank = (o: GraphObject): number =>
+    o.originDomainId === selfDomainId ? 0 : o.provenance === "manual" ? 2 : 1;
+  return rows
+    .map((o, i) => ({ o, i }))
+    .sort((a, b) => rank(a.o) - rank(b.o) || a.i - b.i)
+    .map((e) => e.o);
+}
+
+/** The config object bound to `peerDomainId`, or `null` when the peer has none. Resolved through the
+ *  BINDING (the JSONB property), not through the URN, so it still resolves for a replica whose URN
+ *  was derived in the commander's org — and through `byAuthority`, so a stray unverified shadow can
+ *  never shadow (nor be mistaken for) the row that actually holds authority. */
+export async function findOutpostConfigByPeer(
+  tx: TenantTx,
+  orgId: string,
+  peerDomainId: string
+): Promise<OutpostConfig | null> {
+  const self = await ensureFederationSelf(tx, orgId);
+  const rows = byAuthority(await listOutpostObjectsForPeer(tx, orgId, peerDomainId), self.domainId);
   const row = rows[0];
-  return row ? toOutpostConfig(toGraphObject(row)) : null;
+  return row ? toOutpostConfig(row, self.domainId) : null;
 }
 
 export async function getOutpostConfigByPeer(
@@ -168,6 +245,112 @@ export async function getOutpostConfigByPeer(
     );
   }
   return found;
+}
+
+/**
+ * THE RECOVERY DOOR (review round 4) — `POST /v1/federation/outposts/{peerDomainId}/reconcile`.
+ *
+ * WHY IT EXISTS. Before the hand-fill narrowing, `POST /v1/federation/hand-fill` could plant a second
+ * live `outpost` object for a peer that already had a legitimate one. That left the peer UNRECOVERABLE
+ * THROUGH THE API: the commander's own `PATCH /v1/federation/outposts/{peer}` 409'd forever
+ * ("already has an outpost config object" / "read-only replica"), `DELETE /api/v1/objects/outpost/{id}`
+ * is 403 by this milestone's own refusal, and no delete verb for the config existed. An unrecoverable
+ * state reachable by a supported action is the one-way-ratchet failure class this project has already
+ * paid for (PR #149), so the door is closed AND the existing wedge is made fixable — a database wedged
+ * by an older build must be repairable without SQL.
+ *
+ * WHAT IT DOES, and nothing more:
+ *   * keeps the single most authoritative row for the peer (`byAuthority`);
+ *   * when NO authoritative row exists but an UNVERIFIED shadow does, ADOPTS the first shadow as this
+ *     domain's own object (`unverifiedShadowOverride` — origin re-stamped, `provenance` cleared, and it
+ *     journals from then on like any local object), so the operator's entered config is not thrown away;
+ *   * SOFT-DELETES every remaining unverified shadow for that peer, restoring the 1:1 binding.
+ *
+ * WHAT IT REFUSES. A VERIFIED foreign-origin replica is never adopted and never removed: adopting one
+ * would make the next real import a single-writer violation and wedge that peer's sync — trading one
+ * unrecoverable state for a worse one. Two verified rows for one peer therefore stay a 409 and are
+ * reported as such, which is an honest authority conflict rather than a silent pick.
+ */
+export async function reconcileOutpostConfig(
+  tx: TenantTx,
+  input: { orgId: string; actorObjectId: string; requestId: string; peerDomainId: string }
+): Promise<OutpostConfigReconcileResult> {
+  const self = await ensureFederationSelf(tx, input.orgId);
+  const rows = byAuthority(
+    await listOutpostObjectsForPeer(tx, input.orgId, input.peerDomainId),
+    self.domainId
+  );
+  if (rows.length === 0) {
+    throw notFound(
+      `peer '${input.peerDomainId}' has no outpost config object to reconcile — declare one with POST /v1/federation/outposts`
+    );
+  }
+
+  const keeper = rows[0]!;
+  const isShadow = (o: GraphObject): boolean =>
+    o.originDomainId !== self.domainId && o.provenance === "manual";
+  const surplus = rows.slice(1);
+  const unremovable = surplus.filter((o) => !isShadow(o));
+  if (unremovable.length > 0) {
+    throw notFound(
+      `peer '${input.peerDomainId}' has ${rows.length} live outpost config objects and ${unremovable.length} of ` +
+        `them are authoritative (locally authored or a signature-verified replica) — reconcile only removes ` +
+        `UNVERIFIED hand-filled shadows, because adopting or deleting a verified replica would wedge that ` +
+        `peer's sync. Resolve the authority conflict at its source (${unremovable
+          .map((o) => o.id)
+          .join(", ")})`
+    );
+  }
+
+  let adoptedObjectId: string | null = null;
+  let kept = keeper;
+  if (isShadow(keeper)) {
+    // Nothing authoritative survives — adopt the shadow rather than discard the operator's entry. The
+    // guard runs on this path too (`updateObject`'s choke point), so an adopted object still has to
+    // satisfy clause (4): paired peer, role `outpost`, and — with the surplus not yet removed — no OTHER
+    // claimant. Surplus removal therefore happens FIRST.
+    for (const o of surplus) {
+      await deleteObject(tx, {
+        orgId: input.orgId,
+        typeId: OUTPOST_OBJECT_TYPE_ID,
+        actorObjectId: input.actorObjectId,
+        requestId: input.requestId,
+        idOrUrn: o.id,
+        unverifiedShadowOverride: true
+      });
+    }
+    kept = await updateObject(tx, {
+      orgId: input.orgId,
+      typeId: OUTPOST_OBJECT_TYPE_ID,
+      actorObjectId: input.actorObjectId,
+      requestId: input.requestId,
+      idOrUrn: keeper.id,
+      properties: keeper.properties,
+      unverifiedShadowOverride: true
+    });
+    adoptedObjectId = kept.id;
+    return {
+      config: toOutpostConfig(kept, self.domainId),
+      adoptedObjectId,
+      removedObjectIds: surplus.map((o) => o.id)
+    };
+  }
+
+  for (const o of surplus) {
+    await deleteObject(tx, {
+      orgId: input.orgId,
+      typeId: OUTPOST_OBJECT_TYPE_ID,
+      actorObjectId: input.actorObjectId,
+      requestId: input.requestId,
+      idOrUrn: o.id,
+      unverifiedShadowOverride: true
+    });
+  }
+  return {
+    config: toOutpostConfig(kept, self.domainId),
+    adoptedObjectId,
+    removedObjectIds: surplus.map((o) => o.id)
+  };
 }
 
 export interface UpdateOutpostConfigInput {
@@ -218,5 +401,6 @@ export async function updateOutpostConfig(
     properties: nextProperties,
     ...(input.expectedVersion !== undefined ? { expectedVersion: input.expectedVersion } : {})
   });
-  return toOutpostConfig(updated);
+  const self = await ensureFederationSelf(tx, input.orgId);
+  return toOutpostConfig(updated, self.domainId);
 }

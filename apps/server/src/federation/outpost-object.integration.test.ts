@@ -335,11 +335,13 @@ describe("M16.2 E1: the `outpost` builtin object type + the authority split (Tes
     }
   });
 
-  it("AUTHORITY SPLIT ④: connectivity is DERIVED from transport and stays separate from trustTier", async () => {
-    // An il5 outpost with an https base URL reads `connected`; the tier says nothing about it.
+  it("AUTHORITY SPLIT ④: transportMode is DERIVED from transport CONFIG and stays separate from trustTier", async () => {
+    // An outpost with an https base URL reads `dialable` — "a dialable transport is CONFIGURED", never
+    // "this peer has been reached" (review round 4: the label used to say `connected`). The tier says
+    // nothing about it either way.
     const status = await admin.federation.status();
     const connected = status.peers.find((entry) => entry.peer.id === outpostPeerId);
-    expect(connected?.connectivity).toBe("connected");
+    expect(connected?.transportMode).toBe("dialable");
     expect(connected?.trustTier).toBe("commercial"); // as PATCHed in ① — and unrelated to the above
 
     // A peer with NO transport at all is NOT reported as air-gapped: that is a misconfiguration, not
@@ -347,7 +349,7 @@ describe("M16.2 E1: the `outpost` builtin object type + the authority split (Tes
     const bare = await pairPeerViaApi("outpost");
     const status2 = await admin.federation.status();
     const bareStatus = status2.peers.find((entry) => entry.peer.id === bare);
-    expect(bareStatus?.connectivity ?? null).toBeNull();
-    expect(bareStatus?.unknownFields ?? []).toContain("connectivity");
+    expect(bareStatus?.transportMode ?? null).toBeNull();
+    expect(bareStatus?.unknownFields ?? []).toContain("transportMode");
   });
 });

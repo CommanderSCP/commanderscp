@@ -269,7 +269,21 @@ export type PairPeerRequest = z.infer<typeof PairPeerRequestSchema>;
  *  its transport (`baseUrl`/`deliveryTarget`) and is derived separately — folding it in here would
  *  make one field mean two different things. Until an operator sets a tier there is NO value: the
  *  property is ABSENT from the object, never blank and never defaulted to `commercial`. */
-export const OutpostTrustTierSchema = z.enum(["commercial", "fedramp-high", "il5"]);
+/** THE MEMBERS COME FROM THE GLOSSARY, WHICH IS AUTHORITATIVE FOR VOCABULARY (CLAUDE.md). The trust
+ *  tier IS the SECURITY DOMAIN (`docs/GLOSSARY.md` "security domain": "In CommanderSCP this is the trust
+ *  tier"), whose values that entry and the stage grammar give as `commercial`, `govcloud`, `il5`,
+ *  `airgap`, plus FedRAMP in prose; ADR-0011 says "FedRAMP-High / IL5 / air-gap". The first cut of this
+ *  enum was `['commercial','fedramp-high','il5']`, which left a GOVCLOUD outpost with NO representable
+ *  value — an operator had to leave the tier unknown or assert `commercial`, an INVENTED POSTURE, which
+ *  is the exact failure this milestone exists to prevent. See ADR-0022 for the alignment and for the one
+ *  open item (`fedramp-high` carries a hyphen, so it is not usable as a stage `<domain>` SEGMENT). */
+export const OutpostTrustTierSchema = z.enum([
+  "commercial",
+  "govcloud",
+  "fedramp-high",
+  "il5",
+  "airgap"
+]);
 export type OutpostTrustTier = z.infer<typeof OutpostTrustTierSchema>;
 
 /** `POST /federation/outposts` — declare the commander-origin config object for an ALREADY-PAIRED
@@ -313,15 +327,44 @@ export const OutpostConfigSchema = z.object({
    *  is the commander's own trust domain; on the outpost holding the replica it is the COMMANDER's,
    *  which is exactly why the outpost's own writes to it are refused. */
   originDomainId: z.string().uuid(),
+  /** Review round 4 — ORIGIN-VS-SELF, resolved server-side. `true` on the instance that AUTHORED this
+   *  config (the commander); `false` for the read-only replica an outpost holds, and for any
+   *  foreign-origin copy. `originDomainId` alone cannot answer this: a client would have to already know
+   *  the reading instance's own domain id to compare against, and phase B would then be one join away
+   *  from rendering someone else's copy as this instance's own assertion. */
+  originIsSelf: z.boolean().optional(),
+  /** Review round 4 — `"manual"` for an UNVERIFIED hand-filled shadow copy (DESIGN §13 hand-fill),
+   *  `null` for anything a signature verified or this domain authored. A `"manual"` row's `trustTier` is
+   *  ALSO listed in `unknownFields`: it is a value somebody typed, not an assertion this instance can
+   *  stand behind, and a UI must not render it as a commander assertion. */
+  provenance: z.enum(["manual"]).nullable().optional(),
   revision: z.number().int(),
   version: z.number().int(),
   /** Which of this row's fields are NOT observations (the `ServiceBoardRow.unknownFields` contract).
-   *  `"trustTier"` appears whenever no tier has been asserted. */
+   *  `"trustTier"` appears whenever no tier has been asserted, when the stored tier is one this build
+   *  does not recognise (forward-tolerance — see drizzle/0043), and when the row is an unverified
+   *  `"manual"` shadow. */
   unknownFields: z.array(z.string()),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()
 });
 export type OutpostConfig = z.infer<typeof OutpostConfigSchema>;
+
+/** `POST /federation/outposts/{peerDomainId}/reconcile` — THE RECOVERY VERB (review round 4). Restores
+ *  the 1:1 peer↔config binding for a peer whose database holds duplicates: keeps the authoritative row,
+ *  ADOPTS an unverified hand-filled shadow when nothing authoritative survives (so entered config is not
+ *  discarded), and soft-deletes the remaining shadows. Refuses (409-shaped `notFound` detail) rather than
+ *  touch a signature-verified replica. See `federation/outposts-repo.ts`'s `reconcileOutpostConfig`. */
+export const OutpostConfigReconcileResultSchema = z.object({
+  /** The single row that now holds the binding. */
+  config: OutpostConfigSchema,
+  /** The object id that was ADOPTED as this domain's own (its `provenance` cleared), or `null` when an
+   *  authoritative row already existed and nothing needed adopting. */
+  adoptedObjectId: z.string().uuid().nullable(),
+  /** The unverified shadow objects soft-deleted by this call — empty when there was nothing to clean. */
+  removedObjectIds: z.array(z.string().uuid())
+});
+export type OutpostConfigReconcileResult = z.infer<typeof OutpostConfigReconcileResultSchema>;
 
 // -------------------------------------------------------------------------------------------
 // M16.2 phase A (E4) — THE NARROW PEER PATCH. `POST /federation/peers` (pair/re-pair) is the only
@@ -466,19 +509,32 @@ export const FederationPeerStatusSchema = z.object({
    *  its operator never asserted a tier — NEVER defaulted to a tier (there is no source for one),
    *  and always accompanied by `"trustTier"` in `unknownFields`. */
   trustTier: OutpostTrustTierSchema.nullable().optional(),
-  /** DERIVED reachability, kept strictly separate from `trustTier` (owner decision): `"connected"`
-   *  when the peer has an https/mTLS-capable `baseUrl` this side can dial, `"air-gap"` when it has
-   *  no dialable base URL but does have a configured `deliveryTarget` (a file/object channel), and
-   *  `null` when neither is configured — which is a peer with no transport at all, not a peer known
-   *  to be air-gapped, so it is declared unknown rather than guessed. */
-  connectivity: z.enum(["connected", "air-gap"]).optional().nullable(),
+  /** Review round 4 — WHOSE assertion `trustTier` is, so a UI cannot render a hand-typed claim as a
+   *  commander one. `"declared"` = the winning `outpost` object is authoritative for this instance (its
+   *  own local-origin object on a commander; the signature-verified commander replica on an outpost).
+   *  `"unverified"` = the only tier available comes from a `provenance:'manual'` hand-filled SHADOW; the
+   *  value still rides the wire, and `"trustTier"` is ALSO listed in `unknownFields`. `null` = no tier.
+   *  With two rows bound to one peer the authoritative one always wins — this used to be a
+   *  last-write-wins map, in which a shadow could silently override the commander's own assertion. */
+  trustTierProvenance: z.enum(["declared", "unverified"]).nullable().optional(),
+  /** THE CONFIGURED TRANSPORT CHANNEL — config-derived, never an observation, and named for that
+   *  (review round 4 replaced a `connectivity` field whose `"connected"` value asserted reachability
+   *  this instance had not observed). `"dialable"` = an https/mTLS `baseUrl` is configured, so this side
+   *  MAY dial the peer — it does NOT mean the peer has ever been reached; `lastPullAttemptAt`/
+   *  `lastPullSuccessAt`/`effectiveCadence` in this same row are the observations, and they do reflect
+   *  failure. `"air-gap"` = NO base URL and a configured `deliveryTarget` (a file/object channel).
+   *  `null` = not honestly derivable, declared in `unknownFields`, in two cases: no transport configured
+   *  at all, or a base URL federation refuses to dial (plain http) — which is a contradictory
+   *  configuration to surface, not an air-gap posture to infer. */
+  transportMode: z.enum(["dialable", "air-gap"]).optional().nullable(),
   /** The fields of THIS peer-status row whose values this instance CANNOT OBSERVE, by name — the
    *  same honesty contract `ServiceBoardRowSchema.unknownFields` established. A listed field still
    *  carries its null/zero on the wire for shape stability, but that value is NOT an observation and
    *  a client must render it as unknown, never as a clean reading.
    *
    *  Optional for additivity; an old SDK simply never sees it. Names that appear here include
-   *  `"trustTier"` (never asserted), `"connectivity"` (no transport configured),
+   *  `"trustTier"` (never asserted, unrecognised, or only an unverified hand-filled claim),
+   *  `"transportMode"` (no transport configured, or one federation refuses to dial),
    *  `"lastSyncedBundleChecksum"`/`"lastExportedBundleChecksum"` (no identified bundle),
    *  `"pendingExportEntryCount"` (nothing exported yet), and `"healthRollup"` — a promised Overview
    *  field with NO source in this codebase at all, hence ABSENT from the schema and named here so a

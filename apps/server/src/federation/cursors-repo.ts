@@ -59,13 +59,17 @@ export async function getCursor(
  * statement.)
  *
  * CALLED FROM EXACTLY TWO PLACES, both of which are LOCAL, AUTHENTICATED (`federation:write`)
- * OPERATOR DECLARATIONS of this peer's own `sync_scope`, and both keyed off the RESULTING scope being
- * `full` (never off the transition — see `pairPeer`'s long note for why):
- *   * `pairPeer` — `POST /v1/federation/peers`;
- *   * `updatePeerTransport` — `PATCH /v1/federation/peers/{id}` (M16.2 phase A E4). Re-applied there
- *     deliberately: the documented recovery for a wedged peer is "declare the scope `full` again", and
- *     it must work on EVERY route that can declare a scope, or the same operator action would heal the
- *     peer through one door and silently leave it wedged forever through the other.
+ * OPERATOR DECLARATIONS of this peer's own `sync_scope` — and in both the request must actually CARRY a
+ * `syncScope`, with the permit keyed off the RESULTING scope being `full` (never off the transition — see
+ * `pairPeer`'s long note for why):
+ *   * `pairPeer` — `POST /v1/federation/peers` (`syncScope` is part of every pair/re-pair body);
+ *   * `updatePeerTransport` — `PATCH /v1/federation/peers/{id}` (M16.2 phase A E4), gated on
+ *     `input.syncScope !== undefined`. Re-applied there deliberately: the documented recovery for a
+ *     wedged peer is "declare the scope `full` again", and it must work on EVERY route that can declare a
+ *     scope, or the same operator action would heal the peer through one door and silently leave it
+ *     wedged forever through the other. The `!== undefined` gate is what keeps the trigger as narrow as
+ *     this sentence claims — without it, absent-means-preserve made a pure RENAME issue the permit
+ *     (review round 4, H8), so the code was wider than every doc describing it.
  * `sync_scope` is never carried on the wire, so no peer can induce either call; nothing in an import,
  * relay, inbox, poke or pull path may ever call this.
  *

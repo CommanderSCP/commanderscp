@@ -1082,7 +1082,12 @@ export const federationPeers = pgTable(
   },
   (table) => [
     unique("federation_peers_org_id_key").on(table.orgId, table.id),
-    index("federation_peers_org").on(table.orgId)
+    index("federation_peers_org").on(table.orgId),
+    /** drizzle/0045 (review round 4, H6) — `name` IS A RESOLUTION KEY: `getPeerByIdOrName` resolves a
+     *  non-UUID path parameter by name, and `PATCH /v1/federation/peers/{id}` is a TRANSPORT WRITE. Two
+     *  peers sharing a name made that write land on an arbitrary one of them. Read 0045's header for the
+     *  self-healing backfill and for why the constraint (not a per-route narrowing) is the fix. */
+    unique("federation_peers_org_name_key").on(table.orgId, table.name)
   ]
 );
 

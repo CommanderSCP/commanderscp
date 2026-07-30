@@ -13645,8 +13645,9 @@ export type GetFederationStatusResponses = {
             lastExportedBundleChecksum?: string | null;
             lastSyncedBundleChecksum?: string | null;
             pendingExportEntryCount?: number | null;
-            trustTier?: 'commercial' | 'fedramp-high' | 'il5' | null;
-            connectivity?: 'connected' | 'air-gap' | null;
+            trustTier?: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap' | null;
+            trustTierProvenance?: 'declared' | 'unverified' | null;
+            transportMode?: 'dialable' | 'air-gap' | null;
             unknownFields?: Array<string>;
             recentTransfers: Array<{
                 id: string;
@@ -14660,8 +14661,10 @@ export type ListOutpostConfigsResponses = {
         urn: string;
         name: string;
         peerDomainId: string;
-        trustTier: 'commercial' | 'fedramp-high' | 'il5' | null;
+        trustTier: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap' | null;
         originDomainId: string;
+        originIsSelf?: boolean;
+        provenance?: 'manual' | null;
         revision: number;
         version: number;
         unknownFields: Array<string>;
@@ -14676,7 +14679,7 @@ export type CreateOutpostConfigData = {
     body: {
         peerDomainId: string;
         name?: string;
-        trustTier?: 'commercial' | 'fedramp-high' | 'il5';
+        trustTier?: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap';
     };
     path?: never;
     query?: never;
@@ -14752,8 +14755,10 @@ export type CreateOutpostConfigResponses = {
         urn: string;
         name: string;
         peerDomainId: string;
-        trustTier: 'commercial' | 'fedramp-high' | 'il5' | null;
+        trustTier: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap' | null;
         originDomainId: string;
+        originIsSelf?: boolean;
+        provenance?: 'manual' | null;
         revision: number;
         version: number;
         unknownFields: Array<string>;
@@ -14820,8 +14825,10 @@ export type GetOutpostConfigResponses = {
         urn: string;
         name: string;
         peerDomainId: string;
-        trustTier: 'commercial' | 'fedramp-high' | 'il5' | null;
+        trustTier: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap' | null;
         originDomainId: string;
+        originIsSelf?: boolean;
+        provenance?: 'manual' | null;
         revision: number;
         version: number;
         unknownFields: Array<string>;
@@ -14835,7 +14842,7 @@ export type GetOutpostConfigResponse = GetOutpostConfigResponses[keyof GetOutpos
 export type UpdateOutpostConfigData = {
     body: {
         name?: string;
-        trustTier?: 'commercial' | 'fedramp-high' | 'il5';
+        trustTier?: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap';
         expectedVersion?: number;
     };
     path: {
@@ -14925,8 +14932,10 @@ export type UpdateOutpostConfigResponses = {
         urn: string;
         name: string;
         peerDomainId: string;
-        trustTier: 'commercial' | 'fedramp-high' | 'il5' | null;
+        trustTier: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap' | null;
         originDomainId: string;
+        originIsSelf?: boolean;
+        provenance?: 'manual' | null;
         revision: number;
         version: number;
         unknownFields: Array<string>;
@@ -14936,6 +14945,102 @@ export type UpdateOutpostConfigResponses = {
 };
 
 export type UpdateOutpostConfigResponse = UpdateOutpostConfigResponses[keyof UpdateOutpostConfigResponses];
+
+export type ReconcileOutpostConfigData = {
+    body?: never;
+    path: {
+        peerDomainId: string;
+    };
+    query?: never;
+    url: '/federation/outposts/{peerDomainId}/reconcile';
+};
+
+export type ReconcileOutpostConfigErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ReconcileOutpostConfigError = ReconcileOutpostConfigErrors[keyof ReconcileOutpostConfigErrors];
+
+export type ReconcileOutpostConfigResponses = {
+    /**
+     * Success
+     */
+    200: {
+        config: {
+            objectId: string;
+            urn: string;
+            name: string;
+            peerDomainId: string;
+            trustTier: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap' | null;
+            originDomainId: string;
+            originIsSelf?: boolean;
+            provenance?: 'manual' | null;
+            revision: number;
+            version: number;
+            unknownFields: Array<string>;
+            createdAt: string;
+            updatedAt: string;
+        };
+        adoptedObjectId: string | null;
+        removedObjectIds: Array<string>;
+    };
+};
+
+export type ReconcileOutpostConfigResponse = ReconcileOutpostConfigResponses[keyof ReconcileOutpostConfigResponses];
 
 export type ListPluginManifestsData = {
     body?: never;

@@ -1,4 +1,4 @@
-import { and, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, ne, sql } from "drizzle-orm";
 import { asTrustDomainId } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { federationPeers, objects } from "../db/schema.js";
@@ -31,9 +31,13 @@ import { badRequest, conflict } from "../errors.js";
  *      which resolves `federation:write` for this type rather than plain `object:write`.
  *
  *  (3) NEITHER MAY EXPRESS THE OTHER'S FIELDS, structurally rather than by convention:
- *        * no transport field is REPRESENTABLE in the object — the registered type's JSON Schema is
- *          `additionalProperties: false` over exactly `{peerDomainId, trustTier}` (drizzle/0043), and
- *          the create/update request bodies carry no transport field at all;
+ *        * no transport field is REPRESENTABLE in the object — the create/update REQUEST BODIES
+ *          (`CreateOutpostConfigRequestSchema`/`UpdateOutpostConfigRequestSchema`) carry no transport
+ *          field of any kind, and they are the only operator-reachable write path. This is deliberately
+ *          NOT enforced by the registered JSON Schema: that schema is journaled and validated on the
+ *          RECEIVING side, so making it closed would turn every future property into a fail-closed
+ *          version-skew hazard that aborts whole sync bundles (review round 4, H7 — read drizzle/0043's
+ *          header before tightening it);
  *        * no declared-config field is REPRESENTABLE on the peer row — there is no trust-tier column,
  *          and the PATCH body admits only `{name, baseUrl, syncScope, deliveryTarget, pokeMode}`.
  *      Consequence, and the shape the tests assert in BOTH directions: a config write leaves
@@ -46,6 +50,10 @@ import { badRequest, conflict } from "../errors.js";
  *      second object for the same peer is a 409. The object never creates, mutates, or is required
  *      by the peer row — deleting nothing and blocking nothing. Federation works exactly as before
  *      for a peer that has no `outpost` object; the object only adds declared config.
+ *      ONE ASYMMETRY, and it is the H1 fix: on an UPDATE the 409 fires only for an AUTHORITATIVE
+ *      claimant. An unverified `provenance:'manual'` shadow gets no veto over an edit to the row that
+ *      actually holds authority — that veto was reachable, permanent, and had no delete door. Duplicates
+ *      are removable through `POST /v1/federation/outposts/{peer}/reconcile` (`outposts-repo.ts`).
  *
  *  (5) TIE-BREAK, when both halves could seem to answer one question: THE PEER ROW WINS for anything
  *      about reachability. "Is this outpost air-gapped?" is derived from `base_url`/`delivery_target`
@@ -64,9 +72,18 @@ import { badRequest, conflict } from "../errors.js";
  * IMPORT PATHS STAY PERMISSIVE BY CONSTRUCTION, and must: the check is skipped whenever
  * `federationImport` is set. At the OUTPOST, the arriving replica names the outpost's OWN domain id
  * as `peerDomainId` — which is deliberately NOT in that instance's `federation_peers` (an instance is
- * not its own peer), so applying clause (4) to a replica would refuse every legitimate sync. Hand-fill
- * (`handfill-repo.ts`) always stamps a FOREIGN origin through the same `federationImport` channel, so
- * it is covered by the same skip, exactly as the journal-replay path is.
+ * not its own peer), so applying clause (4) to a replica would refuse every legitimate sync. A bundle can
+ * ALSO legitimately carry a THIRD domain's `outpost` object (a commander at full sync scope ships outpost
+ * B's config down to outpost A), so the skip cannot be narrowed to "names my own domain" on this path
+ * either — doing so would abort whole bundles.
+ *
+ * THAT SKIP IS WHY HAND-FILL NEEDED ITS OWN GUARD (review round 4, H1). `handfill-repo.ts` stamps a
+ * FOREIGN origin through the same `federationImport` channel, so it inherited the skip — but unlike a
+ * journal entry its `peerDomainId` is OPERATOR-SUPPLIED and nothing has verified it, which made
+ * `POST /v1/federation/hand-fill` a fifth free-form-`typeId` local write door that bypassed all three
+ * clause-(4) refusals. It is closed AT THAT MODULE (`assertHandFillableType`), which restricts a
+ * hand-filled peer-bound object to the receiving instance's OWN domain id — the only shape a real replica
+ * has. `import-repo.ts` and `handfill-repo.ts` are the complete census of `federationImport` suppliers.
  */
 
 /** Object types whose objects must be bound to a paired federation peer. A ReadonlySet so the guard
@@ -92,7 +109,16 @@ const REQUIRED_PEER_ROLE = "outpost";
  */
 export async function assertOutpostPeerBinding(
   tx: TenantTx,
-  input: { orgId: string; objectId: string; properties: Record<string, unknown> }
+  input: {
+    orgId: string;
+    objectId: string;
+    properties: Record<string, unknown>;
+    /** Set by the UPDATE half of the choke point only (review round 4, H1). See the note on the clash
+     *  scan below: an UNVERIFIED hand-filled shadow must not be able to VETO an edit to the row that
+     *  actually holds authority — that veto WAS the unrecoverable wedge. A CREATE stays strict, so the
+     *  create door can never grow a second live claimant in the first place. */
+    ignoreUnverifiedClash?: boolean;
+  }
 ): Promise<void> {
   const raw = input.properties.peerDomainId;
   if (typeof raw !== "string" || raw.length === 0) {
@@ -134,7 +160,7 @@ export async function assertOutpostPeerBinding(
   }
 
   const clashing = await tx
-    .select({ id: objects.id })
+    .select({ id: objects.id, provenance: objects.provenance })
     .from(objects)
     .where(
       and(
@@ -148,11 +174,31 @@ export async function assertOutpostPeerBinding(
         sql`${objects.properties} ->> 'peerDomainId' = ${peerDomainId}`
       )
     )
-    .limit(1);
-  if (clashing[0]) {
+    .orderBy(asc(objects.createdAt), asc(objects.id));
+  // AN UNVERIFIED SHADOW IS NOT AN AUTHORITY, AND ON AN UPDATE IT GETS NO VETO (review round 4, H1).
+  // This scan used to be an unordered `LIMIT 1` applied identically to creates and updates, which is how
+  // one hand-filled `provenance:'manual'` duplicate made the commander's own
+  // `PATCH /v1/federation/outposts/{peer}` return 409 FOREVER — with no delete door anywhere in the API,
+  // an UNRECOVERABLE state reached by a supported call. On an UPDATE the question is only "does another
+  // row hold AUTHORITY for this peer?", and a hand-typed, signature-less copy does not.
+  //
+  // A CREATE stays strict against every live claimant, shadows included: that keeps the create door from
+  // ever growing a second row, so the 1:1 invariant holds going forward. The recovery for a database that
+  // already holds one is `POST /v1/federation/outposts/{peer}/reconcile`, named in the refusal below
+  // precisely so the operator is never left guessing.
+  const blocking = input.ignoreUnverifiedClash
+    ? clashing.filter((row) => row.provenance !== "manual")
+    : clashing;
+  if (blocking[0]) {
+    const unverified = blocking[0].provenance === "manual";
     throw conflict(
-      `peer '${peerDomainId}' already has an outpost config object ('${clashing[0].id}') — ` +
-        `the binding is one-to-one; PATCH that object instead of declaring a second one`
+      `peer '${peerDomainId}' already has an outpost config object ('${blocking[0].id}') — ` +
+        `the binding is one-to-one; PATCH that object instead of declaring a second one` +
+        (unverified
+          ? `. That object is an UNVERIFIED hand-filled shadow copy: POST ` +
+            `/v1/federation/outposts/${peerDomainId}/reconcile adopts it as this domain's own config ` +
+            `(or removes it when an authoritative row already exists)`
+          : "")
     );
   }
 }

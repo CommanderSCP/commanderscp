@@ -14,6 +14,7 @@ import {
   ImportResultSchema,
   InitFederationRequestSchema,
   CreateOutpostConfigRequestSchema,
+  OutpostConfigReconcileResultSchema,
   OutpostConfigSchema,
   PairPeerRequestSchema,
   ProblemSchema,
@@ -45,6 +46,7 @@ import {
   createOutpostConfig,
   getOutpostConfigByPeer,
   listOutpostConfigs,
+  reconcileOutpostConfig,
   updateOutpostConfig
 } from "../federation/outposts-repo.js";
 import {
@@ -354,10 +356,23 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         // smuggle in an out-of-root drop directory or an un-allowlisted S3 endpoint.
         assertDeliveryTargetRooted(request.body.deliveryTarget);
         const existing = await getPeerByIdOrName(tx, auth.orgId, request.params.id);
+        // THE FIVE TRANSPORT FIELDS, SPREAD EXPLICITLY (review round 4, H9b). This used to be
+        // `{ orgId, domainId: existing.id, ...request.body }` — the spread LAST, so a body-supplied
+        // `domainId` would have overridden the RESOLVED peer id and the PATCH would land on a different
+        // peer. It is safe today only because fastify-type-provider-zod's validatorCompiler replaces
+        // `request.body` with a key-stripping parse — a behaviour documented nowhere near this call site
+        // and one nobody would think to re-check when swapping validators. Naming the fields makes the
+        // safety local and total: there is no key here that could carry an identity.
         return updatePeerTransport(tx, {
           orgId: auth.orgId,
           domainId: existing.id,
-          ...request.body
+          ...(request.body.name !== undefined ? { name: request.body.name } : {}),
+          ...(request.body.baseUrl !== undefined ? { baseUrl: request.body.baseUrl } : {}),
+          ...(request.body.syncScope !== undefined ? { syncScope: request.body.syncScope } : {}),
+          ...(request.body.deliveryTarget !== undefined
+            ? { deliveryTarget: request.body.deliveryTarget }
+            : {}),
+          ...(request.body.pokeMode !== undefined ? { pokeMode: request.body.pokeMode } : {})
         });
       });
       reply.status(200).send(peer);
@@ -1229,6 +1244,48 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         });
       });
       reply.status(200).send(config);
+    }
+  });
+
+  typed.route({
+    method: "POST",
+    url: "/api/v1/federation/outposts/:peerDomainId/reconcile",
+    schema: {
+      params: z.object({ peerDomainId: z.string().uuid() }),
+      response: {
+        200: OutpostConfigReconcileResultSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema,
+        409: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "reconcileOutpostConfig",
+        summary:
+          "RECOVERY: restore the 1:1 peer↔config binding for a peer holding duplicate outpost config objects (adopts an unverified hand-filled shadow, removes the rest)",
+        tags: ["federation"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:write",
+          scopeObjectId: auth.orgId
+        });
+        return reconcileOutpostConfig(tx, {
+          orgId: auth.orgId,
+          actorObjectId: auth.subjectObjectId,
+          requestId: request.id,
+          peerDomainId: request.params.peerDomainId
+        });
+      });
+      reply.status(200).send(result);
     }
   });
 }

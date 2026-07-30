@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { BundleTransfer, TrustDomainId } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -111,9 +111,16 @@ export async function lastConfirmedSyncImportAt(
   tx: TenantTx,
   orgId: string,
   peerDomainId: TrustDomainId
-): Promise<{ at: Date; transport: BundleTransport | null } | null> {
+): Promise<{ at: Date; transport: BundleTransport | null; checksum: string | null } | null> {
   const rows = await tx
-    .select({ confirmedAt: bundleTransfers.confirmedAt, transport: bundleTransfers.transport })
+    .select({
+      confirmedAt: bundleTransfers.confirmedAt,
+      transport: bundleTransfers.transport,
+      // Returned so `GET /federation/status`'s "as of ⟨bundle⟩" label names the bundle from the SAME row
+      // this timestamp came from. It previously picked its own row with a much looser predicate (review
+      // round 4, H3) and could name a PROMOTION bundle for a peer no sync bundle had arrived from.
+      checksum: bundleTransfers.checksum
+    })
     .from(bundleTransfers)
     .where(
       and(
@@ -130,7 +137,8 @@ export async function lastConfirmedSyncImportAt(
   if (!row?.confirmedAt) return null;
   return {
     at: row.confirmedAt,
-    transport: row.transport === "live-pull" || row.transport === "bundle" ? row.transport : null
+    transport: row.transport === "live-pull" || row.transport === "bundle" ? row.transport : null,
+    checksum: row.checksum
   };
 }
 
@@ -191,7 +199,12 @@ export async function lastSyncExportForPeer(
         eq(bundleTransfers.kind, "sync")
       )
     )
-    .orderBy(desc(bundleTransfers.throughSequence))
+    // `NULLS LAST` is load-bearing, not decoration: Postgres `DESC` is NULLS FIRST, so a single sync-export
+    // row with a NULL `through_sequence` would sort ahead of every real one and the `row.throughSequence
+    // === null` bail below would report "never exported" FOREVER despite real exports. `export-repo.ts`
+    // always sets the column today, so this is a trap being disarmed rather than a bug being fixed —
+    // which is exactly when it is cheap to disarm (review round 4, H9a).
+    .orderBy(sql`${bundleTransfers.throughSequence} DESC NULLS LAST`)
     .limit(1);
   const row = rows[0];
   if (!row || row.throughSequence === null) return null;

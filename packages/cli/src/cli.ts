@@ -280,10 +280,18 @@ function printFederationStatus(status: FederationStatusResponse, output: OutputF
           ? "?"
           : `${p.pendingExportEntryCount} pending`,
       // The owner-ENTERED trust tier from the peer's `outpost` object, or "?" when never asserted
-      // (F3: there is no source for a default, so the CLI must not print one).
-      trustTier: p.trustTier ?? "?",
-      // DERIVED from transport, deliberately separate from the tier; "?" when no transport at all.
-      connectivity: p.connectivity ?? "?",
+      // (F3: there is no source for a default, so the CLI must not print one). An UNVERIFIED
+      // hand-filled claim is suffixed rather than printed bare — it is not a commander assertion.
+      trustTier:
+        p.trustTier === null || p.trustTier === undefined
+          ? "?"
+          : p.trustTierProvenance === "unverified"
+            ? `${p.trustTier} (unverified)`
+            : p.trustTier,
+      // The CONFIGURED transport channel, deliberately separate from the tier and NEVER a reachability
+      // claim ("dialable" means a dialable URL is configured; `lastPull` above is the observation).
+      // "?" when no transport is configured, or when one is configured that federation refuses to dial.
+      transport: p.transportMode ?? "?",
       recentTransfers: String(p.recentTransfers.length)
     };
   });

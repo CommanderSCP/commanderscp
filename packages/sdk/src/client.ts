@@ -197,6 +197,7 @@ import {
   listOutpostConfigs as listOutpostConfigsRequest,
   getOutpostConfig as getOutpostConfigRequest,
   updateOutpostConfig as updateOutpostConfigRequest,
+  reconcileOutpostConfig as reconcileOutpostConfigRequest,
   getFederationStatus as getFederationStatusRequest,
   exportSyncBundle as exportSyncBundleRequest,
   exportPromotionBundle as exportPromotionBundleRequest,
@@ -326,6 +327,7 @@ import type {
   CreateOutpostConfigRequest,
   UpdateOutpostConfigRequest,
   OutpostConfig,
+  OutpostConfigReconcileResult,
   FederationStatusResponse,
   ExportJournalRequest,
   SyncBundle,
@@ -1684,6 +1686,17 @@ export class ScpClient {
         client: this.client,
         path: { peerDomainId },
         body: req
+      });
+      return unwrap(result);
+    },
+    /** RECOVERY (review round 4) — restore the 1:1 peer↔config binding for a peer whose database holds
+     *  DUPLICATE `outpost` objects (the wedge a pre-narrowing hand-fill could create). Keeps the
+     *  authoritative row, ADOPTS an unverified hand-filled shadow when nothing authoritative survives,
+     *  and soft-deletes the remaining shadows. Never touches a signature-verified replica. */
+    reconcileOutpost: async (peerDomainId: string): Promise<OutpostConfigReconcileResult> => {
+      const result = await reconcileOutpostConfigRequest({
+        client: this.client,
+        path: { peerDomainId }
       });
       return unwrap(result);
     },
