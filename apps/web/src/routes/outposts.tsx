@@ -231,7 +231,15 @@ export function InboundSyncCell({ status }: { status: FederationPeerStatus }): R
  * nothing whatsoever about whether the outpost received or applied any of it.
  */
 export function PendingExportCell({ status }: { status: FederationPeerStatus }): React.JSX.Element {
-  const neverExported = isPeerUnknown(status, "lastExportedThroughSequence");
+  // BELT AND BRACES, and not decoration. `unknownFields` is OPTIONAL on the wire (additivity), so an
+  // older server sends a NULL sequence and declares nothing — and keying only on the declaration
+  // would then render "exported through #" with an empty number, i.e. paint a peer that was never
+  // exported to as one that was. The value's own absence is checked too. (`InboundSyncCell` above
+  // already does this for the checksum; this cell was the outlier.)
+  const neverExported =
+    isPeerUnknown(status, "lastExportedThroughSequence") ||
+    status.lastExportedThroughSequence === null ||
+    status.lastExportedThroughSequence === undefined;
   if (neverExported) {
     return (
       <div data-testid="outpost-export" data-export-state="none-recorded">

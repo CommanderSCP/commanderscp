@@ -239,6 +239,17 @@ describe("outposts overview: no string claims the outpost has anything", () => {
     expect(html).not.toContain('data-declared="undeclared"');
   });
 
+  it("an OLDER server that declares nothing still cannot make a never-exported peer look exported", () => {
+    // `unknownFields` is optional on the wire. Keying the export cell ONLY on the declaration would
+    // render "exported through #" with an empty number here — a peer nothing was ever sent to,
+    // painted as one that was.
+    const html = renderToStaticMarkup(
+      <PendingExportCell status={basePeer({ unknownFields: [] })} />
+    );
+    expect(html).toContain('data-export-state="none-recorded"');
+    expect(visibleText(html)).not.toContain("exported through");
+  });
+
   it("a field the server stops declaring still never reads as a clean value", () => {
     // Forward-compatibility branch: an older/newer server that omits the name entirely. "not
     // reported" is still not "healthy" and still not a blank cell.
