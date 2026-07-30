@@ -214,6 +214,11 @@ describe("Decision write amplification: the campaign reconciler persists ON CHAN
     expect(JSON.stringify(first.ordinary[0]!.reasonTree)).toContain(
       "campaign plan compilation failed"
     );
+    // AND IT NAMES THE OFFENDING OBJECT (charter principle 6). `getObjectByIdOrUrnAnyType` throws
+    // `notFound`, a `ProblemError` whose `message` is the bare HTTP title — this used to record
+    // `{ error: "Not Found" }`, which explains nothing and, worse, makes every unresolvable-target
+    // fault byte-identical (see U4). `errors.ts`'s `describeError` records `detail`.
+    expect((first.ordinary[0]!.inputContext as { error: string }).error).toContain(missingTarget);
     // Nothing was compiled — the retry (and therefore the self-heal) is untouched.
     const plan = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       getLatestCampaignPlan(tx, org.orgId, campaignObjectId)
@@ -249,6 +254,77 @@ describe("Decision write amplification: the campaign reconciler persists ON CHAN
     expect(second.ordinary).toHaveLength(2);
     const recordedErrors = second.ordinary.map((d) => (d.inputContext as { error: string }).error);
     expect(recordedErrors[0]).not.toBe(recordedErrors[1]);
-    expect(recordedErrors[1]).toContain("Bad Request"); // the topology-type refusal
+    // The topology-type refusal, NAMED. This used to assert `toContain("Bad Request")` — which is
+    // the HTTP TITLE of the `ProblemError`, not its diagnosis: a green assertion over a Decision
+    // that told the operator nothing. It passed only because this fault's title happens to differ
+    // from the previous fault's ("Not Found"); U4 is the case where they do not.
+    expect(recordedErrors[1]).toContain("is not a release-topology object");
+    expect(recordedErrors[1]).toContain(component.id as string);
+    for (const recorded of recordedErrors) expect(recorded).not.toBe("Bad Request");
+    for (const recorded of recordedErrors) expect(recorded).not.toBe("Not Found");
+  });
+
+  /**
+   * U4 — THE FAULT THE DEDUPE MADE WORSE (PR #153 review Q3).
+   *
+   * `ProblemError` (`errors.ts`) is constructed `(status, title, opts)` and passes the TITLE to
+   * `super()`, so `err.message` is `"Not Found"` / `"Bad Request"` and everything informative lives
+   * in `readonly detail`. Recording `message` therefore collapsed EVERY unresolvable-target fault
+   * to the identical `{ error: "Not Found" }` — and since `insertDecisionIfChanged` compares
+   * CONTENT, the second, genuinely different fault was suppressed as a restatement. The operator
+   * kept reading a Decision about a target that is no longer the problem, with no signal that
+   * anything had changed. The dedupe is what turned an explainability gap into a CORRECTNESS one,
+   * which is why the fix ships here rather than later.
+   *
+   * U3's second fault has a different HTTP title from its first, so it writes a row either way —
+   * this is the case that does not.
+   *
+   * MUTATION-PROVEN: reverting `campaign-reconcile.ts` to `err instanceof Error ? err.message` takes
+   * this to ONE row (`expected 1 to be 2`) — the second fault silently lost.
+   */
+  it("U4: TWO DIFFERENT faults that share an HTTP title write TWO plan_diff Decisions — the title is not the record", async () => {
+    const org = await createTestOrg(server, "campaign-flood-same-title");
+
+    const firstMissing = randomUUID();
+    const secondMissing = randomUUID();
+    const campaignObjectId = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const object = await createObject(tx, {
+        orgId: org.orgId,
+        typeId: "campaign",
+        actorObjectId: org.orgId,
+        requestId: "campaign-flood-test",
+        name: "campaign-same-title-faults",
+        properties: { targets: [firstMissing] }
+      });
+      return object.id;
+    });
+
+    await tick(org, 3);
+
+    // A DIFFERENT unresolvable target — a different fault about a different object, but the SAME
+    // `notFound` and therefore the same HTTP title.
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      updateObject(tx, {
+        orgId: org.orgId,
+        typeId: "campaign",
+        actorObjectId: SYSTEM_ACTOR_ID,
+        requestId: "campaign-flood-test",
+        idOrUrn: campaignObjectId,
+        properties: { targets: [secondMissing] }
+      })
+    );
+
+    await tick(org, 3);
+
+    const rows = await decisionsOfKind(org, campaignObjectId, "plan_diff");
+    expect(rows.conditionErrors).toHaveLength(0);
+    // TWO rows over six ticks: each fault deduped across its own three ticks, and the second was
+    // NOT swallowed by the first. Pre-fix this was ONE row saying "Not Found", forever.
+    expect(rows.ordinary).toHaveLength(2);
+
+    const recordedErrors = rows.ordinary.map((d) => (d.inputContext as { error: string }).error);
+    expect(recordedErrors[0]).toContain(firstMissing);
+    expect(recordedErrors[1]).toContain(secondMissing);
+    expect(recordedErrors[0]).not.toBe(recordedErrors[1]);
   });
 });

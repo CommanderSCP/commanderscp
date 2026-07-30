@@ -42,6 +42,7 @@ import { tryAcquireTriggerClaimLock } from "./trigger-claim-lock.js";
 import { tryAcquireChangeCoordinationLock } from "./change-coordination-lock.js";
 import { evaluateWaveGate } from "./gates.js";
 import { insertDecision, insertDecisionIfChanged } from "./decisions-repo.js";
+import { describeError } from "../errors.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import { DEFAULT_EXECUTOR_INSTANCE_ID, DEFAULT_EXECUTOR_MODULE } from "./executor-config.js";
 import {
@@ -216,7 +217,15 @@ async function advanceEvaluatedChanges(db: Db, orgId: string, gateDeps: GateDeps
           // compile attempt, so either both roll back together or the cancel commits clean. Safe
           // to treat any error here as a genuine compilation failure — the lock above already
           // ruled out "lost a concurrent race" as the cause.
-          const message = err instanceof Error ? err.message : String(err);
+          //
+          // `describeError`, not `err.message`: `compileAndPersistPlan` throws `notFound`/
+          // `badRequest` (`plan-service.ts`) and `transitionChange` throws `notFound`
+          // (`transition.ts`), all `ProblemError`s whose `message` is only the HTTP TITLE. The
+          // reason below is the change's PERMANENT epitaph — it is written into the cancelling
+          // transition's Decision and audit event, and it is the only explanation an operator ever
+          // gets for a change that auto-cancelled. "auto-cancelled: plan compilation failed — Not
+          // Found" names neither the missing topology nor the cycle. See `errors.ts`.
+          const message = describeError(err);
           await transitionChange(
             tx,
             {

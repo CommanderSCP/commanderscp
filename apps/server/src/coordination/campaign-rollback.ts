@@ -1,6 +1,6 @@
 import type { Change } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { badRequest } from "../errors.js";
+import { badRequest, describeError } from "../errors.js";
 import { hasPermission } from "../authz/resolve.js";
 import { getChangeRow } from "./changes-repo.js";
 import { triggerRollback } from "./rollback.js";
@@ -121,9 +121,15 @@ export async function triggerCampaignRollback(
       });
       result.rolledBack.push({ originalChangeObjectId: memberChangeObjectId, rollbackChange });
     } catch (err) {
+      // `describeError`, not `err.message`: every refusal `triggerRollback` raises is a
+      // `ProblemError` — `badRequest` for a member in a non-rollbackable state or with no recorded
+      // targets, `notFound` from `getChangeRow` — whose `message` is the bare HTTP title. This
+      // `reason` is persisted verbatim in the `rollback_trigger` Decision's `input_context` below
+      // and is the only account of why a member was NOT reverted; "Bad Request" against three
+      // skipped members tells an operator nothing and makes three different faults identical.
       result.skipped.push({
         originalChangeObjectId: memberChangeObjectId,
-        reason: err instanceof Error ? err.message : String(err)
+        reason: describeError(err)
       });
     }
   }

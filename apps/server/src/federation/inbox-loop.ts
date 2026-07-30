@@ -89,7 +89,7 @@ import {
 import type { Db } from "../db/client.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { changes, federationInboxFiles, orgs } from "../db/schema.js";
-import { ProblemError } from "../errors.js";
+import { describeError, ProblemError } from "../errors.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { insertDecision } from "../coordination/decisions-repo.js";
 import { ensureFederationSelf, type FederationSelf } from "./self-repo.js";
@@ -784,7 +784,13 @@ export async function inboxOrgTick(
         console.error(`[inbox] org ${orgId}: processing '${name}' failed (will retry):`, err);
         outcomes.push({
           outcome: "deferred",
-          detail: err instanceof Error ? err.message : String(err),
+          // `describeError` for the same reason the five explicit `err.detail ?? err.message` sites
+          // above use it: an escaping `ProblemError`'s `message` is the bare HTTP title. This is the
+          // containment catch, so it is precisely the path where the throw was NOT anticipated and
+          // the text matters most. (Unlike the coordination sites, this `detail` is
+          // observability-only — `InboxFileOutcome` is returned, never persisted — so no Decision
+          // was being degraded here; the inconsistency was.)
+          detail: describeError(err),
           decisionId: null
         });
       }

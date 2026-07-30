@@ -3,7 +3,7 @@ import { orgs } from "../db/schema.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import type { CelSandbox } from "../governance/cel-sandbox.js";
-import { badRequest } from "../errors.js";
+import { badRequest, describeError } from "../errors.js";
 import { getObjectByIdOrUrnAnyType, updateObject } from "../graph/objects-repo.js";
 import type { GateDeps } from "./gates.js";
 import { evaluateWaveGate } from "./gates.js";
@@ -152,7 +152,17 @@ async function reconcileOneCampaign(
       // self-healing above depends on it); only the identical restatement is suppressed. A
       // DIFFERENT error message is a different fault and still writes, so the record always shows
       // what is currently wrong.
-      const message = err instanceof Error ? err.message : String(err);
+      //
+      // ...WHICH IS EXACTLY WHY THIS USES `describeError` AND NOT `err.message`. Everything thrown
+      // in the block above is a `ProblemError`: `getObjectByIdOrUrnAnyType` throws `notFound`, the
+      // topology check throws `badRequest`, `compileAndPersistCampaignPlan` throws `notFound`/
+      // `badRequest` via `plan-service.ts`. Their `message` is the bare HTTP TITLE — an
+      // unresolvable target and a non-release-topology `topologyObjectId` record as "Not Found" and
+      // "Bad Request", naming neither the object nor the reason. Worse, post-dedupe TWO DIFFERENT
+      // unresolvable targets both collapse to `{ error: "Not Found" }`, so the second is suppressed
+      // as a restatement and the operator keeps reading a Decision about the wrong fault. `detail`
+      // is what makes different faults look different (see `errors.ts`'s `describeError`).
+      const message = describeError(err);
       await withTenantTx(db, orgId, (tx) =>
         insertDecisionIfChanged(tx, {
           orgId,
