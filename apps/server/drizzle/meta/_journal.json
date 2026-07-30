@@ -302,6 +302,20 @@
       "when": 1786700000000,
       "tag": "0042_sync_cursor_reanchor",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1786800000000,
+      "tag": "0043_outpost_object_type",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1787000000000,
+      "tag": "0045_federation_peer_name_unique",
+      "breakpoints": true
     }
   ]
 }

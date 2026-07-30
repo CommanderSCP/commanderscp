@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { BundleTransfer, TrustDomainId } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -111,9 +111,16 @@ export async function lastConfirmedSyncImportAt(
   tx: TenantTx,
   orgId: string,
   peerDomainId: TrustDomainId
-): Promise<{ at: Date; transport: BundleTransport | null } | null> {
+): Promise<{ at: Date; transport: BundleTransport | null; checksum: string | null } | null> {
   const rows = await tx
-    .select({ confirmedAt: bundleTransfers.confirmedAt, transport: bundleTransfers.transport })
+    .select({
+      confirmedAt: bundleTransfers.confirmedAt,
+      transport: bundleTransfers.transport,
+      // Returned so `GET /federation/status`'s "as of ⟨bundle⟩" label names the bundle from the SAME row
+      // this timestamp came from. It previously picked its own row with a much looser predicate (review
+      // round 4, H3) and could name a PROMOTION bundle for a peer no sync bundle had arrived from.
+      checksum: bundleTransfers.checksum
+    })
     .from(bundleTransfers)
     .where(
       and(
@@ -124,13 +131,22 @@ export async function lastConfirmedSyncImportAt(
         eq(bundleTransfers.status, "confirmed")
       )
     )
-    .orderBy(desc(bundleTransfers.confirmedAt))
+    // `NULLS LAST` is load-bearing here for exactly the reason it is in `lastSyncExportForPeer`
+    // (H9a), and this helper is the one H3 has since made TWO MORE fields depend on. Postgres `DESC`
+    // is NULLS FIRST, so a single confirmed import/sync row with a NULL `confirmed_at` sorted ahead
+    // of every genuinely-stamped one and the `!row?.confirmedAt` bail below reported BOTH
+    // `lastSyncedAt` AND `lastSyncedBundleChecksum` as null — the commander saying "never synced" and
+    // "bundle unknown" over a real, correctly-stamped sync import. `recordBundleTransfer` cannot
+    // write that row today, which is precisely the reachability argument this PR used to justify
+    // disarming the identical trap two files away (review round 5, N8).
+    .orderBy(sql`${bundleTransfers.confirmedAt} DESC NULLS LAST`)
     .limit(1);
   const row = rows[0];
   if (!row?.confirmedAt) return null;
   return {
     at: row.confirmedAt,
-    transport: row.transport === "live-pull" || row.transport === "bundle" ? row.transport : null
+    transport: row.transport === "live-pull" || row.transport === "bundle" ? row.transport : null,
+    checksum: row.checksum
   };
 }
 
@@ -152,6 +168,55 @@ export async function listTransfersByChecksums(
     .where(and(eq(bundleTransfers.orgId, orgId), inArray(bundleTransfers.checksum, checksums)))
     .orderBy(asc(bundleTransfers.createdAt));
   return rows.map(toBundleTransfer);
+}
+
+/**
+ * M16.2 phase A (E3) — THE PENDING-EXPORT HIGH-WATER MARK for one peer: the highest
+ * `through_sequence` over the SYNC EXPORT rows this instance has written for it, plus the identity of
+ * that bundle (its Ed25519 `checksum`) and when it was produced here.
+ *
+ * This is the strongest statement a commander can honestly make about a peer's sync progress, and it
+ * is deliberately ONE-SIDED. `sync_cursors` records only what WE applied FROM a peer; `export-repo.ts`
+ * ships only this domain's own entries, so a return bundle cannot carry our sequences back; and this
+ * ledger has no production UPDATE path, so an export row is inserted `created` and never advances.
+ * Nothing here means "the peer applied it" — only "we put it on the wire". A field named for
+ * application at the peer would be fabrication; that is future increment M16.4's work.
+ *
+ * `null` when this instance has never exported a sync bundle to the peer — never `0`, which a reader
+ * would take for "synced through the beginning". Ordered by `through_sequence DESC` rather than
+ * `created_at` because a later resume-from-cursor export can legitimately cover a lower range, and the
+ * question asked here is "how far have we ever exported?".
+ */
+export async function lastSyncExportForPeer(
+  tx: TenantTx,
+  orgId: string,
+  peerDomainId: TrustDomainId
+): Promise<{ throughSequence: number; checksum: string | null; createdAt: Date } | null> {
+  const rows = await tx
+    .select({
+      throughSequence: bundleTransfers.throughSequence,
+      checksum: bundleTransfers.checksum,
+      createdAt: bundleTransfers.createdAt
+    })
+    .from(bundleTransfers)
+    .where(
+      and(
+        eq(bundleTransfers.orgId, orgId),
+        eq(bundleTransfers.peerDomainId, peerDomainId),
+        eq(bundleTransfers.direction, "export"),
+        eq(bundleTransfers.kind, "sync")
+      )
+    )
+    // `NULLS LAST` is load-bearing, not decoration: Postgres `DESC` is NULLS FIRST, so a single sync-export
+    // row with a NULL `through_sequence` would sort ahead of every real one and the `row.throughSequence
+    // === null` bail below would report "never exported" FOREVER despite real exports. `export-repo.ts`
+    // always sets the column today, so this is a trap being disarmed rather than a bug being fixed —
+    // which is exactly when it is cheap to disarm (review round 4, H9a).
+    .orderBy(sql`${bundleTransfers.throughSequence} DESC NULLS LAST`)
+    .limit(1);
+  const row = rows[0];
+  if (!row || row.throughSequence === null) return null;
+  return { throughSequence: row.throughSequence, checksum: row.checksum, createdAt: row.createdAt };
 }
 
 export async function listRecentTransfers(

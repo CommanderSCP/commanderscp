@@ -18,6 +18,10 @@ import { validateProperties } from "./property-validation.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { eventBus } from "../events/event-bus.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
+import {
+  assertOutpostPeerBinding,
+  isPeerBoundObjectType
+} from "../federation/outpost-binding.js";
 import { appendJournalEntry } from "../federation/journal-repo.js";
 import type { JournalEntryKind } from "@scp/schemas";
 import { canonicalJson } from "../util/canonical-json.js";
@@ -154,6 +158,19 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   const domainId = await resolveDomainId(tx, input.orgId, input.domainId);
 
   const id = input.id ?? uuidv7();
+
+  // M16.2 phase A (E1) — clause (4) of the authority-split rule, at the ONE choke point every LOCAL
+  // write door funnels through (see `federation/outpost-binding.ts` for the rule and for why it is
+  // here and not per-route). Skipped for `federationImport`, and that skip is NARROWER than it looks:
+  // a JOURNAL replica's `peerDomainId` may name any domain the exporter knew about (a commander with
+  // full sync scope carries outpost B's config down to outpost A), so applying the guard on the import
+  // path would abort whole bundles. The skip is therefore kept for the verified journal path and
+  // CLOSED AT THE OTHER `federationImport` CALLER — `federation/handfill-repo.ts`, whose
+  // `assertHandFillableType` restricts a hand-filled peer-bound object to this instance's OWN domain
+  // id. Those two modules are the complete census of `federationImport` suppliers.
+  if (!input.federationImport && isPeerBoundObjectType(input.typeId)) {
+    await assertOutpostPeerBinding(tx, { orgId: input.orgId, objectId: id, properties });
+  }
   const urn = input.urn ?? deriveUrn(input.orgId, input.typeId, input.name);
   const version = 1;
   const contentHash = computeObjectContentHash({
@@ -360,6 +377,17 @@ export interface UpdateObjectInput {
   expectedVersion?: number;
   /** M6: see `FederationImportContext`'s doc comment above `createObject`. */
   federationImport?: FederationImportContext;
+  /** M16.2 phase A (review round 4) — THE UNVERIFIED-SHADOW ADOPTION ESCAPE HATCH, and nothing wider.
+   *  Honored ONLY when the locked row carries `provenance = 'manual'` — a hand-filled, never-verified
+   *  shadow copy that DESIGN §13 already declares "reconciled (confirmed or REPLACED)". When honored,
+   *  this local write is permitted against a foreign-origin row and RE-STAMPS it as locally authored
+   *  (`origin_domain_id` = this domain, `provenance` = NULL), so it journals and syncs onward like any
+   *  other local object. A row with `provenance = NULL` — a signature-verified replica — is NEVER
+   *  adoptable: the ordinary single-writer refusal still fires, because adopting one would make the
+   *  next real import a single-writer violation and wedge that peer's sync. Set by exactly one caller
+   *  (`federation/outposts-repo.ts`'s `reconcileOutpostConfig`), which is the API-level recovery path
+   *  for a peer wedged by a duplicate hand-filled object. */
+  unverifiedShadowOverride?: boolean;
 }
 
 // Uses the drizzle query builder (not raw `tx.execute(sql...)`) specifically so the result is
@@ -393,6 +421,9 @@ async function lockObjectRow(
 
 export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Promise<GraphObject> {
   const existing = await lockObjectRow(tx, input.orgId, input.typeId, input.idOrUrn);
+  /** Non-null ONLY on the narrow unverified-shadow adoption below — the domain id this write re-stamps
+   *  the row's authority to. `null` keeps `origin_domain_id` exactly as found (every other path). */
+  let adoptedByLocalDomain: TrustDomainId | null = null;
 
   if (input.expectedVersion !== undefined && input.expectedVersion !== existing.version) {
     throw preconditionFailed(
@@ -423,9 +454,15 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
     // Ordinary local write attempting to touch a row this domain did not author.
     const self = await ensureFederationSelf(tx, input.orgId);
     if (existing.originDomainId !== self.domainId) {
-      throw conflict(
-        `object '${existing.id}' is a read-only replica (authoritative domain '${existing.originDomainId}') — it cannot be mutated locally`
-      );
+      // The ONE exception, and it is gated on the row's own `provenance`, never on the caller's word
+      // alone: an UNVERIFIED hand-filled shadow may be adopted as locally authored (see
+      // `unverifiedShadowOverride`). A verified replica (`provenance` NULL) falls through and is refused.
+      if (!(input.unverifiedShadowOverride && existing.provenance === "manual")) {
+        throw conflict(
+          `object '${existing.id}' is a read-only replica (authoritative domain '${existing.originDomainId}') — it cannot be mutated locally`
+        );
+      }
+      adoptedByLocalDomain = self.domainId;
     }
   }
 
@@ -434,13 +471,31 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
   const nextLabels = (input.labels ?? existing.labels) as Record<string, unknown>;
   validateProperties(type.propertySchema, nextProperties, type.id);
 
+  // M16.2 phase A (E1) — the UPDATE half of the same choke point (see `createObject` above). An
+  // update that rewrites `properties` must not be able to re-point the binding at an unpaired peer,
+  // at a non-outpost peer, or at a peer another object already claims.
+  if (!input.federationImport && isPeerBoundObjectType(input.typeId)) {
+    await assertOutpostPeerBinding(tx, {
+      orgId: input.orgId,
+      objectId: existing.id,
+      properties: nextProperties,
+      // See the clash scan in `outpost-binding.ts`: an unverified hand-filled shadow must not be able
+      // to veto an edit to the row that actually holds authority (that veto was the H1 wedge).
+      ignoreUnverifiedClash: true
+    });
+  }
+
   const nextName = input.name ?? existing.name;
   const nextDomainId = input.domainId === undefined ? existing.domainId : input.domainId;
   const nextVersion = existing.version + 1;
   const nextRevision = input.federationImport?.revision ?? existing.revision + 1;
   const nextProvenance = input.federationImport
     ? (input.federationImport.provenance ?? null)
-    : existing.provenance;
+    : // Adoption clears the `manual` flag: the row stops being an unverified shadow the moment this
+      // domain takes authorship of it. Every other local write preserves `provenance` untouched.
+      adoptedByLocalDomain !== null
+      ? null
+      : existing.provenance;
   const beforeHash = existing.contentHash;
   const afterHash = computeObjectContentHash({
     id: existing.id,
@@ -464,6 +519,7 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
       version: nextVersion,
       revision: nextRevision,
       provenance: nextProvenance,
+      ...(adoptedByLocalDomain !== null ? { originDomainId: adoptedByLocalDomain } : {}),
       contentHash: afterHash,
       updatedAt: new Date()
     })
@@ -708,9 +764,16 @@ export async function deleteObject(
     idOrUrn: string;
     /** M6: see `FederationImportContext`'s doc comment above `createObject`. */
     federationImport?: FederationImportContext;
+    /** M16.2 phase A (review round 4) — see `UpdateObjectInput.unverifiedShadowOverride`. Honored ONLY
+     *  for a `provenance = 'manual'` row, and a removal taken under it is deliberately NOT journaled:
+     *  this domain never authored the shadow, so claiming authorship of its deletion would push a
+     *  delete for a row the real authority still owns. Purely local cleanup, audited as usual. */
+    unverifiedShadowOverride?: boolean;
   }
 ): Promise<void> {
   const existing = await lockObjectRow(tx, input.orgId, input.typeId, input.idOrUrn);
+  /** True only on the narrow unverified-shadow removal — suppresses the journal append below. */
+  let removedForeignShadow = false;
 
   if (input.federationImport) {
     if (existing.originDomainId !== input.federationImport.originDomainId) {
@@ -722,9 +785,12 @@ export async function deleteObject(
   } else {
     const self = await ensureFederationSelf(tx, input.orgId);
     if (existing.originDomainId !== self.domainId) {
-      throw conflict(
-        `object '${existing.id}' is a read-only replica (authoritative domain '${existing.originDomainId}') — it cannot be mutated locally`
-      );
+      if (!(input.unverifiedShadowOverride && existing.provenance === "manual")) {
+        throw conflict(
+          `object '${existing.id}' is a read-only replica (authoritative domain '${existing.originDomainId}') — it cannot be mutated locally`
+        );
+      }
+      removedForeignShadow = true;
     }
   }
 
@@ -749,7 +815,7 @@ export async function deleteObject(
     afterHash: null,
     requestId: input.requestId
   });
-  if (!input.federationImport) {
+  if (!input.federationImport && !removedForeignShadow) {
     await appendJournalEntry(tx, {
       orgId: input.orgId,
       entryKind: journalEntryKindFor(input.typeId, true),

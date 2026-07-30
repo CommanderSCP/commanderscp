@@ -38,9 +38,14 @@ import type {
   FederationPeer,
   FederationStatusResponse,
   ImportBundleRequest,
+  // M16.2 phase A — the `outpost` config object (E1) + the narrow peer PATCH (E4).
+  OutpostConfig,
+  OutpostConfigReconcileResult,
+  OutpostTrustTier,
+  UpdateFederationPeerRequest,
   SyncScope
 } from "@scp/schemas";
-import { DesiredStateManifestSchema } from "@scp/schemas";
+import { DesiredStateManifestSchema, OutpostTrustTierSchema } from "@scp/schemas";
 // Node-only hashing (`node:crypto`) — deliberately a separate subpath from `@scp/schemas`'
 // default entry, which `apps/web` also imports (browser build) — see audit-chain.ts's module doc.
 import { verifyAuditChain } from "@scp/schemas/audit-chain";
@@ -266,9 +271,89 @@ function printFederationStatus(status: FederationStatusResponse, output: OutputF
             ? "poke*"
             : "poll",
       lastPull: p.lastPullSuccessAt ?? p.lastPullAttemptAt ?? "never",
+      // M16.2 phase A (E3) — PENDING-EXPORT, never pending-apply. "N pending" counts THIS domain's own
+      // journal entries not yet carried in any bundle addressed to the peer; it says NOTHING about what
+      // the peer applied (this side cannot observe that — see the schema's note and `unknownFields`).
+      // `?` is printed whenever the field is declared unknown, so a null never reads as "nothing
+      // pending"/"synced".
+      pendingExport:
+        p.pendingExportEntryCount === null || p.pendingExportEntryCount === undefined
+          ? "?"
+          : `${p.pendingExportEntryCount} pending`,
+      // The owner-ENTERED trust tier from the peer's `outpost` object, or "?" when never asserted
+      // (F3: there is no source for a default, so the CLI must not print one). An UNVERIFIED
+      // hand-filled claim is suffixed rather than printed bare — it is not a commander assertion.
+      trustTier:
+        p.trustTier === null || p.trustTier === undefined
+          ? "?"
+          : p.trustTierProvenance === "unverified"
+            ? `${p.trustTier} (unverified)`
+            : p.trustTier,
+      // The CONFIGURED transport channel, deliberately separate from the tier and NEVER a reachability
+      // claim ("dialable" means a dialable URL is configured; `lastPull` above is the observation).
+      // "?" when no transport is configured, or when one is configured that federation refuses to dial.
+      transport: p.transportMode ?? "?",
       recentTransfers: String(p.recentTransfers.length)
     };
   });
+  // The honest-unknown declaration, surfaced rather than silently dropped by the table above.
+  for (const p of status.peers) {
+    const unknown = p.unknownFields ?? [];
+    if (unknown.length > 0) {
+      console.log(`  ${p.peer.name}: not observable here — ${unknown.join(", ")}`);
+    }
+  }
+}
+
+/** M16.2 phase A (E1) — one `outpost` config object as a table row. `trustTier` prints "?" when the
+ *  operator has never asserted one; `origin` distinguishes a commander's own authored object from the
+ *  read-only REPLICA an outpost holds of it. */
+function outpostConfigRow(o: OutpostConfig): Record<string, string> {
+  return {
+    peerDomainId: o.peerDomainId,
+    name: o.name,
+    trustTier: o.trustTier ?? "?",
+    originDomainId: o.originDomainId,
+    revision: String(o.revision),
+    version: String(o.version),
+    notObservable: o.unknownFields.join(", ") || "-"
+  };
+}
+
+/** `scp federation outpost reconcile`'s "what happened" lines (review round 6, M1). The two removal
+ *  buckets on `OutpostConfigReconcileResult` are reported with DELIBERATELY DIFFERENT WORDING, and must
+ *  stay that way: `removedShadowObjectIds` is a silent local tidy-up of a hand-typed copy this domain
+ *  never authored (invisible to the outpost), while `removedLocalObjectIds` is THIS DOMAIN'S OWN declared
+ *  config being permanently deleted — an ordinary journaled tombstone that PROPAGATES DOWNSTREAM to the
+ *  outpost. Collapsing the two into one "unverified shadow(s)" sentence (the N9-era bug this fixes) told
+ *  an operator who had just deleted their own config, and pushed that delete to the outpost, that they
+ *  had merely cleaned up a stray copy. Exported so the CLI surface test can pin the wording gap directly
+ *  rather than only via the command's `--keep` help text. */
+export function formatReconcileResultLines(result: OutpostConfigReconcileResult): string[] {
+  const lines: string[] = [
+    result.adoptedObjectId === null
+      ? "Adopted: nothing (an authoritative row already held the binding)"
+      : `Adopted: ${result.adoptedObjectId} (an unverified hand-filled shadow is now this domain's own object)`
+  ];
+  if (result.removedShadowObjectIds.length === 0 && result.removedLocalObjectIds.length === 0) {
+    lines.push("Removed: nothing (no surplus rows)");
+    return lines;
+  }
+  if (result.removedShadowObjectIds.length > 0) {
+    lines.push(
+      `Removed ${result.removedShadowObjectIds.length} unverified shadow(s) (hand-typed copies this ` +
+        `domain never authored — a purely local cleanup, invisible to the outpost): ` +
+        `${result.removedShadowObjectIds.join(", ")}`
+    );
+  }
+  if (result.removedLocalObjectIds.length > 0) {
+    lines.push(
+      `Deleted ${result.removedLocalObjectIds.length} row(s) THIS DOMAIN AUTHORED to resolve a --keep ` +
+        `conflict (an ordinary journaled tombstone — this WILL propagate to the outpost): ` +
+        `${result.removedLocalObjectIds.join(", ")}`
+    );
+  }
+  return lines;
 }
 
 // -------------------------------------------------------------------------------------
@@ -2657,6 +2742,246 @@ export function buildProgram(): Command {
         printResult(peer, opts.output, (item) => peerRow(item as FederationPeer));
       }
     );
+
+  // -----------------------------------------------------------------------------------------
+  // M16.2 phase A (E4) — `scp federation peer-update`: the NARROW, TRANSPORT-ONLY peer edit.
+  //
+  // DELIBERATELY A SEPARATE COMMAND FROM `pair`, not a flag on it. `pair` is a re-pair: it REQUIRES
+  // `--public-key`, and a different value there is a KEY ROTATION that supersedes the peer's current
+  // key window and hard-revokes the old key. This command takes no key flag at all, so "I just want to
+  // fix the base URL" can never become a trust-anchor rotation. Rotating a key remains an explicit
+  // `scp federation pair --public-key <new>`.
+  // -----------------------------------------------------------------------------------------
+  federationCmd
+    .command("peer-update")
+    .description(
+      "Update a peer's TRANSPORT settings only (name/base URL/sync scope/delivery target/poke-mode) — never key material"
+    )
+    .argument("<idOrName>", "the peer's trust-domain id or name")
+    .option("--name <name>", "a new display name for the peer")
+    .option("--base-url-of-peer <url>", "the peer's API base URL")
+    .option("--sync-scope <mode>", "full|policies_only|changes_only|status_only")
+    .option("--delivery-out-dir <dir>", "SERVER-side absolute outbound drop directory")
+    .option("--delivery-in-dir <dir>", "SERVER-side absolute inbound intake directory")
+    .option("--delivery-s3-endpoint <url>", "S3(-compatible) endpoint — operator-allowlisted")
+    .option("--delivery-s3-bucket <bucket>", "S3 bucket for channel artifacts")
+    .option("--delivery-s3-out-prefix <prefix>", "S3 key prefix for outbound drops")
+    .option("--delivery-s3-in-prefix <prefix>", "S3 key prefix for the inbound inbox")
+    .option("--clear-delivery-target", "clear the peer's DeliveryTarget (instance-env fallback)")
+    .option("--poke-mode", "enable poke-mode (requires an https/mTLS peer base URL)")
+    .option("--no-poke-mode", "disable poke-mode (poll-mode)")
+    .option("--base-url <url>", "this domain's own API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        idOrName: string,
+        opts: BaseCliOpts & {
+          name?: string;
+          baseUrlOfPeer?: string;
+          syncScope?: string;
+          deliveryOutDir?: string;
+          deliveryInDir?: string;
+          deliveryS3Endpoint?: string;
+          deliveryS3Bucket?: string;
+          deliveryS3OutPrefix?: string;
+          deliveryS3InPrefix?: string;
+          clearDeliveryTarget?: boolean;
+          pokeMode?: boolean;
+        }
+      ) => {
+        const hasFs = Boolean(opts.deliveryOutDir || opts.deliveryInDir);
+        const hasS3 = Boolean(
+          opts.deliveryS3Endpoint ||
+            opts.deliveryS3Bucket ||
+            opts.deliveryS3OutPrefix ||
+            opts.deliveryS3InPrefix
+        );
+        if (opts.clearDeliveryTarget && (hasFs || hasS3)) {
+          throw new Error("--clear-delivery-target cannot be combined with any --delivery-* flag");
+        }
+        if (hasFs && hasS3) {
+          throw new Error(
+            "a DeliveryTarget is one provider: use EITHER --delivery-out-dir/--delivery-in-dir (filesystem) OR the --delivery-s3-* flags"
+          );
+        }
+        if (hasS3 && !(opts.deliveryS3Endpoint && opts.deliveryS3Bucket)) {
+          throw new Error(
+            "the s3-compatible DeliveryTarget requires BOTH --delivery-s3-endpoint and --delivery-s3-bucket"
+          );
+        }
+        const client = await clientFromStoredCredentials(opts);
+        const deliveryTarget: DeliveryTarget | null | undefined = opts.clearDeliveryTarget
+          ? null
+          : hasS3
+            ? {
+                provider: "s3-compatible",
+                endpoint: opts.deliveryS3Endpoint as string,
+                bucket: opts.deliveryS3Bucket as string,
+                ...(opts.deliveryS3OutPrefix ? { outPrefix: opts.deliveryS3OutPrefix } : {}),
+                ...(opts.deliveryS3InPrefix ? { inPrefix: opts.deliveryS3InPrefix } : {})
+              }
+            : hasFs
+              ? {
+                  provider: "filesystem",
+                  ...(opts.deliveryOutDir ? { outDir: opts.deliveryOutDir } : {}),
+                  ...(opts.deliveryInDir ? { inDir: opts.deliveryInDir } : {})
+                }
+              : undefined;
+        // Absent means PRESERVE on every field — the same tri-state the API applies, so a partial
+        // edit can never blank a setting the operator did not mention.
+        const req: UpdateFederationPeerRequest = {
+          ...(opts.name !== undefined ? { name: opts.name } : {}),
+          ...(opts.baseUrlOfPeer !== undefined ? { baseUrl: opts.baseUrlOfPeer } : {}),
+          ...(opts.syncScope !== undefined ? { syncScope: { mode: opts.syncScope } as SyncScope } : {}),
+          ...(deliveryTarget !== undefined ? { deliveryTarget } : {}),
+          ...(opts.pokeMode !== undefined ? { pokeMode: opts.pokeMode } : {})
+        };
+        const peer = await client.federation.updatePeer(idOrName, req);
+        printResult(peer, opts.output, (item) => peerRow(item as FederationPeer));
+      }
+    );
+
+  federationCmd
+    .command("peer")
+    .description("Show one paired federation peer")
+    .argument("<idOrName>", "the peer's trust-domain id or name")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrName: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const peer = await client.federation.getPeer(idOrName);
+      printResult(peer, opts.output, (item) => peerRow(item as FederationPeer));
+    });
+
+  // -----------------------------------------------------------------------------------------
+  // M16.2 phase A (E1) — `outpost` config objects: the commander-authored declared config that SYNCS
+  // DOWN (a peer ROW never can — the journal has no peer-shaped entry kind). Commander-side commands;
+  // on an outpost these read the local read-only replica, and a write there is refused with 409.
+  // -----------------------------------------------------------------------------------------
+  const outpostCmd = federationCmd
+    .command("outpost")
+    .description("Commander-origin outpost config objects (trust tier) that sync down to the outpost");
+
+  // THE HELP TEXT IS DERIVED FROM THE SCHEMA, NOT RETYPED (review round 5, N1). The first cut of the
+  // tier enum was `commercial|fedramp-high|il5`; ADR-0022 widened it to the glossary's five members,
+  // and every OTHER site was corrected while these two option descriptions kept listing the old
+  // three — the only place an operator ever reads the list. An operator enrolling a GovCloud outpost
+  // was told no value existed for it, and pushed to either leave the tier unknown or assert
+  // `commercial`: the INVENTED POSTURE this milestone exists to prevent. Joining the enum's own
+  // members here makes that drift structurally impossible; `outpost-cli-surface.test.ts` pins it.
+  const TRUST_TIER_CHOICES = OutpostTrustTierSchema.options.join("|");
+
+  outpostCmd
+    .command("declare")
+    .description("Declare the config object for an already-paired outpost peer")
+    .requiredOption("--peer <domainId>", "the paired outpost peer's trust-domain id")
+    .option("--name <name>", "display name for the config object (defaults to the peer's name)")
+    .option(
+      "--trust-tier <tier>",
+      `${TRUST_TIER_CHOICES} — an owner-ENTERED assertion; OMIT it and the tier stays honestly unknown (never defaulted)`
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (opts: BaseCliOpts & { peer: string; name?: string; trustTier?: OutpostTrustTier }) => {
+        const client = await clientFromStoredCredentials(opts);
+        const config = await client.federation.createOutpost({
+          peerDomainId: opts.peer,
+          ...(opts.name !== undefined ? { name: opts.name } : {}),
+          ...(opts.trustTier !== undefined ? { trustTier: opts.trustTier } : {})
+        });
+        printResult(config, opts.output, (item) => outpostConfigRow(item as OutpostConfig));
+      }
+    );
+
+  outpostCmd
+    .command("set")
+    .description("Edit an outpost's commander-origin config (absent flags PRESERVE)")
+    .requiredOption("--peer <domainId>", "the outpost peer's trust-domain id")
+    .option("--name <name>", "new display name")
+    .option("--trust-tier <tier>", TRUST_TIER_CHOICES)
+    .option("--expected-version <n>", "optimistic-concurrency guard on the object's version")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          peer: string;
+          name?: string;
+          trustTier?: OutpostTrustTier;
+          expectedVersion?: string;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const config = await client.federation.updateOutpost(opts.peer, {
+          ...(opts.name !== undefined ? { name: opts.name } : {}),
+          ...(opts.trustTier !== undefined ? { trustTier: opts.trustTier } : {}),
+          ...(opts.expectedVersion !== undefined
+            ? { expectedVersion: Number(opts.expectedVersion) }
+            : {})
+        });
+        printResult(config, opts.output, (item) => outpostConfigRow(item as OutpostConfig));
+      }
+    );
+
+  outpostCmd
+    .command("list")
+    .description("List every outpost config object known here")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const configs = await client.federation.listOutposts();
+      printResult(configs, opts.output, (item) => outpostConfigRow(item as OutpostConfig));
+    });
+
+  outpostCmd
+    .command("show")
+    .description("Show one outpost's config object, resolved through its peer binding")
+    .requiredOption("--peer <domainId>", "the outpost peer's trust-domain id")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { peer: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const config = await client.federation.getOutpost(opts.peer);
+      printResult(config, opts.output, (item) => outpostConfigRow(item as OutpostConfig));
+    });
+
+  // THE RECOVERY VERB, ON THE ONLY SURFACE ITS OPERATOR CAN REACH (review round 5, N2). Charter
+  // principle 3 is API -> SDK -> CLI -> IaC -> UI, and this verb exists precisely so somebody can
+  // UN-WEDGE a peer whose database holds duplicate `outpost` objects. That operator is the one person
+  // who cannot use the UI for it — the wedged peer is exactly what the UI fails to render — so of all
+  // the verbs this milestone added, `reconcile` is the one that most needs a command line.
+  outpostCmd
+    .command("reconcile")
+    .description(
+      "RECOVERY: restore the 1:1 peer<->config binding for a peer holding duplicate outpost config objects"
+    )
+    .requiredOption("--peer <domainId>", "the outpost peer's trust-domain id")
+    .option(
+      "--keep <objectId>",
+      "which config object should SURVIVE (default: the most authoritative one). The only way out of a VERIFIED foreign-origin duplicate: this domain drops the row IT authored. A signature-verified replica is never deleted"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { peer: string; keep?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.federation.reconcileOutpost(
+        opts.peer,
+        opts.keep !== undefined ? { keep: opts.keep } : {}
+      );
+      if (opts.output === "json") {
+        printResult(result, opts.output, (item) => outpostConfigRow(item as OutpostConfig));
+        return;
+      }
+      // Table mode prints WHAT IT DID before the surviving row, because "adopted" and "removed" are
+      // the whole point of the call: a bare config row would look identical to `outpost show` and
+      // leave the operator unable to tell whether anything was cleaned up.
+      printResult([result.config], opts.output, (item) => outpostConfigRow(item as OutpostConfig));
+      for (const line of formatReconcileResultLines(result)) {
+        console.log(line);
+      }
+    });
 
   federationCmd
     .command("peers")

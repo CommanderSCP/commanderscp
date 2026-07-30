@@ -52,12 +52,26 @@ export async function getCursor(
 
 /**
  * ISSUE THE ONE-SHOT RE-ANCHOR PERMIT for every cursor of `peerDomainId` that currently holds NO
- * anchor (drizzle/0042). SECURITY-SENSITIVE — read that migration's header before changing this.
+ * anchor (drizzle/0042). SECURITY-SENSITIVE — read that migration's header before changing this. (That
+ * header predates M16.2 phase A and says the column is written by "ONE function, reached by ONE
+ * route"; it is now the TWO scope-declaring operator routes listed below. An applied migration file is
+ * a historical artifact and is deliberately not edited — its hash is recorded — so this is the current
+ * statement.)
  *
- * CALLED FROM EXACTLY ONE PLACE: `pairPeer`, whenever the LOCAL operator's call leaves this peer's
- * own `sync_scope` at `full` — regardless of what it was set to before that call. That is a local,
- * authenticated (`federation:write`) action on config that is never carried on the wire, so no peer
- * can induce it; nothing in an import, relay, inbox, poke or pull path may ever call this.
+ * CALLED FROM EXACTLY TWO PLACES, both of which are LOCAL, AUTHENTICATED (`federation:write`)
+ * OPERATOR DECLARATIONS of this peer's own `sync_scope` — and in both the request must actually CARRY a
+ * `syncScope`, with the permit keyed off the RESULTING scope being `full` (never off the transition — see
+ * `pairPeer`'s long note for why):
+ *   * `pairPeer` — `POST /v1/federation/peers` (`syncScope` is part of every pair/re-pair body);
+ *   * `updatePeerTransport` — `PATCH /v1/federation/peers/{id}` (M16.2 phase A E4), gated on
+ *     `input.syncScope !== undefined`. Re-applied there deliberately: the documented recovery for a
+ *     wedged peer is "declare the scope `full` again", and it must work on EVERY route that can declare a
+ *     scope, or the same operator action would heal the peer through one door and silently leave it
+ *     wedged forever through the other. The `!== undefined` gate is what keeps the trigger as narrow as
+ *     this sentence claims — without it, absent-means-preserve made a pure RENAME issue the permit
+ *     (review round 4, H8), so the code was wider than every doc describing it.
+ * `sync_scope` is never carried on the wire, so no peer can induce either call; nothing in an import,
+ * relay, inbox, poke or pull path may ever call this.
  *
  * The predicate is the whole safety story. Only a cursor with `last_applied_row_hash IS NULL AND
  * last_applied_seq > 0` — an anchorless cursor left behind by this side's OWN narrow-scope

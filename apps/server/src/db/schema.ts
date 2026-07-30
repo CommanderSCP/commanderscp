@@ -1082,7 +1082,12 @@ export const federationPeers = pgTable(
   },
   (table) => [
     unique("federation_peers_org_id_key").on(table.orgId, table.id),
-    index("federation_peers_org").on(table.orgId)
+    index("federation_peers_org").on(table.orgId),
+    /** drizzle/0045 (review round 4, H6) — `name` IS A RESOLUTION KEY: `getPeerByIdOrName` resolves a
+     *  non-UUID path parameter by name, and `PATCH /v1/federation/peers/{id}` is a TRANSPORT WRITE. Two
+     *  peers sharing a name made that write land on an arbitrary one of them. Read 0045's header for the
+     *  self-healing backfill and for why the constraint (not a per-route narrowing) is the fix. */
+    unique("federation_peers_org_name_key").on(table.orgId, table.name)
   ]
 );
 
@@ -1183,8 +1188,12 @@ export const syncCursors = pgTable(
     // matches nothing real, and `verifyJournalChain` would have no prior tail to check it against.
     // NULL until the first entry from this (peer, origin) pair is applied.
     lastAppliedRowHash: text("last_applied_row_hash"),
-    /** ONE-SHOT RE-ANCHOR PERMIT (drizzle/0042) — SECURITY-SENSITIVE, and deliberately writable
-     *  from exactly ONE place: `pairPeer`, i.e. a LOCAL, AUTHENTICATED operator action.
+    /** ONE-SHOT RE-ANCHOR PERMIT (drizzle/0042) — SECURITY-SENSITIVE, and deliberately writable only
+     *  from a LOCAL, AUTHENTICATED OPERATOR ACTION that declares this peer's own `sync_scope`: today
+     *  `pairPeer` (`POST /v1/federation/peers`) and `updatePeerTransport`
+     *  (`PATCH /v1/federation/peers/{id}`, M16.2 phase A E4 — which re-applies this guard precisely so
+     *  widening a scope to `full` heals a wedged cursor on BOTH scope-declaring routes rather than one).
+     *  Nothing else may write it; read "`pairPeer`" below as "either of those two operator paths".
      *
      *  A receiver whose own `sync_scope` is narrow verifies sparse and advances this cursor with
      *  `last_applied_row_hash = NULL` (it never holds the tail entry's hash — the tail may be an

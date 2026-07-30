@@ -31,6 +31,7 @@ import { containmentDomainIdFromWire, listObjectsQueryFromWire } from "../domain
 import { isGovernanceManagedObjectType } from "../governance/governance-managed-types.js";
 import { isCoordinationTargetScopedObjectType } from "../coordination/campaign-scope-authz.js";
 import { isServiceMemberObjectType } from "../graph/service-member-types.js";
+import { isPeerBoundObjectType } from "../federation/outpost-binding.js";
 
 function idempotencyKey(request: FastifyRequest): string | undefined {
   const header = request.headers["idempotency-key"];
@@ -109,6 +110,27 @@ function assertNotServiceMemberObjectType(type: string): void {
 }
 
 /**
+ * M16.2 phase A (E1): the `outpost` type carries COMMANDER-AUTHORED federation config, so its writes
+ * are gated on `federation:write`, not plain `object:write`. This endpoint checks only the latter —
+ * the same permission-mismatch shape that let a bare-`object:write` actor publish governance objects
+ * through here (see `assertNotGovernanceManagedObjectType`) — so the type is refused outright and
+ * callers go through `/api/v1/federation/outposts`.
+ *
+ * The 1:1 peer BINDING is NOT enforced by this refusal: it is enforced inside `graph/objects-repo.ts`
+ * for every local write door at once (`federation/outpost-binding.ts` explains why one choke point
+ * rather than N route guards). This block is purely about the permission gate.
+ */
+function assertNotPeerBoundObjectType(type: string): void {
+  if (isPeerBoundObjectType(type)) {
+    throw forbidden(
+      `object type '${type}' is commander-authored federation config and cannot be created, updated, ` +
+        `or deleted via the generic /api/v1/objects/${type} endpoint — use ` +
+        `/api/v1/federation/outposts, which enforces 'federation:write' and the peer binding`
+    );
+  }
+}
+
+/**
  * Generic `/objects/{type}` endpoints over the full graph model (DESIGN.md §4.1, §6) — works for
  * ANY registered object type, built-in or org-defined via the type registry, with no special
  * casing (BUILD_AND_TEST.md §8 M1 DoD (b)) EXCEPT the governance-owned `policy`/`control` types,
@@ -147,6 +169,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       assertNotGovernanceManagedObjectType(type);
       assertNotCoordinationTargetScopedObjectType(type);
       assertNotServiceMemberObjectType(type);
+      assertNotPeerBoundObjectType(type);
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const scopeObjectId = await resolveDomainId(
           tx,
@@ -285,6 +308,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       assertNotGovernanceManagedObjectType(type);
       assertNotCoordinationTargetScopedObjectType(type);
       assertNotServiceMemberObjectType(type);
+      assertNotPeerBoundObjectType(type);
       const object = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const found = await getObjectByIdOrUrn(tx, auth.orgId, type, idOrUrn);
         await authorize(tx, {
@@ -335,6 +359,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       assertNotGovernanceManagedObjectType(type);
       assertNotCoordinationTargetScopedObjectType(type);
       assertNotServiceMemberObjectType(type);
+      assertNotPeerBoundObjectType(type);
       const object = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const found = await getObjectByIdOrUrn(tx, auth.orgId, type, idOrUrn);
         await authorize(tx, {
@@ -383,6 +408,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       assertNotGovernanceManagedObjectType(type);
       assertNotCoordinationTargetScopedObjectType(type);
       assertNotServiceMemberObjectType(type);
+      assertNotPeerBoundObjectType(type);
       const { object, created } = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const existing = await tx.query.objects.findFirst({
           where: (t, { eq, and }) => and(eq(t.orgId, auth.orgId), eq(t.urn, urn))
