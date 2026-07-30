@@ -125,8 +125,34 @@ the whole design.
   commander's own PATCH 409 permanently with no delete door, and an unrecoverable state reachable by a
   supported call is worse than the state it was preventing.
   `POST /v1/federation/outposts/{peer}/reconcile` is that verb — it keeps the authoritative row, adopts
-  an unverified shadow when nothing authoritative survives, removes the rest, and refuses to touch a
-  signature-verified replica (adopting one would wedge that peer's sync instead).
+  an unverified shadow when nothing authoritative survives, removes the remaining unverified shadows,
+  and — by default — refuses to touch a signature-verified replica (adopting or deleting one would trade
+  this wedge for a **sync** wedge: the next real import from that peer would be a single-writer
+  violation).
+- **`?keep=<objectId>` (added after acceptance, review round 5, N9) closes the VERIFIED-DUPLICATE class
+  the default refusal above deliberately leaves open.** Before it, a signature-verified foreign-origin
+  duplicate bound to one peer had **no public-API recovery at all**: the commander's own `PATCH` 409s
+  forever (the binding scan's blocking filter exempts only `provenance='manual'`), the default
+  `reconcile` refuses by design, `DELETE /api/v1/objects/outpost/{id}` is 403 by this same milestone's
+  own refusal, and IaC prune only touches stack-managed objects. Not reachable in canonical hub-and-spoke
+  — no bundle a commander imports carries an `outpost` row bound to one of *its own* peers — but reachable
+  the moment two authoring domains describe one outpost (a sub-commander hierarchy, or a dual-homed
+  outpost), which phase A's design does not rule out.
+  **The safety argument, which is what makes `?keep=` acceptable rather than a second wedge door:**
+  `?keep=<objectId>` lets the caller name which of the peer's live claimant rows should survive. If the
+  survivor is a row **this domain authored**, `reconcile` deletes the *other* row — and when that other
+  row is *also* locally authored, that delete is an **ordinary journaled tombstone**: it is
+  indistinguishable from any other local delete, it re-declares cleanly, and it is safe precisely because
+  this domain is the row's own authority. **Deleting a signature-verified replica stays refused
+  unconditionally, with or without `?keep=`** — that half is unchanged and is what stops this from
+  trading a config wedge for a sync wedge: this domain is never the authority for a replica, so deleting
+  one would not be an ordinary tombstone, it would be claiming authorship of a row the real authority
+  still owns.
+  The read side of the same call reports the two removal cases **separately**
+  (`removedShadowObjectIds` vs `removedLocalObjectIds`, review round 6, M1) rather than one bucket: an
+  unverified shadow removal is a silent local cleanup nothing downstream ever sees, while a locally
+  authored removal is this domain's own declared config being deleted and propagated — an operator (and
+  the CLI's `reconcile` output) must be able to tell the two apart.
 - **Open, and a docs-first question, not a schema one:** `fedramp-high` carries a hyphen, so it is not
   usable as a stage `<domain>` **segment** under the glossary's hyphen-free segment rule (which
   disambiguates stage names by segment count). Naming a stage in that security domain needs an
