@@ -38,6 +38,9 @@ import type {
   FederationPeer,
   FederationStatusResponse,
   ImportBundleRequest,
+  // M13.2/M13.3b — the two scan surfaces whose table rows are now exported formatters (Y2).
+  InstanceScanFloor,
+  ScanDbStatus,
   // M16.2 phase A — the `outpost` config object (E1) + the narrow peer PATCH (E4).
   OutpostConfig,
   OutpostConfigReconcileResult,
@@ -193,7 +196,10 @@ function campaignRow(c: Campaign): Record<string, string> {
   };
 }
 
-function campaignDetailRow(c: Campaign): Record<string, string> {
+/** EXPORTED so `cli-absent-formatters.test.ts` can call it. It was module-private and therefore
+ *  unreachable by any test, which is exactly why reverting its `isAbsent` guard left the suite
+ *  green — a fix nothing can red is not a fix, it is a coincidence waiting to be undone. */
+export function campaignDetailRow(c: Campaign): Record<string, string> {
   return {
     id: c.id,
     name: c.name,
@@ -266,50 +272,9 @@ function printFederationStatus(status: FederationStatusResponse, output: OutputF
     console.log("No paired peers.");
     return;
   }
-  printResult(status.peers, "table", (item) => {
-    const p = item as FederationStatusResponse["peers"][number];
-    return {
-      peer: `${p.peer.name} (${p.peer.id})`,
-      role: p.peer.role,
-      // DESIGN §13: air-gapped peers are explicitly "as of <bundle/date>", never presented as live.
-      syncedThrough: isAbsent(p.lastAppliedSequence)
-        ? "never synced"
-        : `seq ${p.lastAppliedSequence}`,
-      asOf: p.lastSyncedAt ?? "never",
-      // M14.4 (ADR-0009) — the cadence ACTUALLY in force, next to the raw flag on `federation peers`.
-      // "poke*" flags a divergence worth looking at: the peer is configured for poke-mode but the
-      // scheduler is still polling it — never poked (D2), no client certs (D4), or the last pull
-      // failed (the reconnect leg). Timestamps are in `--output json`.
-      cadence:
-        (p.effectiveCadence ?? (p.peer.pokeMode ? "poke" : "poll")) === "poke"
-          ? "poke"
-          : p.peer.pokeMode
-            ? "poke*"
-            : "poll",
-      lastPull: p.lastPullSuccessAt ?? p.lastPullAttemptAt ?? "never",
-      // M16.2 phase A (E3) — PENDING-EXPORT, never pending-apply. "N pending" counts THIS domain's own
-      // journal entries not yet carried in any bundle addressed to the peer; it says NOTHING about what
-      // the peer applied (this side cannot observe that — see the schema's note and `unknownFields`).
-      // `?` is printed whenever the field is declared unknown, so a null never reads as "nothing
-      // pending"/"synced".
-      pendingExport: isAbsent(p.pendingExportEntryCount)
-        ? "?"
-        : `${p.pendingExportEntryCount} pending`,
-      // The owner-ENTERED trust tier from the peer's `outpost` object, or "?" when never asserted
-      // (F3: there is no source for a default, so the CLI must not print one). An UNVERIFIED
-      // hand-filled claim is suffixed rather than printed bare — it is not a commander assertion.
-      trustTier: isAbsent(p.trustTier)
-        ? "?"
-        : p.trustTierProvenance === "unverified" || (p.unknownFields ?? []).includes("trustTier")
-          ? `${p.trustTier} (unverified)`
-          : p.trustTier,
-      // The CONFIGURED transport channel, deliberately separate from the tier and NEVER a reachability
-      // claim ("dialable" means a dialable URL is configured; `lastPull` above is the observation).
-      // "?" when no transport is configured, or when one is configured that federation refuses to dial.
-      transport: p.transportMode ?? "?",
-      recentTransfers: String(p.recentTransfers.length)
-    };
-  });
+  printResult(status.peers, "table", (item) =>
+    federationStatusRow(item as FederationStatusResponse["peers"][number])
+  );
   // The honest-unknown declaration, surfaced rather than silently dropped by the table above.
   for (const p of status.peers) {
     const unknown = p.unknownFields ?? [];
@@ -317,6 +282,66 @@ function printFederationStatus(status: FederationStatusResponse, output: OutputF
       console.log(`  ${p.peer.name}: not observable here — ${unknown.join(", ")}`);
     }
   }
+}
+
+/**
+ * ONE peer's row in `scp federation status` — EXTRACTED FROM the `printResult` callback inside
+ * `printFederationStatus` (itself module-private), and exported, so that every honest-unknown rule
+ * below is reachable by a test.
+ *
+ * WHY THE EXTRACTION IS THE POINT (Y2). Every `isAbsent` guard here was added to stop a fabrication,
+ * and every one of them could be reverted with the CLI suite still GREEN, because nothing could
+ * invoke the closure they lived in. `cli-absent-formatters.test.ts` now reverts each of them and
+ * watches a named assertion go red. The most consequential is `trustTier`: without the
+ * `unknownFields` clause a HAND-TYPED (shadow) tier prints BARE, with no `(unverified)` suffix —
+ * the CLI reproduction of exactly the fabrication the web `TrustTierCell` exists to prevent.
+ */
+export function federationStatusRow(
+  p: FederationStatusResponse["peers"][number]
+): Record<string, string> {
+  return {
+    peer: `${p.peer.name} (${p.peer.id})`,
+    role: p.peer.role,
+    // DESIGN §13: air-gapped peers are explicitly "as of <bundle/date>", never presented as live.
+    syncedThrough: isAbsent(p.lastAppliedSequence)
+      ? "never synced"
+      : `seq ${p.lastAppliedSequence}`,
+    asOf: p.lastSyncedAt ?? "never",
+    // M14.4 (ADR-0009) — the cadence ACTUALLY in force, next to the raw flag on `federation peers`.
+    // "poke*" flags a divergence worth looking at: the peer is configured for poke-mode but the
+    // scheduler is still polling it — never poked (D2), no client certs (D4), or the last pull
+    // failed (the reconnect leg). Timestamps are in `--output json`.
+    cadence:
+      (p.effectiveCadence ?? (p.peer.pokeMode ? "poke" : "poll")) === "poke"
+        ? "poke"
+        : p.peer.pokeMode
+          ? "poke*"
+          : "poll",
+    lastPull: p.lastPullSuccessAt ?? p.lastPullAttemptAt ?? "never",
+    // M16.2 phase A (E3) — PENDING-EXPORT, never pending-apply. "N pending" counts THIS domain's own
+    // journal entries not yet carried in any bundle addressed to the peer; it says NOTHING about what
+    // the peer applied (this side cannot observe that — see the schema's note and `unknownFields`).
+    // `?` is printed whenever the field is declared unknown, so a null never reads as "nothing
+    // pending"/"synced".
+    pendingExport: isAbsent(p.pendingExportEntryCount)
+      ? "?"
+      : `${p.pendingExportEntryCount} pending`,
+    // The owner-ENTERED trust tier from the peer's `outpost` object, or "?" when never asserted
+    // (F3: there is no source for a default, so the CLI must not print one). An UNVERIFIED
+    // hand-filled claim is suffixed rather than printed bare — it is not a commander assertion.
+    trustTier: isAbsent(p.trustTier)
+      ? "?"
+      : p.trustTierProvenance === "unverified" || (p.unknownFields ?? []).includes("trustTier")
+        ? `${p.trustTier} (unverified)`
+        : p.trustTier,
+    // The CONFIGURED transport channel, deliberately separate from the tier and NEVER a reachability
+    // claim ("dialable" means a dialable URL is configured; `lastPull` above is the observation).
+    // "?" when no transport is configured, or when one is configured that federation refuses to dial.
+    transport: p.transportMode ?? "?",
+    // `?? []` — the same required-not-optional/no-runtime-validation read that white-screened the
+    // web detail page; here it would abort the WHOLE table on `.length` of `undefined`.
+    recentTransfers: String((p.recentTransfers ?? []).length)
+  };
 }
 
 /** M16.2 phase A (E1) — one `outpost` config object as a table row. `trustTier` prints "?" when the
@@ -331,6 +356,48 @@ function outpostConfigRow(o: OutpostConfig): Record<string, string> {
     revision: String(o.revision),
     version: String(o.version),
     notObservable: o.unknownFields.join(", ") || "-"
+  };
+}
+
+/**
+ * One instance-scoped scan-requirement floor as a table row (`scp scan-floors list`) — LIFTED OUT of
+ * the action closure it was written inside, and exported, for the reason given on
+ * `federationStatusRow`: a guard no test can invoke is a guard nothing holds in place.
+ *
+ * THE FABRICATION EACH `isAbsent` STOPS is specific and severe here. `null` on a ceiling means
+ * UNBOUNDED — no limit was authored — and it is NOT `0`. An unguarded `String(undefined)` prints the
+ * literal `undefined` in a security ceiling column; the honest rendering is `-`.
+ */
+export function instanceScanFloorRow(item: InstanceScanFloor): Record<string, string> {
+  return {
+    tier: item.tier,
+    origin: item.origin,
+    maxCritical: isAbsent(item.maxCritical) ? "-" : String(item.maxCritical),
+    maxHigh: isAbsent(item.maxHigh) ? "-" : String(item.maxHigh),
+    maxMedium: isAbsent(item.maxMedium) ? "-" : String(item.maxMedium),
+    maxLow: isAbsent(item.maxLow) ? "-" : String(item.maxLow),
+    note: item.note ?? ""
+  };
+}
+
+/**
+ * The managed-scan DB status row (`scp scan-db status`) — same lift, same reason.
+ *
+ * `ageHours` is the one where absence is not merely dishonest but FATAL: `.toFixed(1)` on
+ * `undefined` throws, so the whole command dies rather than printing a status. "(unknown)" is the
+ * honest reading — and it must not read as "fresh", because an unknown age is precisely the state a
+ * staleness gate cannot clear.
+ */
+export function scanDbStatusRow(s: ScanDbStatus): Record<string, string> {
+  return {
+    present: String(s.present),
+    source: s.source,
+    ageHours: isAbsent(s.ageHours) ? "(unknown)" : s.ageHours.toFixed(1),
+    schemaCompatible: String(s.schemaCompatible),
+    staleness: s.staleness,
+    thresholdFired: s.thresholdFired,
+    softMaxAgeHours: String(s.activeSoftMaxAgeHours),
+    hardMaxAgeHours: String(s.activeHardMaxAgeHours)
   };
 }
 
@@ -2245,18 +2312,9 @@ export function buildProgram(): Command {
     .action(async (opts: BaseCliOpts) => {
       const client = await clientFromStoredCredentials(opts);
       const floors = await client.instanceScanFloors.list();
-      printResult(floors, opts.output, (raw) => {
-        const item = raw as (typeof floors)[number];
-        return {
-          tier: item.tier,
-          origin: item.origin,
-          maxCritical: isAbsent(item.maxCritical) ? "-" : String(item.maxCritical),
-          maxHigh: isAbsent(item.maxHigh) ? "-" : String(item.maxHigh),
-          maxMedium: isAbsent(item.maxMedium) ? "-" : String(item.maxMedium),
-          maxLow: isAbsent(item.maxLow) ? "-" : String(item.maxLow),
-          note: item.note ?? ""
-        };
-      });
+      printResult(floors, opts.output, (raw) =>
+        instanceScanFloorRow(raw as (typeof floors)[number])
+      );
     });
 
   scanFloorsCmd
@@ -2429,19 +2487,7 @@ export function buildProgram(): Command {
     .action(async (opts: BaseCliOpts) => {
       const client = await clientFromStoredCredentials(opts);
       const status = await client.scanDb.status();
-      printResult(status, opts.output, (raw) => {
-        const s = raw as typeof status;
-        return {
-          present: String(s.present),
-          source: s.source,
-          ageHours: isAbsent(s.ageHours) ? "(unknown)" : s.ageHours.toFixed(1),
-          schemaCompatible: String(s.schemaCompatible),
-          staleness: s.staleness,
-          thresholdFired: s.thresholdFired,
-          softMaxAgeHours: String(s.activeSoftMaxAgeHours),
-          hardMaxAgeHours: String(s.activeHardMaxAgeHours)
-        };
-      });
+      printResult(status, opts.output, (raw) => scanDbStatusRow(raw as typeof status));
     });
 
   const stalenessCmd = scanDbCmd
