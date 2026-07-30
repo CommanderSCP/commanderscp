@@ -19,6 +19,8 @@ import { CampaignDetailPage } from "./routes/campaign-detail";
 import { InitiativeListPage } from "./routes/initiative-list";
 import { InitiativeDetailPage } from "./routes/initiative-detail";
 import { FederationStatusPage } from "./routes/federation-status";
+import { OutpostsPage } from "./routes/outposts";
+import { OutpostDetailPage } from "./routes/outpost-detail";
 import { PluginsPage } from "./routes/plugins";
 
 /**
@@ -147,6 +149,23 @@ const federationStatusRoute = createRoute({
   component: FederationStatusPage
 });
 
+// M16.2 phase B — the Outposts UI, deliberately UNDER the existing `/federation` prefix rather than
+// beside it: `/federation` and its "Federation" heading already ship and may be bookmarked, so this
+// adds to that section instead of renaming it out from under anyone. Static segments out-rank the
+// dynamic `$basePath` route below at the same depth, and `outposts` out-ranks nothing ambiguous
+// under `/federation`, which has no dynamic child.
+const outpostsRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/federation/outposts",
+  component: OutpostsPage
+});
+
+const outpostDetailRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/federation/outposts/$peerDomainId",
+  component: OutpostDetailPage
+});
+
 const pluginsRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/plugins",
@@ -187,6 +206,8 @@ const routeTree = rootRoute.addChildren([
     initiativeListRoute,
     initiativeDetailRoute,
     federationStatusRoute,
+    outpostsRoute,
+    outpostDetailRoute,
     pluginsRoute,
     registryListRoute,
     registryDetailRoute

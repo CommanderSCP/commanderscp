@@ -10,9 +10,7 @@ import {
   TableHeader,
   TableRow
 } from "../components/ui/table";
-import { federationSelfKey } from "../lib/query-client";
-
-const federationStatusKey = ["federation", "status"];
+import { federationSelfKey, federationStatusKey } from "../lib/query-client";
 
 function formatDateTime(value: string | null): string {
   if (!value) return "never";
@@ -62,7 +60,7 @@ export function FederationStatusPage(): React.JSX.Element {
   });
 
   const statusQuery = useQuery({
-    queryKey: federationStatusKey,
+    queryKey: federationStatusKey(),
     queryFn: () => client.federation.status()
   });
 
