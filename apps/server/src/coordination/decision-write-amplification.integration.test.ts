@@ -397,8 +397,10 @@ describe("Decision write amplification: a parked wave gate persists ON CHANGE, n
    * back to ~43,200 rows/day/change. Measured before the fix: 15 consecutive writes, two
    * consecutive 1,346-byte reason trees differing by TWO CHARACTERS, both inside the timestamp.
    *
-   * `cel-sandbox.ts`'s `normalizeCelWorkerError` keeps the diagnosis and drops the dump. Nothing is
-   * lost: the context IS the input and every Decision already stores it verbatim in `input_context`.
+   * `cel-sandbox.ts`'s `normalizeCelWorkerError` keeps the diagnosis and drops the dump. The dump
+   * was a per-tick-unstable restatement of inputs the Decision already summarizes; what survives is
+   * the actionable part — which identifier failed to resolve. (The CEL evaluation context itself is
+   * persisted nowhere: this gate Decision's `input_context` is wave metadata plus three counts.)
    *
    * DISTINCT FROM the bounded intermittent CEL-TIMEOUT residual, which is correct behaviour and is
    * why this suite everywhere asserts a bound rather than a raw count (see
@@ -433,7 +435,8 @@ describe("Decision write amplification: a parked wave gate persists ON CHANGE, n
     expect(isConditionErrorReasonTree(permanent[0]!.reasonTree)).toBe(true);
 
     // (c) THE DIAGNOSIS SURVIVED, THE CONTEXT DUMP DID NOT — an operator can still see WHICH
-    // identifier is wrong (charter principle 6), and `input_context` still holds the inputs.
+    // identifier is wrong (charter principle 6); the Decision's own `input_context` summarizes the
+    // gate's inputs, and the dropped dump was a per-tick-unstable restatement of them.
     const reasonTree = JSON.stringify(permanent[0]!.reasonTree);
     expect(reasonTree).toContain('Identifier \\"typoed\\" not found in context');
     expect(reasonTree).not.toContain("not found in context:"); // cel-js's dump always follows this
