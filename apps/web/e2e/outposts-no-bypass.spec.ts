@@ -7,7 +7,7 @@ import {
   isDeclaredOperation,
   loadOpenApiDocument,
   operationsOf,
-  undeclaredCalls,
+  unexpectedCalls,
   type ApiCall
 } from "./openapi-conformance.js";
 
@@ -104,8 +104,9 @@ test("Outposts: nav → list → detail, and every API call the browser makes is
   const declared = operationsOf(loadOpenApiDocument());
   expect(captured.length, "the walk actually exercised the API").toBeGreaterThan(0);
   expect(
-    undeclaredCalls(declared, captured),
-    "every API path the browser requested must match an operation in the emitted OpenAPI document"
+    unexpectedCalls(declared, captured),
+    "every API path the browser requested must match an operation in the emitted OpenAPI document " +
+      "(or the ONE named, pre-existing exemption: the raw SSE stream — see openapi-conformance.ts)"
   ).toEqual([]);
 
   // NON-VACUITY, here and not only in the matcher's unit test: an assertion that nothing can fail is

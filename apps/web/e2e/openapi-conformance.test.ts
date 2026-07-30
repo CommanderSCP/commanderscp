@@ -5,7 +5,9 @@ import {
   loadOpenApiDocument,
   operationsOf,
   templateToRegExp,
-  undeclaredCalls
+  undeclaredCalls,
+  unexpectedCalls,
+  UNDECLARED_BY_DESIGN
 } from "./openapi-conformance.js";
 
 /**
@@ -73,6 +75,37 @@ describe("openapi conformance: the matcher can actually reject", () => {
     );
     expect(apiPathOf("http://localhost:1234/federation/outposts")).toBeNull();
     expect(apiPathOf("http://localhost:1234/assets/index-abc123.js")).toBeNull();
+  });
+
+  /**
+   * THE ONE EXEMPTION, pinned in both directions.
+   *
+   * `GET /api/v1/events/stream` (the SSE live-update channel) is registered as a raw `app.get`, so
+   * the emitter never sees it, and `use-event-stream.ts` opens it with a hand-built URL from
+   * `RootLayout` — on EVERY page. Without an exemption the sweep would fail on every run for a
+   * pre-existing M2 gap; without these assertions the exemption could quietly grow into a list that
+   * excuses whatever the sweep happens to catch.
+   */
+  it("still FLAGS the SSE stream as undeclared — the exemption is an exemption, not an absence", () => {
+    const sse = { method: "GET", path: "/events/stream" };
+    expect(isDeclaredOperation(operations, sse)).toBe(false);
+    expect(undeclaredCalls(operations, [sse])).toEqual([sse]);
+  });
+
+  it("exempts exactly that one call, and nothing else", () => {
+    expect(UNDECLARED_BY_DESIGN).toEqual([{ method: "GET", path: "/events/stream" }]);
+
+    const sse = { method: "GET", path: "/events/stream" };
+    const madeUp = { method: "GET", path: "/made/up" };
+    expect(unexpectedCalls(operations, [sse])).toEqual([]);
+    // A different METHOD on the same path is NOT exempt — the exemption is one operation, not a path.
+    expect(unexpectedCalls(operations, [{ method: "POST", path: "/events/stream" }])).toEqual([
+      { method: "POST", path: "/events/stream" }
+    ]);
+    expect(unexpectedCalls(operations, [madeUp])).toEqual([madeUp]);
+    expect(
+      unexpectedCalls(operations, [sse, { method: "GET", path: "/federation/status" }])
+    ).toEqual([]);
   });
 
   it("PREMISE: the document really was loaded and really has operations", () => {
