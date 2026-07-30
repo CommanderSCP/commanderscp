@@ -1252,6 +1252,9 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     url: "/api/v1/federation/outposts/:peerDomainId/reconcile",
     schema: {
       params: z.object({ peerDomainId: z.string().uuid() }),
+      /** N9 — a QUERY parameter rather than a body, so the default call is unchanged and needs no
+       *  body at all. Names the row that should SURVIVE; absent keeps the most authoritative one. */
+      querystring: z.object({ keep: z.string().uuid().optional() }),
       response: {
         200: OutpostConfigReconcileResultSchema,
         400: ProblemSchema,
@@ -1265,7 +1268,7 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       openapi: {
         operationId: "reconcileOutpostConfig",
         summary:
-          "RECOVERY: restore the 1:1 peer↔config binding for a peer holding duplicate outpost config objects (adopts an unverified hand-filled shadow, removes the rest)",
+          "RECOVERY: restore the 1:1 peer↔config binding for a peer holding duplicate outpost config objects (adopts an unverified hand-filled shadow, removes the rest; ?keep=<objectId> chooses the survivor and may drop a row this domain authored)",
         tags: ["federation"]
       }
     },
@@ -1282,7 +1285,8 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
           orgId: auth.orgId,
           actorObjectId: auth.subjectObjectId,
           requestId: request.id,
-          peerDomainId: request.params.peerDomainId
+          peerDomainId: request.params.peerDomainId,
+          ...(request.query.keep !== undefined ? { keepObjectId: request.query.keep } : {})
         });
       });
       reply.status(200).send(result);

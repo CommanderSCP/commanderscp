@@ -378,7 +378,16 @@ export type OutpostConfig = z.infer<typeof OutpostConfigSchema>;
  *  signature-verified replica — the peer demonstrably HAS config on that path (`GET` answers 200 for it),
  *  so a 404 would tell a status-keyed consumer "no outpost config" and hide the very authority conflict
  *  this door exists to surface. 404 is reserved for the peer that genuinely has no rows at all.
- *  See `federation/outposts-repo.ts`'s `reconcileOutpostConfig`. */
+ *
+ *  `?keep=<objectId>` (review round 5, N9) names the row that should SURVIVE — absent keeps the most
+ *  authoritative one, so the default call is unchanged. It exists to close the VERIFIED-DUPLICATE
+ *  class: a signature-verified foreign-origin duplicate bound to one peer had no public-API recovery
+ *  at all (PATCH 409, reconcile refuses, `DELETE /objects/outpost/{id}` 403, IaC prune touches only
+ *  stack-managed objects). Not reachable in canonical hub-and-spoke, but reachable the moment two
+ *  authoring domains describe one outpost. With `keep`, this domain can DELETE THE ROW IT AUTHORED
+ *  ITSELF — an ordinary journaled tombstone, re-declarable at any time. Deleting a signature-verified
+ *  replica stays refused unconditionally: that is what stops this trading a config wedge for a sync
+ *  wedge. See `federation/outposts-repo.ts`'s `reconcileOutpostConfig`. */
 export const OutpostConfigReconcileResultSchema = z.object({
   /** The single row that now holds the binding. */
   config: OutpostConfigSchema,

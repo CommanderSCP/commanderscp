@@ -8,7 +8,7 @@ import {
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects } from "../db/schema.js";
-import { conflict, notFound } from "../errors.js";
+import { badRequest, conflict, notFound } from "../errors.js";
 import {
   createObject,
   deleteObject,
@@ -266,14 +266,35 @@ export async function getOutpostConfigByPeer(
  *     journals from then on like any local object), so the operator's entered config is not thrown away;
  *   * SOFT-DELETES every remaining unverified shadow for that peer, restoring the 1:1 binding.
  *
- * WHAT IT REFUSES. A VERIFIED foreign-origin replica is never adopted and never removed: adopting one
+ * WHAT IT REFUSES. A VERIFIED foreign-origin replica is never adopted and never DELETED: deleting one
  * would make the next real import a single-writer violation and wedge that peer's sync — trading one
  * unrecoverable state for a worse one. Two verified rows for one peer therefore stay a 409 and are
  * reported as such, which is an honest authority conflict rather than a silent pick.
+ *
+ * `keepObjectId` — THE VERIFIED-DUPLICATE ESCAPE (review round 5, N9). Without it, a VERIFIED
+ * foreign-origin duplicate bound to one peer had NO public-API recovery AT ALL: `PATCH` 409s (the
+ * binding scan's `blocking` filter exempts only `provenance='manual'`), the default reconcile refuses
+ * by design, `DELETE /objects/outpost/{id}` is 403, and IaC prune only touches stack-managed objects —
+ * and the refusal message named an action the API did not offer. That state is NOT reachable today (in
+ * canonical hub-and-spoke, no bundle a commander imports carries an `outpost` row bound to one of ITS
+ * peers) but becomes reachable the moment two authoring domains describe one outpost — hierarchical
+ * sub-commanders, or a dual-homed outpost. Naming the row to KEEP lets the operator resolve the
+ * authority conflict the only way that is actually safe: this domain DELETES THE ROW IT AUTHORED
+ * ITSELF, which is an ordinary local tombstone that journals normally and can be re-declared at any
+ * time. The refusal to delete a signature-verified replica is unchanged and unconditional — that half
+ * is what stops this from trading the wedge for a sync wedge.
  */
 export async function reconcileOutpostConfig(
   tx: TenantTx,
-  input: { orgId: string; actorObjectId: string; requestId: string; peerDomainId: string }
+  input: {
+    orgId: string;
+    actorObjectId: string;
+    requestId: string;
+    peerDomainId: string;
+    /** Which live row for this peer should SURVIVE. Absent = the most authoritative one
+     *  (`byAuthority`), i.e. the default behaviour is exactly as before. */
+    keepObjectId?: string;
+  }
 ): Promise<OutpostConfigReconcileResult> {
   const self = await ensureFederationSelf(tx, input.orgId);
   const rows = byAuthority(
@@ -286,11 +307,26 @@ export async function reconcileOutpostConfig(
     );
   }
 
-  const keeper = rows[0]!;
+  let keeper = rows[0]!;
+  if (input.keepObjectId !== undefined) {
+    const chosen = rows.find((o) => o.id === input.keepObjectId);
+    if (!chosen) {
+      // 400, not 404: the PEER resolves fine and has config — the caller named a row that is not one
+      // of its live claimants, which is a bad argument, not a missing resource.
+      throw badRequest(
+        `object '${input.keepObjectId}' is not one of the live outpost config objects bound to peer ` +
+          `'${input.peerDomainId}' (${rows.map((o) => o.id).join(", ")})`
+      );
+    }
+    keeper = chosen;
+  }
   const isShadow = (o: GraphObject): boolean =>
     o.originDomainId !== self.domainId && o.provenance === "manual";
-  const surplus = rows.slice(1);
-  const unremovable = surplus.filter((o) => !isShadow(o));
+  /** Locally authored — this domain owns it outright, so removing it is an ordinary tombstone that
+   *  journals like any other local delete. No override, no special case in `deleteObject`. */
+  const isLocallyAuthored = (o: GraphObject): boolean => o.originDomainId === self.domainId;
+  const surplus = rows.filter((o) => o.id !== keeper.id);
+  const unremovable = surplus.filter((o) => !isShadow(o) && !isLocallyAuthored(o));
   if (unremovable.length > 0) {
     // 409, NOT 404 (review round 5, N3). This branch fires when the peer DEMONSTRABLY HAS config —
     // `GET /v1/federation/outposts/{peer}` answers 200 for the very same peer at the same instant —
@@ -299,23 +335,27 @@ export async function reconcileOutpostConfig(
     // declared 409 and the schema comment already called this a "409-shaped notFound"; the code is
     // now the shape it always described. 404 stays for the genuinely-no-rows branch above, which is
     // the only branch where the resource really is absent.
+    // THE MESSAGE NAMES AN ACTION THE API ACTUALLY OFFERS (review round 5, N9). It previously said
+    // "resolve the authority conflict at its source" — advice, not a verb, on a door whose whole
+    // purpose is to be the verb.
     throw conflict(
       `peer '${input.peerDomainId}' has ${rows.length} live outpost config objects and ${unremovable.length} of ` +
-        `them are authoritative (locally authored or a signature-verified replica) — reconcile only removes ` +
-        `UNVERIFIED hand-filled shadows, because adopting or deleting a verified replica would wedge that ` +
-        `peer's sync. Resolve the authority conflict at its source (${unremovable
+        `them are signature-verified replicas this domain did not author (${unremovable
           .map((o) => o.id)
-          .join(", ")})`
+          .join(", ")}) — reconcile never deletes one, because that would make the next real import a ` +
+        `single-writer violation and wedge this peer's sync. Reconcile removes UNVERIFIED hand-filled ` +
+        `shadows, and — with ?keep=<objectId> — rows THIS domain authored. If the verified replica is the ` +
+        `one that should survive, re-run with ?keep=${unremovable[0]!.id}`
     );
   }
 
-  let adoptedObjectId: string | null = null;
-  let kept = keeper;
-  if (isShadow(keeper)) {
-    // Nothing authoritative survives — adopt the shadow rather than discard the operator's entry. The
-    // guard runs on this path too (`updateObject`'s choke point), so an adopted object still has to
-    // satisfy clause (4): paired peer, role `outpost`, and — with the surplus not yet removed — no OTHER
-    // claimant. Surplus removal therefore happens FIRST.
+  /** Surplus removal. `unverifiedShadowOverride` is passed only for a foreign shadow, which is the
+   *  only row it applies to: for a LOCALLY AUTHORED row `deleteObject`'s replica check never fires,
+   *  so the removal is an ordinary local tombstone that JOURNALS normally (a shadow's does not — this
+   *  domain never authored it, so claiming authorship of its deletion would push a delete for a row
+   *  the real authority still owns). Passing the flag for a local row would be a claim we do not
+   *  need to make. */
+  const removeSurplus = async (): Promise<void> => {
     for (const o of surplus) {
       await deleteObject(tx, {
         orgId: input.orgId,
@@ -323,9 +363,19 @@ export async function reconcileOutpostConfig(
         actorObjectId: input.actorObjectId,
         requestId: input.requestId,
         idOrUrn: o.id,
-        unverifiedShadowOverride: true
+        ...(isShadow(o) ? { unverifiedShadowOverride: true } : {})
       });
     }
+  };
+
+  let adoptedObjectId: string | null = null;
+  let kept = keeper;
+  if (isShadow(keeper)) {
+    // Nothing authoritative survives (or the caller chose the shadow) — adopt it rather than discard
+    // the operator's entry. The guard runs on this path too (`updateObject`'s choke point), so an
+    // adopted object still has to satisfy clause (4): paired peer, role `outpost`, and — with the
+    // surplus not yet removed — no OTHER claimant. Surplus removal therefore happens FIRST.
+    await removeSurplus();
     kept = await updateObject(tx, {
       orgId: input.orgId,
       typeId: OUTPOST_OBJECT_TYPE_ID,
@@ -343,16 +393,7 @@ export async function reconcileOutpostConfig(
     };
   }
 
-  for (const o of surplus) {
-    await deleteObject(tx, {
-      orgId: input.orgId,
-      typeId: OUTPOST_OBJECT_TYPE_ID,
-      actorObjectId: input.actorObjectId,
-      requestId: input.requestId,
-      idOrUrn: o.id,
-      unverifiedShadowOverride: true
-    });
-  }
+  await removeSurplus();
   return {
     config: toOutpostConfig(kept, self.domainId),
     adoptedObjectId,

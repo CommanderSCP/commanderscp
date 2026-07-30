@@ -1693,10 +1693,18 @@ export class ScpClient {
      *  DUPLICATE `outpost` objects (the wedge a pre-narrowing hand-fill could create). Keeps the
      *  authoritative row, ADOPTS an unverified hand-filled shadow when nothing authoritative survives,
      *  and soft-deletes the remaining shadows. Never touches a signature-verified replica. */
-    reconcileOutpost: async (peerDomainId: string): Promise<OutpostConfigReconcileResult> => {
+    reconcileOutpost: async (
+      peerDomainId: string,
+      /** N9 — `keep` names the row that should SURVIVE. Absent keeps the most authoritative one, so
+       *  the default call is unchanged. It is the ONLY public-API way out of a VERIFIED foreign-origin
+       *  duplicate: with it, this domain deletes the row IT authored (an ordinary journaled tombstone).
+       *  Deleting a signature-verified replica stays refused unconditionally. */
+      opts: { keep?: string } = {}
+    ): Promise<OutpostConfigReconcileResult> => {
       const result = await reconcileOutpostConfigRequest({
         client: this.client,
-        path: { peerDomainId }
+        path: { peerDomainId },
+        ...(opts.keep !== undefined ? { query: { keep: opts.keep } } : {})
       });
       return unwrap(result);
     },

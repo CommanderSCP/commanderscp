@@ -2921,11 +2921,18 @@ export function buildProgram(): Command {
       "RECOVERY: restore the 1:1 peer<->config binding for a peer holding duplicate outpost config objects"
     )
     .requiredOption("--peer <domainId>", "the outpost peer's trust-domain id")
+    .option(
+      "--keep <objectId>",
+      "which config object should SURVIVE (default: the most authoritative one). The only way out of a VERIFIED foreign-origin duplicate: this domain drops the row IT authored. A signature-verified replica is never deleted"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
-    .action(async (opts: BaseCliOpts & { peer: string }) => {
+    .action(async (opts: BaseCliOpts & { peer: string; keep?: string }) => {
       const client = await clientFromStoredCredentials(opts);
-      const result = await client.federation.reconcileOutpost(opts.peer);
+      const result = await client.federation.reconcileOutpost(
+        opts.peer,
+        opts.keep !== undefined ? { keep: opts.keep } : {}
+      );
       if (opts.output === "json") {
         printResult(result, opts.output, (item) => outpostConfigRow(item as OutpostConfig));
         return;

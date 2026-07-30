@@ -2023,7 +2023,7 @@ export const updateOutpostConfig = <ThrowOnError extends boolean = false>(option
 });
 
 /**
- * RECOVERY: restore the 1:1 peer↔config binding for a peer holding duplicate outpost config objects (adopts an unverified hand-filled shadow, removes the rest)
+ * RECOVERY: restore the 1:1 peer↔config binding for a peer holding duplicate outpost config objects (adopts an unverified hand-filled shadow, removes the rest; ?keep=<objectId> chooses the survivor and may drop a row this domain authored)
  */
 export const reconcileOutpostConfig = <ThrowOnError extends boolean = false>(options: Options<ReconcileOutpostConfigData, ThrowOnError>): RequestResult<ReconcileOutpostConfigResponses, ReconcileOutpostConfigErrors, ThrowOnError> => (options.client ?? client).post<ReconcileOutpostConfigResponses, ReconcileOutpostConfigErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],

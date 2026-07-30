@@ -442,13 +442,130 @@ describe("M16.2 H1: the hand-fill write door + wedge recovery (Testcontainers)",
     await expectApiError(
       admin.federation.reconcileOutpost(peer),
       409,
-      /authoritative \(locally authored or a signature-verified replica\)/i
+      /signature-verified replicas this domain did not author/i
+    );
+    // …and the refusal must name a verb the API ACTUALLY OFFERS (N9). It used to say "resolve the
+    // authority conflict at its source" — advice, not an action, on the one door whose job is to BE
+    // the action. It now names `?keep=` and the id to pass.
+    await admin.federation.reconcileOutpost(peer).then(
+      () => {
+        throw new Error("expected a refusal");
+      },
+      (err: unknown) => {
+        expect((err as ScpApiError).problem?.detail ?? "").toMatch(/\?keep=/);
+      }
     );
     // THE CONTRADICTION THAT MAKES 404 WRONG, asserted rather than argued.
     const stillReadable = await admin.federation.getOutpost(peer);
     expect(stillReadable.peerDomainId).toBe(peer);
     // Nothing removed: both rows survive, and the refusal says why.
     expect(await outpostRowsForPeer(peer)).toHaveLength(2);
+  });
+
+  /**
+   * N9 (review round 5) — CLOSING THE VERIFIED-DUPLICATE CLASS WHILE THE SURFACE IS UNSHIPPED.
+   *
+   * A VERIFIED foreign-origin duplicate bound to one peer had NO public-API recovery: `PATCH` 409s
+   * (the binding scan's `blocking` filter exempts only `provenance='manual'`), the default reconcile
+   * refuses by design, `DELETE /api/v1/objects/outpost/{id}` is 403 by this milestone's own refusal,
+   * and IaC prune only touches stack-managed objects. NOT reachable today — in canonical hub-and-spoke
+   * no bundle a commander imports carries an `outpost` row bound to one of ITS peers — but reachable
+   * the moment two authoring domains describe one outpost (a sub-commander, or a dual-homed outpost).
+   * `?keep=` closes the class the only way that is safe: THIS DOMAIN DELETES THE ROW IT AUTHORED,
+   * which is an ordinary journaled tombstone and re-declarable. The refusal to delete a
+   * signature-verified replica is unchanged — the second test below is what keeps that half honest.
+   */
+  it("N9 RECOVERY (verified duplicate): ?keep=<verified> drops the row THIS domain authored and restores the 1:1 binding", async () => {
+    const peer = await pairPeerViaApi("outpost");
+    const local = await admin.federation.createOutpost({ peerDomainId: peer, trustTier: "il5" });
+    const verified = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      upsertObjectByUrn(tx, {
+        orgId: org.orgId,
+        typeId: "outpost",
+        actorObjectId: org.orgId,
+        requestId: `test-verified-keep-${peer.slice(0, 8)}`,
+        urn: `urn:scp:${org.orgId}:outpost:verified-keep-${peer.slice(0, 8)}`,
+        name: "verified-keep",
+        properties: { peerDomainId: peer, trustTier: "govcloud" },
+        federationImport: { originDomainId: asTrustDomainId(peer), revision: 7, provenance: null }
+      })
+    );
+    expect(await outpostRowsForPeer(peer)).toHaveLength(2);
+
+    // Deleting a locally authored row JOURNALS — it is an ordinary tombstone, not the silent local
+    // cleanup a shadow removal is (this domain never authored a shadow, so claiming authorship of
+    // its deletion would push a delete for a row the real authority still owns).
+    const journalBefore = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select({ id: syncJournal.id }).from(syncJournal).where(eq(syncJournal.orgId, org.orgId))
+    );
+
+    const result = await admin.federation.reconcileOutpost(peer, {
+      keep: verified.object.id
+    });
+    expect(result.config.objectId).toBe(verified.object.id);
+    expect(result.config.originIsSelf).toBe(false);
+    expect(result.adoptedObjectId).toBeNull();
+    expect(result.removedObjectIds).toEqual([local.objectId]);
+
+    const journalAfter = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select({ id: syncJournal.id }).from(syncJournal).where(eq(syncJournal.orgId, org.orgId))
+    );
+    expect(journalAfter.length).toBeGreaterThan(journalBefore.length);
+
+    // THE CLASS IS CLOSED: exactly one row again, and the peer resolves deterministically to it.
+    expect(await outpostRowsForPeer(peer)).toHaveLength(1);
+    const got = await admin.federation.getOutpost(peer);
+    expect(got.objectId).toBe(verified.object.id);
+    // The surviving row is a REPLICA, so a local write is still (correctly) refused — that is the
+    // single-writer rule, not a wedge: the binding is 1:1 and the state is honest.
+    await expectApiError(
+      admin.federation.updateOutpost(peer, { trustTier: "airgap" }),
+      409,
+      /read-only replica/i
+    );
+  });
+
+  it("N9: ?keep= NEVER deletes a signature-verified replica — the escape does not become a sync wedge", async () => {
+    const peer = await pairPeerViaApi("outpost");
+    const local = await admin.federation.createOutpost({ peerDomainId: peer, trustTier: "il5" });
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      upsertObjectByUrn(tx, {
+        orgId: org.orgId,
+        typeId: "outpost",
+        actorObjectId: org.orgId,
+        requestId: `test-verified-nodelete-${peer.slice(0, 8)}`,
+        urn: `urn:scp:${org.orgId}:outpost:verified-nodelete-${peer.slice(0, 8)}`,
+        name: "verified-nodelete",
+        properties: { peerDomainId: peer },
+        federationImport: { originDomainId: asTrustDomainId(peer), revision: 7, provenance: null }
+      })
+    );
+
+    // Asking to keep the LOCAL row is asking to delete the verified replica. Refused — deleting one
+    // would make the next real import a single-writer violation and wedge that peer's sync.
+    await expectApiError(
+      admin.federation.reconcileOutpost(peer, { keep: local.objectId }),
+      409,
+      /signature-verified replicas this domain did not author/i
+    );
+    expect(await outpostRowsForPeer(peer)).toHaveLength(2);
+  });
+
+  it("N9: ?keep= naming a row that is not one of the peer's live claimants is a 400, not a silent fallback", async () => {
+    const peer = await pairPeerViaApi("outpost");
+    await admin.federation.createOutpost({ peerDomainId: peer, trustTier: "il5" });
+    const otherPeer = await pairPeerViaApi("outpost");
+    const other = await admin.federation.createOutpost({ peerDomainId: otherPeer });
+
+    // Silently ignoring an unrecognised `keep` would be the worst outcome: the operator asked for one
+    // survivor and got a different one, with a 200.
+    await expectApiError(
+      admin.federation.reconcileOutpost(peer, { keep: other.objectId }),
+      400,
+      /is not one of the live outpost config objects bound to peer/i
+    );
+    expect(await outpostRowsForPeer(peer)).toHaveLength(1);
+    expect(await outpostRowsForPeer(otherPeer)).toHaveLength(1);
   });
 
   it("reconcile on a peer with no config object at all is a 404 — the ONE branch where the resource really is absent", async () => {

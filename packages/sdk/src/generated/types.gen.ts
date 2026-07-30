@@ -14951,7 +14951,9 @@ export type ReconcileOutpostConfigData = {
     path: {
         peerDomainId: string;
     };
-    query?: never;
+    query?: {
+        keep?: string;
+    };
     url: '/federation/outposts/{peerDomainId}/reconcile';
 };
 
