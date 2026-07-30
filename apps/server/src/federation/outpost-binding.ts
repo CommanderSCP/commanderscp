@@ -7,6 +7,12 @@ import { badRequest, conflict } from "../errors.js";
 /**
  * M16.2 phase A (E1) — THE AUTHORITY-SPLIT RULE, and the one choke point that enforces it.
  *
+ * DECISION RECORD: `docs/adr/0022-outpost-config-authority-split.md` (referenced from BUILD_AND_TEST.md's
+ * M16 entry). The ADR carries the WHY — why the journal cannot carry a peer, why the peer PATCH is
+ * structurally keyless, why trust tier and transport mode are separate fields, why the registered JSON
+ * Schema is deliberately open, and where the trust-tier vocabulary comes from (docs/GLOSSARY.md, which is
+ * authoritative for vocabulary per CLAUDE.md). What follows is the normative statement it records.
+ *
  * ============================================================================================
  * THE RULE (normative; `outpost-object.integration.test.ts` checks every clause of it)
  * ============================================================================================
@@ -57,8 +63,10 @@ import { badRequest, conflict } from "../errors.js";
  *
  *  (5) TIE-BREAK, when both halves could seem to answer one question: THE PEER ROW WINS for anything
  *      about reachability. "Is this outpost air-gapped?" is derived from `base_url`/`delivery_target`
- *      on the peer row — never from `trustTier`, which is why connectivity is deliberately NOT a
- *      trust tier (one field meaning both trust posture and reachability would mean neither).
+ *      on the peer row — never from `trustTier`, which is why the transport channel is deliberately NOT
+ *      a trust tier (one field meaning both trust posture and reachability would mean neither). The
+ *      derived field is `transportMode` on the status row, and it reports what CONFIG says
+ *      (`dialable`/`air-gap`), never an observation of reachability — see `status-repo.ts`.
  * ============================================================================================
  *
  * WHERE THIS IS ENFORCED, AND WHY HERE. Clause (4) is checked in ONE place — `graph/objects-repo.ts`'s
