@@ -1,7 +1,8 @@
 import type { Command } from "commander";
 import { describe, expect, it } from "vitest";
 import { OutpostTrustTierSchema } from "@scp/schemas";
-import { buildProgram } from "./cli.js";
+import type { OutpostConfigReconcileResult } from "@scp/schemas";
+import { buildProgram, formatReconcileResultLines } from "./cli.js";
 
 /**
  * M16.2 phase A, REVIEW ROUND 5 — THE CLI HALF OF THE OUTPOST SURFACE (N1, N2).
@@ -95,5 +96,77 @@ describe("scp federation outpost — the operator-facing surface", () => {
     expect(outpost).toBeDefined();
     const names = outpost!.commands.map((c) => c.name()).sort();
     expect(names).toEqual(["declare", "list", "reconcile", "set", "show"]);
+  });
+
+  /**
+   * M1 (review round 6) — THE RECOVERY COMMAND MUST NOT DESCRIBE A JOURNALED, DOWNSTREAM-PROPAGATING
+   * DELETE OF THIS DOMAIN'S OWN CONFIG AS "removed N unverified shadow(s)". That wording is true only
+   * for `removedShadowObjectIds` (a stray hand-typed copy this domain never authored — nothing rides
+   * the journal). For `removedLocalObjectIds` (the `?keep=` verified-duplicate escape, N9) it is false:
+   * the row dropped is this domain's OWN declared config, and the tombstone journals down to the
+   * outpost. The two cases must read differently — this test fails if they are ever collapsed back
+   * into one bucket/one sentence, which is exactly the regression a `removedObjectIds.length` mutant
+   * would reintroduce.
+   */
+  function fakeConfig() {
+    return {
+      objectId: "00000000-0000-0000-0000-000000000001",
+      urn: "urn:scp:test:outpost:x",
+      name: "x",
+      peerDomainId: "00000000-0000-0000-0000-000000000002",
+      trustTier: null,
+      originDomainId: "00000000-0000-0000-0000-000000000003",
+      revision: 1,
+      version: 1,
+      unknownFields: [] as string[],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    } as unknown as OutpostConfigReconcileResult["config"];
+  }
+
+  it("M1: a removed SHADOW and a removed LOCAL-ORIGIN row produce DIFFERENT output", () => {
+    const shadowRemoval: OutpostConfigReconcileResult = {
+      config: fakeConfig(),
+      adoptedObjectId: null,
+      removedShadowObjectIds: ["shadow-id-1"],
+      removedLocalObjectIds: []
+    };
+    const localRemoval: OutpostConfigReconcileResult = {
+      config: fakeConfig(),
+      adoptedObjectId: null,
+      removedShadowObjectIds: [],
+      removedLocalObjectIds: ["local-id-1"]
+    };
+
+    const shadowLines = formatReconcileResultLines(shadowRemoval).join("\n");
+    const localLines = formatReconcileResultLines(localRemoval).join("\n");
+
+    // The two outputs must differ — pins the M1 fix directly, not just via a substring.
+    expect(shadowLines).not.toEqual(localLines);
+
+    // The shadow case must NOT claim a journal/propagation, and must call it a shadow.
+    expect(shadowLines).toMatch(/unverified shadow/i);
+    expect(shadowLines).not.toMatch(/journal/i);
+    expect(shadowLines).not.toMatch(/propagat/i);
+
+    // The local-origin case MUST say plainly that this domain's own row was deleted and that it
+    // journals/propagates downstream — an operator must be able to tell the two apart.
+    expect(localLines).toMatch(/this domain authored|this domain's own/i);
+    expect(localLines).toMatch(/journal/i);
+    expect(localLines).toMatch(/propagat/i);
+    expect(localLines).not.toMatch(/unverified shadow/i);
+  });
+
+  it("M1: with nothing removed, the message says so without naming either bucket", () => {
+    const nothing: OutpostConfigReconcileResult = {
+      config: fakeConfig(),
+      adoptedObjectId: null,
+      removedShadowObjectIds: [],
+      removedLocalObjectIds: []
+    };
+    const lines = formatReconcileResultLines(nothing).join("\n");
+    expect(lines).toMatch(/nothing/i);
+    expect(lines).not.toMatch(/unverified shadow/i);
+    expect(lines).not.toMatch(/journal/i);
   });
 });

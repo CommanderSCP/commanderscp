@@ -368,7 +368,8 @@ describe("M16.2 H1: the hand-fill write door + wedge recovery (Testcontainers)",
     const result = await admin.federation.reconcileOutpost(peer);
     expect(result.config.objectId).toBe(legit.objectId);
     expect(result.adoptedObjectId).toBeNull();
-    expect(result.removedObjectIds).toEqual([shadow.id]);
+    expect(result.removedShadowObjectIds).toEqual([shadow.id]);
+    expect(result.removedLocalObjectIds).toEqual([]);
 
     // The binding is 1:1 again, the surviving row is the commander's own, and — the whole point — a
     // FRESH declaration for this peer is possible again where it used to 409 forever.
@@ -401,7 +402,8 @@ describe("M16.2 H1: the hand-fill write door + wedge recovery (Testcontainers)",
 
     const result = await admin.federation.reconcileOutpost(peer);
     expect(result.adoptedObjectId).toBe(shadow.id);
-    expect(result.removedObjectIds).toEqual([]);
+    expect(result.removedShadowObjectIds).toEqual([]);
+    expect(result.removedLocalObjectIds).toEqual([]);
     expect(result.config.originIsSelf).toBe(true);
     expect(result.config.provenance ?? null).toBeNull();
     // Adoption makes it LOCALLY AUTHORED, so it must now ride the journal down to the outpost — an
@@ -505,7 +507,8 @@ describe("M16.2 H1: the hand-fill write door + wedge recovery (Testcontainers)",
     expect(result.config.objectId).toBe(verified.object.id);
     expect(result.config.originIsSelf).toBe(false);
     expect(result.adoptedObjectId).toBeNull();
-    expect(result.removedObjectIds).toEqual([local.objectId]);
+    expect(result.removedShadowObjectIds).toEqual([]);
+    expect(result.removedLocalObjectIds).toEqual([local.objectId]);
 
     const journalAfter = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.select({ id: syncJournal.id }).from(syncJournal).where(eq(syncJournal.orgId, org.orgId))

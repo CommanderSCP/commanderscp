@@ -374,7 +374,7 @@ export type OutpostConfig = z.infer<typeof OutpostConfigSchema>;
 /** `POST /federation/outposts/{peerDomainId}/reconcile` — THE RECOVERY VERB (review round 4). Restores
  *  the 1:1 peer↔config binding for a peer whose database holds duplicates: keeps the authoritative row,
  *  ADOPTS an unverified hand-filled shadow when nothing authoritative survives (so entered config is not
- *  discarded), and soft-deletes the remaining shadows. Refuses with **409 Conflict** rather than touch a
+ *  discarded), and removes the remaining surplus rows. Refuses with **409 Conflict** rather than touch a
  *  signature-verified replica — the peer demonstrably HAS config on that path (`GET` answers 200 for it),
  *  so a 404 would tell a status-keyed consumer "no outpost config" and hide the very authority conflict
  *  this door exists to surface. 404 is reserved for the peer that genuinely has no rows at all.
@@ -387,15 +387,30 @@ export type OutpostConfig = z.infer<typeof OutpostConfigSchema>;
  *  authoring domains describe one outpost. With `keep`, this domain can DELETE THE ROW IT AUTHORED
  *  ITSELF — an ordinary journaled tombstone, re-declarable at any time. Deleting a signature-verified
  *  replica stays refused unconditionally: that is what stops this trading a config wedge for a sync
- *  wedge. See `federation/outposts-repo.ts`'s `reconcileOutpostConfig`. */
+ *  wedge. See `federation/outposts-repo.ts`'s `reconcileOutpostConfig`.
+ *
+ *  `removedObjectIds` WAS ONE BUCKET (review round 6, M1) and that bucket LIED for the local-origin
+ *  case `?keep=` exists to serve: a removal it reported as an "unverified shadow" tidy-up is, for a
+ *  row THIS domain authored, an ordinary JOURNALED TOMBSTONE that propagates downstream to the outpost
+ *  — ordinary local config being permanently dropped and pushed onward, not a stray hand-typed copy
+ *  being discarded. The two cases are split into two fields so a caller (the CLI, and any future UI)
+ *  cannot collapse them back into one indistinguishable sentence. */
 export const OutpostConfigReconcileResultSchema = z.object({
   /** The single row that now holds the binding. */
   config: OutpostConfigSchema,
   /** The object id that was ADOPTED as this domain's own (its `provenance` cleared), or `null` when an
    *  authoritative row already existed and nothing needed adopting. */
   adoptedObjectId: z.string().uuid().nullable(),
-  /** The unverified shadow objects soft-deleted by this call — empty when there was nothing to clean. */
-  removedObjectIds: z.array(z.string().uuid())
+  /** Unverified hand-filled shadows soft-deleted by this call — a silent local cleanup that never rode
+   *  the sync journal, because this domain never authored them and claiming authorship of their
+   *  deletion would push a delete for a row the real authority still owns. Empty when there was
+   *  nothing to clean. */
+  removedShadowObjectIds: z.array(z.string().uuid()),
+  /** Rows THIS domain authored that were removed to resolve a `?keep=`-named authority conflict
+   *  (review round 5, N9) — an ORDINARY JOURNALED TOMBSTONE, indistinguishable from any other local
+   *  delete: it PROPAGATES DOWNSTREAM to the outpost. Empty on every call that did not use `?keep=`
+   *  to drop this domain's own row. */
+  removedLocalObjectIds: z.array(z.string().uuid())
 });
 export type OutpostConfigReconcileResult = z.infer<typeof OutpostConfigReconcileResultSchema>;
 

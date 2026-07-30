@@ -264,7 +264,12 @@ export async function getOutpostConfigByPeer(
  *   * when NO authoritative row exists but an UNVERIFIED shadow does, ADOPTS the first shadow as this
  *     domain's own object (`unverifiedShadowOverride` — origin re-stamped, `provenance` cleared, and it
  *     journals from then on like any local object), so the operator's entered config is not thrown away;
- *   * SOFT-DELETES every remaining unverified shadow for that peer, restoring the 1:1 binding.
+ *   * SOFT-DELETES every remaining unverified shadow for that peer, restoring the 1:1 binding — a silent
+ *     local cleanup, reported as `removedShadowObjectIds`;
+ *   * with `?keep=` naming a row THIS domain authored as the survivor (N9 below), also soft-deletes any
+ *     OTHER locally-authored surplus row for that peer — an ordinary JOURNALED TOMBSTONE that propagates
+ *     downstream, reported SEPARATELY as `removedLocalObjectIds` so the caller cannot describe it as a
+ *     shadow tidy-up (review round 6, M1 — the two cases produce different output on every surface).
  *
  * WHAT IT REFUSES. A VERIFIED foreign-origin replica is never adopted and never DELETED: deleting one
  * would make the next real import a single-writer violation and wedge that peer's sync — trading one
@@ -367,6 +372,12 @@ export async function reconcileOutpostConfig(
       });
     }
   };
+  // Split BEFORE removal, and reported separately (review round 6, M1): `unremovable` above already
+  // guarantees every row left in `surplus` is either a shadow or locally authored (a verified foreign
+  // surplus row would have thrown), so these two filters partition it exactly, and neither call site
+  // downstream can recombine "removed a stray copy" with "deleted and journaled my own config".
+  const removedShadowObjectIds = surplus.filter(isShadow).map((o) => o.id);
+  const removedLocalObjectIds = surplus.filter(isLocallyAuthored).map((o) => o.id);
 
   let adoptedObjectId: string | null = null;
   let kept = keeper;
@@ -389,7 +400,8 @@ export async function reconcileOutpostConfig(
     return {
       config: toOutpostConfig(kept, self.domainId),
       adoptedObjectId,
-      removedObjectIds: surplus.map((o) => o.id)
+      removedShadowObjectIds,
+      removedLocalObjectIds
     };
   }
 
@@ -397,7 +409,8 @@ export async function reconcileOutpostConfig(
   return {
     config: toOutpostConfig(kept, self.domainId),
     adoptedObjectId,
-    removedObjectIds: surplus.map((o) => o.id)
+    removedShadowObjectIds,
+    removedLocalObjectIds
   };
 }
 

@@ -15038,7 +15038,8 @@ export type ReconcileOutpostConfigResponses = {
             updatedAt: string;
         };
         adoptedObjectId: string | null;
-        removedObjectIds: Array<string>;
+        removedShadowObjectIds: Array<string>;
+        removedLocalObjectIds: Array<string>;
     };
 };
 

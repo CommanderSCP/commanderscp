@@ -40,6 +40,7 @@ import type {
   ImportBundleRequest,
   // M16.2 phase A — the `outpost` config object (E1) + the narrow peer PATCH (E4).
   OutpostConfig,
+  OutpostConfigReconcileResult,
   OutpostTrustTier,
   UpdateFederationPeerRequest,
   SyncScope
@@ -317,6 +318,42 @@ function outpostConfigRow(o: OutpostConfig): Record<string, string> {
     version: String(o.version),
     notObservable: o.unknownFields.join(", ") || "-"
   };
+}
+
+/** `scp federation outpost reconcile`'s "what happened" lines (review round 6, M1). The two removal
+ *  buckets on `OutpostConfigReconcileResult` are reported with DELIBERATELY DIFFERENT WORDING, and must
+ *  stay that way: `removedShadowObjectIds` is a silent local tidy-up of a hand-typed copy this domain
+ *  never authored (invisible to the outpost), while `removedLocalObjectIds` is THIS DOMAIN'S OWN declared
+ *  config being permanently deleted — an ordinary journaled tombstone that PROPAGATES DOWNSTREAM to the
+ *  outpost. Collapsing the two into one "unverified shadow(s)" sentence (the N9-era bug this fixes) told
+ *  an operator who had just deleted their own config, and pushed that delete to the outpost, that they
+ *  had merely cleaned up a stray copy. Exported so the CLI surface test can pin the wording gap directly
+ *  rather than only via the command's `--keep` help text. */
+export function formatReconcileResultLines(result: OutpostConfigReconcileResult): string[] {
+  const lines: string[] = [
+    result.adoptedObjectId === null
+      ? "Adopted: nothing (an authoritative row already held the binding)"
+      : `Adopted: ${result.adoptedObjectId} (an unverified hand-filled shadow is now this domain's own object)`
+  ];
+  if (result.removedShadowObjectIds.length === 0 && result.removedLocalObjectIds.length === 0) {
+    lines.push("Removed: nothing (no surplus rows)");
+    return lines;
+  }
+  if (result.removedShadowObjectIds.length > 0) {
+    lines.push(
+      `Removed ${result.removedShadowObjectIds.length} unverified shadow(s) (hand-typed copies this ` +
+        `domain never authored — a purely local cleanup, invisible to the outpost): ` +
+        `${result.removedShadowObjectIds.join(", ")}`
+    );
+  }
+  if (result.removedLocalObjectIds.length > 0) {
+    lines.push(
+      `Deleted ${result.removedLocalObjectIds.length} row(s) THIS DOMAIN AUTHORED to resolve a --keep ` +
+        `conflict (an ordinary journaled tombstone — this WILL propagate to the outpost): ` +
+        `${result.removedLocalObjectIds.join(", ")}`
+    );
+  }
+  return lines;
 }
 
 // -------------------------------------------------------------------------------------
@@ -2941,16 +2978,9 @@ export function buildProgram(): Command {
       // the whole point of the call: a bare config row would look identical to `outpost show` and
       // leave the operator unable to tell whether anything was cleaned up.
       printResult([result.config], opts.output, (item) => outpostConfigRow(item as OutpostConfig));
-      console.log(
-        result.adoptedObjectId === null
-          ? "Adopted: nothing (an authoritative row already held the binding)"
-          : `Adopted: ${result.adoptedObjectId} (an unverified hand-filled shadow is now this domain's own object)`
-      );
-      console.log(
-        result.removedObjectIds.length === 0
-          ? "Removed: nothing (no surplus unverified shadows)"
-          : `Removed ${result.removedObjectIds.length} unverified shadow(s): ${result.removedObjectIds.join(", ")}`
-      );
+      for (const line of formatReconcileResultLines(result)) {
+        console.log(line);
+      }
     });
 
   federationCmd
