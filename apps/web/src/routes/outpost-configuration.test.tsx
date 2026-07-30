@@ -42,6 +42,7 @@ const {
   TrustTierCard,
   claimantsForPeer,
   declaredTierOf,
+  defaultSurvivor,
   hasAuthorityConflict,
   isConfigForeign,
   isUnilateralSparse,
@@ -427,6 +428,118 @@ describe("reconcile: the two removal outcomes are never one bucket", () => {
     expect(html).toContain('data-testid="reconcile-confirm-propagating"');
     expect(tagWithAttr(html, `data-keep="${localA.objectId}"`)).toContain('disabled=""');
     expect(tagWithAttr(html, `data-keep="${localB.objectId}"`)).toContain('disabled=""');
+  });
+
+  it("the DEFAULT button does not route around the gate the per-row buttons enforce", () => {
+    // THE MEASURED BYPASS. With two locally-authored claimants both `reconcile-keep` buttons carried
+    // `disabled=""` — either choice drops a row this domain authored, whose tombstone PROPAGATES
+    // downstream to the outpost — while the bare `reconcile-default` button called the SAME
+    // destructive verb with no preview, no per-outcome block, no confirmation, and a label naming no
+    // consequence, and was fully clickable.
+    const localA = configFixture({ objectId: "44444444-4444-4444-8444-444444444444" });
+    const localB = configFixture({ objectId: "55555555-5555-4555-8555-555555555555" });
+    const tied = renderToStaticMarkup(
+      <ReconcilePanel claimants={[localA, localB]} ownDomainId={OWN_DOMAIN} onReconcile={() => {}} />
+    );
+    // Two rows of EQUAL authority: the server breaks that tie by creation order, so this side cannot
+    // preview a survivor. It declines to offer the default rather than guess at one.
+    expect(defaultSurvivor([localA, localB], OWN_DOMAIN)).toBeNull();
+    expect(tied).toContain('data-testid="reconcile-default-indeterminate"');
+    expect(tied).not.toContain('data-testid="reconcile-default"');
+
+    // A DETERMINATE default — one local row outranks one shadow — IS offered, and carries the whole
+    // gate: a per-outcome preview block and the same confirmation the per-row buttons use.
+    const shadow = shadowFixture();
+    const determinate = renderToStaticMarkup(
+      <ReconcilePanel
+        claimants={[localA, shadow]}
+        ownDomainId={OWN_DOMAIN}
+        onReconcile={() => {}}
+      />
+    );
+    expect(defaultSurvivor([localA, shadow], OWN_DOMAIN)).toBe(localA);
+    expect(determinate).toContain('data-testid="reconcile-default-block"');
+    // It NAMES the survivor it previews — on the block AND on the button that sends it — so the
+    // request cannot diverge from what was shown. (`renderToStaticMarkup` cannot fire the handler,
+    // so the attribute is what makes the named survivor machine-checkable at all.)
+    expect(tagWithAttr(determinate, 'data-testid="reconcile-default-block"')).toContain(
+      `data-keep="${localA.objectId}"`
+    );
+    expect(tagWithAttr(determinate, 'data-testid="reconcile-default"')).toContain(
+      `data-keep="${localA.objectId}"`
+    );
+
+    // PREMISE, so "gated" is not just "always disabled": the determinate default here drops only a
+    // shadow — a silent local cleanup — and IS clickable. The gate is not blanket caution.
+    // (`disabled=""`, not `disabled`: the button's own class list carries `disabled:opacity-50`.)
+    expect(tagWithAttr(determinate, 'data-testid="reconcile-default"')).not.toContain('disabled=""');
+    expect(determinate).toContain('data-outcome="local-cleanup"');
+  });
+
+  it("no offered default can ever perform a downstream-propagating removal", () => {
+    // THE STRUCTURAL RULE, asserted over every arrangement of the three claimant kinds rather than
+    // over the two the review happened to render. `propagates-downstream` means dropping a row THIS
+    // domain authored — a journaled tombstone the outpost applies — and that choice must always be
+    // made explicitly, per row, behind the confirmation. So: whenever a default IS offered, its own
+    // preview contains no such outcome.
+    const kinds = {
+      local: configFixture({ objectId: "44444444-4444-4444-8444-444444444444" }),
+      local2: configFixture({ objectId: "55555555-5555-4555-8555-555555555555" }),
+      shadow: shadowFixture(),
+      shadow2: shadowFixture({ objectId: "66666666-6666-4666-8666-666666666666" }),
+      replica: replicaFixture(),
+      replica2: replicaFixture({ objectId: "77777777-7777-4777-8777-777777777777" })
+    };
+    const all = Object.values(kinds);
+    const combos: OutpostConfig[][] = [];
+    for (let i = 0; i < all.length; i += 1) {
+      for (let j = i + 1; j < all.length; j += 1) {
+        combos.push([all[i]!, all[j]!]);
+        for (let k = j + 1; k < all.length; k += 1) combos.push([all[i]!, all[j]!, all[k]!]);
+      }
+    }
+    expect(combos.length).toBeGreaterThan(20);
+
+    let offered = 0;
+    for (const claimants of combos) {
+      const html = renderToStaticMarkup(
+        <ReconcilePanel claimants={claimants} ownDomainId={OWN_DOMAIN} onReconcile={() => {}} />
+      );
+      const ids = claimants.map((c) => c.objectId).join(",");
+      if (!html.includes('data-testid="reconcile-default-block"')) {
+        expect(html, ids).toContain('data-testid="reconcile-default-indeterminate"');
+        continue;
+      }
+      offered += 1;
+      const block = tagWithAttr(html, 'data-testid="reconcile-default-block"');
+      const keep = /data-keep="([^"]+)"/.exec(block)?.[1];
+      expect(keep, `the offered default names its survivor (${ids})`).toBeDefined();
+      // The default's OWN preview, computed from the survivor it names — not the whole panel's, which
+      // legitimately contains propagating outcomes for the per-row choices.
+      const preview = removalPreview(claimants, keep!, OWN_DOMAIN);
+      expect(
+        preview.map((entry) => entry.outcome),
+        `offered default for ${ids} must not propagate`
+      ).not.toContain("propagates-downstream");
+    }
+    // …and the rule is not satisfied by never offering a default at all.
+    expect(offered).toBeGreaterThan(0);
+  });
+
+  it("a default that would need to delete a VERIFIED replica is disabled and says why", () => {
+    // Local row (rank 0) outranks the verified replica (rank 1), so the default keeps the local row —
+    // which requires deleting the replica, and reconcile refuses that outright (409). Disabled with
+    // the reason, rather than offered and refused.
+    const local = configFixture();
+    const replica = replicaFixture();
+    const html = renderToStaticMarkup(
+      <ReconcilePanel claimants={[local, replica]} ownDomainId={OWN_DOMAIN} onReconcile={() => {}} />
+    );
+    expect(html).toContain('data-testid="reconcile-default-block"');
+    expect(tagWithAttr(html, 'data-testid="reconcile-default"')).toContain('disabled=""');
+    expect(tagWithAttr(html, 'data-testid="reconcile-default"')).toContain(
+      "signature-verified replica"
+    );
   });
 
   it("renders a shadow cleanup and a propagating tombstone in visibly different ways", () => {

@@ -112,6 +112,37 @@ export function removalPreview(
     });
 }
 
+/**
+ * The server's own authority ranking, mirrored — `outposts-repo.ts`'s `byAuthority`: a row THIS
+ * DOMAIN AUTHORED outranks a signature-verified replica, which outranks an unverified hand-filled
+ * shadow. Every input is already on the wire (`originIsSelf`/`originDomainId`, `provenance`).
+ */
+export function authorityRank(config: OutpostConfig, ownDomainId: string | undefined): number {
+  if (!isConfigForeign(config, ownDomainId)) return 0;
+  return config.provenance === "manual" ? 2 : 1;
+}
+
+/**
+ * Which row a reconcile with NO `keep` would leave standing — or `null` when this side cannot know.
+ *
+ * DELIBERATELY REFUSES TO GUESS. The server breaks a tie inside one authority class by `(created_at,
+ * id)`, which is its list order and not something a client should reconstruct and present as a
+ * prediction. So a determinate answer means EXACTLY ONE row holds the top rank; two rows of equal
+ * authority return `null`, and the panel then declines to offer the default at all rather than
+ * preview a survivor it is guessing at. A preview that might be wrong is worse than no default
+ * button, because the whole point of the preview is that it is what will happen.
+ */
+export function defaultSurvivor(
+  claimants: OutpostConfig[],
+  ownDomainId: string | undefined
+): OutpostConfig | null {
+  if (claimants.length === 0) return null;
+  const ranks = claimants.map((config) => authorityRank(config, ownDomainId));
+  const best = Math.min(...ranks);
+  const top = claimants.filter((_, index) => ranks[index] === best);
+  return top.length === 1 ? (top[0] ?? null) : null;
+}
+
 const OUTCOME_COPY: Record<RemovalOutcome, { label: string; detail: string; tone: string }> = {
   "propagates-downstream": {
     label: "authored here — removal PROPAGATES to the outpost",
@@ -617,6 +648,25 @@ export function ReconcilePanel({
   onReconcile: (keep?: string) => void;
 }): React.JSX.Element {
   const [confirmed, setConfirmed] = useState<string | null>(null);
+  // THE DEFAULT IS OFFERED ONLY WHERE IT CANNOT BE THE DESTRUCTIVE CHOICE — one rule, not a second
+  // copy of the confirmation machinery. It stands down for either reason:
+  //   * the survivor is INDETERMINATE (two rows of equal authority, tie broken server-side), so any
+  //     preview would be a guess; or
+  //   * reconciling with it would drop a row THIS DOMAIN AUTHORED, whose tombstone PROPAGATES to the
+  //     outpost. That choice must be made explicitly, per row, behind the checkbox below.
+  // As it happens the second condition is implied by the first today (a UNIQUE top-ranked survivor
+  // means every dropped row ranks strictly lower, hence is foreign, hence never propagates) — it is
+  // written out anyway so a later change to `authorityRank` cannot silently reopen the bypass.
+  const candidate = defaultSurvivor(claimants, ownDomainId);
+  const candidatePreview = candidate
+    ? removalPreview(claimants, candidate.objectId, ownDomainId)
+    : [];
+  const candidatePropagates = candidatePreview.some(
+    (entry) => entry.outcome === "propagates-downstream"
+  );
+  const defaultKeep = candidate !== null && !candidatePropagates ? candidate : null;
+  const defaultPreview = defaultKeep ? candidatePreview : [];
+  const defaultRefused = defaultPreview.some((entry) => entry.outcome === "refused");
 
   return (
     <div className="flex flex-col gap-3" data-testid="reconcile-panel">
@@ -695,17 +745,75 @@ export function ReconcilePanel({
         );
       })}
 
-      <div>
-        <Button
-          type="button"
-          variant="outline"
-          disabled={isReconciling}
-          onClick={() => onReconcile(undefined)}
-          data-testid="reconcile-default"
+      {/* THE DEFAULT, THROUGH THE SAME DOOR AS EVERY OTHER CHOICE.
+          It used to call the same destructive verb with NO `keep` — no preview of which row survives,
+          no per-outcome block, no confirmation, and a label naming no consequence — while the
+          per-claimant buttons beside it stayed disabled behind a checkbox for exactly that action.
+          The measured shape of the bypass: with two locally-authored claimants both `reconcile-keep`
+          buttons carried `disabled=""` and `reconcile-default` was fully clickable, and server-side
+          that call still soft-deletes the surplus, journaling a tombstone that PROPAGATES to the
+          outpost for any row this domain authored.
+
+          So it now NAMES its survivor, previews every dropped row, and is withheld entirely wherever
+          it would be the propagating choice. Naming the survivor is not cosmetic: a request carrying
+          `?keep=` cannot diverge from the preview shown beside it, whereas a bare call re-derives the
+          survivor server-side after the operator has already read a prediction. */}
+      {defaultKeep ? (
+        <div
+          className="rounded border border-slate-200 p-3"
+          data-testid="reconcile-default-block"
+          data-keep={defaultKeep.objectId}
         >
-          Reconcile (keep the most authoritative row)
-        </Button>
-      </div>
+          <div className="text-sm text-slate-700">
+            The most authoritative row is <code>{defaultKeep.objectId}</code>. Reconciling with it
+            would do this:
+          </div>
+          <div className="mt-2 flex flex-col gap-2">
+            {defaultPreview.map((entry) => (
+              <div
+                key={entry.config.objectId}
+                className={`rounded border p-2 text-xs ${OUTCOME_COPY[entry.outcome].tone}`}
+                data-testid="reconcile-removal-preview"
+                data-outcome={entry.outcome}
+              >
+                <div className="font-medium">
+                  <code>{entry.config.objectId}</code> — {OUTCOME_COPY[entry.outcome].label}
+                </div>
+                <div className="mt-1">{OUTCOME_COPY[entry.outcome].detail}</div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={isReconciling || defaultRefused}
+              onClick={() => onReconcile(defaultKeep.objectId)}
+              data-testid="reconcile-default"
+              // The SAME value the click sends, on the control itself — `renderToStaticMarkup` cannot
+              // fire a handler, so this is what makes the named survivor machine-checkable.
+              data-keep={defaultKeep.objectId}
+              {...(defaultRefused
+                ? {
+                    title:
+                      "Refused: keeping the most authoritative row would require deleting a " +
+                      "signature-verified replica this domain did not author (409)."
+                  }
+                : {})}
+            >
+              Reconcile (keep the most authoritative row)
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <p className="text-sm text-slate-600" data-testid="reconcile-default-indeterminate">
+          <strong>No default is offered for this conflict.</strong> Either two of these rows hold the
+          same authority — the server breaks that tie by creation order, so this side cannot say
+          which would survive and will not preview a guess — or reconciling would drop configuration
+          this domain authored, whose removal <strong>propagates to the outpost</strong>. Choose the
+          row that should survive above, where the consequence is stated per row.
+        </p>
+      )}
 
       {reconcileError !== undefined && reconcileError !== null && (
         <div
