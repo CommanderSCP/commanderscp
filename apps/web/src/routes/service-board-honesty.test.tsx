@@ -138,7 +138,31 @@ describe("service board rendering: an unobservable field is never painted as a c
     expect(html).toContain(MUTED_DASH);
     expect(html).toContain('data-testid="board-no-change"');
     expect(html).toContain('data-blocked="false"');
-    expect(html).toContain('data-driven-here="true"');
+    // "none", NOT "true". This fixture's `driver` is null — the row has no latest change to
+    // attribute to anyone — and the attribute used to default that to `true`, making a row with
+    // NOTHING TO DRIVE machine-readable as one this domain drives, indistinguishable from the
+    // genuinely-local row asserted below. Same class as `data-blocked` and as the bare row-level
+    // `data-trust-tier` in `routes/outposts.tsx`.
+    expect(html).toContain('data-driven-here="none"');
+    expect(html).not.toContain('data-driven-here="true"');
+  });
+
+  it("distinguishes NO DRIVER from a driver that IS this domain — three states, not two", () => {
+    const locallyDriven: ServiceBoardRow = {
+      ...baseRow("checkout-api"),
+      latestChangeId: "0c3f8a1e-2b4d-4c6f-8a90-1b2c3d4e5f60",
+      changeName: "local rollout",
+      driver: { drivenHere: true, originDomainId: null }
+    };
+    const noDriver = renderRow(drivenRow);
+    const driven = renderRow(locallyDriven);
+
+    expect(driven).toContain('data-driven-here="true"');
+    expect(noDriver).toContain('data-driven-here="none"');
+    // PREMISE: the distinction is the attribute's, not a side effect of the rows differing anyway.
+    expect(driven).not.toContain('data-driven-here="none"');
+    // ...and neither is the not-driven-here case, which stays exactly as it was.
+    expect(renderRow(replicaRow)).toContain('data-driven-here="false"');
   });
 
   it("refuses to render 'no active change' when change visibility itself is unobservable", () => {

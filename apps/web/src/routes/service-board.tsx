@@ -146,7 +146,12 @@ export function BoardRow({ row }: { row: ServiceBoardRow }): React.JSX.Element {
          field this row lists in unknownFields, which reintroduces in the DOM the
          exact confusion the response shape removes on the wire. */
       data-blocked={isUnknown(row, "attention.blocked") ? "unknown" : String(row.attention.blocked)}
-      data-driven-here={row.driver ? row.driver.drivenHere : true}
+      /* "none" — not "true" — when the server sent no driver at all. `driver` is nullable (no
+         latest change to attribute), and defaulting an ABSENT driver to `true` made a row with
+         nothing to drive machine-readable as one this domain DRIVES, indistinguishable from a
+         real local-origin row. Same class as `data-blocked` above, and as the bare row-level
+         `data-trust-tier` fixed in `routes/outposts.tsx`. */
+      data-driven-here={row.driver ? String(row.driver.drivenHere) : "none"}
     >
       <TableCell>
         <Link
