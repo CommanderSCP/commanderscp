@@ -185,10 +185,20 @@ reports which fired (`wokenSync` / `wokenInbox` / `wokenRelay`). Before this, a 
 retrans woke the *import* of the arriving `.scpbundle` and then waited for a human to move the bytes.
 A dropped poke self-heals on the next interval tick, unchanged.
 
-**Chart gap (honest).** As with `SCP_INBOX_LOOP`, none of these variables have a `deploy/helm` value
-yet — `commanderscp.commonEnv` renders a fixed list and the chart has no generic env escape hatch, so
-a Helm-deployed retrans cannot be configured for unattended relay without a chart change. Tracked
-separately; it is not specific to this milestone.
+**Chart surface.** These knobs are settable from `deploy/helm` as `federation.relay.autoRelay.*`
+(and `federation.relay.inbox.*` for M13.1a's ingest half), asserted by `tools/helm-verify` both
+ways — absent on a default render, present and correct when enabled.
+
+**What is still NOT chart-settable, precisely.** The relay's **directories** —
+`SCP_RELAY_OUT_DIR` / `IN_DIR` / `BLOB_OUT_DIR`, `SCP_RELAY_SOURCE_REPO` / `DEST_REPO` / `CERT_DIR`,
+and the `SCP_DELIVERY_ROOTS` that must bound them. A CDS drop directory is polled by a third-party
+intake watcher, so it needs a volume shape (RWX PVC / `existingClaim` / hostPath / CSI) that is a
+deployment-topology decision, and the chart's `readOnlyRootFilesystem: true` pod default forbids
+improvising one. So a Helm-deployed retrans can be switched on but not yet given anywhere to drop:
+both loops resolve no onward target and defer with a named problem, consuming no attempt and writing
+no Decision. Configure those directories out-of-band (or run the retrans outside Helm) until the
+volume shape is decided. *(An earlier revision of this note said the gap was "tracked separately" —
+that was wrong: nothing tracked it. This paragraph is the record.)*
 
 ## Poke-mode across the relay chain (M14.4, ADR-0009)
 

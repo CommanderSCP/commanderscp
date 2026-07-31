@@ -231,16 +231,46 @@ regardless of transport-level identity, mTLS or not. Every mTLS layer above (cli
 `ingress.mtls` + `federation.serverMtls`) is defense-in-depth transport-**identity**, never a
 replacement for that signature verification.
 
-Separately: the scheduled sync loop that actually calls `pull()`/`push()` on an interval for
-connected outposts does not exist yet — only the air-gapped **file** transport (`scp federation
-export/import`) has a caller today. The transport is real and independently testable; nothing
-schedules it yet.
+Separately (**corrected 2026-07-31** — this paragraph used to say the scheduled sync loop "does not
+exist yet"; it shipped in M14.0): the scheduled live-pull loop is real, and the chart can now enable
+it via `federation.sync.enabled`. The air-gapped **file** transport (`scp federation export/import`)
+remains the other, independent path.
+
+## Operator config surface (what this chart can and cannot switch on)
+
+`commanderscp.commonEnv` renders a **fixed** list of env vars and the chart has **no generic
+`extraEnv` escape hatch** — so a server capability whose only switch is an env var is unreachable
+from Helm until this chart grows a value for it. That was a standing gap through M13/M14; the knobs
+below now exist, and `tools/helm-verify` asserts each one **both ways** (absent on a default render,
+present and correct when enabled) so the next one cannot be forgotten silently.
+
+| Values key | Env | Notes |
+|---|---|---|
+| `federation.sync.*` | `SCP_FEDERATION_SYNC_LOOP` + cadences | M14.0/M14.4 live-pull. Off by default. |
+| `federation.relay.inbox.*` | `SCP_INBOX_LOOP`, tick interval | M13.1a staging-node ingest. Off by default. |
+| `federation.relay.autoRelay.*` | `SCP_RETRANS_AUTO_RELAY` + interval/attempts/lease | M13.1b unattended byte egress. Off by default; belongs on the **low-side** retrans only. |
+| `artifactChannel.*` | `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` / `_BLOB_BASE_URLS` / `_INSECURE_HOSTS` | ADR-0019 §4. Fail-closed when unset. |
+| `operatorApi.enabled` | `SCP_OPERATOR_TOKEN` (secretKeyRef) | Requires `appSecrets.existingSecret`; render fails fast without it. |
+| `internalBaseUrl` | `SCP_INTERNAL_BASE_URL` | How this instance names itself to a human — the CLI device-login URL. |
+| `api.role` | `SCP_ROLE` on the api pods | `api` (default) or `all`. |
+
+**Still NOT settable, and why.** The retrans **byte plumbing** — `SCP_RELAY_OUT_DIR` / `IN_DIR` /
+`BLOB_OUT_DIR`, `SCP_RELAY_SOURCE_REPO` / `DEST_REPO` / `CERT_DIR`, and the `SCP_DELIVERY_ROOTS`
+that must bound them — has no values key yet. This is deliberate rather than overlooked: a CDS drop
+directory is polled by a **third-party intake watcher**, so it needs a volume shape (RWX PVC,
+`existingClaim`, hostPath, CSI) that is a deployment-topology decision, and `readOnlyRootFilesystem:
+true` forbids improvising one. A retrans can therefore be *switched on* here but not yet *given
+somewhere to drop*; both loops resolve no target and defer with a named problem, consuming no
+attempt. Same for the managed-scan runner (`SCP_MANAGED_SCAN_RUNNER_IMAGE`) — note the chart
+currently provisions the scan-DB PVC (`scanDbCache`) for a scanner it cannot start.
 
 ## Other known gaps (honestly flagged, not silently worked around)
 
-- **Object storage** (`objectStorage.provider`): the chart provisions the PVC/S3 config per
-  DESIGN §16, but no shipped application feature reads/writes it yet — it's plumbing ahead of a
-  feature, mounted at `/var/lib/scp/storage` so no volume migration is needed later.
+- **Object storage** (`objectStorage.provider`): the chart provisions the PVC per DESIGN §16 and
+  the filesystem provider is mounted at `/var/lib/scp/storage`. **Corrected 2026-07-31:** this
+  entry used to claim no application feature reads or writes it; that stopped being true with
+  M13.2. The `objectStorage.s3` sub-block, however, remains genuinely **inert** — `existingSecret`
+  is referenced by no template, and a non-`filesystem` provider still mounts an `emptyDir`.
 - **`serviceMonitor.enabled`**: the chart can render a `ServiceMonitor`, but the app does not yet
   expose a `/metrics` endpoint (DESIGN §2 names Prometheus metrics as part of the stack; not
   implemented in any milestone through M7). Disabled by default; enabling it today just means
