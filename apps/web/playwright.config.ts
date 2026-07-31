@@ -18,6 +18,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  */
 export default defineConfig({
   testDir: "./e2e",
+  // Playwright's default glob also matches `*.test.ts` (e.g. openapi-conformance.test.ts, a
+  // Vitest unit test living beside the specs for the M16.2 phase B no-bypass matcher — see
+  // vitest.config.ts's doc comment). Restrict to the `*.spec.ts` convention this directory
+  // already follows so Playwright never tries to run a Vitest file under its own runner.
+  testMatch: "**/*.spec.ts",
   timeout: 30_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,
