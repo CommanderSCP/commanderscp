@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { OutpostTrustTierSchema } from "@scp/schemas";
+import { formatOutpostClaimantToken, OutpostTrustTierSchema } from "@scp/schemas";
 import type {
   FederationPeer,
   FederationPeerStatus,
@@ -8,7 +8,7 @@ import type {
   OutpostConfigReconcileResult,
   OutpostTrustTier
 } from "@scp/schemas";
-import { ScpApiError } from "@scp/sdk";
+import { reconcileStaleClaimants, ScpApiError } from "@scp/sdk";
 import { client } from "../lib/client";
 import { federationStatusKey, outpostConfigListKey } from "../lib/query-client";
 import { isForeignOriginObject, replicaGuard, useOwnDomainId } from "../lib/replica-origin";
@@ -648,10 +648,10 @@ export function ReconcileOutcome({
         </p>
       )}
       {removedShadows.length === 0 && removedLocal.length === 0 && adopted === null && (
-          <p className="mt-2 text-slate-600" data-testid="reconcile-removed-none">
-            Nothing needed removing.
-          </p>
-        )}
+        <p className="mt-2 text-slate-600" data-testid="reconcile-removed-none">
+          Nothing needed removing.
+        </p>
+      )}
     </div>
   );
 }
@@ -839,8 +839,8 @@ export function ReconcilePanel({
         </div>
       ) : (
         <p className="text-sm text-slate-600" data-testid="reconcile-default-indeterminate">
-          <strong>No default is offered for this conflict.</strong> Either two of these rows hold the
-          same authority — the server breaks that tie by creation order, so this side cannot say
+          <strong>No default is offered for this conflict.</strong> Either two of these rows hold
+          the same authority — the server breaks that tie by creation order, so this side cannot say
           which would survive and will not preview a guess — or reconciling would drop configuration
           this domain authored, whose removal <strong>propagates to the outpost</strong>. Choose the
           row that should survive above, where the consequence is stated per row.
@@ -909,10 +909,42 @@ export function OutpostConfigurationSection({
     mutationFn: (next: boolean) => client.federation.updatePeer(peerDomainId, { pokeMode: next }),
     onSuccess: invalidate
   });
+  /**
+   * THE PRECONDITION, ATTACHED WHERE EVERY RECONCILE THIS PANEL ISSUES PASSES THROUGH.
+   *
+   * The panel predicts an outcome from `claimants` and then asks the server to act — but the server
+   * derives that outcome from the rows it reads INSIDE its own transaction, which is a different
+   * moment. `?ifClaimant=<objectId>:<version>` is that prediction's premise, sent with the request
+   * and compared as a set, so a world that moved is a 412 that WROTE NOTHING rather than a 200 that
+   * did something else. Both failure directions are covered by this one attachment, which is why it
+   * lives on the mutation and not on a button:
+   *   * the ADOPT-SHADOW control below (`TrustTierCard`'s `onReconcile`) sends no `keep`, so the
+   *     server re-derives the survivor — a locally-authored row that appeared since this query
+   *     resolved outranks the shadow, and the operator's entered value is DROPPED while the button
+   *     promised it would be kept;
+   *   * naming the shadow with `keep` instead makes that same concurrent row surplus, and removing a
+   *     row THIS domain authored journals a tombstone that PROPAGATES to the outpost — the removal
+   *     this panel elsewhere refuses to perform without an explicit confirmation.
+   *
+   * The token is built from `claimants` — the exact array the preview above was computed from — so
+   * the request cannot be checked against a different world than the one on screen.
+   */
   const reconcileMutation = useMutation({
     mutationFn: (keep: string | undefined) =>
-      client.federation.reconcileOutpost(peerDomainId, keep !== undefined ? { keep } : {}),
-    onSuccess: invalidate
+      client.federation.reconcileOutpost(peerDomainId, {
+        ...(keep !== undefined ? { keep } : {}),
+        // Guarded because an EMPTY set is not expressible on the wire (a query parameter repeated
+        // zero times is absence, which means "unchecked"): sending one for a peer whose claimants
+        // have not loaded would silently downgrade to the unguarded call. No control that triggers
+        // this mutation renders before they load, so this is a floor, not a live branch.
+        ...(claimants.length > 0 ? { ifClaimants: claimants.map(formatOutpostClaimantToken) } : {})
+      }),
+    onSuccess: invalidate,
+    // A 412 says the claimant list on screen is stale, so REFETCH it: the refusal's own text names
+    // what moved, and the preview beside it must be the new world, not the one that was refused.
+    onError: (err: unknown) => {
+      if (reconcileStaleClaimants(err) !== null) void invalidate();
+    }
   });
 
   return (
