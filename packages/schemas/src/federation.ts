@@ -504,8 +504,21 @@ export type OutpostConfigReconcileResult = z.infer<typeof OutpostConfigReconcile
 export const OutpostReconcileStaleProblemSchema = ProblemSchema.extend({
   /** Every live `outpost` config row bound to the peer AT THE MOMENT OF REFUSAL, most authoritative
    *  first — the same projection `GET /federation/outposts` returns, so a caller can re-derive the
-   *  token from it directly. */
-  claimants: z.array(OutpostConfigSchema)
+   *  token from it directly.
+   *
+   *  OPTIONAL, not required (R1 fix, PR #156 residual). This route today only ever throws
+   *  `preconditionFailed` with the extension attached (`assertClaimantsUnchanged`), so `claimants`
+   *  is always present in practice — but the SERIALIZER, not the throw site, is what decides
+   *  whether a 412 reaching this handler is honest. `updateObject`'s bare `expectedVersion` 412 is
+   *  unreachable here today only because reconcile never passes one (a prose argument, checked by
+   *  `apps/server/src/routes/federation-reconcile-412-schema.test.ts`, not a type-level one), and
+   *  the neighbouring verb already plumbs `expectedVersion` end to end — one refactor away. A
+   *  REQUIRED field turned that latent
+   *  reachability into a 500: zod's response serializer drops a response that fails to validate
+   *  against its schema, and fastify has nothing else to fall back to. Optional means a bare 412
+   *  still serializes as 412, with no `claimants` array, which is the honest shape of a refusal
+   *  that never got the extension. */
+  claimants: z.array(OutpostConfigSchema).optional()
 });
 export type OutpostReconcileStaleProblem = z.infer<typeof OutpostReconcileStaleProblemSchema>;
 

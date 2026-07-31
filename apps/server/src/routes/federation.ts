@@ -1273,11 +1273,12 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         403: ProblemSchema,
         404: ProblemSchema,
         409: ProblemSchema,
-        /** The ONLY 412 this route can produce is the stale-claimant refusal (`updateObject`'s
-         *  `expectedVersion` 412 is unreachable here — reconcile never passes one), so the fresh
-         *  `claimants` list is a REQUIRED member rather than an optional one a caller has to test
-         *  for. Declaring it is also what lets it through: the zod serializer strips every member a
-         *  response schema does not name, extension members included. */
+        /** Today the ONLY 412 this route produces is the stale-claimant refusal, so `claimants` is
+         *  populated on every 412 this handler actually throws — but the field itself is OPTIONAL
+         *  (R1 fix, PR #156 residual): a bare `preconditionFailed` with no extension must still
+         *  serialize as 412, not 500, however unreachable that branch is today. Declaring the
+         *  schema here is also what lets `claimants` through at all: the zod serializer strips every
+         *  member a response schema does not name, extension members included. */
         412: OutpostReconcileStaleProblemSchema
       }
     },
