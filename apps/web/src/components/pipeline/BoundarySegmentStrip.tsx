@@ -81,7 +81,10 @@ function PhaseCard({
       </span>
       {badge}
       {detail && (
-        <p className="max-w-[16rem] text-center text-[11px] leading-snug text-slate-500" title={detail}>
+        <p
+          className="max-w-[16rem] text-center text-[11px] leading-snug text-slate-500"
+          title={detail}
+        >
           {detail}
         </p>
       )}
@@ -105,9 +108,7 @@ function TransferPhase({ segment }: { segment: BoundarySegment }): React.JSX.Ele
   const handoffUnknown = isBoundaryUnknown(segment, "transfer.handoff");
   const hopCount = transfer.hops.length;
   const hopDetail =
-    hopCount > 0
-      ? `${hopCount} bundle hop${hopCount === 1 ? "" : "s"} observed here`
-      : undefined;
+    hopCount > 0 ? `${hopCount} bundle hop${hopCount === 1 ? "" : "s"} observed here` : undefined;
 
   const badge =
     transfer.state === "received" ? (
@@ -160,9 +161,12 @@ function ValidatePhase({
   // says so, this renders an explicit unknown — NOT a neutral-looking "not reported" chip that a
   // tired operator could read as "fine".
   const stateUnknown = isBoundaryUnknown(segment, "validate.state");
-  // `isAbsent`, not `!== null`: `authorizedArtifactCount` is required-NULLABLE and the generated SDK
-  // validates no response, so a server that omits the key reached this branch with `undefined` and
-  // printed the literal `undefined authorized artifacts`. Same class as the federation cells.
+  // `isAbsent`, not `!== null`: `authorizedArtifactCount` is required-NULLABLE, and BEFORE ADR-0023
+  // the generated SDK validated no response, so a server that omitted the key reached this branch
+  // with `undefined` and printed the literal `undefined authorized artifacts`. SINCE ADR-0023 the
+  // SDK rejects that body at the boundary — the key is required, so an omission is a contract
+  // violation — and this is defence in depth for every other source of a segment. Same class as the
+  // federation cells.
   const artifactDetail = isAbsent(validate.authorizedArtifactCount)
     ? undefined
     : `${validate.authorizedArtifactCount} authorized artifact${validate.authorizedArtifactCount === 1 ? "" : "s"}`;

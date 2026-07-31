@@ -34,10 +34,14 @@ import {
  * file calls each one with the key ABSENT. Each assertion below has been mutation-proven by
  * reverting its `isAbsent(...)` to `=== null` and watching this file go red.
  *
- * WHAT "ABSENT" MEANS, and why `=== null` is not enough (see `isAbsent`'s own doc in `cli.ts`): the
- * generated SDK does no runtime response validation, so a key a server OMITS arrives as `undefined`
- * whatever `.nullable()` says. Every fixture below therefore DELETES the key rather than setting it
- * to `null` — `null` is the case that already worked.
+ * WHAT "ABSENT" MEANS, and why `=== null` is not enough (see `isAbsent`'s own doc in `cli.ts`): an
+ * omitted key arrives as `undefined` whatever `.nullable()` says. For an `.optional()` field that is
+ * CONTRACT-LEGAL and ADR-0023's response validation passes it through untouched, so these guards are
+ * the only thing; for a required field the SDK now rejects the body at the boundary instead and they
+ * are defence in depth. Either way the formatters are called DIRECTLY here, which is the only level
+ * at which the guard itself — as opposed to the boundary in front of it — can be pinned. Every
+ * fixture below therefore DELETES the key rather than setting it to `null` — `null` is the case that
+ * already worked.
  */
 
 /** Delete one key from an otherwise-valid value: what an older/newer server actually puts on the
@@ -346,7 +350,8 @@ describe("peerRow: a peer whose response omits `syncScope` must not kill `scp fe
     // THE MUTANT: `p.syncScope.mode` throws `TypeError: Cannot read properties of undefined
     // (reading 'mode')` while building the FIRST row, so the command prints NO table at all — not a
     // degraded one. `syncScope` is required-not-optional on `FederationPeerSchema` and the generated
-    // SDK validates no response; this is the same field `outpost-settings.tsx` guards on the web.
+    // BEFORE ADR-0023 the SDK validated no response; this is the same field `outpost-settings.tsx`
+    // guards on the web. These cases drive the FORMATTER directly, which is where the guard lives.
     const peer: Partial<FederationPeer> = basePeer();
     delete peer.syncScope;
     expect(() => peerRow(peer as FederationPeer)).not.toThrow();

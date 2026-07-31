@@ -220,11 +220,14 @@ export function TrustTierCard({
 }): React.JSX.Element {
   const [tier, setTier] = useState<string>(config.trustTier ?? "");
   const foreign = isConfigForeign(config, ownDomainId);
-  // `?? []` — `unknownFields` is required-not-optional by `OutpostConfigSchema`, and the generated SDK
-  // validates NO response, so a server that omits the key made this dereference throw a TypeError and
-  // BLANK THE WHOLE PANEL. Under the very response shape the guard below exists for, that is worse
-  // than the unknown it was meant to render: fail loud beats fail dishonest, but a white screen is
-  // neither. "Nothing declared" is the same reading `isPeerUnknown` gives an older server.
+  // `?? []` — `unknownFields` is required-not-optional by `OutpostConfigSchema`, and BEFORE ADR-0023
+  // the generated SDK validated NO response, so a server that omitted the key made this dereference
+  // throw a TypeError and BLANK THE WHOLE PANEL. Under the very response shape the guard below
+  // exists for, that is worse than the unknown it was meant to render: fail loud beats fail
+  // dishonest, but a white screen is neither. SINCE ADR-0023 that body is rejected at the SDK
+  // boundary instead and the page's `isError` branch names the operation and the field; the guard
+  // stays because "nothing declared" is the same reading `isPeerUnknown` gives an older server, for
+  // any source of a config that is not this query.
   const tierUnknown = (config.unknownFields ?? []).includes("trustTier");
   // TWO INDEPENDENT SIGNALS FOR ONE FACT, OR'd — the same fix `outposts.tsx`'s `TrustTierCell` got,
   // applied to the file whose own commit is titled "guard both, everywhere" and which had been given
@@ -238,8 +241,9 @@ export function TrustTierCard({
   //   * A TIER THAT RIDES THE WIRE WHILE THE SERVER DECLARES IT UNOBSERVABLE. `toOutpostConfig`
   //     pushes `"trustTier"` into `unknownFields` in exactly two cases: no tier at all, or
   //     `provenance === "manual"`. So a config that HAS a tier and declares it unknown IS the shadow
-  //     case — with the OPTIONAL `provenance` key merely omitted (`.nullable().optional()`, and the
-  //     SDK does not validate). MEASURED: keyed on provenance alone, such a row rendered
+  //     case — with the OPTIONAL `provenance` key merely omitted. ADR-0023 does NOT close this one:
+  //     `provenance` is `.nullable().optional()`, so an omitted key is CONTRACT-LEGAL and passes
+  //     response validation untouched. MEASURED: keyed on provenance alone, such a row rendered
   //     BYTE-IDENTICAL to a signature-verified replica of the same tier — `data-tier-unverified="false"`,
   //     no shadow notice. `!isAbsent(config.trustTier) &&` is load-bearing and is what keeps this from
   //     over-blocking: an ordinary locally-authored config with NO tier yet also declares `trustTier`
@@ -258,9 +262,9 @@ export function TrustTierCard({
         <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
           Current trust tier
         </span>
-        {/* `isAbsent`, not `=== null`: `OutpostConfigSchema.trustTier` is required-nullable, but the
-            generated SDK does not validate responses at runtime, so a server that omits the key hands
-            this component `undefined` — and `<Badge>{undefined}</Badge>` is an EMPTY BADGE with no
+        {/* `isAbsent`, not `=== null`: `OutpostConfigSchema.trustTier` is required-nullable, and
+            BEFORE ADR-0023 the generated SDK validated no response, so a server that omitted the key
+            handed this component `undefined` — and `<Badge>{undefined}</Badge>` is an EMPTY BADGE with no
             `data-trust-tier` attribute, i.e. a blank standing in for an unknown. Three lines above,
             the select's own initial state already reads this field with `??`; this makes the two
             agree. */}
@@ -601,8 +605,10 @@ export function ReconcileOutcome({
   result: OutpostConfigReconcileResult;
 }): React.JSX.Element {
   // `isAbsent`, not `=== null` / `!== null` — the SAME schema class this file already fixed for
-  // `config.trustTier`, left half-guarded here. `adoptedObjectId` is required-nullable and the SDK
-  // validates no response, so `undefined` is reachable. MEASURED with `adoptedObjectId: undefined`:
+  // `config.trustTier`, left half-guarded here. `adoptedObjectId` is required-nullable, and BEFORE
+  // ADR-0023 the SDK validated no response, so `undefined` was reachable through the SDK too; SINCE
+  // ADR-0023 an omitted required key rejects at the boundary and this is defence in depth for every
+  // other source of a result. MEASURED with `adoptedObjectId: undefined`:
   // `!== null` was TRUE, so the panel emitted
   //   `<p data-testid="reconcile-adopted">Adopted <code></code> as this domain's own configuration —
   //    it journals down to the outpost from now on.</p>`
@@ -648,10 +654,10 @@ export function ReconcileOutcome({
         </p>
       )}
       {removedShadows.length === 0 && removedLocal.length === 0 && adopted === null && (
-          <p className="mt-2 text-slate-600" data-testid="reconcile-removed-none">
-            Nothing needed removing.
-          </p>
-        )}
+        <p className="mt-2 text-slate-600" data-testid="reconcile-removed-none">
+          Nothing needed removing.
+        </p>
+      )}
     </div>
   );
 }
@@ -839,8 +845,8 @@ export function ReconcilePanel({
         </div>
       ) : (
         <p className="text-sm text-slate-600" data-testid="reconcile-default-indeterminate">
-          <strong>No default is offered for this conflict.</strong> Either two of these rows hold the
-          same authority — the server breaks that tie by creation order, so this side cannot say
+          <strong>No default is offered for this conflict.</strong> Either two of these rows hold
+          the same authority — the server breaks that tie by creation order, so this side cannot say
           which would survive and will not preview a guess — or reconciling would drop configuration
           this domain authored, whose removal <strong>propagates to the outpost</strong>. Choose the
           row that should survive above, where the consequence is stated per row.

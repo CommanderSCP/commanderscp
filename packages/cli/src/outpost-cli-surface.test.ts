@@ -305,7 +305,7 @@ describe("scp federation outpost — the operator-facing surface", () => {
 
   /**
    * ROUND 3 — THE SAME HALF-GUARD, IN THE CLI. `adoptedObjectId` is required-NULLABLE
-   * (`federation.ts`), and the generated SDK validates NO response, so a server that omits the key
+   * (`federation.ts`), and BEFORE ADR-0023 the generated SDK validated NO response, so a server that omits the key
    * hands this function `undefined`. Keyed on `=== null`, that took the OTHER branch and printed
    *
    *     Adopted: undefined (an unverified hand-filled shadow is now this domain's own object)
