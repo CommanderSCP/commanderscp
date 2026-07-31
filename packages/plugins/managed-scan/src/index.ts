@@ -63,10 +63,18 @@ export interface ManagedScanConfig {
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_NETWORK_MODE = "none";
 
-/** The methods this runner image ships. Both `trivy` and `openscap` (M13.3b part 1 — proposal §13.3
- *  "Increment order: Trivy first, OpenSCAP second") are dispatchable now; a `trigger()` naming any
- *  other method fails closed here rather than launching a container that would `exit 2`. */
-const SUPPORTED_METHODS = new Set(["trivy", "openscap"]);
+/** The methods this runner image ships — `trivy` (container images), `openscap` (compliance), and
+ *  `trivy-vm` (the 13.3a MACHINE-IMAGE arm: the runner resolves the disk image carried by the pulled
+ *  OCI layout and `trivy vm`s it). A `trigger()` naming any other method fails closed here rather
+ *  than launching a container that would `exit 2`.
+ *
+ *  Deliberately mirrors — and must stay in step with — the server's `RUNNER_SUPPORTED_METHODS`
+ *  (`promotion-scan-step.ts`). The duplication is structural, not laziness: this package does not
+ *  depend on `@scp/schemas` (a plugin runs behind the subprocess isolation host and carries the
+ *  minimum surface), so the set is exported instead and the SERVER-side test pins the containment
+ *  that actually matters — every method the server dispatches must be one this plugin will run. */
+export const SUPPORTED_SCAN_METHODS: readonly string[] = ["trivy", "openscap", "trivy-vm"];
+const SUPPORTED_METHODS = new Set(SUPPORTED_SCAN_METHODS);
 
 function asConfig(config: unknown): ManagedScanConfig {
   const c = config as Partial<ManagedScanConfig> | undefined;
@@ -86,13 +94,17 @@ function asConfig(config: unknown): ManagedScanConfig {
 /** What the commander's promotion scan step passes on `intent.parameters` — all SERVER-controlled:
  *  the pulled OCI layout to scan and where the runner's evidence should land. */
 export interface ManagedScanIntentParameters {
-  /** The scan METHOD (registry-selected per artifact type): `"trivy"` or `"openscap"`. */
+  /** The scan METHOD (registry-selected per artifact type): `"trivy"`, `"trivy-vm"` or `"openscap"`. */
   method: string;
   /** HOST path to the OCI image layout the SERVER pulled by digest (copied INTO the container's
-   *  `/work/image`). The runner has no network and pulls nothing. */
+   *  `/work/image`). The runner has no network and pulls nothing. For `trivy-vm` this layout carries
+   *  the MACHINE IMAGE (a disk-image layer, or a tar layer containing one — run.sh's packaging
+   *  convention); the copy-in seam itself is identical, so the machine-image arm adds no new
+   *  ingress and no new egress. */
   inputDir: string;
   /** HOST path the runner's `/work/out` evidence is copied back into (the commander reads
-   *  `<outputDir>/result.json` for trivy, `<outputDir>/arf.xml` for openscap). */
+   *  `<outputDir>/result.json` for trivy AND trivy-vm — a `trivy vm` run emits the same native Trivy
+   *  JSON — and `<outputDir>/arf.xml` for openscap). */
   outputDir: string;
   /** OpenSCAP only — the XCCDF profile id (`xccdf_..._profile_*`) to evaluate. Ignored by trivy.
    *  Server-resolved from the scan-requirement/registry config (never tenant-suppliable steering of
@@ -233,7 +245,7 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
   const externalId = `managed-scan::${intent.idempotencyKey ?? `${method}:${Date.now()}`}`;
 
   if (!SUPPORTED_METHODS.has(method)) {
-    const detail = `managed-scan: unsupported method '${method}' (this runner image ships 'trivy' and 'openscap')`;
+    const detail = `managed-scan: unsupported method '${method}' (this runner image ships 'trivy', 'trivy-vm' and 'openscap')`;
     outcomes.set(externalId, { succeeded: false, detail });
     return { externalId };
   }

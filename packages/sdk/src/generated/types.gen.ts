@@ -12022,7 +12022,7 @@ export type ListScannerAssignmentsResponses = {
     200: {
         items: Array<{
             executorType: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
-            methods: Array<'trivy' | 'openscap'>;
+            methods: Array<'trivy' | 'openscap' | 'trivy-vm'>;
             updatedAt: string;
         }>;
     };
@@ -12033,7 +12033,7 @@ export type ListScannerAssignmentsResponse = ListScannerAssignmentsResponses[key
 export type PutScannerAssignmentData = {
     body: {
         executorType: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
-        methods: Array<'trivy' | 'openscap'>;
+        methods: Array<'trivy' | 'openscap' | 'trivy-vm'>;
     };
     path?: never;
     query?: never;
@@ -12073,7 +12073,7 @@ export type PutScannerAssignmentResponses = {
      */
     200: {
         executorType: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
-        methods: Array<'trivy' | 'openscap'>;
+        methods: Array<'trivy' | 'openscap' | 'trivy-vm'>;
         updatedAt: string;
     };
 };

@@ -7,6 +7,7 @@ import {
   ScanEvidenceSchema,
   ScanSeverityCountsSchema,
   ExecutorTypeSchema,
+  usesTrivyDb,
   type ScanMethod,
   type ScanSeverityCounts,
   type ScanThreshold,
@@ -91,6 +92,24 @@ const execFileAsync = promisify(execFile);
  * graph object.
  */
 export const MANAGED_SCAN_CONTROL_OBJECT_ID = "00000000-5ca4-4000-8000-000000000001";
+
+/**
+ * The `ScanMethod`s the `scp-runner-scan` image can actually run — the server-side twin of the
+ * runner shim's `case "$METHOD"` arms and the plugin's `SUPPORTED_SCAN_METHODS`. A registry row
+ * naming a method outside this set produces NO evidence (fail-closed at E6) rather than launching a
+ * container that would exit 2. Typed over `ScanMethod`, so a value that is not a real method is a
+ * compile error rather than a silent, permanent runtime refusal.
+ *
+ * Exported so `promotion-scan-step.test.ts` can pin the containment that actually matters: every
+ * method the server DISPATCHES must be one the plugin will RUN (`SUPPORTED_SCAN_METHODS`). The
+ * plugin holds its own copy because it does not depend on `@scp/schemas`; this is the seam where
+ * the two are proven to agree.
+ */
+export const RUNNER_SUPPORTED_METHODS: ReadonlySet<ScanMethod> = new Set<ScanMethod>([
+  "trivy",
+  "trivy-vm",
+  "openscap"
+]);
 
 // --- Injected scan dependency (so the step is hermetically testable without Docker) -------------
 
@@ -222,7 +241,14 @@ function resolvePullRef(sourceRef: Record<string, unknown>, digest: string): str
 }
 
 /** The artifact's ExecutorType for scanner selection — the change's routing Type when valid, else
- *  `image` for an OCI subject (the M13 image-only scope, proposal §13.3 D2). */
+ *  `image` for an OCI subject (the M13 image-only scope, proposal §13.3 D2).
+ *
+ *  Within that scope MACHINE IMAGES ride `infrastructure` (owner decision D2), which is why the
+ *  seeded registry assigns `infrastructure -> ["trivy-vm"]` (drizzle/0048). `infrastructure` is a
+ *  COARSE routing key that also covers IaC-config artifacts, and those are simply out of M13's
+ *  image-only scan scope: a Terraform-plan artifact routed here yields a runner failure, therefore
+ *  no evidence, therefore an E6 refusal — fail-closed, and identical to the behaviour before this
+ *  arm existed (a `trivy image` run on the same subject failed the same way). */
 function executorTypeOf(change: { properties: Record<string, unknown> }): string {
   const parsed = ExecutorTypeSchema.safeParse(change.properties.type);
   return parsed.success ? parsed.data : "image";
@@ -476,15 +502,19 @@ export function createServerManagedScanRunner(db?: Db): ManagedScanRunner {
       if (!settings.runnerImage) {
         return { ok: false, reason: "managed scanning is not enabled (SCP_MANAGED_SCAN_RUNNER_IMAGE unset)" };
       }
-      if (req.method !== "trivy" && req.method !== "openscap") {
+      if (!RUNNER_SUPPORTED_METHODS.has(req.method)) {
         return { ok: false, reason: `method '${req.method}' has no runner support` };
       }
       if (!req.pullRef) {
         return { ok: false, reason: "unresolvable pull ref — artifact carries no location and no SCP_MANAGED_SCAN_SOURCE_REPO fallback" };
       }
 
-      // M13.3b-ii — OFFLINE DB PRE-LOAD + STALENESS GATE (trivy only; OpenSCAP uses the baked SSG,
-      // which has no OCI upstream to refresh — the documented asymmetry). When a DB cache is
+      // M13.3b-ii — OFFLINE DB PRE-LOAD + STALENESS GATE (every TRIVY-FAMILY method — `trivy` and
+      // the 13.3a machine-image arm `trivy-vm` — via `usesTrivyDb`, never OpenSCAP, which evaluates
+      // the baked SSG content that has no OCI upstream to refresh: the documented asymmetry). The
+      // predicate is deliberately NOT a `method === "trivy"` comparison: a second Trivy-family
+      // method that skipped this branch would scan against an unclassified (possibly hard-stale) DB
+      // and still emit passing evidence. When a DB cache is
       // configured, classify it against the operator's instance staleness policy BEFORE dispatch:
       // missing/corrupt/hard-stale FAIL CLOSED (no scan → no evidence → E6 refuses); fresh/warn scan
       // (a warn is surfaced in the evidence). The classified cache dir is `docker cp`'d into the
@@ -492,7 +522,7 @@ export function createServerManagedScanRunner(db?: Db): ManagedScanRunner {
       // fallback), reported as source `baked` with no staleness gate.
       let scanDbDir: string | undefined;
       let scanDbInfo: ManagedScanReport["scanDb"];
-      if (req.method === "trivy") {
+      if (usesTrivyDb(req.method)) {
         if (settings.dbCacheDir) {
           const status = await readScanDbStatus(db, settings.dbCacheDir);
           const scannable = status.staleness === "fresh" || status.staleness === "warn";
@@ -555,8 +585,10 @@ export function createServerManagedScanRunner(db?: Db): ManagedScanRunner {
         if (st.phase !== "succeeded") {
           return { ok: false, reason: `runner did not succeed: ${st.detail ?? "(no detail)"}` };
         }
-        // Method-select the parser: trivy emits result.json, openscap emits arf.xml. BOTH distil to
-        // the four ScanSeverityCounts the unchanged M17.5/E6 machinery consumes. A malformed result
+        // Method-select the parser: every TRIVY-FAMILY method (`trivy`, `trivy-vm`) emits Trivy's
+        // native result.json — a `trivy vm` run's document has the SAME Results[].Vulnerabilities[]
+        // shape, only a different subject model — while openscap emits arf.xml. BOTH distil to the
+        // four ScanSeverityCounts the unchanged M17.5/E6 machinery consumes. A malformed result
         // throws (caught below) → {ok:false} → no passing evidence → E6 refuses (fail-closed).
         const parsed =
           req.method === "openscap"
@@ -566,9 +598,11 @@ export function createServerManagedScanRunner(db?: Db): ManagedScanRunner {
         // the subject above (`landed === req.digest`) and fed exactly that layout to the networkless
         // runner, so the scanned artifact's MANIFEST digest is provably the promoted digest. Trivy's
         // own identifier for an `--input` OCI-layout scan is `Metadata.ImageID` (the image CONFIG
-        // digest — a DIFFERENT sha256 than the manifest digest), and an oscap ARF carries NO image
-        // digest at all (it scanned an extracted rootfs), so trusting `parsed.scannedDigest` here
-        // would false-mismatch. Bind to `req.digest` (the verified pull) for BOTH methods;
+        // digest — a DIFFERENT sha256 than the manifest digest); a `trivy vm` result's `ArtifactName`
+        // is the in-runner DISK PATH and its `Metadata` carries no digest at all; and an oscap ARF
+        // carries no image digest either (it scanned an extracted rootfs). Trusting
+        // `parsed.scannedDigest` would therefore false-mismatch on every method. Bind to
+        // `req.digest` (the verified pull) for ALL methods;
         // `parsed.scannedDigest` is retained only for the trivy malformed-result diagnostic path.
         return {
           ok: true,

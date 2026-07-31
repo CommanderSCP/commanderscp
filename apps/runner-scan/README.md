@@ -5,7 +5,9 @@ launches, one ephemeral single-shot container per artifact per method (ADR-0020 
 §13.3, charter's Managed Execution Exception 2026-07-23 amendment): a digest-pinned scanner
 toolchain + a minimal shell run shim (`run.sh`), nothing else. No Node app code lives here
 (docs/DESIGN.md §3) — the `scpd` image carries no scanner at all; this is the only place `trivy`
-and `oscap` exist in the whole system, exactly as `tofu` exists only in `scp-runner-iac`.
+and `oscap` exist in the whole system, exactly as `tofu` exists only in `scp-runner-iac`. That
+containment is machine-checked, not merely conventional — see
+`packages/plugins/managed-scan/src/scanner-containment.test.ts`.
 
 Not an npm workspace package — a plain Docker build context.
 
@@ -33,9 +35,45 @@ the result back out of `/work/out` — see `run.sh`'s own doc comment for the fu
 contract. Methods:
 
 - `trivy` — scans the OCI layout at `/work/image`, emits `/work/out/result.json`.
+- `trivy-vm` — **the machine-image arm** (M13.3a, owner decision D2: "image-only for M13, where
+  image INCLUDES machine images"). Resolves the DISK carried by the OCI layout at `/work/image`,
+  materializes it at `/work/disk/disk.<ext>`, and runs `trivy vm` over it — emitting the SAME native
+  Trivy JSON to `/work/out/result.json`, so the commander parses it with the same
+  `parseTrivyResult`. Takes no extra argv.
 - `openscap` — extracts `/work/image` into a rootfs and runs `oscap xccdf eval` (`OSCAP_PROBE_ROOT`)
   against the given SSG `datastream` + XCCDF `profile`, emitting `/work/out/arf.xml`. `profile`
   defaults to the SSG `standard` profile and `datastream` to `ssg-fedora-ds.xml` when omitted.
+
+## The machine-image packaging convention (`trivy-vm`)
+
+A machine image reaches the runner over the **same** allowlisted OCI pull as a container image —
+nothing in the pull path is special-cased — so the question is only how the disk is carried inside
+the layout. Two forms, resolved in this order, both **fail closed** on zero or ambiguous matches:
+
+1. **OCI artifact** — the manifest carries exactly ONE layer descriptor that IS the disk:
+   `mediaType: application/vnd.scp.machine-image.disk.v1+{raw,vmdk}` (optionally `+gzip`), or any
+   layer whose `annotations["org.opencontainers.image.title"]` ends in `.raw`/`.img`/`.vmdk`
+   (optionally `.gz`). The blob is hardlinked in place, so a multi-GiB disk is not copied.
+2. **Tar-layer fallback** — no such descriptor: the layers are treated as ordinary image tars (what
+   a plain `FROM scratch` + `COPY disk.raw /` build produces) and must contain exactly one file with
+   a recognized disk extension.
+
+The materialized path is always `/work/disk/disk.<ext>`, derived from the recognized **extension** —
+never from the annotation text. A registry annotation is attacker-adjacent data: it selects a
+format, never a filesystem path.
+
+**Supported disk formats, honestly.** Raw disk images and streamOptimized VMDK, over MBR/GPT
+partition tables or as a bare filesystem image, with ext2/3/4 or XFS. OVA/VHD/VHDX/QCOW2 and
+LVM/ZFS are not supported by `trivy vm` upstream and are therefore not recognized here — an
+unrecognized subject fails the run rather than being handed to Trivy to mis-parse into a
+spuriously clean scan.
+
+**`ami:` / `ebs:` are NOT supported and are not merely unbuilt.** Trivy's AWS API forms would need
+the runner to reach the EBS direct APIs, which means (a) egress from a `--network none` container
+and (b) SCP holding **cloud-provider credentials** — the thing charter principle 1 forbids. The
+ADR-0019 §3 artifact-store credential class covers registry read/push, not cloud IAM. Scanning an
+AMI therefore stays an owner-level charter question, not a TODO: the supported path is to export the
+machine image as a disk artifact and promote that.
 
 The runner has **no network** (`--network none`); the commander is what pulls the scan subject's
 bytes over the allowlisted skopeo channel (ADR-0019 §4) and what parses the result into

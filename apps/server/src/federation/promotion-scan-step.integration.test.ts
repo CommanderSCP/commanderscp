@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,8 @@ import { managedScanServerSettings } from "../coordination/executor-bindings-rep
 import { withTenantTx } from "../db/tenant-tx.js";
 import { createObject } from "../graph/objects-repo.js";
 import { proposeChange } from "../coordination/changes-repo.js";
+import { transitionChange } from "../coordination/transition.js";
+import { getSharedCelSandbox } from "../governance/cel-sandbox.js";
 import { ensureFederationSelf } from "./self-repo.js";
 import { pairPeer } from "./peers-repo.js";
 import { insertControlRun, listControlRunsForChange } from "../governance/controls-repo.js";
@@ -58,6 +60,14 @@ import { asTrustDomainId } from "@scp/schemas";
  * status fail → E6 refuses with a decision_id. The `rpm` executor Type is assigned `openscap` in the
  * instance scanner registry (registry-driven method selection), and `managedScanServerSettings().networkMode`
  * is asserted `none` (the offline oscap scan succeeding under it is the --network none proof).
+ *
+ * 13.3a's MACHINE-IMAGE arm adds the third managed-scan METHOD end-to-end through the same DEFAULT
+ * server runner: (h) a clean ext4 disk image (alpine rootfs) scans clean via a real `trivy vm` →
+ * digest-bound `scanner: trivy-vm` evidence → E6 exports; (i) a vulnerable disk image (debian:11
+ * rootfs) breaches the fail-closed 0/0 threshold → status fail → E6 refuses with a decision_id. The
+ * `infrastructure` executor Type resolves to `trivy-vm` in the seeded registry (drizzle/0048), so
+ * method selection is registry-driven here too. (j) closes the DoD's remaining clause: a promotion
+ * that crosses NO boundary schedules NO scan, proven against the same artifact that (i) refuses.
  *
  * The three WIRING verdicts inject a `ManagedScanRunner` (the seam the step exposes precisely so
  * these branches are hermetic and DB-drift-free): short-circuit (spy asserted NOT invoked),
@@ -104,6 +114,36 @@ const SSG = "/usr/share/xml/scap/ssg/content";
 const OSCAP_CLEAN_PROFILE = "xccdf_org.ssgproject.content_profile_anssi_np_nt28_minimal";
 const OSCAP_DIRTY_PROFILE = "xccdf_org.ssgproject.content_profile_standard";
 
+// --- MACHINE-IMAGE subjects (13.3a — the `trivy-vm` arm, owner decision D2) -----------------------
+//
+// A machine image is a DISK, not a layer stack, so these subjects are built rather than pulled: an
+// ext4 filesystem image carrying the OS release files + package DB that `trivy vm` reads. Built
+// ROOTLESSLY with `mke2fs -d` (populate-from-directory — no mount, no loop device, no privileged
+// container), so this runs on an ordinary CI worker. No partition table is written: `trivy vm`
+// accepts a bare filesystem image as well as an MBR/GPT-partitioned disk, and skipping the partition
+// table drops a `sfdisk`/`util-linux` dependency the base images do not all carry.
+//
+// Calibrated against the runner image's PINNED, baked Trivy DB, exactly like the container cases:
+//   MACHINE-IMAGE CLEAN — an alpine:3.20 rootfs: 0 findings -> within the fail-closed 0/0 -> PASS.
+//   MACHINE-IMAGE DIRTY — a debian:11 rootfs: 6 CRITICAL / 22 HIGH -> breaches 0/0 -> FAIL.
+// The DIRTY case is the one that matters most for this arm: `trivy vm` emits a result document whose
+// `Metadata` carries NO image digest and whose `ArtifactName` is a file path, so a parser that
+// quietly found nothing would report all-zero counts and masquerade as clean. A subject with KNOWN
+// non-zero findings is what makes the clean case's zeros meaningful.
+const MACHINE_IMAGE_CLEAN_BASE = "alpine:3.20";
+const MACHINE_IMAGE_DIRTY_BASE = "debian:11";
+/** Collect the files `trivy vm` needs into `/r`, per OS family (release files + the package DB). */
+const MACHINE_IMAGE_CLEAN_COLLECT =
+  "mkdir -p /r/lib/apk/db /r/etc && cp /lib/apk/db/installed /r/lib/apk/db/installed && " +
+  "cp /etc/os-release /r/etc/os-release && cp /etc/alpine-release /r/etc/alpine-release";
+const MACHINE_IMAGE_DIRTY_COLLECT =
+  "mkdir -p /r/var/lib/dpkg /r/etc && cp /var/lib/dpkg/status /r/var/lib/dpkg/status && " +
+  "cp /usr/lib/os-release /r/etc/os-release && cp /etc/debian_version /r/etc/debian_version";
+/** The image that builds the disk — needs `mke2fs` (e2fsprogs), which debian:11 already ships. */
+const DISK_BUILDER_IMAGE = "debian:11";
+/** OCI media types the runner's `trivy-vm` arm recognizes as "this layer IS the disk" (run.sh). */
+const MACHINE_IMAGE_DISK_MEDIA_TYPE = "application/vnd.scp.machine-image.disk.v1+raw";
+
 async function dockerAvailable(): Promise<boolean> {
   try {
     await execFileAsync("docker", ["info"], { timeout: 10_000 });
@@ -130,6 +170,10 @@ describe.runIf(await dockerAvailable())(
     let oscapCleanRepo: string;
     let oscapDirtyDigest: string;
     let oscapDirtyRepo: string;
+    let vmCleanDigest: string;
+    let vmCleanRepo: string;
+    let vmDirtyDigest: string;
+    let vmDirtyRepo: string;
 
     beforeAll(async () => {
       const resolved = resolveSkopeo();
@@ -168,6 +212,19 @@ describe.runIf(await dockerAvailable())(
       oscapDirtyRepo = `${registryHost}/scp/oscap-dirty`;
       oscapCleanDigest = await pushSubject(OSCAP_CLEAN_SRC, oscapCleanRepo);
       oscapDirtyDigest = await pushSubject(OSCAP_DIRTY_SRC, oscapDirtyRepo);
+
+      // MACHINE-IMAGE subjects (13.3a) — built as ext4 disk images, then packaged as OCI artifacts
+      // and pushed, so the SERVER pulls them over the very same allowlisted skopeo channel.
+      const vmCleanDisk = join(scratch, "machine-image-clean.raw");
+      const vmDirtyDisk = join(scratch, "machine-image-dirty.raw");
+      await buildMachineImageDisk(MACHINE_IMAGE_CLEAN_BASE, MACHINE_IMAGE_CLEAN_COLLECT, vmCleanDisk);
+      await buildMachineImageDisk(MACHINE_IMAGE_DIRTY_BASE, MACHINE_IMAGE_DIRTY_COLLECT, vmDirtyDisk);
+      vmCleanRepo = `${registryHost}/scp/machine-image-clean`;
+      vmDirtyRepo = `${registryHost}/scp/machine-image-dirty`;
+      vmCleanDigest = await pushMachineImage(vmCleanDisk, vmCleanRepo);
+      vmDirtyDigest = await pushMachineImage(vmDirtyDisk, vmDirtyRepo);
+      await rm(vmCleanDisk, { force: true });
+      await rm(vmDirtyDisk, { force: true });
 
       // Assign the `openscap` method to the `rpm` executor Type for THIS domain's instance-scoped
       // scanner registry (default seed is `rpm -> [trivy]`). Instance-scoped `scanner_assignments`
@@ -249,13 +306,151 @@ describe.runIf(await dockerAvailable())(
       return digest;
     }
 
+    /** Run a throwaway container to completion and copy ONE file out of it. `create` + `cp` + `start`
+     *  (never a bind mount) — the same seam the managed-scan orchestrator uses, and the reason this
+     *  works identically on a Docker-Desktop host where /tmp is not a shared path. */
+    async function runAndExtract(opts: {
+      image: string;
+      script: string;
+      /** Optional host file copied INTO the container before it starts. */
+      copyIn?: { from: string; to: string };
+      containerPath: string;
+      hostPath: string;
+    }): Promise<void> {
+      const { stdout: created } = await execFileAsync(
+        "docker",
+        ["create", "--entrypoint", "sh", opts.image, "-c", opts.script],
+        { timeout: 120_000 }
+      );
+      const cid = created.trim();
+      try {
+        if (opts.copyIn) {
+          await execFileAsync("docker", ["cp", opts.copyIn.from, `${cid}:${opts.copyIn.to}`], {
+            timeout: 300_000,
+            maxBuffer: 64 * 1024 * 1024
+          });
+        }
+        await execFileAsync("docker", ["start", "-a", cid], {
+          timeout: 300_000,
+          maxBuffer: 64 * 1024 * 1024
+        });
+        await execFileAsync("docker", ["cp", `${cid}:${opts.containerPath}`, opts.hostPath], {
+          timeout: 300_000,
+          maxBuffer: 64 * 1024 * 1024
+        });
+      } finally {
+        await execFileAsync("docker", ["rm", "-f", cid], { timeout: 60_000 }).catch(() => undefined);
+      }
+    }
+
+    /** Build a MACHINE IMAGE: an ext4 filesystem image carrying `base`'s OS release files + package
+     *  DB. Two throwaway containers — one to collect the rootfs (the base may lack `mke2fs`), one to
+     *  make the filesystem. Rootless throughout (`mke2fs -d` populates without mounting). */
+    async function buildMachineImageDisk(
+      base: string,
+      collect: string,
+      hostDiskPath: string
+    ): Promise<void> {
+      const rootfsTar = join(scratch, `rootfs-${randomUUID()}.tar`);
+      await runAndExtract({
+        image: base,
+        script: `set -e; ${collect}; tar -cf /rootfs.tar -C /r .`,
+        containerPath: "/rootfs.tar",
+        hostPath: rootfsTar
+      });
+      await runAndExtract({
+        image: DISK_BUILDER_IMAGE,
+        // 96 MiB of 4 KiB blocks. `-O ^64bit,^metadata_csum,^has_journal` keeps the on-disk format
+        // within what Trivy's pure-Go ext4 reader supports (it is a reader, not a kernel driver).
+        script:
+          "set -e; mkdir -p /rootfs && tar -xf /rootfs.tar -C /rootfs && " +
+          "mke2fs -q -t ext4 -O ^64bit,^metadata_csum,^has_journal -b 4096 -I 256 -d /rootfs /disk.raw 24576",
+        copyIn: { from: rootfsTar, to: "/rootfs.tar" },
+        containerPath: "/disk.raw",
+        hostPath: hostDiskPath
+      });
+      await rm(rootfsTar, { force: true });
+    }
+
+    /**
+     * Package a disk as an OCI ARTIFACT — form (1) of `run.sh`'s declared machine-image packaging
+     * convention: one layer descriptor that IS the disk, carrying the SCP machine-image mediaType —
+     * and push it into the local registry. Returns the manifest digest.
+     *
+     * The layout is hand-authored rather than produced by a packaging tool because that is exactly
+     * what the convention is: nothing in the pull path is special-cased for machine images, so the
+     * SERVER pulls this with the same allowlisted `skopeo copy` it uses for a container image. The
+     * digest is computed from the manifest bytes we author (content-addressing, not a tool's word
+     * for it) and PROVEN by the round-trip: the server re-reads the landed layout's digest and
+     * refuses the scan unless it equals the promoted digest.
+     */
+    async function pushMachineImage(diskPath: string, destRepo: string): Promise<string> {
+      const layoutDir = join(scratch, `oci-${randomUUID()}`);
+      const blobs = join(layoutDir, "blobs", "sha256");
+      await mkdir(blobs, { recursive: true });
+      const put = async (bytes: Buffer): Promise<{ digest: string; size: number }> => {
+        const hex = createHash("sha256").update(bytes).digest("hex");
+        await writeFile(join(blobs, hex), bytes);
+        return { digest: `sha256:${hex}`, size: bytes.length };
+      };
+      const layer = await put(await readFile(diskPath));
+      const config = await put(Buffer.from("{}", "utf8"));
+      const manifest = {
+        schemaVersion: 2,
+        mediaType: "application/vnd.oci.image.manifest.v1+json",
+        artifactType: "application/vnd.scp.machine-image.v1",
+        config: { mediaType: "application/vnd.scp.machine-image.config.v1+json", ...config },
+        layers: [
+          {
+            mediaType: MACHINE_IMAGE_DISK_MEDIA_TYPE,
+            ...layer,
+            annotations: { "org.opencontainers.image.title": "disk.raw" }
+          }
+        ]
+      };
+      const manifestBytes = Buffer.from(JSON.stringify(manifest), "utf8");
+      const m = await put(manifestBytes);
+      await writeFile(
+        join(layoutDir, "oci-layout"),
+        JSON.stringify({ imageLayoutVersion: "1.0.0" })
+      );
+      await writeFile(
+        join(layoutDir, "index.json"),
+        JSON.stringify({
+          schemaVersion: 2,
+          mediaType: "application/vnd.oci.image.index.v1+json",
+          manifests: [
+            {
+              mediaType: manifest.mediaType,
+              ...m,
+              annotations: { "org.opencontainers.image.ref.name": "subject" }
+            }
+          ]
+        })
+      );
+      await execFileAsync(
+        skopeoBin,
+        [
+          "copy",
+          "--preserve-digests",
+          "--dest-tls-verify=false",
+          `oci:${layoutDir}:subject`,
+          `docker://${destRepo}:subject`
+        ],
+        { timeout: 300_000, maxBuffer: 64 * 1024 * 1024 }
+      );
+      await rm(layoutDir, { recursive: true, force: true });
+      return m.digest;
+    }
+
     /** Propose a change tracking one OCI artifact (digest + registry location), so the E6 gate sees a
      *  substantive artifact and the scan step can pull it. `type` selects the scanner registry row
-     *  ("image" ⇒ trivy; "configuration" ⇒ no scanner — the fail-closed case). */
+     *  ("image" ⇒ trivy; "infrastructure" ⇒ trivy-vm, the machine-image arm; "configuration" ⇒ no
+     *  scanner — the fail-closed case). */
     async function proposeArtifactChange(
       digest: string,
       repo: string,
-      type: "image" | "configuration" | "rpm",
+      type: "image" | "configuration" | "rpm" | "infrastructure",
       scan?: { profile: string; datastream: string }
     ): Promise<string> {
       const target = await withTenantTx(domain.db, domain.orgId, (tx) =>
@@ -521,5 +716,130 @@ describe.runIf(await dockerAvailable())(
       expect(ev.severityCounts.high).toBeGreaterThan(0); // ≥1 high-severity failed rule
       expect(ev.severityCounts.critical).toBe(0); // never a critical from XCCDF
     }, 180_000);
+
+    // -------------------------------------------------------------------------------------------
+    // (h) MACHINE IMAGE, CLEAN — the 13.3a `trivy-vm` arm end-to-end through the DEFAULT server
+    //     runner: a real DISK image pulled by digest over the allowlisted channel, scanned by a real
+    //     `trivy vm` inside a `--network none` runner → digest-bound `scanner: trivy-vm` evidence →
+    //     the UNCHANGED E6 machinery exports. The `infrastructure` executor Type resolves to
+    //     `trivy-vm` in the seeded registry (drizzle/0048), so this is registry-driven selection of
+    //     the machine-image method, not a hard-coded branch.
+    // -------------------------------------------------------------------------------------------
+    it("(h) MACHINE IMAGE: a clean disk image scans clean via `trivy vm` → (scanner:trivy-vm) → E6 EXPORTS", async () => {
+      const changeId = await proposeArtifactChange(vmCleanDigest, vmCleanRepo, "infrastructure");
+
+      // The runner is networkless for a machine-image scan exactly as for a container scan — the
+      // subject is a multi-MiB disk `docker cp`'d in, never a mount and never a fetch.
+      expect(managedScanServerSettings().networkMode).toBe("none");
+
+      const outcome = await exportToPeer(changeId);
+      expect(outcome.refused, outcome.refused ? outcome.reason : "expected export").toBe(false);
+      if (outcome.refused) throw new Error(outcome.reason);
+      expect(outcome.bundle.artifactDigests).toContain(vmCleanDigest);
+
+      const runs = await managedRunsFor(changeId);
+      expect(runs).toHaveLength(1);
+      const run = runs[0]!;
+      expect(run.status).toBe("pass");
+      const ev = ScanEvidenceSchema.parse(run.evidence);
+      // Self-describing: the evidence says it was scanned AS A MACHINE IMAGE, not as a container.
+      expect(ev.scanner).toBe("trivy-vm");
+      // Digest-bound to the PULL (a `trivy vm` result carries no image digest of its own — the
+      // binding is the server-verified layout digest, which must equal the promoted digest).
+      expect(ev.artifactDigest).toBe(vmCleanDigest);
+      expect(ev.expectedDigest).toBe(vmCleanDigest);
+      expect(ev.digestMatch).toBe(true);
+      expect(ev.severityCounts.critical).toBe(0);
+      expect(ev.severityCounts.high).toBe(0);
+      expect(ev.scannerVersion).not.toBe("unknown"); // a REAL trivy ran (version stamped from the run)
+    }, 300_000);
+
+    // -------------------------------------------------------------------------------------------
+    // (i) MACHINE IMAGE, VULNERABLE — the anti-vacuity half of (h). A `trivy vm` result document
+    //     differs from a `trivy image` one (no `Metadata` digest, an `ArtifactName` that is a file
+    //     path), so a parser that silently matched nothing would report all-zero counts and every
+    //     machine image would "scan clean". A subject with KNOWN findings proves the counts flow.
+    // -------------------------------------------------------------------------------------------
+    it("(i) MACHINE IMAGE: a vulnerable disk image over threshold → status FAIL → E6 REFUSES with a decision_id", async () => {
+      const changeId = await proposeArtifactChange(vmDirtyDigest, vmDirtyRepo, "infrastructure");
+
+      const outcome = await exportToPeer(changeId);
+      expect(outcome.refused).toBe(true);
+      if (!outcome.refused) throw new Error("expected refusal");
+      expect(outcome.decisionId).toMatch(/^[0-9a-f-]{36}$/);
+
+      const runs = await managedRunsFor(changeId);
+      expect(runs).toHaveLength(1);
+      const run = runs[0]!;
+      expect(run.status).toBe("fail");
+      const ev = ScanEvidenceSchema.parse(run.evidence);
+      expect(ev.scanner).toBe("trivy-vm");
+      expect(ev.digestMatch).toBe(true); // it WAS the promoted artifact — it failed on findings
+      expect(ev.artifactDigest).toBe(vmDirtyDigest);
+      // The counts came from a real `trivy vm` run over the disk's package DB — not zeros.
+      expect(ev.severityCounts.critical + ev.severityCounts.high).toBeGreaterThan(0);
+    }, 300_000);
+
+    // -------------------------------------------------------------------------------------------
+    // (j) NO BOUNDARY CROSSING ⇒ NO SCAN SCHEDULED (13.3a DoD, "default-permissive = adoption
+    //     semantics only"). The commander's managed scan is a step of the CROSS-BOUNDARY export
+    //     journey. A change that never crosses a boundary — one that runs its whole lifecycle inside
+    //     the domain, `proposed -> ... -> accepted` — must schedule NO scan: no runner dispatch, no
+    //     managed evidence, no Decision about scanning. Adopting SCP must not silently start
+    //     scanning every in-domain release.
+    //
+    //     Non-vacuous BY CONSTRUCTION: the subject is the SAME artifact whose scan REFUSES in (i),
+    //     managed scanning is fully enabled, and the change's type resolves to a real scanner. The
+    //     test then EXPORTS the same change and asserts the scan does happen — so it fails both if
+    //     scanning leaked onto the in-domain path and if the boundary path stopped scanning.
+    // -------------------------------------------------------------------------------------------
+    it("(j) a promotion that crosses NO boundary schedules NO scan — and the same change DOES scan on export", async () => {
+      const changeId = await proposeArtifactChange(vmDirtyDigest, vmDirtyRepo, "infrastructure");
+
+      // Managed scanning IS enabled — this is not a vacuous "nothing configured" pass.
+      expect(managedScanServerSettings().runnerImage).toBeTruthy();
+
+      // Run the ENTIRE in-domain lifecycle through the one guarded transition function every
+      // `changes.state` mutation goes through (coordination/transition.ts). No export, no peer, no
+      // boundary.
+      const gateDeps = { sandbox: getSharedCelSandbox(), host: null };
+      for (const toState of [
+        "evaluated",
+        "coordinated",
+        "executing",
+        "validating",
+        "accepted"
+      ] as const) {
+        const result = await withTenantTx(domain.db, domain.orgId, (tx) =>
+          transitionChange(
+            tx,
+            {
+              orgId: domain.orgId,
+              changeObjectId: changeId,
+              toState,
+              actorObjectId: domain.orgId,
+              requestId: `no-boundary-${toState}-${randomUUID()}`
+            },
+            gateDeps
+          )
+        );
+        expect(result.verdict, `in-domain transition to ${toState} must not be blocked`).toBe("allow");
+      }
+
+      // THE CLAIM: a full in-domain promotion deposited NO managed-scan evidence at all.
+      expect(
+        await managedRunsFor(changeId),
+        "an in-domain promotion must schedule no managed scan"
+      ).toHaveLength(0);
+
+      // THE CONTRAST: the SAME change, exported across a boundary, IS scanned — and refuses, because
+      // this artifact is the vulnerable one. (`accepted` is terminal for the lifecycle but the export
+      // journey is independent of change state.)
+      const outcome = await exportToPeer(changeId);
+      expect(outcome.refused).toBe(true);
+      const afterExport = await managedRunsFor(changeId);
+      expect(afterExport, "the boundary crossing MUST schedule the scan").toHaveLength(1);
+      expect(ScanEvidenceSchema.parse(afterExport[0]!.evidence).scanner).toBe("trivy-vm");
+    }, 300_000);
   }
 );

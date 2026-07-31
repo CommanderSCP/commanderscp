@@ -1,3 +1,4 @@
+import pg from "pg";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpApiError, ScpClient } from "@scp/sdk";
@@ -7,6 +8,7 @@ import { resolveScannersForType } from "./scanner-registry.js";
 import {
   createTestOrg,
   listenTestServer,
+  testDatabaseUrl,
   type ListeningTestServer
 } from "../test-support/harness.js";
 
@@ -47,16 +49,57 @@ describe("M13.3a scanner-assignment registry (Testcontainers)", () => {
     await server?.close();
   });
 
-  it("ships fail-closed seed defaults (image->trivy, configuration->[])", async () => {
+  it("ships fail-closed seed defaults (image->trivy, infrastructure->trivy-vm, configuration->[])", async () => {
     const items = await operator.scannerAssignments.list();
     const byType = new Map(items.map((a) => [a.executorType, a.methods]));
     expect(byType.get("image")).toEqual(["trivy"]);
     expect(byType.get("rpm")).toEqual(["trivy"]);
     expect(byType.get("deb")).toEqual(["trivy"]);
     expect(byType.get("npm")).toEqual(["trivy"]);
-    expect(byType.get("infrastructure")).toEqual(["trivy"]);
+    // 13.3a: machine images ride `infrastructure` (owner decision D2) and are scanned AS DISKS by
+    // the `trivy-vm` arm — 0035 seeded `trivy` here before that arm existed, 0048 corrects it.
+    expect(byType.get("infrastructure")).toEqual(["trivy-vm"]);
     // configuration = no managed scanner (fail-closed: E6 refuses unless org-pipeline evidence).
     expect(byType.get("configuration")).toEqual([]);
+  });
+
+  it("(0048) does NOT stomp an operator-authored infrastructure assignment", async () => {
+    // The 0048 data migration rewrites `infrastructure` ONLY while it still holds the exact 0035
+    // seed value. Once an operator has decided otherwise, that decision is theirs — a later upgrade
+    // replaying the migration must not silently take it back.
+    const custom = await operator.scannerAssignments.put(
+      { executorType: "infrastructure", methods: ["trivy", "openscap"] },
+      OPERATOR_TOKEN
+    );
+    expect(custom.methods.sort()).toEqual(["openscap", "trivy"]);
+
+    // Replay 0048's rewrite over the SUPERUSER connection (the runtime `scp_app` role has no write
+    // grant on this table at all — the two-barrier posture — so a migration replay can only be
+    // simulated privileged, exactly as it runs at upgrade).
+    const adminPool = new pg.Pool({ connectionString: testDatabaseUrl() });
+    try {
+      const replay = await adminPool.query(
+        `UPDATE scanner_assignments
+            SET methods = '["trivy-vm"]'::jsonb, updated_at = now()
+          WHERE executor_type = 'infrastructure'
+            AND methods = '["trivy"]'::jsonb`
+      );
+      expect(replay.rowCount, "the operator's value must not match the 0035 seed guard").toBe(0);
+    } finally {
+      await adminPool.end();
+    }
+
+    const after = await operator.scannerAssignments.list();
+    expect(after.find((a) => a.executorType === "infrastructure")?.methods.sort()).toEqual([
+      "openscap",
+      "trivy"
+    ]);
+
+    // Restore the seed default so later assertions/suites see a clean instance-global table.
+    await operator.scannerAssignments.put(
+      { executorType: "infrastructure", methods: ["trivy-vm"] },
+      OPERATOR_TOKEN
+    );
   });
 
   it("(operator PUT/GET round-trip) upserts an assignment and reads it back", async () => {
@@ -101,6 +144,7 @@ describe("M13.3a scanner-assignment registry (Testcontainers)", () => {
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
     const items = await admin.scannerAssignments.list();
     expect(items.find((a) => a.executorType === "npm")?.methods).toEqual(["trivy"]);
+    expect(items.find((a) => a.executorType === "infrastructure")?.methods).toEqual(["trivy-vm"]);
   });
 
   it("(RLS) no tenant can WRITE the assignments — refused by RLS on a real tenant transaction AND by the API without the operator token", async () => {

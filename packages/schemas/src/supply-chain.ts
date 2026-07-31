@@ -55,9 +55,39 @@ export type ScanThreshold = z.infer<typeof ScanThresholdSchema>;
  * is widened to below — so evidence is self-describing about WHICH method produced it. M13 ships
  * `trivy` first, `openscap` second (proposal §13.3 "Increment order"); both are enumerated up front so
  * the registry and evidence shapes are stable across the two 13.3a increments.
+ *
+ * `trivy-vm` — THE MACHINE-IMAGE ARM (13.3a, owner decision D2: "image-only for M13, where image
+ * INCLUDES machine images"). A DISTINCT method rather than a mode of `trivy`, for two reasons that
+ * are both load-bearing:
+ *   1. **The registry can express it.** Scanner assignment is per `ExecutorType` (machine images ride
+ *      `infrastructure`), and `infrastructure -> ["trivy-vm"]` is a statement the registry can make;
+ *      "run `trivy`, but in vm mode, when the subject happens to be a disk" is not — it would force
+ *      the runner to SNIFF the subject and silently pick a scan mode, which is exactly the kind of
+ *      guess a fail-closed gate must not make.
+ *   2. **The evidence stays honest.** `scanner: "trivy-vm"` is the claim "this artifact was scanned
+ *      as a VM disk image (partition table → filesystem → OS package DB)", which is a materially
+ *      different assertion from "scanned as a container image layer stack" — same binary, same
+ *      vulnerability DB, different subject model. A reader of a Decision can tell them apart.
+ * The widening is ADDITIVE and GATE-INVISIBLE, exactly as `openscap`'s was: E6 reads only
+ * `digestMatch`/`artifactDigest`, never `scanner`, so every pre-existing evidence document still
+ * parses and no gate code changes.
  */
-export const ScanMethodSchema = z.enum(["trivy", "openscap"]);
+export const ScanMethodSchema = z.enum(["trivy", "openscap", "trivy-vm"]);
 export type ScanMethod = z.infer<typeof ScanMethodSchema>;
+
+/**
+ * The subset of `ScanMethod`s that read the **Trivy vulnerability DB** — so every DB-dependent
+ * concern (the M13.3b-ii offline pre-load seam, the staleness gate, the `scanDb*` evidence fields)
+ * applies to ALL of them and never to `openscap` (which evaluates baked SSG content instead).
+ *
+ * This predicate exists because the alternative — a `method === "trivy"` comparison at each site —
+ * is precisely how a second Trivy-family method silently escapes the staleness gate: a `trivy-vm`
+ * scan would then run against an unclassified (possibly hard-stale) DB and still emit passing
+ * evidence. One named predicate, every call site.
+ */
+export function usesTrivyDb(method: ScanMethod): boolean {
+  return method === "trivy" || method === "trivy-vm";
+}
 
 
 // ===========================================================================================
@@ -192,7 +222,8 @@ export type PutInstanceScanFloorRequest = z.infer<typeof PutInstanceScanFloorReq
 export const ScanEvidenceSchema = z.object({
   /** WHICH scan method produced this verdict. Widened from `z.literal("trivy")` to `ScanMethodSchema`
    *  (ADR-0020 §2 / proposal §13.3, 13.3a) — this was designed as a field "so a future second scanner
-   *  slots in without a shape change", and `openscap` is that second scanner. The widening is strictly
+   *  slots in without a shape change", and `openscap` is that second scanner (`trivy-vm`, the
+   *  machine-image arm, is the third). The widening is strictly
    *  ADDITIVE and GATE-INVISIBLE: `trivy` is still accepted, so every existing evidence document (and
    *  the E6 export gate's `ScanEvidenceSchema.safeParse`, promotion-repo.ts) parses byte-for-byte
    *  unchanged; the gate reads only `digestMatch`/`artifactDigest`, never `scanner`. */
