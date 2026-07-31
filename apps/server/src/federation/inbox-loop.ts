@@ -83,8 +83,7 @@ import type PgBoss from "pg-boss";
 import {
   ImportBundleRequestSchema,
   type ImportBundleRequest,
-  type PromotionBundle,
-  type TrustDomainId
+  type PromotionBundle
 } from "@scp/schemas";
 import type { Db } from "../db/client.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";

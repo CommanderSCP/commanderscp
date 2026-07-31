@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OutpostConfig } from "@scp/schemas";
 
 /**
@@ -114,6 +114,24 @@ async function runReconcile(args: string[]): Promise<void> {
   const { buildProgram } = await import("./cli.js");
   await buildProgram().parseAsync(["node", "scp", "federation", "outpost", "reconcile", ...args]);
 }
+
+/**
+ * Warm the dynamic import ONCE, in a hook, so the first `it` does not pay it.
+ *
+ * `runReconcile` imports `./cli.js` lazily (it must: the SDK mock above has to be installed before
+ * the CLI module graph is evaluated). Dynamic imports are cached, so the FIRST test in this file
+ * silently absorbed the cost of transforming and evaluating the entire CLI module graph — ~0.3s on a
+ * warm dev machine, but 5.4s on a cold CI runner, which blew vitest's 5000ms default test timeout
+ * and failed a test whose own work takes milliseconds. (Its three siblings ran in 30-180ms, all on
+ * the cached module — the tell that the cost is one-time setup, not the behaviour under test.)
+ *
+ * A bigger `testTimeout` would have hidden it behind a number nobody could interpret. Charging the
+ * cost to a hook is both honest and more robust: hooks get vitest's separate `hookTimeout` (10s),
+ * and a genuine 5s regression in the COMMAND is still caught by the per-test budget.
+ */
+beforeAll(async () => {
+  await import("./cli.js");
+}, 30_000);
 
 beforeEach(async () => {
   reconcileCalls.length = 0;
