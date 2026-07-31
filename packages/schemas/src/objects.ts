@@ -1,18 +1,27 @@
 import { z } from "zod";
 import { cursorPageResponseSchema } from "./common.js";
+import { GraphObjectSchema } from "./graph.js";
 
 /**
  * `service` object — M0's minimal slice of the full graph object model (DESIGN.md §4.1).
  * The real generic `objects`/`object_types` registry lands in M1; M0 ships just enough of the
  * shape (id, org scoping, type discriminator, name, timestamp) to prove the contract pipeline
  * end to end without building the whole graph substrate early.
+ *
+ * ADR-0023 (the first violation SDK response validation caught): this is now the FULL
+ * `GraphObject` plus M0's `type` discriminator, not a five-field subset. Fastify's router prefers
+ * the literal static route `POST/GET /objects/service` over the parametric `/objects/:type`, so
+ * that handler is the only one that ever runs for the exact path `/objects/service` — while the
+ * SDK's `client.object("service")` calls the GENERIC `createObject`/`listObjects` operations,
+ * whose declared response is a full `GraphObject`. The narrow shape therefore meant
+ * `client.object("service").create(...).urn` (and `.typeId`, `.domainId`, `.properties`,
+ * `.labels`, `.version`, …) was `undefined` at runtime while TypeScript insisted it was a string
+ * — the exact bug class ADR-0023 exists to stop. Widening is additive within /v1 (response
+ * properties added, none removed or renamed; `type` is kept) and costs nothing: the underlying
+ * row is already a plain `service`-typed graph object, so every field was there to begin with.
  */
-export const ServiceObjectSchema = z.object({
-  id: z.string().uuid(),
-  orgId: z.string().uuid(),
-  type: z.literal("service"),
-  name: z.string(),
-  createdAt: z.string().datetime()
+export const ServiceObjectSchema = GraphObjectSchema.extend({
+  type: z.literal("service")
 });
 export type ServiceObject = z.infer<typeof ServiceObjectSchema>;
 
