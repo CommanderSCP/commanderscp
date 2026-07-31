@@ -785,12 +785,11 @@ export class ScpClient {
   // just resource-specific and without a `type` argument to pass at every call site.
   // -----------------------------------------------------------------------------------------
 
-  private typedResource<C = CreateObjectRequest, U = UpsertObjectRequest>(fns: TypedObjectFns<C, U>) {
+  private typedResource<C = CreateObjectRequest, U = UpsertObjectRequest>(
+    fns: TypedObjectFns<C, U>
+  ) {
     return {
-      create: async (
-        req: C,
-        opts: { idempotencyKey?: string } = {}
-      ): Promise<GraphObject> => {
+      create: async (req: C, opts: { idempotencyKey?: string } = {}): Promise<GraphObject> => {
         const result = await fns.create({
           client: this.client,
           body: req,
@@ -1098,11 +1097,7 @@ export class ScpClient {
      * PUSH-IN the latest health of an object (idempotent upsert). `source` is binding-ready — an
      * owner writes `owner` today; a future opt-in health-source binding writes the SAME row.
      */
-    push: async (
-      type: string,
-      idOrUrn: string,
-      body: PushHealthRequest
-    ): Promise<HealthRecord> => {
+    push: async (type: string, idOrUrn: string, body: PushHealthRequest): Promise<HealthRecord> => {
       const result = await pushObjectHealthRequest({
         client: this.client,
         path: { type, idOrUrn },
@@ -1698,13 +1693,24 @@ export class ScpClient {
       /** N9 — `keep` names the row that should SURVIVE. Absent keeps the most authoritative one, so
        *  the default call is unchanged. It is the ONLY public-API way out of a VERIFIED foreign-origin
        *  duplicate: with it, this domain deletes the row IT authored (an ordinary journaled tombstone).
-       *  Deleting a signature-verified replica stays refused unconditionally. */
-      opts: { keep?: string } = {}
+       *  Deleting a signature-verified replica stays refused unconditionally.
+       *
+       *  `ifClaimants` is the OPTIMISTIC-CONCURRENCY PRECONDITION — the `objectId:version` token of
+       *  every claimant the caller PREVIEWED, from {@link outpostClaimantTokens}. If the live set has
+       *  moved since, the call is refused 412 having written NOTHING, and the refusal body carries
+       *  the fresh claimants (parse with `OutpostReconcileStaleProblemSchema`, or use
+       *  {@link reconcileStaleClaimants}). Omitting it proceeds unchecked, which is the protocol
+       *  default for compatibility — not a recommendation. */
+      opts: { keep?: string; ifClaimants?: readonly string[] } = {}
     ): Promise<OutpostConfigReconcileResult> => {
+      const query = {
+        ...(opts.keep !== undefined ? { keep: opts.keep } : {}),
+        ...(opts.ifClaimants !== undefined ? { ifClaimant: [...opts.ifClaimants] } : {})
+      };
       const result = await reconcileOutpostConfigRequest({
         client: this.client,
         path: { peerDomainId },
-        ...(opts.keep !== undefined ? { query: { keep: opts.keep } } : {})
+        ...(Object.keys(query).length > 0 ? { query } : {})
       });
       return unwrap(result);
     },
@@ -1785,10 +1791,7 @@ export class ScpClient {
     },
     /** `type` omitted ⇒ 'configuration' (server-side default) — a target may hold one binding per
      *  Type (M12 P3 / ADR-0007), so reading a non-default pipeline requires naming its Type. */
-    getBinding: async (
-      idOrUrn: string,
-      type?: ExecutorType
-    ): Promise<ExecutorBinding> => {
+    getBinding: async (idOrUrn: string, type?: ExecutorType): Promise<ExecutorBinding> => {
       const result = await getExecutorBindingRequest({
         client: this.client,
         path: { idOrUrn },
@@ -1802,10 +1805,7 @@ export class ScpClient {
       return unwrap(result).items;
     },
     /** Delete a target's binding for one Type (default 'configuration') — M12 P5c. Returns the removed binding. */
-    deleteBinding: async (
-      idOrUrn: string,
-      type?: ExecutorType
-    ): Promise<ExecutorBinding> => {
+    deleteBinding: async (idOrUrn: string, type?: ExecutorType): Promise<ExecutorBinding> => {
       const result = await deleteExecutorBindingRequest({
         client: this.client,
         path: { idOrUrn },
@@ -1913,7 +1913,10 @@ export class ScpClient {
     backfillSourceMappings: async (
       proposal: DiscoveryProposal
     ): Promise<BackfillSourceMappingsResponse> => {
-      const result = await backfillSourceMappingsRequest({ client: this.client, body: { proposal } });
+      const result = await backfillSourceMappingsRequest({
+        client: this.client,
+        body: { proposal }
+      });
       return unwrap(result);
     }
   };

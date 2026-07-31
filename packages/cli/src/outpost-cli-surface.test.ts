@@ -1,8 +1,8 @@
 import type { Command } from "commander";
 import { describe, expect, it } from "vitest";
-import { OutpostTrustTierSchema } from "@scp/schemas";
-import type { OutpostConfigReconcileResult } from "@scp/schemas";
-import { buildProgram, formatReconcileResultLines } from "./cli.js";
+import { outpostClaimantTokens, OutpostTrustTierSchema } from "@scp/schemas";
+import type { OutpostConfig, OutpostConfigReconcileResult } from "@scp/schemas";
+import { buildProgram, formatReconcilePreviewLines, formatReconcileResultLines } from "./cli.js";
 
 /**
  * M16.2 phase A, REVIEW ROUND 5 — THE CLI HALF OF THE OUTPOST SURFACE (N1, N2).
@@ -41,6 +41,7 @@ function trustTierHelp(command: Command): string {
 
 describe("scp federation outpost — the operator-facing surface", () => {
   const program = buildProgram();
+  const PEER = "00000000-0000-0000-0000-000000000002";
 
   it("N1: `outpost declare --trust-tier` documents EVERY tier the API accepts", () => {
     const declare = findCommand(program, ["federation", "outpost", "declare"]);
@@ -73,9 +74,10 @@ describe("scp federation outpost — the operator-facing surface", () => {
       const offered = (help.split(/\s+/)[0] ?? "").split("|");
       expect(offered.length).toBeGreaterThan(1);
       for (const token of offered) {
-        expect(accepted.has(token), `--trust-tier help offers '${token}', which the API rejects`).toBe(
-          true
-        );
+        expect(
+          accepted.has(token),
+          `--trust-tier help offers '${token}', which the API rejects`
+        ).toBe(true);
       }
     }
   });
@@ -155,6 +157,137 @@ describe("scp federation outpost — the operator-facing surface", () => {
     expect(localLines).toMatch(/journal/i);
     expect(localLines).toMatch(/propagat/i);
     expect(localLines).not.toMatch(/unverified shadow/i);
+  });
+
+  /**
+   * THE OPTIMISTIC-CONCURRENCY PRECONDITION, ON THE SURFACE WITH THE LARGEST UNGUARDED WINDOW.
+   * `reconcile` went straight to the write with no read at all, so the CLI had neither a preview
+   * nor a staleness guard on a call that can adopt an operator's entered config, DISCARD it, or
+   * delete a row this domain authored and journal that delete downstream.
+   */
+  function claimant(over: Partial<OutpostConfig> & { objectId: string }): OutpostConfig {
+    return {
+      urn: `urn:scp:test:outpost:${over.objectId}`,
+      name: over.objectId,
+      peerDomainId: PEER,
+      trustTier: null,
+      originDomainId: "00000000-0000-0000-0000-0000000000ff",
+      originIsSelf: false,
+      provenance: null,
+      revision: 1,
+      version: 1,
+      unknownFields: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      ...over
+    } as OutpostConfig;
+  }
+
+  it("the precondition is ON by default and skipping it takes a NAMED flag", () => {
+    const reconcile = findCommand(program, ["federation", "outpost", "reconcile"])!;
+    const flag = reconcile.options.find((o) => o.long === "--no-precondition");
+    expect(
+      flag,
+      "`--no-precondition` is missing — the token would have no deliberate escape"
+    ).toBeDefined();
+    // Commander models `--no-x` as a boolean that DEFAULTS TRUE: absent flag => precondition sent.
+    // A default of `false` would make the guard opt-in, which is the shipped-broken shape.
+    expect(reconcile.opts().precondition).toBe(true);
+    // And it must not promise consent: the CLI's window is milliseconds, not a human reading.
+    expect(flag!.description).toMatch(/between the listing and the call|silently/i);
+  });
+
+  it("the token is derived from the listing, per peer, as objectId:version", () => {
+    const mine = claimant({ objectId: "11111111-1111-1111-1111-111111111111", version: 4 });
+    const other = claimant({
+      objectId: "22222222-2222-2222-2222-222222222222",
+      version: 9,
+      peerDomainId: "00000000-0000-0000-0000-00000000dead"
+    });
+    expect(outpostClaimantTokens([mine, other], PEER)).toEqual([
+      "11111111-1111-1111-1111-111111111111:4"
+    ]);
+    // VERSION, NOT REVISION. `revision` is author-assigned on the import path, so it cannot detect a
+    // shadow ADOPTED IN PLACE — same id, same revision, different origin.
+    expect(
+      outpostClaimantTokens([claimant({ objectId: mine.objectId, revision: 77 })], PEER)
+    ).toEqual([`${mine.objectId}:1`]);
+  });
+
+  it("the preview names the ADOPTION, the silent local cleanup and the PROPAGATING delete differently", () => {
+    const shadow = claimant({
+      objectId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      provenance: "manual",
+      originIsSelf: false
+    });
+    const local = claimant({
+      objectId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      originIsSelf: true
+    });
+    const verified = claimant({ objectId: "cccccccc-cccc-cccc-cccc-cccccccccccc" });
+
+    // THE DEFECT'S OWN SCENARIO: a locally-authored row alongside the shadow. The default call keeps
+    // the LOCAL row — so a preview that promised adoption would be a lie, and the operator's entered
+    // value is what gets dropped.
+    const bare = formatReconcilePreviewLines([shadow, local]).join("\n");
+    expect(bare).toMatch(new RegExp(`KEEP\\s+${local.objectId}`));
+    expect(bare).toMatch(new RegExp(`REMOVE\\s+${shadow.objectId}`));
+    expect(bare).not.toMatch(new RegExp(`ADOPT\\s+${shadow.objectId}`));
+
+    // Naming the shadow with --keep is the OTHER arm: it adopts, and the concurrent locally-authored
+    // row is deleted with a tombstone that PROPAGATES. Both facts must be on screen.
+    const kept = formatReconcilePreviewLines([shadow, local], shadow.objectId).join("\n");
+    expect(kept).toMatch(new RegExp(`ADOPT\\s+${shadow.objectId}`));
+    expect(kept).toMatch(new RegExp(`DELETE\\s+${local.objectId}`));
+    expect(kept).toMatch(/PROPAGATE/);
+    // The two removals must never read alike (the M1 rule, applied to the PREVIEW as well as the
+    // report): a shadow removal is invisible to the outpost, a local one is not.
+    expect(bare).toMatch(/invisible to the outpost/i);
+    expect(bare).not.toMatch(/PROPAGATE/);
+
+    // A verified replica can only be refused — the preview says so before the 409 arrives.
+    expect(formatReconcilePreviewLines([local, verified]).join("\n")).toMatch(
+      new RegExp(`REFUSE\\s+${verified.objectId}`)
+    );
+  });
+
+  it("with TWO rows of equal authority and no --keep, it declines to predict rather than guess", () => {
+    // The server breaks a same-class tie by `(created_at, id)`. Reconstructing that here and
+    // printing it as a prediction is the guess the panel refuses to make
+    // (`reconcile-default-indeterminate`) — and a preview that MIGHT be wrong is worse than none,
+    // because these lines exist precisely to say what WILL happen.
+    const localA = claimant({
+      objectId: "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      originIsSelf: true
+    });
+    const localB = claimant({
+      objectId: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+      originIsSelf: true
+    });
+    const tied = formatReconcilePreviewLines([localA, localB]).join("\n");
+    expect(tied).toMatch(/will not guess/i);
+    expect(tied).not.toMatch(/\bKEEP\b|\bADOPT\b|\bDELETE\b/);
+    // It still states the consequence class of each row — declining to predict is not declining to
+    // inform, and dropping either of these PROPAGATES.
+    expect(tied).toContain(localA.objectId);
+    expect(tied).toContain(localB.objectId);
+    expect(tied).toMatch(/PROPAGATE/);
+    // Naming a survivor resolves it: the same two rows now preview a definite outcome.
+    const named = formatReconcilePreviewLines([localA, localB], localB.objectId).join("\n");
+    expect(named).toMatch(new RegExp(`KEEP\\s+${localB.objectId}`));
+    expect(named).toMatch(new RegExp(`DELETE\\s+${localA.objectId}`));
+  });
+
+  it("a --keep naming no live claimant previews the 400, not the default outcome", () => {
+    const local = claimant({
+      objectId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      originIsSelf: true
+    });
+    const lines = formatReconcilePreviewLines([local], "ffffffff-ffff-ffff-ffff-ffffffffffff").join(
+      "\n"
+    );
+    expect(lines).toMatch(/400/);
+    expect(lines).not.toMatch(/\bKEEP\b/);
   });
 
   it("M1: with nothing removed, the message says so without naming either bucket", () => {

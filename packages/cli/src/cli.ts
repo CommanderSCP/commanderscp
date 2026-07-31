@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { Command } from "commander";
-import { ScpApiError, ScpClient } from "@scp/sdk";
+import { reconcileStaleClaimants, ScpApiError, ScpClient } from "@scp/sdk";
 import type { ListObjectsQuery, ListQuery } from "@scp/sdk";
 import type {
   ApprovalRequest,
@@ -50,7 +50,11 @@ import type {
   UpdateFederationPeerRequest,
   SyncScope
 } from "@scp/schemas";
-import { DesiredStateManifestSchema, OutpostTrustTierSchema } from "@scp/schemas";
+import {
+  DesiredStateManifestSchema,
+  outpostClaimantTokens,
+  OutpostTrustTierSchema
+} from "@scp/schemas";
 // Node-only hashing (`node:crypto`) — deliberately a separate subpath from `@scp/schemas`'
 // default entry, which `apps/web` also imports (browser build) — see audit-chain.ts's module doc.
 import { verifyAuditChain } from "@scp/schemas/audit-chain";
@@ -474,6 +478,116 @@ export function scanDbOutcomeRow(
   row.ageHours = isAbsent(status?.ageHours) ? "(unknown)" : String(status.ageHours);
   row.detail = outcome.detail ?? "";
   return row;
+}
+
+/**
+ * `scp federation outpost reconcile`'s "what this WOULD do" lines — one per live claimant, printed
+ * BEFORE the call from the very listing the `?ifClaimant=` token is derived from.
+ *
+ * WHY THE CLI NEEDS ITS OWN PREVIEW. This verb exists to un-wedge a peer, and the operator who
+ * needs it is precisely the one who cannot use the UI (the wedged peer is what the UI fails to
+ * render). Without these lines the command went straight to the write with NO read at all: the
+ * largest unguarded window of any surface, and no preview whatsoever of a call that can adopt an
+ * entered config, discard it, or delete a row this domain authored and JOURNAL that delete
+ * downstream.
+ *
+ * BE HONEST ABOUT WHAT THE TOKEN BUYS HERE. Between this listing and the call is a ~millisecond
+ * window, so for the CLI `?ifClaimant=` is a TOCTOU guard — NOT evidence that a human read
+ * anything. The informed-consent claim belongs to the UI, where an operator actually reads the
+ * preview and confirms. Both are worth having; this one must not be described as consent.
+ *
+ * THE RANKING IS MIRRORED, NOT AUTHORITATIVE. The server's `byAuthority` is the only thing that
+ * decides the outcome; this reproduces its three classes (local-origin > verified replica >
+ * unverified shadow, ties in listing order) from the fields the API already publishes
+ * (`originIsSelf`, `provenance`). A drifted mirror would mis-PREDICT — which is exactly why the
+ * token exists to make a divergence a refusal instead of a surprise.
+ */
+export function formatReconcilePreviewLines(
+  claimants: readonly OutpostConfig[],
+  keepObjectId?: string
+): string[] {
+  if (claimants.length === 0) return ["No live config objects claim this peer."];
+  const isShadow = (c: OutpostConfig): boolean =>
+    c.originIsSelf !== true && (c.provenance ?? null) === "manual";
+  const rank = (c: OutpostConfig): number => (c.originIsSelf === true ? 0 : isShadow(c) ? 2 : 1);
+  const ordered = claimants
+    .map((c, i) => ({ c, i }))
+    .sort((a, b) => rank(a.c) - rank(b.c) || a.i - b.i)
+    .map((e) => e.c);
+  /** Each row's CLASS and what dropping it would mean — the honest fallback for every case where
+   *  the survivor is not knowable from this side. */
+  const classLines = (): string[] =>
+    ordered.map((c) => {
+      const at = `${c.objectId} (version ${c.version})`;
+      if (isShadow(c)) {
+        return `  ${at} — an unverified hand-typed copy: dropping it is a purely local cleanup, invisible to the outpost`;
+      }
+      if (c.originIsSelf === true) {
+        return `  ${at} — THIS DOMAIN AUTHORED it: dropping it is a journaled tombstone that WILL PROPAGATE to the outpost`;
+      }
+      return `  ${at} — a signature-verified replica: it is never deleted, so a survivor that requires dropping it is refused (409)`;
+    });
+
+  let keeper: OutpostConfig;
+  if (keepObjectId !== undefined) {
+    const named = claimants.find((c) => c.objectId === keepObjectId);
+    if (named === undefined) {
+      // The server answers 400 for a `keep` that names no live claimant. Say so instead of quietly
+      // previewing the DEFAULT outcome, which is not the call about to be made.
+      return [
+        `--keep ${keepObjectId} names no live claimant of this peer, so the server will refuse this ` +
+          `call with a 400. Its live claimants:`,
+        ...classLines()
+      ];
+    }
+    keeper = named;
+  } else {
+    // WITH NO `--keep`, THE SURVIVOR IS ONLY PREDICTABLE WHEN ONE ROW HOLDS THE TOP RANK ALONE. The
+    // server breaks a tie inside one authority class by `(created_at, id)`; reconstructing that here
+    // and printing it as a prediction is exactly the guess the panel refuses to make
+    // (`reconcile-default-indeterminate`), and a preview that MIGHT be wrong is worse than no
+    // preview — the whole value of these lines is that they say what WILL happen.
+    const top = ordered.filter((c) => rank(c) === rank(ordered[0]!));
+    if (top.length > 1) {
+      return [
+        `${claimants.length} live config object(s) claim this peer and ${top.length} of them hold the ` +
+          `SAME authority — which one survives is decided by the server's creation order, so this side ` +
+          `will not guess. Re-run with --keep <objectId>. Each row's class and the consequence of ` +
+          `dropping it:`,
+        ...classLines()
+      ];
+    }
+    keeper = ordered[0]!;
+  }
+
+  const lines = [`${claimants.length} live config object(s) claim this peer; reconcile would:`];
+  for (const c of ordered) {
+    const at = `${c.objectId} (version ${c.version})`;
+    if (c.objectId === keeper.objectId) {
+      lines.push(
+        isShadow(c)
+          ? `  ADOPT  ${at} — an unverified hand-filled shadow becomes THIS DOMAIN'S OWN object, and from then on it JOURNALS DOWN to the outpost`
+          : `  KEEP   ${at} — ${c.originIsSelf === true ? "this domain authored it" : "a signature-verified replica this domain did not author"}`
+      );
+      continue;
+    }
+    if (isShadow(c)) {
+      lines.push(
+        `  REMOVE ${at} — an unverified hand-typed copy this domain never authored: a purely local cleanup, invisible to the outpost`
+      );
+      continue;
+    }
+    if (c.originIsSelf === true) {
+      lines.push(
+        `  DELETE ${at} — a row THIS DOMAIN AUTHORED: an ordinary journaled tombstone that WILL PROPAGATE to the outpost`
+      );
+      continue;
+    }
+    lines.push(
+      `  REFUSE ${at} — a signature-verified replica: reconcile never deletes one, so this call will be refused (409)`
+    );
+  }
+  return lines;
 }
 
 /** `scp federation outpost reconcile`'s "what happened" lines (review round 6, M1). The two removal
@@ -3172,21 +3286,70 @@ export function buildProgram(): Command {
       "--keep <objectId>",
       "which config object should SURVIVE (default: the most authoritative one). The only way out of a VERIFIED foreign-origin duplicate: this domain drops the row IT authored. A signature-verified replica is never deleted"
     )
+    // NAMED, NEVER THE DEFAULT. Skipping the precondition is a deliberate act with a name, so it
+    // shows up in the shell history and in any script that does it. The default reads first and
+    // sends `?ifClaimant=` derived from that read.
+    .option(
+      "--no-precondition",
+      "skip the ?ifClaimant= staleness check (send the bare call). Only for a peer whose claimants you have already inspected another way — without it, a claimant that appears between the listing and the call can silently change what reconcile does"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
-    .action(async (opts: BaseCliOpts & { peer: string; keep?: string }) => {
+    .action(async (opts: BaseCliOpts & { peer: string; keep?: string; precondition: boolean }) => {
       const client = await clientFromStoredCredentials(opts);
-      const result = await client.federation.reconcileOutpost(
-        opts.peer,
-        opts.keep !== undefined ? { keep: opts.keep } : {}
-      );
+      // READ FIRST. The window between this listing and the call is milliseconds, so the token is
+      // a TOCTOU guard rather than proof anybody read the preview — but the preview is also the
+      // only look at the claimants this surface has ever offered, and the write below can adopt,
+      // discard, or journal a delete downstream.
+      let ifClaimants: string[] | undefined;
+      if (opts.precondition) {
+        const configs = await client.federation.listOutposts();
+        ifClaimants = outpostClaimantTokens(configs, opts.peer);
+        if (opts.output !== "json") {
+          for (const line of formatReconcilePreviewLines(
+            configs.filter((c) => c.peerDomainId === opts.peer),
+            opts.keep
+          )) {
+            console.log(line);
+          }
+        }
+      }
+      const result = await client.federation
+        .reconcileOutpost(opts.peer, {
+          ...(opts.keep !== undefined ? { keep: opts.keep } : {}),
+          ...(ifClaimants !== undefined ? { ifClaimants } : {})
+        })
+        .catch((err: unknown) => {
+          // The stale-precondition 412 is the ONE refusal that carries its own re-preview. The
+          // generic handler in bin.ts prints `err.message`, which for a ProblemError is the bare
+          // HTTP title ("Precondition Failed") — an operator would learn nothing about WHAT moved
+          // or what to do next, on the exact refusal whose whole point is to say so.
+          const fresh = reconcileStaleClaimants(err);
+          if (fresh === null) throw err;
+          console.error(`REFUSED (HTTP 412): ${(err as ScpApiError).problem?.detail ?? ""}`);
+          console.error("Claimants NOW:");
+          for (const line of formatReconcilePreviewLines(
+            fresh.filter((c) => c.peerDomainId === opts.peer),
+            opts.keep
+          )) {
+            console.error(`  ${line}`);
+          }
+          console.error(
+            "Nothing was adopted, removed or journaled. Re-run to act on the list above."
+          );
+          return null;
+        });
+      if (result === null) {
+        process.exitCode = 1;
+        return;
+      }
       if (opts.output === "json") {
         printResult(result, opts.output, (item) => outpostConfigRow(item as OutpostConfig));
         return;
       }
-      // Table mode prints WHAT IT DID before the surviving row, because "adopted" and "removed" are
-      // the whole point of the call: a bare config row would look identical to `outpost show` and
-      // leave the operator unable to tell whether anything was cleaned up.
+      // Table mode prints WHAT IT DID before the surviving row, because "adopted" and "removed"
+      // are the whole point of the call: a bare config row would look identical to `outpost show`
+      // and leave the operator unable to tell whether anything was cleaned up.
       printResult([result.config], opts.output, (item) => outpostConfigRow(item as OutpostConfig));
       for (const line of formatReconcileResultLines(result)) {
         console.log(line);

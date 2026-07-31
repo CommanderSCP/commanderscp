@@ -14953,6 +14953,7 @@ export type ReconcileOutpostConfigData = {
     };
     query?: {
         keep?: string;
+        ifClaimant?: Array<string>;
     };
     url: '/federation/outposts/{peerDomainId}/reconcile';
 };
@@ -15012,6 +15013,32 @@ export type ReconcileOutpostConfigErrors = {
         detail?: string;
         instance?: string;
         decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    412: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+        claimants?: Array<{
+            objectId: string;
+            urn: string;
+            name: string;
+            peerDomainId: string;
+            trustTier: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap' | null;
+            originDomainId: string;
+            originIsSelf?: boolean;
+            provenance?: 'manual' | null;
+            revision: number;
+            version: number;
+            unknownFields: Array<string>;
+            createdAt: string;
+            updatedAt: string;
+        }>;
     };
 };
 

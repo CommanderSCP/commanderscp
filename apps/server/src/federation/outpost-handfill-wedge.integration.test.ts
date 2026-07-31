@@ -1,8 +1,8 @@
 import { randomUUID, generateKeyPairSync } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, isNull } from "drizzle-orm";
-import { ScpApiError, ScpClient } from "@scp/sdk";
-import { asTrustDomainId } from "@scp/schemas";
+import { reconcileStaleClaimants, ScpApiError, ScpClient } from "@scp/sdk";
+import { asTrustDomainId, outpostClaimantTokens } from "@scp/schemas";
 import {
   createTestOrg,
   listenTestServer,
@@ -581,5 +581,266 @@ describe("M16.2 H1: the hand-fill write door + wedge recovery (Testcontainers)",
     // Pinned as the counterpart to the 409 above: the two refusals must not collapse onto one code,
     // or a consumer can no longer tell "this peer has nothing" from "this peer has too much".
     await expectApiError(admin.federation.getOutpost(peer), 404, /has no outpost config object/i);
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // (D) THE OPTIMISTIC-CONCURRENCY PRECONDITION — `?ifClaimant=<objectId>:<version>`.
+  //
+  // Reconcile's outcome is derived from the claimant set INSIDE the write transaction, while the
+  // caller decided from a set it read earlier. Both arms of the divergence are silent 200s:
+  //   * the BARE call re-derives the survivor with `byAuthority`, so a locally-authored row that
+  //     appeared since the preview outranks the shadow and the operator's ENTERED VALUE IS DROPPED;
+  //   * `?keep=<shadow>` instead makes that concurrent locally-authored row surplus and soft-deletes
+  //     it — a JOURNALED TOMBSTONE that PROPAGATES DOWNSTREAM to the outpost.
+  // Both are pinned below as the state the precondition refuses, and the refusal is proven to write
+  // NOTHING: no removal, no adoption, no journal entry.
+  // -----------------------------------------------------------------------------------------
+
+  /** The token set for one peer, derived from exactly the array a client's preview renders from. */
+  async function previewTokens(peerDomainId: string): Promise<string[]> {
+    return outpostClaimantTokens(await admin.federation.listOutposts(), peerDomainId);
+  }
+
+  async function journalCount(): Promise<number> {
+    const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select({ id: syncJournal.id }).from(syncJournal).where(eq(syncJournal.orgId, org.orgId))
+    );
+    return rows.length;
+  }
+
+  /**
+   * A SECOND LOCALLY-AUTHORED claimant for a peer that already has one — the concurrent row whose
+   * appearance is the defect. Planted through the repo for the same reason `plantShadow` is: the
+   * create door refuses it TODAY (clause (4)'s clash scan is strict on CREATE, exempting only an
+   * unverified shadow on UPDATE), so an API-built version of this state is impossible — while the
+   * state itself is reachable from an install upgraded past the older hand-fill door, and from the
+   * second-authoring-domain case `?keep=` exists to serve. What matters to the precondition is only
+   * that the row is LIVE, bound to the peer, and NOT in the token the caller previewed.
+   */
+  async function plantLocalAuthored(peerDomainId: string, urnSuffix: string) {
+    return withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const { object } = await upsertObjectByUrn(tx, {
+        orgId: org.orgId,
+        typeId: "outpost",
+        actorObjectId: org.orgId,
+        requestId: `test-plant-local-${urnSuffix}`,
+        urn: `urn:scp:${org.orgId}:outpost:local-${urnSuffix}`,
+        name: `local-${urnSuffix}`,
+        properties: { peerDomainId, trustTier: "il5" },
+        federationImport: {
+          originDomainId: asTrustDomainId(selfDomainId),
+          revision: 0,
+          provenance: null
+        }
+      });
+      return object;
+    });
+  }
+
+  it("(a) NO concurrent change: the token matches, and the adopt the operator asked for happens", async () => {
+    const peer = await pairPeerViaApi("outpost");
+    const shadow = await plantShadow(peer, "commercial", `pre-a-${peer.slice(0, 8)}`);
+    const tokens = await previewTokens(peer);
+    expect(tokens).toEqual([`${shadow.id}:${shadow.version}`]);
+
+    const result = await admin.federation.reconcileOutpost(peer, { ifClaimants: tokens });
+    expect(result.adoptedObjectId).toBe(shadow.id);
+    expect(result.config.originIsSelf).toBe(true);
+    // A matching token must be INERT — same outcome as the bare call, no extra refusal surface.
+    expect(result.removedShadowObjectIds).toEqual([]);
+    expect(result.removedLocalObjectIds).toEqual([]);
+  });
+
+  it("(b) THE DEFECT: a locally-authored claimant appears between preview and call — REFUSED 412, nothing removed, nothing journaled", async () => {
+    const peer = await pairPeerViaApi("outpost");
+    const shadow = await plantShadow(peer, "commercial", `pre-b-${peer.slice(0, 8)}`);
+    // The operator previews: one claimant, the shadow they typed in. The panel's copy promises
+    // "reconcile keeps the entered value and makes it journal down to the outpost".
+    const tokens = await previewTokens(peer);
+    expect(tokens).toEqual([`${shadow.id}:${shadow.version}`]);
+    // …and then the world moves: a commander-origin row for this peer appears. It OUTRANKS the
+    // shadow in `byAuthority`, so from here the bare call keeps IT and discards the entered value —
+    // see (d), which measures exactly that.
+    const local = await plantLocalAuthored(peer, `pre-b-${peer.slice(0, 8)}`);
+    const journalBefore = await journalCount();
+
+    await expectApiError(
+      admin.federation.reconcileOutpost(peer, { ifClaimants: tokens }),
+      412,
+      /not the ones this call was previewed against/i
+    );
+    // The refusal NAMES what moved — "precondition failed" alone is not actionable.
+    await admin.federation.reconcileOutpost(peer, { ifClaimants: tokens }).then(
+      () => {
+        throw new Error("expected a refusal");
+      },
+      (err: unknown) => {
+        const detail = (err as ScpApiError).problem?.detail ?? "";
+        expect(detail).toMatch(/appeared/i);
+        expect(detail).toContain(local.id);
+        // …and carries the FRESH claimants, so the caller re-previews with no second round trip and
+        // no second staleness window.
+        const fresh = reconcileStaleClaimants(err);
+        expect(fresh).not.toBeNull();
+        expect(new Set(fresh!.map((c) => c.objectId))).toEqual(new Set([shadow.id, local.id]));
+      }
+    );
+
+    // NOTHING WAS WRITTEN — asserted, not assumed. Both rows survive, the shadow is still a shadow,
+    // and no journal entry was produced (a tombstone here would have propagated to the outpost).
+    expect(await outpostRowsForPeer(peer)).toHaveLength(2);
+    expect(await journalCount()).toBe(journalBefore);
+    const still = await admin.federation.listOutposts();
+    expect(still.find((c) => c.objectId === shadow.id)?.provenance).toBe("manual");
+  });
+
+  it("(b2) THE WRONG ONE-LINE FIX: ?keep=<shadow> with a stale token does NOT delete the concurrent locally-authored row", async () => {
+    const peer = await pairPeerViaApi("outpost");
+    const shadow = await plantShadow(peer, "commercial", `pre-b2-${peer.slice(0, 8)}`);
+    const tokens = await previewTokens(peer);
+    const local = await plantLocalAuthored(peer, `pre-b2-${peer.slice(0, 8)}`);
+    const journalBefore = await journalCount();
+
+    // Passing `?keep=<shadowId>` is the tempting one-line "fix" for the dropped-value bug. It trades
+    // it for a worse one: the concurrent row is THIS DOMAIN'S OWN, so removing it journals a
+    // tombstone that propagates to the outpost — a delete the operator never saw. The precondition
+    // has to refuse this arm too, or the guard only covers half the defect.
+    await expectApiError(
+      admin.federation.reconcileOutpost(peer, { keep: shadow.id, ifClaimants: tokens }),
+      412,
+      /not the ones this call was previewed against/i
+    );
+    expect(await outpostRowsForPeer(peer)).toHaveLength(2);
+    expect(await journalCount()).toBe(journalBefore);
+    expect((await admin.federation.listOutposts()).some((c) => c.objectId === local.id)).toBe(true);
+
+    // The precondition is TRANSIENT, which is the whole reason it is a 412 and not a second 409: a
+    // re-preview and a re-issue succeed. (Here the operator, now seeing both rows, still chooses the
+    // shadow — and is told the local row was deleted and WILL propagate.)
+    const fresh = await previewTokens(peer);
+    const result = await admin.federation.reconcileOutpost(peer, {
+      keep: shadow.id,
+      ifClaimants: fresh
+    });
+    expect(result.adoptedObjectId).toBe(shadow.id);
+    expect(result.removedLocalObjectIds).toEqual([local.id]);
+  });
+
+  it("(c) the previewed shadow DISAPPEARED: refused 412, and not swallowed as a 404 'nothing to reconcile'", async () => {
+    const peer = await pairPeerViaApi("outpost");
+    const local = await admin.federation.createOutpost({ peerDomainId: peer, trustTier: "il5" });
+    const shadow = await plantShadow(peer, "commercial", `pre-c-${peer.slice(0, 8)}`);
+    const tokens = await previewTokens(peer);
+    expect(tokens).toHaveLength(2);
+    // Someone else reconciles first, which removes the shadow.
+    await admin.federation.reconcileOutpost(peer);
+    expect(await outpostRowsForPeer(peer)).toHaveLength(1);
+
+    await admin.federation.reconcileOutpost(peer, { ifClaimants: tokens }).then(
+      () => {
+        throw new Error("expected a refusal");
+      },
+      (err: unknown) => {
+        expect((err as ScpApiError).status).toBe(412);
+        const detail = (err as ScpApiError).problem?.detail ?? "";
+        expect(detail).toMatch(/disappeared/i);
+        expect(detail).toContain(shadow.id);
+        expect(reconcileStaleClaimants(err)!.map((c) => c.objectId)).toEqual([local.objectId]);
+      }
+    );
+  });
+
+  it("(c2) a claimant ADOPTED IN PLACE keeps its id — only `version` catches it, and it must", async () => {
+    // The case ids-alone would be BLIND to: the set of ids is unchanged, but the row that was an
+    // unverified shadow is now this domain's own object, so `byAuthority` ranks it differently and
+    // reconcile's outcome changes under a caller holding the older preview.
+    const peer = await pairPeerViaApi("outpost");
+    const shadow = await plantShadow(peer, "commercial", `pre-c2-${peer.slice(0, 8)}`);
+    const tokens = await previewTokens(peer);
+    await admin.federation.reconcileOutpost(peer); // adopts in place: same id, version bumped
+    const after = (await admin.federation.listOutposts()).find((c) => c.objectId === shadow.id)!;
+    expect(after.originIsSelf).toBe(true);
+    expect(after.version).toBeGreaterThan(shadow.version);
+    // Same ids on both sides — an id-only token would have said "unchanged" and proceeded.
+    expect(tokens.map((t) => t.split(":")[0])).toEqual([shadow.id]);
+
+    await admin.federation.reconcileOutpost(peer, { ifClaimants: tokens }).then(
+      () => {
+        throw new Error("expected a refusal");
+      },
+      (err: unknown) => {
+        expect((err as ScpApiError).status).toBe(412);
+        expect((err as ScpApiError).problem?.detail ?? "").toMatch(/changed since the preview/i);
+      }
+    );
+  });
+
+  it("(d) an OMITTED token proceeds unchecked — the documented protocol default, and exactly today's behaviour", async () => {
+    const peer = await pairPeerViaApi("outpost");
+    const shadow = await plantShadow(peer, "commercial", `pre-d-${peer.slice(0, 8)}`);
+    const local = await plantLocalAuthored(peer, `pre-d-${peer.slice(0, 8)}`);
+
+    // No token, no check: the call succeeds and the SERVER re-derives the survivor. This is the
+    // silent outcome the precondition exists to make refusable — pinned here so "unchecked" is a
+    // measured property of the default and not an assumption, and so any future change that starts
+    // REQUIRING the token (a /v1 break, oasdiff job 3b) fails this test first.
+    const result = await admin.federation.reconcileOutpost(peer);
+    expect(result.config.objectId).toBe(local.id);
+    expect(result.adoptedObjectId).toBeNull();
+    expect(result.removedShadowObjectIds).toEqual([shadow.id]);
+  });
+
+  it("(e) the token does not disturb the existing refusals: ?keep= 400 and the verified-replica 409 still hold", async () => {
+    const peer = await pairPeerViaApi("outpost");
+    const local = await admin.federation.createOutpost({ peerDomainId: peer, trustTier: "il5" });
+    const otherPeer = await pairPeerViaApi("outpost");
+    const other = await admin.federation.createOutpost({ peerDomainId: otherPeer });
+
+    // A FRESH token plus a `keep` naming a row bound to a different peer is still a 400 — the
+    // precondition must not mask an ordinary bad argument as staleness.
+    await expectApiError(
+      admin.federation.reconcileOutpost(peer, {
+        keep: other.objectId,
+        ifClaimants: await previewTokens(peer)
+      }),
+      400,
+      /is not one of the live outpost config objects bound to peer/i
+    );
+
+    // …and the AUTHORITY conflict stays a 409 with a fresh token: it is PERMANENT until the operator
+    // chooses differently, so collapsing it into the retryable 412 would tell them to look again and
+    // press the same button forever.
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      upsertObjectByUrn(tx, {
+        orgId: org.orgId,
+        typeId: "outpost",
+        actorObjectId: org.orgId,
+        requestId: `test-verified-precond-${peer.slice(0, 8)}`,
+        urn: `urn:scp:${org.orgId}:outpost:verified-precond-${peer.slice(0, 8)}`,
+        name: "verified-precond",
+        properties: { peerDomainId: peer },
+        federationImport: { originDomainId: asTrustDomainId(peer), revision: 7, provenance: null }
+      })
+    );
+    await expectApiError(
+      admin.federation.reconcileOutpost(peer, { ifClaimants: await previewTokens(peer) }),
+      409,
+      /signature-verified replicas this domain did not author/i
+    );
+    expect(await outpostRowsForPeer(peer)).toHaveLength(2);
+    expect(local.objectId).toBeDefined();
+  });
+
+  it("(e2) a malformed token is a 400 at the route edge, and the peer is untouched", async () => {
+    const peer = await pairPeerViaApi("outpost");
+    const shadow = await plantShadow(peer, "commercial", `pre-e2-${peer.slice(0, 8)}`);
+    // `<objectId>` with no version is the shape a client would produce if it reached for `keep`'s
+    // id list by mistake — rejected by the parameter schema before any work happens.
+    await expectApiError(
+      admin.federation.reconcileOutpost(peer, { ifClaimants: [shadow.id] }),
+      400,
+      /ifClaimant/i
+    );
+    expect(await outpostRowsForPeer(peer)).toHaveLength(1);
   });
 });

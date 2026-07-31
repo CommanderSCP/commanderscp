@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { OutpostTrustTierSchema } from "@scp/schemas";
+import { formatOutpostClaimantToken, OutpostTrustTierSchema } from "@scp/schemas";
 import type {
   FederationPeer,
   FederationPeerStatus,
@@ -8,7 +8,7 @@ import type {
   OutpostConfigReconcileResult,
   OutpostTrustTier
 } from "@scp/schemas";
-import { ScpApiError } from "@scp/sdk";
+import { reconcileStaleClaimants, ScpApiError } from "@scp/sdk";
 import { client } from "../lib/client";
 import { federationStatusKey, outpostConfigListKey } from "../lib/query-client";
 import { isForeignOriginObject, replicaGuard, useOwnDomainId } from "../lib/replica-origin";
@@ -892,10 +892,30 @@ export function OutpostConfigurationSection({
     await queryClient.invalidateQueries({ queryKey: federationStatusKey() });
   };
 
+  /**
+   * THE SAME PREMISE THE RECONCILE MUTATION ATTACHES, ON THIS PANEL'S OTHER WRITE DOOR (R2, PR
+   * #156 residual). The operator reads a tier off `config` and edits it — a prediction from the
+   * row on screen, exactly like reconcile's claimant preview — but until this fix the call carried
+   * no `expectedVersion`, so a concurrent edit (another operator, or this same peer's `keep`
+   * reconcile) was silently overwritten: `updateObject` has always accepted the precondition
+   * (`packages/schemas/src/federation.ts`'s `UpdateOutpostConfigRequestSchema`), the PATCH route
+   * has always declared its 412, and NOTHING on the write path needed to change — only this call
+   * site was leaving its premise unstated. `config.version` is read from the same query result the
+   * rendered form derives from, so the request cannot be checked against a different world than
+   * the one on screen.
+   */
   const tierMutation = useMutation({
-    mutationFn: (tier: OutpostTrustTier) =>
-      client.federation.updateOutpost(peerDomainId, { trustTier: tier }),
-    onSuccess: invalidate
+    mutationFn: (input: { tier: OutpostTrustTier; expectedVersion: number }) =>
+      client.federation.updateOutpost(peerDomainId, {
+        trustTier: input.tier,
+        expectedVersion: input.expectedVersion
+      }),
+    onSuccess: invalidate,
+    // Mirrors reconcile's onError: a 412 means the row on screen is stale, so refetch it rather
+    // than leaving the operator staring at the version they just tried (and failed) to overwrite.
+    onError: (err: unknown) => {
+      if (err instanceof ScpApiError && err.status === 412) void invalidate();
+    }
   });
   const createMutation = useMutation({
     mutationFn: (tier: OutpostTrustTier | undefined) =>
@@ -909,10 +929,53 @@ export function OutpostConfigurationSection({
     mutationFn: (next: boolean) => client.federation.updatePeer(peerDomainId, { pokeMode: next }),
     onSuccess: invalidate
   });
+  /**
+   * THE PRECONDITION, ATTACHED WHERE EVERY RECONCILE THIS PANEL ISSUES PASSES THROUGH.
+   *
+   * The panel predicts an outcome from `claimants` and then asks the server to act — but the server
+   * derives that outcome from the rows it reads INSIDE its own transaction, which is a different
+   * moment. `?ifClaimant=<objectId>:<version>` is that prediction's premise, sent with the request
+   * and compared as a set, so a world that moved is a 412 that WROTE NOTHING rather than a 200 that
+   * did something else. Both failure directions are covered by this one attachment, which is why it
+   * lives on the mutation and not on a button:
+   *   * the ADOPT-SHADOW control below (`TrustTierCard`'s `onReconcile`) sends no `keep`, so the
+   *     server re-derives the survivor — a locally-authored row that appeared since this query
+   *     resolved outranks the shadow, and the operator's entered value is DROPPED while the button
+   *     promised it would be kept;
+   *   * naming the shadow with `keep` instead makes that same concurrent row surplus, and removing a
+   *     row THIS domain authored journals a tombstone that PROPAGATES to the outpost — the removal
+   *     this panel elsewhere refuses to perform without an explicit confirmation.
+   *
+   * The token is built from `claimants` — the exact array the preview above was computed from — so
+   * the request cannot be checked against a different world than the one on screen.
+   */
   const reconcileMutation = useMutation({
     mutationFn: (keep: string | undefined) =>
-      client.federation.reconcileOutpost(peerDomainId, keep !== undefined ? { keep } : {}),
-    onSuccess: invalidate
+      client.federation.reconcileOutpost(peerDomainId, {
+        ...(keep !== undefined ? { keep } : {}),
+        // Guarded because an EMPTY set is not expressible on the wire (a query parameter repeated
+        // zero times is absence, which means "unchecked"): sending one for a peer whose claimants
+        // have not loaded would silently downgrade to the unguarded call. No control that triggers
+        // this mutation renders before they load, so this is a floor, not a live branch.
+        ...(claimants.length > 0 ? { ifClaimants: claimants.map(formatOutpostClaimantToken) } : {})
+      }),
+    onSuccess: invalidate,
+    // A 412 says the claimant list on screen is stale, so REFETCH it: the refusal's own text names
+    // what moved, and the preview beside it must be the new world, not the one that was refused.
+    //
+    // R3 (PR #156 residual) — THIS PANEL REFETCHES; IT DOES NOT RE-RENDER THE CARRIED PREVIEW.
+    // `reconcileStaleClaimants(err)` is used ONLY as a 412 detector here — its return value (the
+    // fresh `claimants` the refusal carried) is discarded, and `invalidate()` opens a second round
+    // trip and a second, if narrower, staleness window instead. `scp federation outpost reconcile`
+    // (`packages/cli/src/cli.ts`) takes the other branch: it re-previews straight from the carried
+    // list, no second read. Both are correct — a second stale press here is refused again, since the
+    // refetch is what the next token derives from — but they are not the same behaviour, and the
+    // "no second round trip" rationale on `preconditionFailed` (`apps/server/src/errors.ts`) and on
+    // `OutpostReconcileStaleProblemSchema.claimants` (`packages/schemas/src/federation.ts`) describes
+    // the CLI's path, not this one.
+    onError: (err: unknown) => {
+      if (reconcileStaleClaimants(err) !== null) void invalidate();
+    }
   });
 
   return (
@@ -946,7 +1009,7 @@ export function OutpostConfigurationSection({
             ownDomainId={ownDomainId}
             saveError={tierMutation.error}
             isSaving={tierMutation.isPending}
-            onSave={(tier) => tierMutation.mutate(tier)}
+            onSave={(tier) => tierMutation.mutate({ tier, expectedVersion: config.version })}
             onReconcile={() => reconcileMutation.mutate(undefined)}
           />
         )}
