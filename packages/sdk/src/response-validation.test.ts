@@ -22,7 +22,11 @@ interface JsonObject {
   [key: string]: unknown;
 }
 
-function wellFormedStatus(): JsonObject {
+interface StatusBody extends JsonObject {
+  peers: JsonObject[];
+}
+
+function wellFormedStatus(): StatusBody {
   return {
     self: null,
     peers: [
@@ -44,11 +48,30 @@ function wellFormedStatus(): JsonObject {
   };
 }
 
-/** Deep clone + delete, so each case starts from the same known-good body. */
-function statusWithout(mutate: (body: JsonObject) => void): JsonObject {
+/** The sole `peers[]` entry of a fresh known-good body. */
+function onlyPeerEntry(body: StatusBody): JsonObject {
+  const entry = body.peers[0];
+  if (entry === undefined) throw new Error("fixture invariant: exactly one peer entry");
+  return entry;
+}
+
+/** That entry's nested `peer` object. */
+function onlyPeer(body: StatusBody): JsonObject {
+  return onlyPeerEntry(body).peer as JsonObject;
+}
+
+/** A fresh known-good body with `mutate` applied — each case starts from the same baseline. */
+function statusWith(mutate: (body: StatusBody) => void): StatusBody {
   const body = wellFormedStatus();
   mutate(body);
   return body;
+}
+
+/** A body whose only peer is missing `peer.syncScope` — the round-3/4/5 regression. */
+function statusMissingSyncScope(): StatusBody {
+  return statusWith((b) => {
+    delete onlyPeer(b).syncScope;
+  });
 }
 
 describe("SDK response validation (ADR-0023)", () => {
@@ -81,9 +104,7 @@ describe("SDK response validation (ADR-0023)", () => {
 
   it("rejects a response missing a required field, naming the operation and the field", async () => {
     // The round-3/round-4 regression: a peer whose `syncScope` the instance did not send.
-    body = statusWithout((b) => {
-      delete ((b.peers as JsonObject[])[0].peer as JsonObject).syncScope;
-    });
+    body = statusMissingSyncScope();
 
     const error = await client()
       .federation.status()
@@ -110,8 +131,8 @@ describe("SDK response validation (ADR-0023)", () => {
   });
 
   it("names a missing required ARRAY field too (the round-4 `recentTransfers` site)", async () => {
-    body = statusWithout((b) => {
-      delete (b.peers as JsonObject[])[0].recentTransfers;
+    body = statusWith((b) => {
+      delete onlyPeerEntry(b).recentTransfers;
     });
 
     const error = (await client()
@@ -124,9 +145,7 @@ describe("SDK response validation (ADR-0023)", () => {
   });
 
   it("fails ONCE — one request, one throw, no retry and no silent undefined", async () => {
-    body = statusWithout((b) => {
-      delete ((b.peers as JsonObject[])[0].peer as JsonObject).syncScope;
-    });
+    body = statusMissingSyncScope();
 
     let resolved: unknown = "not-resolved";
     let threw: unknown;
@@ -143,9 +162,7 @@ describe("SDK response validation (ADR-0023)", () => {
   });
 
   it("does not disguise a validation failure as a generic API error", async () => {
-    body = statusWithout((b) => {
-      delete ((b.peers as JsonObject[])[0].peer as JsonObject).syncScope;
-    });
+    body = statusMissingSyncScope();
 
     const error = (await client()
       .federation.status()
@@ -161,8 +178,9 @@ describe("SDK response validation (ADR-0023)", () => {
   it("leaves a well-formed response untouched, including fields the SDK does not know about", async () => {
     // Forward compatibility: a NEWER instance sending an extra field must still work, and the
     // payload handed to callers must be the server's, not a validator-rewritten copy.
-    const sent = wellFormedStatus();
-    (sent.peers as JsonObject[])[0].someFieldFromANewerInstance = { nested: true };
+    const sent = statusWith((b) => {
+      onlyPeerEntry(b).someFieldFromANewerInstance = { nested: true };
+    });
     body = sent;
 
     const status = await client().federation.status();
