@@ -7,6 +7,7 @@ import type {
   ServiceBoardWave
 } from "@scp/sdk";
 import { client } from "../lib/client";
+import { declaredUnknowns, isAbsent } from "../lib/absent";
 import { serviceBoardKey } from "../lib/query-client";
 import { useIdParam } from "../lib/use-route-params";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -44,7 +45,7 @@ function WhyLink({ changeId, decisionId }: { changeId: string; decisionId: strin
  *  `ServiceBoardRow.unknownFields`) — as opposed to observed-and-empty. The two must never render
  *  the same way: an unobservable field is an honest UNKNOWN, not a clean bill of health. */
 function isUnknown(row: ServiceBoardRow, field: string): boolean {
-  return row.unknownFields.includes(field);
+  return declaredUnknowns(row).includes(field);
 }
 
 /** The honest-unknown marker. Deliberately NOT the muted dash used for observed-and-empty, and
@@ -145,7 +146,12 @@ export function BoardRow({ row }: { row: ServiceBoardRow }): React.JSX.Element {
          field this row lists in unknownFields, which reintroduces in the DOM the
          exact confusion the response shape removes on the wire. */
       data-blocked={isUnknown(row, "attention.blocked") ? "unknown" : String(row.attention.blocked)}
-      data-driven-here={row.driver ? row.driver.drivenHere : true}
+      /* "none" — not "true" — when the server sent no driver at all. `driver` is nullable (no
+         latest change to attribute), and defaulting an ABSENT driver to `true` made a row with
+         nothing to drive machine-readable as one this domain DRIVES, indistinguishable from a
+         real local-origin row. Same class as `data-blocked` above, and as the bare row-level
+         `data-trust-tier` fixed in `routes/outposts.tsx`. */
+      data-driven-here={row.driver ? String(row.driver.drivenHere) : "none"}
     >
       <TableCell>
         <Link
@@ -261,11 +267,11 @@ export function changeVisibilityUnknownOf(board: { unknownFields: string[] }): b
   //       local — which is what catches the SENDING side being the narrow one;
   //   (3) the upstream this board depends on is overdue by its own sync cadence.
   // Which one it is shows in the "as of" line (3) and the row-level markers (1, 2).
-  return board.unknownFields.includes("summary.stable");
+  return declaredUnknowns(board).includes("summary.stable");
 }
 
 export function freezeVisibilityUnknownOf(board: { unknownFields: string[] }): boolean {
-  return board.unknownFields.includes("rows[].activeFreeze");
+  return declaredUnknowns(board).includes("rows[].activeFreeze");
 }
 
 /**
@@ -309,7 +315,7 @@ export function BoardAsOfLabel({ asOf }: { asOf: ServiceBoardAsOf | null }): Rea
       title={
         asOf.stale === true
           ? `Overdue: nothing has arrived from ${asOf.peerName} for ${asOf.ageSeconds}s, past the ${asOf.staleAfterSeconds}s after which a sync cycle counts as missed (its effective sync cadence is ${asOf.expectedWithinSeconds}s, plus the grace a healthy peer needs — data is always at least one cadence old by the time the next import lands). This board may not reflect changes already in flight upstream.`
-          : asOf.stale === null
+          : isAbsent(asOf.stale)
             ? `This instance runs no pull schedule for ${asOf.peerName}, so there is no cadence for this data to be late against. It is last-known state as of the bundle named here — not live status (DESIGN §13).`
             : `Not overdue: this data is ${asOf.ageSeconds}s old and ${asOf.peerName} is not counted late until ${asOf.staleAfterSeconds}s (its effective sync cadence is ${asOf.expectedWithinSeconds}s, plus the grace a healthy peer needs — data is always at least one cadence old by the time the next import lands).`
       }

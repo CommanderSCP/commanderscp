@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { BoundarySegment } from "@scp/sdk";
 import { Badge } from "../ui/badge";
+import { declaredUnknowns, isAbsent } from "../../lib/absent";
 
 /**
  * M16.1 — THE UNIVERSAL BOUNDARY SEGMENT, rendered (ADR-0011; vocabulary fixed by ADR-0021 D6).
@@ -35,7 +36,7 @@ import { Badge } from "../ui/badge";
  *  observed-and-negative. The two must never render the same way. Mirrors `service-board.tsx`'s
  *  `isUnknown` deliberately: one honesty pattern in this codebase, not two. */
 export function isBoundaryUnknown(segment: BoundarySegment, field: string): boolean {
-  return segment.unknownFields.includes(field);
+  return declaredUnknowns(segment).includes(field);
 }
 
 /** The honest-unknown marker — same visual language as the board's `UnknownHere`: dashed amber,
@@ -159,10 +160,12 @@ function ValidatePhase({
   // says so, this renders an explicit unknown — NOT a neutral-looking "not reported" chip that a
   // tired operator could read as "fine".
   const stateUnknown = isBoundaryUnknown(segment, "validate.state");
-  const artifactDetail =
-    validate.authorizedArtifactCount !== null
-      ? `${validate.authorizedArtifactCount} authorized artifact${validate.authorizedArtifactCount === 1 ? "" : "s"}`
-      : undefined;
+  // `isAbsent`, not `!== null`: `authorizedArtifactCount` is required-NULLABLE and the generated SDK
+  // validates no response, so a server that omits the key reached this branch with `undefined` and
+  // printed the literal `undefined authorized artifacts`. Same class as the federation cells.
+  const artifactDetail = isAbsent(validate.authorizedArtifactCount)
+    ? undefined
+    : `${validate.authorizedArtifactCount} authorized artifact${validate.authorizedArtifactCount === 1 ? "" : "s"}`;
 
   let badge: ReactNode;
   if (stateUnknown) {

@@ -169,4 +169,41 @@ describe("scp federation outpost — the operator-facing surface", () => {
     expect(lines).not.toMatch(/unverified shadow/i);
     expect(lines).not.toMatch(/journal/i);
   });
+
+  /**
+   * ROUND 3 — THE SAME HALF-GUARD, IN THE CLI. `adoptedObjectId` is required-NULLABLE
+   * (`federation.ts`), and the generated SDK validates NO response, so a server that omits the key
+   * hands this function `undefined`. Keyed on `=== null`, that took the OTHER branch and printed
+   *
+   *     Adopted: undefined (an unverified hand-filled shadow is now this domain's own object)
+   *
+   * — an adoption that did not happen, reported as one that did, from the CLI's own recovery verb.
+   * The browser half of this bug was fixed in `routes/outpost-configuration.tsx`; the class is
+   * broader than the file, so it is pinned in both.
+   */
+  it("an ABSENT adoptedObjectId reports NO adoption, never `Adopted: undefined`", () => {
+    const absent = {
+      config: fakeConfig(),
+      removedShadowObjectIds: [],
+      removedLocalObjectIds: []
+    } as unknown as OutpostConfigReconcileResult;
+    // `adoptedObjectId` is not merely `undefined` — the KEY IS MISSING, which is what an omitting
+    // server actually sends.
+    expect("adoptedObjectId" in absent).toBe(false);
+
+    const lines = formatReconcileResultLines(absent).join("\n");
+    expect(lines).toContain("Adopted: nothing");
+    expect(lines).not.toMatch(/undefined/);
+    expect(lines).not.toMatch(/is now this domain's own object/);
+
+    // PREMISE, so this cannot pass by the adoption branch having been broken outright: a REAL
+    // adoption is still reported as one.
+    const real: OutpostConfigReconcileResult = {
+      config: fakeConfig(),
+      adoptedObjectId: "adopted-id-1",
+      removedShadowObjectIds: [],
+      removedLocalObjectIds: []
+    };
+    expect(formatReconcileResultLines(real).join("\n")).toContain("Adopted: adopted-id-1");
+  });
 });

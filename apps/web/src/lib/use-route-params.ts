@@ -24,6 +24,13 @@ export function useServiceIdParam(): string | undefined {
   return (useParams({ strict: false }) as { serviceId?: string }).serviceId;
 }
 
+/** `/federation/outposts/$peerDomainId` (M16.2 phase B) — an outpost is addressed by its peer
+ *  TRUST-DOMAIN id, which is the anchor of the whole authority split (ADR-0022 clause 4): the peer
+ *  row's primary key AND the `outpost` config object's binding. Never by the config object's id. */
+export function usePeerDomainIdParam(): string | undefined {
+  return (useParams({ strict: false }) as { peerDomainId?: string }).peerDomainId;
+}
+
 export function useUserCodeSearch(): string | undefined {
   return (useSearch({ strict: false }) as { user_code?: string }).user_code;
 }

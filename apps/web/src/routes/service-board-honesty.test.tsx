@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ServiceBoardRow, ServiceBoardSummary } from "@scp/sdk";
+import type { ServiceBoardAsOf, ServiceBoardRow, ServiceBoardSummary } from "@scp/sdk";
 
 /**
  * The RENDERING half of the service board's federation-honesty rule, pinned by a check that runs on
@@ -138,7 +138,31 @@ describe("service board rendering: an unobservable field is never painted as a c
     expect(html).toContain(MUTED_DASH);
     expect(html).toContain('data-testid="board-no-change"');
     expect(html).toContain('data-blocked="false"');
-    expect(html).toContain('data-driven-here="true"');
+    // "none", NOT "true". This fixture's `driver` is null — the row has no latest change to
+    // attribute to anyone — and the attribute used to default that to `true`, making a row with
+    // NOTHING TO DRIVE machine-readable as one this domain drives, indistinguishable from the
+    // genuinely-local row asserted below. Same class as `data-blocked` and as the bare row-level
+    // `data-trust-tier` in `routes/outposts.tsx`.
+    expect(html).toContain('data-driven-here="none"');
+    expect(html).not.toContain('data-driven-here="true"');
+  });
+
+  it("distinguishes NO DRIVER from a driver that IS this domain — three states, not two", () => {
+    const locallyDriven: ServiceBoardRow = {
+      ...baseRow("checkout-api"),
+      latestChangeId: "0c3f8a1e-2b4d-4c6f-8a90-1b2c3d4e5f60",
+      changeName: "local rollout",
+      driver: { drivenHere: true, originDomainId: null }
+    };
+    const noDriver = renderRow(drivenRow);
+    const driven = renderRow(locallyDriven);
+
+    expect(driven).toContain('data-driven-here="true"');
+    expect(noDriver).toContain('data-driven-here="none"');
+    // PREMISE: the distinction is the attribute's, not a side effect of the rows differing anyway.
+    expect(driven).not.toContain('data-driven-here="none"');
+    // ...and neither is the not-driven-here case, which stays exactly as it was.
+    expect(renderRow(replicaRow)).toContain('data-driven-here="false"');
   });
 
   it("refuses to render 'no active change' when change visibility itself is unobservable", () => {
@@ -204,6 +228,34 @@ describe("service board summary: an unassessable count is never dressed as a suc
     expect(freezeVisibilityUnknownOf({ unknownFields: ["rows[].activeFreeze"] })).toBe(true);
     expect(freezeVisibilityUnknownOf({ unknownFields: ["summary.stable"] })).toBe(false);
     expect(freezeVisibilityUnknownOf({ unknownFields: [] })).toBe(false);
+  });
+
+  /**
+   * Y4 — THE X7 CLASS, CLOSED FOR `unknownFields` ITSELF.
+   *
+   * Every predicate above reads `…unknownFields.includes(field)`. `unknownFields` is
+   * required-not-optional on both `ServiceBoardRow` and the board response, and the generated SDK
+   * validates nothing, so a server that omits the honesty list made the read a TypeError — and this
+   * one is not scoped to a cell: it is called from `BoardRow`, so it takes the WHOLE board down.
+   *
+   * `declaredUnknowns` returns `[]` for an absent list. That is the pre-honesty-work reading (every
+   * field renders as observed) and it is deliberately the lesser evil: a blank page tells the
+   * operator nothing at all, and the honest-unknown markers are additive on top of a working board.
+   */
+  it("a row with NO unknownFields key renders instead of killing the board", () => {
+    const row: Partial<ServiceBoardRow> = baseRow("no-honesty-list");
+    delete row.unknownFields;
+    const html = renderRow(row as ServiceBoardRow);
+
+    expect(html).toContain("no-honesty-list");
+    // nothing is claimed unknown, because nothing was declared unknown
+    expect(html).not.toContain('data-testid="board-unknown"');
+  });
+
+  it("the two board-level predicates treat an ABSENT list as no declaration, not as a crash", () => {
+    const board = {} as { unknownFields: string[] };
+    expect(changeVisibilityUnknownOf(board)).toBe(false);
+    expect(freezeVisibilityUnknownOf(board)).toBe(false);
   });
 });
 
@@ -287,5 +339,40 @@ describe("service board as-of label: a snapshot is never painted as live status"
     // `null` is not `false`: it must not be warned about, and it must not claim currency either.
     expect(html).not.toContain("STALE");
     expect(html).toContain("not live status");
+  });
+
+  /**
+   * Y3(b) — THE PIN THE `isAbsent` FIX NEVER GOT.
+   *
+   * Round 3 changed `asOf.stale === null` to `isAbsent(asOf.stale)` here and reported it as
+   * mutation-proven. It was not: reverting it left the whole `apps/web` suite GREEN, because the
+   * air-gapped test above sets `stale: null` — the case that already worked. The case that did not
+   * is the key being ABSENT, which is what an older server sends and which the SDK never validates.
+   *
+   * MEASURED mutant output with `stale` omitted: the tooltip reads
+   *   "Not overdue: this data is 10s old and amer-prod is not counted late until 60s …"
+   * — the REASSURANCE branch. Nobody measured that freshness; with no `stale` verdict on the wire
+   * there is no basis for "not overdue" at all, and the honest branch (no pull schedule, so no
+   * cadence to be late against) is the one that must render.
+   */
+  it("an OMITTED `stale` takes the no-schedule branch, NEVER the not-overdue reassurance", () => {
+    const asOf: Partial<ServiceBoardAsOf> = {
+      ...base,
+      peerName: "amer-prod",
+      ageSeconds: 10,
+      staleAfterSeconds: 60,
+      via: "bundle"
+    };
+    delete asOf.stale;
+    const html = renderToStaticMarkup(<BoardAsOfLabel asOf={asOf as ServiceBoardAsOf} />);
+
+    // the honest branch
+    expect(html).toContain("no pull schedule");
+    expect(html).toContain("not live status");
+    // THE MUTANT'S OUTPUT — a freshness statement with nothing behind it
+    expect(html).not.toContain("Not overdue");
+    expect(html).not.toContain("not counted late until");
+    // and an absent verdict is still not a STALE warning either
+    expect(html).not.toContain("STALE");
   });
 });

@@ -57,6 +57,10 @@ export function AppShell({ children }: { children: ReactNode }): React.JSX.Eleme
           >
             Initiatives
           </Link>
+          {/* M16.2 phase B (B4) — "Outposts" is added UNDER the existing Federation entry rather
+              than replacing it. `/federation` and its "Federation" heading already ship and may be
+              bookmarked, so this is an addition to that section, never a rename out from under one.
+              Pinned by `app-shell-nav.test.tsx`, which runs on every PR. */}
           <Link
             to="/federation"
             className={navLinkClass}
@@ -64,10 +68,25 @@ export function AppShell({ children }: { children: ReactNode }): React.JSX.Eleme
           >
             Federation
           </Link>
-          <Link to="/plugins" className={navLinkClass} activeProps={{ className: navLinkActiveClass }}>
+          <Link
+            to="/federation/outposts"
+            className={`${navLinkClass} pl-5`}
+            activeProps={{ className: navLinkActiveClass }}
+          >
+            Outposts
+          </Link>
+          <Link
+            to="/plugins"
+            className={navLinkClass}
+            activeProps={{ className: navLinkActiveClass }}
+          >
             Plugins
           </Link>
-          <Link to="/graph" className={navLinkClass} activeProps={{ className: navLinkActiveClass }}>
+          <Link
+            to="/graph"
+            className={navLinkClass}
+            activeProps={{ className: navLinkActiveClass }}
+          >
             Graph
           </Link>
           <div className="mt-4 mb-1 px-2 text-xs font-semibold uppercase tracking-wide text-slate-400">

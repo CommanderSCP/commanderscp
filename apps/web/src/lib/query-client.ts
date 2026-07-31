@@ -25,6 +25,28 @@ export function federationSelfKey(): unknown[] {
   return ["federation", "self"];
 }
 
+/** Query key for `GET /federation/status` — the whole-instance federation reading (peers, sync
+ *  freshness, pending-export figures). Shared by `routes/federation-status.tsx`, the M16.2 phase B
+ *  Outposts overview and its per-outpost detail page, so a write on the detail page invalidates the
+ *  reading every one of them renders. NOT parameterized: the endpoint takes no arguments. */
+export function federationStatusKey(): unknown[] {
+  return ["federation", "status"];
+}
+
+/** Query key for `GET /federation/outposts` — every `outpost` CONFIG OBJECT (ADR-0022's
+ *  commander-declared half), as opposed to the peer ROWS in `federationStatusKey`. The detail page
+ *  reads the LIST rather than only its own peer's row because a peer bound to TWO live config
+ *  objects is exactly the authority conflict the reconcile verb exists for, and the single-object
+ *  `GET` answers with the winner alone — it cannot show a conflict it has already resolved. */
+export function outpostConfigListKey(): unknown[] {
+  return ["federation", "outposts", "list"];
+}
+
+/** Query key for one peer's `outpost` config object (`GET /federation/outposts/{peerDomainId}`). */
+export function outpostConfigKey(peerDomainId: string): unknown[] {
+  return ["federation", "outposts", "detail", peerDomainId];
+}
+
 /** Query key for a registry resource's list view — `useEventStream` invalidates this on create/delete. */
 export function registryListKey(basePath: string): unknown[] {
   return ["registry", basePath, "list"];
