@@ -74,6 +74,29 @@ function statusMissingSyncScope(): StatusBody {
   });
 }
 
+const OBJECT_ID = "22222222-2222-4222-8222-222222222222";
+
+/** A well-formed `GraphObject` — the 200 AND the 201 branch of every upsert-by-urn union. */
+function wellFormedObject(): JsonObject {
+  return {
+    id: OBJECT_ID,
+    orgId: OBJECT_ID,
+    domainId: null,
+    typeId: "service",
+    name: "checkout",
+    urn: "urn:scp:service:checkout",
+    properties: {},
+    labels: {},
+    originDomainId: OBJECT_ID,
+    revision: 1,
+    provenance: null,
+    version: 1,
+    createdAt: "2026-07-30T12:00:00Z",
+    updatedAt: "2026-07-30T12:00:00Z",
+    deletedAt: null
+  };
+}
+
 describe("SDK response validation (ADR-0023)", () => {
   let server: Server;
   let baseUrl: string;
@@ -205,5 +228,132 @@ describe("SDK response validation (ADR-0023)", () => {
     expect(error).toBeInstanceOf(ScpApiError);
     expect(error).not.toBeInstanceOf(ScpResponseValidationError);
     expect(error.status).toBe(403);
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // Unions. `@hey-api`'s zod plugin emits `z.union([...])` for every operation declaring two 2xx
+  // codes — all 11 upsert-by-urn operations (200 updated / 201 created), i.e. exactly the write
+  // path `packages/iac` drives. zod 4 collapses a failed union into ONE top-level
+  // `invalid_union` issue and hides the per-branch issues in a nested `errors: ZodIssue[][]`,
+  // so reading `error.issues` alone names NO field and the promise `ScpResponseValidationError`
+  // makes ("naming BOTH the operation and the offending field(s)") is void precisely where it
+  // matters most.
+  // -------------------------------------------------------------------------------------------
+
+  it("names the offending FIELD when the operation's response schema is a union", async () => {
+    // `PUT /objects/{type}/{urn}` — 200 | 201, so `zUpsertObjectByUrnResponse` is a `z.union`.
+    body = ((): JsonObject => {
+      const object = wellFormedObject();
+      delete object.urn;
+      return object;
+    })();
+
+    const error = (await client()
+      .object("service")
+      .upsertByUrn("urn:scp:service:checkout", { name: "checkout" })
+      .catch((e: unknown) => e)) as ScpResponseValidationError;
+
+    expect(error).toBeInstanceOf(ScpResponseValidationError);
+    expect(error.operation).toBe("PUT /objects/{type}/{urn}");
+    // The regression: before the union issues were flattened this was the whole diagnosis —
+    // `<root> (invalid_union: Invalid input)`, naming nothing a human could act on.
+    expect(error.issues.map((i) => i.path)).toContain("urn");
+    expect(error.issues.map((i) => i.path)).not.toContain("<root>");
+    expect(error.message).toContain("PUT /objects/{type}/{urn}");
+    expect(error.message).toContain("urn");
+  });
+
+  it("lists a union's fields ONCE, not once per branch", async () => {
+    // Both branches of the upsert union are the same object shape, so each reports the same two
+    // missing fields; un-deduplicated they would fill the 5-issue message budget with repeats.
+    body = ((): JsonObject => {
+      const object = wellFormedObject();
+      delete object.urn;
+      delete object.revision;
+      return object;
+    })();
+
+    const error = (await client()
+      .object("service")
+      .upsertByUrn("urn:scp:service:checkout", { name: "checkout" })
+      .catch((e: unknown) => e)) as ScpResponseValidationError;
+
+    expect(error.issues.map((i) => i.path).sort()).toEqual(["revision", "urn"]);
+  });
+
+  it("still accepts a well-formed union response", async () => {
+    body = wellFormedObject();
+
+    const object = await client()
+      .object("service")
+      .upsertByUrn("urn:scp:service:checkout", { name: "checkout" });
+
+    expect(object).toEqual(body);
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // Empty bodies. `client.gen.ts` returns `{}` for ANY 2xx with `status === 204` or
+  // `Content-Length: 0` WITHOUT running `responseValidator` — the one bypass of "fails once".
+  // The shipped Fastify server never emits it; a proxy/ingress/CDN in front of an instance can,
+  // and that is this product's deployment shape.
+  // -------------------------------------------------------------------------------------------
+
+  function serve(status: number, headers: Record<string, string>, payload = ""): void {
+    server.removeAllListeners("request");
+    server.on("request", (_req, res) => {
+      requestCount += 1;
+      res.writeHead(status, headers);
+      res.end(payload);
+    });
+  }
+
+  it("rejects a 200 whose body a proxy stripped, instead of returning an empty object", async () => {
+    serve(200, { "Content-Type": "application/json", "Content-Length": "0" });
+
+    let resolved: unknown = "not-resolved";
+    let threw: unknown;
+    try {
+      resolved = await client().federation.status();
+    } catch (e) {
+      threw = e;
+    }
+
+    // The measured falsehood this closes: `scp federation status` exited 0 and printed
+    // "Self: not initialized / No paired peers" off a `{}` that no validator ever saw.
+    expect(resolved).toBe("not-resolved");
+    expect(threw).toBeInstanceOf(ScpResponseValidationError);
+    const error = threw as ScpResponseValidationError;
+    expect(error.operation).toBe("GET /federation/status");
+    expect(error.status).toBe(200);
+    expect(error.issues.map((i) => i.code)).toContain("empty_body");
+    expect(requestCount).toBe(1);
+  });
+
+  it("rejects a 204 on an operation whose contract declares a body", async () => {
+    serve(204, {});
+
+    const error = (await client()
+      .federation.status()
+      .catch((e: unknown) => e)) as ScpResponseValidationError;
+
+    expect(error).toBeInstanceOf(ScpResponseValidationError);
+    expect(error.operation).toBe("GET /federation/status");
+    expect(error.status).toBe(204);
+  });
+
+  it("still lets the genuinely body-less operations through (204 No Content)", async () => {
+    // `zLogoutResponse` is `z.void()`; so are `zAddInitiativeCampaignResponse`,
+    // `zDeleteSecretResponse` and `zDeleteNotificationBindingResponse`. Recognised by asking the
+    // operation's own validator whether an absent body satisfies it — not by an allowlist.
+    serve(204, {});
+
+    await expect(client().auth.logout()).resolves.toBeUndefined();
+    expect(requestCount).toBe(1);
+  });
+
+  it("still lets a body-less operation through when the 2xx carries Content-Length: 0", async () => {
+    serve(200, { "Content-Type": "application/json", "Content-Length": "0" });
+
+    await expect(client().auth.logout()).resolves.toBeUndefined();
   });
 });
