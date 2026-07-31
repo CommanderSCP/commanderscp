@@ -65,8 +65,12 @@ export function conflict(detail?: string, opts: { decisionId?: string } = {}): P
 }
 
 /** `extensions` carries the refusal-specific payload an optimistic-concurrency 412 needs to be
- *  actionable in ONE round trip — e.g. reconcile's fresh `claimants` list, so the caller re-renders
- *  a real preview instead of opening a second staleness window re-reading it. */
+ *  actionable in ONE round trip — e.g. reconcile's fresh `claimants` list, so a caller CAN re-render
+ *  a real preview instead of opening a second staleness window re-reading it. That is what
+ *  `scp federation outpost reconcile` does (`packages/cli/src/cli.ts`). It is an offer, not a
+ *  guarantee every consumer takes: the Outposts web panel (`apps/web/src/routes/
+ *  outpost-configuration.tsx`) reads a 412 here only as a signal to refetch, and discards the
+ *  carried preview — a second round trip, on purpose, not a defect (R3, PR #156 residual). */
 export function preconditionFailed(
   detail?: string,
   opts: { extensions?: Readonly<Record<string, unknown>> } = {}

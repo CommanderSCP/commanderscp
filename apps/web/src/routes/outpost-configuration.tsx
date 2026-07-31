@@ -962,6 +962,17 @@ export function OutpostConfigurationSection({
     onSuccess: invalidate,
     // A 412 says the claimant list on screen is stale, so REFETCH it: the refusal's own text names
     // what moved, and the preview beside it must be the new world, not the one that was refused.
+    //
+    // R3 (PR #156 residual) — THIS PANEL REFETCHES; IT DOES NOT RE-RENDER THE CARRIED PREVIEW.
+    // `reconcileStaleClaimants(err)` is used ONLY as a 412 detector here — its return value (the
+    // fresh `claimants` the refusal carried) is discarded, and `invalidate()` opens a second round
+    // trip and a second, if narrower, staleness window instead. `scp federation outpost reconcile`
+    // (`packages/cli/src/cli.ts`) takes the other branch: it re-previews straight from the carried
+    // list, no second read. Both are correct — a second stale press here is refused again, since the
+    // refetch is what the next token derives from — but they are not the same behaviour, and the
+    // "no second round trip" rationale on `preconditionFailed` (`apps/server/src/errors.ts`) and on
+    // `OutpostReconcileStaleProblemSchema.claimants` (`packages/schemas/src/federation.ts`) describes
+    // the CLI's path, not this one.
     onError: (err: unknown) => {
       if (reconcileStaleClaimants(err) !== null) void invalidate();
     }

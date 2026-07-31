@@ -498,9 +498,14 @@ export type OutpostConfigReconcileResult = z.infer<typeof OutpostConfigReconcile
  * optional by design, so the server must never demand one.
  *
  * `claimants` IS THE POINT. A bare refusal would force a second read and open a second window; the
- * refusal carries the FRESH claimant list so a caller re-renders a real preview from the same
- * response, then re-issues with a fresh token. It is an RFC 9457 extension member, like the
- * in-house `decision_id`. */
+ * refusal carries the FRESH claimant list so a caller CAN re-render a real preview from the same
+ * response, then re-issue with a fresh token, without a second read. It is an RFC 9457 extension
+ * member, like the in-house `decision_id`.
+ *
+ * NOT EVERY CALLER TAKES THAT OFFER (R3, PR #156 residual). `scp federation outpost reconcile`
+ * (`packages/cli/src/cli.ts`) does: it re-previews straight from this body. The Outposts web panel
+ * (`apps/web/src/routes/outpost-configuration.tsx`) does not — it treats the 412 as a signal to
+ * refetch the list instead, deliberately paying the second round trip this field exists to save. */
 export const OutpostReconcileStaleProblemSchema = ProblemSchema.extend({
   /** Every live `outpost` config row bound to the peer AT THE MOMENT OF REFUSAL, most authoritative
    *  first — the same projection `GET /federation/outposts` returns, so a caller can re-derive the
