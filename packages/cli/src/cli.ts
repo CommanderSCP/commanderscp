@@ -514,10 +514,51 @@ export function formatReconcilePreviewLines(
     .map((c, i) => ({ c, i }))
     .sort((a, b) => rank(a.c) - rank(b.c) || a.i - b.i)
     .map((e) => e.c);
-  const keeper =
-    keepObjectId !== undefined
-      ? (claimants.find((c) => c.objectId === keepObjectId) ?? ordered[0]!)
-      : ordered[0]!;
+  /** Each row's CLASS and what dropping it would mean — the honest fallback for every case where
+   *  the survivor is not knowable from this side. */
+  const classLines = (): string[] =>
+    ordered.map((c) => {
+      const at = `${c.objectId} (version ${c.version})`;
+      if (isShadow(c)) {
+        return `  ${at} — an unverified hand-typed copy: dropping it is a purely local cleanup, invisible to the outpost`;
+      }
+      if (c.originIsSelf === true) {
+        return `  ${at} — THIS DOMAIN AUTHORED it: dropping it is a journaled tombstone that WILL PROPAGATE to the outpost`;
+      }
+      return `  ${at} — a signature-verified replica: it is never deleted, so a survivor that requires dropping it is refused (409)`;
+    });
+
+  let keeper: OutpostConfig;
+  if (keepObjectId !== undefined) {
+    const named = claimants.find((c) => c.objectId === keepObjectId);
+    if (named === undefined) {
+      // The server answers 400 for a `keep` that names no live claimant. Say so instead of quietly
+      // previewing the DEFAULT outcome, which is not the call about to be made.
+      return [
+        `--keep ${keepObjectId} names no live claimant of this peer, so the server will refuse this ` +
+          `call with a 400. Its live claimants:`,
+        ...classLines()
+      ];
+    }
+    keeper = named;
+  } else {
+    // WITH NO `--keep`, THE SURVIVOR IS ONLY PREDICTABLE WHEN ONE ROW HOLDS THE TOP RANK ALONE. The
+    // server breaks a tie inside one authority class by `(created_at, id)`; reconstructing that here
+    // and printing it as a prediction is exactly the guess the panel refuses to make
+    // (`reconcile-default-indeterminate`), and a preview that MIGHT be wrong is worse than no
+    // preview — the whole value of these lines is that they say what WILL happen.
+    const top = ordered.filter((c) => rank(c) === rank(ordered[0]!));
+    if (top.length > 1) {
+      return [
+        `${claimants.length} live config object(s) claim this peer and ${top.length} of them hold the ` +
+          `SAME authority — which one survives is decided by the server's creation order, so this side ` +
+          `will not guess. Re-run with --keep <objectId>. Each row's class and the consequence of ` +
+          `dropping it:`,
+        ...classLines()
+      ];
+    }
+    keeper = ordered[0]!;
+  }
 
   const lines = [`${claimants.length} live config object(s) claim this peer; reconcile would:`];
   for (const c of ordered) {

@@ -251,6 +251,45 @@ describe("scp federation outpost — the operator-facing surface", () => {
     );
   });
 
+  it("with TWO rows of equal authority and no --keep, it declines to predict rather than guess", () => {
+    // The server breaks a same-class tie by `(created_at, id)`. Reconstructing that here and
+    // printing it as a prediction is the guess the panel refuses to make
+    // (`reconcile-default-indeterminate`) — and a preview that MIGHT be wrong is worse than none,
+    // because these lines exist precisely to say what WILL happen.
+    const localA = claimant({
+      objectId: "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      originIsSelf: true
+    });
+    const localB = claimant({
+      objectId: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+      originIsSelf: true
+    });
+    const tied = formatReconcilePreviewLines([localA, localB]).join("\n");
+    expect(tied).toMatch(/will not guess/i);
+    expect(tied).not.toMatch(/\bKEEP\b|\bADOPT\b|\bDELETE\b/);
+    // It still states the consequence class of each row — declining to predict is not declining to
+    // inform, and dropping either of these PROPAGATES.
+    expect(tied).toContain(localA.objectId);
+    expect(tied).toContain(localB.objectId);
+    expect(tied).toMatch(/PROPAGATE/);
+    // Naming a survivor resolves it: the same two rows now preview a definite outcome.
+    const named = formatReconcilePreviewLines([localA, localB], localB.objectId).join("\n");
+    expect(named).toMatch(new RegExp(`KEEP\\s+${localB.objectId}`));
+    expect(named).toMatch(new RegExp(`DELETE\\s+${localA.objectId}`));
+  });
+
+  it("a --keep naming no live claimant previews the 400, not the default outcome", () => {
+    const local = claimant({
+      objectId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      originIsSelf: true
+    });
+    const lines = formatReconcilePreviewLines([local], "ffffffff-ffff-ffff-ffff-ffffffffffff").join(
+      "\n"
+    );
+    expect(lines).toMatch(/400/);
+    expect(lines).not.toMatch(/\bKEEP\b/);
+  });
+
   it("M1: with nothing removed, the message says so without naming either bucket", () => {
     const nothing: OutpostConfigReconcileResult = {
       config: fakeConfig(),
