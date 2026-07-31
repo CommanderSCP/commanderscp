@@ -73,10 +73,11 @@
  * hosts) — safe here because the cosign SIGNATURE, not registry TLS, is the trust anchor (the
  * same argument as `VerifyImageOptions.allowInsecureRegistry`). See docs/runbooks/retrans-relay.md.
  */
-import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { createReadStream } from "node:fs";
-import { copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
 import { z } from "zod";
@@ -103,6 +104,7 @@ import { ensureInstanceCosignKey } from "../governance/cosign-keys.js";
 import { ensureFederationSelf } from "./self-repo.js";
 import { currentPeerCosignPublicKey } from "./peers-repo.js";
 import { recordBundleTransfer } from "./bundle-transfers-repo.js";
+import { markRelayBuildForwarded } from "./relay-builds-repo.js";
 import { FEDERATION_IMPORT_ACTOR_ID } from "./import-repo.js";
 import {
   LocationRegistryReader,
@@ -113,6 +115,8 @@ import {
   verifyAuthorizedArtifactSet,
   type ResolvedBlob
 } from "./artifact-verify.js";
+
+const execFileAsync = promisify(execFile);
 
 export const RETRANS_RELAY_VALIDATE_DECISION_KIND = "retrans-relay-validate";
 export const RETRANS_RELAY_IMPORT_DECISION_KIND = "retrans-relay-import";
@@ -268,16 +272,42 @@ function skopeoBin(): string {
   return resolved.bin;
 }
 
-function runSkopeo(args: string[]): string {
+/**
+ * ASYNCHRONOUS by requirement, not by taste (M13.1b). Until this milestone `buildRelayTarball` had
+ * exactly one non-test caller — the operator-invoked route — so a blocking `execFileSync` around a
+ * multi-GB `skopeo copy` froze one deliberate, human-initiated request. M13.1b puts the same
+ * pipeline on an unattended timer inside the shared worker process, which also hosts reconcile,
+ * watchdog, observe, inbox and federation-sync (`main.ts`): a synchronous pull there would stop the
+ * event loop — every other loop, every in-flight HTTP request on a combined `SCP_ROLE=all` process,
+ * and the SIGTERM handler that makes a rolling restart graceful — for as long as the copy takes.
+ * `execFile` keeps the subprocess semantics identical (argv only, no shell) while yielding.
+ */
+async function runSkopeo(args: string[]): Promise<string> {
   const bin = skopeoBin();
   // argv only — NEVER env, and credentials never appear in argv (authfile flags carry a path).
   process.stderr.write(`+ ${bin} ${args.join(" ")}\n`);
   try {
-    return execFileSync(bin, args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    const { stdout } = await execFileAsync(bin, args, {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024
+    });
+    return stdout;
   } catch (err) {
-    const e = err as { status?: number | null; stdout?: string; stderr?: string };
+    const e = err as { code?: number | null; stdout?: string; stderr?: string };
     throw new Error(
-      `skopeo ${args[0]} failed (exit ${e.status ?? "?"}): ${(e.stderr ?? "").trim() || (e.stdout ?? "").trim()}`
+      `skopeo ${args[0]} failed (exit ${e.code ?? "?"}): ${(e.stderr ?? "").trim() || (e.stdout ?? "").trim()}`
+    );
+  }
+}
+
+/** Same rationale as {@link runSkopeo}: `tar` over a multi-GB bundle must not block the loop. */
+async function runTar(args: string[]): Promise<void> {
+  try {
+    await execFileAsync("tar", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  } catch (err) {
+    const e = err as { code?: number | null; stdout?: string; stderr?: string };
+    throw new Error(
+      `tar ${args[0]} failed (exit ${e.code ?? "?"}): ${(e.stderr ?? "").trim() || (e.stdout ?? "").trim()}`
     );
   }
 }
@@ -373,6 +403,11 @@ export interface BuildRelayTarballInput {
   masterKey: Buffer;
   /** Where the signed tarball lands (the CDS drop directory) — `SCP_RELAY_OUT_DIR` at the route. */
   outDir: string;
+  /** M13.1b — the DOWNSTREAM boundary peer this drop targets (its federation domain id), when the
+   *  caller resolved one. Used ONLY to attribute the onward `export`/`submitted` `bundle_transfers`
+   *  row to the peer the bytes actually go to; observational, never authority (the ledger's own
+   *  header). Absent (env-fallback drop) → the upstream import peer, as the forward hop does. */
+  onwardPeerDomainId?: TrustDomainId;
   config?: RelayConfig;
 }
 
@@ -389,6 +424,36 @@ interface RelayFailure {
   type: string;
   digest: string;
   reason: string;
+}
+
+/** M13.1b — how many per-artifact entries are persisted on a refusal, how much of each one's error
+ *  text, and how much of each IDENTIFIER. See the refusal block below for why an unbounded payload
+ *  is #153's pathology arriving by size instead of by row count; the complete detail still reaches
+ *  the operator through the logs, only the PERMANENT record is bounded. */
+export const RELAY_FAILURE_DETAIL_LIMIT = 10;
+export const RELAY_FAILURE_REASON_CHARS = 2000;
+/** A well-formed sha256 digest is 71 chars. Anything longer never reached a registry — it failed
+ *  `normalizeSha256Digest` — so it is bundle-supplied text being echoed into a permanent record.
+ *  `ArtifactRefSchema.digest` is a bare `z.string()`, so nothing upstream bounds it. */
+export const RELAY_IDENTIFIER_CHARS = 128;
+
+function truncate(text: string, limit: number): string {
+  return text.length <= limit
+    ? text
+    : `${text.slice(0, limit)}… (${text.length - limit} chars elided)`;
+}
+
+/** One artifact reduced to a BOUNDED (type, digest) pair for persistence. Both fields come from the
+ *  imported bundle and neither is length-constrained by its schema, so both are truncated — a digest
+ *  is only ever length-checked at PULL time, long after the import stored whatever it was given. */
+function boundedArtifactRef(artifact: { type: string; digest: string }): {
+  type: string;
+  digest: string;
+} {
+  return {
+    type: truncate(artifact.type, RELAY_IDENTIFIER_CHARS),
+    digest: truncate(artifact.digest, RELAY_IDENTIFIER_CHARS)
+  };
 }
 
 export async function buildRelayTarball(
@@ -458,6 +523,7 @@ export async function buildRelayTarball(
     return {
       relayDomainId: self.domainId,
       changeObjectId: change.objectId,
+      importedFromDomain: change.importedFromDomain,
       artifacts: manifestRef.artifacts,
       exporterDomainId: manifestRef.exporterDomainId,
       sourceChangeObjectId:
@@ -529,7 +595,7 @@ export async function buildRelayTarball(
           const authArgs = hasCreds ? ["--src-authfile", srcAuthFile] : [];
           // `--all` preserves the EXACT manifest (incl. multi-arch lists) so the landed layout's
           // digest can be asserted equal to the authorized digest below.
-          runSkopeo([
+          await runSkopeo([
             "copy",
             "--all",
             "--preserve-digests",
@@ -565,7 +631,7 @@ export async function buildRelayTarball(
           for (const sigTag of [`sha256-${hex}.sig`, `sha256-${hex}`]) {
             const sigRelPath = path.posix.join("images", `${name}-sig-${ociSignatures.length}`);
             try {
-              runSkopeo([
+              await runSkopeo([
                 "copy",
                 "--all",
                 "--preserve-digests",
@@ -710,8 +776,26 @@ export async function buildRelayTarball(
         await rm(keyDir, { recursive: true, force: true }); // never leave key material on disk.
       }
       await mkdir(input.outDir, { recursive: true });
-      tarballPath = path.join(input.outDir, `${bundleDirName}.tar.gz`);
-      execFileSync("tar", ["czf", tarballPath, "-C", workDir, bundleDirName], { encoding: "utf8" });
+      // ATOMIC PUBLICATION (M13.1b). The drop directory IS the org's CDS intake, and a CDS watcher
+      // polls it. `tar czf` straight to the final name publishes a GROWING file, so a watcher can
+      // pick up a truncated tarball mid-write — latent while a human ran the relay and then walked
+      // the file over, LIVE the moment an unattended loop writes it (and doubly so if a lease
+      // expiry ever lets two builders write the same name). So the archive is written under a temp
+      // name in the SAME directory (rename is atomic only within one filesystem) and renamed into
+      // place: that rename is the single instant the file becomes visible under its
+      // channel-artifact name, whole. The temp name deliberately does NOT match
+      // `scp-relay-*.tar.gz`, so a loopback config whose drop dir doubles as an inbox can never
+      // mistake a partial for an arrival.
+      const finalPath = path.join(input.outDir, `${bundleDirName}.tar.gz`);
+      const partialPath = path.join(input.outDir, `.scp-relay-build-${randomUUID()}.partial`);
+      try {
+        await runTar(["czf", partialPath, "-C", workDir, bundleDirName]);
+        await rename(partialPath, finalPath);
+      } catch (err) {
+        await rm(partialPath, { force: true }); // never leave a partial behind in the CDS intake.
+        throw err;
+      }
+      tarballPath = finalPath;
     }
   } finally {
     await rm(workDir, { recursive: true, force: true });
@@ -720,9 +804,24 @@ export async function buildRelayTarball(
   if (failures.length > 0 || tarballPath === null) {
     // FAIL-CLOSED REFUSAL: a failing/tampered/unauthorized/missing artifact NEVER crosses — block
     // Decision + hash-chained audit event, like every gate (charter principle 6).
+    //
+    // BOUNDED PAYLOAD (M13.1b). Each entry embeds skopeo's verbatim stderr and the authorized
+    // artifact set has no schema-level maximum, so an unbounded join could persist a multi-megabyte
+    // `reason` + `input_context` into `decisions` AND (via `appendAuditEvent`) `audit_events` and
+    // the sync journal — tables ADR-0024 classes as never-deleted. Once this function runs on a
+    // timer that is #153's pathology arriving by size instead of by row count, so both the joined
+    // text and the persisted `failing` array are truncated to a head plus an honest total. The
+    // COMPLETE per-artifact detail still reaches the operator on the spot, via the `+ skopeo …`
+    // stderr trace and the per-attempt log line; only the permanent record is bounded.
+    const shown = failures.slice(0, RELAY_FAILURE_DETAIL_LIMIT).map((f) => ({
+      ...boundedArtifactRef(f),
+      reason: truncate(f.reason, RELAY_FAILURE_REASON_CHARS)
+    }));
+    const elided = failures.length - shown.length;
     const reason =
       `retrans relay refused: ${failures.length} artifact(s) failed validate-then-relay — ` +
-      failures.map((f) => `${f.type} ${f.digest}: ${f.reason}`).join("; ");
+      shown.map((f) => `${f.type} ${f.digest}: ${f.reason}`).join("; ") +
+      (elided > 0 ? `; …and ${elided} more (elided)` : "");
     const decisionId = await withTenantTx(db, input.orgId, async (tx) => {
       const decision = await insertDecision(tx, {
         orgId: input.orgId,
@@ -732,8 +831,14 @@ export async function buildRelayTarball(
         inputContext: {
           exporterDomainId: ctx.exporterDomainId,
           sourceChangeObjectId: ctx.sourceChangeObjectId,
-          authorizedArtifacts: ctx.artifacts.map((a) => ({ type: a.type, digest: a.digest })),
-          failing: failures
+          // Bounded on BOTH axes — the set is sliced and each identifier truncated. The count is
+          // carried separately so nothing is lost: `boundary-segment.ts` reads only `.length`.
+          authorizedArtifactCount: ctx.artifacts.length,
+          authorizedArtifacts: ctx.artifacts
+            .slice(0, RELAY_FAILURE_DETAIL_LIMIT)
+            .map(boundedArtifactRef),
+          failingCount: failures.length,
+          failing: shown
         },
         reasonTree: { summary: reason }
       });
@@ -763,7 +868,7 @@ export async function buildRelayTarball(
       inputContext: {
         exporterDomainId: ctx.exporterDomainId,
         sourceChangeObjectId: ctx.sourceChangeObjectId,
-        authorizedArtifacts: artifacts,
+        authorizedArtifacts: artifacts.map(boundedArtifactRef),
         tarballPath: finalTarballPath
       },
       reasonTree: {
@@ -779,6 +884,25 @@ export async function buildRelayTarball(
       decisionId: decision.id,
       requestId: `federation-relay:${ctx.sourceChangeObjectId}`
     });
+    // M13.1b — the BUILD hop's own `submitted` row, so the byte leg is visible on the SAME
+    // `bundle_transfers` status surface §13.1 names for the staging node and M16.1's boundary
+    // segment reads. The forward hop has always written this pair (`validateAndForwardRelayTarball`
+    // below); the build hop wrote nothing at all, so an unattended build was invisible to every
+    // surface except the logs — untenable once nobody is watching a terminal. Validate-gated by
+    // construction (D4): this transaction runs only after every artifact verified and the tarball
+    // landed. Attributed to the DOWNSTREAM peer the drop targets when the caller resolved one,
+    // else the upstream import peer — the same fallback the forward hop uses.
+    const onwardPeerDomainId = input.onwardPeerDomainId ?? ctx.importedFromDomain;
+    if (onwardPeerDomainId) {
+      await recordBundleTransfer(tx, {
+        orgId: input.orgId,
+        peerDomainId: onwardPeerDomainId,
+        direction: "export",
+        kind: "promotion",
+        status: "submitted",
+        checksum: null
+      });
+    }
     return decision.id;
   });
 
@@ -872,7 +996,7 @@ async function extractAndVerifyRelayTarball(args: {
   config: RelayConfig;
 }): Promise<VerifiedRelayTarball> {
   const { workDir, config } = args;
-  execFileSync("tar", ["xzf", args.tarballPath, "-C", workDir], { encoding: "utf8" });
+  await runTar(["xzf", args.tarballPath, "-C", workDir]);
   const entries = (await readdir(workDir, { withFileTypes: true })).filter((e) => e.isDirectory());
   const rootEntry = entries.length === 1 ? entries[0] : undefined;
   if (!rootEntry)
@@ -1093,7 +1217,7 @@ export async function importRelayTarball(
     for (const { digest, ociDir, signatures, artifact } of verifiedOci) {
       const hex = digest.slice("sha256:".length);
       const destTagRef = `${destRepo}:relay-${hex.slice(0, 12)}`;
-      runSkopeo([
+      await runSkopeo([
         "copy",
         "--all",
         "--preserve-digests",
@@ -1102,14 +1226,16 @@ export async function importRelayTarball(
         `oci:${ociDir}:${artifact.ociTag}`,
         `docker://${destTagRef}`
       ]);
-      const inspected = runSkopeo([
-        "inspect",
-        ...inspectTls,
-        ...inspectAuthArgs,
-        "--format",
-        "{{.Digest}}",
-        `docker://${destTagRef}`
-      ]).trim();
+      const inspected = (
+        await runSkopeo([
+          "inspect",
+          ...inspectTls,
+          ...inspectAuthArgs,
+          "--format",
+          "{{.Digest}}",
+          `docker://${destTagRef}`
+        ])
+      ).trim();
       if (inspected !== digest) {
         throw new RelayImportRefusal(
           `pushed ${destTagRef} re-inspected as ${inspected}, expected ${digest} — possible ` +
@@ -1120,7 +1246,7 @@ export async function importRelayTarball(
       // they had at the source, so the receiving M17.4(b) gate's `cosign verify` finds them where
       // the bytes landed, whatever the signing cosign's storage scheme was.
       for (const signature of signatures) {
-        runSkopeo([
+        await runSkopeo([
           "copy",
           "--all",
           "--preserve-digests",
@@ -1163,7 +1289,7 @@ export async function importRelayTarball(
         inputContext: {
           tarballPath: input.tarballPath,
           sourceChangeObjectId: ctx.sourceChangeObjectId,
-          authorizedArtifacts: ctx.authorized.map((a) => ({ type: a.type, digest: a.digest })),
+          authorizedArtifacts: ctx.authorized.map(boundedArtifactRef),
           pushedBeforeRefusal: pushed
         },
         reasonTree: { summary: reason }
@@ -1403,7 +1529,7 @@ export async function validateAndForwardRelayTarball(
           tarballPath: input.tarballPath,
           tarballSha256,
           sourceChangeObjectId: ctx.sourceChangeObjectId,
-          authorizedArtifacts: ctx.authorized.map((a) => ({ type: a.type, digest: a.digest }))
+          authorizedArtifacts: ctx.authorized.map(boundedArtifactRef)
         },
         reasonTree: { summary: reason }
       });
@@ -1434,7 +1560,7 @@ export async function validateAndForwardRelayTarball(
         tarballPath: input.tarballPath,
         tarballSha256,
         sourceChangeObjectId: ctx.sourceChangeObjectId,
-        authorizedArtifacts: ctx.authorized.map((a) => ({ type: a.type, digest: a.digest })),
+        authorizedArtifacts: ctx.authorized.map(boundedArtifactRef),
         forwardedPath: finalForwardedPath
       },
       reasonTree: {
@@ -1465,6 +1591,20 @@ export async function validateAndForwardRelayTarball(
         checksum: tarballSha256
       });
     }
+    // M13.1b — TERMINATE this change's auto-relay obligation. Both boundary nodes are `role:
+    // retrans` (ADR-0009 §38), so both seed a relay-build row when they import the promotion
+    // `.scpbundle`; but the node whose BYTES ARRIVE is the receiving side of the hop and must never
+    // also try to build them (its source registry is on the far side of the air gap — which is
+    // precisely why this tarball exists). Recording `forwarded` here is the causal signal that this
+    // node is that side, and it is what stops the sweep from producing a trail of fabricated
+    // refusals over a promotion that in fact crossed successfully.
+    await markRelayBuildForwarded(tx, {
+      orgId: input.orgId,
+      changeObjectId: ctx.change.objectId,
+      sourceChangeObjectId: ctx.sourceChangeObjectId,
+      forwardedPath: finalForwardedPath,
+      decisionId: decision.id
+    });
     // The onward hop's SUBMITTED row is keyed on the DOWNSTREAM boundary peer the drop TARGETS —
     // not the upstream peer (minor fix: this used to mis-attribute the onward hop to the source).
     // Env-fallback drop (no downstream peer resolvable) → attribute to the upstream peer as before.

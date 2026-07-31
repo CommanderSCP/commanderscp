@@ -21,20 +21,31 @@ export interface PokeWakeStats {
   wokenSync: number;
   /** Accepted pokes that successfully enqueued an inbox wake (the air-gap leg). */
   wokenInbox: number;
+  /** M13.1b — accepted pokes that successfully enqueued an auto-relay wake (the BYTE leg at a
+   *  `role: retrans` staging node). */
+  wokenRelay: number;
   /** Accepted pokes that woke NOTHING — the split-topology hole. Watch this one. */
   notWoken: number;
 }
 
-const stats: PokeWakeStats = { accepted: 0, wokenSync: 0, wokenInbox: 0, notWoken: 0 };
+const stats: PokeWakeStats = {
+  accepted: 0,
+  wokenSync: 0,
+  wokenInbox: 0,
+  wokenRelay: 0,
+  notWoken: 0
+};
 
 export function recordPokeWake(result: {
   wokenSync: boolean;
   wokenInbox: boolean;
+  wokenRelay?: boolean;
 }): PokeWakeStats {
   stats.accepted += 1;
   if (result.wokenSync) stats.wokenSync += 1;
   if (result.wokenInbox) stats.wokenInbox += 1;
-  if (!result.wokenSync && !result.wokenInbox) stats.notWoken += 1;
+  if (result.wokenRelay) stats.wokenRelay += 1;
+  if (!result.wokenSync && !result.wokenInbox && !result.wokenRelay) stats.notWoken += 1;
   return { ...stats };
 }
 
@@ -47,5 +58,6 @@ export function resetPokeWakeStats(): void {
   stats.accepted = 0;
   stats.wokenSync = 0;
   stats.wokenInbox = 0;
+  stats.wokenRelay = 0;
   stats.notWoken = 0;
 }

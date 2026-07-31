@@ -85,6 +85,9 @@ import {
 } from "../federation/mtls-enforcement.js";
 import { wakeFederationSyncNow } from "../federation/federation-sync.js";
 import { inboxLoopEnabled, wakeInboxNow } from "../federation/inbox-loop.js";
+import { autoRelayEnabled, wakeAutoRelayNow } from "../federation/auto-relay.js";
+import { reopenRelayBuild } from "../federation/relay-builds-repo.js";
+import { getChangeRow } from "../coordination/changes-repo.js";
 import { pokeRateLimiter } from "../federation/poke-rate-limit.js";
 import { recordPokeWake } from "../federation/poke-metrics.js";
 
@@ -722,6 +725,7 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         changeIdOrUrn: request.body.change,
         masterKey: deps.config.secretsMasterKey,
         outDir,
+        ...(deliverPeer ? { onwardPeerDomainId: deliverPeer.id } : {}),
         config
       });
       // FAIL-CLOSED: a failing/tampered/unauthorized/missing artifact refused the whole relay —
@@ -729,6 +733,27 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       if (outcome.refused) {
         throw conflict(outcome.reason, { decisionId: outcome.decisionId });
       }
+      // M13.1b — THIS ROUTE IS THE DOCUMENTED EXIT from the auto-relay's terminal `exhausted` state.
+      // An operator who fixes whatever the unattended sweep gave up on and re-drives the hop by hand
+      // has, by that act, both delivered the bytes and demonstrated the cause is gone; recording the
+      // ledger row `built` is simply the truth, and it is what keeps `exhausted` from being a trap
+      // that needs superuser SQL to clear. Upserts, so a manual relay on an instance/change with no
+      // ledger row (a promotion imported before this milestone) records its outcome too. Deliberately
+      // AFTER the refusal check: a refused manual build clears nothing.
+      await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        const change = await getChangeRow(tx, auth.orgId, request.body.change);
+        const sourceRef = (change.sourceRef ?? {}) as Record<string, unknown>;
+        await reopenRelayBuild(tx, {
+          orgId: auth.orgId,
+          changeObjectId: change.objectId,
+          sourceChangeObjectId:
+            typeof sourceRef.sourceChangeObjectId === "string"
+              ? sourceRef.sourceChangeObjectId
+              : null,
+          tarballPath: outcome.tarballPath,
+          decisionId: outcome.decisionId
+        });
+      });
       reply.status(200).send(outcome);
     }
   });
@@ -820,15 +845,17 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     schema: {
       // NO body schema — the poke is contentless; any/empty body is accepted and never read.
       response: {
-        // `woken` = "this poke woke SOMETHING" — EITHER leg. A pure air-gap outpost runs an inbox
+        // `woken` = "this poke woke SOMETHING" — ANY leg. A pure air-gap outpost runs an inbox
         // loop and no sync queue, so keying `woken` on the sync wake alone under-reported the very
         // leg M14.4 added (an accepted poke that successfully woke the air-gap leg read as
-        // `woken:false`). The two per-leg booleans are additive and report which one fired.
+        // `woken:false`). The per-leg booleans are additive and report which one(s) fired.
         202: z.object({
           accepted: z.literal(true),
           woken: z.boolean(),
           wokenSync: z.boolean().optional(),
-          wokenInbox: z.boolean().optional()
+          wokenInbox: z.boolean().optional(),
+          /** M13.1b — the auto-relay leg (a `role: retrans` staging node's onward BYTE hop). */
+          wokenRelay: z.boolean().optional()
         }),
         401: ProblemSchema,
         403: ProblemSchema,
@@ -893,16 +920,21 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       // never pull inline. No queue on this process (pure role=api, or the loops are disabled) →
       // accepted-but-no-op (the sparse safety-net is the reliability floor).
       //
-      // TWO loops, TWO independent try/catches (M14.4 S6):
+      // THREE loops, THREE independent try/catches (M14.4 S6, extended by M13.1b):
       //   1. the federation-sync loop — the CONNECTED leg (an outpost that dials its commander); the
       //      wake carries `{reason:"poke", orgId}` so the worker runs a FORCED tick that bypasses the
       //      M14.4 due-gate. The orgId is the CALLER'S OWN AUTHENTICATED org, never a request body.
       //   2. the inbox loop — the AIR-GAP leg. An air-gapped outpost has NO role:commander peer with
       //      a baseUrl; its content arrives as a FILE. Without this, the ADR-0009 §38 "required"
       //      high-side-retrans→outpost poke would wake a sweep that resolves to ZERO peers.
-      // Each in its own try/catch so a missing queue on either side still returns accepted:true.
+      //   3. the auto-relay loop — the BYTE leg at a `role: retrans` staging node (M13.1b). Legs 1
+      //      and 2 move METADATA; until this one existed, a poke landing on a retrans woke the
+      //      import of the arriving `.scpbundle` and then waited for a human to run the byte hop
+      //      (M14.4's honest-scope note, owner decision D3). This is what makes the chain move bytes.
+      // Each in its own try/catch so a missing queue on any side still returns accepted:true.
       let wokenSync = false;
       let wokenInbox = false;
+      let wokenRelay = false;
       if (deps.boss) {
         try {
           await wakeFederationSyncNow(deps.boss, auth.orgId);
@@ -929,12 +961,28 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
             );
           }
         }
+        // Only when THIS deployment opted into unattended byte egress: otherwise the queue does not
+        // exist and the send is pure noise (same gate shape as the inbox leg above).
+        if (autoRelayEnabled()) {
+          try {
+            await wakeAutoRelayNow(deps.boss);
+            wokenRelay = true;
+          } catch (err) {
+            request.log.warn(
+              { err: err instanceof Error ? err.message : String(err), peer: peer.name },
+              "federation poke accepted but could not enqueue an auto-relay tick (auto-relay loop " +
+                "likely not running) — no-op-but-accepted; the byte hop falls back to the auto-relay " +
+                "interval"
+            );
+          }
+        }
       }
-      const stats = recordPokeWake({ wokenSync, wokenInbox });
-      // EITHER leg counts as woken. On a pure air-gap outpost the sync queue does not exist at all
+      const stats = recordPokeWake({ wokenSync, wokenInbox, wokenRelay });
+      // ANY leg counts as woken. On a pure air-gap outpost the sync queue does not exist at all
       // (nothing to dial) while the inbox loop is the one that matters — reporting `woken:false`
-      // there would have the response contradict the wake that actually happened.
-      const woken = wokenSync || wokenInbox;
+      // there would have the response contradict the wake that actually happened. Same for a slim
+      // `role: retrans` profile whose only woken leg is the byte hop.
+      const woken = wokenSync || wokenInbox || wokenRelay;
       if (!woken) {
         // SPLIT-TOPOLOGY HOLE — countable, not a silent one-liner: this poke was accepted and woke
         // NOTHING. One occurrence is benign; a monotonically climbing `notWoken` means poke-mode is
@@ -942,11 +990,11 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         request.log.warn(
           { peer: peer.name, pokeWakeStats: stats },
           "federation poke accepted but woke NOTHING on this process (no job queue: role=api, or the " +
-            "sync/inbox loops are disabled) — no-op-but-accepted; watch pokeWakeStats.notWoken, a " +
-            "climbing value means poke-mode is effectively off and only the sparse safety-net is syncing"
+            "sync/inbox/auto-relay loops are disabled) — no-op-but-accepted; watch pokeWakeStats.notWoken, " +
+            "a climbing value means poke-mode is effectively off and only the sparse safety-net is syncing"
         );
       }
-      reply.status(202).send({ accepted: true as const, woken, wokenSync, wokenInbox });
+      reply.status(202).send({ accepted: true as const, woken, wokenSync, wokenInbox, wokenRelay });
     }
   });
 

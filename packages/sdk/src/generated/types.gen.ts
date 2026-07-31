@@ -14379,6 +14379,7 @@ export type FederationPokeResponses = {
         woken: boolean;
         wokenSync?: boolean;
         wokenInbox?: boolean;
+        wokenRelay?: boolean;
     };
 };
 
