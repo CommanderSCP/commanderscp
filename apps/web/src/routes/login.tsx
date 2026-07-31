@@ -7,6 +7,7 @@ import { authConfigKey } from "../lib/query-client";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { QueryErrorNotice } from "../components/query-error";
 
 /** `/login` (BUILD_AND_TEST.md §8 M2 item 2) — local-auth form, plus an OIDC "Continue with SSO" link. */
 export function LoginPage(): React.JSX.Element {
@@ -19,10 +20,11 @@ export function LoginPage(): React.JSX.Element {
 
   // Public — no auth required (routes/auth.ts `getAuthConfig`) — decides whether to render the
   // SSO link below.
-  const { data: authConfig } = useQuery({
+  const authConfigQuery = useQuery({
     queryKey: authConfigKey,
     queryFn: () => client.auth.config()
   });
+  const authConfig = authConfigQuery.data;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -84,6 +86,21 @@ export function LoginPage(): React.JSX.Element {
               {submitting ? "Signing in…" : "Sign in"}
             </Button>
           </form>
+
+          {/* ADR-0023: a failed `GET /auth/config` used to be indistinguishable from
+              `oidcEnabled: false` — the SSO link simply never appeared, and an operator on an
+              SSO-only instance was left staring at a local-credentials form with no way to know
+              WHY. A version skew is now said out loud instead of silently removing the only door
+              they have. */}
+          {authConfigQuery.isError && (
+            <div className="mt-4 border-t border-slate-200 pt-4">
+              <QueryErrorNotice
+                error={authConfigQuery.error}
+                what="this instance's sign-in options"
+                testId="login-auth-config-error"
+              />
+            </div>
+          )}
 
           {authConfig?.oidcEnabled && (
             <div className="mt-4 border-t border-slate-200 pt-4 text-center">

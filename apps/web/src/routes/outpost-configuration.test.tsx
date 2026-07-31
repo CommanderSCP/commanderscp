@@ -183,9 +183,10 @@ describe("trust tier: absent until set, and never defaulted", () => {
   });
 
   it("treats an ABSENT tier key exactly like a null one — no empty badge, no orphan select", () => {
-    // `OutpostConfigSchema.trustTier` is required-nullable, but the generated SDK does NOT validate
-    // responses at runtime (it returns `response.json()` under a TypeScript type), so a server that
-    // omits the key hands this component `undefined`. Keyed on `=== null`, that fell through to the
+    // `OutpostConfigSchema.trustTier` is required-nullable, and BEFORE ADR-0023 the generated SDK
+    // validated no response, so a server that omitted the key handed this component `undefined`
+    // (since ADR-0023 that body rejects at the SDK boundary; this drives the component directly,
+    // which is where the guard itself lives). Keyed on `=== null`, that fell through to the
     // VALUE branch and rendered an empty `<Badge>` with no `data-trust-tier` attribute — a blank
     // standing in for an unknown — while the select, initialised with `?? ""`, showed a value no
     // option carried.
@@ -207,7 +208,7 @@ describe("trust tier: absent until set, and never defaulted", () => {
     // cannot silently settle on the first enum member.
     expect(html).toContain("— not set —");
     expect(tagWithAttr(html, 'selected=""')).toContain('value=""');
-    expect(html).not.toContain('data-tier-unverified=');
+    expect(html).not.toContain("data-tier-unverified=");
   });
 
   it("does not offer the placeholder once a tier IS set — there is no clear-to-unknown verb", () => {
@@ -398,10 +399,11 @@ describe("trust tier: an unverified shadow is named, not overwritten", () => {
   });
 
   it("survives a response that omits unknownFields — an unknown, never a blank panel", () => {
-    // `unknownFields` is required-not-optional and the SDK validates no response, so
+    // `unknownFields` is required-not-optional and BEFORE ADR-0023 the SDK validated no response, so
     // `config.unknownFields.includes(...)` threw a TypeError and BLANKED THE WHOLE CARD — under the
     // very response shape the guards here exist for. Fail loud beats fail dishonest; a white screen
-    // is neither.
+    // is neither. (Since ADR-0023 that body rejects at the SDK boundary; this case drives the
+    // component directly, where the guard itself lives.)
     const noDeclaration = configFixture({ trustTier: "il5" });
     delete (noDeclaration as { unknownFields?: unknown }).unknownFields;
 
@@ -557,7 +559,11 @@ describe("reconcile: the two removal outcomes are never one bucket", () => {
     const localA = configFixture({ objectId: "44444444-4444-4444-8444-444444444444" });
     const localB = configFixture({ objectId: "55555555-5555-4555-8555-555555555555" });
     const tied = renderToStaticMarkup(
-      <ReconcilePanel claimants={[localA, localB]} ownDomainId={OWN_DOMAIN} onReconcile={() => {}} />
+      <ReconcilePanel
+        claimants={[localA, localB]}
+        ownDomainId={OWN_DOMAIN}
+        onReconcile={() => {}}
+      />
     );
     // Two rows of EQUAL authority: the server breaks that tie by creation order, so this side cannot
     // preview a survivor. It declines to offer the default rather than guess at one.
@@ -590,7 +596,9 @@ describe("reconcile: the two removal outcomes are never one bucket", () => {
     // PREMISE, so "gated" is not just "always disabled": the determinate default here drops only a
     // shadow — a silent local cleanup — and IS clickable. The gate is not blanket caution.
     // (`disabled=""`, not `disabled`: the button's own class list carries `disabled:opacity-50`.)
-    expect(tagWithAttr(determinate, 'data-testid="reconcile-default"')).not.toContain('disabled=""');
+    expect(tagWithAttr(determinate, 'data-testid="reconcile-default"')).not.toContain(
+      'disabled=""'
+    );
     expect(determinate).toContain('data-outcome="local-cleanup"');
   });
 
@@ -651,7 +659,11 @@ describe("reconcile: the two removal outcomes are never one bucket", () => {
     const local = configFixture();
     const replica = replicaFixture();
     const html = renderToStaticMarkup(
-      <ReconcilePanel claimants={[local, replica]} ownDomainId={OWN_DOMAIN} onReconcile={() => {}} />
+      <ReconcilePanel
+        claimants={[local, replica]}
+        ownDomainId={OWN_DOMAIN}
+        onReconcile={() => {}}
+      />
     );
     expect(html).toContain('data-testid="reconcile-default-block"');
     expect(tagWithAttr(html, 'data-testid="reconcile-default"')).toContain('disabled=""');
@@ -705,7 +717,9 @@ describe("reconcile: the two removal outcomes are never one bucket", () => {
 
   /**
    * ROUND 3 — THE SAME `=== null` HALF-GUARD, IN THE FILE WHOSE COMMIT IS TITLED "guard both,
-   * everywhere". `adoptedObjectId` is required-nullable and the SDK validates no response.
+   * everywhere". `adoptedObjectId` is required-nullable, and BEFORE ADR-0023 the SDK validated no
+   * response. (Since ADR-0023 an omitted required key rejects at the SDK boundary; this case drives
+   * the component directly, where the guard itself lives.)
    *
    * MEASURED with `adoptedObjectId: undefined`, BOTH mirrors misfired at once:
    *   * `!== null` was TRUE, so the panel emitted `<p data-testid="reconcile-adopted">Adopted

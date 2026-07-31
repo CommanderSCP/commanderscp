@@ -4,6 +4,7 @@ import type { FederationPeerStatus } from "@scp/schemas";
 import { client } from "../lib/client";
 import { federationStatusKey } from "../lib/query-client";
 import { usePeerDomainIdParam } from "../lib/use-route-params";
+import { QueryErrorNotice } from "../components/query-error";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import {
   InboundSyncCell,
@@ -121,12 +122,14 @@ export function OutpostStatusCard({ status }: { status: FederationPeerStatus }):
           </div>
           <div className="mt-2">
             {/* `?? []` — the SAME guard `outposts.tsx` carries at the identical call, for the same
-                measured reason. `recentTransfers` is required-not-optional by the schema and the
-                SDK validates no response, so a server that omits the key made `transfers.length`
-                throw a TypeError. Here that is strictly worse than on the overview: this card is
-                the FIRST child of the per-outpost page, so the throw white-screened Status AND
-                Settings AND Configuration together. An empty ledger renders "none recorded here",
-                which is the truthful reading of "this side has no transfer rows to show". */}
+                measured reason. `recentTransfers` is required-not-optional by the schema and,
+                BEFORE ADR-0023, the SDK validated no response, so a server that omitted the key
+                made `transfers.length` throw a TypeError. Here that was strictly worse than on the
+                overview: this card is the FIRST child of the per-outpost page, so the throw
+                white-screened Status AND Settings AND Configuration together. SINCE ADR-0023 the
+                SDK rejects that body and the page's `isError` branch names the operation and the
+                field. The guard stays as the truthful reading of an empty ledger ("none recorded
+                here") — "this side has no transfer rows to show". */}
             <RecentTransfersCell transfers={status.recentTransfers ?? []} />
           </div>
         </div>
@@ -161,6 +164,17 @@ export function OutpostDetailPage(): React.JSX.Element {
       </div>
 
       {statusQuery.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
+      {/* ADR-0023: `isError` is reachable for a 200 whose body fails contract validation, and this
+          page renders nothing at all for that state without this branch — the peer name above
+          silently falls back to the raw id and every card below is absent, which reads exactly
+          like "this peer is not paired". */}
+      {statusQuery.isError && (
+        <QueryErrorNotice
+          error={statusQuery.error}
+          what="federation status"
+          testId="outpost-detail-error"
+        />
+      )}
       {statusQuery.data && !status && (
         <p className="text-sm text-slate-500" data-testid="outpost-not-paired">
           No peer with this trust-domain id is paired on this instance.

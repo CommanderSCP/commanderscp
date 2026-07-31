@@ -66,10 +66,12 @@ import { printResult, type OutputFormat } from "./output.js";
 /**
  * ABSENT — `null` OR `undefined`, never one of the two.
  *
- * The generated SDK does NO runtime response validation (it returns `response.json()` under a
- * TypeScript type), so a key an older or newer server OMITS arrives as `undefined` whatever the
- * schema says — `.nullable()` without `.optional()` buys nothing at runtime. A strict `=== null`
- * therefore guards ONE of two legal absences and lets the other through to a printer, where it
+ * A key an older or newer server OMITS arrives as `undefined` whatever the TypeScript type says.
+ * SINCE ADR-0023 the SDK validates every 2xx JSON body of every spec'd operation, so for a field
+ * that is `.nullable()` WITHOUT `.optional()` an omitted key now REJECTS at the boundary and this
+ * guard is defence in depth. For a field that IS `.optional()` nothing changed: an omitted key is
+ * contract-legal, passes validation untouched, and this guard is the only thing left. A strict
+ * `=== null` therefore guards ONE of two legal absences and lets the other through to a printer, where it
  * becomes the literal string `undefined`, a crash on `.toFixed(…)`, or — worst — the CONFIDENT
  * branch of a ternary whose other branch was the honest one. `apps/web/src/lib/absent.ts` is the
  * same rule for the browser half; this is the CLI's copy, because the two share no runtime.
@@ -239,8 +241,11 @@ function initiativeRow(i: Initiative): Record<string, string> {
  * test can invoke is a guard nothing holds in place. This function was module-private, so the
  * `?.mode ?? "?"` below could be reverted without a single test noticing.
  *
- * `syncScope` is required-not-optional on `FederationPeerSchema` and the generated SDK validates NO
- * response at runtime, so `p.syncScope.mode` was a bare dereference of a promise about the server —
+ * `syncScope` is required-not-optional on `FederationPeerSchema`, and BEFORE ADR-0023 the generated
+ * SDK validated NO response at runtime, so `p.syncScope.mode` was a bare dereference of a promise
+ * about the server (since ADR-0023 such a body rejects at the SDK boundary and `bin.ts` prints the
+ * operation and the field; this stays for every other source of a peer, and this function is what a
+ * test can actually invoke) —
  * the EXACT field `outpost-settings.tsx`'s `peerSyncScopeMode` guards on the web side (its doc
  * comment states the rule). MEASURED here: `TypeError: Cannot read properties of undefined (reading
  * 'mode')`, thrown while building the FIRST row, so `scp federation peers` printed no table at all.
@@ -272,8 +277,9 @@ export function peerRow(p: FederationPeer): Record<string, string> {
 /**
  * `scp federation status` in table form. EXPORTED for the reason given on `peerRow`.
  *
- * `peers` is required-not-optional on `FederationStatusResponseSchema` and the SDK validates no
- * response — the LAST unguarded consumer of that field (Z5). `outposts.tsx` reads it as
+ * `peers` is required-not-optional on `FederationStatusResponseSchema` and BEFORE ADR-0023 the SDK
+ * validated no response — the LAST unguarded consumer of that field (Z5). Since ADR-0023 a body
+ * without the key rejects at the boundary rather than reaching this printer. `outposts.tsx` reads it as
  * `statusQuery.data?.peers ?? []` and `outpost-detail.tsx` passes `data?.peers` into a function that
  * accepts `undefined`; this and `federation-status.tsx` were the two that did not. "No paired peers."
  * is the honest degradation: it says this side has no peer rows to show, which is exactly what an
@@ -388,7 +394,8 @@ export function federationStatusRow(
  * unreachable by any test.
  *
  * `unknownFields` is required-not-optional (`packages/schemas/src/federation.ts` `OutpostConfigSchema`)
- * and the SDK validates no response, so `o.unknownFields.join(", ")` was bare. MEASURED: `TypeError:
+ * and BEFORE ADR-0023 the SDK validated no response, so `o.unknownFields.join(", ")` was bare
+ * (since ADR-0023 that body rejects at the boundary). MEASURED: `TypeError:
  * Cannot read properties of undefined (reading 'join')`. Its web twin at `outpost-configuration.tsx`
  * took the `?? []` last round and IS pinned; this half was not fixed even though the PR body claimed
  * the field "closed as a class". Blast radius is SIX commands (`cli.ts` ~2963/2993/3005/3017/3044/3050).
@@ -601,7 +608,8 @@ export function formatReconcilePreviewLines(
  *  rather than only via the command's `--keep` help text.
  *
  *  `?? []` ON BOTH BUCKETS (Z4). Both are required-not-optional on `OutpostConfigReconcileResultSchema`
- *  and the SDK validates no response, so both were bare `.length`/`.join` reads. MEASURED: `TypeError:
+ *  and BEFORE ADR-0023 the SDK validated no response, so both were bare `.length`/`.join` reads
+ *  (since ADR-0023 that body rejects at the boundary). MEASURED: `TypeError:
  *  Cannot read properties of undefined (reading 'length')`. This is the WORST place in the CLI for it —
  *  the operator has just run a DESTRUCTIVE, DOWNSTREAM-PROPAGATING verb and the throw kills the entire
  *  report of what it did, so they are told NOTHING about deletes that already happened and already

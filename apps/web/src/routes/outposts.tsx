@@ -5,6 +5,7 @@ import { client } from "../lib/client";
 import { isAbsent } from "../lib/absent";
 import { federationStatusKey } from "../lib/query-client";
 import { Badge } from "../components/ui/badge";
+import { QueryErrorNotice } from "../components/query-error";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import {
   Table,
@@ -485,11 +486,12 @@ export function OutpostRow({ status }: { status: FederationPeerStatus }): React.
       </TableCell>
       <TableCell>
         {/* `?? []` — FAIL LOUD IS BETTER THAN FAIL DISHONEST, but a WHITE SCREEN is neither.
-            `recentTransfers` is required-not-optional by the schema, and the SDK validates no
-            response, so a server that omits it made `transfers.length` throw a TypeError that took
-            the ENTIRE page down — including every honest unknown on every other row. An empty
-            ledger renders "none recorded here", which is already the truthful reading of "this
-            side has no transfer rows to show". */}
+            `recentTransfers` is required-not-optional by the schema, and BEFORE ADR-0023 the SDK
+            validated no response, so a server that omitted it made `transfers.length` throw a
+            TypeError that took the ENTIRE page down — including every honest unknown on every other
+            row. SINCE ADR-0023 the SDK rejects that body and the `isError` branch below names the
+            operation and the field. The guard stays as the truthful reading of an empty ledger
+            ("none recorded here") — "this side has no transfer rows to show". */}
         <RecentTransfersCell transfers={status.recentTransfers ?? []} />
       </TableCell>
     </TableRow>
@@ -529,10 +531,17 @@ export function OutpostsPage(): React.JSX.Element {
         </CardHeader>
         <CardContent>
           {statusQuery.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
+          {/* NOT a fixed string (ADR-0023). "Could not load federation status." is what this
+              rendered before, and it reads identically for a 401, an unreachable instance, and a
+              version skew — three faults with three different remedies. The SDK boundary now
+              produces the operation and the offending field; discarding that here would have
+              thrown away the single thing the boundary exists to make. */}
           {statusQuery.isError && (
-            <p className="text-sm text-red-700" data-testid="outposts-error">
-              Could not load federation status.
-            </p>
+            <QueryErrorNotice
+              error={statusQuery.error}
+              what="federation status"
+              testId="outposts-error"
+            />
           )}
           {statusQuery.data && outposts.length === 0 && (
             <p className="text-sm text-slate-500" data-testid="outposts-empty">

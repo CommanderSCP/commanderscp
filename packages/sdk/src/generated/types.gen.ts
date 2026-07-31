@@ -419,9 +419,24 @@ export type ListServiceObjectsResponses = {
         items: Array<{
             id: string;
             orgId: string;
-            type: 'service';
+            domainId: string | null;
+            typeId: string;
             name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            provenance: 'manual' | null;
+            version: number;
             createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+            type: 'service';
         }>;
         nextCursor: string | null;
     };
@@ -503,9 +518,24 @@ export type CreateServiceObjectResponses = {
     201: {
         id: string;
         orgId: string;
-        type: 'service';
+        domainId: string | null;
+        typeId: string;
         name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        provenance: 'manual' | null;
+        version: number;
         createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+        type: 'service';
     };
 };
 
@@ -558,9 +588,24 @@ export type ListServiceObjectsForOrgResponses = {
         items: Array<{
             id: string;
             orgId: string;
-            type: 'service';
+            domainId: string | null;
+            typeId: string;
             name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            provenance: 'manual' | null;
+            version: number;
             createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+            type: 'service';
         }>;
         nextCursor: string | null;
     };
@@ -644,9 +689,24 @@ export type CreateServiceObjectForOrgResponses = {
     201: {
         id: string;
         orgId: string;
-        type: 'service';
+        domainId: string | null;
+        typeId: string;
         name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        provenance: 'manual' | null;
+        version: number;
         createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+        type: 'service';
     };
 };
 

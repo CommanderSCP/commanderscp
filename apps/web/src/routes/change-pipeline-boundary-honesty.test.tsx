@@ -27,9 +27,8 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   Link: ({ children }: { children?: React.ReactNode }) => <a>{children}</a>
 }));
 
-const { BoundarySegmentStrip, NoBoundarySegment, isBoundaryUnknown } = await import(
-  "../components/pipeline/BoundarySegmentStrip"
-);
+const { BoundarySegmentStrip, NoBoundarySegment, isBoundaryUnknown } =
+  await import("../components/pipeline/BoundarySegmentStrip");
 
 const PEER_DOMAIN_ID = "9a8b7c6d-5e4f-4a3b-8c1d-2e3f4a5b6c7d";
 const DECISION_ID = "1b2c3d4e-5f6a-4b8c-9d0e-1f2a3b4c5d6e";
@@ -236,10 +235,16 @@ describe("boundary segment: the wiring, by exact field name", () => {
     // A neighbouring unknown must not satisfy the other: a commander that could somehow observe the
     // handoff would still not be able to see the outpost's verdict, and vice versa.
     expect(
-      isBoundaryUnknown({ ...commanderSegment, unknownFields: ["transfer.handoff"] }, "validate.state")
+      isBoundaryUnknown(
+        { ...commanderSegment, unknownFields: ["transfer.handoff"] },
+        "validate.state"
+      )
     ).toBe(false);
     expect(
-      isBoundaryUnknown({ ...commanderSegment, unknownFields: ["validate.state"] }, "transfer.handoff")
+      isBoundaryUnknown(
+        { ...commanderSegment, unknownFields: ["validate.state"] },
+        "transfer.handoff"
+      )
     ).toBe(false);
   });
 
@@ -268,7 +273,10 @@ describe("boundary segment: the wiring, by exact field name", () => {
  * `BoundarySegmentStrip.tsx:166` and reported it as mutation-proven. It was not: reverting it left
  * the whole `apps/web` suite GREEN, because every fixture above sets the key to `null` — the case
  * that already worked. The case that did not is the key being ABSENT, which is what a server
- * predating the field actually sends and which the generated SDK does not validate away.
+ * predating the field actually sends. (Since ADR-0023 the SDK rejects that body before a component
+ * ever sees it — `authorizedArtifactCount` is required-nullable, so an omission is a contract
+ * violation — but these tests drive the component DIRECTLY, which is the only level at which the
+ * guard itself, rather than the boundary in front of it, can be pinned.)
  *
  * MEASURED mutant output, inside the `signatures verified` phase card:
  *   <p … title="undefined authorized artifacts">undefined authorized artifacts</p>
@@ -276,8 +284,10 @@ describe("boundary segment: the wiring, by exact field name", () => {
  */
 /**
  * Y4 — THE X7 CLASS, CLOSED FOR `unknownFields` ITSELF. `isBoundaryUnknown` dereferenced
- * `segment.unknownFields` bare; the field is required-not-optional and the SDK validates nothing, so
- * a server that omits the honesty list threw inside the strip and took the change page with it.
+ * `segment.unknownFields` bare; the field is required-not-optional and BEFORE ADR-0023 the SDK
+ * validated nothing, so a server that omitted the honesty list threw inside the strip and took the
+ * change page with it. (Since ADR-0023 such a body rejects at the SDK boundary; the guard remains
+ * the component's own contract, which is what this file drives.)
  * `declaredUnknowns` reads it as "nothing declared unobservable" — additive honesty on top of a
  * working page, rather than no page.
  */

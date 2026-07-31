@@ -243,10 +243,17 @@ describe("peer settings: the rendered form", () => {
 /**
  * Y4 — THE X7 CLASS, CLOSED FOR `syncScope`.
  *
- * `syncScope` is required-not-optional on `FederationPeer` and the SDK validates no response, so
- * `peer.syncScope.mode` was a bare dereference of a promise nothing enforces at runtime — the same
- * read that white-screened the outposts pages. Here it would kill the Settings card, which is the
- * only door an operator has to fix the peer whose response is malformed.
+ * `syncScope` is required-not-optional on `FederationPeer` and BEFORE ADR-0023 the SDK validated no
+ * response, so `peer.syncScope.mode` was a bare dereference of a promise nothing enforced at
+ * runtime — the same read that white-screened the outposts pages. Here it would kill the Settings
+ * card, which is the only door an operator has to fix the peer whose response is malformed.
+ *
+ * SINCE ADR-0023 a body omitting `syncScope` no longer reaches this card through
+ * `client.federation.status()` — it rejects at the SDK boundary and `/federation` renders the
+ * diagnosis (`federation-status-crash.test.tsx` pins that). These cases drive the COMPONENT
+ * directly, which is the only level at which the guard itself — as opposed to the boundary in front
+ * of it — can be pinned, and the level that still decides what happens for any other source of a
+ * peer (a cached snapshot, a future unspec'd feed).
  *
  * The guard must not become the OTHER failure: substituting a default mode would tell the operator
  * the peer exports everything, and — since the patch builder omits an UNCHANGED mode — a form left

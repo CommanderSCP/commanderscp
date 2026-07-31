@@ -413,8 +413,9 @@ describe("outposts overview: no string claims the outpost has anything", () => {
 
   it("an ABSENT (not null) backlog count is an unknown, never a blank number", () => {
     // `pendingExportEntryCount` is `.nullable().OPTIONAL()`, so `undefined` is as legal on the wire as
-    // `null` — and the generated SDK does no runtime response validation, so a key a server omits
-    // arrives here as `undefined` whatever the schema says. Keying the guard on `=== null` alone let
+    // `null` — and ADR-0023 does NOT close this one: an omitted OPTIONAL key is contract-legal and
+    // passes the SDK's response validation untouched, so this guard is still the only thing between
+    // the renderer and `undefined`. Keying the guard on `=== null` alone let
     // that value through and rendered
     //   `<span data-testid="outpost-export-backlog"> of this domain's own journal entries…</span>`
     // — an EMPTY number inside confident copy, reading as "nothing pending".
@@ -494,9 +495,17 @@ describe("outposts overview: no string claims the outpost has anything", () => {
 
   it("a row survives a response that omits recentTransfers — an unknown, never a white screen", () => {
     // FAIL LOUD BEATS FAIL DISHONEST, BUT A WHITE SCREEN IS NEITHER. `recentTransfers` is
-    // required-not-optional and the SDK validates no response, so a server that omits it made
-    // `transfers.length` throw a TypeError that took down the ENTIRE table — every honest unknown on
-    // every other row with it, which is strictly worse than the fabrication these tests forbid.
+    // required-not-optional and BEFORE ADR-0023 the SDK validated no response, so a server that
+    // omitted it made `transfers.length` throw a TypeError that took down the ENTIRE table — every
+    // honest unknown on every other row with it, which is strictly worse than the fabrication these
+    // tests forbid.
+    //
+    // WHAT THIS CASE PINS NOW. It renders the ROW directly, so it pins the row's OWN guard and
+    // nothing else — which is still the right level for it: the SDK boundary is one source of a
+    // `FederationPeerStatus`, not the only one, and reverting the `?? []` must stay red. What it
+    // deliberately does NOT claim is anything about the page: since ADR-0023 this body never reaches
+    // the row through `client.federation.status()` (it rejects), and what `/outposts` does with that
+    // rejection is pinned end-to-end, against the real SDK, in `outposts-crash.test.tsx`.
     const noTransfers = basePeer();
     delete (noTransfers as { recentTransfers?: unknown }).recentTransfers;
 

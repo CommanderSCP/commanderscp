@@ -48,3 +48,73 @@ export function reconcileStaleClaimants(err: unknown): OutpostConfig[] | null {
   const parsed = OutpostReconcileStaleProblemSchema.safeParse(err.problem);
   return parsed.success ? (parsed.data.claimants ?? null) : null;
 }
+
+/** One field of a 2xx response body that did not match the OpenAPI contract. */
+export interface ResponseValidationIssue {
+  /** Dot/index path INSIDE the response body, e.g. `peers.0.syncScope`. `<root>` for the body itself. */
+  path: string;
+  /** Human-readable explanation from the response validator. */
+  message: string;
+  /** Machine code from the response validator, e.g. `invalid_type`. */
+  code?: string;
+}
+
+/** How many issues the message enumerates before it summarizes the rest. */
+const MAX_LISTED_ISSUES = 5;
+
+function describeIssues(issues: readonly ResponseValidationIssue[]): string {
+  if (issues.length === 0) return "the response body did not match the contract";
+  const listed = issues
+    .slice(0, MAX_LISTED_ISSUES)
+    .map((issue) => `${issue.path} (${issue.code ?? "invalid"}: ${issue.message})`)
+    .join(", ");
+  const rest = issues.length - MAX_LISTED_ISSUES;
+  return rest > 0 ? `${listed}, and ${rest} more field(s)` : listed;
+}
+
+/**
+ * Thrown by {@link ScpClient} when a 2xx response body does NOT match the OpenAPI contract the SDK
+ * was generated from (ADR-0023) — a required field is absent, a discriminated union has no
+ * matching branch, etc.
+ *
+ * This exists so that a version skew between a client and an instance fails ONCE, at the SDK
+ * boundary, naming BOTH the operation and the offending field(s) — instead of surfacing much later
+ * as a bare `TypeError: Cannot read properties of undefined` inside whichever component happened to
+ * dereference the missing field first.
+ */
+export class ScpResponseValidationError extends Error {
+  /** `GET /federation/status` — the OpenAPI coordinates (method + templated path) of the call. */
+  readonly operation: string;
+  /** Uppercase HTTP method, e.g. `GET`. */
+  readonly method: string;
+  /** Templated request path as declared in the OpenAPI document, e.g. `/federation/peers/{id}`. */
+  readonly path: string;
+  /** HTTP status of the (successful) response whose body failed validation. */
+  readonly status?: number;
+  /** Every field that failed, in the validator's order. */
+  readonly issues: readonly ResponseValidationIssue[];
+
+  constructor(opts: {
+    method: string;
+    path: string;
+    status?: number;
+    issues: readonly ResponseValidationIssue[];
+    cause?: unknown;
+  }) {
+    const operation = `${opts.method} ${opts.path}`;
+    super(
+      `CommanderSCP API response failed contract validation for ${operation}` +
+        `${opts.status === undefined ? "" : ` (HTTP ${opts.status})`}: ` +
+        `${describeIssues(opts.issues)}. The instance returned a body that does not match the ` +
+        `OpenAPI contract this SDK was generated from — most likely a version skew between this ` +
+        `client and the instance.`,
+      { cause: opts.cause }
+    );
+    this.name = "ScpResponseValidationError";
+    this.operation = operation;
+    this.method = opts.method;
+    this.path = opts.path;
+    this.status = opts.status;
+    this.issues = opts.issues;
+  }
+}

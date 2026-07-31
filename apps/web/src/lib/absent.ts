@@ -3,10 +3,17 @@
  *
  * THE BUG THIS EXISTS TO MAKE UNREPEATABLE. Almost every federated reading in this app is
  * `.nullable()` and very often `.optional()` too (`packages/schemas/src/federation.ts`), so BOTH
- * absent values are legal on the wire — and the generated SDK does NO runtime response validation
- * (it returns `response.json()` under a TypeScript type), so a key an older or newer server simply
- * OMITS arrives as `undefined` whatever its schema says. `.nullable()` without `.optional()` buys
- * nothing here: the type says the key is always present, and nothing at runtime enforces it.
+ * absent values are legal on the wire and a key an older or newer server simply OMITS arrives as
+ * `undefined` whatever the TypeScript type says.
+ *
+ * WHAT ADR-0023 CHANGED HERE, AND WHAT IT DID NOT. The SDK now runs a generated zod schema over
+ * every 2xx JSON body of every spec'd operation, so for a field that is `.nullable()` WITHOUT
+ * `.optional()` an omitted key no longer resolves a query — it rejects at the boundary, naming the
+ * operation and the field, and this guard became defence in depth for that case. For a field that
+ * is `.optional()` NOTHING CHANGED: an omitted key is contract-LEGAL, validation passes it through
+ * untouched, and this guard is still the only thing between the renderer and `undefined`. Which of
+ * the two applies is per field, so `isAbsent` stays the rule at every site rather than a judgement
+ * call made one dereference at a time.
  *
  * A strict `=== null` check therefore guards ONE of two legal absences and lets the other reach the
  * renderer, where an absent NUMBER prints as an empty string inside otherwise-confident copy

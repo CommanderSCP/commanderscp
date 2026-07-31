@@ -15,14 +15,14 @@ import type { GraphObject } from "@scp/schemas";
 // here; the codec itself now lives in `../pagination.ts` since every M1 list endpoint needs it.
 export { decodeCursor, encodeCursor } from "../pagination.js";
 
+/**
+ * ADR-0023: the M0 wire shape is the WHOLE graph object plus M0's `type` discriminator — see
+ * `ServiceObjectSchema`'s doc comment for why a subset was a live contract violation (the SDK's
+ * `client.object("service")` calls the generic `createObject`/`listObjects`, which this static
+ * route shadows, and those declare a full `GraphObject`).
+ */
 function toServiceObject(row: GraphObject): ServiceObject {
-  return {
-    id: row.id,
-    orgId: row.orgId,
-    type: "service",
-    name: row.name,
-    createdAt: row.createdAt
-  };
+  return { ...row, type: "service" };
 }
 
 /**

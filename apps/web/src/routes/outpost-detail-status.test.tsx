@@ -9,10 +9,12 @@ import type { FederationPeerStatus } from "@scp/schemas";
  * WHAT THIS FILE OWNS, and why it is not a duplicate of `outposts-honesty.test.tsx`: that file pins
  * the OVERVIEW row. This card renders the same cells on a different page, and the failure mode it
  * missed is not a wording failure but a CRASH. `recentTransfers` is required-not-optional by
- * `FederationPeerStatusSchema` and the generated SDK validates no response, so a server that omits
- * the key reaches `transfers.length` on `undefined`. On the overview that throw kills one row's
- * page; here the card is the first child of the detail route, so the throw takes Status AND
- * Settings AND Configuration down together — a white screen where three sections should be.
+ * `FederationPeerStatusSchema` and BEFORE ADR-0023 the generated SDK validated no response, so a
+ * server that omitted the key reached `transfers.length` on `undefined`. On the overview that throw
+ * kills one row's page; here the card is the first child of the detail route, so the throw took
+ * Status AND Settings AND Configuration down together — a white screen where three sections should
+ * be. SINCE ADR-0023 that body rejects at the SDK boundary instead; these cases drive the CARD
+ * directly, which is the only level at which the card's own guard can be pinned.
  *
  * The guard therefore has to be pinned by RENDERING with the key absent, not by reading the source:
  * removing `?? []` from `outpost-detail.tsx` must make the first test below throw.
