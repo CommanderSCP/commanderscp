@@ -4,13 +4,19 @@ name: CI
 # command with no hosted-service dependency, so the same pipeline runs on self-hosted runners or
 # a bare local runner script (charter self-hosting requirement — §6).
 #
-# WHAT ACTUALLY GATES A PR: stages 1-5. Every E2E job below (7, 8, 8b-8d, 9, plus the 9a image
-# build they depend on) carries `if: github.event_name == 'push' && github.ref == 'refs/heads/main'`
-# and is SKIPPED on pull requests. There is no "PR subset" of stage 7 — no --grep, no project
-# filter, no second job; an earlier version of this comment and of §6 claimed one, and it was never
-# built. So a regression that only a Playwright spec covers reaches `main` with both required
-# checks green and is caught only afterwards. Anything that must not regress needs an assertion
-# reachable from job 4 or job 5.
+# WHAT ACTUALLY GATES A PR: stages 1-5, plus 4b (helm-verify) and 5y (prod-audit) as of this PR —
+# branch protection requires "3. Codegen drift" and "5z. Integration (aggregation gate)", and 5z
+# now `needs:` the integration-shard matrix, helm-verify, AND prod-audit directly (previously 4b
+# was reachable from nothing and a red 4b did not block merge, despite that job's own comment
+# claiming otherwise; 5y is net-new). Job 4d (testcontainer-images) is also new this PR: a
+# prerequisite of integration-shard that mirrors postgres/nats/registry off Docker Hub, not a gate
+# itself. Every E2E job below (7, 8, 8b-8d, 9, plus the 9a image build they depend on) carries
+# `if: github.event_name == 'push' && github.ref == 'refs/heads/main'` and is SKIPPED on pull
+# requests. There is no "PR subset" of stage 7 — no --grep, no project filter, no second job; an
+# earlier version of this comment and of §6 claimed one, and it was never built. So a regression
+# that only a Playwright spec covers reaches `main` with both required checks green and is caught
+# only afterwards. Anything that must not regress needs an assertion reachable from job 4, 4b, 5,
+# or 5y.
 #
 # RUNNERS: GitHub-hosted `ubuntu-latest` throughout (previously two homelab ARC self-hosted labels,
 # `homelab-commanderscp-linux-general` and `homelab-commanderscp-linux-docker-build`). The old split
@@ -164,8 +170,14 @@ jobs:
     # with `spawnSync helm ENOENT`); it is KEPT on `ubuntu-latest` — which does pre-install helm —
     # precisely so this gate does not depend on GitHub's runner-image contents and stays valid on
     # any self-hosted runner. `tools/helm-verify/src/verify.ts` SKIPS cleanly when helm is absent
-    # (see its own comment), so THIS job — which always has helm — is what makes the assertions an
-    # unconditional gate on every PR regardless of runner provisioning.
+    # (see its own comment), so THIS job — which always has helm — is what makes the assertions
+    # capable of being an unconditional gate.
+    #
+    # CORRECTION (this PR): "capable of" is the accurate word, not "is" — this job was never in any
+    # `needs:` chain and branch protection requires only "5z. Integration (aggregation gate)" and
+    # "3. Codegen drift", so a red 4b did NOT block merge; the paragraph above previously claimed
+    # otherwise. Fixed by adding this job to job 5z's `needs:` below, the same mechanism job 5z's
+    # own comment already documents for static-checks/codegen-drift/unit-tests/runner-images.
     runs-on: ubuntu-latest
     needs: build
     steps:
@@ -230,6 +242,130 @@ jobs:
           build_and_push "$SCP_RUNNER_SCAN_IMAGE_REF" apps/runner-scan
           build_and_push "$SCP_RUNNER_IAC_IMAGE_REF" apps/runner-iac
 
+  testcontainer-images:
+    name: "4d. Mirror Testcontainer images to GHCR (postgres, nats, registry)"
+    # Job 5 below starts postgres:16, nats:2.10, and registry:2 directly via Testcontainers
+    # (PostgreSqlContainer/GenericContainer in apps/server's integration suites — e.g.
+    # event-bus.integration.test.ts, promotion-scan-step.integration.test.ts,
+    # retrans-relay.integration.test.ts) — a live `docker pull` from Docker Hub, unauthenticated,
+    # on every shard of every run. Docker Hub's anonymous-pull rate limit / occasional registry
+    # timeouts intermittently red job 5 — the REQUIRED integration gate — for a reason that has
+    # nothing to do with the code under test.
+    #
+    # Same "pull/build once, publish to GHCR, reuse" shape as job 4c (runner-images) and job 9a
+    # (ci-image), but for third-party images we don't build: mirror each upstream tag to GHCR
+    # under a fixed path, keyed by the tag itself (postgres:16 only ever means one thing, unlike
+    # the runner images' content-hash tags, whose content we control and rebuild on change).
+    # First sighting of a tag is a genuine Docker Hub pull (published here); every run after that
+    # is a GHCR pull, same registry/credentials as the rest of this workflow already uses.
+    #
+    # This job only MIRRORS the bytes into GHCR. Job 5's own steps below re-tag the mirrored image
+    # back to the exact literal string the test code passes to `new GenericContainer(...)` —
+    # Testcontainers only pulls an image it doesn't already find locally, so a pre-seeded local tag
+    # makes its own pull a no-op. Nothing in apps/ changes; the test files keep referencing
+    # "postgres:16" etc. unmodified.
+    #
+    # CAVEAT: this mirrors whatever single-arch manifest `ubuntu-latest` (amd64) pulls, not the
+    # upstream multi-arch index — fine today (every job in this workflow runs on `ubuntu-latest`),
+    # but an arm64 self-hosted runner would need its own mirror pass.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Mirror each upstream tag to GHCR, once per tag
+        run: |
+          set -uo pipefail
+          mirror() {
+            upstream="$1"
+            repo="${upstream%%:*}"
+            tag="${upstream##*:}"
+            mirror_ref="ghcr.io/commanderscp/mirror/${repo}:${tag}"
+            if docker pull "$mirror_ref" >/dev/null 2>&1; then
+              echo "cache hit: $mirror_ref already mirrored."
+            else
+              echo "cache miss: mirroring docker.io/library/$upstream -> $mirror_ref"
+              docker pull "docker.io/library/${upstream}"
+              docker tag "docker.io/library/${upstream}" "$mirror_ref"
+              docker push "$mirror_ref"
+            fi
+          }
+          mirror postgres:16
+          mirror nats:2.10
+          mirror registry:2
+
+  prod-audit:
+    name: "5y. Prod dependency audit (pnpm audit --prod, GHCR-mirrored advisory snapshot)"
+    # `pnpm audit` appeared in no workflow and no script before this PR (BUILD_AND_TEST.md's
+    # "Intended but not wired" list) — 5 real prod-dependency vulnerabilities (measured 2026-07-31:
+    # 4 high, 1 moderate — @fastify/static path-traversal GHSA-83w8-p2f5-377r, find-my-way ReDoS,
+    # transitive fast-uri and brace-expansion issues) sat ungated. That same doc names the blocker
+    # precisely: "an unmirrored `pnpm audit` is a runtime call to the outside world, which is
+    # exactly what charter principle 5 forbids CI to make" — every run would hit npm's advisory
+    # endpoint live.
+    #
+    # Same "query once, publish to GHCR, reuse" shape as jobs 4c/4d/9a, keyed on a content hash of
+    # pnpm-lock.yaml (the exact installed-package set is what the advisory query is over, so a
+    # lockfile-unchanged run has nothing new to ask about). Cache hit: pull the snapshot this exact
+    # lockfile already produced. Cache miss: query the registry ONCE, publish the raw `pnpm audit
+    # --json` output as a scratch-image layer in GHCR so a later run — including a self-hosted
+    # runner pointed at an internal GHCR mirror instead of the public registry — never needs to
+    # reach npm directly.
+    #
+    # REMEDIATED (this PR), not just wired: find-my-way, fast-uri, and brace-expansion were all
+    # transitive pins already inside their parents' declared semver ranges — a plain
+    # `pnpm update --recursive` picked up the patched versions with zero source changes.
+    # @fastify/static needed an actual major bump (9.3.0 -> 10.1.2, in apps/server/package.json);
+    # its only breaking change between those majors is the `setHeaders(res)` -> `setHeaders(reply)`
+    # signature, which this codebase's two registrations (apps/server/src/app.ts) don't use.
+    # `pnpm audit --prod` is clean (0 high/critical) as of this PR, so job 5y is now wired into job
+    # 5z's `needs:` for real, the same way this PR adds `helm-verify`.
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - name: Compute the advisory-snapshot tag (content hash of pnpm-lock.yaml)
+        id: tag
+        run: echo "ref=ghcr.io/commanderscp/audit-db:$(sha256sum pnpm-lock.yaml | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Pull the cached advisory snapshot, or query once on a cache miss and publish it
+        run: |
+          set -uo pipefail
+          REF="${{ steps.tag.outputs.ref }}"
+          mkdir -p /tmp/audit
+          if docker pull "$REF" >/dev/null 2>&1; then
+            echo "cache hit: $REF already in GHCR — reusing the snapshot queried when this lockfile was last pinned."
+            cid=$(docker create "$REF")
+            docker cp "$cid:/audit.json" /tmp/audit/audit.json
+            docker rm "$cid" >/dev/null
+          else
+            echo "cache miss: pnpm-lock.yaml changed since the last snapshot. Querying the registry advisory endpoint ONCE (the only network call in this job) and publishing the result to GHCR."
+            pnpm audit --prod --json > /tmp/audit/audit.json || true
+            printf 'FROM scratch\nCOPY audit.json /audit.json\n' > /tmp/audit/Dockerfile
+            docker build -t "$REF" /tmp/audit
+            docker push "$REF"
+          fi
+      - name: Fail on any high/critical prod-dependency vulnerability in the snapshot
+        run: |
+          node -e '
+            const fs = require("fs");
+            const a = JSON.parse(fs.readFileSync("/tmp/audit/audit.json", "utf8"));
+            const v = (a && a.metadata && a.metadata.vulnerabilities) || {};
+            console.log("prod vulnerabilities:", JSON.stringify(v));
+            const bad = (v.high || 0) + (v.critical || 0);
+            if (bad > 0) {
+              console.error("::error::" + bad + " high/critical prod-dependency vulnerabilities in the audit snapshot above.");
+              process.exit(1);
+            }
+          '
+
   integration-shard:
     name: "5. Integration shard ${{ matrix.shard }}/2 (Testcontainers Postgres + real-Docker runners)"
     # LEVER 2: SHARDED across a 2-way matrix. vitest `--shard=i/2` deterministically splits the
@@ -263,7 +399,7 @@ jobs:
     # that declare that exact script name) — with all three tools genuinely on PATH, the tamper
     # scenario actually executes here instead of skipping.
     runs-on: ubuntu-latest
-    needs: [static-checks, codegen-drift, unit-tests, runner-images]
+    needs: [static-checks, codegen-drift, unit-tests, runner-images, testcontainer-images]
     permissions:
       contents: read
       packages: read
@@ -329,6 +465,20 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker pull "$SCP_RUNNER_SCAN_IMAGE_REF"
           docker pull "$SCP_RUNNER_IAC_IMAGE_REF"
+      # Pull the Testcontainer images (job 4d) from GHCR and re-tag them back to the literal
+      # strings the integration suites pass to `new GenericContainer(...)` /
+      # `new PostgreSqlContainer(...)` — Testcontainers only pulls an image it can't already find
+      # locally, so this makes its own pull step a no-op and keeps the suite off Docker Hub.
+      - name: Pull mirrored Testcontainer images and re-tag as the names the tests reference
+        run: |
+          set -uo pipefail
+          for upstream in postgres:16 nats:2.10 registry:2; do
+            repo="${upstream%%:*}"
+            tag="${upstream##*:}"
+            mirror_ref="ghcr.io/commanderscp/mirror/${repo}:${tag}"
+            docker pull "$mirror_ref"
+            docker tag "$mirror_ref" "$upstream"
+          done
       # LEVER 2: `--shard=i/2` (turbo forwards args after `--` to every test:integration task —
       # @scp/server AND @scp/plugin-managed-iac; both configs pass `--passWithNoTests`, so the
       # single-file managed-iac suite runs in whichever shard vitest assigns it and no-ops in the
@@ -353,20 +503,43 @@ jobs:
     #
     # DONE (2026-07-24): `main` branch protection now requires exactly this check plus "3. Codegen
     # drift". Requiring 5z transitively covers static-checks, codegen-drift, unit-tests and
-    # runner-images, because integration-shard `needs:` all four — if any of them fails the matrix is
-    # skipped, `needs.integration-shard.result != "success"`, and this gate goes red. See §6.
-    needs: [integration-shard]
+    # runner-images, because integration-shard `needs:` all four (plus testcontainer-images, added
+    # this PR) — if any of them fails the matrix is skipped, `needs.integration-shard.result !=
+    # "success"`, and this gate goes red. See §6.
+    #
+    # UPDATED (this PR): also `needs: [helm-verify, prod-audit]` directly. 4b was previously
+    # reachable from nothing — a red 4b did not block merge despite that job's own comment claiming
+    # it did (see the CORRECTION note on job 4b above). 5y (prod-audit) is net-new this PR; its own
+    # 5 pre-existing findings were remediated in the same PR that adds the gate (see 5y's comment),
+    # so it's wired in immediately rather than landing dark. Neither has another dependency
+    # relationship with integration-shard, so both are added as sibling `needs:` entries here
+    # rather than folded into that job's chain.
+    needs: [integration-shard, helm-verify, prod-audit]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Require every integration shard to have succeeded
+      - name: Require every integration shard, helm-verify, and prod-audit to have succeeded
         run: |
-          result="${{ needs.integration-shard.result }}"
-          echo "integration-shard matrix result: $result"
-          if [ "$result" != "success" ]; then
-            echo "::error::one or more integration shards did not succeed ($result)"
-            exit 1
+          shards="${{ needs.integration-shard.result }}"
+          helm="${{ needs.helm-verify.result }}"
+          audit="${{ needs.prod-audit.result }}"
+          echo "integration-shard matrix result: $shards"
+          echo "helm-verify result: $helm"
+          echo "prod-audit result: $audit"
+          failed=0
+          if [ "$shards" != "success" ]; then
+            echo "::error::one or more integration shards did not succeed ($shards)"
+            failed=1
           fi
+          if [ "$helm" != "success" ]; then
+            echo "::error::helm-verify (job 4b) did not succeed ($helm)"
+            failed=1
+          fi
+          if [ "$audit" != "success" ]; then
+            echo "::error::prod-audit (job 5y) did not succeed ($audit)"
+            failed=1
+          fi
+          exit "$failed"
 
   e2e-m0:
     name: "7. E2E (M0 golden path, main only)"

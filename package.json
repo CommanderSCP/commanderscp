@@ -15,6 +15,7 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "test:integration": "turbo run test:integration",
+    "audit": "pnpm audit --prod",
     "openapi:emit": "pnpm --filter @scp/server openapi:emit",
     "sdk:generate": "pnpm --filter @scp/sdk generate",
     "gen": "pnpm run openapi:emit && pnpm run sdk:generate",
