@@ -20,6 +20,7 @@ import { getPeerByIdOrName, pairPeer } from "./peers-repo.js";
 import { federationPeerSanUri } from "./mtls-enforcement.js";
 import { FEDERATION_SYNC_QUEUE, federationSyncOrgTick } from "./federation-sync.js";
 import { INBOX_QUEUE } from "./inbox-loop.js";
+import { AUTO_RELAY_QUEUE } from "./auto-relay.js";
 import { pokeRateLimiter } from "./poke-rate-limit.js";
 import {
   createTestCa,
@@ -45,6 +46,9 @@ import { asTrustDomainId } from "@scp/schemas";
 
 interface Recorded {
   queue: string;
+  /** The job payload, recorded only by the air-gap fixture below — asserting a wake is CONTENTLESS
+   *  needs the payload, not just the queue name. */
+  data?: unknown;
 }
 
 describe.skipIf(!opensslAvailable())(
@@ -373,203 +377,278 @@ describe("M14.2 inbound federation poke — fail-closed transport identity (mTLS
  * `retrans`, poke-mode), so the sync sweep has nothing to pull from — the tick returns an EMPTY
  * outcome list — and the inbox tick is the only thing that can move the chain forward.
  */
-describe.skipIf(!opensslAvailable())("M14.4 air-gap poke leg — the poke wakes the INBOX loop", () => {
-  let ca: TestCa;
-  let app: FastifyInstance;
-  let db: Db;
-  let pool: ReturnType<typeof createPool>;
-  let port: number;
-  let orgId: string;
-  let adminToken: string;
-  let relay: { domainId: string; leaf: TestLeafCert };
-  let sends: Recorded[] = [];
-  let previousInboxLoop: string | undefined;
-  /** Which queue's `boss.send` should THROW — models "that loop's queue does not exist on this
-   *  process" (a split topology), the case the two independent try/catches exist for. */
-  let failQueue: string | null = null;
+describe.skipIf(!opensslAvailable())(
+  "M14.4 air-gap poke leg — the poke wakes the INBOX loop",
+  () => {
+    let ca: TestCa;
+    let app: FastifyInstance;
+    let db: Db;
+    let pool: ReturnType<typeof createPool>;
+    let port: number;
+    let orgId: string;
+    let adminToken: string;
+    let relay: { domainId: string; leaf: TestLeafCert };
+    let sends: Recorded[] = [];
+    let previousInboxLoop: string | undefined;
+    let previousAutoRelay: string | undefined;
+    /** Which queue's `boss.send` should THROW — models "that loop's queue does not exist on this
+     *  process" (a split topology), the case the two independent try/catches exist for. */
+    let failQueue: string | null = null;
 
-  beforeAll(async () => {
-    // The inbox wake is sent only where the deployment actually RUNS an inbox loop — otherwise the
-    // queue does not exist and the send is pure noise (the flag is deployment-wide; the worker
-    // replica that created the queue shares it with the api replica serving this request).
-    previousInboxLoop = process.env.SCP_INBOX_LOOP;
-    process.env.SCP_INBOX_LOOP = "1";
+    beforeAll(async () => {
+      // The inbox wake is sent only where the deployment actually RUNS an inbox loop — otherwise the
+      // queue does not exist and the send is pure noise (the flag is deployment-wide; the worker
+      // replica that created the queue shares it with the api replica serving this request).
+      previousInboxLoop = process.env.SCP_INBOX_LOOP;
+      process.env.SCP_INBOX_LOOP = "1";
+      // M13.1b — same rule for the BYTE leg: the auto-relay wake is sent only where the deployment
+      // actually runs that loop. Enabled here so the third leg is under test at all.
+      previousAutoRelay = process.env.SCP_RETRANS_AUTO_RELAY;
+      process.env.SCP_RETRANS_AUTO_RELAY = "1";
 
-    ca = createTestCa();
-    const serverLeaf = issueLeafCert(ca, { name: `airgap-receiver-${randomUUID()}` });
-    const config = loadConfig({
-      DATABASE_URL: testDatabaseUrl(),
-      SCP_RUNTIME_DATABASE_URL: testRuntimeDatabaseUrl(),
-      SCP_PGBOSS_DATABASE_URL: testPgBossDatabaseUrl(),
-      SCP_COOKIE_SECRET: "test-cookie-secret-value",
-      SCP_FEDERATION_SERVER_MTLS_CA_FILE: ca.caCrtFile,
-      SCP_FEDERATION_SERVER_MTLS_CERT_FILE: serverLeaf.certFile,
-      SCP_FEDERATION_SERVER_MTLS_KEY_FILE: serverLeaf.keyFile
-    });
-    pool = createPool(config.runtimeDatabaseUrl);
-    db = createDb(pool);
-    const deps: AppDeps = { db, config };
-    deps.boss = {
-      send: async (queue: string) => {
-        if (queue === failQueue) {
-          throw new Error(`queue ${queue} does not exist on this process`);
+      ca = createTestCa();
+      const serverLeaf = issueLeafCert(ca, { name: `airgap-receiver-${randomUUID()}` });
+      const config = loadConfig({
+        DATABASE_URL: testDatabaseUrl(),
+        SCP_RUNTIME_DATABASE_URL: testRuntimeDatabaseUrl(),
+        SCP_PGBOSS_DATABASE_URL: testPgBossDatabaseUrl(),
+        SCP_COOKIE_SECRET: "test-cookie-secret-value",
+        SCP_FEDERATION_SERVER_MTLS_CA_FILE: ca.caCrtFile,
+        SCP_FEDERATION_SERVER_MTLS_CERT_FILE: serverLeaf.certFile,
+        SCP_FEDERATION_SERVER_MTLS_KEY_FILE: serverLeaf.keyFile
+      });
+      pool = createPool(config.runtimeDatabaseUrl);
+      db = createDb(pool);
+      const deps: AppDeps = { db, config };
+      deps.boss = {
+        send: async (queue: string, data?: unknown) => {
+          if (queue === failQueue) {
+            throw new Error(`queue ${queue} does not exist on this process`);
+          }
+          sends.push({ queue, data });
+          return "job-id";
         }
-        sends.push({ queue });
-        return "job-id";
-      }
-    } as unknown as PgBoss;
-    app = await buildApp(deps, { logger: false });
-    await app.ready();
-    const address = await app.listen({ port: 0, host: "127.0.0.1" });
-    port = Number(new URL(address).port);
+      } as unknown as PgBoss;
+      app = await buildApp(deps, { logger: false });
+      await app.ready();
+      const address = await app.listen({ port: 0, host: "127.0.0.1" });
+      port = Number(new URL(address).port);
 
-    const server: TestServer = { app, deps, close: async () => undefined };
-    const org = await createTestOrg(server, "airgappoke");
-    orgId = org.orgId;
-    adminToken = org.adminToken;
-    await withTenantTx(db, orgId, (tx) => ensureFederationSelf(tx, orgId));
+      const server: TestServer = { app, deps, close: async () => undefined };
+      const org = await createTestOrg(server, "airgappoke");
+      orgId = org.orgId;
+      adminToken = org.adminToken;
+      await withTenantTx(db, orgId, (tx) => ensureFederationSelf(tx, orgId));
 
-    const relayDomainId = asTrustDomainId(randomUUID());
-    relay = {
-      domainId: relayDomainId,
-      leaf: issueLeafCert(ca, {
-        name: "high-side-retrans",
-        sanUri: federationPeerSanUri(relayDomainId)
-      })
-    };
-    const { publicKey } = generateKeyPairSync("ed25519");
-    await withTenantTx(db, orgId, (tx) =>
-      pairPeer(tx, {
-        orgId,
+      const relayDomainId = asTrustDomainId(randomUUID());
+      relay = {
         domainId: relayDomainId,
-        name: "high-side-retrans",
-        // NOT a `commander` peer: the sync sweep only ever pulls from `commander`-role peers, so
-        // this instance has NOTHING to pull. Its content crosses the CDS as a file.
-        role: "retrans",
-        publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64"),
-        baseUrl: "https://localhost:1",
-        pokeMode: true
-      })
-    );
-  }, 120_000);
-
-  afterAll(async () => {
-    await app?.close();
-    await pool?.end();
-    if (previousInboxLoop === undefined) delete process.env.SCP_INBOX_LOOP;
-    else process.env.SCP_INBOX_LOOP = previousInboxLoop;
-  });
-
-  beforeEach(() => {
-    sends = [];
-    failQueue = null;
-    pokeRateLimiter.reset();
-  });
-
-  /** One mTLS poke from the enrolled high-side retrans. */
-  async function poke(): Promise<{ status: number; json: Record<string, unknown> | undefined }> {
-    return new Promise((resolve, reject) => {
-      const req = https.request(
-        {
-          hostname: "127.0.0.1",
-          port,
-          path: "/api/v1/federation/poke",
-          method: "POST",
-          ca: ca.caCrtPem,
-          cert: relay.leaf.certPem,
-          key: relay.leaf.keyPem,
-          rejectUnauthorized: false,
-          agent: false,
-          headers: { authorization: `Bearer ${adminToken}` }
-        },
-        (r) => {
-          let raw = "";
-          r.on("data", (chunk: Buffer) => (raw += chunk.toString("utf8")));
-          r.on("end", () =>
-            resolve({ status: r.statusCode ?? 0, json: raw ? JSON.parse(raw) : undefined })
-          );
-        }
+        leaf: issueLeafCert(ca, {
+          name: "high-side-retrans",
+          sanUri: federationPeerSanUri(relayDomainId)
+        })
+      };
+      const { publicKey } = generateKeyPairSync("ed25519");
+      await withTenantTx(db, orgId, (tx) =>
+        pairPeer(tx, {
+          orgId,
+          domainId: relayDomainId,
+          name: "high-side-retrans",
+          // NOT a `commander` peer: the sync sweep only ever pulls from `commander`-role peers, so
+          // this instance has NOTHING to pull. Its content crosses the CDS as a file.
+          role: "retrans",
+          publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64"),
+          baseUrl: "https://localhost:1",
+          pokeMode: true
+        })
       );
-      req.on("error", reject);
-      req.end();
+    }, 120_000);
+
+    afterAll(async () => {
+      await app?.close();
+      await pool?.end();
+      if (previousInboxLoop === undefined) delete process.env.SCP_INBOX_LOOP;
+      else process.env.SCP_INBOX_LOOP = previousInboxLoop;
+      if (previousAutoRelay === undefined) delete process.env.SCP_RETRANS_AUTO_RELAY;
+      else process.env.SCP_RETRANS_AUTO_RELAY = previousAutoRelay;
+    });
+
+    beforeEach(() => {
+      sends = [];
+      failQueue = null;
+      pokeRateLimiter.reset();
+    });
+
+    /** One mTLS poke from the enrolled high-side retrans. */
+    async function poke(): Promise<{ status: number; json: Record<string, unknown> | undefined }> {
+      return new Promise((resolve, reject) => {
+        const req = https.request(
+          {
+            hostname: "127.0.0.1",
+            port,
+            path: "/api/v1/federation/poke",
+            method: "POST",
+            ca: ca.caCrtPem,
+            cert: relay.leaf.certPem,
+            key: relay.leaf.keyPem,
+            rejectUnauthorized: false,
+            agent: false,
+            headers: { authorization: `Bearer ${adminToken}` }
+          },
+          (r) => {
+            let raw = "";
+            r.on("data", (chunk: Buffer) => (raw += chunk.toString("utf8")));
+            r.on("end", () =>
+              resolve({ status: r.statusCode ?? 0, json: raw ? JSON.parse(raw) : undefined })
+            );
+          }
+        );
+        req.on("error", reject);
+        req.end();
+      });
+    }
+
+    it("the sync sweep alone would do NOTHING here (no role:commander peer to pull from)", async () => {
+      const outcomes = await federationSyncOrgTick(db, orgId, { env: {}, mtls: null });
+      expect(outcomes).toEqual([]);
+    });
+
+    it("a poke enqueues an INBOX tick as well as the sync tick, and still returns 202", async () => {
+      const res = await new Promise<{ status: number; json: unknown }>((resolve, reject) => {
+        const req = https.request(
+          {
+            hostname: "127.0.0.1",
+            port,
+            path: "/api/v1/federation/poke",
+            method: "POST",
+            ca: ca.caCrtPem,
+            cert: relay.leaf.certPem,
+            key: relay.leaf.keyPem,
+            rejectUnauthorized: false,
+            agent: false,
+            headers: { authorization: `Bearer ${adminToken}` }
+          },
+          (r) => {
+            let raw = "";
+            r.on("data", (chunk: Buffer) => (raw += chunk.toString("utf8")));
+            r.on("end", () =>
+              resolve({ status: r.statusCode ?? 0, json: raw ? JSON.parse(raw) : undefined })
+            );
+          }
+        );
+        req.on("error", reject);
+        req.end();
+      });
+
+      expect(res.status).toBe(202);
+      expect(res.json).toMatchObject({ accepted: true });
+      // BOTH loops woken, each behind its own try/catch — the air-gap leg is the INBOX one.
+      const queues = sends.map((s) => s.queue);
+      expect(queues).toContain(INBOX_QUEUE);
+      expect(queues).toContain(FEDERATION_SYNC_QUEUE);
+    });
+
+    /**
+     * N3 — THE TWO INDEPENDENT TRY/CATCHES, ACTUALLY EXERCISED. Every other test here injects a
+     * recording boss whose `send` always succeeds, so the isolation between the two wakes was only
+     * correct BY INSPECTION. A real split topology is precisely the case where one queue does not
+     * exist on the process serving the request, and a `boss.send` for it THROWS.
+     */
+    it("N3: when the SYNC queue's send throws, the poke is still accepted and the AIR-GAP (inbox) leg still fires", async () => {
+      failQueue = FEDERATION_SYNC_QUEUE;
+      const res = await poke();
+
+      expect(res.status).toBe(202);
+      // The other legs are unaffected — one failing wake never aborts the handler. (The auto-relay
+      // queue joined this list in M13.1b; the sync leg is the only one suppressed here.)
+      expect(sends.map((s) => s.queue)).toEqual([INBOX_QUEUE, AUTO_RELAY_QUEUE]);
+      // …and `woken` reports the leg that ACTUALLY fired. On a pure air-gap outpost the sync queue is
+      // absent by construction, so keying `woken` on the sync wake alone reported `false` for a poke
+      // that had just successfully woken the very leg M14.4 added.
+      expect(res.json).toMatchObject({
+        accepted: true,
+        woken: true,
+        wokenSync: false,
+        wokenInbox: true
+      });
+    });
+
+    it("N3: when the INBOX queue's send throws, the poke is still accepted and the SYNC leg still fires", async () => {
+      failQueue = INBOX_QUEUE;
+      const res = await poke();
+
+      expect(res.status).toBe(202);
+      expect(sends.map((s) => s.queue)).toEqual([FEDERATION_SYNC_QUEUE, AUTO_RELAY_QUEUE]);
+      expect(res.json).toMatchObject({
+        accepted: true,
+        woken: true,
+        wokenSync: true,
+        wokenInbox: false
+      });
+    });
+
+    /**
+     * M13.1b — THE BYTE LEG. Legs 1 and 2 move METADATA: a poke landing on a retrans woke the import
+     * of the arriving `.scpbundle` and then waited for a human to run the byte hop (M14.4's
+     * honest-scope note, owner decision D3). This third leg is what makes the ADR-0009 chain move
+     * BYTES, and "a poke triggers an immediate cycle" is half of M13.1b's own DoD — so it is asserted
+     * here rather than left correct-by-inspection, exactly as the inbox leg was.
+     *
+     * Asserted on the QUEUE the wake actually landed on, not on the response alone: `wokenRelay` is a
+     * boolean the handler sets, so a regression that dropped the `boss.send` while leaving the flag
+     * would keep the response green and move nothing.
+     */
+    it("M13.1b: a poke wakes the AUTO-RELAY queue too — the leg that makes the chain move bytes, not just metadata", async () => {
+      const res = await poke();
+
+      expect(res.status).toBe(202);
+      expect(sends.map((s) => s.queue)).toContain(AUTO_RELAY_QUEUE);
+      // Contentless: WHICH promotions are owed is discovered by the sweep, exactly as on an interval
+      // tick. The reason is a routing marker (it suppresses the re-schedule), never content.
+      const relayWake = sends.find((s) => s.queue === AUTO_RELAY_QUEUE);
+      expect(relayWake?.data).toEqual({ reason: "poke" });
+      expect(res.json).toMatchObject({
+        accepted: true,
+        woken: true,
+        wokenSync: true,
+        wokenInbox: true,
+        wokenRelay: true
+      });
+    });
+
+    it("M13.1b: when the AUTO-RELAY queue's send throws, the poke is still accepted and BOTH metadata legs still fire", async () => {
+      failQueue = AUTO_RELAY_QUEUE;
+      const res = await poke();
+
+      expect(res.status).toBe(202);
+      expect(sends.map((s) => s.queue)).toEqual([FEDERATION_SYNC_QUEUE, INBOX_QUEUE]);
+      expect(res.json).toMatchObject({
+        accepted: true,
+        woken: true,
+        wokenSync: true,
+        wokenInbox: true,
+        wokenRelay: false
+      });
+    });
+
+    /**
+     * The gate on the byte leg, proven the same way the inbox leg's is: an instance that never opted
+     * into unattended byte egress must not even have its queue poked. `startAutoRelayLoop` never
+     * creates that queue when the flag is unset, so a send would be pure noise — but more to the
+     * point, "a poke can reach it" is exactly the property the default-off consent denies.
+     */
+    it("M13.1b: with SCP_RETRANS_AUTO_RELAY unset, a poke does NOT touch the auto-relay queue", async () => {
+      const previous = process.env.SCP_RETRANS_AUTO_RELAY;
+      delete process.env.SCP_RETRANS_AUTO_RELAY;
+      try {
+        const res = await poke();
+        expect(res.status).toBe(202);
+        expect(sends.map((s) => s.queue)).not.toContain(AUTO_RELAY_QUEUE);
+        expect(res.json).toMatchObject({ accepted: true, woken: true, wokenRelay: false });
+      } finally {
+        if (previous === undefined) delete process.env.SCP_RETRANS_AUTO_RELAY;
+        else process.env.SCP_RETRANS_AUTO_RELAY = previous;
+      }
     });
   }
-
-  it("the sync sweep alone would do NOTHING here (no role:commander peer to pull from)", async () => {
-    const outcomes = await federationSyncOrgTick(db, orgId, { env: {}, mtls: null });
-    expect(outcomes).toEqual([]);
-  });
-
-  it("a poke enqueues an INBOX tick as well as the sync tick, and still returns 202", async () => {
-    const res = await new Promise<{ status: number; json: unknown }>((resolve, reject) => {
-      const req = https.request(
-        {
-          hostname: "127.0.0.1",
-          port,
-          path: "/api/v1/federation/poke",
-          method: "POST",
-          ca: ca.caCrtPem,
-          cert: relay.leaf.certPem,
-          key: relay.leaf.keyPem,
-          rejectUnauthorized: false,
-          agent: false,
-          headers: { authorization: `Bearer ${adminToken}` }
-        },
-        (r) => {
-          let raw = "";
-          r.on("data", (chunk: Buffer) => (raw += chunk.toString("utf8")));
-          r.on("end", () =>
-            resolve({ status: r.statusCode ?? 0, json: raw ? JSON.parse(raw) : undefined })
-          );
-        }
-      );
-      req.on("error", reject);
-      req.end();
-    });
-
-    expect(res.status).toBe(202);
-    expect(res.json).toMatchObject({ accepted: true });
-    // BOTH loops woken, each behind its own try/catch — the air-gap leg is the INBOX one.
-    const queues = sends.map((s) => s.queue);
-    expect(queues).toContain(INBOX_QUEUE);
-    expect(queues).toContain(FEDERATION_SYNC_QUEUE);
-  });
-
-  /**
-   * N3 — THE TWO INDEPENDENT TRY/CATCHES, ACTUALLY EXERCISED. Every other test here injects a
-   * recording boss whose `send` always succeeds, so the isolation between the two wakes was only
-   * correct BY INSPECTION. A real split topology is precisely the case where one queue does not
-   * exist on the process serving the request, and a `boss.send` for it THROWS.
-   */
-  it("N3: when the SYNC queue's send throws, the poke is still accepted and the AIR-GAP (inbox) leg still fires", async () => {
-    failQueue = FEDERATION_SYNC_QUEUE;
-    const res = await poke();
-
-    expect(res.status).toBe(202);
-    // The other leg is unaffected — one failing wake never aborts the handler…
-    expect(sends.map((s) => s.queue)).toEqual([INBOX_QUEUE]);
-    // …and `woken` reports the leg that ACTUALLY fired. On a pure air-gap outpost the sync queue is
-    // absent by construction, so keying `woken` on the sync wake alone reported `false` for a poke
-    // that had just successfully woken the very leg M14.4 added.
-    expect(res.json).toMatchObject({
-      accepted: true,
-      woken: true,
-      wokenSync: false,
-      wokenInbox: true
-    });
-  });
-
-  it("N3: when the INBOX queue's send throws, the poke is still accepted and the SYNC leg still fires", async () => {
-    failQueue = INBOX_QUEUE;
-    const res = await poke();
-
-    expect(res.status).toBe(202);
-    expect(sends.map((s) => s.queue)).toEqual([FEDERATION_SYNC_QUEUE]);
-    expect(res.json).toMatchObject({
-      accepted: true,
-      woken: true,
-      wokenSync: true,
-      wokenInbox: false
-    });
-  });
-});
+);

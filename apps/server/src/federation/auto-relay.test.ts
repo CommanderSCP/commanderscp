@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
+import type PgBoss from "pg-boss";
+import type { Db } from "../db/client.js";
 import {
   AUTO_RELAY_POKE_REASON,
   AUTO_RELAY_QUEUE,
@@ -7,7 +9,9 @@ import {
   autoRelayIntervalSeconds,
   autoRelayLeaseSeconds,
   autoRelayMaxAttempts,
-  startAutoRelayLoop
+  startAutoRelayLoop,
+  wakeAutoRelayNow,
+  type AutoRelayJobData
 } from "./auto-relay.js";
 
 /**
@@ -151,5 +155,128 @@ describe("M13.1b auto-relay config", () => {
     // landing in a different pg-boss singleton slot leaves two pending interval ticks).
     expect(AUTO_RELAY_POKE_REASON).toBe("poke");
     expect(AUTO_RELAY_POKE_REASON).not.toBe(undefined);
+  });
+});
+
+/**
+ * M13.1b — THE RE-SCHEDULE MATRIX, the M14.4 rule applied to this loop (its sibling proof for the
+ * sync loop is `federation-sync-cadence.test.ts`'s "force vs. reschedule are two flags").
+ *
+ * WHY IT MATTERS HERE. pg-boss computes a singleton slot from `now()` AT INSERT, so a poke wake
+ * landing in a different slot than the already-pending interval tick is NOT deduped. If a poke tick
+ * re-scheduled, every poke would leave a second pending interval job and the "reliable floor" would
+ * quietly densify — at a CDS boundary, where each tick can pull GBs through skopeo. And the inverse
+ * regression is worse and completely silent: if an INTERVAL tick stopped re-scheduling, the
+ * self-rescheduling chain dies at the first tick and the boundary stalls forever with no error
+ * anywhere. Both directions have to be pinned, which is why this is a matrix and not one case.
+ *
+ * The batch cases exist because the keying is "the batch contains a NON-POKE job", not "no poke is
+ * present": pg-boss 10.4.2 defaults `batchSize` to 1, so a mixed batch is hardening rather than a
+ * live bug — but a future `batchSize > 1` would otherwise let one poke consume the pending interval
+ * job AND suppress its re-schedule, permanently killing the chain until a process restart.
+ */
+describe("M13.1b auto-relay loop — force vs. re-schedule", () => {
+  /** A db whose org list is empty, so the sweep is a no-op and only SCHEDULING is under test. */
+  const emptyDb = { select: () => ({ from: async () => [] }) } as unknown as Db;
+
+  type Sent = { queue: string; data: AutoRelayJobData; options?: unknown };
+
+  async function startLoop() {
+    const previous = process.env.SCP_RETRANS_AUTO_RELAY;
+    process.env.SCP_RETRANS_AUTO_RELAY = "1"; // DEFAULT-OFF without this.
+    try {
+      const sends: Sent[] = [];
+      let handler: ((jobs: { data?: AutoRelayJobData }[]) => Promise<void>) | undefined;
+      const boss = {
+        createQueue: async () => undefined,
+        work: async (_q: string, h: (jobs: { data?: AutoRelayJobData }[]) => Promise<void>) => {
+          handler = h;
+          return "worker-id";
+        },
+        send: async (queue: string, data: AutoRelayJobData, options?: unknown) => {
+          sends.push({ queue, data, options });
+          return "job-id";
+        }
+      } as unknown as PgBoss;
+      const handle = await startAutoRelayLoop(boss, emptyDb, Buffer.alloc(32));
+      return { sends, handle, boss, run: (jobs: { data?: AutoRelayJobData }[]) => handler!(jobs) };
+    } finally {
+      if (previous === undefined) delete process.env.SCP_RETRANS_AUTO_RELAY;
+      else process.env.SCP_RETRANS_AUTO_RELAY = previous;
+    }
+  }
+
+  /** Did the handler re-schedule? The re-schedule is the only send carrying a `singletonKey`. */
+  function rescheduled(sends: Sent[]): number {
+    return sends.filter(
+      (s) => (s.options as { singletonKey?: string } | undefined)?.singletonKey === "tick"
+    ).length;
+  }
+
+  it("an INTERVAL tick re-schedules — this is the self-rescheduling chain, and the reliable floor", async () => {
+    const { sends, run, handle } = await startLoop();
+    sends.length = 0;
+    await run([{ data: {} }]);
+    expect(rescheduled(sends)).toBe(1);
+    await handle.stop();
+  });
+
+  it("a POKE tick does NOT re-schedule — it rides alongside the still-pending interval job", async () => {
+    const { sends, run, handle } = await startLoop();
+    sends.length = 0;
+    await run([{ data: { reason: AUTO_RELAY_POKE_REASON } }]);
+    expect(rescheduled(sends)).toBe(0);
+    await handle.stop();
+  });
+
+  it("a MIXED batch re-schedules — one poke can never consume the interval job and kill the chain", async () => {
+    const { sends, run, handle } = await startLoop();
+    sends.length = 0;
+    await run([{ data: { reason: AUTO_RELAY_POKE_REASON } }, { data: {} }]);
+    expect(rescheduled(sends)).toBe(1);
+    await handle.stop();
+  });
+
+  it("an EMPTY batch re-schedules — a delivery that carries no job must not silently end the chain", async () => {
+    const { sends, run, handle } = await startLoop();
+    sends.length = 0;
+    await run([]);
+    expect(rescheduled(sends)).toBe(1);
+    await handle.stop();
+  });
+
+  it("the re-scheduled tick carries the LIVE interval, not an import-frozen constant", async () => {
+    const previous = process.env.SCP_RETRANS_AUTO_RELAY_INTERVAL_SECONDS;
+    process.env.SCP_RETRANS_AUTO_RELAY_INTERVAL_SECONDS = "123";
+    try {
+      const { sends, run, handle } = await startLoop();
+      sends.length = 0;
+      await run([{ data: {} }]);
+      const tick = sends.find(
+        (s) => (s.options as { singletonKey?: string } | undefined)?.singletonKey === "tick"
+      );
+      expect(tick?.options).toMatchObject({ startAfter: 123, singletonSeconds: 123 });
+      await handle.stop();
+    } finally {
+      if (previous === undefined) delete process.env.SCP_RETRANS_AUTO_RELAY_INTERVAL_SECONDS;
+      else process.env.SCP_RETRANS_AUTO_RELAY_INTERVAL_SECONDS = previous;
+    }
+  });
+
+  it("wakeAutoRelayNow sends an IMMEDIATE, non-singleton job — a queued interval tick must never swallow a wake", async () => {
+    const sends: Sent[] = [];
+    const boss = {
+      send: async (queue: string, data: AutoRelayJobData, options?: unknown) => {
+        sends.push({ queue, data, options });
+        return "job-id";
+      }
+    } as unknown as PgBoss;
+    await wakeAutoRelayNow(boss);
+    expect(sends).toHaveLength(1);
+    expect(sends[0]!.queue).toBe(AUTO_RELAY_QUEUE);
+    expect(sends[0]!.data).toEqual({ reason: AUTO_RELAY_POKE_REASON });
+    // No singletonKey and no startAfter: a wake deduped into the pending interval slot would be a
+    // poke that does nothing, which is precisely the latency the poke chain exists to remove.
+    expect(sends[0]!.options).toBeUndefined();
   });
 });
