@@ -37,9 +37,14 @@ export class ScpApiError extends Error {
  * a well-formed claimant list reads as `null` (present the plain `detail`) rather than as an empty
  * preview, which would tell the operator "nothing claims this peer" — the one thing a stale-claimant
  * refusal never means.
+ *
+ * `claimants` is OPTIONAL on the schema (R1, PR #156 residual) — a 412 this route has never
+ * actually thrown yet, but could, carries no extension at all. `?? null` folds that case into the
+ * same "no preview to render" answer a schema mismatch gets, for the same reason: an absent list is
+ * not an empty one.
  */
 export function reconcileStaleClaimants(err: unknown): OutpostConfig[] | null {
   if (!(err instanceof ScpApiError) || err.status !== 412) return null;
   const parsed = OutpostReconcileStaleProblemSchema.safeParse(err.problem);
-  return parsed.success ? parsed.data.claimants : null;
+  return parsed.success ? (parsed.data.claimants ?? null) : null;
 }

@@ -892,10 +892,30 @@ export function OutpostConfigurationSection({
     await queryClient.invalidateQueries({ queryKey: federationStatusKey() });
   };
 
+  /**
+   * THE SAME PREMISE THE RECONCILE MUTATION ATTACHES, ON THIS PANEL'S OTHER WRITE DOOR (R2, PR
+   * #156 residual). The operator reads a tier off `config` and edits it — a prediction from the
+   * row on screen, exactly like reconcile's claimant preview — but until this fix the call carried
+   * no `expectedVersion`, so a concurrent edit (another operator, or this same peer's `keep`
+   * reconcile) was silently overwritten: `updateObject` has always accepted the precondition
+   * (`packages/schemas/src/federation.ts`'s `UpdateOutpostConfigRequestSchema`), the PATCH route
+   * has always declared its 412, and NOTHING on the write path needed to change — only this call
+   * site was leaving its premise unstated. `config.version` is read from the same query result the
+   * rendered form derives from, so the request cannot be checked against a different world than
+   * the one on screen.
+   */
   const tierMutation = useMutation({
-    mutationFn: (tier: OutpostTrustTier) =>
-      client.federation.updateOutpost(peerDomainId, { trustTier: tier }),
-    onSuccess: invalidate
+    mutationFn: (input: { tier: OutpostTrustTier; expectedVersion: number }) =>
+      client.federation.updateOutpost(peerDomainId, {
+        trustTier: input.tier,
+        expectedVersion: input.expectedVersion
+      }),
+    onSuccess: invalidate,
+    // Mirrors reconcile's onError: a 412 means the row on screen is stale, so refetch it rather
+    // than leaving the operator staring at the version they just tried (and failed) to overwrite.
+    onError: (err: unknown) => {
+      if (err instanceof ScpApiError && err.status === 412) void invalidate();
+    }
   });
   const createMutation = useMutation({
     mutationFn: (tier: OutpostTrustTier | undefined) =>
@@ -978,7 +998,7 @@ export function OutpostConfigurationSection({
             ownDomainId={ownDomainId}
             saveError={tierMutation.error}
             isSaving={tierMutation.isPending}
-            onSave={(tier) => tierMutation.mutate(tier)}
+            onSave={(tier) => tierMutation.mutate({ tier, expectedVersion: config.version })}
             onReconcile={() => reconcileMutation.mutate(undefined)}
           />
         )}
