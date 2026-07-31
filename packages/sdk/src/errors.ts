@@ -47,6 +47,8 @@ export function reconcileStaleClaimants(err: unknown): OutpostConfig[] | null {
   if (!(err instanceof ScpApiError) || err.status !== 412) return null;
   const parsed = OutpostReconcileStaleProblemSchema.safeParse(err.problem);
   return parsed.success ? (parsed.data.claimants ?? null) : null;
+}
+
 /** One field of a 2xx response body that did not match the OpenAPI contract. */
 export interface ResponseValidationIssue {
   /** Dot/index path INSIDE the response body, e.g. `peers.0.syncScope`. `<root>` for the body itself. */
