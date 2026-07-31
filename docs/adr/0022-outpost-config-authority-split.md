@@ -153,6 +153,24 @@ the whole design.
   unverified shadow removal is a silent local cleanup nothing downstream ever sees, while a locally
   authored removal is this domain's own declared config being deleted and propagated — an operator (and
   the CLI's `reconcile` output) must be able to tell the two apart.
+- **`?ifClaimant=<objectId>:<version>` (added after acceptance) makes a STALE reconcile a refusal
+  instead of a silent divergence.** Both of the arms above derive their outcome from the claimant set as
+  it is *inside the write transaction*, while the caller chose from a set it read earlier. When those
+  disagree the failure is silent in **both directions**: the default call re-derives the survivor, so a
+  locally-authored row that appeared since the preview outranks an unverified shadow and the operator's
+  entered config is **dropped** with a 200; naming that shadow with `?keep=` instead makes the concurrent
+  locally-authored row surplus, and removing it is the **journaled tombstone that propagates to the
+  outpost** described above — a delete the operator never saw. The optional, repeatable token names the
+  claimants the caller previewed and is compared as an order-insensitive set before anything is written;
+  a mismatch is **412 Precondition Failed** carrying the fresh claimant list as an RFC 9457 extension
+  member, so the caller re-previews without a second read and without a second window. `(objectId,
+  version)` rather than ids alone because a shadow **adopted in place** keeps its id — only `version`
+  (bumped unconditionally by every writer that can restamp `originDomainId` or clear `provenance`)
+  detects it; `revision` cannot, being author-assigned on the import path. **412, not a second 409:** the
+  409 on this route is the authority conflict and is permanent until the operator chooses differently,
+  while staleness is transient and retryable after a re-preview. An **omitted** token proceeds unchecked
+  — forced by `/v1` additivity and correct as a protocol default, but not a licence for a client to omit
+  it: the UI and `scp federation outpost reconcile` both send one unless explicitly told not to.
 - **Open, and a docs-first question, not a schema one:** `fedramp-high` carries a hyphen, so it is not
   usable as a stage `<domain>` **segment** under the glossary's hyphen-free segment rule (which
   disambiguates stage names by segment count). Naming a stage in that security domain needs an
