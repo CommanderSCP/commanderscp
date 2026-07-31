@@ -67,6 +67,24 @@ Nothing in `apps/web/src` or `packages/cli/src` deep-imports `generated/`; both 
 - the CLI's top-level handler (`packages/cli/src/bin.ts`) prints one formatted line and exits 1;
 - the web's react-query (`retry: false`) turns it into a **query error state**, not a render-time crash — strictly better than today's `TypeError`, which unmounts the tree.
 
+### 5. What it caught immediately
+
+On its **first CI run** the boundary rejected a live contract violation that had been shipping since M1 — and that no call-site census could have found, because the field was not merely absent under skew, it was never sent at all.
+
+Fastify prefers a literal static route over a parametric one, so `POST/GET /api/v1/objects/service` (the M0 route) is the only handler that ever runs for that exact path. The SDK has no idea: `client.object(type)` calls the **generic** `createObject`/`listObjects` operations for every type, `service` included, and those declare a full `GraphObject` response. The M0 handler returned a five-field subset. Net effect:
+
+```ts
+const svc = await client.object("service").create({ name: "billing" });
+svc.urn        // typed `string`; `undefined` at runtime, always
+svc.typeId     // ditto — and .domainId, .properties, .labels, .version, .revision, …
+```
+
+`objects-service.ts`'s own module doc already stated the rule this broke — the static route "must carry full parity …, not a stripped subset". It carried parity on the *request* side only, and nothing checked the other half.
+
+Fixed by widening `ServiceObjectSchema` to `GraphObjectSchema.extend({ type: "service" })` — additive within `/v1` (properties added, none removed or renamed, M0's `type` kept; confirmed with the vendored oasdiff) and free at runtime, since the row underneath was always a plain `service`-typed graph object.
+
+A mechanical census over the emitted spec — for every parametric path, every literal path that shadows it on a shared method — reports **exactly one** such pair in the whole API. `apps/server/src/routes/objects-service-shadowing.integration.test.ts` pins that set, so a future shadowing route fails there with the pair named rather than quietly inheriting a contract nobody checked.
+
 ## Rejected alternatives
 
 **Ship the census as the bound.** This is what the previous seven attempts did. A census is a snapshot: it fixes the instances present on the day it is run and leaves nothing behind that stops the next one. Four review rounds is the measurement of its half-life. Rejected on evidence, not taste.
@@ -108,4 +126,14 @@ Runtime cost, measured: schemas construct once at module load; a passing parse o
 5. a well-formed response is returned **untouched**, including a field the SDK does not know about;
 6. an RFC 9457 problem response is still an `ScpApiError`.
 
-Mutation-proven three ways — removing the generator's `validator: { response: "zod" }`, the interceptor registration, or the `unwrap()` rethrow branch each turns 4 of the 6 tests red.
+Mutation-proven three ways — each mutation was actually applied and the run watched:
+
+| Mutation | Result |
+|---|---|
+| strip all 204 `responseValidator:` lines from `sdk.gen.ts` (i.e. as if `validator: { response: "zod" }` were never set) | tests 1–4 red, 5–6 green |
+| skip `installResponseValidationErrors(this.client)` in `ScpClient` | tests 1–4 red, 5–6 green |
+| delete the `ScpResponseValidationError` rethrow branch from `unwrap()`/`unwrapVoid()` | tests 1–4 red, 5–6 green |
+
+Tests 5–6 staying green under every mutation is itself the point: they assert the paths validation must *not* change.
+
+`apps/server/src/routes/objects-service-shadowing.integration.test.ts` covers the shadowing violation of §5 end to end against real Postgres, through the real SDK. It is mutation-proven the same way: restoring `toServiceObject`'s five-field return turns 3 of its 4 cases red, the SDK-driven ones with `ScpResponseValidationError`.
