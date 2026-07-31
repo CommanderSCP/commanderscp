@@ -648,10 +648,10 @@ export function ReconcileOutcome({
         </p>
       )}
       {removedShadows.length === 0 && removedLocal.length === 0 && adopted === null && (
-        <p className="mt-2 text-slate-600" data-testid="reconcile-removed-none">
-          Nothing needed removing.
-        </p>
-      )}
+          <p className="mt-2 text-slate-600" data-testid="reconcile-removed-none">
+            Nothing needed removing.
+          </p>
+        )}
     </div>
   );
 }
@@ -839,8 +839,8 @@ export function ReconcilePanel({
         </div>
       ) : (
         <p className="text-sm text-slate-600" data-testid="reconcile-default-indeterminate">
-          <strong>No default is offered for this conflict.</strong> Either two of these rows hold
-          the same authority — the server breaks that tie by creation order, so this side cannot say
+          <strong>No default is offered for this conflict.</strong> Either two of these rows hold the
+          same authority — the server breaks that tie by creation order, so this side cannot say
           which would survive and will not preview a guess — or reconciling would drop configuration
           this domain authored, whose removal <strong>propagates to the outpost</strong>. Choose the
           row that should survive above, where the consequence is stated per row.
