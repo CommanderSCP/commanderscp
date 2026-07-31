@@ -56,7 +56,12 @@ function boardPayload(service: StubComponent, driven: StubComponent, replica: St
           emergency: false
         },
         activeFreeze: null,
-        driver: null,
+        // `driver: null` means NO latest change to attribute to anyone, not "this domain drives
+        // it" (fix(web) "qualify data-driven-here", src/routes/service-board.tsx) — that renders
+        // "none", the third of three states. This row is genuinely locally-driven, so it needs an
+        // explicit driver object to assert `data-driven-here="true"` (mirrors the `locallyDriven`
+        // fixture in src/routes/service-board-honesty.test.tsx).
+        driver: { drivenHere: true, originDomainId: null },
         // Nothing declared unknown: these empties ARE observations.
         unknownFields: []
       },
