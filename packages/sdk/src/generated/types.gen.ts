@@ -15024,7 +15024,7 @@ export type ReconcileOutpostConfigErrors = {
         detail?: string;
         instance?: string;
         decision_id?: string;
-        claimants: Array<{
+        claimants?: Array<{
             objectId: string;
             urn: string;
             name: string;

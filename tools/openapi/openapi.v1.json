@@ -58588,8 +58588,7 @@
                   "required": [
                     "type",
                     "title",
-                    "status",
-                    "claimants"
+                    "status"
                   ],
                   "additionalProperties": false
                 }
