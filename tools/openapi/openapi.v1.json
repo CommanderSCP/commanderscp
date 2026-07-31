@@ -55817,6 +55817,9 @@
                     },
                     "wokenInbox": {
                       "type": "boolean"
+                    },
+                    "wokenRelay": {
+                      "type": "boolean"
                     }
                   },
                   "required": [

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { DeliveryTargetSchema } from "@scp/schemas";
+import { asTrustDomainId } from "@scp/schemas";
 import {
   assertDeliveryTargetRooted,
   dropDeliveryFile,
@@ -14,7 +15,9 @@ import {
   parseDeliveryS3Endpoints,
   requireInboundDir,
   requireOutboundDir,
-  resolveDeliveryTarget
+  resolveDeliveryTarget,
+  resolveOnwardDeliveryDir,
+  type OnwardDeliveryPeerRef
 } from "./delivery-target.js";
 import { deliveryTargetSecretKey, parseDeliveryS3Credential } from "./retrans-relay.js";
 
@@ -36,8 +39,10 @@ afterAll(async () => {
   await Promise.all(tempDirs.map((d) => rm(d, { recursive: true, force: true })));
 });
 
-const fsTarget = (dirs: { outDir?: string; inDir?: string }) =>
-  ({ provider: "filesystem" as const, ...dirs });
+const fsTarget = (dirs: { outDir?: string; inDir?: string }) => ({
+  provider: "filesystem" as const,
+  ...dirs
+});
 
 /** ProblemError puts the human text in `.detail` (`.message` is the RFC 9457 title). */
 function problemDetail(fn: () => unknown): string {
@@ -143,7 +148,10 @@ describe("DeliveryTargetSchema — config-time validation (the same predicate, a
 });
 
 describe("SCP_DELIVERY_ROOTS — the operator root bound on per-peer dirs (#110 pattern)", () => {
-  const rootedPeer = (dir: string) => ({ name: "tenant", deliveryTarget: fsTarget({ outDir: dir }) });
+  const rootedPeer = (dir: string) => ({
+    name: "tenant",
+    deliveryTarget: fsTarget({ outDir: dir })
+  });
 
   it("parseDeliveryRoots: comma/colon-separated absolutes, normalized; non-absolute dropped", () => {
     expect(parseDeliveryRoots("/a,/b:/c")).toEqual(["/a", "/b", "/c"]);
@@ -188,7 +196,11 @@ describe("SCP_DELIVERY_ROOTS — the operator root bound on per-peer dirs (#110 
   });
 
   it("UNSET roots + a per-peer dir => FAIL-CLOSED (the honest multi-tenant default)", () => {
-    const view = resolveDeliveryTarget(rootedPeer("/anywhere/writable"), { outDir: "/env/out" }, []);
+    const view = resolveDeliveryTarget(
+      rootedPeer("/anywhere/writable"),
+      { outDir: "/env/out" },
+      []
+    );
     expect(view.valid).toBe(false);
     expect(view.outbound.dir).toBeNull();
     expect(view.outbound.problem).toContain("no operator delivery roots are declared");
@@ -214,21 +226,25 @@ describe("SCP_DELIVERY_ROOTS — the operator root bound on per-peer dirs (#110 
     });
 
     it("refuses an out-of-root dir at pair time (never stored)", () => {
-      expect(problemDetail(() =>
-        assertDeliveryTargetRooted(fsTarget({ inDir: "/etc/victim-in" }), ["/roots"])
-      )).toContain("outside every operator-declared delivery root");
+      expect(
+        problemDetail(() =>
+          assertDeliveryTargetRooted(fsTarget({ inDir: "/etc/victim-in" }), ["/roots"])
+        )
+      ).toContain("outside every operator-declared delivery root");
     });
 
     it("refuses the /root-evil prefix trick at pair time", () => {
-      expect(problemDetail(() =>
-        assertDeliveryTargetRooted(fsTarget({ outDir: "/root-evil/out" }), ["/root"])
-      )).toContain("outside every operator-declared delivery root");
+      expect(
+        problemDetail(() =>
+          assertDeliveryTargetRooted(fsTarget({ outDir: "/root-evil/out" }), ["/root"])
+        )
+      ).toContain("outside every operator-declared delivery root");
     });
 
     it("UNSET roots + a per-peer dir => refused at pair time (fail-closed default)", () => {
-      expect(problemDetail(() =>
-        assertDeliveryTargetRooted(fsTarget({ outDir: "/somewhere" }), [])
-      )).toContain("no operator delivery roots are declared");
+      expect(
+        problemDetail(() => assertDeliveryTargetRooted(fsTarget({ outDir: "/somewhere" }), []))
+      ).toContain("no operator delivery roots are declared");
     });
   });
 });
@@ -307,7 +323,12 @@ const s3Target = (t: {
   inPrefix?: string;
 }) => ({ provider: "s3-compatible" as const, ...t });
 
-const s3Peer = (t: { endpoint: string; bucket: string; outPrefix?: string; inPrefix?: string }) => ({
+const s3Peer = (t: {
+  endpoint: string;
+  bucket: string;
+  outPrefix?: string;
+  inPrefix?: string;
+}) => ({
   name: "s3-tenant",
   deliveryTarget: s3Target(t)
 });
@@ -365,8 +386,16 @@ describe("resolveDeliveryTarget — s3-compatible (allowlist-gated, fail-closed)
     );
     expect(view.provider).toBe("s3-compatible");
     expect(view.valid).toBe(true);
-    expect(view.outboundS3).toEqual({ endpoint: "https://minio:9000", bucket: "drop", prefix: "out/" });
-    expect(view.inboundS3).toEqual({ endpoint: "https://minio:9000", bucket: "drop", prefix: "in/" });
+    expect(view.outboundS3).toEqual({
+      endpoint: "https://minio:9000",
+      bucket: "drop",
+      prefix: "out/"
+    });
+    expect(view.inboundS3).toEqual({
+      endpoint: "https://minio:9000",
+      bucket: "drop",
+      prefix: "in/"
+    });
     // The filesystem-shaped direction stays byte-identical (dir null, no problem) — census: fs
     // consumers keyed on `.dir` correctly skip s3 rather than misread it.
     expect(view.outbound).toEqual({ dir: null, source: "peer", problem: null });
@@ -438,9 +467,155 @@ describe("assertDeliveryTargetRooted — the pair-time gate, s3 sibling", () => 
   it("UNSET allowlist + an s3 target => refused at pair time (fail-closed default)", () => {
     expect(
       problemDetail(() =>
-        assertDeliveryTargetRooted(s3Target({ endpoint: "https://minio:9000", bucket: "b" }), [], [])
+        assertDeliveryTargetRooted(
+          s3Target({ endpoint: "https://minio:9000", bucket: "b" }),
+          [],
+          []
+        )
       )
     ).toContain("no operator s3 delivery endpoints are declared");
+  });
+});
+
+// ===========================================================================================
+// M13.1b — `resolveOnwardDeliveryDir`, the ONE onward-drop resolution shared by the M13.1a inbox
+// loop's validate-and-forward and the M13.1b auto-relay (the two halves of the same hop).
+//
+// `strict` exists because the two callers have different tolerances for a config gap. The inbox
+// loop is REACTIVE — a file arrived, and deferring it is visibly a stall an operator is already
+// looking at. The auto-relay is a TIMER: falling through to the instance-wide env dir would perform
+// the very action the operator-invoked route explicitly 400s on (`requireOutboundDir` refuses an s3
+// target), mark the build done, and leave the bytes in a directory the s3-expecting CDS never
+// watches — a silent boundary misdelivery nobody is watching a terminal for.
+// ===========================================================================================
+
+describe("resolveOnwardDeliveryDir — the shared onward drop (M13.1a forward + M13.1b auto-relay)", () => {
+  const peerId = (n: number) => asTrustDomainId(`00000000-0000-4000-8000-00000000000${n}`);
+
+  const fsPeer = (name: string, n: number, outDir?: string): OnwardDeliveryPeerRef => ({
+    id: peerId(n),
+    name,
+    deliveryTarget: outDir === undefined ? null : fsTarget({ outDir })
+  });
+
+  const s3OnwardPeer = (name: string, n: number): OnwardDeliveryPeerRef => ({
+    id: peerId(n),
+    name,
+    deliveryTarget: s3Target({ endpoint: "https://minio:9000", bucket: "drop" })
+  });
+
+  it("the single peer-configured outbound dir wins, and the peer's domain id rides along (onward-hop attribution)", () => {
+    const resolved = resolveOnwardDeliveryDir(
+      [fsPeer("upstream", 1), fsPeer("high-side", 2, "/roots/high/out")],
+      { outDir: "/env/out" },
+      ["/roots"]
+    );
+    expect(resolved).toEqual({ dir: "/roots/high/out", peerDomainId: peerId(2) });
+  });
+
+  it("NO peer-configured dir falls back to the instance env, with NO peer attribution", () => {
+    const resolved = resolveOnwardDeliveryDir([fsPeer("upstream", 1)], { outDir: "/env/out" }, []);
+    expect(resolved).toEqual({ dir: "/env/out" });
+  });
+
+  it("AMBIGUITY is a named problem in both modes — dropping bytes at the wrong boundary peer is not a coin toss", () => {
+    const peers = [fsPeer("east", 1, "/roots/east"), fsPeer("west", 2, "/roots/west")];
+    for (const options of [undefined, { strict: true }]) {
+      const resolved = resolveOnwardDeliveryDir(peers, { outDir: "/env/out" }, ["/roots"], options);
+      expect(resolved).toMatchObject({
+        problem: expect.stringContaining("the onward drop is ambiguous")
+      });
+      expect(resolved).not.toHaveProperty("dir");
+    }
+  });
+
+  it("NON-STRICT: an s3 peer is SKIPPED (its location is outbound.s3, not a dir) and the env fallback still resolves — M13.1a's behavior, unchanged", () => {
+    const resolved = resolveOnwardDeliveryDir(
+      [s3OnwardPeer("s3-boundary", 1)],
+      { outDir: "/env/out" },
+      []
+    );
+    expect(resolved).toEqual({ dir: "/env/out" });
+  });
+
+  it("STRICT: the same s3 peer REFUSES with a named problem instead of silently dropping into SCP_RELAY_OUT_DIR", () => {
+    const resolved = resolveOnwardDeliveryDir(
+      [s3OnwardPeer("s3-boundary", 1)],
+      { outDir: "/env/out" },
+      [],
+      { strict: true }
+    );
+    expect(resolved).toMatchObject({ problem: expect.stringContaining("s3-boundary") });
+    expect((resolved as { problem: string }).problem).toContain("s3-compatible");
+    expect((resolved as { problem: string }).problem).toContain(
+      "refusing rather than silently dropping"
+    );
+  });
+
+  it("STRICT: a peer whose configured dir FAILED CLOSED (outside SCP_DELIVERY_ROOTS) refuses too — the env must never mask a misconfigured per-peer target", () => {
+    const resolved = resolveOnwardDeliveryDir(
+      [fsPeer("high-side", 1, "/etc/somewhere-else")],
+      { outDir: "/env/out" },
+      ["/roots"],
+      { strict: true }
+    );
+    expect((resolved as { problem: string }).problem).toContain(
+      "outside every operator-declared delivery root"
+    );
+    // Non-strict keeps M13.1a's env fallback for the same input — the difference IS the point.
+    expect(
+      resolveOnwardDeliveryDir(
+        [fsPeer("high-side", 1, "/etc/somewhere-else")],
+        { outDir: "/env/out" },
+        ["/roots"]
+      )
+    ).toEqual({ dir: "/env/out" });
+  });
+
+  /**
+   * THE REGRESSION (cd1bf1c): strict may only flag peers that CONFIGURED a target. A peer with no
+   * delivery target of its own is not a misconfiguration — it simply is not the boundary peer, and
+   * the normal CDS topology has exactly one of each. Flagging it refuses the drop on account of a
+   * peer that was never a candidate, which silently kills auto-relay in the standard two-peer
+   * deployment (upstream commander + downstream boundary peer, no instance env dir at all).
+   */
+  it("STRICT: the normal two-peer topology resolves — a target-LESS upstream peer never blocks the boundary peer's dir", () => {
+    const resolved = resolveOnwardDeliveryDir(
+      [fsPeer("commander-a", 1), fsPeer("high-side", 2, "/roots/high/out")],
+      {}, // no SCP_RELAY_OUT_DIR: the boundary peer carries the only dir, which is legitimate.
+      ["/roots"],
+      { strict: true }
+    );
+    expect(resolved).toEqual({ dir: "/roots/high/out", peerDomainId: peerId(2) });
+  });
+
+  it("STRICT: a target-LESS peer with no env fallback anywhere falls through to the ENV gap, not a peer misconfiguration claim", () => {
+    const resolved = resolveOnwardDeliveryDir([fsPeer("upstream", 1)], {}, [], { strict: true });
+    expect((resolved as { problem: string }).problem).toContain("SCP_RELAY_OUT_DIR");
+    expect((resolved as { problem: string }).problem).not.toContain(
+      "configure a delivery target this hop cannot write to"
+    );
+  });
+
+  it("STRICT: peers that all resolve (env fallback) still resolve — strict refuses gaps, not delivery", () => {
+    expect(
+      resolveOnwardDeliveryDir(
+        [fsPeer("upstream", 1), fsPeer("other", 2)],
+        { outDir: "/env/out" },
+        [],
+        {
+          strict: true
+        }
+      )
+    ).toEqual({ dir: "/env/out" });
+  });
+
+  it("no peers and no env: the named gap names the env var (fail-closed, both modes)", () => {
+    for (const options of [undefined, { strict: true }]) {
+      expect(resolveOnwardDeliveryDir([], {}, [], options)).toMatchObject({
+        problem: expect.stringContaining("SCP_RELAY_OUT_DIR")
+      });
+    }
   });
 });
 

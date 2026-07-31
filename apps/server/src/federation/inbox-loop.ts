@@ -83,8 +83,7 @@ import type PgBoss from "pg-boss";
 import {
   ImportBundleRequestSchema,
   type ImportBundleRequest,
-  type PromotionBundle,
-  type TrustDomainId
+  type PromotionBundle
 } from "@scp/schemas";
 import type { Db } from "../db/client.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
@@ -94,7 +93,7 @@ import { appendAuditEvent } from "../audit/audit-repo.js";
 import { insertDecision } from "../coordination/decisions-repo.js";
 import { ensureFederationSelf, type FederationSelf } from "./self-repo.js";
 import { listPeers, type FederationPeerRow } from "./peers-repo.js";
-import { listInbox, resolveDeliveryTarget } from "./delivery-target.js";
+import { listInbox, resolveDeliveryTarget, resolveOnwardDeliveryDir } from "./delivery-target.js";
 import { importSyncBundle, FEDERATION_IMPORT_ACTOR_ID } from "./import-repo.js";
 import { importPromotionBundle } from "./promotion-repo.js";
 import {
@@ -366,38 +365,6 @@ function upstreamRelayCosignKey(peers: FederationPeerRow[]): string | null {
   return candidates[0]!.cosignPublicKey;
 }
 
-/** The retrans's ONWARD drop dir (§13.2): the single peer-configured outbound DeliveryTarget if
- *  exactly one peer carries one, else the instance env (`SCP_RELAY_OUT_DIR`). Ambiguity (several
- *  peer-configured outbound dirs) is a config gap → null (deferred, logged). */
-function resolveOnwardOutDir(
-  peers: FederationPeerRow[],
-  config: RelayConfig
-): { dir: string; peerDomainId?: TrustDomainId } | { problem: string } {
-  const peerOut = peers
-    .map((peer) => ({ peer, resolved: resolveDeliveryTarget(peer, config) }))
-    // Filesystem onward dirs only — an s3-compatible peer has `outbound.dir === null` (location is
-    // `outbound.s3`); the onward relay-tarball s3 drop is a follow-on (see the relay route's scope
-    // note), so it is correctly skipped here rather than treated as an unresolved fs dir.
-    .filter(({ resolved }) => resolved.outbound.source === "peer" && resolved.outbound.dir !== null);
-  if (peerOut.length === 1)
-    return {
-      dir: peerOut[0]!.resolved.outbound.dir as string,
-      // The downstream boundary peer — threaded to attribute the onward transfer row to it.
-      peerDomainId: peerOut[0]!.peer.id
-    };
-  if (peerOut.length > 1) {
-    return {
-      problem:
-        `${peerOut.length} peers configure an outbound deliveryTarget (` +
-        peerOut.map(({ peer }) => peer.name).join(", ") +
-        `) — the onward drop is ambiguous; M13.1a forwards to a single boundary peer`
-    };
-  }
-  const env = resolveDeliveryTarget(null, config);
-  if (env.outbound.dir !== null) return { dir: env.outbound.dir };
-  return { problem: env.outbound.problem ?? "no outbound delivery target resolvable" };
-}
-
 // -------------------------------------------------------------------------------------------------
 // The per-file processor.
 // -------------------------------------------------------------------------------------------------
@@ -627,7 +594,7 @@ async function processRelayTarballFile(
 
   try {
     if (ctx.self.role === "retrans") {
-      const onward = resolveOnwardOutDir(ctx.peers, config);
+      const onward = resolveOnwardDeliveryDir(ctx.peers, config);
       if ("problem" in onward) {
         return deferFile(orgId, fileName, `onward drop unresolvable: ${onward.problem}`);
       }

@@ -4452,7 +4452,8 @@ export const zFederationPokeResponse = z.object({
     accepted: z.literal(true),
     woken: z.boolean(),
     wokenSync: z.boolean().optional(),
-    wokenInbox: z.boolean().optional()
+    wokenInbox: z.boolean().optional(),
+    wokenRelay: z.boolean().optional()
 });
 
 /**

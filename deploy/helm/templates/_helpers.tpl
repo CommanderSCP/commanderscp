@@ -88,6 +88,20 @@ as the bundled chart's helper.
 {{- $role -}}
 {{- end -}}
 
+{{/*
+SCP_ROLE for the api Deployment — "api" (default) or "all". Same fail-fast-on-a-typo discipline as
+`commanderscp.federationRole`: a silently-ignored misspelling here would leave the operator with an
+api-only pod they believe is worker-capable, and the symptom (a 400 from /discovery/run) looks
+nothing like a values typo.
+*/}}
+{{- define "commanderscp.apiRole" -}}
+{{- $role := .Values.api.role | default "api" -}}
+{{- if not (has $role (list "api" "all")) -}}
+{{- fail (printf "api.role must be one of api|all, got %q" $role) -}}
+{{- end -}}
+{{- $role -}}
+{{- end -}}
+
 {{- define "commanderscp.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create -}}
 {{- default (include "commanderscp.fullname" .) .Values.serviceAccount.name -}}
@@ -194,6 +208,71 @@ since those three differ between the migrations Job and the api/worker Deploymen
       name: {{ .Values.oidc.existingSecretClientSecret }}
       key: {{ .Values.oidc.existingSecretClientSecretKey }}
 {{- end }}
+{{- end }}
+{{- if .Values.internalBaseUrl }}
+{{- /* How this instance names ITSELF to a human — the CLI device-login `verificationUri` is
+       derived from it (routes/device-flow.ts). Unset keeps config.ts's 127.0.0.1 default, which is
+       correct for a local run and wrong for every ingress-served install. */}}
+- name: SCP_INTERNAL_BASE_URL
+  value: {{ .Values.internalBaseUrl | quote }}
+{{- end }}
+{{- if .Values.operatorApi.enabled }}
+{{- /* The instance-operator write surface. REQUIRES an operator-supplied Secret: the token must be
+       readable by a human, so the chart-generated secret is deliberately not an option (see the
+       values comment). Fail at render rather than crash-loop the pod on a missing secret key. */}}
+{{- if not .Values.appSecrets.existingSecret }}
+{{- fail "operatorApi.enabled requires appSecrets.existingSecret — the operator token must come from a Secret you create and can read (the chart-generated secret never contains it)" }}
+{{- end }}
+- name: SCP_OPERATOR_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "commanderscp.appSecretsName" . }}
+      key: {{ .Values.appSecrets.existingSecretKeys.operatorToken }}
+{{- end }}
+{{- if .Values.artifactChannel.ociRegistryHosts }}
+{{- /* ADR-0019 §4 — the APPLICATION half of the two-layer egress model. The NETWORK half is
+       networkPolicy.executorEgress (CIDRs; a NetworkPolicy cannot match a DNS name). Both or
+       neither: one alone renders green and still cannot pull. */}}
+- name: SCP_ARTIFACT_OCI_REGISTRY_HOSTS
+  value: {{ join "," .Values.artifactChannel.ociRegistryHosts | quote }}
+{{- end }}
+{{- if .Values.artifactChannel.blobBaseUrls }}
+- name: SCP_ARTIFACT_BLOB_BASE_URLS
+  value: {{ join "," .Values.artifactChannel.blobBaseUrls | quote }}
+{{- end }}
+{{- if .Values.artifactChannel.insecureHosts }}
+- name: SCP_ARTIFACT_INSECURE_HOSTS
+  value: {{ join "," .Values.artifactChannel.insecureHosts | quote }}
+{{- end }}
+{{- if .Values.federation.sync.enabled }}
+{{- /* M14.0/M14.4 (ADR-0009) — the outpost/retrans live-pull scheduler. Data direction unchanged:
+       the outpost pulls; nothing flows commander→outpost. */}}
+- name: SCP_FEDERATION_SYNC_LOOP
+  value: "1"
+- name: SCP_FEDERATION_SYNC_INTERVAL_SECONDS
+  value: {{ .Values.federation.sync.intervalSeconds | quote }}
+- name: SCP_FEDERATION_SYNC_SPARSE_INTERVAL_SECONDS
+  value: {{ .Values.federation.sync.sparseIntervalSeconds | quote }}
+{{- end }}
+{{- if .Values.federation.relay.inbox.enabled }}
+{{- /* M13.1a — the staging node's unattended INGEST half. */}}
+- name: SCP_INBOX_LOOP
+  value: "1"
+- name: SCP_INBOX_TICK_INTERVAL_SECONDS
+  value: {{ .Values.federation.relay.inbox.tickIntervalSeconds | quote }}
+{{- end }}
+{{- if .Values.federation.relay.autoRelay.enabled }}
+{{- /* M13.1b — the staging node's unattended EGRESS half: byte movement across a security
+       boundary, opted into separately from ingest, and belonging ONLY on the retrans that can
+       reach the source registry (the low side). */}}
+- name: SCP_RETRANS_AUTO_RELAY
+  value: "1"
+- name: SCP_RETRANS_AUTO_RELAY_INTERVAL_SECONDS
+  value: {{ .Values.federation.relay.autoRelay.intervalSeconds | quote }}
+- name: SCP_RETRANS_AUTO_RELAY_MAX_ATTEMPTS
+  value: {{ .Values.federation.relay.autoRelay.maxAttempts | quote }}
+- name: SCP_RETRANS_AUTO_RELAY_LEASE_SECONDS
+  value: {{ .Values.federation.relay.autoRelay.leaseSeconds | quote }}
 {{- end }}
 {{- if .Values.internalEgressHosts }}
 {{- /* Operator half of the two-layer internal-egress model (ADR-0003) — same host-level,

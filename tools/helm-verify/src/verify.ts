@@ -123,12 +123,16 @@ function renderedFederationRole(docs: K8sDoc[]): string {
 function federationRoleViolations(role: string, docs: K8sDoc[]): string[] {
   const allowed = ALLOWED_BUNDLED_BACKENDS_BY_ROLE[role];
   if (!allowed) {
-    return [`unknown federationRole '${role}' — expected one of ${Object.keys(ALLOWED_BUNDLED_BACKENDS_BY_ROLE).join("|")}`];
+    return [
+      `unknown federationRole '${role}' — expected one of ${Object.keys(ALLOWED_BUNDLED_BACKENDS_BY_ROLE).join("|")}`
+    ];
   }
   const allowedList = [...allowed].join(", ") || "none";
   const violations: string[] = [];
   for (const [backend, ns] of Object.entries(BACKEND_NAMESPACES)) {
-    const enabled = docs.some((d) => d.metadata?.namespace === ns || (d.kind === "Namespace" && d.metadata?.name === ns));
+    const enabled = docs.some(
+      (d) => d.metadata?.namespace === ns || (d.kind === "Namespace" && d.metadata?.name === ns)
+    );
     if (enabled && !allowed.has(backend)) {
       violations.push(
         `federationRole '${role}' may NOT enable bundled backend '${backend}' (renders into namespace ${ns}); ` +
@@ -170,10 +174,20 @@ function packagedChartBase64Size(dir: string): number {
   return readFileSync(path.join(out, tgz)).toString("base64").length;
 }
 
+/** One container env entry. `valueFrom` was `unknown` until the operator-config-surface block
+ *  below needed to assert that a SECRET-backed var is genuinely a `secretKeyRef` and not a literal
+ *  — an assertion that cannot be written against `unknown`, and one worth being able to write:
+ *  a token rendered as a plain `value` sits in the Deployment spec for anyone with `get deploy`. */
+interface EnvVar {
+  name: string;
+  value?: string;
+  valueFrom?: { secretKeyRef?: { name?: string; key?: string } };
+}
+
 interface Container {
   name: string;
   image?: string;
-  env?: { name: string; value?: string; valueFrom?: unknown }[];
+  env?: EnvVar[];
   securityContext?: {
     allowPrivilegeEscalation?: boolean;
     readOnlyRootFilesystem?: boolean;
@@ -199,7 +213,8 @@ function podSpecOf(doc: K8sDoc): PodSpec | undefined {
 }
 
 function podTemplateLabelsOf(doc: K8sDoc): Record<string, string> {
-  const spec = doc.spec as { template?: { metadata?: { labels?: Record<string, string> } } } | undefined;
+  const spec = doc.spec as
+    { template?: { metadata?: { labels?: Record<string, string> } } } | undefined;
   return spec?.template?.metadata?.labels ?? {};
 }
 
@@ -393,7 +408,9 @@ function autowireHookKubeApiViolations(label: string, docs: K8sDoc[]): string[] 
   /** Does this single egress rule plausibly reach a kube-apiserver endpoint? Returns the reason it
    *  does NOT, so the violation message can say which half failed. */
   const kubeApiRuleGap = (rule: NpEgressRule): string | undefined => {
-    const blocks = (rule.to ?? []).map((t) => t.ipBlock).filter((b): b is NonNullable<typeof b> => Boolean(b));
+    const blocks = (rule.to ?? [])
+      .map((t) => t.ipBlock)
+      .filter((b): b is NonNullable<typeof b> => Boolean(b));
     if (blocks.length === 0) return "no ipBlock 'to' entry";
     const ports = rule.ports ?? [];
     // An absent/empty `ports` means "every port" in Kubernetes — genuinely reachable.
@@ -439,12 +456,16 @@ function autowireHookKubeApiViolations(label: string, docs: K8sDoc[]): string[] 
     // this any more than it can be used to dodge the coverage check above.
     const excess = subtractRanges(covered, KUBE_API_REQUIRED_RANGES);
     if (excess.length > 0) {
-      return `its ipBlocks (${blocks.map((b) => b.cidr).join(",")}) grant egress BEYOND the ` +
+      return (
+        `its ipBlocks (${blocks.map((b) => b.cidr).join(",")}) grant egress BEYOND the ` +
         `required private ranges (${KUBE_API_REQUIRED_CIDRS.join(", ")}) — e.g. ${excess
           .map(([s, e]) => (s === e ? ipToStr(s) : `${ipToStr(s)}-${ipToStr(e)}`))
-          .join(", ")} — which includes public-internet address space; the kube-API allow must be ` +
+          .join(
+            ", "
+          )} — which includes public-internet address space; the kube-API allow must be ` +
         `scoped to exactly the required private ranges, never 0.0.0.0/0 or any range that reaches ` +
-        `beyond them`;
+        `beyond them`
+      );
     }
     return undefined;
   };
@@ -453,7 +474,8 @@ function autowireHookKubeApiViolations(label: string, docs: K8sDoc[]): string[] 
   // unrelated migrations Job into this check.
   const hookJobs = docs.filter(
     (d) =>
-      d.kind === "Job" && /-autowire$/.test(String(d.metadata?.labels?.["app.kubernetes.io/component"] ?? ""))
+      d.kind === "Job" &&
+      /-autowire$/.test(String(d.metadata?.labels?.["app.kubernetes.io/component"] ?? ""))
   );
   if (hookJobs.length === 0) {
     return [`[${label}] expected at least one *-autowire hook Job in this render, found none`];
@@ -503,7 +525,8 @@ function autowireHookKubeApiViolations(label: string, docs: K8sDoc[]): string[] 
       for (const rule of spec?.egress ?? []) {
         const gap = kubeApiRuleGap(rule);
         if (gap === undefined) ok = true;
-        else if (gap !== "no ipBlock 'to' entry") gaps.push(`NetworkPolicy/${np.metadata?.name}: ${gap}`);
+        else if (gap !== "no ipBlock 'to' entry")
+          gaps.push(`NetworkPolicy/${np.metadata?.name}: ${gap}`);
       }
       return ok;
     });
@@ -532,7 +555,8 @@ function autowireHookKubeApiViolations(label: string, docs: K8sDoc[]): string[] 
       const sel = (np.spec as { podSelector?: LabelSelector }).podSelector;
       for (const kind of ["api", "worker"]) {
         const deploy = docs.find(
-          (d) => d.kind === "Deployment" && d.metadata?.labels?.["app.kubernetes.io/component"] === kind
+          (d) =>
+            d.kind === "Deployment" && d.metadata?.labels?.["app.kubernetes.io/component"] === kind
         );
         if (deploy && selectorSelects(sel, podTemplateLabelsOf(deploy))) {
           violations.push(
@@ -605,7 +629,9 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
   }
 
   // Migrations Job must run as a pre-install/pre-upgrade hook.
-  const migrationsJob = docs.find((d) => d.kind === "Job" && String(d.metadata?.name).includes("-migrate-"));
+  const migrationsJob = docs.find(
+    (d) => d.kind === "Job" && String(d.metadata?.name).includes("-migrate-")
+  );
   assert(migrationsJob, `[${label}] expected a migrations Job in the render`);
   if (migrationsJob) {
     const hookAnnotation = migrationsJob.metadata?.annotations?.["helm.sh/hook"] ?? "";
@@ -623,8 +649,12 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
     );
   }
 
-  const apiDeploy = docs.find((d) => d.kind === "Deployment" && String(d.metadata?.name).endsWith("-api"));
-  const workerDeploy = docs.find((d) => d.kind === "Deployment" && String(d.metadata?.name).endsWith("-worker"));
+  const apiDeploy = docs.find(
+    (d) => d.kind === "Deployment" && String(d.metadata?.name).endsWith("-api")
+  );
+  const workerDeploy = docs.find(
+    (d) => d.kind === "Deployment" && String(d.metadata?.name).endsWith("-worker")
+  );
   assert(apiDeploy, `[${label}] expected the api Deployment`);
   assert(workerDeploy, `[${label}] expected the worker Deployment`);
 
@@ -652,7 +682,10 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
   if (apiDeploy && workerDeploy) {
     const apiImage = (podSpecOf(apiDeploy)?.containers ?? [])[0]?.image;
     const workerImage = (podSpecOf(workerDeploy)?.containers ?? [])[0]?.image;
-    assert(apiImage && apiImage === workerImage, `[${label}] api and worker must use the SAME image (got api=${apiImage}, worker=${workerImage})`);
+    assert(
+      apiImage && apiImage === workerImage,
+      `[${label}] api and worker must use the SAME image (got api=${apiImage}, worker=${workerImage})`
+    );
   }
 
   // Ingress mTLS (adversarial review MAJOR #3) — the kitchen-sink render opts into
@@ -730,7 +763,9 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
     strayBundled.length === 0,
     `[${label}] the main chart rendered ${strayBundled.length} non-autowire resource(s) into a bundled-backend namespace (${strayBundled
       .map((d) => `${d.kind}/${d.metadata?.name}`)
-      .join(", ")}) — bundled backends must live ONLY in deploy/helm-bundled, never the release-stored main chart`
+      .join(
+        ", "
+      )}) — bundled backends must live ONLY in deploy/helm-bundled, never the release-stored main chart`
   );
   if (label === "kitchen-sink") {
     // What the main chart DOES keep for bundled backends: enabling argocd / gitea turns on the SCP-
@@ -740,14 +775,19 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
       const autowireJob = docs.find(
         (d) => d.kind === "Job" && String(d.metadata?.name).includes(`${be}-autowire`)
       );
-      assert(autowireJob, `[${label}] bundledExecutor.${be}.enabled but no ${be}-autowire hook Job in the main chart`);
+      assert(
+        autowireJob,
+        `[${label}] bundledExecutor.${be}.enabled but no ${be}-autowire hook Job in the main chart`
+      );
       const hookAnn = autowireJob?.metadata?.annotations?.["helm.sh/hook"] ?? "";
       assert(
         hookAnn.includes("post-install"),
         `[${label}] ${be}-autowire Job must be a post-install hook (got "${hookAnn}")`
       );
       assert(
-        docs.some((d) => d.kind === "NetworkPolicy" && String(d.metadata?.name).includes(`allow-${be}`)),
+        docs.some(
+          (d) => d.kind === "NetworkPolicy" && String(d.metadata?.name).includes(`allow-${be}`)
+        ),
         `[${label}] bundledExecutor.${be}.enabled but no allow-${be} NetworkPolicy egress in the main chart`
       );
     }
@@ -758,12 +798,16 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
 
   // NetworkPolicy — default-deny AND at least one explicit allow, both present.
   const networkPolicies = docs.filter((d) => d.kind === "NetworkPolicy");
-  assert(networkPolicies.length >= 2, `[${label}] expected multiple NetworkPolicies (default-deny + explicit allows), got ${networkPolicies.length}`);
+  assert(
+    networkPolicies.length >= 2,
+    `[${label}] expected multiple NetworkPolicies (default-deny + explicit allows), got ${networkPolicies.length}`
+  );
   // `hasNoAllowRules` rather than `=== undefined`: `ingress: []` / `egress: []` is the same
   // deny-everything policy to Kubernetes as omitting the field (same predicate the auto-wire
   // kube-API guard uses — see hasNoAllowRules).
   const defaultDeny = networkPolicies.find((np) => {
-    const spec = np.spec as { policyTypes?: string[]; ingress?: unknown; egress?: unknown } | undefined;
+    const spec = np.spec as
+      { policyTypes?: string[]; ingress?: unknown; egress?: unknown } | undefined;
     return (
       spec?.policyTypes?.includes("Ingress") &&
       spec?.policyTypes?.includes("Egress") &&
@@ -771,12 +815,18 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
       hasNoAllowRules(spec.egress)
     );
   });
-  assert(defaultDeny, `[${label}] expected a default-deny NetworkPolicy (policyTypes [Ingress,Egress], no ingress/egress rules)`);
+  assert(
+    defaultDeny,
+    `[${label}] expected a default-deny NetworkPolicy (policyTypes [Ingress,Egress], no ingress/egress rules)`
+  );
   const explicitAllowEgress = networkPolicies.some((np) => {
     const spec = np.spec as { egress?: unknown[] } | undefined;
     return Array.isArray(spec?.egress) && spec!.egress!.length > 0;
   });
-  assert(explicitAllowEgress, `[${label}] expected at least one NetworkPolicy with an explicit egress allow (e.g. DNS)`);
+  assert(
+    explicitAllowEgress,
+    `[${label}] expected at least one NetworkPolicy with an explicit egress allow (e.g. DNS)`
+  );
 
   // Executor egress allowlist (networkPolicy.executorEgress, Mode A / BYO-coordinate — SCP's
   // outbound observe/trigger/status/abort calls to a coordinated Argo CD/GitHub/etc). Opt-in and
@@ -837,12 +887,13 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
         ipBlock?: { cidr?: string };
       }
       const spec = argocdExecPolicy.spec as
-        | { egress?: { to?: ExecEgressTo[]; ports?: { port?: number }[] }[] }
-        | undefined;
+        { egress?: { to?: ExecEgressTo[]; ports?: { port?: number }[] }[] } | undefined;
       const rule = spec?.egress?.[0];
       assert(
         Array.isArray(rule?.to) &&
-          rule!.to!.some((t) => t.namespaceSelector?.matchLabels?.["kubernetes.io/metadata.name"] === "argocd"),
+          rule!.to!.some(
+            (t) => t.namespaceSelector?.matchLabels?.["kubernetes.io/metadata.name"] === "argocd"
+          ),
         `[${label}] allow-executor-argocd must carry a namespaceSelector 'to' entry for namespace argocd`
       );
       assert(
@@ -850,7 +901,9 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
         `[${label}] allow-executor-argocd must carry an ipBlock 'to' entry for the configured CIDR`
       );
       assert(
-        Array.isArray(rule?.ports) && rule!.ports!.some((p) => p.port === 8080) && rule!.ports!.some((p) => p.port === 80),
+        Array.isArray(rule?.ports) &&
+          rule!.ports!.some((p) => p.port === 8080) &&
+          rule!.ports!.some((p) => p.port === 80),
         `[${label}] allow-executor-argocd must carry the configured ports (8080, 80)`
       );
     }
@@ -873,7 +926,9 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
     if (!/allow-(postgres|nats)/.test(name)) continue;
     const spec = np.spec as { egress?: EgressRule[] } | undefined;
     for (const rule of spec?.egress ?? []) {
-      const touchesDbPort = (rule.ports ?? []).some((p) => typeof p.port === "number" && dbPorts.has(p.port));
+      const touchesDbPort = (rule.ports ?? []).some(
+        (p) => typeof p.port === "number" && dbPorts.has(p.port)
+      );
       if (!touchesDbPort) continue;
       assert(
         Array.isArray(rule.to) && rule.to.length > 0,
@@ -963,40 +1018,66 @@ function main(): void {
   verifyRender(
     "kitchen-sink",
     renderChart("verify-kitchen-sink", [
-      "--set", "postgres.evalInCluster.enabled=true",
-      "--set", "managedIac.enabled=true",
-      "--set", "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0",
-      "--set", "federation.mtls.enabled=true",
-      "--set", "federation.mtls.existingSecret=my-fed-cert",
-      "--set", "federation.serverMtls.enabled=true",
-      "--set", "federation.serverMtls.existingSecret=my-fed-server-mtls",
-      "--set", "federation.serverMtls.crl.enabled=true",
-      "--set", "federation.serverMtls.crl.existingSecret=my-fed-server-mtls-crl",
-      "--set", "ingress.enabled=true",
-      "--set", "ingress.host=scp.example.com",
-      "--set", "ingress.mtls.enabled=true",
-      "--set", "ingress.mtls.caSecretName=fed-ca",
-      "--set", "serviceMonitor.enabled=true",
-      "--set", "objectStorage.provider=s3",
-      "--set", "eventBus.backend=nats",
-      "--set", "eventBus.natsUrl=nats://nats:4222",
-      "--set", "worker.hpa.enabled=true",
-      "--set", "oidc.enabled=true",
-      "--set", "oidc.issuer=https://idp.example.com",
-      "--set", "oidc.clientId=scp",
-      "--set", "oidc.redirectUri=https://scp.example.com/callback",
+      "--set",
+      "postgres.evalInCluster.enabled=true",
+      "--set",
+      "managedIac.enabled=true",
+      "--set",
+      "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0",
+      "--set",
+      "federation.mtls.enabled=true",
+      "--set",
+      "federation.mtls.existingSecret=my-fed-cert",
+      "--set",
+      "federation.serverMtls.enabled=true",
+      "--set",
+      "federation.serverMtls.existingSecret=my-fed-server-mtls",
+      "--set",
+      "federation.serverMtls.crl.enabled=true",
+      "--set",
+      "federation.serverMtls.crl.existingSecret=my-fed-server-mtls-crl",
+      "--set",
+      "ingress.enabled=true",
+      "--set",
+      "ingress.host=scp.example.com",
+      "--set",
+      "ingress.mtls.enabled=true",
+      "--set",
+      "ingress.mtls.caSecretName=fed-ca",
+      "--set",
+      "serviceMonitor.enabled=true",
+      "--set",
+      "objectStorage.provider=s3",
+      "--set",
+      "eventBus.backend=nats",
+      "--set",
+      "eventBus.natsUrl=nats://nats:4222",
+      "--set",
+      "worker.hpa.enabled=true",
+      "--set",
+      "oidc.enabled=true",
+      "--set",
+      "oidc.issuer=https://idp.example.com",
+      "--set",
+      "oidc.clientId=scp",
+      "--set",
+      "oidc.redirectUri=https://scp.example.com/callback",
       // Main-chart bundled integration: only the SLIM enabled flags exist here now (they turn on the
       // auto-wire hook + allow-argocd NetworkPolicy). The vendored render lives in the
       // separate bundled chart, verified below.
-      "--set", "bundledExecutor.argocd.enabled=true",
-      "--set", "bundledExecutor.gitea.enabled=true",
+      "--set",
+      "bundledExecutor.argocd.enabled=true",
+      "--set",
+      "bundledExecutor.gitea.enabled=true",
       // Executor egress allowlist (Mode A / BYO-coordinate) — one entry exercising BOTH `to` shapes
       // at once (an in-cluster namespaceSelector AND an external ipBlock) plus multiple ports.
-      "--set-json", 'networkPolicy.executorEgress=[{"name":"argocd","namespaces":["argocd"],"cidrs":["203.0.113.0/24"],"ports":[{"protocol":"TCP","port":8080},{"protocol":"TCP","port":80}]}]',
+      "--set-json",
+      'networkPolicy.executorEgress=[{"name":"argocd","namespaces":["argocd"],"cidrs":["203.0.113.0/24"],"ports":[{"protocol":"TCP","port":8080},{"protocol":"TCP","port":80}]}]',
       // Operator half of the two-layer internal-egress model (ADR-0003) — the application-layer SSRF
       // guard's hard boundary. Pairs with networkPolicy.executorEgress above: the same "what may this
       // pod reach" decision, enforced once at the k8s layer and once inside the plugin host.
-      "--set-json", 'internalEgressHosts=["argocd-server.argocd.svc.cluster.local"]'
+      "--set-json",
+      'internalEgressHosts=["argocd-server.argocd.svc.cluster.local"]'
     ])
   );
 
@@ -1009,9 +1090,14 @@ function main(): void {
   // makes the identical `https://kubernetes.default.svc` call and had the identical latent failure,
   // reached only because argocd is enabled first and died first. A fix that happened to work only
   // when both flags are on would be exactly the "fixed the instance, not the class" bug.
-  console.log("helm-verify: checking the bundled auto-wire hooks' kube-API egress under default-deny...");
+  console.log(
+    "helm-verify: checking the bundled auto-wire hooks' kube-API egress under default-deny..."
+  );
   for (const be of ["argocd", "gitea"]) {
-    const docs = renderChart(`verify-autowire-${be}`, ["--set", `bundledExecutor.${be}.enabled=true`]);
+    const docs = renderChart(`verify-autowire-${be}`, [
+      "--set",
+      `bundledExecutor.${be}.enabled=true`
+    ]);
     const violations = autowireHookKubeApiViolations(`autowire-${be}-only`, docs);
     for (const v of violations) fail(v);
     if (violations.length === 0) {
@@ -1038,15 +1124,20 @@ function main(): void {
   // policy must still be RENDERED. A nil-safe read that let the absent key mean "disabled" would
   // render happily and then hang the auto-wire hook all over again.
   {
-    const label = "reuse-values-upgrade (networkPolicy.kubeApi absent, as on any pre-existing release)";
+    const label =
+      "reuse-values-upgrade (networkPolicy.kubeApi absent, as on any pre-existing release)";
     const upgraded = renderChart("verify-reuse-values", [
-      "--set", "bundledExecutor.argocd.enabled=true",
-      "--set", "bundledExecutor.gitea.enabled=true",
-      "--set", "networkPolicy.kubeApi=null"
+      "--set",
+      "bundledExecutor.argocd.enabled=true",
+      "--set",
+      "bundledExecutor.gitea.enabled=true",
+      "--set",
+      "networkPolicy.kubeApi=null"
     ]);
     assert(
       upgraded.some(
-        (d) => d.kind === "NetworkPolicy" && String(d.metadata?.name).includes("allow-kube-api-autowire")
+        (d) =>
+          d.kind === "NetworkPolicy" && String(d.metadata?.name).includes("allow-kube-api-autowire")
       ),
       `[${label}] rendered without error but produced NO -allow-kube-api-autowire NetworkPolicy — an ` +
         `absent kubeApi key must default to ENABLED with the chart's documented CIDRs/ports, otherwise ` +
@@ -1054,7 +1145,9 @@ function main(): void {
         `auto-wire hook hangs exactly as it did before`
     );
     for (const v of autowireHookKubeApiViolations(label, upgraded)) fail(v);
-    console.log("  reuse-values upgrade render (kubeApi key absent): policy still rendered and reachable — OK");
+    console.log(
+      "  reuse-values upgrade render (kubeApi key absent): policy still rendered and reachable — OK"
+    );
   }
 
   // NEGATIVE case — PROVE the guard above actually fires. Rendering with networkPolicy.kubeApi
@@ -1065,9 +1158,12 @@ function main(): void {
   {
     const guardLabel = "autowire-kube-api-guard";
     const preFix = renderChart("verify-autowire-prefix", [
-      "--set", "bundledExecutor.argocd.enabled=true",
-      "--set", "bundledExecutor.gitea.enabled=true",
-      "--set", "networkPolicy.kubeApi.enabled=false"
+      "--set",
+      "bundledExecutor.argocd.enabled=true",
+      "--set",
+      "bundledExecutor.gitea.enabled=true",
+      "--set",
+      "networkPolicy.kubeApi.enabled=false"
     ]);
     const preFixViolations = autowireHookKubeApiViolations(guardLabel, preFix);
     assert(
@@ -1101,8 +1197,10 @@ function main(): void {
   ] as [string, string[], string][]) {
     const guardLabel = `autowire-kube-api-guard (${what})`;
     const mutated = renderChart("verify-autowire-mutation", [
-      "--set", "bundledExecutor.argocd.enabled=true",
-      "--set", "bundledExecutor.gitea.enabled=true",
+      "--set",
+      "bundledExecutor.argocd.enabled=true",
+      "--set",
+      "bundledExecutor.gitea.enabled=true",
       ...setArgs
     ]);
     const mutatedViolations = autowireHookKubeApiViolations(guardLabel, mutated);
@@ -1125,9 +1223,12 @@ function main(): void {
   {
     const guardLabel = "autowire-kube-api-guard (cidrs widened to [0.0.0.0/0])";
     const widened = renderChart("verify-autowire-widen", [
-      "--set", "bundledExecutor.argocd.enabled=true",
-      "--set", "bundledExecutor.gitea.enabled=true",
-      "--set-json", 'networkPolicy.kubeApi.cidrs=["0.0.0.0/0"]'
+      "--set",
+      "bundledExecutor.argocd.enabled=true",
+      "--set",
+      "bundledExecutor.gitea.enabled=true",
+      "--set-json",
+      'networkPolicy.kubeApi.cidrs=["0.0.0.0/0"]'
     ]);
     const widenedViolations = autowireHookKubeApiViolations(guardLabel, widened);
     assert(
@@ -1153,17 +1254,27 @@ function main(): void {
   // which is exactly why the hole survived review.
   {
     const guardLabel = "autowire-kube-api-guard (default-deny as `egress: []`)";
-    const hookLabels = { "app.kubernetes.io/name": "commanderscp", "commanderscp.io/autowire-hook": "true" };
+    const hookLabels = {
+      "app.kubernetes.io/name": "commanderscp",
+      "commanderscp.io/autowire-hook": "true"
+    };
     const synthetic: K8sDoc[] = [
       {
         kind: "NetworkPolicy",
         metadata: { name: "synthetic-default-deny" },
         // The evasion: an ALLOW-RULE-FREE egress list spelled as [] rather than omitted.
-        spec: { podSelector: { matchLabels: { "app.kubernetes.io/name": "commanderscp" } }, policyTypes: ["Egress"], egress: [] }
+        spec: {
+          podSelector: { matchLabels: { "app.kubernetes.io/name": "commanderscp" } },
+          policyTypes: ["Egress"],
+          egress: []
+        }
       },
       {
         kind: "Job",
-        metadata: { name: "synthetic-argocd-autowire", labels: { "app.kubernetes.io/component": "argocd-autowire" } },
+        metadata: {
+          name: "synthetic-argocd-autowire",
+          labels: { "app.kubernetes.io/component": "argocd-autowire" }
+        },
         spec: { template: { metadata: { labels: hookLabels } } }
       }
     ];
@@ -1192,7 +1303,9 @@ function main(): void {
         `and which is just as green a violation count while checking nothing this case exists to ` +
         `check); got: ${JSON.stringify(syntheticViolations)}`
     );
-    console.log(`  negative case (default-deny as \`egress: []\`) correctly recognised as deny-all`);
+    console.log(
+      `  negative case (default-deny as \`egress: []\`) correctly recognised as deny-all`
+    );
   }
 
   // M16.3 P3 — the MAIN chart's `federationRole` value must reach the api/worker containers as
@@ -1205,7 +1318,9 @@ function main(): void {
   // that dropped this env var from `commonEnv` (or reverted app.ts's gate) would leave a retrans
   // instance silently serving the SPA again — exactly the defect this milestone fixes — so this
   // assertion is what keeps it caught at render time, permanently, in CI.
-  console.log("helm-verify: checking the main chart wires SCP_FEDERATION_ROLE through to api/worker...");
+  console.log(
+    "helm-verify: checking the main chart wires SCP_FEDERATION_ROLE through to api/worker..."
+  );
   {
     const roleLabel = "federation-role-runtime-env";
     function scpFederationRoleEnvOf(docs: K8sDoc[], deploymentName: string): string | undefined {
@@ -1224,8 +1339,9 @@ function main(): void {
     const releaseName = "verify-fedrole";
 
     const defaultDocs = renderChart(releaseName, []);
-    const apiName = defaultDocs.find((d) => d.kind === "Deployment" && d.metadata?.name?.endsWith("-api"))
-      ?.metadata?.name;
+    const apiName = defaultDocs.find(
+      (d) => d.kind === "Deployment" && d.metadata?.name?.endsWith("-api")
+    )?.metadata?.name;
     const workerName = defaultDocs.find(
       (d) => d.kind === "Deployment" && d.metadata?.name?.endsWith("-worker")
     )?.metadata?.name;
@@ -1247,14 +1363,191 @@ function main(): void {
       scpFederationRoleEnvOf(retransDocs, workerName ?? "") === "retrans",
       `[${roleLabel}] federationRole=retrans render must carry SCP_FEDERATION_ROLE=retrans on the worker Deployment`
     );
-    console.log(`  SCP_FEDERATION_ROLE present + correct on both Deployments for default and retrans renders`);
+    console.log(
+      `  SCP_FEDERATION_ROLE present + correct on both Deployments for default and retrans renders`
+    );
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // OPERATOR CONFIG SURFACE — the chart must be able to configure the profiles the server ships.
+  //
+  // WHY THIS EXISTS. M13 and M14 both shipped operator env vars with no chart deliverable in
+  // their DoDs, and the gap was invisible because nothing asserted on it: `commanderscp.commonEnv`
+  // renders a FIXED list, there is no generic `extraEnv` escape hatch, and a var that is simply
+  // absent produces a perfectly healthy pod running with the feature off. The result was a chart
+  // that provisioned a scan-DB PVC for a scanner it could not start and mounted federation client
+  // certs for a sync loop it could not enable. This block is the standing guard against the next
+  // one: every knob below is asserted BOTH ways — absent by default, present and correct when
+  // asked for — so "the server grew a knob and the chart did not" fails at render time in CI.
+  //
+  // DEFAULT-ABSENT IS THE LOAD-BEARING HALF. Every loop here is opt-in on the server side
+  // (`=== "1"`), so a chart that rendered `SCP_INBOX_LOOP=0` would still be wrong-ish but harmless,
+  // while one that rendered it unconditionally as "1" would start unattended byte movement at a
+  // CDS boundary on a default `helm install`. Assert the vars are ABSENT, not merely falsy.
+  // ------------------------------------------------------------------------------------------
+  console.log(
+    "helm-verify: checking the operator config surface (loops, allowlists, operator token)..."
+  );
+  {
+    const envLabel = "operator-config-surface";
+    const releaseName = "verify-opsurface";
+
+    function envOf(docs: K8sDoc[], suffix: string, name: string): EnvVar | undefined {
+      const doc = docs.find((d) => d.kind === "Deployment" && d.metadata?.name?.endsWith(suffix));
+      for (const c of podSpecOf(doc ?? ({} as K8sDoc))?.containers ?? []) {
+        const found = c.env?.find((e) => e.name === name);
+        if (found) return found;
+      }
+      return undefined;
+    }
+    /** Assert on BOTH Deployments — a knob wired into only one of them is a silent half-fix (the
+     *  loops run on the worker, but an `api.role=all` pod runs them too). */
+    function bothHave(docs: K8sDoc[], name: string, expected: string): void {
+      for (const suffix of ["-api", "-worker"]) {
+        const found = envOf(docs, suffix, name);
+        assert(
+          found?.value === expected,
+          `[${envLabel}] ${name} must be ${expected} on the ${suffix.slice(1)} Deployment, got ${found?.value ?? "<absent>"}`
+        );
+      }
+    }
+    function neitherHas(docs: K8sDoc[], name: string): void {
+      for (const suffix of ["-api", "-worker"]) {
+        assert(
+          envOf(docs, suffix, name) === undefined,
+          `[${envLabel}] ${name} must be ABSENT from the ${suffix.slice(1)} Deployment on a default render — an unconfigured instance must not opt itself into it`
+        );
+      }
+    }
+
+    const OPT_IN_VARS = [
+      "SCP_INBOX_LOOP",
+      "SCP_INBOX_TICK_INTERVAL_SECONDS",
+      "SCP_RETRANS_AUTO_RELAY",
+      "SCP_RETRANS_AUTO_RELAY_INTERVAL_SECONDS",
+      "SCP_RETRANS_AUTO_RELAY_MAX_ATTEMPTS",
+      "SCP_RETRANS_AUTO_RELAY_LEASE_SECONDS",
+      "SCP_FEDERATION_SYNC_LOOP",
+      "SCP_FEDERATION_SYNC_INTERVAL_SECONDS",
+      "SCP_FEDERATION_SYNC_SPARSE_INTERVAL_SECONDS",
+      "SCP_OPERATOR_TOKEN",
+      "SCP_ARTIFACT_OCI_REGISTRY_HOSTS",
+      "SCP_ARTIFACT_BLOB_BASE_URLS",
+      "SCP_ARTIFACT_INSECURE_HOSTS",
+      "SCP_INTERNAL_BASE_URL"
+    ];
+
+    const defaultDocs = renderChart(releaseName, []);
+    for (const v of OPT_IN_VARS) neitherHas(defaultDocs, v);
+    // The api role default, and that it is a VALUE now rather than the old hardcoded literal.
+    for (const suffix of ["-api", "-worker"]) {
+      const expected = suffix === "-api" ? "api" : "worker";
+      assert(
+        envOf(defaultDocs, suffix, "SCP_ROLE")?.value === expected,
+        `[${envLabel}] default render must carry SCP_ROLE=${expected} on the ${suffix.slice(1)} Deployment`
+      );
+    }
+    console.log(
+      `  default render: all ${OPT_IN_VARS.length} opt-in vars absent, SCP_ROLE api/worker`
+    );
+
+    const onDocs = renderChart(releaseName, [
+      "--set",
+      "federationRole=retrans",
+      "--set",
+      "api.role=all",
+      "--set",
+      "internalBaseUrl=https://scp.example.com/api/v1",
+      "--set",
+      "federation.sync.enabled=true",
+      "--set",
+      "federation.sync.intervalSeconds=30",
+      "--set",
+      "federation.sync.sparseIntervalSeconds=1800",
+      "--set",
+      "federation.relay.inbox.enabled=true",
+      "--set",
+      "federation.relay.inbox.tickIntervalSeconds=45",
+      "--set",
+      "federation.relay.autoRelay.enabled=true",
+      "--set",
+      "federation.relay.autoRelay.intervalSeconds=90",
+      "--set",
+      "federation.relay.autoRelay.maxAttempts=3",
+      "--set",
+      "federation.relay.autoRelay.leaseSeconds=7200",
+      "--set",
+      "artifactChannel.ociRegistryHosts={reg.example.com:5000,mirror.example.com}",
+      "--set",
+      "artifactChannel.blobBaseUrls={https://blobs.example.com}",
+      "--set",
+      "artifactChannel.insecureHosts={reg.example.com:5000}"
+    ]);
+    bothHave(onDocs, "SCP_FEDERATION_SYNC_LOOP", "1");
+    bothHave(onDocs, "SCP_FEDERATION_SYNC_INTERVAL_SECONDS", "30");
+    bothHave(onDocs, "SCP_FEDERATION_SYNC_SPARSE_INTERVAL_SECONDS", "1800");
+    bothHave(onDocs, "SCP_INBOX_LOOP", "1");
+    bothHave(onDocs, "SCP_INBOX_TICK_INTERVAL_SECONDS", "45");
+    bothHave(onDocs, "SCP_RETRANS_AUTO_RELAY", "1");
+    bothHave(onDocs, "SCP_RETRANS_AUTO_RELAY_INTERVAL_SECONDS", "90");
+    bothHave(onDocs, "SCP_RETRANS_AUTO_RELAY_MAX_ATTEMPTS", "3");
+    bothHave(onDocs, "SCP_RETRANS_AUTO_RELAY_LEASE_SECONDS", "7200");
+    bothHave(onDocs, "SCP_INTERNAL_BASE_URL", "https://scp.example.com/api/v1");
+    // Comma-joined, in values order — the parse the server does (`parseRegistryHostList`).
+    bothHave(onDocs, "SCP_ARTIFACT_OCI_REGISTRY_HOSTS", "reg.example.com:5000,mirror.example.com");
+    bothHave(onDocs, "SCP_ARTIFACT_BLOB_BASE_URLS", "https://blobs.example.com");
+    bothHave(onDocs, "SCP_ARTIFACT_INSECURE_HOSTS", "reg.example.com:5000");
+    assert(
+      envOf(onDocs, "-api", "SCP_ROLE")?.value === "all",
+      `[${envLabel}] api.role=all must render SCP_ROLE=all on the api Deployment (the knob that unblocks POST /discovery/run on a two-Deployment install)`
+    );
+    console.log(`  enabled render: every knob present + correct on BOTH Deployments`);
+
+    // The operator token is a secretKeyRef, never a literal — a token rendered as a plain env
+    // VALUE would sit in the Deployment spec for anyone with `get deploy`.
+    const opDocs = renderChart(releaseName, [
+      "--set",
+      "operatorApi.enabled=true",
+      "--set",
+      "appSecrets.existingSecret=scp-operator"
+    ]);
+    for (const suffix of ["-api", "-worker"]) {
+      const found = envOf(opDocs, suffix, "SCP_OPERATOR_TOKEN");
+      assert(
+        found?.value === undefined && found?.valueFrom?.secretKeyRef?.name === "scp-operator",
+        `[${envLabel}] SCP_OPERATOR_TOKEN must be a secretKeyRef (never a literal value) on the ${suffix.slice(1)} Deployment`
+      );
+    }
+
+    // FAIL-FAST GUARDS — both must REFUSE to render. A typo'd role or an operator token with no
+    // Secret behind it would otherwise surface as a healthy-looking install that misbehaves at
+    // runtime (a 400 from /discovery/run; a pod crash-looping on a missing secret key).
+    for (const [args, what] of [
+      [["--set", "api.role=worker"], "api.role=worker"],
+      [
+        ["--set", "operatorApi.enabled=true"],
+        "operatorApi.enabled with no appSecrets.existingSecret"
+      ]
+    ] as [string[], string][]) {
+      let rendered = false;
+      try {
+        renderChart(releaseName, args);
+        rendered = true;
+      } catch {
+        /* expected */
+      }
+      assert(!rendered, `[${envLabel}] ${what} must FAIL the render, not be silently ignored`);
+    }
+    console.log(`  operator token is a secretKeyRef; both fail-fast guards refuse to render`);
   }
 
   // Size-regression guard: the MAIN chart's Helm release Secret must stay under Kubernetes' 1 MB
   // limit. Helm stores base64(gzip(whole chart)) in the release — a vendored backend manifest
   // creeping into deploy/helm would blow past 1 MB and break `helm install` outright (the M11
   // regression that motivated the deploy/helm-bundled split). Package + measure.
-  console.log("helm-verify: checking the main chart's packaged size stays under Helm's 1 MB release limit...");
+  console.log(
+    "helm-verify: checking the main chart's packaged size stays under Helm's 1 MB release limit..."
+  );
   const mainPkg = packagedChartBase64Size(CHART_DIR);
   assert(
     mainPkg < 1_048_576,
@@ -1268,35 +1561,53 @@ function main(): void {
   console.log("helm-verify: rendering the bundled-backends chart (deploy/helm-bundled)...");
   verifyBundledChart(
     renderBundledChart([
-      "--set", "bundledExecutor.argocd.enabled=true",
-      "--set", "bundledExecutor.argocd.image=registry.example.com/scp/argocd:v3.4.5",
-      "--set", "bundledExecutor.argocd.valkeyImage=registry.example.com/scp/valkey:8.2.3",
-      "--set", "bundledExecutor.argoWorkflows.enabled=true",
-      "--set", "bundledExecutor.argoWorkflows.serverImage=registry.example.com/scp/argocli:v4.0.7",
-      "--set", "bundledExecutor.argoWorkflows.controllerImage=registry.example.com/scp/workflow-controller:v4.0.7",
-      "--set", "bundledExecutor.argoEvents.enabled=true",
-      "--set", "bundledExecutor.argoEvents.image=registry.example.com/scp/argo-events:v1.9.10",
-      "--set", "bundledExecutor.gitea.enabled=true",
-      "--set", "bundledExecutor.gitea.image=registry.example.com/scp/gitea:1.26.1-rootless"
+      "--set",
+      "bundledExecutor.argocd.enabled=true",
+      "--set",
+      "bundledExecutor.argocd.image=registry.example.com/scp/argocd:v3.4.5",
+      "--set",
+      "bundledExecutor.argocd.valkeyImage=registry.example.com/scp/valkey:8.2.3",
+      "--set",
+      "bundledExecutor.argoWorkflows.enabled=true",
+      "--set",
+      "bundledExecutor.argoWorkflows.serverImage=registry.example.com/scp/argocli:v4.0.7",
+      "--set",
+      "bundledExecutor.argoWorkflows.controllerImage=registry.example.com/scp/workflow-controller:v4.0.7",
+      "--set",
+      "bundledExecutor.argoEvents.enabled=true",
+      "--set",
+      "bundledExecutor.argoEvents.image=registry.example.com/scp/argo-events:v1.9.10",
+      "--set",
+      "bundledExecutor.gitea.enabled=true",
+      "--set",
+      "bundledExecutor.gitea.image=registry.example.com/scp/gitea:1.26.1-rootless"
     ])
   );
 
   // M15.4 federation-role guardrail (CHART-RENDER-TIME LINT, NOT runtime authority) — explicit
   // positive AND negative cases. The operator sets both federationRole and the enabled flags; this
   // lint catches the misconfiguration of a role enabling a backend it should not run.
-  console.log("helm-verify: checking the M15.4 federation-role bundled-backend guardrail (render-time lint)...");
+  console.log(
+    "helm-verify: checking the M15.4 federation-role bundled-backend guardrail (render-time lint)..."
+  );
   {
     const guardLabel = "federation-role-guardrail";
 
     // POSITIVE: an `outpost` may run gitea + argocd (self-contained deploy target, ADR-0012). The
     // role label must be stamped on the render, and the guardrail must find ZERO violations.
     const okDocs = renderBundledChart([
-      "--set", "federationRole=outpost",
-      "--set", "bundledExecutor.gitea.enabled=true",
-      "--set", "bundledExecutor.gitea.image=registry.example.com/scp/gitea:1.26.1-rootless",
-      "--set", "bundledExecutor.argocd.enabled=true",
-      "--set", "bundledExecutor.argocd.image=registry.example.com/scp/argocd:v3.4.5",
-      "--set", "bundledExecutor.argocd.valkeyImage=registry.example.com/scp/valkey:8.2.3"
+      "--set",
+      "federationRole=outpost",
+      "--set",
+      "bundledExecutor.gitea.enabled=true",
+      "--set",
+      "bundledExecutor.gitea.image=registry.example.com/scp/gitea:1.26.1-rootless",
+      "--set",
+      "bundledExecutor.argocd.enabled=true",
+      "--set",
+      "bundledExecutor.argocd.image=registry.example.com/scp/argocd:v3.4.5",
+      "--set",
+      "bundledExecutor.argocd.valkeyImage=registry.example.com/scp/valkey:8.2.3"
     ]);
     assert(
       renderedFederationRole(okDocs) === "outpost",
@@ -1314,9 +1625,12 @@ function main(): void {
     // violation naming the role + the offending backend. This is a REAL suite assertion — if a
     // future change made the guardrail permissive, THIS assert fails and helm-verify goes red.
     const badDocs = renderBundledChart([
-      "--set", "federationRole=retrans",
-      "--set", "bundledExecutor.gitea.enabled=true",
-      "--set", "bundledExecutor.gitea.image=registry.example.com/scp/gitea:1.26.1-rootless"
+      "--set",
+      "federationRole=retrans",
+      "--set",
+      "bundledExecutor.gitea.enabled=true",
+      "--set",
+      "bundledExecutor.gitea.image=registry.example.com/scp/gitea:1.26.1-rootless"
     ]);
     const badViolations = federationRoleViolations("retrans", badDocs);
     assert(
@@ -1331,7 +1645,8 @@ function main(): void {
     // non-zero exit. We simulate the standing-gate wiring against this disallowed render and confirm
     // it would contribute at least one failure (without polluting the real suite tally).
     const wouldFail: string[] = [];
-    for (const v of federationRoleViolations(renderedFederationRole(badDocs), badDocs)) wouldFail.push(v);
+    for (const v of federationRoleViolations(renderedFederationRole(badDocs), badDocs))
+      wouldFail.push(v);
     assert(
       wouldFail.length > 0,
       `[${guardLabel}] a disallowed (role, enabled-backends) render must produce a helm-verify failure (non-zero exit); it produced none`

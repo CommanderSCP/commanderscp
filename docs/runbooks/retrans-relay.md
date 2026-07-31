@@ -122,11 +122,83 @@ for this org's (single) `role: retrans` peer (`scp federation pair --role retran
 material is ever read from the inbox. No (or ambiguous) retrans peer → tarballs stay unprocessed
 with a logged config gap.
 
-Out of scope in M13.1a (deliberately): the retrans auto-relay build after a promotion import
-(13.1b) — a retrans still runs `scp federation relay` to *build* tarballs; the loop automates the
-receiving/forwarding ends. **Still true after M14.4** (owner decision D3, 2026-07-24): the poke
-chain is now wired, but **hop 2 — the retrans packaging a tarball for the CDS — remains
-operator-gated.** A poke arriving at a retrans wakes its ingest, not a build.
+Out of scope in M13.1a (deliberately): the retrans auto-relay build after a promotion import. That
+was 13.1b, and it has since shipped — see the next section. Before it, and still today wherever
+`SCP_RETRANS_AUTO_RELAY` is unset, **hop 2 (the retrans packaging a tarball for the CDS) is
+operator-gated**: a poke arriving at a retrans wakes its ingest, not a build.
+
+## Unattended AUTO-RELAY — the onward byte hop (M13.1b, proposal §13.1)
+
+The last operator-gated step of the walk. When a promotion `.scpbundle` is imported at a
+`role: retrans` instance, that import writes an **obligation** into `federation_relay_builds`
+(drizzle/0047), and a second pg-boss loop (`federation/auto-relay.ts`) discharges it by calling the
+*same* `buildRelayTarball` the route calls — same role arm, same verification, same Decisions, same
+audit events. Nothing about what is trusted changes; only who issues the command.
+
+| Variable | Meaning |
+|---|---|
+| `SCP_RETRANS_AUTO_RELAY` | **`1` = enable** (default off). **Set this on the retrans that can reach the SOURCE registry — the LOW side.** Unattended byte egress across a security boundary is opted into separately from unattended *ingest*, so `SCP_INBOX_LOOP=1` alone never moves bytes outward. |
+| `SCP_RETRANS_AUTO_RELAY_INTERVAL_SECONDS` | Tick cadence (default `60`, floor `5`). The interval is the reliable floor; a poke (below) merely optimizes latency. |
+| `SCP_RETRANS_AUTO_RELAY_MAX_ATTEMPTS` | Failed **verdicts** before a change goes terminal `exhausted` (default `5`, clamped `[1,20]`). |
+| `SCP_RETRANS_AUTO_RELAY_LEASE_SECONDS` | How long a claiming worker owns a change (default `3600`, clamped `[60,86400]`). Should exceed the slowest realistic multi-GB pull. |
+
+**Why the obligation is written at import rather than discovered by a query.** "An imported change
+carrying a verified manifest with artifacts" describes the HIGH-side retrans's rows just as well as
+the low side's — and the high side can never build them (the source registry is on the far side of
+the air gap, which is why a tarball exists at all). A node that receives bytes has nothing seeded;
+`validateAndForwardRelayTarball` additionally marks its row `forwarded`, so even a misconfigured
+high-side enable stops as soon as the tarball lands. It also means enabling the flag never drains a
+historical backlog across the CDS.
+
+**What one tick does, per org.** Non-`retrans` role → nothing. Otherwise: list due obligations
+(oldest first, at most 5 per tick — each can pull GBs), resolve the onward drop ONCE (per-peer
+`deliveryTarget.outDir`, else `SCP_RELAY_OUT_DIR`; **strict** here, so a peer configured for
+s3-compatible delivery *defers with a named problem* rather than silently dropping into the instance
+env dir), then per change: claim atomically → build → record.
+
+**Failure is bounded, on purpose.** `buildRelayTarball` cannot tell a transient registry outage from
+a permanently tampered artifact — both are refusals carrying a block Decision. Retrying forever would
+restate that Decision every tick, which is the unbounded-write pathology PR #153 measured at
+1.44 GB/day in production. So a failing change gets `MAX_ATTEMPTS` **verdicts** (claims that never
+reach a verdict — an evicted pod — do not count) with exponential backoff (60s, 120s, 240s… capped at
+1h), then terminal `exhausted` with one `retrans-auto-relay` block Decision and one
+`federation.relay.auto.exhausted` audit event, and no further work.
+
+**Getting out of `exhausted`.** Fix the cause and run the ordinary manual command:
+
+```bash
+scp federation relay --change <changeObjectId>
+```
+
+A successful manual build both delivers the bytes and **clears the ledger row** — `exhausted` is
+never a state that needs database surgery to leave.
+
+**Multi-replica safety.** The claim is a single conditional `UPDATE … RETURNING` that also takes the
+lease, and **every release is fenced on the attempt number that claim returned**. A lease can lapse
+while a multi-GB pull is still running, so two workers can legitimately hold one change in sequence;
+the fence means the slow one's late write is refused outright rather than flipping a `built` row back
+to `pending` (re-crossing bytes) or stamping a durable "nothing crossed the boundary" over a crossing
+that happened.
+
+**Poke.** `POST /federation/poke` now wakes three loops, not two — sync, inbox, and auto-relay — and
+reports which fired (`wokenSync` / `wokenInbox` / `wokenRelay`). Before this, a poke landing on a
+retrans woke the *import* of the arriving `.scpbundle` and then waited for a human to move the bytes.
+A dropped poke self-heals on the next interval tick, unchanged.
+
+**Chart surface.** These knobs are settable from `deploy/helm` as `federation.relay.autoRelay.*`
+(and `federation.relay.inbox.*` for M13.1a's ingest half), asserted by `tools/helm-verify` both
+ways — absent on a default render, present and correct when enabled.
+
+**What is still NOT chart-settable, precisely.** The relay's **directories** —
+`SCP_RELAY_OUT_DIR` / `IN_DIR` / `BLOB_OUT_DIR`, `SCP_RELAY_SOURCE_REPO` / `DEST_REPO` / `CERT_DIR`,
+and the `SCP_DELIVERY_ROOTS` that must bound them. A CDS drop directory is polled by a third-party
+intake watcher, so it needs a volume shape (RWX PVC / `existingClaim` / hostPath / CSI) that is a
+deployment-topology decision, and the chart's `readOnlyRootFilesystem: true` pod default forbids
+improvising one. So a Helm-deployed retrans can be switched on but not yet given anywhere to drop:
+both loops resolve no onward target and defer with a named problem, consuming no attempt and writing
+no Decision. Configure those directories out-of-band (or run the retrans outside Helm) until the
+volume shape is decided. *(An earlier revision of this note said the gap was "tracked separately" —
+that was wrong: nothing tracked it. This paragraph is the record.)*
 
 ## Poke-mode across the relay chain (M14.4, ADR-0009)
 
@@ -137,10 +209,17 @@ operator-gated.** A poke arriving at a retrans wakes its ingest, not a build.
 unconsented poke with **409**.
 
 ```
-commander ──poke──▶ low-side retrans ──(CDS, operator-gated)──▶ high-side retrans ──poke──▶ outpost
-   ▲ pair the retrans   ▲ pair the commander    ▲ pair the outpost   ▲ pair the retrans
-     --poke-mode          --poke-mode             --poke-mode          --poke-mode
+commander ──poke──▶ low-side retrans ──(CDS transfer, the org's)──▶ high-side retrans ──poke──▶ outpost
+   ▲ pair the retrans   ▲ pair the commander       ▲ pair the outpost   ▲ pair the retrans
+     --poke-mode          --poke-mode                --poke-mode          --poke-mode
+                          + SCP_RETRANS_AUTO_RELAY=1 builds the tarball
+                            unattended (M13.1b); without it, hop 2 waits
+                            for `scp federation relay`
 ```
+
+The CDS crossing itself is never SCP's — everything past the drop directory is the org's
+cross-domain solution (charter principle 1). What M13.1b removed is the operator command *before*
+that drop, not the transfer after it.
 
 Every poke-mode peer needs an **https/mTLS-capable `baseUrl`** — the pair command refuses otherwise
 (the poke carries no signed payload, so the client certificate is the only thing authenticating the

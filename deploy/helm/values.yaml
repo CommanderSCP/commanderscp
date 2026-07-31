@@ -38,6 +38,22 @@ serviceAccount:
 # -------------------------------------------------------------------------------------------
 api:
   replicaCount: 2
+  # SCP_ROLE for the api pods: "api" (default — pure request server) or "all".
+  #
+  # WHY "all" IS OFFERED. A handful of capabilities run INLINE on the request path and need the
+  # serving process to be worker-capable — most visibly `POST /v1/discovery/run`, which refuses
+  # with "discovery requires a worker-capable process (SCP_ROLE=all or worker)" because the
+  # api-only process has no plugin host. The worker Deployment cannot help: it serves no traffic.
+  # So on a default two-Deployment install that endpoint 400s for everyone, and the documented
+  # import-an-existing-executor (Mode A) flow is impossible. Until that work is dispatched to the
+  # worker properly (docs/proposals/discovery-worker-dispatch.md), "all" is the escape hatch.
+  #
+  # WHAT IT COSTS. An "all" api pod also runs the loops (reconcile, watchdog, observe, and any
+  # federation loop enabled below). The loops are pg-boss singletons, so N replicas do not
+  # multiply the work — but they do add the plugin host's memory to every api pod, and with the
+  # worker Deployment still running you have two sets of loop-capable processes. For a small or
+  # single-pod install, set this to "all" and `worker.replicaCount: 0`.
+  role: api
   service:
     type: ClusterIP
     port: 80
@@ -154,6 +170,26 @@ appSecrets:
   existingSecretKeys:
     cookieSecret: SCP_COOKIE_SECRET
     secretsMasterKey: SCP_SECRETS_MASTER_KEY
+    # Only read when `operatorApi.enabled` (below). Not in the chart-GENERATED secret by design —
+    # see that block for why.
+    operatorToken: SCP_OPERATOR_TOKEN
+
+# -------------------------------------------------------------------------------------------
+# THE INSTANCE-OPERATOR WRITE SURFACE (SCP_OPERATOR_TOKEN) — instance-scoped config that is NOT
+# any tenant's to set: the scanner registry (`PUT /v1/instance/scanner-assignments`), the
+# scan-DB staleness policy, and the other operator-only endpoints. `config.ts` is explicit that
+# UNSET = the operator write surface is CLOSED, which is the right default and is why this is
+# opt-in rather than generated.
+#
+# DELIBERATELY NOT AUTO-GENERATED. The chart generates `cookieSecret`/`secretsMasterKey` because
+# nothing outside the pod ever needs to read them. An operator token is the opposite: a HUMAN
+# (or their CLI) must present it, so a value only the pod knows would be useless. Enabling this
+# therefore REQUIRES `appSecrets.existingSecret` — an operator-created Secret carrying the key
+# named above. Rendering fails fast if you enable it without one, rather than producing a pod
+# that crash-loops on a missing secret key.
+# -------------------------------------------------------------------------------------------
+operatorApi:
+  enabled: false
 
 eventBus:
   # postgres (default, zero extra dependency) | nats (DESIGN §8 — optional JetStream backend).
@@ -174,6 +210,16 @@ bootstrap:
   adminUsername: admin
 
 seedDemo: false
+
+# SCP_INTERNAL_BASE_URL — how this instance refers to ITSELF in text it hands to a human.
+#
+# NOT cosmetic. `config.ts` defaults it to `http://127.0.0.1:<port>/api/v1`, and the CLI device
+# login derives its `verificationUri` from it (routes/device-flow.ts) — so on every ingress-served
+# install that has left this unset, `scp login` tells the user to open `http://127.0.0.1:8080/device`,
+# which resolves to the user's own machine and cannot work. Set it to the URL a human actually
+# reaches this instance at, INCLUDING the `/api/v1` suffix — e.g. https://scp.example.com/api/v1.
+# Empty (the default) preserves today's behavior exactly.
+internalBaseUrl: ""
 
 # -------------------------------------------------------------------------------------------
 # Managed-IaC (Mode 2, DESIGN §12) — OFF by default. When enabled, the chart grants the worker
@@ -288,6 +334,93 @@ federation:
     # WITHOUT revocation enforcement on a stale CRL, air-gap-friendly); `true` refuses to boot on
     # an expired CRL instead of trusting a stale revocation list.
     crlHardFailOnExpiry: false
+
+  # -----------------------------------------------------------------------------------------
+  # LIVE-SYNC + POKE (M14.0/M14.4, ADR-0009) — the scheduled HTTP pull an outpost (or retrans)
+  # runs against its commander, and the contentless wake that optimizes its latency.
+  #
+  # OFF BY DEFAULT, exactly like the server's own `SCP_FEDERATION_SYNC_LOOP=1` opt-in
+  # (`federation-sync.ts`): an instance whose operator never asked for it never schedules a tick.
+  # The chart previously rendered the CLIENT CERT material this loop dials with
+  # (`federation.mtls` → SCP_FEDERATION_MTLS_*) while having no way to switch the loop itself on
+  # — certs for a dialer that could not run.
+  #
+  # Data direction is unchanged and non-negotiable (DESIGN §13 / ADR-0009): nothing flows
+  # commander→outpost; the outpost pulls. Poke-mode is per-PEER config set through the API, not
+  # here — these are only this instance's own cadence knobs.
+  # -----------------------------------------------------------------------------------------
+  sync:
+    # `1` ⇒ SCP_FEDERATION_SYNC_LOOP=1. Runs on worker-capable processes only.
+    enabled: false
+    # SCP_FEDERATION_SYNC_INTERVAL_SECONDS — the frequent cadence (server default 60, floor 5).
+    intervalSeconds: 60
+    # SCP_FEDERATION_SYNC_SPARSE_INTERVAL_SECONDS — the safety-net cadence a peer drops to once it
+    # has PROVEN poke-mode by actually receiving a poke (M14.4 D2). Server default 900, clamped by
+    # the server to [intervalSeconds, 43200] — the 12h ceiling is load-bearing (pg-boss asserts
+    # singletonSeconds <= archiveSeconds), so a "daily" value would throw at runtime.
+    sparseIntervalSeconds: 900
+
+  # -----------------------------------------------------------------------------------------
+  # THE STAGING NODE (M13.1a + M13.1b) — the two unattended loops a `role: retrans` CDS-boundary
+  # relay runs. Both OFF BY DEFAULT and INDEPENDENT of each other, deliberately: INGEST and
+  # EGRESS are separate consents.
+  #
+  #   inbox.enabled     — watch the delivery inbox and import/forward what arrives.
+  #   autoRelay.enabled — build the onward artifact-BYTE tarball for an imported promotion with no
+  #                       operator command. Set this ONLY on the retrans that can reach the SOURCE
+  #                       registry (the LOW side); a high-side node has nothing to build.
+  #
+  # ONLY the env plumbing is here. The relay's DIRECTORIES (SCP_RELAY_OUT_DIR / IN_DIR /
+  # BLOB_OUT_DIR and the SCP_DELIVERY_ROOTS that must bound them) are NOT chart-settable yet:
+  # a CDS drop directory is polled by a THIRD-PARTY intake watcher, so it needs a volume shape
+  # (RWX PVC / existingClaim / hostPath / CSI) this chart has no vocabulary for and that the
+  # `readOnlyRootFilesystem: true` pod default forbids improvising. Until that lands, a
+  # Helm-deployed retrans can be switched on but not given anywhere to drop — see
+  # docs/runbooks/retrans-relay.md. Enabling these without those directories is harmless: both
+  # loops resolve no target and defer with a named problem, consuming no attempt.
+  # -----------------------------------------------------------------------------------------
+  relay:
+    inbox:
+      # `1` ⇒ SCP_INBOX_LOOP=1.
+      enabled: false
+      # SCP_INBOX_TICK_INTERVAL_SECONDS (server default 60, floor 5).
+      tickIntervalSeconds: 60
+    autoRelay:
+      # `1` ⇒ SCP_RETRANS_AUTO_RELAY=1. Unattended byte egress across a security boundary.
+      enabled: false
+      # SCP_RETRANS_AUTO_RELAY_INTERVAL_SECONDS (server default 60, floor 5).
+      intervalSeconds: 60
+      # SCP_RETRANS_AUTO_RELAY_MAX_ATTEMPTS — failed VERDICTS before a promotion's onward hop goes
+      # terminal `exhausted` (server default 5, clamped [1,20]). This is the bound that keeps a
+      # permanently-failing relay from restating a block Decision forever (PR #153's lesson).
+      maxAttempts: 5
+      # SCP_RETRANS_AUTO_RELAY_LEASE_SECONDS — how long a claiming worker owns a change (server
+      # default 3600, clamped [60,86400]). Should exceed the slowest realistic multi-GB pull.
+      leaseSeconds: 3600
+
+# -------------------------------------------------------------------------------------------
+# ARTIFACT BYTE-CHANNEL EGRESS ALLOWLISTS (ADR-0019 §4) — the operator half of the two-layer
+# model, same never-tenant-suppliable trust tier as internalEgressHosts / managedIac above.
+#
+# FAIL-CLOSED BY DESIGN: unset means every OCI artifact verification REFUSES
+# (`artifact-verify.ts`). That is correct and costs nothing until this instance actually
+# verifies cross-boundary artifact bytes — which happens only for a change imported from a peer
+# carrying a verified promotion manifest. A commander with no peers never reaches it.
+#
+# TWO LAYERS MUST BOTH BE SET. These are the APPLICATION layer and take host names. The NETWORK
+# layer is `networkPolicy.executorEgress`, which can only express namespaceSelector or ipBlock
+# CIDRs — a Kubernetes NetworkPolicy cannot match a DNS name. So an external registry needs its
+# hostname here AND its CIDR there; setting only one renders green and still cannot pull.
+# -------------------------------------------------------------------------------------------
+artifactChannel:
+  # SCP_ARTIFACT_OCI_REGISTRY_HOSTS — `host[:port]` entries any OCI ref may be pulled from.
+  ociRegistryHosts: []
+  # SCP_ARTIFACT_BLOB_BASE_URLS — base URLs the guarded blob fetch may request under (SSRF).
+  blobBaseUrls: []
+  # SCP_ARTIFACT_INSECURE_HOSTS — registry hosts reachable WITHOUT TLS verification. Safe only
+  # because the cosign SIGNATURE, not transport TLS, is the trust anchor; still an explicit,
+  # per-host operator choice, never a blanket default.
+  insecureHosts: []
 
 ingress:
   enabled: false

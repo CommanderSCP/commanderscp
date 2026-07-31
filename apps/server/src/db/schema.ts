@@ -1317,6 +1317,50 @@ export const federationInboxFiles = pgTable(
   ]
 );
 
+/**
+ * M13.1b (drizzle/0047) — the staging-node AUTO-RELAY BUILD LEDGER. One row per (org, LOCAL
+ * imported change) that OWES the onward byte hop, so a `role: retrans` instance builds the tarball
+ * exactly once per imported promotion, retries a transient failure, and STOPS at an
+ * operator-configured cap.
+ *
+ * CAUSAL, NOT DERIVED: the row is written by the promotion import itself (`promotion-repo.ts`), in
+ * that transaction, on a `role: retrans` instance only — the sweep never stands a predicate scan
+ * over `changes`. See the migration header for why (the high-side retrans would otherwise enumerate
+ * builds it can never perform) and for why no existing surface can carry this state.
+ */
+export const federationRelayBuilds = pgTable(
+  "federation_relay_builds",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    /** The LOCAL imported change whose M17.4(a)-verified authorized set is relayed. */
+    changeObjectId: uuid("change_object_id").notNull(),
+    /** The EXPORTER's change id — what names the emitted tarball at the CDS. */
+    sourceChangeObjectId: text("source_change_object_id"),
+    /** 'pending' | 'built' | 'forwarded' | 'exhausted' — see the migration header. */
+    status: text("status").notNull(),
+    /** CLAIMS taken; also the fence token every release is guarded on. */
+    attempts: integer("attempts").notNull().default(0),
+    /** Attempts that produced a VERDICT and failed — the ONLY counter the cap is measured against,
+     *  so an evicted worker cannot spend a change's budget without ever deciding anything. */
+    failedAttempts: integer("failed_attempts").notNull().default(0),
+    /** Retry gate: a 'pending' row is workable only at/after this instant. */
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    /** The claiming worker's lease; NULL = unclaimed. A dead worker's lease simply lapses. */
+    claimedUntil: timestamp("claimed_until", { withTimezone: true }),
+    lastReason: text("last_reason"),
+    /** `buildRelayTarball`'s OWN Decision — identical to what the manual path writes. */
+    lastDecisionId: uuid("last_decision_id"),
+    tarballPath: text("tarball_path"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    uniqueIndex("federation_relay_builds_change").on(table.orgId, table.changeObjectId),
+    index("federation_relay_builds_due").on(table.orgId, table.status, table.nextAttemptAt)
+  ]
+);
+
 /** Pre-M16 residual, Track A (drizzle/0040) — peer change STATUS this domain received and could
  *  not attach to anything. A `change_status` journal entry is positive evidence that a change
  *  exists and is moving on the peer (it names `payload.objectId` and a state); when no local

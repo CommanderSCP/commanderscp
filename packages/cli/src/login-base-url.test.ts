@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Capture the baseUrl every ScpClient is constructed with, so we can assert which host
 // `scp login` actually targets given flag / env / saved-config precedence.
@@ -45,6 +45,14 @@ async function runLogin(args: string[]): Promise<void> {
   const { buildProgram } = await import("./cli.js");
   await buildProgram().parseAsync(["node", "scp", "login", ...args]);
 }
+
+/** Warm the lazy import in a hook, for the reason `outpost-reconcile-precondition.test.ts` spells
+ *  out: whichever test runs first otherwise absorbs the whole CLI module graph's transform cost
+ *  inside its own 5s budget. That file's first test crossed the line on a cold CI runner; this
+ *  one's was already spending 2.2s of its 5s there, so it was the next to go. */
+beforeAll(async () => {
+  await import("./cli.js");
+}, 30_000);
 
 async function writeSavedConfig(baseUrl: string): Promise<void> {
   await writeFile(

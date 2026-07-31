@@ -24,6 +24,8 @@ import {
   currentPeerCosignPublicKey
 } from "./peers-repo.js";
 import { recordBundleTransfer } from "./bundle-transfers-repo.js";
+import { seedRelayBuild } from "./relay-builds-repo.js";
+import { autoRelayEnabled } from "./auto-relay.js";
 import { ensureInstanceKey, verifyAttestation } from "../governance/attestation.js";
 import { ensureInstanceCosignKey } from "../governance/cosign-keys.js";
 import { insertDecision } from "../coordination/decisions-repo.js";
@@ -408,7 +410,12 @@ export async function exportPromotionBundle(
     // this row is and stays `created` on THIS instance (the ledger is INSERT-only and every
     // `submitted`/`confirmed` row is written by a LATER hop's own instance), so the boundary
     // segment may say "exported" here and must call the handoff unknown.
-    await stampBoundaryBundleChecksum(tx, input.orgId, gathered.header.sourceChangeObjectId, checksum);
+    await stampBoundaryBundleChecksum(
+      tx,
+      input.orgId,
+      gathered.header.sourceChangeObjectId,
+      checksum
+    );
 
     return {
       header: gathered.header,
@@ -476,7 +483,11 @@ export interface ManifestVerifyContext {
 export type ManifestVerifyResult = { ok: true } | ({ ok: false } & ManifestVerifyContext);
 
 /** Canonical multiset key for an artifact entry — only the three fields the manifest carries. */
-function artifactKey(a: { type: string; digest: string; signatureRef?: string | undefined }): string {
+function artifactKey(a: {
+  type: string;
+  digest: string;
+  signatureRef?: string | undefined;
+}): string {
   return JSON.stringify([a.type, a.digest, a.signatureRef ?? ""]);
 }
 /** Multiset equality: equal cardinality AND identical element counts (sort the canonical keys). */
@@ -545,7 +556,8 @@ export async function verifyPromotionManifest(args: {
   if (manifest.sourceChangeObjectId !== bundle.header.sourceChangeObjectId) {
     return {
       ok: false,
-      reason: "promotion manifest sourceChangeObjectId does not bind this bundle (rejected, fail-closed)",
+      reason:
+        "promotion manifest sourceChangeObjectId does not bind this bundle (rejected, fail-closed)",
       detail: {
         check: "self-binding",
         field: "sourceChangeObjectId",
@@ -557,7 +569,8 @@ export async function verifyPromotionManifest(args: {
   if (manifest.exporterDomainId !== bundle.header.exporterDomainId) {
     return {
       ok: false,
-      reason: "promotion manifest exporterDomainId does not bind this bundle (rejected, fail-closed)",
+      reason:
+        "promotion manifest exporterDomainId does not bind this bundle (rejected, fail-closed)",
       detail: {
         check: "self-binding",
         field: "exporterDomainId",
@@ -670,7 +683,10 @@ export async function importPromotionBundle(
       throw conflict("promotion bundle checksum mismatch (rejected, fail-closed)");
     }
     const currentKey = await currentPeerPublicKey(tx, orgId, peer.id);
-    if (!currentKey || !verifyBundleSignature(bundle.checksum, bundle.bundleSignature, currentKey)) {
+    if (
+      !currentKey ||
+      !verifyBundleSignature(bundle.checksum, bundle.bundleSignature, currentKey)
+    ) {
       throw conflict("promotion bundle signature verification failed (rejected, fail-closed)");
     }
 
@@ -855,6 +871,45 @@ async function applyPromotionImport(
     status: "confirmed",
     checksum: bundle.checksum
   });
+
+  // M13.1b — THE CAUSAL SEED for the unattended onward BYTE hop (proposal §13.1: "when a promotion
+  // import succeeds on a `retrans`-role instance, the loop schedules `buildRelayTarball` for it").
+  // Written HERE, in the import's own transaction, rather than derived later by a predicate scan
+  // over `changes`: "an imported change carrying a verified manifest with artifacts" is equally
+  // true of every promotion the HIGH-side retrans successfully forwarded, so a scan would enumerate
+  // builds that node can never perform — its source registry is on the far side of the air gap,
+  // which is the entire reason the tarball exists — and bury a real crossing under fabricated
+  // refusals. Seeding on the causal event means a node that RECEIVES bytes has nothing seeded, and
+  // it also means flipping the feature on never drains a historical backlog across the CDS.
+  //
+  // Gated to `role: retrans` because only that role may relay at all (ADR-0004; `buildRelayTarball`
+  // hard-refuses 409 elsewhere) and to a NON-EMPTY typed artifact set because a metadata-only
+  // promotion has no bytes to move. The seed is idempotent (ON CONFLICT DO NOTHING), so a replayed
+  // bundle can never resurrect a terminal row or reset a backoff. It creates an obligation, never a
+  // permission: whether it is ever acted on is `SCP_RETRANS_AUTO_RELAY`'s call, and every trust
+  // decision is still re-derived from the signed manifest inside `buildRelayTarball`.
+  const relaySelf = await ensureFederationSelf(tx, orgId);
+  const typedArtifacts = Array.isArray(bundle.artifacts) ? bundle.artifacts : [];
+  if (relaySelf.role === "retrans" && typedArtifacts.length > 0) {
+    const seeded = await seedRelayBuild(tx, {
+      orgId,
+      changeObjectId: change.id,
+      sourceChangeObjectId: bundle.header.sourceChangeObjectId
+    });
+    // THE STALL SIGNAL, at the one place it is reachable by construction and emitted exactly ONCE
+    // PER PROMOTION rather than once per tick. When automation is off, this hop is owed and nothing
+    // will move it — at a CDS nobody is watching a terminal, so say so here, naming the command
+    // that does move it. (The sweep cannot carry this message: with the flag unset its loop is
+    // never started, so any warning inside it is unreachable in production.)
+    if (seeded && !autoRelayEnabled()) {
+      console.warn(
+        `[federation] org ${orgId}: promotion ${change.id} imported at this retrans owes an onward ` +
+          `BYTE hop (${typedArtifacts.length} artifact(s)), but SCP_RETRANS_AUTO_RELAY is not set — ` +
+          `hop 2 stays OPERATOR-GATED here: run 'scp federation relay --change ${change.id}' to ` +
+          `build and drop the tarball, or set SCP_RETRANS_AUTO_RELAY=1 to automate it`
+      );
+    }
+  }
 
   return {
     localChangeObjectId: change.id,

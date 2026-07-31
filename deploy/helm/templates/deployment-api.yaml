@@ -56,7 +56,7 @@ spec:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           env:
             - name: SCP_ROLE
-              value: "api"
+              value: {{ include "commanderscp.apiRole" . | quote }}
             {{- include "commanderscp.commonEnv" . | nindent 12 }}
             {{- include "commanderscp.runtimeDbEnv" . | nindent 12 }}
           ports:

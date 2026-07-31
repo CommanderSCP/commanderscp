@@ -66,7 +66,7 @@
  */
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { DeliveryTarget, S3DeliveryTarget } from "@scp/schemas";
+import type { DeliveryTarget, S3DeliveryTarget, TrustDomainId } from "@scp/schemas";
 import { badRequest } from "../errors.js";
 import { resolveUnderDir, relayConfigFromEnv } from "./retrans-relay.js";
 import { s3Get, s3List, s3Put, type S3DeliveryCredentials } from "./delivery-s3.js";
@@ -473,10 +473,119 @@ export function requireInboundDir(resolved: ResolvedDeliveryTarget): string {
   return resolved.inbound.dir;
 }
 
+/** The slice of a `FederationPeerRow` {@link resolveOnwardDeliveryDir} needs — `id` on top of
+ *  {@link DeliveryTargetPeerRef}, so the onward hop can be attributed to the peer it targets. */
+export interface OnwardDeliveryPeerRef extends DeliveryTargetPeerRef {
+  /** TRUST sense (ADR-0021 D4) — the peer's federation domain id. */
+  id: TrustDomainId;
+}
+
+/**
+ * THE ONWARD DROP a store-and-forward hop writes into: the single peer-configured OUTBOUND
+ * filesystem `deliveryTarget` if exactly one peer carries one, else the instance env
+ * (`SCP_RELAY_OUT_DIR`). Shared by the M13.1a inbox loop's validate-and-forward and the M13.1b
+ * auto-relay, which must resolve it identically — the two halves of the same hop.
+ *
+ * FAIL-CLOSED, NEVER A SILENT DEFAULT. Every gap returns a NAMED `problem` the caller surfaces and
+ * defers on, rather than falling through to some other directory:
+ *   - AMBIGUITY (several peers configure an outbound dir) is a config gap, not a coin toss —
+ *     dropping bytes at the wrong boundary peer is exactly the mistake this refuses to guess at.
+ *   - An `s3-compatible` peer resolves with `outbound.dir === null` (its location is `outbound.s3`)
+ *     and is correctly skipped rather than mistaken for an unresolved filesystem dir: relaying a
+ *     multi-GB tarball straight to s3 is the documented 13.2b follow-on (see the relay route's
+ *     scope note), so an s3-only instance falls through to the env fallback or a named problem.
+ *   - A per-peer dir outside `SCP_DELIVERY_ROOTS` never resolves at all (`resolveDeliveryTarget`
+ *     refuses it fail-closed), so it cannot become an onward target here either.
+ */
+export function resolveOnwardDeliveryDir(
+  peers: readonly OnwardDeliveryPeerRef[],
+  config?: DeliveryEnvDirs,
+  roots?: readonly string[],
+  options?: {
+    /** M13.1b — for AUTOMATED callers: refuse (named problem) rather than fall through to the
+     *  instance env when a peer IS configured for delivery but with a provider this hop cannot
+     *  write to. Without it the automated path would perform an action the operator-invoked route
+     *  explicitly 400s on (`requireOutboundDir` refuses an s3 target), mark the build done, and put
+     *  the bytes in a directory the s3-expecting CDS never watches. */
+    strict?: boolean;
+  }
+): { dir: string; peerDomainId?: TrustDomainId } | { problem: string } {
+  const resolvedPeers = peers.map((peer) => ({
+    peer,
+    resolved: resolveDeliveryTarget(peer, config, roots)
+  }));
+  if (options?.strict) {
+    // ONLY peers that configured an OUTBOUND target this hop cannot write to. Both narrowings are
+    // load-bearing, and each was a live bug before it was added:
+    //
+    //   - a peer with NO deliveryTarget at all is not a misconfiguration, it simply is not the
+    //     boundary peer. Flagging it would refuse the whole hop on account of, typically, the
+    //     upstream commander — in the normal two-peer retrans topology, where the DOWNSTREAM peer
+    //     carries the only outDir and `SCP_RELAY_OUT_DIR` is legitimately unset.
+    //   - a peer whose target configures only `inDir` is the DOCUMENTED M13.1a upstream shape (the
+    //     schema makes `outDir` optional precisely so a peer can be an inbox and nothing more).
+    //     Keying on the resolved `outbound.dir` alone would flag it for lacking an outbound dir it
+    //     was never meant to have, with the same effect: every build deferred forever, no attempt,
+    //     no Decision, nothing to see.
+    //
+    // What is left is the case strictness exists for: a peer that DID declare where its outbound
+    // bytes go, in a form this hop cannot write (s3 — the documented 13.2b follow-on) or that
+    // resolution refused (traversal, outside `SCP_DELIVERY_ROOTS`). Falling through to the
+    // instance-wide dir there would perform an action the manual route explicitly 400s on.
+    const undeliverable = resolvedPeers.filter(({ peer, resolved }) => {
+      if (peer.deliveryTarget == null) return false;
+      if (resolved.provider === "s3-compatible") return true;
+      const declaredOutDir = (peer.deliveryTarget as { outDir?: string }).outDir;
+      return declaredOutDir !== undefined && resolved.outbound.dir === null;
+    });
+    if (undeliverable.length > 0) {
+      return {
+        problem:
+          `${undeliverable.length} peer(s) configure a delivery target this hop cannot write to (` +
+          undeliverable
+            .map(
+              ({ peer, resolved }) =>
+                `${peer.name}: ${
+                  resolved.provider === "s3-compatible"
+                    ? "s3-compatible (relaying the tarball straight to s3 is the documented 13.2b follow-on — configure a filesystem outDir)"
+                    : (resolved.outbound.problem ?? "outbound target unresolved")
+                }`
+            )
+            .join("; ") +
+          `) — refusing rather than silently dropping into the instance-wide SCP_RELAY_OUT_DIR instead`
+      };
+    }
+  }
+  const peerOut = resolvedPeers.filter(
+    ({ resolved }) => resolved.outbound.source === "peer" && resolved.outbound.dir !== null
+  );
+  if (peerOut.length === 1) {
+    return {
+      dir: peerOut[0]!.resolved.outbound.dir as string,
+      // The downstream boundary peer — threaded so the onward transfer row is attributed to the
+      // peer the drop actually goes to (M16.1's per-peer surface).
+      peerDomainId: peerOut[0]!.peer.id
+    };
+  }
+  if (peerOut.length > 1) {
+    return {
+      problem:
+        `${peerOut.length} peers configure an outbound deliveryTarget (` +
+        peerOut.map(({ peer }) => peer.name).join(", ") +
+        `) — the onward drop is ambiguous; a store-and-forward hop drops to a single boundary peer`
+    };
+  }
+  const env = resolveDeliveryTarget(null, config, roots);
+  if (env.outbound.dir !== null) return { dir: env.outbound.dir };
+  return { problem: env.outbound.problem ?? "no outbound delivery target resolvable" };
+}
+
 /** The resolved OUTBOUND s3 location, or a fail-closed 400 carrying the named per-gap problem. */
 function requireOutboundS3(resolved: ResolvedDeliveryTarget): ResolvedS3Location {
   if (resolved.outboundS3 === null) {
-    throw badRequest(resolved.outbound.problem ?? "delivery target outbound s3 location unresolved");
+    throw badRequest(
+      resolved.outbound.problem ?? "delivery target outbound s3 location unresolved"
+    );
   }
   return resolved.outboundS3;
 }

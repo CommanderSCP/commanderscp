@@ -15,6 +15,7 @@ import { startReconcileLoop } from "./coordination/reconcile.js";
 import { startObserveLoop } from "./coordination/observe.js";
 import { startWatchdogLoop } from "./coordination/watchdog.js";
 import { startInboxLoop } from "./federation/inbox-loop.js";
+import { startAutoRelayLoop } from "./federation/auto-relay.js";
 import { startFederationSyncLoop } from "./federation/federation-sync.js";
 import { createCommanderPokeSender } from "./federation/poke-sender.js";
 import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
@@ -149,6 +150,13 @@ async function main(): Promise<void> {
     // the same role guard — but DEFAULT-OFF (explicit `SCP_INBOX_LOOP=1` opt-in; without it this
     // returns an inert handle and never schedules a tick — an unconfigured instance does not spin).
     const inboxLoop = await startInboxLoop(boss, db, config.secretsMasterKey);
+    // M13.1b staging-node AUTO-RELAY (proposal §13.1): the last operator-gated step of the CDS
+    // boundary walk — a `role: retrans` instance builds the onward byte tarball for an imported
+    // promotion with no operator command. Same queue-per-capability pattern under the same role
+    // guard, DEFAULT-OFF behind its own explicit `SCP_RETRANS_AUTO_RELAY=1` (unattended byte egress
+    // across a security boundary is opted into separately from unattended INGEST; without it this
+    // returns an inert handle and the queue is never created).
+    const autoRelayLoop = await startAutoRelayLoop(boss, db, config.secretsMasterKey);
     // M14.0 outpost live-pull scheduler (docs/proposals/outpost-poke.md §"Milestone scope",
     // ADR-0009): same queue-per-capability pattern under the same role guard — DEFAULT-OFF (explicit
     // `SCP_FEDERATION_SYNC_LOOP=1` opt-in; without it an inert handle, never a scheduled tick). The
@@ -162,6 +170,7 @@ async function main(): Promise<void> {
       await watchdogLoop.stop();
       await observeLoop.stop();
       await inboxLoop.stop();
+      await autoRelayLoop.stop();
       await federationSyncLoop.stop();
       await pluginHost.stop();
       await relay.stop();
