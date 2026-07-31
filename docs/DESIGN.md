@@ -253,7 +253,8 @@ REVOKE UPDATE, DELETE ON audit_events FROM scp_app;   -- app role is INSERT/SELE
 ```
 
 - Written **in the same transaction** as the audited action — the trail can never skew from reality.
-- `scp audit verify` re-walks the chain; chain heads are periodically **anchored** to object storage/filesystem for external verifiability (grafted).
+- `scp audit verify` re-walks the chain; chain heads are periodically **anchored** to filesystem/object storage for external verifiability (grafted). **NOT YET BUILT (2026-07-31)** — `verifyAuditChain` still starts from `AUDIT_GENESIS_HASH` and `scp audit verify` pages the org's *complete* history client-side, with no `since` parameter, so verification cost is O(all history). [ADR-0024](adr/0024-decision-and-audit-retention.md) O4 commits to building it: an `audit_checkpoints` table + anchor job, a `startingPrevHash` parameter on `verifyAuditChain`, `GET /v1/audit-events?sinceSeq=`, and `scp audit verify --from`. Anchors go to the **filesystem** — the same channel air-gap bundles use — never to a cloud object store, which principle 4 forbids making required.
+- **`audit_events` is never deleted, and neither is `sync_journal`** ([ADR-0024](adr/0024-decision-and-audit-retention.md) D3). Both are hash-chained, so removing any row breaks verification of everything after the gap — a hole is indistinguishable from tampering, which is the exact property the chain exists to provide. Old segments may eventually be *archived* to a signed, standalone-verifiable file, but only once checkpointing exists, and never from the middle. The journal additionally stays un-prunable until bootstrap-snapshot export lands (§13), because a peer that falls below a pruned floor could otherwise never resync.
 - Audit segments **ride the federation journal**, so cross-domain actions are audit-complete on both sides of a trust boundary (grafted).
 
 ---
@@ -512,7 +513,9 @@ CREATE TABLE decisions (
 );
 ```
 
-Every engine verdict persists one. Exposed at `/decisions/{id}`, linked from every change/approval/rollback in the UI ("Why?"), from `scp change explain <id>`, and from every blocked 4xx response (`decision_id` field). Because the *inputs* are persisted — not re-derived — "blocked because required policy `prod-security@v3` control `security-scan` (Trivy binding) returned `fail` (CVE-2026-1234)" is reconstructible forever, even after policies change.
+Every engine verdict persists one. Exposed at `/decisions/{id}`, linked from every change/approval/rollback in the UI ("Why?"), from `scp change explain <id>`, and from every blocked 4xx response (`decision_id` field). Because the *inputs* are persisted — not re-derived — "blocked because required policy `prod-security@v3` control `security-scan` (Trivy binding) returned `fail` (CVE-2026-1234)" stays reconstructible **for as long as the Decision is retained, and is never altered by a later policy edit**.
+
+**Retention ([ADR-0024](adr/0024-decision-and-audit-retention.md), owner-decided 2026-07-31).** A Decision is retained **permanently** if it is **cited** (its id appears in `audit_events.decision_id`, `control_runs.decision_id`, `approval_requests.satisfied_decision_id`, `approval_votes.decision_id`, or `federation_inbox_files.decision_id`), **current** (the newest for its `(org, subject, kind)` while the subject is live), or **pinned** (explicit legal hold / open incident). Only Decisions that are *both* uncited *and* superseded age out, after a configurable window defaulting to 365 days. The citation columns are FK-constrained `(org_id, decision_id) → decisions(org_id, id) ON DELETE RESTRICT`, so a `decision_id` handed out in a 4xx or recorded in an audit event can never dangle. Earlier drafts of this paragraph said "reconstructible forever": that was a promise the platform had no mechanism to keep — it had no retention story at all, and `decisions` reached 1.44 GB/day in production before anyone noticed.
 
 ---
 
@@ -779,6 +782,7 @@ Kubernetes installs upgrade with `helm upgrade` (pre-upgrade migrations Job). Fo
 | Runtime plugin hot-loading | Deliberately never; custom-image-layer pattern is the permanent distribution model (air-gap-compatible by definition). |
 | GitLab/Jenkins/Ansible/etc. executors | Same ExecutorPlugin verbs; the three MVP integrations exercise push, pull, and hybrid detection modes. |
 | Argo Rollouts-driven canary analysis | Canary is already a two-wave topology + operational control; deeper analysis is a ControlPlugin. |
+| ~~Retention / data lifecycle~~ | **NOT A DEFERRAL — AN OVERSIGHT.** Listed here because the omission belongs on the record, not because deferral was ever considered and judged safe. The platform shipped with **no deletion story at all**: a census of all 50 tables finds four with a delete path and zero raw `DELETE FROM` in `apps/server/src`. It surfaced in production on 2026-07-29 with `decisions` growing 1.44 GB/day (99.94% byte-identical duplicates from a per-tick re-write). Corrected by [ADR-0024](adr/0024-decision-and-audit-retention.md): retention by evidentiary class, FK-protected citations, checkpointed chains that are never deleted from. |
 
 ### Testing strategy (how the promises stay true)
 
@@ -826,3 +830,9 @@ Kubernetes installs upgrade with `helm upgrade` (pre-upgrade migrations Job). Fo
 | Decision | Outcome | Where |
 |---|---|---|
 | Federation service naming | Clean break (not additive aliases) from `parent`/`child` to three tiers — **commander** (top/central, replaces `parent`), **outpost** (per-environment/region, replaces `child`), and a NEW **retrans** role for the CDS boundary (validates + relays only, no local authority, no CDS transfer logic yet). `FederationRoleSchema` is now `z.enum(["unset","commander","outpost","retrans"])`; `parent`/`child` are removed, not aliased — justified pre-1.0 with homelab as the only deployment, so there is no legacy vocabulary to carry forward. This is a breaking `/v1` change (`api-v2-exception`, per `tools/openapi/check.sh`) | [ADR-0004](adr/0004-service-naming-commander-outpost-retrans.md), §13 |
+
+### Resolved in owner review (2026-07-31)
+
+| Decision | Outcome | Where |
+|---|---|---|
+| Decision & audit retention | Retention by **evidentiary class**, not a global TTL. A Decision is permanent iff **cited**, **current**, or **pinned**; only uncited *and* superseded Decisions age out, default **365 days** — a window chosen as insurance against a write-path regression, not to reclaim space. The five citation columns become **composite FKs** `(org_id, decision_id) → decisions(org_id, id) ON DELETE RESTRICT` (composite because PostgreSQL's referential-integrity checks bypass RLS; RESTRICT because `audit_events` has UPDATE/DELETE revoked, making `SET NULL`/`CASCADE` impossible). `audit_events` and `sync_journal` are **never deleted** — checkpointed and archived instead. `Idempotency-Key` lifetime fixed at **24h** as a stated API contract. `decisions` is **not** partitioned in v1 (FKs and partitioning are mutually exclusive; Simplicity wins at the measured volume). §18 records the omission as an oversight, not a deferral | [ADR-0024](adr/0024-decision-and-audit-retention.md), §4.3, §10.4, §18 |
