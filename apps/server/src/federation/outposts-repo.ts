@@ -273,6 +273,18 @@ export async function getOutpostConfigByPeer(
  * NOTHING IS WRITTEN ON A MISMATCH — this runs before every `deleteObject`/`updateObject` on the
  * path, so a refusal removes nothing, adopts nothing and journals nothing.
  *
+ * "READ INSIDE THIS TRANSACTION" IS NOT A LOCK (R4, PR #156 residual, honesty owed by ADR-0022).
+ * `listOutpostObjectsForPeer`'s read is a plain, non-locking `SELECT` under this connection's
+ * default `READ COMMITTED` isolation — not `SELECT ... FOR UPDATE`. A claimant row inserted and
+ * COMMITTED by a concurrent transaction after this read runs is genuinely invisible to the compare
+ * below; "inside the write transaction" means "as fresh as this transaction's snapshot allows", not
+ * "serialized against every concurrent writer". That gap does not reopen the silent-divergence
+ * defect this precondition exists to close, because both write branches below are self-checking on
+ * exactly that row: the adopt-shadow path re-scans it through `outpost-binding.ts`'s single-writer
+ * guard and 409s before writing anything, and the non-adopting `?keep=` path never touches a row it
+ * did not itself read. The outcome is a correctly-refused write or a no-op either way — not a
+ * silent divergence — which is why this is a documentation fix, not a `FOR UPDATE`.
+ *
  * AN OMITTED TOKEN PROCEEDS UNCHECKED — exactly today's behaviour. That is forced by API additivity
  * (`/v1` is additive-only; a required precondition would break every existing caller) and it is the
  * right PROTOCOL default. It is NOT a licence for a client to omit it: both first-party surfaces

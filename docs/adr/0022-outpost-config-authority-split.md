@@ -171,6 +171,17 @@ the whole design.
   while staleness is transient and retryable after a re-preview. An **omitted** token proceeds unchecked
   — forced by `/v1` additivity and correct as a protocol default, but not a licence for a client to omit
   it: the UI and `scp federation outpost reconcile` both send one unless explicitly told not to.
+  **Honest caveat on "inside the write transaction" (R4, PR #156 residual):** the claimant read
+  (`listOutpostObjectsForPeer` in `outposts-repo.ts`) is a plain, non-locking `SELECT` under the
+  session's default `READ COMMITTED` isolation (`db/tenant-tx.ts`), not `SELECT ... FOR UPDATE` and
+  not a stronger isolation level. A claimant row **inserted and committed by a concurrent transaction
+  after** that read is genuinely invisible to `assertClaimantsUnchanged` — the precondition check does
+  not see it. This is not the silent-divergence hole the precondition exists to close, though: the two
+  write branches that follow are self-checking. The adopt-shadow path re-scans through
+  `outpost-binding.ts`'s single-writer guard and 409s on the newly-committed row before writing
+  anything; the non-adopting `?keep=` path never touches a row it did not itself read, so it leaves the
+  new row untouched. The outcome is a correctly-refused write or a no-op, never a silent divergence —
+  which is why no `FOR UPDATE` was added for this.
 - **Open, and a docs-first question, not a schema one:** `fedramp-high` carries a hyphen, so it is not
   usable as a stage `<domain>` **segment** under the glossary's hyphen-free segment rule (which
   disambiguates stage names by segment count). Naming a stage in that security domain needs an
