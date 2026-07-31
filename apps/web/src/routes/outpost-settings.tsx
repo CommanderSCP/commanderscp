@@ -60,10 +60,23 @@ export const SETTABLE_SYNC_SCOPE_MODES = [
 /**
  * THE PEER'S CURRENT SYNC-SCOPE MODE, or `undefined` when the server did not send `syncScope` (Y4).
  *
- * `syncScope` is required-not-optional on `FederationPeer` and the generated SDK validates no
- * response, so `peer.syncScope.mode` was a bare dereference of a field nothing enforces at runtime —
- * the SAME read that white-screened the outposts pages, and here it would kill the Settings form
- * (and with it the only door an operator has to fix the peer).
+ * `syncScope` is required-not-optional on `FederationPeer`, and BEFORE ADR-0023 the generated SDK
+ * validated NO response, so `peer.syncScope.mode` was a bare dereference of a field nothing
+ * enforced at runtime — the SAME read that white-screened the outposts pages, and here it would
+ * kill the Settings form (and with it the only door an operator has to fix the peer).
+ *
+ * WHAT ADR-0023 CHANGED, AND WHAT IT DID NOT — the canonical statement of the rule, since this
+ * comment is the one the ADR cites. The SDK now runs a generated zod schema over every 2xx JSON
+ * body of every SPEC'D operation, so a body missing `syncScope` no longer RESOLVES a query: it
+ * REJECTS it, once, naming the operation and the field. Three consequences, all live:
+ *   1. A required field arriving through the SDK is now enforced at runtime, so a guard like this
+ *      one is defence in depth rather than the only thing standing between a page and a TypeError.
+ *   2. The failure moved, it did not vanish. Every page that reads through the SDK must render its
+ *      `isError` state, or the diagnosis dies in the query cache and the operator sees a blank
+ *      card — the regression this round fixed (`../components/query-error.tsx`).
+ *   3. THE BOUND IS 204/204 SPEC'D OPERATIONS, NOT EVERY BYTE THE SPA PARSES OFF THE NETWORK.
+ *      `GET /events/stream` is not in `openapi.v1.json` at all, so `lib/use-event-stream.ts` still
+ *      parses unvalidated JSON; that surface is unchanged by ADR-0023 and closes separately.
  *
  * `undefined` RATHER THAN A DEFAULT, deliberately. Substituting `"full"` would be the fabrication
  * class this whole branch exists to remove: it would tell the operator the peer exports everything,

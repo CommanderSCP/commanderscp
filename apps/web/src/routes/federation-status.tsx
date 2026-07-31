@@ -11,6 +11,7 @@ import {
   TableRow
 } from "../components/ui/table";
 import { federationSelfKey, federationStatusKey } from "../lib/query-client";
+import { QueryErrorNotice } from "../components/query-error";
 
 function formatDateTime(value: string | null): string {
   if (!value) return "never";
@@ -52,6 +53,14 @@ function transferStatusBadge(status: string): React.JSX.Element {
  * `lastSyncedAt` reflects this domain's own last-applied cursor, never a live probe of the peer
  * (air-gapped peers may not be reachable at all) — every timestamp below is labeled "as of", not
  * "live."
+ *
+ * EVERY QUERY HERE HAS THREE STATES, NOT TWO (ADR-0023). Since the SDK validates responses, a body
+ * that does not match the contract REJECTS the `queryFn` — so `isError` is now a reachable state
+ * for a 200 response, not only for a 4xx/5xx or a dead network. A page that branches only on
+ * `isLoading` and `data` renders an EMPTY card for exactly the fault the boundary exists to
+ * report, which is how the diagnosis dies in the query cache instead of reaching an operator. Both
+ * cards below therefore render `QueryErrorNotice`, which prints the operation and the offending
+ * field verbatim.
  */
 export function FederationStatusPage(): React.JSX.Element {
   const selfQuery = useQuery({
@@ -72,12 +81,14 @@ export function FederationStatusPage(): React.JSX.Element {
   const notInitialized = selfQuery.data?.role === "unset";
 
   // `?? []` — the LAST unguarded consumer of `FederationStatusResponse.peers` (Z5). `peers` is
-  // required-not-optional and the SDK validates no response; `outposts.tsx` already reads it as
-  // `statusQuery.data?.peers ?? []` and `outpost-detail.tsx` passes `data?.peers` into a function
-  // that accepts `undefined` — this page and `printFederationStatus` were the two that did not.
-  // `statusQuery.data && data.peers.length` therefore threw once the query resolved a body without
-  // the key. `peersLoaded` keeps the loaded-vs-loading distinction the two branches below need,
-  // which a bare `?? []` would have collapsed into "no peers paired yet" while still fetching.
+  // required-not-optional, and BEFORE ADR-0023 the SDK validated no response, so a body without the
+  // key resolved the query and `statusQuery.data && data.peers.length` threw. The SDK now REJECTS
+  // that body at the boundary, so this guard is no longer what stands between the page and a
+  // white screen — the `isError` branch below is. It stays anyway: it is the correct reading of a
+  // body this component is handed by any other route (a test double, a future cached snapshot),
+  // and defence in depth against a shape the contract does not yet forbid costs one operator.
+  // `peersLoaded` keeps the loaded-vs-loading distinction the two branches below need, which a bare
+  // `?? []` would have collapsed into "no peers paired yet" while still fetching.
   const peers = statusQuery.data?.peers ?? [];
   const peersLoaded = statusQuery.data !== undefined;
 
@@ -102,6 +113,13 @@ export function FederationStatusPage(): React.JSX.Element {
         </CardHeader>
         <CardContent>
           {selfQuery.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
+          {selfQuery.isError && (
+            <QueryErrorNotice
+              error={selfQuery.error}
+              what="this domain's federation identity"
+              testId="federation-self-error"
+            />
+          )}
           {notInitialized && (
             <p className="text-sm text-slate-500" data-testid="federation-not-initialized">
               This domain has not been initialized for federation yet. Run{" "}
@@ -149,6 +167,13 @@ export function FederationStatusPage(): React.JSX.Element {
         </CardHeader>
         <CardContent>
           {statusQuery.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
+          {statusQuery.isError && (
+            <QueryErrorNotice
+              error={statusQuery.error}
+              what="federation status"
+              testId="federation-status-error"
+            />
+          )}
           {peersLoaded && peers.length === 0 && (
             <p className="text-sm text-slate-500">
               No peers paired yet. Run{" "}
@@ -180,16 +205,18 @@ export function FederationStatusPage(): React.JSX.Element {
                       {/* `?? []` — the THIRD site of the identical defect, off the identical
                             `client.federation.status()` call already guarded at `outposts.tsx`
                             and `outpost-detail.tsx`. `recentTransfers` is required-not-optional by
-                            `FederationPeerStatusSchema` and the generated SDK validates NO
-                            response at runtime, so one peer whose key the server omits threw
-                            `TypeError: Cannot read properties of undefined (reading 'length')`
-                            out of `.map` — and because that throw escapes the whole page body,
-                            MEASURED `container.innerHTML.length === 0`: `/federation` painted
-                            NOTHING, including the rows of every well-formed peer. `outposts.tsx`
-                            sends the operator here by name ("see Federation status"), so the
-                            landing page they are directed to was the one that white-screened. An
-                            empty ledger renders "none", the truthful reading of "this side has no
-                            transfer rows to show". */}
+                            `FederationPeerStatusSchema`, and BEFORE ADR-0023 the generated SDK
+                            validated NO response at runtime, so one peer whose key the server
+                            omitted threw `TypeError: Cannot read properties of undefined (reading
+                            'length')` out of `.map` — and because that throw escapes the whole
+                            page body, MEASURED `container.innerHTML.length === 0`: `/federation`
+                            painted NOTHING, including the rows of every well-formed peer.
+                            SINCE ADR-0023 the SDK REJECTS that body at the boundary, so this page
+                            never receives it from `client.federation.status()` — the `isError`
+                            branch above renders the operation and the field instead. The guard
+                            stays as the honest reading of an empty ledger ("none") for any other
+                            source of this value, and as one less thing to get right if the
+                            contract ever makes the key optional. */}
                       {(recentTransfers ?? []).length === 0 && (
                         <span className="text-sm text-slate-400">none</span>
                       )}

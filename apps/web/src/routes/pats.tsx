@@ -12,6 +12,7 @@ import {
   TableRow
 } from "../components/ui/table";
 import { Badge } from "../components/ui/badge";
+import { QueryErrorNotice } from "../components/query-error";
 import {
   Dialog,
   DialogContent,
@@ -102,6 +103,16 @@ export function PatsPage(): React.JSX.Element {
       </form>
 
       {listQuery.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
+      {/* ADR-0023: without this branch a failed read renders neither the table nor "No tokens
+          yet" — an operator sees the create form above an entirely blank space and cannot tell a
+          401 from a contract failure. */}
+      {listQuery.isError && (
+        <QueryErrorNotice
+          error={listQuery.error}
+          what="your personal access tokens"
+          testId="pats-error"
+        />
+      )}
       {listQuery.data && listQuery.data.items.length === 0 && (
         <p className="text-sm text-slate-500">No tokens yet.</p>
       )}

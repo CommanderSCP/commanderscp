@@ -1,56 +1,52 @@
 // @vitest-environment happy-dom
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ScpClient } from "@scp/sdk";
 import type { FederationPeerStatus } from "@scp/schemas";
 import { render } from "../test-support/render-dom";
 
 /**
- * Z1 — `/federation` MUST NOT WHITE-SCREEN WHEN ONE PEER OMITS ONE KEY.
+ * Z1 — `/federation` MUST REPORT A CONTRACT FAILURE, NOT SWALLOW IT.
  *
- * WHAT THIS FILE OWNS. `outposts-honesty.test.tsx` and `outpost-detail-status.test.tsx` pin the
- * `?? []` guard on the two OTHER consumers of `client.federation.status()`. This is the third, and
- * the only one where the dereference sits inside the page body's own `.map` rather than inside a
- * leaf card — so the throw is not contained: it escapes `FederationStatusPage` entirely.
+ * WHY THIS FILE WAS REWRITTEN (ADR-0023). Its previous form mocked `client.federation.status()` to
+ * RESOLVE with a body whose `recentTransfers` key was deleted, and asserted the row rendered "none".
+ * The SDK now validates every 2xx JSON body against the generated schema, so THE REAL SDK CAN NO
+ * LONGER PRODUCE THAT RESOLUTION — it rejects. The old assertions therefore pinned a scenario that
+ * cannot occur while staying green, giving the web suite zero signal about what the page actually
+ * does with a malformed response: the vacuous-guard class (wording, not behaviour) in its purest
+ * form. The REVERT TEST it advertised — "delete the `?? []`s and this goes red" — had stopped being
+ * true for exactly the same reason.
  *
- * THE DEFECT CLASS, stated once (see `outpost-settings.tsx:61-74` for the rule verbatim):
- * `FederationPeerStatus.recentTransfers` is required-not-optional in the schema, and the GENERATED
- * SDK VALIDATES NO RESPONSE AT RUNTIME. A required field is therefore a claim about the server, not
- * a guarantee about the value in hand — an older or partial commander that omits the key hands this
- * page `undefined`, and `undefined.length` throws.
+ * WHAT IT PINS NOW, AND WHY IT DRIVES THE REAL SDK. The behaviour under test spans two packages: the
+ * SDK converts a malformed body into an `ScpResponseValidationError`, react-query converts the
+ * rejected `queryFn` into `isError`, and this page must RENDER that. Mocking `client` would stub out
+ * the first half — the exact half that decides whether the second half is reachable at all. So these
+ * tests construct a REAL `ScpClient` over a stubbed `fetch`: everything from the wire bytes up is
+ * production code.
  *
- * MEASURED, before the fix, with exactly the setup below (happy-dom + a real `QueryClientProvider`
- * + one peer whose `recentTransfers` key is deleted):
- *   TypeError: Cannot read properties of undefined (reading 'length')
- * and `container.innerHTML.length === 0` — the WHOLE page painted nothing, including the identity
- * card and the rows of every well-formed peer. `outposts.tsx` routes the operator here by name
- * ("see Federation status"), so the page they are sent to is the page that died.
+ * THE REGRESSION THIS CLOSES, MEASURED. With the real SDK and a body whose one peer omits
+ * `recentTransfers`, the page rendered the identity card and an EMPTY "Peers" card — no peer row, and
+ * no occurrence anywhere in the DOM of "fail", "error", "contract", "invalid", or "skew". The
+ * failure was detected, diagnosed, and then died in the query cache. Before response validation, the
+ * `?? []` guard at least rendered that peer's row with "none". Detection that never reaches a human
+ * is worse than the guard it replaced; the `isError` branches restore, and improve on, what an
+ * operator sees.
  *
- * WHY THE WHOLE PAGE AND NOT A LEAF COMPONENT. The row is inline JSX inside `FederationStatusPage`;
- * there is nothing smaller to render. Pinning it therefore requires driving the real query layer,
- * which is why this file opts into the DOM environment rather than using `renderToStaticMarkup`
- * like its siblings.
- *
- * REVERT TEST: delete the `?? []`s at the `recentTransfers` cell in `federation-status.tsx` and the
- * first case below fails with that TypeError.
+ * REVERT TEST: delete the `statusQuery.isError` branch in `federation-status.tsx` and the first case
+ * below fails on the missing `federation-status-error` node.
  */
-
-const statusMock = vi.fn();
-const selfMock = vi.fn();
-
-vi.mock("../lib/client", () => ({
-  client: {
-    federation: {
-      status: () => statusMock(),
-      self: () => selfMock()
-    }
-  }
-}));
-
-const { FederationStatusPage } = await import("./federation-status");
 
 const PEER_ID = "0e0a1b2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c";
 const OTHER_PEER_ID = "1f1b2c3d-4e5f-4a6b-9c7d-8e9f0a1b2c3d";
+
+/** One real `ScpClient` — the same class `lib/client.ts` constructs — so the generated
+ *  `responseValidator` and the error interceptor are both live. */
+const realClient = new ScpClient({ baseUrl: "/api/v1" });
+
+vi.mock("../lib/client", () => ({ client: realClient }));
+
+const { FederationStatusPage } = await import("./federation-status");
 
 function selfFixture() {
   return {
@@ -90,29 +86,42 @@ function peerFixture(overrides: Partial<FederationPeerStatus> = {}): FederationP
 }
 
 /** What a server that never learned to send `recentTransfers` actually puts on the wire — the KEY
- *  DELETED, which no type in this repo can rule out at runtime. */
-function peerWithoutTransfersKey(
-  overrides: Partial<FederationPeerStatus> = {}
-): FederationPeerStatus {
-  const peer: Partial<FederationPeerStatus> = peerFixture(overrides);
+ *  DELETED, which no TYPE in this repo can rule out; only the response validator can. */
+function peerWithoutTransfersKey(): FederationPeerStatus {
+  const peer: Partial<FederationPeerStatus> = peerFixture();
   delete peer.recentTransfers;
   return peer as FederationPeerStatus;
 }
 
-/** Render the page against a fresh, retry-free QueryClient and let both queries settle. `peers`
- *  is passed straight through, so `undefined` here means the response OMITTED the key. */
-async function renderPage(peers: FederationPeerStatus[] | undefined) {
-  statusMock.mockResolvedValue(peers === undefined ? {} : { peers });
-  selfMock.mockResolvedValue(selfFixture());
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: 0 } }
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "Content-Type": "application/json" }
   });
+}
+
+/** Serve `GET /federation/self` and `GET /federation/status` as real HTTP 200 JSON. `statusBody` is
+ *  written to the wire VERBATIM — a missing key here is a missing key on the network. */
+function stubFetch(statusBody: unknown): void {
+  vi.stubGlobal("fetch", (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    return Promise.resolve(
+      jsonResponse(url.includes("/federation/self") ? selfFixture() : statusBody)
+    );
+  });
+}
+
+function newQueryClient(): QueryClient {
+  return new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+}
+
+async function renderPage() {
   const rendered = render(
-    <QueryClientProvider client={queryClient}>
+    <QueryClientProvider client={newQueryClient()}>
       <FederationStatusPage />
     </QueryClientProvider>
   );
-  // flush the resolved queries into a committed render. React Query settles across several
+  // Flush the settled queries into a committed render. React Query settles across several
   // microtask/timer turns; loop until the "Loading…" placeholders are gone rather than guessing a
   // fixed number of ticks (a fixed count is exactly how this file first went green-on-nothing).
   for (let i = 0; i < 50 && rendered.html().includes("Loading…"); i += 1) {
@@ -125,104 +134,129 @@ async function renderPage(peers: FederationPeerStatus[] | undefined) {
 }
 
 beforeEach(() => {
-  statusMock.mockReset();
-  selfMock.mockReset();
+  vi.unstubAllGlobals();
 });
 
-describe("/federation: one peer missing `recentTransfers` must not take the page down", () => {
-  it("renders the peer, and the page, when the server omits the key entirely", async () => {
-    // THE CRASH THIS PINS: without `?? []` this render throws
-    // `TypeError: Cannot read properties of undefined (reading 'length')` and the container is empty.
-    const rendered = await renderPage([peerWithoutTransfersKey()]);
-
-    expect(rendered.container.innerHTML.length).toBeGreaterThan(0);
-    expect(rendered.html()).toContain(`data-testid="federation-peer-${PEER_ID}"`);
-    // the absence degrades to the honest empty reading, never to a fabricated ledger
-    expect(rendered.html()).toContain("none");
-    rendered.unmount();
-  });
-
-  it("still renders the OTHER peers' rows and the identity card — one bad row is not the page", async () => {
-    const rendered = await renderPage([
-      peerWithoutTransfersKey(),
-      peerFixture({
-        peer: {
-          id: OTHER_PEER_ID,
-          name: "emea-prod",
-          role: "outpost",
-          baseUrl: "https://emea.example.net",
-          syncScope: { mode: "full" },
-          publicKey: "BBBB",
-          pokeMode: false,
-          pairedAt: "2026-07-01T00:00:00.000Z"
-        }
-      })
-    ]);
-
-    const html = rendered.html();
-    expect(html).toContain(`data-testid="federation-peer-${OTHER_PEER_ID}"`);
-    expect(html).toContain("emea-prod");
-    // the identity card sits ABOVE the table: it is collateral of the same throw
-    expect(html).toContain("This domain");
-    expect(html).toContain("hq");
-    rendered.unmount();
-  });
-
-  it("renders the transfer rows when the server does send them", async () => {
-    const rendered = await renderPage([
-      peerFixture({
-        recentTransfers: [
-          {
-            id: "11111111-2222-4333-8444-555555555555",
-            peerDomainId: PEER_ID,
-            direction: "export",
-            kind: "sync",
-            status: "confirmed",
-            sinceSequence: null,
-            throughSequence: 12,
-            createdAt: "2026-07-02T00:00:00.000Z",
-            confirmedAt: "2026-07-02T01:00:00.000Z"
-          }
-        ]
-      })
-    ]);
-
-    expect(rendered.html()).toContain("export");
-    expect(rendered.html()).toContain("confirmed");
-    rendered.unmount();
-  });
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
-describe("/federation: an omitted `peers` list must not take the page down either (Z5)", () => {
-  it("renders the empty reading instead of throwing on `peers.length`", async () => {
-    // THE CRASH THIS PINS: `statusQuery.data && statusQuery.data.peers.length === 0` throws
-    // `TypeError: Cannot read properties of undefined (reading 'length')` the moment the query
-    // resolves a body without the key. `outposts.tsx` has read this as `data?.peers ?? []` since
-    // round 3; this page was the twin one file over that never got it.
-    const rendered = await renderPage(undefined);
+describe("/federation: a body that fails contract validation must reach the operator", () => {
+  it("reports a contract failure naming the operation and the field, not an empty card", async () => {
+    stubFetch({ self: selfFixture(), peers: [peerWithoutTransfersKey()] });
+    const rendered = await renderPage();
 
-    expect(rendered.container.innerHTML.length).toBeGreaterThan(0);
-    expect(rendered.html()).toContain("No peers paired yet");
-    // and the identity card above it survives
+    const notice = rendered.byTestId("federation-status-error");
+    expect(notice.getAttribute("data-error-kind")).toBe("contract");
+    // the OPERATION — the thing no call-site census could have produced
+    expect(notice.textContent).toContain("GET /federation/status");
+    // the FIELD that was missing
+    expect(notice.textContent).toContain("recentTransfers");
+    // and it is legible AS a contract/version-skew failure, not as a network or permission fault
+    expect(notice.textContent).toMatch(/contract/i);
+    expect(notice.textContent).toMatch(/version skew/i);
+
+    // THE REGRESSION, stated as an assertion: the page must not present this as "no peers".
+    expect(rendered.html()).not.toContain("No peers paired yet");
+    rendered.unmount();
+  });
+
+  it("an omitted `peers` list is reported too, and never as 'no peers paired yet'", async () => {
+    stubFetch({ self: selfFixture() });
+    const rendered = await renderPage();
+
+    const notice = rendered.byTestId("federation-status-error");
+    expect(notice.textContent).toContain("GET /federation/status");
+    expect(rendered.byTestId("query-error-fields").textContent).toContain("peers");
+    expect(rendered.html()).not.toContain("No peers paired yet");
+    rendered.unmount();
+  });
+
+  it("the identity card still renders — one bad response is not the whole page", async () => {
+    stubFetch({ self: selfFixture(), peers: [peerWithoutTransfersKey()] });
+    const rendered = await renderPage();
+
+    // `GET /federation/self` is a SEPARATE operation with its own validator; its body is well
+    // formed, so it must be unaffected by the other query's failure.
+    expect(rendered.html()).toContain("This domain");
     expect(rendered.html()).toContain("hq");
     rendered.unmount();
   });
+});
 
-  it("an omitted list is NOT reported while still loading — the two states stay distinct", async () => {
-    // `?? []` alone would have made a still-fetching page claim "No peers paired yet". The guard
-    // keeps `peersLoaded` separate so the loading placeholder still wins.
-    statusMock.mockReturnValue(new Promise(() => {}));
-    selfMock.mockResolvedValue(selfFixture());
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false, gcTime: 0 } }
+describe("/federation: a well-formed response is unaffected", () => {
+  it("renders every peer row and its transfers, with no error notice", async () => {
+    stubFetch({
+      self: selfFixture(),
+      peers: [
+        peerFixture({
+          recentTransfers: [
+            {
+              id: "11111111-2222-4333-8444-555555555555",
+              peerDomainId: PEER_ID,
+              direction: "export",
+              kind: "sync",
+              status: "confirmed",
+              sinceSequence: null,
+              throughSequence: 12,
+              createdAt: "2026-07-02T00:00:00.000Z",
+              confirmedAt: "2026-07-02T01:00:00.000Z"
+            }
+          ]
+        }),
+        peerFixture({
+          peer: {
+            id: OTHER_PEER_ID,
+            name: "emea-prod",
+            role: "outpost",
+            baseUrl: "https://emea.example.net",
+            syncScope: { mode: "full" },
+            publicKey: "BBBB",
+            pokeMode: false,
+            pairedAt: "2026-07-01T00:00:00.000Z"
+          }
+        })
+      ]
+    });
+    const rendered = await renderPage();
+
+    const html = rendered.html();
+    expect(html).toContain(`data-testid="federation-peer-${PEER_ID}"`);
+    expect(html).toContain(`data-testid="federation-peer-${OTHER_PEER_ID}"`);
+    expect(html).toContain("export");
+    expect(html).toContain("confirmed");
+    // the second peer HAS an empty ledger, which is still the honest "none"
+    expect(html).toContain("none");
+    // no false positive: a valid body must not trip the boundary
+    expect(html).not.toContain('data-testid="federation-status-error"');
+    rendered.unmount();
+  });
+
+  it("an empty peer list renders the empty reading, not an error", async () => {
+    stubFetch({ self: selfFixture(), peers: [] });
+    const rendered = await renderPage();
+
+    expect(rendered.html()).toContain("No peers paired yet");
+    expect(rendered.html()).not.toContain('data-testid="federation-status-error"');
+    rendered.unmount();
+  });
+});
+
+describe("/federation: loading is still distinct from every other state", () => {
+  it("claims neither 'no peers paired yet' nor a failure while still fetching", async () => {
+    vi.stubGlobal("fetch", (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("/federation/self")) return Promise.resolve(jsonResponse(selfFixture()));
+      return new Promise<Response>(() => {});
     });
     const rendered = render(
-      <QueryClientProvider client={queryClient}>
+      <QueryClientProvider client={newQueryClient()}>
         <FederationStatusPage />
       </QueryClientProvider>
     );
     expect(rendered.html()).toContain("Loading…");
     expect(rendered.html()).not.toContain("No peers paired yet");
+    expect(rendered.html()).not.toContain('data-testid="federation-status-error"');
     rendered.unmount();
   });
 });
