@@ -97,22 +97,47 @@ async function renderSection() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } }
   });
-  const view = render(
+  return render(
     <QueryClientProvider client={queryClient}>
       <OutpostConfigurationSection status={status} />
     </QueryClientProvider>
   );
-  // Let the two queries (`self`, `listOutposts`) resolve and the card re-render with real data.
-  await settle();
-  return view;
 }
 
-/** Flush pending promises INSIDE `act`, so the query-driven re-render is applied before the next
- *  assertion (and React does not warn about an unwrapped update). */
+/** One flush of pending promises INSIDE `act`, so a query-driven re-render is applied before the
+ *  next check (and React does not warn about an unwrapped update). */
 async function settle(): Promise<void> {
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 5));
   });
+}
+
+/**
+ * Wait for a CONDITION, never for a fixed delay.
+ *
+ * A single `settle()` after render was enough on a fast machine and NOT on a loaded CI runner,
+ * where the two queries (`self`, `listOutposts`) had not both resolved before the click — the test
+ * then failed looking for a control that simply had not rendered yet. A fixed sleep long enough to
+ * be safe everywhere is also a fixed cost paid on every run; polling is both faster and correct.
+ */
+async function waitUntil(check: () => boolean, what: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (check()) return;
+    await settle();
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
+async function clickWhenReady(
+  view: Awaited<ReturnType<typeof renderSection>>,
+  testId: string
+): Promise<void> {
+  await waitUntil(
+    () => view.container.querySelector(`[data-testid="${testId}"]`) !== null,
+    `data-testid="${testId}"`
+  );
+  view.click(testId);
+  await waitUntil(() => reconcileCalls.length > 0, "the reconcile request to be issued");
 }
 
 describe("the wired-up Configuration card sends the ifClaimant precondition", () => {
@@ -121,9 +146,7 @@ describe("the wired-up Configuration card sends the ifClaimant precondition", ()
     const shadow = shadowFixture();
     listed = [local, shadow];
     const view = await renderSection();
-
-    view.click("reconcile-default");
-    await settle();
+    await clickWhenReady(view, "reconcile-default");
 
     expect(reconcileCalls).toHaveLength(1);
     expect(reconcileCalls[0]!.peer).toBe(PEER_ID);
@@ -145,9 +168,7 @@ describe("the wired-up Configuration card sends the ifClaimant precondition", ()
     const shadow = shadowFixture();
     listed = [shadow];
     const view = await renderSection();
-
-    view.click("config-adopt-shadow");
-    await settle();
+    await clickWhenReady(view, "config-adopt-shadow");
 
     expect(reconcileCalls).toHaveLength(1);
     expect(reconcileCalls[0]!.opts.keep).toBeUndefined();
