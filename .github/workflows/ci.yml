@@ -342,7 +342,19 @@ jobs:
           mkdir -p /tmp/audit
           if docker pull "$REF" >/dev/null 2>&1; then
             echo "cache hit: $REF already in GHCR — reusing the snapshot queried when this lockfile was last pinned."
-            cid=$(docker create "$REF")
+            # The trailing `true` is a COMMAND ARGUMENT, and it is load-bearing. The snapshot image
+            # is `FROM scratch` + one COPY (see the cache-miss branch below), so it carries no CMD
+            # and no ENTRYPOINT — and `docker create` REFUSES an image with no command:
+            # "Error response from daemon: no command specified". The container is only ever a
+            # handle for `docker cp`; it is never started, so the argument need not exist in the
+            # image. (This is the same create -> cp -> rm seam `packages/plugins/managed-scan` uses,
+            # which passes a real argv and so never hit this.)
+            #
+            # Fixing the PRODUCER instead — adding a CMD to the scratch Dockerfile below — would NOT
+            # have been enough on its own: snapshot images already published to GHCR are immutable
+            # and still carry no CMD, so every already-cached lockfile would stay broken until its
+            # hash changed. The consumer-side fix repairs old and new snapshots alike.
+            cid=$(docker create "$REF" true)
             docker cp "$cid:/audit.json" /tmp/audit/audit.json
             docker rm "$cid" >/dev/null
           else
