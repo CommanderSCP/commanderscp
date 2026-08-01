@@ -805,6 +805,24 @@ describe("coordination engine: trigger idempotency across a same-tick crash (CRI
     expect(targetBRow1!.status).toBe("triggered");
     expect(targetBRow1!.executorRef).not.toBeNull();
 
+    // The injected fault is thrown FROM `trigger()`, which at that call boundary is
+    // indistinguishable from an executor refusal (Argo CD answering HTTP 400 because a sync is
+    // already running) — so `triggerWaveTarget` now records it as a real attempt and A's retry is
+    // BACKED OFF rather than re-fired on the very next tick (see
+    // `trigger-retry-backoff.integration.test.ts` for why the storm made that necessary). Step past
+    // the backoff window so this suite keeps testing what it is about — IDEMPOTENCY of the retry,
+    // not the tick it happens to land on. Every assertion below is unchanged.
+    //
+    // NOTE the genuine crash case — process death between claim and record — is unaffected and
+    // still retries on the next tick with no delay: nothing runs, so `attempt` stays 0. That
+    // contract is pinned by the backoff suite's third arm.
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(changeWaveTargets)
+        .set({ updatedAt: new Date(Date.now() - 60_000) })
+        .where(eq(changeWaveTargets.targetObjectId, targetAId))
+    );
+
     // Tick 2: A's target (still `triggering`) is retried with the SAME idempotencyKey; nothing
     // faults it this time, so it commits.
     await reconcileOrgTick(

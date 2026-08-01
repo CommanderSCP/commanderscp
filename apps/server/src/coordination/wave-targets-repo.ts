@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { ExecutionStatus } from "@scp/plugin-api";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changePlans, changeWaveTargets, changeWaves } from "../db/schema.js";
@@ -150,6 +150,48 @@ export async function markWaveTargetTriggered(
       executorRef: update.executorRef,
       priorStateRef: update.priorStateRef ?? null,
       attempt: 1,
+      updatedAt: new Date()
+    })
+    .where(
+      and(
+        eq(changeWaveTargets.orgId, orgId),
+        eq(changeWaveTargets.id, targetId),
+        eq(changeWaveTargets.status, "triggering")
+      )
+    )
+    .returning({ id: changeWaveTargets.id });
+  return result.length > 0;
+}
+
+/**
+ * Step 3', the FAILURE arm of the claim/record split — records that `plugin.trigger()` was called
+ * and REJECTED, so the retry can be backed off instead of hammered.
+ *
+ * THE MEASURED PRODUCTION STORM (homelab, 2026-08-01): 19 `argocd trigger: sync returned HTTP 400`
+ * against 12 successful syncs in 15 minutes, every 400 on the SAME target. Argo CD rejects a sync
+ * request while an operation is already running on that Application, and the homelab's backlog has
+ * many changes fanning out onto a handful of Argo apps. Before this, a rejected trigger left the
+ * row `triggering` with `attempt` still 0 (only `markWaveTargetTriggered` ever wrote `attempt`, and
+ * only on success), so the next tick — one second later — re-claimed and re-fired it, forever.
+ *
+ * `attempt` is deliberately the ONLY signal the backoff reads, and it is written HERE and nowhere
+ * else on the failure path. That is what preserves this file's crash-recovery contract: a tick that
+ * dies between `claimWaveTargetForTriggering` and here leaves `attempt` at 0, so the abandoned
+ * `triggering` row is still retried on the VERY NEXT tick with no delay — exactly as the M3 suites
+ * require, and exactly as the doc comment above promises. Only a trigger that genuinely reached the
+ * executor and was refused earns a backoff.
+ *
+ * Status stays `triggering` so the existing `pending`-or-`triggering` re-claim path is unchanged.
+ */
+export async function markWaveTargetTriggerFailed(
+  tx: TenantTx,
+  orgId: string,
+  targetId: string
+): Promise<boolean> {
+  const result = await tx
+    .update(changeWaveTargets)
+    .set({
+      attempt: sql`${changeWaveTargets.attempt} + 1`,
       updatedAt: new Date()
     })
     .where(
