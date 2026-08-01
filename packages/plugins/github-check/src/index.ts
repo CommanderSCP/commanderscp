@@ -26,6 +26,12 @@
  * trigger/dispatch executor needs — least privilege — and it keeps this package self-contained
  * (no dependency on `@scp/plugin-github`).
  *
+ * EGRESS — `apiBaseUrl` may legitimately point at a self-hosted GitHub Enterprise Server on a
+ * private address, the same on-prem case `scan-result-control`'s own module doc names for its scan
+ * source; `github-check` is therefore in `subprocess-entry.ts`'s `OPERATOR_PLANE_MODULES`
+ * (loopback/private egress permitted), same `policy:write`-gated control-binding trust tier as
+ * `webhook-control`/`scan-result-control`.
+ *
  * STILL-RUNNING CI → `"expired"`, NOT `"fail"`: a wave gate is frequently asked before CI on the
  * target commit has even started or concluded. Returning `"fail"` for an in-flight check would be
  * WRONG — `governance/control-runner.ts`'s `ensureControlRun` treats a produced outcome as a

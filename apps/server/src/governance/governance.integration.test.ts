@@ -6,7 +6,7 @@ import { ScpApiError, ScpClient } from "@scp/sdk";
 import type { DesiredStateManifest } from "@scp/schemas";
 import { eq } from "drizzle-orm";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { changeSourceEvents, changes } from "../db/schema.js";
+import { changeSourceEvents, changes, controlRuns } from "../db/schema.js";
 import { processChangeSourceEvents } from "../coordination/webhook-processor.js";
 import {
   createTestComponent,
@@ -1620,6 +1620,181 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
         artifactDigest: MATCH_DIGEST,
         expectedDigest: MATCH_DIGEST // ← came from the change, via the canonicalized sourceRef key
       });
+    });
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // M10.4 (BUILD_AND_TEST.md §8): the `github-check` ControlPlugin — a GitHub Check Run verdict
+  // for the change's OWN tracked commit turned into wave-gate evidence, proven through the REAL
+  // gate seam (real subprocess plugin host, real GitHub Checks-API-shaped fixture).
+  // -----------------------------------------------------------------------------------------
+
+  describe("github-check (CI evidence as a wave-gate control)", () => {
+    interface CheckRunFixtureState {
+      conclusion: "success" | "failure" | "pending";
+    }
+
+    /** A real loopback HTTP server shaped like GitHub's Check Runs API
+     *  (`GET /repos/{owner}/{repo}/commits/{ref}/check-runs`). State is keyed by `ref` (the commit
+     *  sha in the URL), so ONE fixture backs many differently-configured bindings/changes across
+     *  tests — same pattern as `startTrivySource`. `callCountFor` lets a test PROVE the plugin was
+     *  invoked again (not served from `control_runs`' cache) after the M10.4 expired-cooldown
+     *  bypass fires. */
+    async function startGithubCheckSource(): Promise<
+      TestWebhookServer & { setState(ref: string, state: CheckRunFixtureState): void; callCountFor(ref: string): number }
+    > {
+      const states = new Map<string, CheckRunFixtureState>();
+      const counts = new Map<string, number>();
+      const httpServer = createServer((req, res) => {
+        const url = new URL(req.url ?? "/", "http://127.0.0.1");
+        const match = /\/commits\/([^/]+)\/check-runs$/.exec(url.pathname);
+        const ref = match?.[1] ? decodeURIComponent(match[1]) : "";
+        counts.set(ref, (counts.get(ref) ?? 0) + 1);
+        const state = states.get(ref) ?? { conclusion: "pending" };
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            check_runs:
+              state.conclusion === "pending"
+                ? [{ name: "build", status: "in_progress", conclusion: null }]
+                : [{ name: "build", status: "completed", conclusion: state.conclusion }]
+          })
+        );
+      });
+      await new Promise<void>((resolve) => httpServer.listen(0, "127.0.0.1", resolve));
+      const { port } = httpServer.address() as AddressInfo;
+      return {
+        url: `http://127.0.0.1:${port}`,
+        close: () =>
+          new Promise<void>((resolve, reject) => {
+            httpServer.close((err) => (err ? reject(err) : resolve()));
+          }),
+        setState: (ref, state) => {
+          states.set(ref, state);
+        },
+        callCountFor: (ref) => counts.get(ref) ?? 0
+      };
+    }
+
+    let checkSource: Awaited<ReturnType<typeof startGithubCheckSource>>;
+
+    /** A real `control` graph object bound to the real `github-check` plugin, pointed at the
+     *  fixture above. No `expectedRef` is ever configured — the ONLY ref the plugin can bind
+     *  against is `context.commitSha`, which the gate threads from the change's own
+     *  `sourceRef.sha` (`gate-orchestrator.ts`'s `resolveChangeCommitSha`). */
+    async function createGithubCheckControl(admin: ScpClient, org: TestOrg, opts: { urnSuffix: string }) {
+      const control = await admin.controls.create({
+        name: `gh-check-${opts.urnSuffix}`,
+        urn: `urn:scp:${org.orgId}:control:${opts.urnSuffix}`,
+        properties: { category: "custom" }
+      });
+      await admin.controls.putBinding(control.id, {
+        pluginModule: "github-check",
+        pluginInstanceId: `ghc-${control.id}`,
+        config: { owner: "acme", repo: "widgets", apiBaseUrl: checkSource.url, token: "test-token" }
+      });
+      return control;
+    }
+
+    beforeAll(async () => {
+      checkSource = await startGithubCheckSource();
+    });
+    afterAll(async () => {
+      await checkSource.close();
+    });
+
+    it("a green check run for the change's OWN tracked commit ACCEPTS — bound via context.commitSha, never an operator-typed value", async () => {
+      const org = await createTestOrg(server, "gh-check-pass");
+      const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+      const target = await createTestComponent(admin, { name: "gh-check-pass-target" });
+      const control = await createGithubCheckControl(admin, org, { urnSuffix: "gh-check-pass" });
+      await createPolicy(admin, org, {
+        name: "ci-gate",
+        urnSuffix: "gh-check-pass-policy",
+        enforcement: "required",
+        scopeObjectId: target.id,
+        requireControlIds: [control.id]
+      });
+
+      const sha = "a1b2c3d4e5".repeat(4);
+      checkSource.setState(sha, { conclusion: "success" });
+
+      const change = await admin.changes.propose({ name: "gh-check-pass-change", targets: [target.id], sourceRef: { sha } });
+
+      await waitForControlRun(admin, change.id, control.id, "pass");
+      await waitForValidating(admin, change.id);
+      const accepted = await admin.changes.accept(change.id);
+      expect(accepted.state).toBe("accepted");
+    });
+
+    it("a completed check run with conclusion=failure BLOCKS — the wave never leaves 'executing'", async () => {
+      const org = await createTestOrg(server, "gh-check-fail");
+      const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+      const target = await createTestComponent(admin, { name: "gh-check-fail-target" });
+      const control = await createGithubCheckControl(admin, org, { urnSuffix: "gh-check-fail" });
+      await createPolicy(admin, org, {
+        name: "ci-gate",
+        urnSuffix: "gh-check-fail-policy",
+        enforcement: "required",
+        scopeObjectId: target.id,
+        requireControlIds: [control.id]
+      });
+
+      const sha = "f1e2d3c4b5".repeat(4);
+      checkSource.setState(sha, { conclusion: "failure" });
+
+      const change = await admin.changes.propose({ name: "gh-check-fail-change", targets: [target.id], sourceRef: { sha } });
+
+      await waitForControlRun(admin, change.id, control.id, "fail");
+      await assertStaysExecuting(admin, change.id);
+    });
+
+    it("an in-flight (not yet completed) check run maps to 'expired' and blocks WITHOUT permanently deadlocking the wave: once control-runner.ts's expired-recheck cooldown elapses it is re-evaluated, and a later green conclusion then allows", async () => {
+      const org = await createTestOrg(server, "gh-check-inflight");
+      const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+      const target = await createTestComponent(admin, { name: "gh-check-inflight-target" });
+      const control = await createGithubCheckControl(admin, org, { urnSuffix: "gh-check-inflight" });
+      await createPolicy(admin, org, {
+        name: "ci-gate",
+        urnSuffix: "gh-check-inflight-policy",
+        enforcement: "required",
+        scopeObjectId: target.id,
+        requireControlIds: [control.id]
+      });
+
+      const sha = "0f1e2d3c4b".repeat(4);
+      checkSource.setState(sha, { conclusion: "pending" });
+
+      const change = await admin.changes.propose({ name: "gh-check-inflight-change", targets: [target.id], sourceRef: { sha } });
+
+      await waitForControlRun(admin, change.id, control.id, "expired");
+      const callsWhileInFlight = checkSource.callCountFor(sha);
+      expect(callsWhileInFlight).toBeGreaterThan(0);
+      await assertStaysExecuting(admin, change.id);
+
+      // Directly backdate the cached 'expired' row past `control-runner.ts`'s
+      // EXPIRED_RECHECK_INTERVAL_MS (30s) — the deterministic, non-flaky way to prove the cooldown
+      // bypass actually re-invokes the plugin rather than caching 'expired' forever the way every
+      // OTHER status is cached (which would permanently deadlock this wave, since a wave-boundary
+      // gate is asked well before CI on a fresh commit has even started).
+      await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        tx
+          .update(controlRuns)
+          .set({ createdAt: new Date(Date.now() - 31_000) })
+          .where(eq(controlRuns.controlObjectId, control.id))
+      );
+      checkSource.setState(sha, { conclusion: "success" });
+
+      await waitForControlRun(admin, change.id, control.id, "pass");
+      // A cache hit would never re-fetch — this proves the plugin genuinely ran again.
+      expect(checkSource.callCountFor(sha)).toBeGreaterThan(callsWhileInFlight);
+
+      await waitForValidating(admin, change.id);
+      const accepted = await admin.changes.accept(change.id);
+      expect(accepted.state).toBe("accepted");
     });
   });
 });
