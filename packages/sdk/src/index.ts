@@ -17,6 +17,12 @@ export type {
 export { ScpApiError, ScpResponseValidationError, reconcileStaleClaimants } from "./errors.js";
 export type { ProblemWithExtensions, ResponseValidationIssue } from "./errors.js";
 
+// The live event stream (`client.events.stream()`) — `RelayedEvent` re-exported so `apps/web` keeps
+// consuming ONLY the generated SDK for the SSE channel too (charter principle 3).
+export { resilientEventStream } from "./event-stream.js";
+export type { EventStreamOptions, OpenEventStream } from "./event-stream.js";
+export type { RelayedEvent } from "@scp/schemas";
+
 export type {
   CreateServiceObjectData,
   CreateServiceObjectResponse,

@@ -2301,6 +2301,19 @@ export const zListAuditEventsResponse = z.object({
 });
 
 /**
+ * Server-Sent Events stream
+ */
+export const zStreamEventsResponse = z.object({
+    id: z.string(),
+    orgId: z.string(),
+    type: z.string(),
+    source: z.string(),
+    subject: z.string().nullable(),
+    data: z.unknown(),
+    createdAt: z.string()
+});
+
+/**
  * Success
  */
 export const zCreatePlanResponse = z.object({

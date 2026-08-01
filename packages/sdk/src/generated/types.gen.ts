@@ -8572,6 +8572,57 @@ export type ListAuditEventsResponses = {
 
 export type ListAuditEventsResponse = ListAuditEventsResponses[keyof ListAuditEventsResponses];
 
+export type StreamEventsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/events/stream';
+};
+
+export type StreamEventsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type StreamEventsError = StreamEventsErrors[keyof StreamEventsErrors];
+
+export type StreamEventsResponses = {
+    /**
+     * Server-Sent Events stream
+     */
+    200: {
+        id: string;
+        orgId: string;
+        type: string;
+        source: string;
+        subject: string | null;
+        data: unknown;
+        createdAt: string;
+    };
+};
+
+export type StreamEventsResponse = StreamEventsResponses[keyof StreamEventsResponses];
+
 export type CreatePlanData = {
     body: {
         manifest: {

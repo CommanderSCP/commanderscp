@@ -48,6 +48,19 @@ export function buildOpenApiDocument(routes: CollectedRoute[]): Record<string, u
     ];
 
     const responses: Record<string, unknown> = {};
+
+    // An SSE operation's 200 is a `text/event-stream` of `data:` frames, not a JSON body — the
+    // frame schema comes from `openapi.eventStream` because there is no Fastify response schema
+    // to read it from (see registry.ts). `text/event-stream` is also the exact marker
+    // `@hey-api/openapi-ts` looks for to generate a streaming operation rather than a
+    // request/response one, so this one key is what makes the stream SDK-consumable.
+    if (route.openapi.eventStream) {
+      responses["200"] = {
+        description: "Server-Sent Events stream",
+        content: { "text/event-stream": { schema: z.toJSONSchema(route.openapi.eventStream) } }
+      };
+    }
+
     for (const [status, schema] of Object.entries(route.schema?.response ?? {})) {
       // `z.void()`/`z.undefined()` model a body-less response (e.g. 204 No Content) and can't be
       // represented as JSON Schema (`z.toJSONSchema` throws) — OpenAPI 3.1 models "no body" as a

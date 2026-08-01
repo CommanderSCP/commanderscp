@@ -106,7 +106,7 @@ test("Outposts: nav → list → detail, and every API call the browser makes is
   expect(
     unexpectedCalls(declared, captured),
     "every API path the browser requested must match an operation in the emitted OpenAPI document " +
-      "(or the ONE named, pre-existing exemption: the raw SSE stream — see openapi-conformance.ts)"
+      "— with no exemptions: the SSE stream that used to be the one carve-out is now declared"
   ).toEqual([]);
 
   // NON-VACUITY, here and not only in the matcher's unit test: an assertion that nothing can fail is

@@ -86,34 +86,18 @@ export function undeclaredCalls(operations: Operation[], captured: ApiCall[]): A
 }
 
 /**
- * THE ONE KNOWN, PRE-EXISTING GAP — named here rather than papered over, because a sweep that
- * silently tolerated it would tolerate the next one too.
+ * The sweep's pass condition: EVERY captured call is a declared operation. Empty is the pass.
  *
- * `GET /api/v1/events/stream` is the SSE live-update channel (`apps/server/src/routes/events.ts`,
- * DESIGN §6/§8, M2). It is registered as a raw `app.get`, NOT through the `typed.route` wrapper the
- * OpenAPI emitter reads, so it is absent from `tools/openapi/openapi.v1.json` — and
- * `apps/web/src/lib/use-event-stream.ts` opens it with a hand-built URL and a raw `EventSource`,
- * from `RootLayout`, i.e. on EVERY page including this one.
- *
- * That is a genuine charter-principle-3 gap and it PREDATES this milestone by many increments (M2).
- * Fixing it means either declaring the operation in the contract or routing SSE through the SDK —
- * both server/SDK changes, and out of scope for a UI phase. What this milestone can honestly do is
- * make the exemption EXPLICIT, EXACT and TESTED: it is one method+path, it is asserted to be exactly
- * one entry, and `undeclaredCalls` (above) still flags it — so the exemption is visible as an
- * exemption rather than as an absence of evidence.
+ * This used to subtract an exemption list holding the one known gap — `GET /api/v1/events/stream`,
+ * the SSE live-update channel, which was registered as a raw `app.get` the emitter never saw and
+ * opened by `use-event-stream.ts` with a hand-built URL and a raw `EventSource` on every page. The
+ * SSE API-parity work closed it at the source: the operation is declared in
+ * `tools/openapi/openapi.v1.json` and `apps/web` consumes it through the generated SDK, so it is
+ * now matched by `isDeclaredOperation` like every other call. The exemption mechanism is deleted
+ * along with the exemption — an empty carve-out list is an invitation to refill it.
  */
-export const UNDECLARED_BY_DESIGN: readonly ApiCall[] = [{ method: "GET", path: "/events/stream" }];
-
-function isExempt(call: ApiCall): boolean {
-  return UNDECLARED_BY_DESIGN.some(
-    (known) => known.method === call.method && known.path === call.path
-  );
-}
-
-/** The sweep's actual pass condition: every captured call is either a declared operation or the one
- *  named, pre-existing exemption above. Empty is the pass. */
 export function unexpectedCalls(operations: Operation[], captured: ApiCall[]): ApiCall[] {
-  return undeclaredCalls(operations, captured).filter((call) => !isExempt(call));
+  return undeclaredCalls(operations, captured);
 }
 
 /** The API path a request URL addressed, or `null` when it is not an API call at all (the SPA's own

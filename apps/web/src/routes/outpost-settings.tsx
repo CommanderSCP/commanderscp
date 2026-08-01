@@ -74,9 +74,10 @@ export const SETTABLE_SYNC_SCOPE_MODES = [
  *   2. The failure moved, it did not vanish. Every page that reads through the SDK must render its
  *      `isError` state, or the diagnosis dies in the query cache and the operator sees a blank
  *      card — the regression this round fixed (`../components/query-error.tsx`).
- *   3. THE BOUND IS 204/204 SPEC'D OPERATIONS, NOT EVERY BYTE THE SPA PARSES OFF THE NETWORK.
- *      `GET /events/stream` is not in `openapi.v1.json` at all, so `lib/use-event-stream.ts` still
- *      parses unvalidated JSON; that surface is unchanged by ADR-0023 and closes separately.
+ *   3. THE BOUND IS THE SPEC'D OPERATIONS — which, since the SSE API-parity work, is every byte the
+ *      SPA parses off the network. `GET /events/stream` was the one exception (absent from
+ *      `openapi.v1.json`, so `lib/use-event-stream.ts` cast raw JSON); it is declared now, and each
+ *      frame is validated by the same generated validator as any 2xx body.
  *
  * `undefined` RATHER THAN A DEFAULT, deliberately. Substituting `"full"` would be the fabrication
  * class this whole branch exists to remove: it would tell the operator the peer exports everything,
