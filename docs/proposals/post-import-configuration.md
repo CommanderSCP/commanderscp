@@ -1,15 +1,26 @@
-# Proposal: post-import configuration — default topologies, readiness, and the self-outpost
+# Proposal: post-import configuration — stages, stage-shaped pipelines, readiness, and the self-outpost
 
-**Status:** Draft — proposed 2026-08-01, pending owner review.
-**Relates to:** [organize-after.md](organize-after.md) (M12 P5 — assign/merge, the half of this problem that shipped), [service-component-model.md](service-component-model.md) (import-permissive / create-strict), [import-existing-executors.md](import-existing-executors.md) (Mode A), [ADR-0007](../adr/0007-executor-binding-type-taxonomy.md) (routing Type), [ADR-0011](../adr/0011-universal-outpost-validation.md), [ADR-0022](../adr/0022-outpost-config-authority-split.md) (peer row vs `outpost` object), [PROJECT_CHARTER.md](../../PROJECT_CHARTER.md) principles 2 (graph-native), 3 (API-first parity), 6 (explainability).
+**Status:** Draft rev 2 — proposed 2026-08-01, revised the same day after owner review. Rev 1's §2 was withdrawn (see §2.0).
+**Relates to:** [GLOSSARY.md](../GLOSSARY.md) (**authoritative** — its `stage` and `wave` entries govern §3), [ADR-0021](../adr/0021-terminology.md) (D6, the stage grammar), [organize-after.md](organize-after.md) (M12 P5 — assign/merge, the half that shipped), [service-component-model.md](service-component-model.md), [ADR-0006](../adr/0006-fail-closed-on-missing-executor-binding-for-purpose.md) (fail-closed on a missing binding), [ADR-0007](../adr/0007-executor-binding-type-taxonomy.md) (the binding Type facet), [ADR-0011](../adr/0011-universal-outpost-validation.md), [ADR-0022](../adr/0022-outpost-config-authority-split.md), [PROJECT_CHARTER.md](../../PROJECT_CHARTER.md) principles 2 (graph-native), 3 (API-first parity), 6 (explainability).
+
+---
+
+## 0. Owner decisions recorded (2026-08-01)
+
+| | Decision |
+|---|---|
+| **D1** | **Fix the executor-binding uniqueness constraint.** Pipelines become stage-shaped, not component-shaped. Supersedes rev 1 §2 entirely. |
+| **D2** | The multi-target topology conflict is not a real problem — **dropped**, evidence in §1.4. |
+| **D3** | A commander acting in an outpost capacity **is** an outpost and must be shown as one — exempt from polling and poking itself. |
+| **D4** | Topology inheritance walks **past** the owning service. |
+| **D5** | The readiness marker flags items **awaiting manual resolution by a user**. It is not an "acknowledged, stop counting" flag. |
+| **D6** | No backfill. Applies only to changes created afterward. |
 
 ---
 
 ## Why now
 
-`organize-after.md` predicted the shape of the post-import problem and solved one half of it: an imported orphan can now be assigned to a service (`scp component assign`, M12 P5b) or merged into one (P5d). Both shipped. On 2026-08-01 they were run against the homelab for the first time, and the result exposed the other half.
-
-A census of the live homelab instance, before and after:
+`organize-after.md` predicted the post-import problem and shipped one half: an imported orphan can be assigned to a service (`scp component assign`, M12 P5b) or merged (P5d). On 2026-08-01 those ran against the homelab for the first time. The result closed the gap they were built for and exposed the rest.
 
 | Gap, per component | Before | After assign |
 |---|---:|---:|
@@ -18,195 +29,268 @@ A census of the live homelab instance, before and after:
 | No release topology | 51 | **51** |
 | No executor binding | 8 | **8** |
 
-Assign fixed exactly the gap it was built for and nothing else. The remaining rows are the point of this proposal, and one of them has no tooling at all: **51 of 69 components cannot be released through a pipeline, because nothing in the model can say which pipeline they belong to.**
-
-The instance is not failing. It is silently presenting an unconfigured estate as a working one — 45 components imported, bound to Argo CD, visible in the graph, through which no change has ever flowed and none ever can. That silence is the common thread across all three parts below.
+The 51 have no tooling, and the reason is structural rather than a missing feature: **the graph has no word for the place a release lands.** The glossary reserved one — `stage` — and states plainly that no such entity exists yet. Everything below follows from giving it a home.
 
 ---
 
 ## 1. What we verified
 
-Grounded against the running instance and the code on `main` at `55ffe2d`. Every claim traced to `file:line` or a query.
+Grounded against the running homelab instance and the code at `55ffe2d`. Every claim traced to `file:line` or a query.
 
-### 1.1 A topology cannot be attached to anything
+### 1.1 A topology orders a change's targets; it cannot supply them
 
-`release-topology` is a registered builtin object type with a `properties.waves` JSON Schema, and the compiler that consumes it works. What is missing is any way to say *"this component releases via this topology."*
+`plan-compiler.ts:133`:
 
-- `topologyIdOrUrn` is resolved in exactly one place — `coordination/changes-repo.ts:169-176` — and **only when a caller passes it**. It is type-checked there (`if (topology.typeId !== "release-topology") throw badRequest(...)`) and persisted to `changes.topology_object_id`.
-- The only callers that can pass it are `routes/changes.ts` (`POST /v1/changes`) and `routes/campaigns.ts` (`POST /v1/campaigns`). Verified by grepping every `topologyIdOrUrn` reference in `apps/server/src`.
-- **`coordination/webhook-processor.ts:299` — the ingress that creates changes from a matched source mapping — does not pass it.** It threads `targets`, `type`, `provides` and `requires`, and stops there. So every change born from a webhook has `topology_object_id = NULL`.
-- None of the 14 rows in `relationship_types` has `release-topology` in its `from_types` or `to_types`. There is no edge that could carry the fact.
+```js
+if (!targetSet.has(t)) return { ok: false, error: "unknown_target", target: t };
+```
 
-The consequence, measured on the homelab: **276 of 280 `change_plans` rows have `topology_object_id = NULL`**, and 276 of 284 `change_waves` rows have an empty `name` — the single anonymous wave that `plan-compiler.ts` emits by toposort when no topology is supplied. Only 4 changes have ever run a real pipeline, each proposed by hand. The two `release-topology` objects that exist (`forge-gamma-then-prod`, `agentkit-gamma-then-prod`) have **zero relationships** and are reachable only by a human typing `--topology`.
+Every target a topology names **must already be in the change's target set**. A topology is an ordering template over targets the change already has.
 
-Two hazards worth naming while we are here, both currently silent:
+### 1.2 The two live topologies use different units, and one is rehearsal debris
 
-- `plan-service.ts:39-43` — `parseTopologyWaves` returns `undefined` when `document.waves` is not an array. A topology whose document is malformed is **silently ignored**, and the change compiles to a single wave as though no topology were attached. Indistinguishable, today, from the ordinary case.
-- `reconcile.ts:268-290` — if compilation *throws* (cycle, unknown target, topology violating a `depends_on` edge), the change is **auto-cancelled** with the compiler message as its epitaph. On the homelab, 9 of 280 changes are `cancelled`; whether any died this way is not currently distinguishable from the outside.
+| Topology | Created | Waves name | Real? |
+|---|---|---|---|
+| `forge-gamma-then-prod` | 2026-07-12 19:11 | 2 **deployment-targets** | No — left from the fake-executor rehearsal, unused since |
+| `agentkit-gamma-then-prod` | 2026-07-17 16:44 | 18 **components** | Yes — the only real one |
 
-### 1.2 The IaC surface cannot express the configuration either
+There is exactly one real pipeline in the estate, and it is expressed over components.
 
-`packages/iac/src/index.ts:11-30` exports `Service`, `Component`, `Domain`, `Team`, `DeploymentTarget`, `Group`, `User`, `ServiceAccount`, `Campaign`, `Initiative`, `ReleaseTopology`. The synthesised manifest (`DesiredStateManifest`) carries exactly two collections: `objects` and `relationships`.
+### 1.3 Why it is expressed over components — the root cause
 
-So today, declaratively:
+`agentkit-gamma-then-prod` must name 18 components because gamma and prod are modelled as **separate component objects**: `agentkit-auto` and `agentkitauto-prod`, `agentkitmarket` and `agentkitmarket-prod`, and so on.
 
-| Configuration | IaC-expressible? | Why |
-|---|---|---|
-| Services, components, `contains` edges | **yes** | graph objects + a registered relationship |
-| Release topologies (the object) | **yes** | a graph object |
-| Deployment targets | **yes** | a graph object |
-| **Which topology a component releases via** | **no** | the concept does not exist in any surface |
-| **Source mappings** | **no** | `source_mappings` is a standalone table, not a graph object |
-| **Executor bindings** | **no** | `executor_bindings` is a standalone table, not a graph object |
+That pairing is not a modelling preference. `executor_bindings` carries:
 
-The last three are the entire remaining gap in the census table. A user cannot today check their post-import configuration into git, which is precisely what charter principle 3 (API → SDK → CLI → IaC → UI parity) exists to prevent.
+```
+UNIQUE (org_id, target_object_id, type)      -- executor_bindings_org_target_type_key
+```
 
-Note that making the topology attachment a **relationship** (§2) puts it inside the IaC surface for free — no manifest change. Source mappings and executor bindings do not get that for free, because they are not graph data.
+One component can hold **at most one `configuration` binding**. A single `agentkit-auto` cannot be bound to both the homelab Argo CD (`homelab-argo`) and the prod Argo CD (`argocd-prod`). **The env-suffixed component pairs exist to work around this constraint** — they are stages wearing a component costume, and `agentkitauto-prod` names a *place*, not a *thing*.
 
-### 1.3 There is no notion of "configured" anywhere
+This single fact shapes the rest of the proposal.
 
-Grepping `apps/server/src` and `apps/web/src` for `readiness`, `unconfigured`, `needsConfiguration`, `pendingMapping` returns only unrelated federation-loop hits. Nothing computes, stores, or displays whether a component is wired up. The Components and Graph views render a fully-configured component and an inert one identically.
+### 1.4 Auto-created changes have exactly one target (D2's evidence)
 
-### 1.4 The federation role is advisory and gates nothing
+`webhook-processor.ts:299` calls `proposeChange` once per matched source mapping, with `targets: [match.componentObjectId]`. Measured distribution of targets per plan:
 
-The homelab is a single instance with `federation_self.role = 'unset'` and zero `federation_peers` rows.
+```
+ 1 target  → 277 changes
+ 2 targets →   1 change    (the 2026-07-12 rehearsal)
+18 targets →   3 changes   (the real promotions)
+```
 
-- `federation/self-repo.ts:80-92` documents `role` as *"advisory metadata for the CLI/UI, not a precondition"*, and `ensureFederationSelf` lazily mints the row with `role: 'unset'`.
-- Its only consumer in the product is an informational banner: `federation-status.tsx:81` (`const notInitialized = selfQuery.data?.role === "unset"`).
-- `getFederationStatus` (`federation/status-repo.ts:60-140`) reads `federation_self` only for `domainId`/`name`. It never filters on `role`.
-- `outposts.tsx:508` builds its list as `peers.filter(isOutpostPeer)`, where `isOutpostPeer` (`outposts.tsx:42`) is `["outpost","retrans"].includes(status.peer.role)`. **Self is structurally never a candidate row.**
-- The one role-based gate in the system is `app.ts:263` (`if (deps.config.federationRole !== "retrans")`), which suppresses the whole SPA on a relay node. It reads the install-time env var `SCP_FEDERATION_ROLE`, *not* `federation_self.role`.
+A push to `AgentKitProject/agentkit` matches 24 mappings and creates **24 separate single-target changes**. A single-target change has nothing to disagree with, so the multi-target conflict raised in rev 1 cannot arise on the automatic path. **Dropped per D2.**
 
-So an operator running a single instance that coordinates every environment directly sees an Outposts page reading "No outpost or retrans peers are paired yet" and nothing anywhere stating that this instance is itself the domain where everything lands. The UI is not wrong; it is silent.
+### 1.5 Consequence today
 
----
+276 of 280 `change_plans` rows have `topology_object_id = NULL`, and 276 of 284 `change_waves` rows have an empty `name` — the single anonymous wave `plan-compiler.ts` emits by toposort when no topology is supplied. The two topology objects have **zero relationships** and are reachable only by a human typing `--topology`.
 
-## 2. Proposal A — `releases`, a topology attachment edge
+Two silent hazards worth fixing alongside:
 
-Add one registered builtin relationship type:
+- `plan-service.ts:39-43` — `parseTopologyWaves` returns `undefined` when `document.waves` is not an array. A malformed topology is **silently ignored** and compiles to a single wave, indistinguishable from having no topology at all.
+- `reconcile.ts:268-290` — if compilation throws, the change is **auto-cancelled** with the compiler message as its epitaph. 9 of 280 changes are `cancelled`; whether any died this way is not distinguishable from outside.
 
-| | |
-|---|---|
-| `id` | `releases` |
-| `from_types` | `{release-topology}` |
-| `to_types` | `{service, component}` |
-| `cardinality` | `one_to_many` |
+### 1.6 The federation role is advisory and gates nothing
 
-**The direction is load-bearing, and it is the opposite of the obvious one.** The natural first instinct is `component → release-topology` ("this component releases via that topology"). That cannot be constrained correctly today. `assertCardinality` (`graph/relationships-repo.ts:56-79`) only ever constrains the **to** side — its own comment at line 67 reads *"'to' side is singular: this `to_id` may not already have an incoming edge of this type"* — and the `cardinality` column is free `text` whose only live values are `one_to_many` and `many_to_many`, with `one_to_one` also handled in code. There is **no `many_to_one`**. So on a `component → topology` edge:
-
-- `one_to_many` would constrain the *topology*, i.e. only one component could ever use each topology — the exact opposite of what a shared pipeline is for
-- `one_to_one` would constrain both sides, same problem
-- expressing the real rule would require a new cardinality value plus an engine change to `assertCardinality`
-
-Declaring it `topology → component` instead makes the constraint we want — **at most one topology per component, one topology serving many components** — precisely what the existing `one_to_many` already means, with **zero engine changes**. It becomes the exact structural twin of `contains` (`service → component`, `one_to_many`), down to the race backstop: a partial unique index on `(org_id, to_id) WHERE type_id='releases' AND deleted_at IS NULL`, mirroring migration `0022`'s index for `contains` (verified at `apps/server/drizzle/0022_contains_single_service_constraint.sql:27-29`).
-
-The edge reads "topology T releases component C", which is also the honest description of what a release topology does.
-
-**Resolution order** when `proposeChange` is called without an explicit `topologyIdOrUrn`:
-
-1. the change's own `topologyIdOrUrn`, if the caller passed one (unchanged — explicit always wins)
-2. else the incoming `releases` edge on the **component** being targeted
-3. else the incoming `releases` edge on that component's owning **service** (walk the `contains` edge inbound)
-4. else `null` — today's behaviour, single toposorted wave
-
-Steps 2-3 give the umbrella-service model its natural payoff: attach one topology to `agentkit` and all 24 of its components inherit it, overriding per-component only where a component genuinely differs.
-
-**Where the resolution lives.** It must be inside `proposeChange` (`changes-repo.ts`), not in `webhook-processor.ts`. The webhook processor is one of several change-creating paths, and putting resolution in the caller is precisely the incomplete-call-site-census mistake this repo has been bitten by four times (BUILD_AND_TEST.md §4.4). Resolution belongs at the single point where `topologyObjectId` is already decided — `changes-repo.ts:167-176`.
-
-**Multi-target changes.** A change may target several components (`targets: string[]`). If two targets resolve to different topologies, that is a genuine conflict. Proposed: **refuse the change with a 400 naming both topologies**, consistent with ADR-0007's "one release = one source = one pipeline" ruling, which already treats the routing Type as a property of the change rather than of each target. Open question Q2.
-
-**Charter fit.** New relationship type = registry data, not a new top-level table (principle 2). Free IaC expressibility via the existing `relationships` collection (principle 3). The resolution outcome should be recorded on the Decision the change already writes, so "why did this change get this pipeline?" is answerable (principle 6).
+- `federation/self-repo.ts:80-92` documents `role` as *"advisory metadata for the CLI/UI, not a precondition"*.
+- Its only product consumer is a banner at `federation-status.tsx:81`.
+- `getFederationStatus` (`federation/status-repo.ts:60-140`) reads `federation_self` only for `domainId`/`name`; it never filters on `role`.
+- `outposts.tsx:508` builds the list as `peers.filter(isOutpostPeer)`, where `isOutpostPeer` (`outposts.tsx:42`) tests `["outpost","retrans"].includes(status.peer.role)`. **Self is structurally never a candidate row.**
+- The one real role gate is `app.ts:263` (`if (deps.config.federationRole !== "retrans")`), reading the install-time env var `SCP_FEDERATION_ROLE`, *not* `federation_self.role`.
 
 ---
 
-## 3. Proposal B — configuration readiness, and an honest badge
+## 2.0 What rev 1 got wrong
 
-### 3.1 The computation
+Rev 1 proposed a `releases` relationship attaching a topology to a component, so webhook-created changes would inherit a pipeline. **That cannot work.** A webhook change targets one component (§1.4); `agentkit-gamma-then-prod` names 18; `plan-compiler.ts:133` rejects any topology target absent from the change's targets. The change would fail to compile with `unknown_target` rather than inherit anything.
 
-A derived, per-component readiness record — **no new table**, computed from what already exists:
+The error was treating "which pipeline does this component use?" as the question. With gamma and prod modelled as different components, a pipeline is inherently multi-component and no per-component edge can express it. The real question is what a pipeline is expressed *over* — which the glossary already answered.
+
+---
+
+## 3. Stages become first-class
+
+The [glossary](../GLOSSARY.md) reserves the vocabulary and names the gap:
+
+> **stage** | **Reserved:** one named deployment **place**, spelled `<domain>[-<location>]-<env>`. **No such entity exists yet**
+
+> **wave** | One ordered step of a compiled plan — the **set of one-or-more stages** advanced at once
+
+> **A stage is a place; a wave is a step.** … **a wave contains one or more stages.**
+
+A wave containing stages is exactly the model D1 asks for. Nothing here is invented; this is implementation of a decided vocabulary.
+
+**Proposed:** a new builtin object type `stage`, whose `name` obeys the ADR-0021 D6 grammar — `<domain>[-<location>]-<env>`, lowercase, fixed segment order, **every segment value hyphen-free**. The grammar is parsed by segment count, so `us-east` is invalid; use `useast`. Validation belongs in the type's `property_schema` and the typed create route, because a name that cannot be parsed by segment count is unrecoverable later.
+
+For the homelab that is two stages — `commercial-gamma` and `commercial-prod`. No location segment: the glossary says to include it only when telling geographic peers apart, and there is one region.
+
+**Stage versus deployment-target.** Not the same, and both survive. The glossary is explicit that a deployment-target "may or may not represent an environment" — it models a concrete cluster or host. A stage is the *named place* in the release grammar. Proposed: a stage relates to one or more deployment-targets, so `commercial-prod` points at `prod (DOKS hosted)`. See Q3 on which edge.
+
+---
+
+## 4. The binding constraint fix (D1)
+
+**Today:** `UNIQUE (org_id, target_object_id, type)` — one binding per (component, type).
+
+**Proposed:** `UNIQUE (org_id, target_object_id, stage_object_id, type)`, via a new nullable `stage_object_id` column on `executor_bindings`.
+
+`stage_object_id IS NULL` means **stage-agnostic** — the binding applies wherever the component is released. Every existing row migrates to `NULL` unchanged, so this is expand-only and no current behaviour shifts on the migration itself.
+
+**One detail that must not be missed.** Postgres treats `NULL`s as distinct in a unique constraint by default, so a nullable column would permit unlimited stage-agnostic duplicates — silently removing the protection ADR-0006 depends on. On PostgreSQL 16 the fix is `UNIQUE NULLS NOT DISTINCT`, available since PG15 and usable directly given charter principle 4 pins PG16. Without it this migration is a regression, not a feature.
+
+**Resolution order** when reconcile resolves a binding for (component, stage, type):
+
+1. the binding for that exact `(component, stage, type)`
+2. else the stage-agnostic binding `(component, NULL, type)`
+3. else no binding — ADR-0006's fail-closed path, unchanged
+
+Step 2 preserves today's semantics exactly for every component that never gains a stage-scoped binding.
+
+**`change_wave_targets` gains `stage_object_id` too.** A wave target becomes the pair (component, stage) — "deploy `agentkit-auto` at `commercial-prod`" — which is what the row has always meant, with the stage previously smuggled into the component identity. `status` is already plain text with no enum or check constraint, and this column is additive, so the migration is expand-only.
+
+---
+
+## 5. Pipelines over stages
+
+**Topology documents name stages in their waves**, not components:
+
+```json
+{ "waves": [ { "name": "gamma", "mode": "parallel", "stages": ["<commercial-gamma-id>"] },
+             { "name": "prod",  "mode": "parallel", "stages": ["<commercial-prod-id>"] } ] }
+```
+
+**Compilation changes shape.** Today the compiler intersects topology targets with change targets and rejects any that are absent (§1.1). Stage-shaped, it takes the **cartesian product**: the change supplies the components, the topology supplies the ordered stages, and each wave's targets are (every change target × every stage in that wave). A single-target change now yields a real multi-wave plan — precisely what 277 of 281 changes need and none of them get.
+
+Both shapes must be supported during migration (§6), distinguished by whether a wave carries `stages` or `targets`. A wave carrying **both** should be rejected outright rather than resolved by precedence — a silently-preferred key is how `parseTopologyWaves` already loses malformed documents (§1.5).
+
+**Attachment and inheritance (D4).** With pipelines now reusable, the attachment edge from rev 1 becomes worth having — but pointing at a *pipeline*, not at a bundle of components. A `releases_via` edge, resolved in this order when a change carries no explicit `--topology`:
+
+1. the change's own explicit topology (unchanged — explicit always wins)
+2. the component's `releases_via`
+3. the owning service's `releases_via` (walk `contains` inbound)
+4. **past the service, per D4** — domain, then org default
+5. else `null`, today's single-wave behaviour
+
+Because many components now share one topology, the cardinality question from rev 1 returns in its original form: `assertCardinality` (`relationships-repo.ts:56-79`) only ever constrains the **to** side, and there is no `many_to_one`. Either the edge is declared `topology → component` (reads backwards, no engine change), or `assertCardinality` gains a `many_to_one` arm. **Recommended: add `many_to_one`** — the edge is read far more often than written, and a backwards-reading edge in a system whose glossary is this careful about vocabulary is a poor trade. See Q1.
+
+**Resolution must live in `proposeChange`** (`changes-repo.ts:167-176`), not in `webhook-processor.ts`. Several paths create changes, and fixing the caller rather than the single decision point is the incomplete-call-site-census mistake this repo has hit four times (BUILD_AND_TEST.md §4.4). The resolved topology and the rung it came from belong on the change's Decision (principle 6), so "why did this change get this pipeline?" is answerable.
+
+---
+
+## 6. Migrating the live estate
+
+The homelab's 18 env-suffixed components collapse to 9, each gaining two stage-scoped bindings. This is the disruptive part and should be staged.
+
+1. **Create the two stages** (`commercial-gamma`, `commercial-prod`) and their edges to the existing deployment-targets. Additive; nothing observes them yet.
+2. **Backfill `stage_object_id`** on the 61 existing bindings, from each component's `properties.environment` (already present on the 11 prod components) and its Argo CD execution-system. Still additive — resolution rung 2 keeps every component working.
+3. **Merge each env pair** with the shipped `scp component merge` (P5d), which already moves bindings and soft-deletes the loser. The binding-type collision that would previously 409 is exactly what step 2 resolves: the two `configuration` bindings now differ by stage.
+4. **Author one `commercial-gamma-then-prod` topology** over stages and attach it to the `agentkit` service. All 9 components inherit it (rung 3).
+5. **Retire `agentkit-gamma-then-prod`** and `forge-gamma-then-prod` once no in-flight plan references them. Compiled plans snapshot `topology_document` (`plan-service.ts:96-109`), so retiring the object cannot disturb history.
+
+Per D6 there is **no backfill of existing changes** — the 276 single-wave plans stay as they are, and only changes created after step 4 compile stage-shaped.
+
+Step 3 is the only irreversible step and is the natural stopping point for owner review.
+
+---
+
+## 7. Readiness and the manual-resolution marker (D5)
+
+### 7.1 The computation
+
+Derived per component, **no new table**:
 
 | Check | Source | Meaning if absent |
 |---|---|---|
 | `hasService` | `contains` edge inbound | invisible on every service board; no RBAC/policy/freeze scope |
-| `hasExecutorBinding` | `executor_bindings` by `target_object_id` | nothing can execute for it |
-| `hasSourceMapping` | `source_mappings` by `component_object_id` | no change will ever be created from a webhook |
-| `hasTopology` | `releases` (§2), own or inherited | releases compile to one anonymous wave |
+| `hasExecutorBinding` | `executor_bindings` by target | nothing can execute for it |
+| `hasSourceMapping` | `source_mappings` by component | no change will ever be created from a push |
+| `hasPipeline` | `releases_via`, own or inherited (§5) | releases compile to one anonymous wave |
 
-Exposed as `GET /v1/components/{idOrUrn}/readiness` and aggregated at `GET /v1/readiness` for the instance-wide count. API-first, then SDK/CLI/UI per principle 3.
+Exposed as `GET /v1/components/{idOrUrn}/readiness` and aggregated at `GET /v1/readiness`, then SDK → CLI → UI per principle 3.
 
-### 3.2 The part that makes or breaks it: acknowledgement
+On the homelab today:
 
-A badge that can never reach zero is a badge operators learn to ignore. On the homelab, 43 components are **deliberately** catalog-only — imported for visibility, with no intention of ever coordinating a release through them. If those permanently show as unconfigured, the count is noise from day one.
+```
+                 service   binding   source_mapping
+agentkit-auto      yes       yes         yes
+homelab-loki       yes       yes         NO
+homelab-pihole     yes       yes         NO
+```
 
-So readiness needs an explicit escape: a component (or a whole service) can be marked **catalog-only**, which excludes it from the count and displays as a distinct, deliberate state rather than a gap. Proposed as a label or property rather than a new type, set through the same API/CLI/IaC path as everything else — so the *decision not to wire something up* is itself checked into git.
+### 7.2 The marker flags work, not permission to ignore it
 
-This is the difference between "45 things are broken" and "45 things are catalog, 0 gaps" — the same data, one of them actionable.
+Per D5 the marker means **awaiting manual resolution by a user** — these gaps are real and a human must close them. It is not an acknowledgement that silences the count.
 
-### 3.3 Surfacing
+Resolution is one of two human acts, and **both** clear the flag:
 
-- a count in the nav next to Components/Services, suppressed entirely at zero
-- per-component detail listing which of the four checks failed, each linking to the action that fixes it
-- on the service board, a per-row indicator, since that is where "this service's components" is already the frame
+- **wire it up** — create the source mapping, attach the pipeline; or
+- **declare it not-for-coordination** — an explicit, recorded statement that this component is catalogue-only
 
-Deliberately **not** proposed: a notification or alert. These are static configuration gaps, not events; they do not need to interrupt anyone, and routing them through the notification bindings would make them repeat.
+The second is not a way of ignoring the first. It is a decision, made by a person, checked into git like any other configuration (principle 3) and visible in the audit trail. The distinction that matters: **an unresolved gap and a resolved-as-not-coordinated component must not look the same**, because only one of them is work.
 
----
+Granularity: **per service, with a per-component override.** The homelab's 43 `homelab-platform` components are one decision, not 43.
 
-## 4. Proposal C — IaC coverage for the two non-graph tables
-
-`source_mappings` and `executor_bindings` are the only post-import configuration that cannot be declared. Two options:
-
-**C1 — extend the manifest.** Add `sourceMappings` and `executorBindings` collections to `DesiredStateManifest`, with matching constructs. Honest about what they are (projections, not graph objects), and keeps `executePlanDiff` as the single apply path. Cost: the manifest stops being purely `objects` + `relationships`, and the plan-diff engine grows two more resource kinds.
-
-**C2 — leave them out.** Accept that bindings and mappings are imperative (`scp connect argocd`, `scp change-source create-mapping`) and not part of desired state.
-
-**Recommendation: C1**, because principle 3 is written as a parity guarantee and these are the two things a user most needs to reproduce when standing up a second instance — which is exactly the air-gap/self-hosting story (principle 5). C2 leaves a documented hole in the parity claim.
-
-Note this is independent of §2: `releases` needs no manifest change either way.
+Deliberately **not** proposed: notifications. These are static configuration gaps, not events; routing them through notification bindings would make them repeat.
 
 ---
 
-## 5. Proposal D — the self-outpost
+## 8. IaC coverage
 
-Two distinct problems, and they should not be conflated.
+`packages/iac/src/index.ts:11-30` exports `Service`, `Component`, `Domain`, `Team`, `DeploymentTarget`, `Group`, `User`, `ServiceAccount`, `Campaign`, `Initiative`, `ReleaseTopology`. The manifest carries exactly two collections: `objects` and `relationships`.
 
-### 5.1 Make the role mean something
+| Configuration | IaC-expressible today | After this proposal |
+|---|---|---|
+| Services, components, `contains` | yes | yes |
+| Release topologies | yes | yes |
+| **Stages** (§3) | n/a | **yes** — a graph object, free |
+| **Pipeline attachment** (§5) | no | **yes** — a relationship, free |
+| **Source mappings** | **no** | needs C1 below |
+| **Executor bindings** | **no** | needs C1 below |
 
-`federation_self.role` is advisory and gates nothing (§1.4). Either it should be set and displayed, or it should be removed. Proposed: keep it, require it to be designated during bootstrap or first-run, and **surface it prominently** — the instance header or the Federation page — so "this is a commander" is a stated fact rather than an inference. A `role: 'unset'` instance should say so plainly.
+Making stages objects and attachment a relationship puts both inside the IaC surface at no cost. The two standalone tables do not get that for free.
 
-This is a display and bootstrap change only. Nothing should start *gating* on `federation_self.role`, because `SCP_FEDERATION_ROLE` already does the one piece of real gating (`app.ts:263`) and two role sources that can disagree is a bug generator.
+**C1 — extend the manifest** with `sourceMappings` and `executorBindings` collections. **Recommended.** Principle 3 is written as a parity guarantee, and these two are exactly what a user must reproduce when standing up a second instance — the air-gap and self-hosting story (principle 5). Leaving them out is a documented hole in the parity claim.
 
-### 5.2 Show self in the Outposts list
-
-An operator running one instance that coordinates every environment has, in every practical sense, a commander that is also the domain where releases land. Proposed: **synthesise a self row** at the top of the Outposts list, visually distinct from paired peers.
-
-The constraint comes from ADR-0022, which splits authority between a `federation_peers` row (transport, keys, sync state) and an `outpost` graph object (declared config, trust tier). **Self has neither.** So the self row must not render the fields that only exist for a real peer — last pull, sync cadence, poke mode, journal cursor, verification key. Showing an empty or zeroed sync state for self would be exactly the dishonesty the boundary-honesty tests (`outposts-honesty.test.tsx`, `change-pipeline-boundary-honesty.test.tsx`) exist to prevent.
-
-What the self row should carry: the domain name and id from `federation_self`, the declared role, the deployment targets it coordinates directly, and an explicit "this domain — not a paired peer" marker. Everything else omitted rather than blanked.
-
-Open question Q3: whether self should additionally get a real `outpost` config object so its trust tier is declarable, or whether trust tier is meaningless for the domain you are standing in.
+Ordering constraint: an executor binding now references a stage, so stages must apply before bindings within one plan diff.
 
 ---
 
-## 6. Charter and principle check
+## 9. The self-outpost (D3)
+
+Two separable changes.
+
+**9.1 Make the role visible.** `federation_self.role` is advisory and gates nothing (§1.6). Keep it, require designation at bootstrap, and surface it where an operator sees it. An instance with `role: 'unset'` should say so plainly. Nothing should begin *gating* on it — `SCP_FEDERATION_ROLE` already does the one piece of real gating, and two disagreeing role sources is a bug generator.
+
+**9.2 Synthesise a self row.** Per D3, a commander acting in an outpost capacity **is** an outpost and appears in the list, visually distinct, **exempt from polling and poking itself**.
+
+That exemption is a correctness requirement, not an optimisation. The federation-sync loop dials a peer's `base_url`; a self row entering the peer set would dial its own — a self-loop syncing a journal against itself. The exemption must therefore live in the **data**, not only in the rendering: the self row is synthesised for display and must never be inserted into `federation_peers`, or every loop that iterates peers inherits the bug.
+
+ADR-0022 constrains the rest. Authority is split between a `federation_peers` row (transport, keys, sync state) and an `outpost` graph object (declared config, trust tier), and **self has neither**. So the self row must **omit** the fields that exist only for a real peer — last pull, sync cadence, poke mode, journal cursor, verification key — rather than render them blank or zeroed. Showing a zeroed sync state for self is precisely the dishonesty `outposts-honesty.test.tsx` and `change-pipeline-boundary-honesty.test.tsx` exist to catch.
+
+What the self row carries: domain name and id from `federation_self`, the declared role, the stages it coordinates directly, and an explicit "this domain — not a paired peer" marker.
+
+---
+
+## 10. Charter check
 
 | Principle | Effect |
 |---|---|
 | 1 — coordination, not execution | untouched; no new execution verbs |
-| 2 — graph-native | `releases` is registry data, not a table. Readiness is computed, not stored. |
-| 3 — API-first parity | readiness and `releases` ship API → SDK → CLI → IaC → UI. §4 closes an existing parity hole. |
-| 4 — PostgreSQL only | no new stateful dependency |
-| 5 — air-gap | §4 (C1) directly serves reproducing an instance offline |
-| 6 — explainability | topology resolution recorded on the change's Decision; readiness is derived and inspectable |
-| 7 — priorities | Simplicity is the pressure point: §3.2's acknowledgement mechanism is the one place this adds user-facing concept weight. Judged worth it — without it the feature is ignorable. |
+| 2 — graph-native | `stage` is a registered object type, attachment is a relationship, readiness is computed. The two new **columns** sit on existing projection tables, not new top-level tables. |
+| 3 — API-first parity | stages, attachment and readiness ship API → SDK → CLI → IaC → UI; §8 closes an existing hole |
+| 4 — PostgreSQL only | no new stateful dependency; §4 uses a PG15+ feature the pinned PG16 provides |
+| 5 — air-gap | §8 directly serves reproducing an instance offline |
+| 6 — explainability | resolved topology and the rung it came from recorded on the change's Decision |
+| 7 — priorities | Simplicity is the pressure point. This adds one entity and two columns, and **removes** the env-suffixed component duplication — the estate gets smaller. Judged net-positive. |
 
 ---
 
-## 7. Open questions for the owner
+## 11. Open questions
 
-- **Q1 — edge direction.** §2 proposes `topology → component` specifically so the existing `one_to_many` expresses the constraint with no engine change, at the cost of an edge that points "backwards" relative to how one says it in English. The alternative is `component → topology` plus a new `many_to_one` cardinality and an `assertCardinality` change. Confirm the trade is the right way round.
-- **Q2 — multi-target conflict.** Refuse a change whose targets resolve to different topologies (proposed), or take the service-level one as the tie-break?
-- **Q3 — trust tier for self.** Does a self-outpost row get a real `outpost` config object, or is trust tier meaningless for the local domain?
-- **Q4 — inheritance depth.** Component → owning service is proposed. Should it walk further (service → domain → org), or stop at the service?
-- **Q5 — catalog-only granularity.** Set per component, per service, or both? Per-service would have marked all 43 homelab-platform components in one action.
-- **Q6 — retrofit.** Should attaching a topology to a service backfill anything for the 276 existing single-wave changes, or apply only to changes created after? (Proposed: only after — a compiled plan is already snapshotted deliberately, per `plan-service.ts`'s topology-document snapshot comment.)
+- **Q1 — `releases_via` cardinality.** Add a `many_to_one` arm to `assertCardinality` (recommended, edge reads naturally), or declare the edge `topology → component` and read it backwards for no engine change?
+- **Q2 — inheritance beyond the service.** D4 says walk past it. Confirm the rungs: domain, then an org-level default? And is an org default a singleton object or a settings value?
+- **Q3 — stage → deployment-target edge.** Reuse `hosted_on` (whose `from_types` is `{service, component}` today, so this widens an existing type), or add a dedicated relationship type?
+- **Q4 — merge timing.** §6 step 3 is irreversible. Merge all 9 env pairs at once, or one service at a time with a verification pass between?
+- **Q5 — stage naming for the homelab.** `commercial-gamma` / `commercial-prod` (proposed, no location segment), or `commercial-amer-*` to leave room for a region split? The glossary says omit unless disambiguating, but renaming a stage later renames a *place*.
+- **Q6 — the 8 unbound components.** Out of scope here, but they fail `hasExecutorBinding` and surface in the readiness count on day one. Wire them, or resolve them as not-for-coordination?
