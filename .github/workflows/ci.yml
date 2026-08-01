@@ -259,7 +259,7 @@ jobs:
           build_and_push "$SCP_RUNNER_IAC_IMAGE_REF" apps/runner-iac
 
   testcontainer-images:
-    name: "4d. Mirror Testcontainer images to GHCR (postgres, nats, registry)"
+    name: "4d. Mirror Testcontainer images to GHCR (postgres, nats, registry, minio)"
     # Job 5 below starts postgres:16, nats:2.10, and registry:2 directly via Testcontainers
     # (PostgreSqlContainer/GenericContainer in apps/server's integration suites — e.g.
     # event-bus.integration.test.ts, promotion-scan-step.integration.test.ts,
