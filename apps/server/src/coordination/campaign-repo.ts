@@ -265,8 +265,29 @@ export function campaignTargetObjectIdsOf(
   return Array.isArray(targets) ? targets.filter((t): t is string => typeof t === "string") : [];
 }
 
-/** Every non-terminal (no plan yet, or plan not yet fully completed/aborted) campaign in the org —
- *  the reconciler's batch-fetch, mirroring `changes-repo.ts`'s `listChangeRowsInStates` shape. */
+/**
+ * The campaign reconciler's batch-fetch, mirroring `changes-repo.ts`'s `listChangeRowsInStates`
+ * shape (`ORDER BY updated_at ASC LIMIT n`).
+ *
+ * CORRECTED 2026-08-01 — this doc previously read "Every non-terminal (no plan yet, or plan not yet
+ * fully completed/aborted) campaign in the org", and the query DOES NOT DO THAT. Its WHERE clause
+ * is `org_id`, `type_id = 'campaign'`, `deleted_at IS NULL` and nothing else: a campaign whose
+ * latest plan is `completed` or `aborted` is still returned, every tick, forever.
+ * `reconcileOneCampaign` then early-returns on it having done nothing. The name says "Active", the
+ * doc said "non-terminal", the query says "all of them" — and only the query runs.
+ *
+ * Consequence, now contained rather than fixed: terminal campaigns consume batch slots. That was a
+ * STARVATION vector until `reconcileCampaignsOrgTick` began round-robin bumping every campaign it
+ * examines (see the bump's comment there) — with the bump, a terminal campaign yields its slot on
+ * the next tick instead of holding it forever, so no campaign is starved. What remains is wasted
+ * work: every terminal campaign is re-fetched and re-early-returned for the life of the org.
+ *
+ * FOLLOW-UP (deliberately not done here): add the real predicate — "the LATEST plan by created_at
+ * is not `completed`/`aborted`". It needs care, because a campaign may have several plans and
+ * `getLatestCampaignPlan` picks by `created_at DESC` with no tiebreak; a filter that gets this
+ * wrong would exclude ACTIVE campaigns, which is far worse than today's over-inclusion. Not worth
+ * risking in the same change that fixed the starvation class.
+ */
 export async function listActiveCampaignObjectIds(
   tx: TenantTx,
   orgId: string,

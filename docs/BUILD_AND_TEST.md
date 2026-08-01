@@ -226,6 +226,31 @@ Four layers, matching DESIGN.md §18. Every layer runs offline; no test may reac
 - **UI (Playwright, Chromium):** login (local auth), graph explorer renders seeded org, service detail shows owners/dependents, change detail shows waves and a working "Why?" Decision link, blocked action surfaces `decision_id`. Runs against the compose stack; also a `pnpm --filter @scp/web test:e2e` local target against the dev server.
 - **Two-domain federation round-trip (`scripts/e2e-m6.sh`, job 8c — post-merge on `main`, not a PR gate; §6.0):** compose file with two isolated `scpd`+postgres pairs; create objects in Domain A → `scp federation export` → file copy (simulating the air gap — no network path exists between the stacks) → `scp federation import` into B → assert graph equivalence → accept a change through B's **local** gates → export status back to A → assert convergence and audit-chain integrity on both sides.
 
+### 4.4a Census by property, not by symptom
+
+**The practice.** When a bug is fixed, the fix is not done until the *property* that made it possible has been named and every other instance of that property has been checked. A bug found by its symptom is one instance; the property is the class.
+
+**The worked example, and why this is a convention rather than advice.** The reconcile engine selects candidates with a batch-limited, `updated_at`-ordered query. Any loop that can re-serve a row *without writing the column its `ORDER BY` reads* pins its batch forever and starves everything queued behind it. That property held in **four** places:
+
+| loop | outcome |
+|---|---|
+| `advanceWaitingChanges` | Found, correctly diagnosed, fixed, and commented as a named hazard — *"STARVATION fix, coupled-pipelines.md §3.5 hazard"*. |
+| `advanceExecutingChanges` | Same property, untouched. **Stopped production coordination for 13 days** behind green health checks: 25 gate-blocked changes pinned every batch slot; 231 changes were never evaluated once. |
+| `advanceValidatingChanges` | Same property, latent — 7 rows against a limit of 25. Invisible to any symptom-driven search. |
+| `reconcileCampaignsOrgTick` | Same property, latent — 0 campaigns. Found **only** by censusing the property. |
+
+The first fix was good work with a good comment, and it still left three instances. That is the whole argument: **a comment naming a hazard as a class is a signal to sweep, not evidence the class was handled.**
+
+**How to do it.**
+
+1. **State the property as a sentence about code shape**, not about the bug. "A batch-limited candidate loop that can re-serve a row without writing its sort column" — not "changes got stuck".
+2. **Census with no filters.** `grep -rn` the whole tree and read every hit. A `grep -v` is where the next instance hides; if the list is long, that is information.
+3. **Check the latent instances too.** `advanceValidatingChanges` and the campaign loop had no symptom at all. Sorting by "what looks broken" would never have reached them.
+4. **Use the mechanism the codebase already has.** All four are fixed by the same `updated_at` bump. Two mechanisms for one property is how the next partial fix happens.
+5. **Leave a guard, not just a fix.** `apps/server/src/coordination/candidate-loop-registry.test.ts` fails CI when a new batch-limited candidate loop appears unclassified. It cannot prove a loop is correct — it makes adding one a deliberate act.
+
+**Sibling failure modes**, same discipline: an incomplete **call-site** census (fixing some callers of a changed concept) and an incomplete **state-space** census (reasoning about the happy path and the null path, but not `set-stale` / `set-but-failed` / `throws` / what survives a restart).
+
 ### 4.5 What runs where / target runtimes
 
 | Layer | Local dev | CI | Needs Docker | Target runtime |
