@@ -1,5 +1,6 @@
 import type { Db } from "../db/client.js";
-import { orgs } from "../db/schema.js";
+import { and, eq } from "drizzle-orm";
+import { objects, orgs } from "../db/schema.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import type { CelSandbox } from "../governance/cel-sandbox.js";
@@ -404,6 +405,33 @@ export async function reconcileCampaignsOrgTick(
     } catch (err) {
       logCampaignError(orgId, campaignObject.id, "reconcile", err);
     }
+    // ROUND-ROBIN BUMP — the FOURTH instance of the starvation class, found by censusing the
+    // PROPERTY ("a batch-limited, `updated_at`-ordered candidate loop that can re-serve a row
+    // without writing it") rather than by hitting the symptom. See `reconcile.ts`'s
+    // `advanceExecutingChanges`, which is the instance that stopped production coordination for 13
+    // days, and `advanceWaitingChanges`, where the hazard was first found and fixed.
+    //
+    // WHY THIS LOOP QUALIFIES: `listActiveCampaignObjectIds` is `ORDER BY objects.updated_at ASC
+    // LIMIT 25`, and NOTHING in `reconcileOneCampaign` ever writes the campaign's `objects` row —
+    // its writes all land on `campaign_plans` / `campaign_waves` / `campaign_wave_targets`. So a
+    // campaign whose wave gate is `blocked` (a branch that deliberately keeps re-evaluating, so an
+    // operator clearing the block is noticed) freezes its `updated_at` forever, and 25 of them
+    // starve every campaign behind them. A campaign that is merely PROGRESSING freezes it too.
+    //
+    // Bumped unconditionally, for every campaign examined — including one that early-returns on a
+    // terminal plan — because the requirement is "took its turn", not "made progress". Unlike the
+    // change-side loops there is no cheap in-loop signal for which of the two happened, and
+    // bumping both is correct for fairness either way.
+    //
+    // NOT YET BITING: the homelab holds 0 campaigns. Fixed before it can, because this class has
+    // now cost real production downtime once and its symptom (silence) is indistinguishable from
+    // "nothing to do".
+    await withTenantTx(db, orgId, (tx) =>
+      tx
+        .update(objects)
+        .set({ updatedAt: new Date() })
+        .where(and(eq(objects.orgId, orgId), eq(objects.id, campaignObject.id)))
+    ).catch((err) => logCampaignError(orgId, campaignObject.id, "round-robin-bump", err));
   }
 }
 
