@@ -111,7 +111,7 @@ export async function triggerCampaignRollback(
     }
 
     try {
-      const { rollbackChange } = await triggerRollback(tx, {
+      const outcome = await triggerRollback(tx, {
         orgId: input.orgId,
         originalChangeObjectId: memberChangeObjectId,
         actorObjectId: input.actorObjectId,
@@ -119,7 +119,20 @@ export async function triggerCampaignRollback(
         reason: input.reason,
         trigger: "manual"
       });
-      result.rolledBack.push({ originalChangeObjectId: memberChangeObjectId, rollbackChange });
+      if (!outcome.ok) {
+        // S10 single-writer guard: this member's change is authoritatively owned by another
+        // federation domain — refused exactly like a standalone `POST /changes/{id}/rollback`
+        // would be, skipped in this campaign's result rather than aborting the other members.
+        result.skipped.push({
+          originalChangeObjectId: memberChangeObjectId,
+          reason: outcome.blockedReason
+        });
+        continue;
+      }
+      result.rolledBack.push({
+        originalChangeObjectId: memberChangeObjectId,
+        rollbackChange: outcome.rollbackChange
+      });
     } catch (err) {
       // `describeError`, not `err.message`: every refusal `triggerRollback` raises is a
       // `ProblemError` — `badRequest` for a member in a non-rollbackable state or with no recorded

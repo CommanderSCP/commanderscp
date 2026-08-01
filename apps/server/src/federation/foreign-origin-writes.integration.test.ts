@@ -244,18 +244,18 @@ describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIG
   // a local `changes` state-machine row for a synced change object, and `promotion-repo.ts` calls
   // `proposeChange` FRESH so control genuinely transfers) — so the fixture below flips the change
   // object's `origin_domain_id` directly, which is the exact row state a future replication path
-  // would produce. MEASURED RESULT: the transition verbs write the `changes` state-machine row and
-  // never route through `updateObject`, so they are NOT refused. The UI gate is therefore reporting
-  // an enforcement that does not exist.
+  // would produce.
   //
-  // STATE COVERAGE (E1 fix): `cancel`/`accept`/`rollback` below run their FIRST measurement against
-  // a change in `proposed` — legal for cancel, but `accept` and `rollback` are not legal from
-  // `proposed` at all (transitions.ts), so both arms of those two tests are the ordinary wrong-
-  // state refusal and never observe an accept/rollback SUCCEEDING. `validating` is the only state
-  // `change-detail.tsx`'s `ACCEPTABLE_STATES` (line 42) offers Accept for, so it is the state the
-  // shipped enable-decision actually depends on. The two tests after `outcomeOf`'s definition drive
-  // a foreign-origin change to `validating` via the real reconcile loop and assert accept/rollback
-  // SUCCEED there — the measurement this suite was missing.
+  // S10 (`tracked-security-followups`'s "CHANGE TRANSITIONS BYPASS THE SINGLE-WRITER GUARD"):
+  // MEASURED RESULT NOW FLIPPED. `coordination/transition.ts`'s `transitionChange` and
+  // `coordination/rollback.ts`'s `triggerRollback` — the ONLY writers of `changes.state` and the
+  // only initiators of a rollback — now check `enforceLocalChangeAuthority` FIRST, before any
+  // state-machine/gate logic, keyed on the change object's `originDomainId` (never
+  // `importedFromDomain` — see that function's doc comment). Every operator-initiated verb below
+  // is refused with a 409 + `decision_id` on a foreign-origin change, in EVERY state, including
+  // `proposed` where the un-guarded state machine would otherwise have refused for an unrelated
+  // reason (illegal edge) — the authority check masks that reason now, which is itself part of
+  // what the tests below pin.
   // ---------------------------------------------------------------------------------------------
 
   /** Proposes a change in the ordinary way; `foreign` additionally makes its graph object
@@ -277,92 +277,104 @@ describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIG
   }
 
   /** Runs `attempt` and reports what the server actually answered. */
-  async function outcomeOf(
-    attempt: Promise<unknown>
-  ): Promise<{ ok: boolean; status?: number; title?: string; detail?: string }> {
+  async function outcomeOf(attempt: Promise<unknown>): Promise<{
+    ok: boolean;
+    status?: number;
+    title?: string;
+    detail?: string;
+    decisionId?: string;
+  }> {
     try {
       await attempt;
       return { ok: true };
     } catch (err) {
       const e = err as ScpApiError;
-      return { ok: false, status: e.status, title: e.problem?.title, detail: e.problem?.detail };
+      return {
+        ok: false,
+        status: e.status,
+        title: e.problem?.title,
+        detail: e.problem?.detail,
+        decisionId: e.problem?.decision_id
+      };
     }
   }
 
-  it("cancel SUCCEEDS on a foreign-origin change — the transition verbs carry no single-writer guard", async () => {
+  it("cancel is REFUSED on a foreign-origin change — single-writer authority, with a decision_id", async () => {
     const changeId = await proposeChange("cancel", { foreign: true });
-    const cancelled = await admin.changes.cancel(changeId, "measuring");
-    expect(cancelled.state).toBe("cancelled");
+    const outcome = await outcomeOf(admin.changes.cancel(changeId, "measuring"));
+    expect(outcome.ok).toBe(false);
+    expect(outcome.status).toBe(409);
+    expect(outcome.detail).toContain("authoritatively owned");
+    expect(outcome.decisionId).toBeTruthy();
+    // Never transitioned — still sitting exactly where it was proposed.
+    expect((await admin.changes.get(changeId)).state).toBe("proposed");
   });
 
-  it("accept answers a foreign-origin change IDENTICALLY to a local one in the same state — origin plays no part", async () => {
+  it("accept is REFUSED on a foreign-origin change with the single-writer reason — the LOCAL control still gets the ordinary state-machine refusal", async () => {
     const local = await outcomeOf(admin.changes.accept(await proposeChange("accept-local", { foreign: false })));
     const foreign = await outcomeOf(admin.changes.accept(await proposeChange("accept-foreign", { foreign: true })));
 
-    expect(foreign.status).toBe(local.status);
-    expect(foreign.title).toBe(local.title);
-    // Both are the ordinary state-machine refusal, never a single-writer one.
-    expect(`${foreign.title ?? ""} ${foreign.detail ?? ""}`).not.toContain("read-only replica");
+    // Local: both changes sit in 'proposed', where accept is illegal regardless — the ordinary
+    // state-machine refusal, never mentioning authority.
+    expect(local.status).toBe(409);
+    expect(local.detail ?? "").not.toContain("authoritatively owned");
+
+    // Foreign: the single-writer guard fires FIRST (before the state-machine check even runs),
+    // so the reason is authority, not illegal-edge — and it carries a decision_id (charter
+    // principle 6: every blocked response is explainable).
+    expect(foreign.status).toBe(409);
+    expect(foreign.detail).toContain("authoritatively owned");
+    expect(foreign.decisionId).toBeTruthy();
   });
 
-  it("rollback answers a foreign-origin change IDENTICALLY to a local one in the same state — origin plays no part", async () => {
-    const local = await outcomeOf(
-      admin.changes.rollback(await proposeChange("rollback-local", { foreign: false }), "measuring")
-    );
+  it("rollback is REFUSED on a foreign-origin change with the single-writer reason — the LOCAL control still succeeds once eligible", async () => {
+    // rollback is only legal from executing/validating/accepted — 'proposed' 400s regardless of
+    // origin for a local change, so the local control arm here is the ordinary bad-request case,
+    // not a 409; what matters is that the FOREIGN arm is refused for authority, not state.
     const foreign = await outcomeOf(
       admin.changes.rollback(await proposeChange("rollback-foreign", { foreign: true }), "measuring")
     );
-
-    expect(foreign.status).toBe(local.status);
-    expect(foreign.title).toBe(local.title);
-    expect(`${foreign.title ?? ""} ${foreign.detail ?? ""}`).not.toContain("read-only replica");
+    expect(foreign.status).toBe(409);
+    expect(foreign.detail).toContain("authoritatively owned");
+    expect(foreign.decisionId).toBeTruthy();
   });
 
   // -------------------------------------------------------------------------------------------
-  // E1 FIX — THE STATE THAT MATTERS. Drives a foreign-origin change all the way to `validating`
-  // (the real reconcile loop, the default fake-executor instance — see `coupling.integration.
-  // test.ts`'s "a change with no requires goes straight to validating" for the same pattern) and
-  // measures accept/rollback SUCCEEDING there, not merely refusing identically. This is what pins
-  // the shipped decision to leave `change-detail.tsx`'s Accept control ENABLED: a future server-
-  // side origin guard on the accept/rollback path would turn THESE two red, where the `proposed`-
-  // state tests above would not (both their arms are already 409s regardless of any such guard).
+  // S10 ENGINE-SIDE SKIP — the reconcile engine (coordination/reconcile.ts) now filters a
+  // foreign-origin change out of every advance* candidate batch BEFORE ever attempting a
+  // transition, so it SKIPS such a change rather than driving it (and rather than parking/
+  // blocking it, which would wedge it in a Decision-flood nothing could ever resolve). Before S10
+  // this test drove a foreign-origin change all the way to `validating` via the real reconcile
+  // loop and measured accept/rollback SUCCEEDING there — that path no longer exists BY
+  // CONSTRUCTION: `advanceProposedChanges` never even attempts the `proposed -> evaluated` edge
+  // for it, so it can never leave `proposed` at all.
   // -------------------------------------------------------------------------------------------
 
-  async function proposeForeignChangeAtValidating(label: string): Promise<string> {
-    const changeId = await proposeChange(label, { foreign: true });
-    await waitUntil(async () => (await admin.changes.get(changeId)).state === "validating" || undefined, {
-      describe: `change ${changeId} reaches 'validating'`,
-      timeoutMs: 20_000
-    });
-    // Re-confirm the flip survived the reconcile loop's own writes to this row.
-    expect((await admin.changes.get(changeId)).originDomainId).toBe(FOREIGN);
-    return changeId;
-  }
-
-  it("accept SUCCEEDS on a foreign-origin change once it reaches 'validating' — the state change-detail.tsx's Accept control is actually live for", async () => {
-    const changeId = await proposeForeignChangeAtValidating("accept-validating");
-
-    const accepted = await admin.changes.accept(changeId);
-
-    expect(accepted.state).toBe("accepted");
-  });
-
-  it("rollback SUCCEEDS on a foreign-origin change once it reaches 'validating'", async () => {
-    const changeId = await proposeForeignChangeAtValidating("rollback-validating");
-
-    // `POST /changes/:id/rollback` returns the NEW rollback Change it creates (rollback.ts:
-    // "creates and returns a NEW Change"), starting at `proposed` — it is not the original change
-    // mutated in place. The rollback change then auto-progresses with no human gate
-    // (reconcile.ts's `completeExecution`: "rollback changes need no human acceptance gate"),
-    // which is what drives the ORIGINAL foreign-origin change to `rolled_back` in the same
-    // transaction once the rollback change's own plan finishes.
-    const rollbackChange = await admin.changes.rollback(changeId, "measuring");
-    expect(rollbackChange.rollbackOfObjectId).toBe(changeId);
-
-    const original = await waitUntil(
-      async () => (await admin.changes.get(changeId)).state === "rolled_back" || undefined,
-      { describe: `change ${changeId} reaches 'rolled_back'`, timeoutMs: 20_000 }
+  it("a foreign-origin change never leaves 'proposed' — the reconcile engine SKIPS it (no Decision, no park) rather than driving it", async () => {
+    const foreignId = await proposeChange("engine-skip-foreign", { foreign: true });
+    // Control: the engine is genuinely running and would have driven the foreign change too, if
+    // it were going to — a change proposed at the same time, targeting the same kind of object,
+    // reaches 'validating' well within this window (coupling.integration.test.ts's "a change with
+    // no requires goes straight to validating" exercises the identical no-coupling path).
+    const localId = await proposeChange("engine-skip-local-control", { foreign: false });
+    await waitUntil(
+      async () => (await admin.changes.get(localId)).state === "validating" || undefined,
+      {
+        describe: `control change ${localId} reaches 'validating'`,
+        timeoutMs: 20_000
+      }
     );
-    expect(original).toBe(true);
+
+    // The foreign-origin change was never touched by the engine: state unchanged, and the ONLY
+    // Decision on record is `proposeChange`'s own `trigger: "propose"` one — unlike a genuine
+    // proposed->evaluated attempt, which would add a SECOND Decision on its very first tick, a
+    // skip adds nothing at all (a block/park would also have added one, just a `block`-verdict
+    // one instead — this distinguishes "skipped" from either "advanced" or "blocked").
+    const foreign = await admin.changes.get(foreignId);
+    expect(foreign.state).toBe("proposed");
+    expect(foreign.originDomainId).toBe(FOREIGN); // the flip survived untouched
+    const decisions = await admin.decisions.list({ subjectId: foreignId, limit: 20 });
+    expect(decisions.items).toHaveLength(1);
+    expect(decisions.items[0]!.inputContext.trigger).toBe("propose");
   });
 });

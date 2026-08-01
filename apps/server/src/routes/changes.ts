@@ -410,7 +410,8 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
         400: ProblemSchema,
         401: ProblemSchema,
         403: ProblemSchema,
-        404: ProblemSchema
+        404: ProblemSchema,
+        409: ProblemSchema
       }
     },
     config: {
@@ -423,7 +424,7 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
-      const { rollbackChange } = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+      const outcome = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
@@ -439,7 +440,10 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
           trigger: "manual"
         });
       });
-      reply.status(201).send(rollbackChange);
+      if (!outcome.ok) {
+        throw conflict(outcome.blockedReason, { decisionId: outcome.decision.id });
+      }
+      reply.status(201).send(outcome.rollbackChange);
     }
   });
 

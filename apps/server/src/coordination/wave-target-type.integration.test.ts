@@ -228,7 +228,7 @@ describe("wave target type: a release triggers the matching-Type pipeline", () =
     });
     await tick(); // -> executing, which is where a rollback becomes legal
 
-    const { rollbackChange } = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+    const outcome = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       triggerRollback(tx, {
         orgId: org.orgId,
         originalChangeObjectId: change.id,
@@ -237,6 +237,8 @@ describe("wave target type: a release triggers the matching-Type pipeline", () =
         reason: "type inheritance test"
       })
     );
+    if (!outcome.ok) throw new Error(`unexpected rollback refusal: ${outcome.blockedReason}`);
+    const { rollbackChange } = outcome;
     expect(await changeProperties(rollbackChange.id)).toMatchObject({ type: "infrastructure" });
 
     await tick();
