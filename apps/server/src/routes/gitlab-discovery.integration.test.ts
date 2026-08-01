@@ -171,8 +171,7 @@ describe("M15.3b: gitlab-discovery import loop (BYO GitLab → proposal → acce
     const component = components[0]!;
     expect(component.name).toBe("service-a");
     const sourceMapping = component.properties?.sourceMapping as
-      | { sourceKind?: string; repoPattern?: string; pathPattern?: string }
-      | undefined;
+      { sourceKind?: string; repoPattern?: string; pathPattern?: string } | undefined;
     expect(sourceMapping?.sourceKind).toBe("gitlab");
     expect(sourceMapping?.repoPattern).toBe(projectPath);
     expect(sourceMapping?.pathPattern).toBe("service-a/**");

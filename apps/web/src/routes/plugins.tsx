@@ -115,7 +115,10 @@ function SchemaForm({
  *  "validated" half of "validated config form" (a required field left empty fails HTML5
  *  `required` before this ever runs; a malformed number input is rejected by the `type="number"`
  *  input itself). Empty optional strings are omitted entirely rather than sent as `""`. */
-function coerceConfigValues(configSchema: unknown, values: Record<string, string>): Record<string, unknown> {
+function coerceConfigValues(
+  configSchema: unknown,
+  values: Record<string, string>
+): Record<string, unknown> {
   const properties = schemaProperties(configSchema);
   const result: Record<string, unknown> = {};
   for (const [key, raw] of Object.entries(values)) {
@@ -186,7 +189,11 @@ function ConfigureDialog({
   const discoverMutation = useMutation({
     mutationFn: async () => {
       const config = coerceConfigValues(manifest.configSchema, configValues);
-      return client.discovery.run({ pluginModule: manifest.id, pluginInstanceId: instanceId, config });
+      return client.discovery.run({
+        pluginModule: manifest.id,
+        pluginInstanceId: instanceId,
+        config
+      });
     },
     onSuccess: (proposal) => setDiscoveryProposal(proposal)
   });
@@ -218,7 +225,8 @@ function ConfigureDialog({
           <DialogTitle>Configure {manifest.id}</DialogTitle>
           <DialogDescription>
             {isExecutor && "Binds a Component/DeploymentTarget to this ExecutorPlugin instance."}
-            {isNotification && "Configures a notification channel — an org may configure more than one."}
+            {isNotification &&
+              "Configures a notification channel — an org may configure more than one."}
             {isDiscovery &&
               "Runs a repo/topology scan — returns a PROPOSAL only. Nothing is written to the graph until you explicitly accept it."}
           </DialogDescription>
@@ -294,10 +302,12 @@ function ConfigureDialog({
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm">
-                  Proposal: {discoveryProposal.objects.length} object(s), {discoveryProposal.relationships.length}{" "}
-                  relationship(s)
+                  Proposal: {discoveryProposal.objects.length} object(s),{" "}
+                  {discoveryProposal.relationships.length} relationship(s)
                 </CardTitle>
-                <CardDescription>Review before accepting — nothing has been written yet.</CardDescription>
+                <CardDescription>
+                  Review before accepting — nothing has been written yet.
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 <pre className="max-h-48 overflow-auto rounded bg-slate-50 p-2 text-xs">

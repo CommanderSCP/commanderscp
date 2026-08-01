@@ -81,11 +81,17 @@ export async function triggerCampaignRollback(
     } catch {
       // The member Change row is gone (shouldn't happen for a plan-compiled member) — skip rather
       // than abort the batch.
-      result.skipped.push({ originalChangeObjectId: memberChangeObjectId, reason: "member change not found" });
+      result.skipped.push({
+        originalChangeObjectId: memberChangeObjectId,
+        reason: "member change not found"
+      });
       continue;
     }
     if (!ROLLBACK_ELIGIBLE_STATES.has(state)) {
-      result.skipped.push({ originalChangeObjectId: memberChangeObjectId, reason: `not eligible from state '${state}'` });
+      result.skipped.push({
+        originalChangeObjectId: memberChangeObjectId,
+        reason: `not eligible from state '${state}'`
+      });
       continue;
     }
 

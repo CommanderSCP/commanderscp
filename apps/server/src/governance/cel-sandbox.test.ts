@@ -33,7 +33,8 @@ describe("checkStaticComplexity (layer 1: static pre-validation)", () => {
   });
 
   it("rejects pathologically deep nesting (parser-stack-overflow defense)", () => {
-    const deep = "(".repeat(CEL_MAX_NESTING_DEPTH + 10) + "1" + ")".repeat(CEL_MAX_NESTING_DEPTH + 10);
+    const deep =
+      "(".repeat(CEL_MAX_NESTING_DEPTH + 10) + "1" + ")".repeat(CEL_MAX_NESTING_DEPTH + 10);
     expect(() => checkStaticComplexity(deep)).toThrow(CelSandboxError);
   });
 
@@ -56,13 +57,17 @@ describe("CelSandbox (layer 2: worker-thread isolation)", () => {
 
   it("evaluates a true boolean condition", async () => {
     const sandbox = makeSandbox();
-    const result = await sandbox.evaluate("change.emergency == false", { change: { emergency: false } });
+    const result = await sandbox.evaluate("change.emergency == false", {
+      change: { emergency: false }
+    });
     expect(result).toEqual({ ok: true, value: true });
   });
 
   it("evaluates a false boolean condition", async () => {
     const sandbox = makeSandbox();
-    const result = await sandbox.evaluate("change.emergency == true", { change: { emergency: false } });
+    const result = await sandbox.evaluate("change.emergency == true", {
+      change: { emergency: false }
+    });
     expect(result).toEqual({ ok: true, value: false });
   });
 
@@ -86,7 +91,9 @@ describe("CelSandbox (layer 2: worker-thread isolation)", () => {
     const sandbox = makeSandbox();
     const ctx = { change: { emergency: false }, subject: { labels: { env: "prod" } } };
     const results = await Promise.all(
-      Array.from({ length: 10 }, () => sandbox.evaluate('subject.labels.env == "prod" && !change.emergency', ctx))
+      Array.from({ length: 10 }, () =>
+        sandbox.evaluate('subject.labels.env == "prod" && !change.emergency', ctx)
+      )
     );
     for (const r of results) expect(r).toEqual({ ok: true, value: true });
   });
@@ -214,7 +221,9 @@ describe("CelSandbox (layer 2: worker-thread isolation)", () => {
   // data, never a live/callable value.
   it("a parseable expression that resolves to a context OBJECT returns inert, JSON-safe data (never a live/callable value)", async () => {
     const sandbox = makeSandbox();
-    const result = await sandbox.evaluate("context", { context: { nested: { deep: true }, list: [1, 2, 3] } });
+    const result = await sandbox.evaluate("context", {
+      context: { nested: { deep: true }, list: [1, 2, 3] }
+    });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(typeof result.value).toBe("object");
@@ -229,7 +238,9 @@ describe("CelSandbox (layer 2: worker-thread isolation)", () => {
   it("rejects an over-large evaluation context (fail-closed, not passed to a worker)", async () => {
     const sandbox = makeSandbox();
     const huge = "x".repeat(CEL_MAX_CONTEXT_BYTES + 1);
-    const result = await sandbox.evaluate("subject.labels == subject.labels", { subject: { labels: { blob: huge } } });
+    const result = await sandbox.evaluate("subject.labels == subject.labels", {
+      subject: { labels: { blob: huge } }
+    });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/context exceeds max size/i);
   });
@@ -260,7 +271,10 @@ describe("CelSandbox (layer 2: worker-thread isolation)", () => {
     // deterministically: it hangs ONLY on the sentinel "__HANG__" and evaluates everything else
     // normally. That lets this prove what the old test couldn't (MINOR (b)) — after the timeout
     // terminates+respawns the wedged worker, the SAME sandbox instance serves a subsequent call.
-    const sandbox = makeSandbox({ timeoutMs: 50, workerEntryPath: CONDITIONAL_HANG_WORKER_ENTRY_PATH });
+    const sandbox = makeSandbox({
+      timeoutMs: 50,
+      workerEntryPath: CONDITIONAL_HANG_WORKER_ENTRY_PATH
+    });
     const start = Date.now();
     const hung = await sandbox.evaluate("__HANG__", {});
     expect(hung.ok).toBe(false);

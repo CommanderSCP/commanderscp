@@ -91,7 +91,13 @@ export async function ensureInstanceCosignKey(
   const row = await withTenantTx(db, orgId, async (tx) => {
     await tx
       .insert(instanceCosignKeys)
-      .values({ id: uuidv7(), orgId, privateKey: privateKeyPem, publicKey: publicKeyPem, fingerprint })
+      .values({
+        id: uuidv7(),
+        orgId,
+        privateKey: privateKeyPem,
+        publicKey: publicKeyPem,
+        fingerprint
+      })
       .onConflictDoNothing({ target: instanceCosignKeys.orgId });
     const rows = await tx
       .select()

@@ -12,7 +12,13 @@ import type { PromotionBundle } from "@scp/schemas";
 import { resolveCosign } from "@scp/cosign";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { notFound } from "../errors.js";
-import { auditEvents, bundleTransfers, changes, decisions, federationInboxFiles } from "../db/schema.js";
+import {
+  auditEvents,
+  bundleTransfers,
+  changes,
+  decisions,
+  federationInboxFiles
+} from "../db/schema.js";
 import { createObject } from "../graph/objects-repo.js";
 import { proposeChange, getChangeRow } from "../coordination/changes-repo.js";
 import { insertControlRun } from "../governance/controls-repo.js";
@@ -747,7 +753,10 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
     );
     expect(bundle.entries.length).toBeGreaterThan(0);
     await writeFile(
-      path.join(outpostInbox, `scp-sync-${commanderDomainId}-${bundle.header.throughSequence}.scpbundle`),
+      path.join(
+        outpostInbox,
+        `scp-sync-${commanderDomainId}-${bundle.header.throughSequence}.scpbundle`
+      ),
       JSON.stringify(bundle, null, 2),
       "utf8"
     );

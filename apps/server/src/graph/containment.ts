@@ -75,7 +75,11 @@ export interface ChainEntry {
  * code compares depth across differently-named policies to pick a single "most specific" winner — if
  * you are about to write that, fix this first.
  */
-export async function containmentChain(tx: TenantTx, orgId: string, objectId: string): Promise<ChainEntry[]> {
+export async function containmentChain(
+  tx: TenantTx,
+  orgId: string,
+  objectId: string
+): Promise<ChainEntry[]> {
   const result = await tx.execute<{
     id: string;
     type_id: string;
@@ -117,13 +121,22 @@ export async function containmentChain(tx: TenantTx, orgId: string, objectId: st
   const rows = result.rows;
   const maxDepth = Math.max(0, ...rows.map((r) => r.depth));
   return rows
-    .map((r) => ({ id: r.id, typeId: r.type_id, depth: maxDepth - r.depth, labels: r.labels ?? {} }))
+    .map((r) => ({
+      id: r.id,
+      typeId: r.type_id,
+      depth: maxDepth - r.depth,
+      labels: r.labels ?? {}
+    }))
     .sort((a, b) => a.depth - b.depth);
 }
 
 /** Every object id that contains `objectId` (plus `objectId` itself) — the flat set, for callers
  *  that only need membership and not depth/labels (e.g. freeze scoping). */
-export async function containmentScopeIds(tx: TenantTx, orgId: string, objectIds: string[]): Promise<string[]> {
+export async function containmentScopeIds(
+  tx: TenantTx,
+  orgId: string,
+  objectIds: string[]
+): Promise<string[]> {
   const ids = new Set<string>();
   for (const objectId of objectIds) {
     for (const entry of await containmentChain(tx, orgId, objectId)) {

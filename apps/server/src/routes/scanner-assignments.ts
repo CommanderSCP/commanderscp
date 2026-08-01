@@ -58,7 +58,8 @@ function toApi(row: AssignmentRow): ScannerAssignment {
   return {
     executorType: row.executor_type as ScannerAssignment["executorType"],
     methods: parseMethods(row.methods),
-    updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at)
+    updatedAt:
+      row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at)
   };
 }
 

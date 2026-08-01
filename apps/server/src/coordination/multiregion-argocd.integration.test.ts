@@ -106,7 +106,9 @@ describe("M15.6: multi-region Argo CD — config surface + per-region fan-out", 
       executionSystemId: apacSys.id
     });
     // The two regions really resolve to DISTINCT Argo CD systems — the whole point of the setting.
-    expect(byRegion.get("amer")!.executionSystemId).not.toBe(byRegion.get("apac")!.executionSystemId);
+    expect(byRegion.get("amer")!.executionSystemId).not.toBe(
+      byRegion.get("apac")!.executionSystemId
+    );
   });
 
   it("config surface: a region with NO Argo CD binding fails validation with a helpful problem (never a silent deploy)", async () => {
@@ -121,7 +123,11 @@ describe("M15.6: multi-region Argo CD — config surface + per-region fan-out", 
     expect(view.valid).toBe(false);
     const emeaEntry = view.regions.find((r) => r.region === "emea");
     expect(emeaEntry).toMatchObject({ bound: false, isExpectedModule: false, pluginModule: null });
-    expect(view.problems.some((p) => p.includes("emea") && p.includes("no 'configuration' executor binding"))).toBe(true);
+    expect(
+      view.problems.some(
+        (p) => p.includes("emea") && p.includes("no 'configuration' executor binding")
+      )
+    ).toBe(true);
     expect(emea.id).toBe(emeaEntry!.targetId);
   });
 

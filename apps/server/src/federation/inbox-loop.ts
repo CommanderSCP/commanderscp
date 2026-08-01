@@ -278,7 +278,8 @@ async function completeFile(
     await appendAuditEvent(tx, {
       orgId: args.orgId,
       actorId: FEDERATION_IMPORT_ACTOR_ID,
-      action: args.outcome === "forwarded" ? "federation.inbox.forwarded" : "federation.inbox.imported",
+      action:
+        args.outcome === "forwarded" ? "federation.inbox.forwarded" : "federation.inbox.imported",
       subjectId: args.subjectId ?? null,
       reason: `inbox file '${args.fileName}' ${args.outcome}: ${args.detail}`,
       decisionId: args.decisionId,
@@ -430,14 +431,28 @@ export async function processInboxFile(
     ledgerHas(tx, orgId, source.dir, fileName, sha256)
   );
   if (processed) {
-    return { outcome: "already-processed", detail: "content already in the inbox ledger", decisionId: null };
+    return {
+      outcome: "already-processed",
+      detail: "content already in the inbox ledger",
+      decisionId: null
+    };
   }
 
   if (isBundle) {
     return processBundleFile(db, orgId, ctx, source, fileName, bundleBytes!, sha256);
   }
   if (RELAY_TARBALL_RE.test(fileName)) {
-    return processRelayTarballFile(db, orgId, ctx, source, fileName, filePath, sha256, masterKey, config);
+    return processRelayTarballFile(
+      db,
+      orgId,
+      ctx,
+      source,
+      fileName,
+      filePath,
+      sha256,
+      masterKey,
+      config
+    );
   }
   return skipFile(db, {
     orgId,

@@ -84,8 +84,7 @@ export function mapHarborWebhookEventToHint(
   const repo = eventData?.repository?.repo_full_name;
   const resources = eventData?.resources;
   const firstResource = Array.isArray(resources) ? resources[0] : undefined;
-  const digest =
-    typeof firstResource?.digest === "string" ? firstResource.digest : undefined;
+  const digest = typeof firstResource?.digest === "string" ? firstResource.digest : undefined;
 
   // A push event with neither a repo nor a digest carries nothing correlatable — ignore it rather
   // than propose a Change against nothing.

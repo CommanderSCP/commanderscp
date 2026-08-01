@@ -477,7 +477,6 @@ export async function waitUntil<T>(
   }
 }
 
-
 /**
  * M12 P5a: components can no longer be created bare — the strict `POST /components` requires a
  * service. This test helper creates a throwaway service (unless one is supplied) and the component
@@ -496,7 +495,6 @@ export async function createTestComponent(
   return client.components.create({ ...rest, service: serviceId });
 }
 
-
 /**
  * M12 P5a: create an ORPHAN component (no service) via the IMPORT path (`discovery/accept`), which is
  * permissive by design — the strict `POST /components` route requires a service, but imports never
@@ -504,7 +502,11 @@ export async function createTestComponent(
  */
 export async function createOrphanComponent(client: ScpClient, name: string): Promise<GraphObject> {
   const result = await client.discovery.accept({
-    proposal: { objects: [{ typeId: "component", name, properties: {} }], relationships: [], bindings: [] }
+    proposal: {
+      objects: [{ typeId: "component", name, properties: {} }],
+      relationships: [],
+      bindings: []
+    }
   });
   return client.components.get(result.createdObjectIds[0]!);
 }

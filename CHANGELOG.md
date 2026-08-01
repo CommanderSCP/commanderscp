@@ -12,6 +12,7 @@ See the M8 pull request for the full definition-of-done evidence (CI-gated vs. m
 load/perf numbers, security-sensitive surfaces).
 
 ### Added
+
 - Helm chart (`deploy/helm`): `api` (HPA-scalable) + `worker` (queue-depth-scalable) Deployments,
   a pre-install/pre-upgrade migrations Job (`apps/server/src/migrate-bin.ts`, expand/contract),
   hardened pod defaults (non-root, read-only rootfs, dropped caps, `seccompProfile: RuntimeDefault`)
@@ -61,6 +62,7 @@ load/perf numbers, security-sensitive surfaces).
   connection.
 
 ### Fixed
+
 - `instance_keys` (each org's federation/attestation Ed25519 private signing key) became
   org-scoped in M6 but never received a Row-Level Security policy — a full RLS audit found this
   gap and closed it (`drizzle/0016_instance_keys_rls.sql`), with adversarial regression coverage

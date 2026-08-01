@@ -158,7 +158,11 @@ async function verifyOne(
     if (artifact.type === "oci") {
       const resolvedRef = await reader.resolveOci(artifact);
       if (!resolvedRef) {
-        return { ...base, ok: false, reason: "oci image bytes absent from the reachable registry (fail-closed)" };
+        return {
+          ...base,
+          ok: false,
+          reason: "oci image bytes absent from the reachable registry (fail-closed)"
+        };
       }
       // DIGEST BINDING: never verify whatever the (unsigned) location points at — verify AT the
       // authorized digest. A location pinning a different digest is a substitution → fail closed
@@ -186,12 +190,20 @@ async function verifyOne(
     // blob (today: the build-time SBOM, and any other detached-signed document).
     const resolved = await reader.resolveBlob(artifact);
     if (!resolved) {
-      return { ...base, ok: false, reason: "blob bytes absent from the reachable registry (fail-closed)" };
+      return {
+        ...base,
+        ok: false,
+        reason: "blob bytes absent from the reachable registry (fail-closed)"
+      };
     }
     if (!artifact.signatureRef) {
       // No origin signature reference to verify against — cannot prove authenticity, so fail closed
       // rather than wave an unsigned blob through.
-      return { ...base, ok: false, reason: "blob carries no origin signatureRef to verify against (fail-closed)" };
+      return {
+        ...base,
+        ok: false,
+        reason: "blob carries no origin signatureRef to verify against (fail-closed)"
+      };
     }
     // DIGEST BINDING: the fetched bytes must BE the authorized artifact — a valid signature over
     // DIFFERENT bytes (substitution via the unsigned location) must not pass. Checked before the
@@ -490,7 +502,9 @@ async function fetchBytes(url: string): Promise<Buffer | null> {
   if (!res.ok) throw new Error(`registry read ${url} -> HTTP ${res.status}`);
   const declared = Number(res.headers.get("content-length") ?? "0");
   if (Number.isFinite(declared) && declared > MAX_BLOB_BYTES) {
-    throw new Error(`registry read ${url} -> declared ${declared} bytes exceeds the ${MAX_BLOB_BYTES}-byte blob cap`);
+    throw new Error(
+      `registry read ${url} -> declared ${declared} bytes exceeds the ${MAX_BLOB_BYTES}-byte blob cap`
+    );
   }
   const chunks: Buffer[] = [];
   let total = 0;
@@ -502,7 +516,9 @@ async function fetchBytes(url: string): Promise<Buffer | null> {
     total += value.byteLength;
     if (total > MAX_BLOB_BYTES) {
       await reader.cancel();
-      throw new Error(`registry read ${url} -> response exceeds the ${MAX_BLOB_BYTES}-byte blob cap`);
+      throw new Error(
+        `registry read ${url} -> response exceeds the ${MAX_BLOB_BYTES}-byte blob cap`
+      );
     }
     chunks.push(Buffer.from(value));
   }

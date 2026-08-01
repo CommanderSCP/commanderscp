@@ -63,7 +63,12 @@ describe("parseOscapResult — severity mapping", () => {
       { result: "fail" }, // no severity attribute at all
       { sev: "high", result: "fail" }
     ]);
-    expect(parseOscapResult(xml).severityCounts).toEqual({ critical: 0, high: 1, medium: 0, low: 0 });
+    expect(parseOscapResult(xml).severityCounts).toEqual({
+      critical: 0,
+      high: 1,
+      medium: 0,
+      low: 0
+    });
   });
 
   it("only `fail` counts — pass/notapplicable/notchecked/notselected/error are NOT findings", () => {
@@ -75,7 +80,12 @@ describe("parseOscapResult — severity mapping", () => {
       { sev: "high", result: "error" },
       { sev: "high", result: "fail" }
     ]);
-    expect(parseOscapResult(xml).severityCounts).toEqual({ critical: 0, high: 1, medium: 0, low: 0 });
+    expect(parseOscapResult(xml).severityCounts).toEqual({
+      critical: 0,
+      high: 1,
+      medium: 0,
+      low: 0
+    });
   });
 
   it("a genuinely clean scan (rule-results present, zero fails) reports all-zero counts (NOT a throw)", () => {
@@ -83,7 +93,12 @@ describe("parseOscapResult — severity mapping", () => {
       { sev: "high", result: "pass" },
       { sev: "low", result: "notapplicable" }
     ]);
-    expect(parseOscapResult(xml).severityCounts).toEqual({ critical: 0, high: 0, medium: 0, low: 0 });
+    expect(parseOscapResult(xml).severityCounts).toEqual({
+      critical: 0,
+      high: 0,
+      medium: 0,
+      low: 0
+    });
   });
 
   it("handles namespace-prefixed elements (e.g. cdf:rule-result / cdf:result)", () => {
@@ -91,7 +106,12 @@ describe("parseOscapResult — severity mapping", () => {
       { sev: "high", result: "fail", prefix: "cdf:" },
       { sev: "medium", result: "fail", prefix: "cdf:" }
     ]);
-    expect(parseOscapResult(xml).severityCounts).toEqual({ critical: 0, high: 1, medium: 1, low: 0 });
+    expect(parseOscapResult(xml).severityCounts).toEqual({
+      critical: 0,
+      high: 1,
+      medium: 1,
+      low: 0
+    });
   });
 
   it("scannedDigest is always undefined (an ARF carries no image digest — binding is the pull)", () => {
@@ -100,7 +120,9 @@ describe("parseOscapResult — severity mapping", () => {
 
   it("parses the oscap version from the version header, else `unknown`", () => {
     const xml = xccdf([{ sev: "low", result: "pass" }]);
-    expect(parseOscapResult(xml, "OpenSCAP command line tool (oscap) 1.4.2\n").scannerVersion).toBe("1.4.2");
+    expect(parseOscapResult(xml, "OpenSCAP command line tool (oscap) 1.4.2\n").scannerVersion).toBe(
+      "1.4.2"
+    );
     expect(parseOscapResult(xml).scannerVersion).toBe("unknown");
   });
 });
@@ -114,7 +136,9 @@ describe("parseOscapResult — fail-closed on malformed input", () => {
   });
 
   it("throws on non-XCCDF content (no TestResult / no rule-result) — not zero findings", () => {
-    expect(() => parseOscapResult("<html><body>gateway timeout</body></html>")).toThrow(/XCCDF|ARF/i);
+    expect(() => parseOscapResult("<html><body>gateway timeout</body></html>")).toThrow(
+      /XCCDF|ARF/i
+    );
     expect(() => parseOscapResult('{"Results":[]}')).toThrow(/XCCDF|ARF/i);
   });
 

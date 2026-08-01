@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { DeliveryTarget, SyncBundle } from "@scp/schemas";
-import { buildTestServer, createTestOrg, type TestServer, type TestOrg } from "../test-support/harness.js";
+import {
+  buildTestServer,
+  createTestOrg,
+  type TestServer,
+  type TestOrg
+} from "../test-support/harness.js";
 
 /**
  * M13.2a — the DeliveryTarget SUBSTRATE (proposal §13.2), proven at the real API surface
@@ -107,7 +112,9 @@ describe("M13.2a DeliveryTarget substrate (API surface)", () => {
     return { statusCode: response.statusCode, body: response.json() as Record<string, unknown> };
   }
 
-  async function listPeers(): Promise<Array<{ name: string; deliveryTarget: DeliveryTarget | null }>> {
+  async function listPeers(): Promise<
+    Array<{ name: string; deliveryTarget: DeliveryTarget | null }>
+  > {
     const response = await server.app.inject({
       method: "GET",
       url: "/api/v1/federation/peers",

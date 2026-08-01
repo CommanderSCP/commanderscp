@@ -26,10 +26,7 @@ vi.mock("@scp/cosign", () => ({
 }));
 
 import { verifyImageSignature } from "@scp/cosign";
-import {
-  verifyAuthorizedArtifactSet,
-  type ArtifactRegistryReader
-} from "./artifact-verify.js";
+import { verifyAuthorizedArtifactSet, type ArtifactRegistryReader } from "./artifact-verify.js";
 
 const DIGEST_A = `sha256:${"a".repeat(64)}`;
 const DIGEST_B = `sha256:${"b".repeat(64)}`;
@@ -51,7 +48,11 @@ const reader: ArtifactRegistryReader = {
 
 const mockedVerify = vi.mocked(verifyImageSignature);
 
-function callOptions(): { ref: string; allowInsecureRegistry?: boolean; env?: NodeJS.ProcessEnv }[] {
+function callOptions(): {
+  ref: string;
+  allowInsecureRegistry?: boolean;
+  env?: NodeJS.ProcessEnv;
+}[] {
   return mockedVerify.mock.calls.map(([ref, , options]) => ({
     ref,
     allowInsecureRegistry: options?.allowInsecureRegistry,

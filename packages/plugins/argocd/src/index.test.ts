@@ -20,7 +20,11 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import nock from "nock";
 import type { PluginContext, SecretsAccessor, TriggerIntent } from "@scp/plugin-api";
-import { createArgoCdExecutorPlugin, createArgoCdDiscoveryPlugin, githubRepoSlug } from "./index.js";
+import {
+  createArgoCdExecutorPlugin,
+  createArgoCdDiscoveryPlugin,
+  githubRepoSlug
+} from "./index.js";
 import { createNodeHttpTestClient } from "./test-node-http-client.js";
 
 const SERVER_URL = "http://argocd.test";
@@ -839,7 +843,10 @@ describe("discover() (M12 P3 — import an existing Argo CD)", () => {
       .get("/api/v1/applications")
       .reply(200, {
         items: [
-          { metadata: { name: "web-prod" }, spec: { project: "default", destination: { namespace: "web" } } },
+          {
+            metadata: { name: "web-prod" },
+            spec: { project: "default", destination: { namespace: "web" } }
+          },
           { metadata: { name: "api-prod" }, spec: { project: "platform" } }
         ]
       });
@@ -867,10 +874,16 @@ describe("discover() (M12 P3 — import an existing Argo CD)", () => {
   });
 
   it("when config carries executionSystemId, ALSO proposes a binding per app so accept coordinates them (M12 P3b)", async () => {
-    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token", executionSystemId: "sys-123" });
+    const ctx = testCtx({
+      serverUrl: SERVER_URL,
+      token: "test-token",
+      executionSystemId: "sys-123"
+    });
     nock(SERVER_URL)
       .get("/api/v1/applications")
-      .reply(200, { items: [{ metadata: { name: "web-prod" } }, { metadata: { name: "api-prod" } }] });
+      .reply(200, {
+        items: [{ metadata: { name: "web-prod" } }, { metadata: { name: "api-prod" } }]
+      });
 
     const proposal = await createArgoCdDiscoveryPlugin().discover(ctx);
     expect(proposal.objects).toHaveLength(2);
@@ -888,9 +901,15 @@ describe("discover() (M12 P3 — import an existing Argo CD)", () => {
       .reply(200, {
         items: [
           // single-source
-          { metadata: { name: "web-prod" }, spec: { source: { repoURL: "https://github.com/acme/web", path: "deploy" } } },
+          {
+            metadata: { name: "web-prod" },
+            spec: { source: { repoURL: "https://github.com/acme/web", path: "deploy" } }
+          },
           // multi-source — the first source declaring a repoURL wins
-          { metadata: { name: "api-prod" }, spec: { sources: [{ path: "chart" }, { repoURL: "https://github.com/acme/api" }] } },
+          {
+            metadata: { name: "api-prod" },
+            spec: { sources: [{ path: "chart" }, { repoURL: "https://github.com/acme/api" }] }
+          },
           // no git source (e.g. a Helm-repo-only app) — no mapping, no sourceRepo property
           { metadata: { name: "cache" }, spec: { destination: { namespace: "cache" } } }
         ]
@@ -919,12 +938,18 @@ describe("discover() (M12 P3 — import an existing Argo CD)", () => {
     );
     // The source-less app proposes no mapping.
     expect(proposal.sourceMappings?.some((m) => m.objectName === "cache")).toBe(false);
-    expect(proposal.objects.find((o) => o.name === "cache")?.properties?.sourceRepo).toBeUndefined();
+    expect(
+      proposal.objects.find((o) => o.name === "cache")?.properties?.sourceRepo
+    ).toBeUndefined();
   });
 
   it("githubRepoSlug normalizes https/ssh/.git URLs and skips non-GitHub hosts (M12 P5)", () => {
-    expect(githubRepoSlug("https://github.com/AgentKitProject/agentkit.git")).toBe("AgentKitProject/agentkit");
-    expect(githubRepoSlug("git@github.com:AgentKitProject/agentkit-hosting.git")).toBe("AgentKitProject/agentkit-hosting");
+    expect(githubRepoSlug("https://github.com/AgentKitProject/agentkit.git")).toBe(
+      "AgentKitProject/agentkit"
+    );
+    expect(githubRepoSlug("git@github.com:AgentKitProject/agentkit-hosting.git")).toBe(
+      "AgentKitProject/agentkit-hosting"
+    );
     expect(githubRepoSlug("https://github.com/owner/repo")).toBe("owner/repo");
     expect(githubRepoSlug("ssh://git@github.com/owner/repo.git")).toBe("owner/repo");
     expect(githubRepoSlug("https://gitlab.com/owner/repo.git")).toBeUndefined();

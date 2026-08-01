@@ -82,7 +82,9 @@ export function parseChecksums(text: string): ChecksumEntry[] {
   return lines.map((line) => {
     const match = /^([a-f0-9]{64}) {2}(.+)$/.exec(line);
     if (!match) {
-      throw new Error(`malformed CHECKSUMS.txt line (expected "<64-hex sha256>  <path>"): ${JSON.stringify(line)}`);
+      throw new Error(
+        `malformed CHECKSUMS.txt line (expected "<64-hex sha256>  <path>"): ${JSON.stringify(line)}`
+      );
     }
     const digest = match[1];
     const relativePath = match[2];
@@ -105,7 +107,10 @@ export interface ChecksumMismatch {
  * array on success. This is the function verify-bundle.ts's exit code hinges on — it must never
  * silently pass a bundle where a file was added, removed, or modified.
  */
-export async function verifyChecksums(bundleRoot: string, expected: ChecksumEntry[]): Promise<ChecksumMismatch[]> {
+export async function verifyChecksums(
+  bundleRoot: string,
+  expected: ChecksumEntry[]
+): Promise<ChecksumMismatch[]> {
   const mismatches: ChecksumMismatch[] = [];
   const expectedByPath = new Map(expected.map((e) => [e.relativePath, e.digest]));
 
@@ -114,12 +119,22 @@ export async function verifyChecksums(bundleRoot: string, expected: ChecksumEntr
     try {
       await stat(fullPath);
     } catch {
-      mismatches.push({ relativePath: entry.relativePath, expected: entry.digest, actual: undefined, reason: "missing-on-disk" });
+      mismatches.push({
+        relativePath: entry.relativePath,
+        expected: entry.digest,
+        actual: undefined,
+        reason: "missing-on-disk"
+      });
       continue;
     }
     const actual = await sha256File(fullPath);
     if (actual !== entry.digest) {
-      mismatches.push({ relativePath: entry.relativePath, expected: entry.digest, actual, reason: "digest-mismatch" });
+      mismatches.push({
+        relativePath: entry.relativePath,
+        expected: entry.digest,
+        actual,
+        reason: "digest-mismatch"
+      });
     }
   }
 
@@ -129,7 +144,12 @@ export async function verifyChecksums(bundleRoot: string, expected: ChecksumEntr
   for (const relativePath of onDisk) {
     if (relativePath === "CHECKSUMS.txt" || relativePath === "CHECKSUMS.txt.sig") continue;
     if (!expectedByPath.has(relativePath)) {
-      mismatches.push({ relativePath, expected: undefined, actual: undefined, reason: "unexpected-extra-file" });
+      mismatches.push({
+        relativePath,
+        expected: undefined,
+        actual: undefined,
+        reason: "unexpected-extra-file"
+      });
     }
   }
 

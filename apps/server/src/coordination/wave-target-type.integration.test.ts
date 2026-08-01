@@ -283,7 +283,9 @@ describe("wave target type: a release triggers the matching-Type pipeline", () =
     expect(campaignChanges).toHaveLength(1);
     // Asserted on the VALUE, not on find()-ing a match: a wrong Type here must report what it
     // actually was, rather than an unhelpful "expected undefined to be defined".
-    expect((campaignChanges[0]!.properties as Record<string, unknown>)["type"]).toBe("infrastructure");
+    expect((campaignChanges[0]!.properties as Record<string, unknown>)["type"]).toBe(
+      "infrastructure"
+    );
   });
 
   it("a Type passed inside `properties` is inherited, not clobbered — the federation-promotion path", async () => {

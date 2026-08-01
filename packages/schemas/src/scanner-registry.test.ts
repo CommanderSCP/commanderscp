@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ScanEvidenceSchema, ScanMethodSchema, usesTrivyDb } from "./supply-chain.js";
-import {
-  PutScannerAssignmentRequestSchema,
-  ScannerAssignmentSchema
-} from "./executors.js";
+import { PutScannerAssignmentRequestSchema, ScannerAssignmentSchema } from "./executors.js";
 
 /**
  * M13.3a — the scanner-method enum widening + scanner-assignment registry schemas (ADR-0020 §2).
@@ -102,7 +99,8 @@ describe("scanner-assignment registry schemas", () => {
 
   it("PUT body requires a valid ExecutorType", () => {
     expect(
-      PutScannerAssignmentRequestSchema.safeParse({ executorType: "image", methods: ["trivy"] }).success
+      PutScannerAssignmentRequestSchema.safeParse({ executorType: "image", methods: ["trivy"] })
+        .success
     ).toBe(true);
     expect(
       PutScannerAssignmentRequestSchema.safeParse({ executorType: "container", methods: ["trivy"] })
@@ -112,7 +110,8 @@ describe("scanner-assignment registry schemas", () => {
 
   it("PUT body rejects an invalid ScanMethod", () => {
     expect(
-      PutScannerAssignmentRequestSchema.safeParse({ executorType: "image", methods: ["grype"] }).success
+      PutScannerAssignmentRequestSchema.safeParse({ executorType: "image", methods: ["grype"] })
+        .success
     ).toBe(false);
   });
 

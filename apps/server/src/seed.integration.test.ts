@@ -1,6 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
-import { createTestOrg, listenTestServer, type ListeningTestServer } from "./test-support/harness.js";
+import {
+  createTestOrg,
+  listenTestServer,
+  type ListeningTestServer
+} from "./test-support/harness.js";
 import { seedDemoData } from "./seed.js";
 
 const silentLog = { info: () => undefined, warn: () => undefined };

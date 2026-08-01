@@ -179,7 +179,9 @@ test("service board: an unobservable field renders as an explicit unknown, never
     "";
   const notDrivenBadgeClass =
     (await notDrivenStat.locator("div").last().getAttribute("class")) ?? "";
-  expect(stableBadgeClass, "premise: Stable really is the success variant").toContain("bg-green-600");
+  expect(stableBadgeClass, "premise: Stable really is the success variant").toContain(
+    "bg-green-600"
+  );
   expect(notDrivenBadgeClass).not.toContain("bg-green-600");
 
   // 5. The board-level freeze-visibility caveat: freezes never replicate, so an unfrozen row on a

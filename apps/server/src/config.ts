@@ -249,7 +249,9 @@ function loadEventBusConfig(env: NodeJS.ProcessEnv): ServerConfig["eventBus"] {
 function loadFederationRole(env: NodeJS.ProcessEnv): ServerConfig["federationRole"] {
   const role = env.SCP_FEDERATION_ROLE ?? "commander";
   if (role !== "commander" && role !== "outpost" && role !== "retrans") {
-    throw new Error(`SCP_FEDERATION_ROLE must be "commander", "outpost", or "retrans" (got "${role}")`);
+    throw new Error(
+      `SCP_FEDERATION_ROLE must be "commander", "outpost", or "retrans" (got "${role}")`
+    );
   }
   return role;
 }
@@ -374,6 +376,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     graphQueryStatementTimeoutMs: Number(env.SCP_GRAPH_QUERY_TIMEOUT_MS ?? 5000),
     federationServerMtls: loadFederationServerMtlsConfig(env),
     operatorToken:
-      env.SCP_OPERATOR_TOKEN && env.SCP_OPERATOR_TOKEN.length > 0 ? env.SCP_OPERATOR_TOKEN : undefined
+      env.SCP_OPERATOR_TOKEN && env.SCP_OPERATOR_TOKEN.length > 0
+        ? env.SCP_OPERATOR_TOKEN
+        : undefined
   };
 }

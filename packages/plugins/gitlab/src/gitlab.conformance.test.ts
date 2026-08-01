@@ -51,7 +51,11 @@ beforeAll(() => {
   nock(base)
     .matchHeader("private-token", token)
     .get(new RegExp(`/projects/${pid}/pipelines/\\d+$`))
-    .reply(200, (uri: string) => ({ id: Number(uri.split("/").pop()), status: "success", sha: "a".repeat(40) }))
+    .reply(200, (uri: string) => ({
+      id: Number(uri.split("/").pop()),
+      status: "success",
+      sha: "a".repeat(40)
+    }))
     .persist();
 
   // abort(): cancel ANY correlated pipeline id.
@@ -97,7 +101,10 @@ runExecutorConformanceSuite("gitlab", async () => {
   // A durable statePath (fresh per factory() call) so the cross-restart dedup test reads on-disk
   // state, not the first instance's memory.
   const statePath = join(await mkdtemp(join(tmpdir(), "gitlab-conformance-")), "state.json");
-  const build = (): { plugin: ReturnType<typeof createGitlabExecutorPlugin>; ctx: PluginContext } => ({
+  const build = (): {
+    plugin: ReturnType<typeof createGitlabExecutorPlugin>;
+    ctx: PluginContext;
+  } => ({
     plugin: createGitlabExecutorPlugin(),
     ctx: buildTestCtx({ ...config, statePath })
   });

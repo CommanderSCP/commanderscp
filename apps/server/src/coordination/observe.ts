@@ -213,11 +213,7 @@ export async function observeOrgTick(
 }
 
 /** Every org, one tick — mirrors `runReconcileSweep`. */
-export async function runObserveSweep(
-  db: Db,
-  host: PluginHost,
-  masterKey: Buffer
-): Promise<void> {
+export async function runObserveSweep(db: Db, host: PluginHost, masterKey: Buffer): Promise<void> {
   const orgRows = await db.select({ id: orgs.id }).from(orgs);
   for (const org of orgRows) {
     try {

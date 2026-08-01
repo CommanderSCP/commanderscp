@@ -341,7 +341,8 @@ describe("status() — single GitLab pipeline status enum", () => {
   });
   it("failed -> failed", async () => expect((await statusFor("failed")).phase).toBe("failed"));
   it("skipped -> failed", async () => expect((await statusFor("skipped")).phase).toBe("failed"));
-  it("canceled -> aborted", async () => expect((await statusFor("canceled")).phase).toBe("aborted"));
+  it("canceled -> aborted", async () =>
+    expect((await statusFor("canceled")).phase).toBe("aborted"));
   it("an unknown status maps to running (safe default, not a crash)", async () =>
     expect((await statusFor("some-future-status")).phase).toBe("running"));
 
@@ -464,10 +465,7 @@ describe("observe() polling — commits and pipelines", () => {
       .matchHeader("private-token", token)
       .get(`/projects/${pid}/repository/commits`)
       .reply(200, [{ id: commitSha, created_at: "2026-07-01T00:00:00Z" }]);
-    nock(base)
-      .matchHeader("private-token", token)
-      .get(`/projects/${pid}/pipelines`)
-      .reply(200, []);
+    nock(base).matchHeader("private-token", token).get(`/projects/${pid}/pipelines`).reply(200, []);
 
     const events = await plugin.observe(ctx);
     const polledPush = events.find((e) => e.kind === "push");
@@ -481,10 +479,7 @@ describe("observe() polling — commits and pipelines", () => {
       .matchHeader("private-token", token)
       .get(`/projects/${pid}/repository/commits`)
       .reply(429, { message: "rate limited" });
-    nock(base)
-      .matchHeader("private-token", token)
-      .get(`/projects/${pid}/pipelines`)
-      .reply(200, []);
+    nock(base).matchHeader("private-token", token).get(`/projects/${pid}/pipelines`).reply(200, []);
 
     await expect(plugin.observe(ctx)).resolves.toEqual([]);
   });
@@ -506,10 +501,7 @@ describe("base URL resolution (baseUrl → serverUrl; required, no default)", ()
       .matchHeader("private-token", token)
       .get(`/projects/${pid}/repository/commits`)
       .reply(200, [{ id: commitSha, created_at: "2026-07-01T00:00:00Z" }]);
-    nock(base)
-      .matchHeader("private-token", token)
-      .get(`/projects/${pid}/pipelines`)
-      .reply(200, []);
+    nock(base).matchHeader("private-token", token).get(`/projects/${pid}/pipelines`).reply(200, []);
 
     const events = await plugin.observe(ctx);
     expect(events.find((e) => e.kind === "push")?.correlation.commitSha).toBe(commitSha);
@@ -524,10 +516,7 @@ describe("base URL resolution (baseUrl → serverUrl; required, no default)", ()
       .matchHeader("private-token", token)
       .get(`/projects/${pid}/repository/commits`)
       .reply(200, []);
-    nock(base)
-      .matchHeader("private-token", token)
-      .get(`/projects/${pid}/pipelines`)
-      .reply(200, []);
+    nock(base).matchHeader("private-token", token).get(`/projects/${pid}/pipelines`).reply(200, []);
 
     await expect(plugin.observe(ctx)).resolves.toEqual([]);
   });

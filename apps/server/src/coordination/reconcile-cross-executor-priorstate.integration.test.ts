@@ -58,10 +58,13 @@ describe("reconcile: prior-state snapshot is scoped to the current executor inst
 
   async function proposeAndAccept(name: string, targetId: string): Promise<void> {
     const change = await admin.changes.propose({ name, targets: [targetId] });
-    await waitUntil(async () => (await admin.changes.get(change.id)).state === "validating" || undefined, {
-      describe: `change ${change.id} (${name}) reaches 'validating'`,
-      timeoutMs: 20_000
-    });
+    await waitUntil(
+      async () => (await admin.changes.get(change.id)).state === "validating" || undefined,
+      {
+        describe: `change ${change.id} (${name}) reaches 'validating'`,
+        timeoutMs: 20_000
+      }
+    );
     await admin.changes.accept(change.id);
   }
 
@@ -77,7 +80,9 @@ describe("reconcile: prior-state snapshot is scoped to the current executor inst
       tx
         .select()
         .from(changeWaveTargets)
-        .where(and(eq(changeWaveTargets.orgId, org.orgId), eq(changeWaveTargets.targetObjectId, comp.id)))
+        .where(
+          and(eq(changeWaveTargets.orgId, org.orgId), eq(changeWaveTargets.targetObjectId, comp.id))
+        )
         .orderBy(desc(changeWaveTargets.createdAt))
         .limit(1)
     );
@@ -98,7 +103,10 @@ describe("reconcile: prior-state snapshot is scoped to the current executor inst
         waveId: change1WaveId,
         targetObjectId: comp.id,
         executorPluginId: "argocd-homelab-foreign",
-        executorRef: { externalId: `foreign-app::${uuidv7()}`, url: "argocd://homelab/foreign-app" },
+        executorRef: {
+          externalId: `foreign-app::${uuidv7()}`,
+          url: "argocd://homelab/foreign-app"
+        },
         priorStateRef: "foreign-state",
         status: "succeeded",
         // Strictly newer than change #1 so the pre-fix (unscoped) query would prefer it.
@@ -112,7 +120,12 @@ describe("reconcile: prior-state snapshot is scoped to the current executor inst
           tx
             .select({ id: changeWaveTargets.id })
             .from(changeWaveTargets)
-            .where(and(eq(changeWaveTargets.orgId, org.orgId), eq(changeWaveTargets.targetObjectId, comp.id)))
+            .where(
+              and(
+                eq(changeWaveTargets.orgId, org.orgId),
+                eq(changeWaveTargets.targetObjectId, comp.id)
+              )
+            )
         )
       ).map((r) => r.id)
     );
@@ -127,7 +140,12 @@ describe("reconcile: prior-state snapshot is scoped to the current executor inst
           tx
             .select()
             .from(changeWaveTargets)
-            .where(and(eq(changeWaveTargets.orgId, org.orgId), eq(changeWaveTargets.targetObjectId, comp.id)))
+            .where(
+              and(
+                eq(changeWaveTargets.orgId, org.orgId),
+                eq(changeWaveTargets.targetObjectId, comp.id)
+              )
+            )
         );
         const fresh = rows.find((r) => !preChange2Ids.has(r.id));
         return fresh && fresh.executorRef ? fresh : undefined;
@@ -154,13 +172,20 @@ describe("reconcile: prior-state snapshot is scoped to the current executor inst
     const comp = await createTestComponent(admin, { name: `xexec-wedge-${uuidv7().slice(0, 8)}` });
 
     // Borrow an existing real wave/plan so the injected foreign row satisfies the repo joins.
-    const anchor = await createTestComponent(admin, { name: `xexec-anchor-${uuidv7().slice(0, 8)}` });
+    const anchor = await createTestComponent(admin, {
+      name: `xexec-anchor-${uuidv7().slice(0, 8)}`
+    });
     await proposeAndAccept("anchor change", anchor.id);
     const anchorTarget = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
         .select()
         .from(changeWaveTargets)
-        .where(and(eq(changeWaveTargets.orgId, org.orgId), eq(changeWaveTargets.targetObjectId, anchor.id)))
+        .where(
+          and(
+            eq(changeWaveTargets.orgId, org.orgId),
+            eq(changeWaveTargets.targetObjectId, anchor.id)
+          )
+        )
         .limit(1)
     );
     const anchorWaveId = anchorTarget[0]!.waveId;
@@ -185,10 +210,13 @@ describe("reconcile: prior-state snapshot is scoped to the current executor inst
     // Drive a fresh trigger of `comp` on the shared fake-executor. It must reach a terminal state
     // (no wedge) with a null prior-state snapshot (there is no SAME-executor prior run).
     const change = await admin.changes.propose({ name: "post-poison change", targets: [comp.id] });
-    await waitUntil(async () => (await admin.changes.get(change.id)).state === "validating" || undefined, {
-      describe: `post-poison change ${change.id} reaches 'validating' (not wedged)`,
-      timeoutMs: 20_000
-    });
+    await waitUntil(
+      async () => (await admin.changes.get(change.id)).state === "validating" || undefined,
+      {
+        describe: `post-poison change ${change.id} reaches 'validating' (not wedged)`,
+        timeoutMs: 20_000
+      }
+    );
 
     const triggered = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx

@@ -1,11 +1,37 @@
 import { describe, expect, it } from "vitest";
-import { buildManifest, parseManifestJson, renderManifestJson, renderManifestSh } from "./manifest.js";
+import {
+  buildManifest,
+  parseManifestJson,
+  renderManifestJson,
+  renderManifestSh
+} from "./manifest.js";
 import type { BundleImage } from "./types.js";
 
 const IMAGES: BundleImage[] = [
-  { name: "scpd", sourceRef: "scp:dev", sourceType: "docker-daemon", ociPath: "images/scpd", ociTag: "1.0.0-rc", manifestDigest: "sha256:" + "a".repeat(64) },
-  { name: "scp-runner-iac", sourceRef: "scp-runner-iac:dev", sourceType: "docker-daemon", ociPath: "images/scp-runner-iac", ociTag: "1.0.0-rc", manifestDigest: "sha256:" + "b".repeat(64) },
-  { name: "postgres-eval", sourceRef: "postgres:16", sourceType: "docker-daemon", ociPath: "images/postgres-eval", ociTag: "1.0.0-rc", manifestDigest: "sha256:" + "c".repeat(64) }
+  {
+    name: "scpd",
+    sourceRef: "scp:dev",
+    sourceType: "docker-daemon",
+    ociPath: "images/scpd",
+    ociTag: "1.0.0-rc",
+    manifestDigest: "sha256:" + "a".repeat(64)
+  },
+  {
+    name: "scp-runner-iac",
+    sourceRef: "scp-runner-iac:dev",
+    sourceType: "docker-daemon",
+    ociPath: "images/scp-runner-iac",
+    ociTag: "1.0.0-rc",
+    manifestDigest: "sha256:" + "b".repeat(64)
+  },
+  {
+    name: "postgres-eval",
+    sourceRef: "postgres:16",
+    sourceType: "docker-daemon",
+    ociPath: "images/postgres-eval",
+    ociTag: "1.0.0-rc",
+    manifestDigest: "sha256:" + "c".repeat(64)
+  }
 ];
 
 describe("manifest.json render/parse round-trip", () => {
@@ -16,7 +42,9 @@ describe("manifest.json render/parse round-trip", () => {
   });
 
   it("rejects a manifest missing required fields", () => {
-    expect(() => parseManifestJson(JSON.stringify({ foo: "bar" }))).toThrow(/not a valid bundle manifest/);
+    expect(() => parseManifestJson(JSON.stringify({ foo: "bar" }))).toThrow(
+      /not a valid bundle manifest/
+    );
   });
 });
 
@@ -42,7 +70,16 @@ describe("manifest.sh — the shell-sourceable rendering install.sh relies on", 
 
   it("single-quotes values so the file is safe to `source`", () => {
     const manifest = buildManifest(
-      [{ name: "scpd", sourceRef: "scp:dev", sourceType: "docker-daemon", ociPath: "images/scpd", ociTag: "1.0.0-rc", manifestDigest: "sha256:" + "a".repeat(64) }],
+      [
+        {
+          name: "scpd",
+          sourceRef: "scp:dev",
+          sourceType: "docker-daemon",
+          ociPath: "images/scpd",
+          ociTag: "1.0.0-rc",
+          manifestDigest: "sha256:" + "a".repeat(64)
+        }
+      ],
       "it's-a-test",
       "2026-07-11T00:00:00.000Z"
     );

@@ -28,7 +28,11 @@ parentPort.on("message", (msg: EvalRequest) => {
   try {
     parentPort!.postMessage({ id, ok: true, value: evaluate(expression, context) });
   } catch (err) {
-    parentPort!.postMessage({ id, ok: false, error: err instanceof Error ? err.message : String(err) });
+    parentPort!.postMessage({
+      id,
+      ok: false,
+      error: err instanceof Error ? err.message : String(err)
+    });
   }
 });
 

@@ -27,10 +27,7 @@ import {
   updateObject,
   upsertObjectByUrn
 } from "../graph/objects-repo.js";
-import {
-  containmentDomainIdFromWire,
-  listObjectsQueryFromWire
-} from "../domain-id-edge.js";
+import { containmentDomainIdFromWire, listObjectsQueryFromWire } from "../domain-id-edge.js";
 import { createComponentInService, setComponentService } from "../graph/components-repo.js";
 import { mergeComponents } from "../coordination/component-merge-repo.js";
 
@@ -60,12 +57,19 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
     url: base,
     schema: {
       body: CreateComponentRequestSchema,
-      response: { 201: GraphObjectSchema, 400: ProblemSchema, 401: ProblemSchema, 403: ProblemSchema, 409: ProblemSchema }
+      response: {
+        201: GraphObjectSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        409: ProblemSchema
+      }
     },
     config: {
       openapi: {
         operationId: "createComponent",
-        summary: "Create a component in a service (strict — the component and its containment edge are written atomically)",
+        summary:
+          "Create a component in a service (strict — the component and its containment edge are written atomically)",
         tags: ["components"]
       }
     },
@@ -113,12 +117,26 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
   typed.route({
     method: "GET",
     url: base,
-    schema: { querystring: ObjectListQuerySchema, response: { 200: ObjectListResponseSchema, 401: ProblemSchema, 403: ProblemSchema } },
-    config: { openapi: { operationId: "listComponents", summary: "List component objects", tags: ["components"] } },
+    schema: {
+      querystring: ObjectListQuerySchema,
+      response: { 200: ObjectListResponseSchema, 401: ProblemSchema, 403: ProblemSchema }
+    },
+    config: {
+      openapi: {
+        operationId: "listComponents",
+        summary: "List component objects",
+        tags: ["components"]
+      }
+    },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const page = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "object:read", scopeObjectId: auth.orgId });
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:read",
+          scopeObjectId: auth.orgId
+        });
         return listObjects(tx, auth.orgId, "component", listObjectsQueryFromWire(request.query));
       });
       reply.status(200).send(page);
@@ -128,13 +146,32 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
   typed.route({
     method: "GET",
     url: `${base}/:idOrUrn`,
-    schema: { params: RegistryIdOrUrnParamSchema, response: { 200: GraphObjectSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema } },
-    config: { openapi: { operationId: "getComponent", summary: "Get a component by id or URN", tags: ["components"] } },
+    schema: {
+      params: RegistryIdOrUrnParamSchema,
+      response: {
+        200: GraphObjectSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "getComponent",
+        summary: "Get a component by id or URN",
+        tags: ["components"]
+      }
+    },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const object = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const found = await getObjectByIdOrUrn(tx, auth.orgId, "component", request.params.idOrUrn);
-        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "object:read", scopeObjectId: found.id });
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:read",
+          scopeObjectId: found.id
+        });
         return found;
       });
       reply.status(200).send(object);
@@ -144,13 +181,34 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
   typed.route({
     method: "PATCH",
     url: `${base}/:idOrUrn`,
-    schema: { params: RegistryIdOrUrnParamSchema, body: UpdateObjectRequestSchema, response: { 200: GraphObjectSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema, 412: ProblemSchema } },
-    config: { openapi: { operationId: "updateComponent", summary: "Partially update a component", tags: ["components"] } },
+    schema: {
+      params: RegistryIdOrUrnParamSchema,
+      body: UpdateObjectRequestSchema,
+      response: {
+        200: GraphObjectSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema,
+        412: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "updateComponent",
+        summary: "Partially update a component",
+        tags: ["components"]
+      }
+    },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const object = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const found = await getObjectByIdOrUrn(tx, auth.orgId, "component", request.params.idOrUrn);
-        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "object:write", scopeObjectId: found.id });
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:write",
+          scopeObjectId: found.id
+        });
         return updateObject(tx, {
           orgId: auth.orgId,
           typeId: "component",
@@ -171,14 +229,39 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
   typed.route({
     method: "DELETE",
     url: `${base}/:idOrUrn`,
-    schema: { params: RegistryIdOrUrnParamSchema, response: { 200: GraphObjectSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema } },
-    config: { openapi: { operationId: "deleteComponent", summary: "Soft-delete a component", tags: ["components"] } },
+    schema: {
+      params: RegistryIdOrUrnParamSchema,
+      response: {
+        200: GraphObjectSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "deleteComponent",
+        summary: "Soft-delete a component",
+        tags: ["components"]
+      }
+    },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const object = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const found = await getObjectByIdOrUrn(tx, auth.orgId, "component", request.params.idOrUrn);
-        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "object:write", scopeObjectId: found.id });
-        await deleteObject(tx, { orgId: auth.orgId, typeId: "component", actorObjectId: auth.subjectObjectId, requestId: request.id, idOrUrn: request.params.idOrUrn });
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:write",
+          scopeObjectId: found.id
+        });
+        await deleteObject(tx, {
+          orgId: auth.orgId,
+          typeId: "component",
+          actorObjectId: auth.subjectObjectId,
+          requestId: request.id,
+          idOrUrn: request.params.idOrUrn
+        });
         return getObjectByIdOrUrn(tx, auth.orgId, "component", found.id, { includeDeleted: true });
       });
       reply.status(200).send(object);
@@ -190,8 +273,25 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
   typed.route({
     method: "PUT",
     url: `${base}/:urn`,
-    schema: { params: RegistryUrnParamSchema, body: UpsertComponentRequestSchema, response: { 200: GraphObjectSchema, 201: GraphObjectSchema, 400: ProblemSchema, 401: ProblemSchema, 403: ProblemSchema, 409: ProblemSchema } },
-    config: { openapi: { operationId: "upsertComponentByUrn", summary: "Idempotent upsert-by-URN for a component (create branch requires a service)", tags: ["components"] } },
+    schema: {
+      params: RegistryUrnParamSchema,
+      body: UpsertComponentRequestSchema,
+      response: {
+        200: GraphObjectSchema,
+        201: GraphObjectSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        409: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "upsertComponentByUrn",
+        summary: "Idempotent upsert-by-URN for a component (create branch requires a service)",
+        tags: ["components"]
+      }
+    },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const { urn } = request.params;
@@ -202,10 +302,17 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
         if (!existing) {
           // Create branch — strict: a service is required.
           if (!request.body.service) {
-            throw badRequest(`creating component '${urn}' requires a service — a component must belong to a service`);
+            throw badRequest(
+              `creating component '${urn}' requires a service — a component must belong to a service`
+            );
           }
           const scopeObjectId = request.body.domainId ?? auth.orgId;
-          await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "object:write", scopeObjectId });
+          await authorize(tx, {
+            orgId: auth.orgId,
+            subjectObjectId: auth.subjectObjectId,
+            permission: "object:write",
+            scopeObjectId
+          });
           const created = await createComponentInService(tx, {
             orgId: auth.orgId,
             actorObjectId: auth.subjectObjectId,
@@ -221,7 +328,12 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
           return { object: created, status: 201 as const };
         }
         // Update branch — field-only; the `service` field (if any) is ignored (P5b handles re-assign).
-        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "object:write", scopeObjectId: existing.id });
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:write",
+          scopeObjectId: existing.id
+        });
         const { object: updated } = await upsertObjectByUrn(tx, {
           orgId: auth.orgId,
           typeId: "component",
@@ -249,12 +361,20 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
     schema: {
       params: RegistryIdOrUrnParamSchema,
       body: SetComponentServiceRequestSchema,
-      response: { 200: GraphObjectSchema, 400: ProblemSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema, 409: ProblemSchema }
+      response: {
+        200: GraphObjectSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema,
+        409: ProblemSchema
+      }
     },
     config: {
       openapi: {
         operationId: "setComponentService",
-        summary: "Assign or move a component into a service (idempotent; atomic move — the old and new containment edges swap in one transaction)",
+        summary:
+          "Assign or move a component into a service (idempotent; atomic move — the old and new containment edges swap in one transaction)",
         tags: ["components"]
       }
     },
@@ -283,12 +403,20 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
     schema: {
       params: RegistryIdOrUrnParamSchema,
       body: MergeComponentsRequestSchema,
-      response: { 200: MergeComponentsResponseSchema, 400: ProblemSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema, 409: ProblemSchema }
+      response: {
+        200: MergeComponentsResponseSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema,
+        409: ProblemSchema
+      }
     },
     config: {
       openapi: {
         operationId: "mergeComponents",
-        summary: "Merge another (freshly-imported, binding-only) component into this one — moves its executor bindings here and soft-deletes it",
+        summary:
+          "Merge another (freshly-imported, binding-only) component into this one — moves its executor bindings here and soft-deletes it",
         tags: ["components"]
       }
     },

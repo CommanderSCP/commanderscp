@@ -177,7 +177,8 @@ describe.runIf(await dockerAvailable())(
 
     beforeAll(async () => {
       const resolved = resolveSkopeo();
-      if (resolved.source === "missing") throw new Error("skopeo binary not found (vendored or PATH)");
+      if (resolved.source === "missing")
+        throw new Error("skopeo binary not found (vendored or PATH)");
       skopeoBin = resolved.bin;
 
       // LEVER 1: resolve the runner image ONCE (PULL the pre-built content-hash GHCR image in CI via
@@ -217,8 +218,16 @@ describe.runIf(await dockerAvailable())(
       // and pushed, so the SERVER pulls them over the very same allowlisted skopeo channel.
       const vmCleanDisk = join(scratch, "machine-image-clean.raw");
       const vmDirtyDisk = join(scratch, "machine-image-dirty.raw");
-      await buildMachineImageDisk(MACHINE_IMAGE_CLEAN_BASE, MACHINE_IMAGE_CLEAN_COLLECT, vmCleanDisk);
-      await buildMachineImageDisk(MACHINE_IMAGE_DIRTY_BASE, MACHINE_IMAGE_DIRTY_COLLECT, vmDirtyDisk);
+      await buildMachineImageDisk(
+        MACHINE_IMAGE_CLEAN_BASE,
+        MACHINE_IMAGE_CLEAN_COLLECT,
+        vmCleanDisk
+      );
+      await buildMachineImageDisk(
+        MACHINE_IMAGE_DIRTY_BASE,
+        MACHINE_IMAGE_DIRTY_COLLECT,
+        vmDirtyDisk
+      );
       vmCleanRepo = `${registryHost}/scp/machine-image-clean`;
       vmDirtyRepo = `${registryHost}/scp/machine-image-dirty`;
       vmCleanDigest = await pushMachineImage(vmCleanDisk, vmCleanRepo);
@@ -298,11 +307,18 @@ describe.runIf(await dockerAvailable())(
       );
       const { stdout } = await execFileAsync(
         skopeoBin,
-        ["inspect", "--tls-verify=false", "--format", "{{.Digest}}", `docker://${destRepo}:subject`],
+        [
+          "inspect",
+          "--tls-verify=false",
+          "--format",
+          "{{.Digest}}",
+          `docker://${destRepo}:subject`
+        ],
         { timeout: 60_000 }
       );
       const digest = stdout.trim();
-      if (!/^sha256:[a-f0-9]{64}$/.test(digest)) throw new Error(`unexpected pushed digest: ${digest}`);
+      if (!/^sha256:[a-f0-9]{64}$/.test(digest))
+        throw new Error(`unexpected pushed digest: ${digest}`);
       return digest;
     }
 
@@ -339,7 +355,9 @@ describe.runIf(await dockerAvailable())(
           maxBuffer: 64 * 1024 * 1024
         });
       } finally {
-        await execFileAsync("docker", ["rm", "-f", cid], { timeout: 60_000 }).catch(() => undefined);
+        await execFileAsync("docker", ["rm", "-f", cid], { timeout: 60_000 }).catch(
+          () => undefined
+        );
       }
     }
 
@@ -823,7 +841,9 @@ describe.runIf(await dockerAvailable())(
             gateDeps
           )
         );
-        expect(result.verdict, `in-domain transition to ${toState} must not be blocked`).toBe("allow");
+        expect(result.verdict, `in-domain transition to ${toState} must not be blocked`).toBe(
+          "allow"
+        );
       }
 
       // THE CLAIM: a full in-domain promotion deposited NO managed-scan evidence at all.

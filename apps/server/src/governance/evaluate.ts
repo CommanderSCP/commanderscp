@@ -224,7 +224,10 @@ export async function resolveFiredPolicies(
       enforcement,
       requireControls: merged.requireControls,
       requireApprovals: merged.requireApprovals,
-      contributingPolicyVersions: counted.map((c) => ({ policyObjectId: c.policyObjectId, policyVersion: c.policyVersion })),
+      contributingPolicyVersions: counted.map((c) => ({
+        policyObjectId: c.policyObjectId,
+        policyVersion: c.policyVersion
+      })),
       conditionErrorPolicyVersions,
       conditionResult,
       ...(firstError !== undefined ? { conditionError: firstError } : {}),
@@ -267,7 +270,8 @@ export function evaluateFiredPolicies(
           policyObjectId: fp.requiredConditionEvalError.policyObjectId,
           policyVersion: fp.requiredConditionEvalError.policyVersion,
           error: fp.requiredConditionEvalError.error,
-          reason: "required policy condition failed to evaluate — failing closed (never allow on a broken/timed-out required condition)"
+          reason:
+            "required policy condition failed to evaluate — failing closed (never allow on a broken/timed-out required condition)"
         }
       });
     }
@@ -280,7 +284,11 @@ export function evaluateFiredPolicies(
       });
     }
     for (const approval of fp.requireApprovals) {
-      const key = effectKey(approval.originPolicyObjectId, approval.originPolicyVersion, approval.originEffectIndex);
+      const key = effectKey(
+        approval.originPolicyObjectId,
+        approval.originPolicyVersion,
+        approval.originEffectIndex
+      );
       const status = context.approvals[key];
       effects.push({
         kind: "requireApprovals",
@@ -301,9 +309,14 @@ export function evaluateFiredPolicies(
     };
   });
 
-  const blocking = entries.filter((e) => e.fired && !e.satisfied && isAtLeastAsStrict(e.enforcement, "required"));
-  const warning = entries.filter((e) => e.fired && !e.satisfied && !isAtLeastAsStrict(e.enforcement, "required"));
-  const verdict: GovernanceVerdict = blocking.length > 0 ? "block" : warning.length > 0 ? "warn" : "allow";
+  const blocking = entries.filter(
+    (e) => e.fired && !e.satisfied && isAtLeastAsStrict(e.enforcement, "required")
+  );
+  const warning = entries.filter(
+    (e) => e.fired && !e.satisfied && !isAtLeastAsStrict(e.enforcement, "required")
+  );
+  const verdict: GovernanceVerdict =
+    blocking.length > 0 ? "block" : warning.length > 0 ? "warn" : "allow";
 
   return {
     verdict,

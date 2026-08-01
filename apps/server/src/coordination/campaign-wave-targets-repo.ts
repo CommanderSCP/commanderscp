@@ -8,14 +8,22 @@ import { campaignWaveTargets, campaignWaves } from "../db/schema.js";
  * writes the initial compiled plan) — the campaign-scoped sibling of `wave-targets-repo.ts`.
  */
 
-export async function markCampaignWaveBlocked(tx: TenantTx, orgId: string, waveId: string): Promise<void> {
+export async function markCampaignWaveBlocked(
+  tx: TenantTx,
+  orgId: string,
+  waveId: string
+): Promise<void> {
   await tx
     .update(campaignWaves)
     .set({ status: "blocked" })
     .where(and(eq(campaignWaves.orgId, orgId), eq(campaignWaves.id, waveId)));
 }
 
-export async function markCampaignWaveRunning(tx: TenantTx, orgId: string, waveId: string): Promise<void> {
+export async function markCampaignWaveRunning(
+  tx: TenantTx,
+  orgId: string,
+  waveId: string
+): Promise<void> {
   await tx
     .update(campaignWaves)
     .set({ status: "running", startedAt: new Date() })

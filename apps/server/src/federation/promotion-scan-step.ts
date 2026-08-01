@@ -146,8 +146,7 @@ export interface ManagedScanReport {
 }
 
 export type ManagedScanResult =
-  | { ok: true; report: ManagedScanReport }
-  | { ok: false; reason: string };
+  { ok: true; report: ManagedScanReport } | { ok: false; reason: string };
 
 export interface ManagedScanRunner {
   scan(req: ManagedScanRequest): Promise<ManagedScanResult>;
@@ -216,7 +215,11 @@ function ociDigestsOf(sourceRef: Record<string, unknown>): string[] {
   const raw =
     (sourceRef.artifact_digest as unknown) ?? (sourceRef.artifactDigest as unknown) ?? undefined;
   const list =
-    typeof raw === "string" ? [raw] : Array.isArray(raw) ? raw.filter((d): d is string => typeof d === "string") : [];
+    typeof raw === "string"
+      ? [raw]
+      : Array.isArray(raw)
+        ? raw.filter((d): d is string => typeof d === "string")
+        : [];
   const out: string[] = [];
   for (const d of list) {
     const norm = normalizeSha256Digest(d);
@@ -235,7 +238,9 @@ function resolvePullRef(sourceRef: Record<string, unknown>, digest: string): str
     (typeof sourceRef.artifactRepo === "string" && sourceRef.artifactRepo) ||
     "";
   const repoBase =
-    explicit && explicit.length > 0 ? explicit.replace(/[@:][^/]*$/, "") : process.env.SCP_MANAGED_SCAN_SOURCE_REPO ?? "";
+    explicit && explicit.length > 0
+      ? explicit.replace(/[@:][^/]*$/, "")
+      : (process.env.SCP_MANAGED_SCAN_SOURCE_REPO ?? "");
   if (!repoBase) return null;
   return `${repoBase}@${digest}`;
 }
@@ -405,7 +410,9 @@ export async function runPromotionScanStep(
         ...(report.scanDb
           ? {
               scanDbSource: report.scanDb.source,
-              ...(report.scanDb.ageHours !== undefined ? { scanDbAgeHours: report.scanDb.ageHours } : {}),
+              ...(report.scanDb.ageHours !== undefined
+                ? { scanDbAgeHours: report.scanDb.ageHours }
+                : {}),
               scanDbStaleness: report.scanDb.staleness,
               scanDbThresholdFired: report.scanDb.thresholdFired
             }
@@ -500,13 +507,20 @@ export function createServerManagedScanRunner(db?: Db): ManagedScanRunner {
   return {
     async scan(req: ManagedScanRequest): Promise<ManagedScanResult> {
       if (!settings.runnerImage) {
-        return { ok: false, reason: "managed scanning is not enabled (SCP_MANAGED_SCAN_RUNNER_IMAGE unset)" };
+        return {
+          ok: false,
+          reason: "managed scanning is not enabled (SCP_MANAGED_SCAN_RUNNER_IMAGE unset)"
+        };
       }
       if (!RUNNER_SUPPORTED_METHODS.has(req.method)) {
         return { ok: false, reason: `method '${req.method}' has no runner support` };
       }
       if (!req.pullRef) {
-        return { ok: false, reason: "unresolvable pull ref — artifact carries no location and no SCP_MANAGED_SCAN_SOURCE_REPO fallback" };
+        return {
+          ok: false,
+          reason:
+            "unresolvable pull ref — artifact carries no location and no SCP_MANAGED_SCAN_SOURCE_REPO fallback"
+        };
       }
 
       // M13.3b-ii — OFFLINE DB PRE-LOAD + STALENESS GATE (every TRIVY-FAMILY method — `trivy` and
@@ -547,7 +561,10 @@ export function createServerManagedScanRunner(db?: Db): ManagedScanRunner {
       const host = ociRegistryHostOf(bound.ref);
       if (!host) return { ok: false, reason: `source ref '${bound.ref}' names no registry host` };
       if (!ociAllowlist().includes(host)) {
-        return { ok: false, reason: `registry host '${host}' is not in SCP_ARTIFACT_OCI_REGISTRY_HOSTS (fail-closed)` };
+        return {
+          ok: false,
+          reason: `registry host '${host}' is not in SCP_ARTIFACT_OCI_REGISTRY_HOSTS (fail-closed)`
+        };
       }
 
       const root = settings.workspaceRoot || tmpdir();
@@ -559,13 +576,23 @@ export function createServerManagedScanRunner(db?: Db): ManagedScanRunner {
         const tls = insecureHosts().has(host.toLowerCase()) ? ["--src-tls-verify=false"] : [];
         await execFileAsync(
           skopeoBin(),
-          ["copy", "--all", "--preserve-digests", ...tls, `docker://${bound.ref}`, `oci:${ociDir}:scan`],
+          [
+            "copy",
+            "--all",
+            "--preserve-digests",
+            ...tls,
+            `docker://${bound.ref}`,
+            `oci:${ociDir}:scan`
+          ],
           { timeout: settings.runnerImage ? 180_000 : 60_000, maxBuffer: 64 * 1024 * 1024 }
         );
         // Digest-bind what actually landed (content-addressed, fail-closed) before scanning it.
         const landed = await airgapOciLayout.readOciManifestDigest(ociDir);
         if (landed !== req.digest) {
-          return { ok: false, reason: `pulled OCI layout digest '${landed}' != promoted '${req.digest}'` };
+          return {
+            ok: false,
+            reason: `pulled OCI layout digest '${landed}' != promoted '${req.digest}'`
+          };
         }
 
         const ctx = pluginCtx(settings.runnerImage, settings.networkMode);
@@ -659,7 +686,11 @@ const SEVERITIES = ["critical", "high", "medium", "low"] as const;
  *  the plugin/server boundary (a plugin cannot import server code, and vice versa). */
 export function parseTrivyResult(raw: unknown, versionText?: string): ParsedTrivy {
   const counts = { critical: 0, high: 0, medium: 0, low: 0 };
-  const doc = (raw ?? {}) as { Results?: unknown; Metadata?: { ImageID?: unknown; RepoDigests?: unknown }; ArtifactName?: unknown };
+  const doc = (raw ?? {}) as {
+    Results?: unknown;
+    Metadata?: { ImageID?: unknown; RepoDigests?: unknown };
+    ArtifactName?: unknown;
+  };
   const results = doc.Results;
   if (Array.isArray(results)) {
     for (const result of results) {
@@ -669,13 +700,15 @@ export function parseTrivyResult(raw: unknown, versionText?: string): ParsedTriv
         const sev = (v as { Severity?: unknown }).Severity;
         if (typeof sev !== "string") continue;
         const key = sev.toLowerCase();
-        if ((SEVERITIES as readonly string[]).includes(key)) counts[key as (typeof SEVERITIES)[number]] += 1;
+        if ((SEVERITIES as readonly string[]).includes(key))
+          counts[key as (typeof SEVERITIES)[number]] += 1;
       }
     }
   }
   const candidates: string[] = [];
   const repoDigests = doc.Metadata?.RepoDigests;
-  if (Array.isArray(repoDigests)) for (const d of repoDigests) if (typeof d === "string") candidates.push(d);
+  if (Array.isArray(repoDigests))
+    for (const d of repoDigests) if (typeof d === "string") candidates.push(d);
   if (typeof doc.Metadata?.ImageID === "string") candidates.push(doc.Metadata.ImageID);
   if (typeof doc.ArtifactName === "string") candidates.push(doc.ArtifactName);
   let scannedDigest: string | undefined;
@@ -765,7 +798,8 @@ export function parseOscapResult(rawXml: unknown, versionText?: string): ParsedO
     );
   }
 
-  const ruleResultRe = /<[A-Za-z0-9]*:?rule-result\b([^>]*)>([\s\S]*?)<\/[A-Za-z0-9]*:?rule-result>/g;
+  const ruleResultRe =
+    /<[A-Za-z0-9]*:?rule-result\b([^>]*)>([\s\S]*?)<\/[A-Za-z0-9]*:?rule-result>/g;
   let seen = 0;
   let m: RegExpExecArray | null;
   while ((m = ruleResultRe.exec(rawXml)) !== null) {
@@ -787,7 +821,9 @@ export function parseOscapResult(rawXml: unknown, versionText?: string): ParsedO
   const version = (() => {
     if (versionText) {
       // `oscap --version` header: "OpenSCAP command line tool (oscap) 1.4.2".
-      const m2 = /oscap\)?\s*v?(\d+\.\d+(?:\.\d+)?)/i.exec(versionText) ?? /(\d+\.\d+\.\d+)/.exec(versionText);
+      const m2 =
+        /oscap\)?\s*v?(\d+\.\d+(?:\.\d+)?)/i.exec(versionText) ??
+        /(\d+\.\d+\.\d+)/.exec(versionText);
       if (m2?.[1]) return m2[1];
     }
     return "unknown";

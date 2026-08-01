@@ -82,7 +82,9 @@ const ROLLUP_PRIORITY: readonly CampaignStatus[] = [
 /** Derives an initiative's roll-up status (DESIGN §9.5: "grouping campaigns with roll-up status
  *  derived by traversal") from its member campaigns' own derived statuses. An initiative with no
  *  member campaigns yet reads `proposed` (nothing started). */
-export function computeInitiativeRollup(campaignStatuses: readonly CampaignStatus[]): CampaignStatus {
+export function computeInitiativeRollup(
+  campaignStatuses: readonly CampaignStatus[]
+): CampaignStatus {
   if (campaignStatuses.length === 0) return "proposed";
   for (const tier of ROLLUP_PRIORITY) {
     if (campaignStatuses.includes(tier)) return tier;

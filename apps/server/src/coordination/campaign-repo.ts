@@ -1,7 +1,13 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Campaign, CampaignStatus, ContainmentDomainId, ExecutorType } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { campaignPlans, campaignWaves, campaignWaveTargets, changes, objects } from "../db/schema.js";
+import {
+  campaignPlans,
+  campaignWaves,
+  campaignWaveTargets,
+  changes,
+  objects
+} from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
@@ -163,11 +169,17 @@ async function fetchCampaignObject(tx: TenantTx, orgId: string, id: string): Pro
  * `computeCampaignStatus`. Shared by `GET /campaigns`, `GET /campaigns/{id}`, the campaign
  * reconciler's own bookkeeping, and `graph/named-queries.ts`'s `initiative-rollup`.
  */
-export async function getCampaignStatus(tx: TenantTx, orgId: string, campaignObjectId: string): Promise<CampaignStatus> {
+export async function getCampaignStatus(
+  tx: TenantTx,
+  orgId: string,
+  campaignObjectId: string
+): Promise<CampaignStatus> {
   const plan = await getLatestCampaignPlan(tx, orgId, campaignObjectId);
   if (!plan) return computeCampaignStatus({ hasPlan: false, waves: [] });
 
-  const memberChangeIds = plan.waves.flatMap((w) => w.targets.map((t) => t.memberChangeObjectId)).filter((id): id is string => id !== null);
+  const memberChangeIds = plan.waves
+    .flatMap((w) => w.targets.map((t) => t.memberChangeObjectId))
+    .filter((id): id is string => id !== null);
   const stateByChangeId = new Map<string, string>();
   if (memberChangeIds.length > 0) {
     const rows = await tx
@@ -184,7 +196,9 @@ export async function getCampaignStatus(tx: TenantTx, orgId: string, campaignObj
       targetObjectId: t.targetObjectId,
       memberChangeState:
         t.memberChangeObjectId && stateByChangeId.has(t.memberChangeObjectId)
-          ? (stateByChangeId.get(t.memberChangeObjectId) as CampaignWaveStatusInput["targets"][number]["memberChangeState"])
+          ? (stateByChangeId.get(
+              t.memberChangeObjectId
+            ) as CampaignWaveStatusInput["targets"][number]["memberChangeState"])
           : null
     }))
   }));
@@ -210,7 +224,11 @@ export async function listCampaigns(
   query: ListCampaignsQuery
 ): Promise<{ items: Campaign[]; nextCursor: string | null }> {
   const cursor = query.cursor ? decodeCursor(query.cursor) : null;
-  const conditions = [eq(objects.orgId, orgId), eq(objects.typeId, "campaign"), sql`${objects.deletedAt} IS NULL`];
+  const conditions = [
+    eq(objects.orgId, orgId),
+    eq(objects.typeId, "campaign"),
+    sql`${objects.deletedAt} IS NULL`
+  ];
   if (cursor) {
     conditions.push(keysetAfter(objects.createdAt, objects.id, cursor));
   }
@@ -240,26 +258,40 @@ export async function listCampaigns(
 }
 
 /** Reads the target object ids `proposeCampaign` stashed under `properties.targets`. */
-export function campaignTargetObjectIdsOf(properties: Record<string, unknown> | null | undefined): string[] {
+export function campaignTargetObjectIdsOf(
+  properties: Record<string, unknown> | null | undefined
+): string[] {
   const targets = properties?.targets;
   return Array.isArray(targets) ? targets.filter((t): t is string => typeof t === "string") : [];
 }
 
 /** Every non-terminal (no plan yet, or plan not yet fully completed/aborted) campaign in the org —
  *  the reconciler's batch-fetch, mirroring `changes-repo.ts`'s `listChangeRowsInStates` shape. */
-export async function listActiveCampaignObjectIds(tx: TenantTx, orgId: string, limit: number): Promise<ObjectRow[]> {
+export async function listActiveCampaignObjectIds(
+  tx: TenantTx,
+  orgId: string,
+  limit: number
+): Promise<ObjectRow[]> {
   return tx
     .select()
     .from(objects)
-    .where(and(eq(objects.orgId, orgId), eq(objects.typeId, "campaign"), sql`${objects.deletedAt} IS NULL`))
+    .where(
+      and(
+        eq(objects.orgId, orgId),
+        eq(objects.typeId, "campaign"),
+        sql`${objects.deletedAt} IS NULL`
+      )
+    )
     .orderBy(asc(objects.updatedAt))
     .limit(limit);
 }
 
 /** Member-change lookup for a campaign wave target, used by the reconciler to poll progress. */
-export async function memberChangeIdsForCampaign(tx: TenantTx, orgId: string, waveId: string): Promise<
-  (typeof campaignWaveTargets.$inferSelect)[]
-> {
+export async function memberChangeIdsForCampaign(
+  tx: TenantTx,
+  orgId: string,
+  waveId: string
+): Promise<(typeof campaignWaveTargets.$inferSelect)[]> {
   return tx
     .select()
     .from(campaignWaveTargets)
@@ -292,8 +324,19 @@ export async function authoritativeCampaignMembers(
     .from(campaignWaveTargets)
     .innerJoin(campaignWaves, eq(campaignWaveTargets.waveId, campaignWaves.id))
     .innerJoin(campaignPlans, eq(campaignWaves.planId, campaignPlans.id))
-    .where(and(eq(campaignWaveTargets.orgId, orgId), eq(campaignPlans.campaignObjectId, campaignObjectId)));
+    .where(
+      and(
+        eq(campaignWaveTargets.orgId, orgId),
+        eq(campaignPlans.campaignObjectId, campaignObjectId)
+      )
+    );
   return rows
-    .filter((r): r is { memberChangeObjectId: string; targetObjectId: string } => r.memberChangeObjectId !== null)
-    .map((r) => ({ memberChangeObjectId: r.memberChangeObjectId, targetObjectId: r.targetObjectId }));
+    .filter(
+      (r): r is { memberChangeObjectId: string; targetObjectId: string } =>
+        r.memberChangeObjectId !== null
+    )
+    .map((r) => ({
+      memberChangeObjectId: r.memberChangeObjectId,
+      targetObjectId: r.targetObjectId
+    }));
 }

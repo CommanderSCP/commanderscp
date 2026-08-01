@@ -8,7 +8,12 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { eventBus } from "./event-bus.js";
 import { sseHub, type RelayedEvent } from "./sse-hub.js";
 import { DOMAIN_EVENTS_QUEUE } from "./pgboss.js";
-import { connectNatsFanout, eventSubject, STREAM_NAME, type NatsFanoutHandle } from "./nats-fanout.js";
+import {
+  connectNatsFanout,
+  eventSubject,
+  STREAM_NAME,
+  type NatsFanoutHandle
+} from "./nats-fanout.js";
 import {
   createTestOrg,
   listenTestServer,

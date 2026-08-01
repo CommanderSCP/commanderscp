@@ -160,7 +160,15 @@ async function runScanContainer(
   if (preload.scanScapDir) envArgs.push("-e", "SCP_SCAN_SCAP_DIR=/work/scap");
   const { stdout: createOut } = await execFileAsync(
     docker,
-    ["create", "--network", config.networkMode, ...envArgs, config.runnerImage, method, ...scanArgs],
+    [
+      "create",
+      "--network",
+      config.networkMode,
+      ...envArgs,
+      config.runnerImage,
+      method,
+      ...scanArgs
+    ],
     { timeout, maxBuffer }
   );
   const containerId = createOut.trim();
@@ -263,24 +271,38 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
     method === "openscap" ? [params.profile ?? "", params.datastream ?? ""] : [];
 
   await mkdir(params.outputDir, { recursive: true });
-  const result = await runScanContainer(config, method, params.inputDir, params.outputDir, scanArgs, {
-    scanDbDir: params.scanDbDir,
-    scanScapDir: params.scanScapDir
-  });
+  const result = await runScanContainer(
+    config,
+    method,
+    params.inputDir,
+    params.outputDir,
+    scanArgs,
+    {
+      scanDbDir: params.scanDbDir,
+      scanScapDir: params.scanScapDir
+    }
+  );
   outcomes.set(externalId, {
     succeeded: result.succeeded,
     detail: result.succeeded
       ? `managed-scan: ${method} scan complete — evidence at ${params.outputDir}/result.json`
       : `managed-scan: ${method} scan FAILED — ${result.stderr.slice(0, 2000)}`
   });
-  ctx.logger.info("managed-scan: run complete", { externalId, method, succeeded: result.succeeded });
+  ctx.logger.info("managed-scan: run complete", {
+    externalId,
+    method,
+    succeeded: result.succeeded
+  });
   return { externalId };
 }
 
 async function status(_ctx: PluginContext, ref: ExternalRunRef): Promise<ExecutionStatus> {
   const outcome = outcomes.get(ref.externalId);
   if (!outcome) {
-    return { phase: "pending", detail: "managed-scan: unknown run (not found in local outcome cache)" };
+    return {
+      phase: "pending",
+      detail: "managed-scan: unknown run (not found in local outcome cache)"
+    };
   }
   return {
     phase: outcome.succeeded ? "succeeded" : "failed",

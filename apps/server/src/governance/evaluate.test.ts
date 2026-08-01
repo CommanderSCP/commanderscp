@@ -7,7 +7,13 @@ import { resolvePolicies } from "./policy-model.js";
 
 function baseContext(overrides: Partial<PolicyEvaluationContext> = {}): PolicyEvaluationContext {
   return {
-    change: { id: "change-1", emergency: false, targets: ["target-1"], sourceKind: "manual", correlationKey: null },
+    change: {
+      id: "change-1",
+      emergency: false,
+      targets: ["target-1"],
+      sourceKind: "manual",
+      correlationKey: null
+    },
     subject: { id: "target-1", typeId: "service", name: "billing", labels: { env: "prod" } },
     graph: { ownerIds: [], dependentIds: [], domainIds: [] },
     controlOutcomes: {},
@@ -66,7 +72,11 @@ describe("evaluateGovernance", () => {
   });
 
   it("allows when a required policy's requireControls effect is satisfied (control passed)", async () => {
-    const policy = effective({ name: "scan", enforcement: "required", requireControls: ["security-scan"] });
+    const policy = effective({
+      name: "scan",
+      enforcement: "required",
+      requireControls: ["security-scan"]
+    });
     const ctx = baseContext({ controlOutcomes: { "security-scan": "pass" } });
     const result = await evaluateGovernance(sandbox(), [policy], ctx);
     expect(result.verdict).toBe("allow");
@@ -74,26 +84,42 @@ describe("evaluateGovernance", () => {
   });
 
   it("blocks when a required policy's requireControls effect is unsatisfied", async () => {
-    const policy = effective({ name: "scan", enforcement: "required", requireControls: ["security-scan"] });
+    const policy = effective({
+      name: "scan",
+      enforcement: "required",
+      requireControls: ["security-scan"]
+    });
     const ctx = baseContext({ controlOutcomes: { "security-scan": "fail" } });
     const result = await evaluateGovernance(sandbox(), [policy], ctx);
     expect(result.verdict).toBe("block");
   });
 
   it("a control that never ran (absent from controlOutcomes) counts as unsatisfied, not silently passing", async () => {
-    const policy = effective({ name: "scan", enforcement: "required", requireControls: ["security-scan"] });
+    const policy = effective({
+      name: "scan",
+      enforcement: "required",
+      requireControls: ["security-scan"]
+    });
     const result = await evaluateGovernance(sandbox(), [policy], baseContext());
     expect(result.verdict).toBe("block");
   });
 
   it("advisory unmet effects WARN, never BLOCK", async () => {
-    const policy = effective({ name: "nice-to-have", enforcement: "advisory", requireControls: ["lint"] });
+    const policy = effective({
+      name: "nice-to-have",
+      enforcement: "advisory",
+      requireControls: ["lint"]
+    });
     const result = await evaluateGovernance(sandbox(), [policy], baseContext());
     expect(result.verdict).toBe("warn");
   });
 
   it("recommended unmet effects WARN, never BLOCK", async () => {
-    const policy = effective({ name: "should-have", enforcement: "recommended", requireControls: ["lint"] });
+    const policy = effective({
+      name: "should-have",
+      enforcement: "recommended",
+      requireControls: ["lint"]
+    });
     const result = await evaluateGovernance(sandbox(), [policy], baseContext());
     expect(result.verdict).toBe("warn");
   });
@@ -108,7 +134,7 @@ describe("evaluateGovernance", () => {
       effects: [{ requireControls: ["scan"] }],
       matchedAt: { objectId: "org", depth: 0, via: "unscoped" },
       emergencyPolicy: false,
-    autoRollbackOnFailure: false
+      autoRollbackOnFailure: false
     };
     const [policy] = resolvePolicies([contributor]);
     const result = await evaluateGovernance(sandbox(), [policy!], baseContext());
@@ -126,7 +152,7 @@ describe("evaluateGovernance", () => {
       effects: [{ requireControls: ["scan"] }],
       matchedAt: { objectId: "org", depth: 0, via: "unscoped" },
       emergencyPolicy: false,
-    autoRollbackOnFailure: false
+      autoRollbackOnFailure: false
     };
     const [policy] = resolvePolicies([contributor]);
     const result = await evaluateGovernance(sandbox(), [policy!], baseContext());
@@ -152,7 +178,9 @@ describe("evaluateGovernance", () => {
     expect(result.verdict).toBe("block");
     expect(result.policies[0]!.fired).toBe(true);
     expect(result.policies[0]!.conditionResult).toBe("error");
-    expect(result.policies[0]!.effects.some((e) => e.kind === "conditionError" && !e.satisfied)).toBe(true);
+    expect(
+      result.policies[0]!.effects.some((e) => e.kind === "conditionError" && !e.satisfied)
+    ).toBe(true);
   });
 
   it("MAJOR #3 advisory annotate: an ADVISORY policy whose CEL condition errors does NOT block (annotate-and-continue)", async () => {
@@ -258,7 +286,7 @@ describe("evaluateGovernance", () => {
       effects: [{ requireApprovals: { count: 2, fromRole: "Approver", scope: "org" } }],
       matchedAt: { objectId: "org", depth: 0, via: "unscoped" },
       emergencyPolicy: false,
-    autoRollbackOnFailure: false
+      autoRollbackOnFailure: false
     };
     const [policy] = resolvePolicies([contributor]);
     const key = "policy-approval::1::0";
@@ -286,7 +314,9 @@ describe("evaluateGovernance", () => {
     const ctx = baseContext({ controlOutcomes: { "security-scan": "pass" } });
     const s = sandbox();
 
-    const results = await Promise.all(Array.from({ length: 8 }, () => evaluateGovernance(s, policies, ctx)));
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => evaluateGovernance(s, policies, ctx))
+    );
     const first = JSON.stringify(results[0]);
     for (const r of results) {
       expect(JSON.stringify(r)).toBe(first);
@@ -305,7 +335,11 @@ describe("evaluateGovernance", () => {
           "timed_out",
           "expired"
         ),
-        fc.constantFrom<"advisory" | "recommended" | "required">("advisory", "recommended", "required"),
+        fc.constantFrom<"advisory" | "recommended" | "required">(
+          "advisory",
+          "recommended",
+          "required"
+        ),
         async (outcome, enforcement) => {
           const policy = effective({ name: "p", enforcement, requireControls: ["c1"] });
           const ctx = baseContext({ controlOutcomes: { c1: outcome } });

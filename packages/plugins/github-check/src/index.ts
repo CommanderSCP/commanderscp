@@ -101,11 +101,15 @@ function resolveTargetRef(ctx: PluginContext, req: ControlRequest): string | und
   const fromContext = (req.context as { commitSha?: unknown }).commitSha;
   if (typeof fromContext === "string" && fromContext.length > 0) return fromContext;
   const config = ctx.config as GithubCheckControlConfig;
-  if (typeof config.expectedRef === "string" && config.expectedRef.length > 0) return config.expectedRef;
+  if (typeof config.expectedRef === "string" && config.expectedRef.length > 0)
+    return config.expectedRef;
   return undefined;
 }
 
-async function resolveToken(ctx: PluginContext, config: GithubCheckControlConfig): Promise<string | undefined> {
+async function resolveToken(
+  ctx: PluginContext,
+  config: GithubCheckControlConfig
+): Promise<string | undefined> {
   if (config.tokenSecretKey) {
     const resolved = await ctx.secrets.get(config.tokenSecretKey);
     if (resolved) return resolved;
@@ -113,7 +117,9 @@ async function resolveToken(ctx: PluginContext, config: GithubCheckControlConfig
   return config.token;
 }
 
-function summarizeRuns(runs: GithubCheckRun[]): Array<{ name: string; status: string; conclusion: string | null }> {
+function summarizeRuns(
+  runs: GithubCheckRun[]
+): Array<{ name: string; status: string; conclusion: string | null }> {
   return runs.map((r) => ({
     name: typeof r.name === "string" ? r.name : "unknown",
     status: typeof r.status === "string" ? r.status : "unknown",
@@ -153,12 +159,19 @@ export function createGithubCheckControlPlugin(): ControlPlugin {
           headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" }
         })
         .then((response) => ({ kind: "response" as const, response }))
-        .catch((err: unknown) => ({ kind: "error" as const, message: err instanceof Error ? err.message : String(err) }));
+        .catch((err: unknown) => ({
+          kind: "error" as const,
+          message: err instanceof Error ? err.message : String(err)
+        }));
 
       const result = await Promise.race([call, timeout(timeoutMs)]);
 
       if (result === "timeout") {
-        return { status: "timed_out", detail: `github-check: no response within ${timeoutMs}ms`, evidence: { url, timeoutMs } };
+        return {
+          status: "timed_out",
+          detail: `github-check: no response within ${timeoutMs}ms`,
+          evidence: { url, timeoutMs }
+        };
       }
       if (result.kind === "error") {
         return fail(`github-check: request failed — ${result.message}`, { url });
@@ -171,12 +184,17 @@ export function createGithubCheckControlPlugin(): ControlPlugin {
         return expired(`github-check: no check runs reported yet for ${ref}`, { url, ref });
       }
       if (response.status < 200 || response.status >= 300) {
-        return fail(`github-check: GitHub API returned HTTP ${response.status}`, { url, httpStatus: response.status });
+        return fail(`github-check: GitHub API returned HTTP ${response.status}`, {
+          url,
+          httpStatus: response.status
+        });
       }
 
       const body = response.body as { check_runs?: unknown } | undefined;
       const allRuns = Array.isArray(body?.check_runs) ? (body!.check_runs as GithubCheckRun[]) : [];
-      const relevant = config.checkName ? allRuns.filter((r) => r.name === config.checkName) : allRuns;
+      const relevant = config.checkName
+        ? allRuns.filter((r) => r.name === config.checkName)
+        : allRuns;
 
       if (relevant.length === 0) {
         return expired(
@@ -187,14 +205,19 @@ export function createGithubCheckControlPlugin(): ControlPlugin {
 
       const incomplete = relevant.filter((r) => r.status !== "completed");
       if (incomplete.length > 0) {
-        return expired(`github-check: ${incomplete.length}/${relevant.length} check run(s) still running for ${ref}`, {
-          url,
-          ref,
-          checkRuns: summarizeRuns(relevant)
-        });
+        return expired(
+          `github-check: ${incomplete.length}/${relevant.length} check run(s) still running for ${ref}`,
+          {
+            url,
+            ref,
+            checkRuns: summarizeRuns(relevant)
+          }
+        );
       }
 
-      const failing = relevant.filter((r) => !PASSING_CONCLUSIONS.has(typeof r.conclusion === "string" ? r.conclusion : ""));
+      const failing = relevant.filter(
+        (r) => !PASSING_CONCLUSIONS.has(typeof r.conclusion === "string" ? r.conclusion : "")
+      );
       if (failing.length > 0) {
         const detail = summarizeRuns(failing)
           .map((r) => `${r.name}=${r.conclusion ?? "none"}`)

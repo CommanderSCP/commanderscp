@@ -256,12 +256,21 @@ describe.skipIf(!opensslAvailable())("in-app federation mTLS (M9.3, ADR-0001)", 
     orgId: string;
     selfDomainId: string;
     adminToken: string;
-    peers: Record<string, { domainId: string; leaf: TestLeafCert; keys: { publicKey: string; privateKey: string } }>;
+    peers: Record<
+      string,
+      { domainId: string; leaf: TestLeafCert; keys: { publicKey: string; privateKey: string } }
+    >;
   }> {
     const setup = await bootServer();
-    const testServerLike: TestServer = { app: setup.app, deps: setup.deps, close: async () => undefined };
+    const testServerLike: TestServer = {
+      app: setup.app,
+      deps: setup.deps,
+      close: async () => undefined
+    };
     const org = await createTestOrg(testServerLike, "fed");
-    const self = await withTenantTx(setup.deps.db, org.orgId, (tx) => ensureFederationSelf(tx, org.orgId));
+    const self = await withTenantTx(setup.deps.db, org.orgId, (tx) =>
+      ensureFederationSelf(tx, org.orgId)
+    );
 
     const peers: Record<
       string,
@@ -433,7 +442,10 @@ describe.skipIf(!opensslAvailable())("in-app federation mTLS (M9.3, ADR-0001)", 
     };
     const entries: unknown[] = [];
     const checksum = computeBundleChecksum({ header, entries });
-    const bundleSignature = signBundleChecksum(setup.peers["claimed-exporter"]!.keys.privateKey, checksum);
+    const bundleSignature = signBundleChecksum(
+      setup.peers["claimed-exporter"]!.keys.privateKey,
+      checksum
+    );
     const bundle = { header, entries, checksum, bundleSignature };
 
     const res = await httpsPost({
@@ -509,7 +521,11 @@ describe.skipIf(!opensslAvailable())("in-app federation mTLS (M9.3, ADR-0001)", 
   it("mTLS DISABLED (default): plain HTTP works, no client certificate required — no regression", async () => {
     // No CA/certs needed at all for this scenario — the peer just needs a placeholder public key.
     const setup = await bootServer(); // {} -> federationServerMtls unset
-    const testServerLike: TestServer = { app: setup.app, deps: setup.deps, close: async () => undefined };
+    const testServerLike: TestServer = {
+      app: setup.app,
+      deps: setup.deps,
+      close: async () => undefined
+    };
     const org = await createTestOrg(testServerLike, "plain");
     await withTenantTx(setup.deps.db, org.orgId, (tx) => ensureFederationSelf(tx, org.orgId));
     await withTenantTx(setup.deps.db, org.orgId, (tx) =>

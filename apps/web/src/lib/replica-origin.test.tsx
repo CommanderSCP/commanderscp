@@ -36,7 +36,8 @@ import {
 describe("replica-origin (M16.3 P2): measured foreign-origin write-control gating", () => {
   const OWN_DOMAIN = "2c1d3e4f-5a6b-4c8d-9e0f-1a2b3c4d5e6f";
   const OTHER_DOMAIN = "5f6b4a2c-1d3e-4f8a-9b0c-2d4e6f8a0b1c";
-  const REFUSAL = "Merging this component in would soft-delete it, which `deleteObject` refuses here:";
+  const REFUSAL =
+    "Merging this component in would soft-delete it, which `deleteObject` refuses here:";
 
   describe("isForeignOriginObject", () => {
     it("is FALSE for a row this domain itself originated", () => {
@@ -136,7 +137,7 @@ describe("replica-origin (M16.3 P2): measured foreign-origin write-control gatin
   describe("ForeignOriginNotice (the honest provenance marker — mirrors service-board.tsx's UnknownHere idiom)", () => {
     it("renders the dashed-amber 'read-only replica' marker, naming the owning domain in its title", () => {
       const html = renderToStaticMarkup(<ForeignOriginNotice originDomainId={OTHER_DOMAIN} />);
-      expect(html).toContain("data-testid=\"foreign-origin-notice\"");
+      expect(html).toContain('data-testid="foreign-origin-notice"');
       expect(html).toContain("border-dashed");
       expect(html).toContain("read-only replica");
       expect(html).toContain(OTHER_DOMAIN);

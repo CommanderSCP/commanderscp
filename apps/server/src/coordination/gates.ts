@@ -53,7 +53,11 @@ export interface GateVerdict {
 }
 
 function allowVerdict(reason: string, extra: Record<string, unknown> = {}): GateVerdict {
-  return { verdict: "allow", inputContext: { gatesBound: 0, ...extra }, reasonTree: { summary: reason } };
+  return {
+    verdict: "allow",
+    inputContext: { gatesBound: 0, ...extra },
+    reasonTree: { summary: reason }
+  };
 }
 
 async function boundControlRefs(
@@ -62,7 +66,10 @@ async function boundControlRefs(
   where: ReturnType<typeof and>
 ): Promise<{ controlRefs: string[]; enforcement: string }[]> {
   const bound = await tx.select().from(gateBindings).where(where);
-  return bound.map((b) => ({ controlRefs: (b.controlRefs as string[]) ?? [], enforcement: b.enforcement }));
+  return bound.map((b) => ({
+    controlRefs: (b.controlRefs as string[]) ?? [],
+    enforcement: b.enforcement
+  }));
 }
 
 export interface EvaluateLifecycleGateContext {
@@ -103,7 +110,12 @@ export async function evaluateLifecycleGate(
   const explicitlyBound = await boundControlRefs(
     tx,
     ctx.orgId,
-    and(eq(gateBindings.orgId, ctx.orgId), eq(gateBindings.scopeKind, "lifecycle_edge"), eq(gateBindings.fromState, ctx.fromState), eq(gateBindings.toState, ctx.toState))
+    and(
+      eq(gateBindings.orgId, ctx.orgId),
+      eq(gateBindings.scopeKind, "lifecycle_edge"),
+      eq(gateBindings.fromState, ctx.fromState),
+      eq(gateBindings.toState, ctx.toState)
+    )
   );
 
   if (!GOVERNED_LIFECYCLE_EDGES.has(edgeKey)) {
@@ -116,7 +128,9 @@ export async function evaluateLifecycleGate(
   }
 
   if (ctx.isRollback) {
-    return allowVerdict("rollback changes are exempt from governance at validating->accepted (DESIGN §9.4 — no human-review step to wait for)");
+    return allowVerdict(
+      "rollback changes are exempt from governance at validating->accepted (DESIGN §9.4 — no human-review step to wait for)"
+    );
   }
 
   const changeObject = await getObjectByIdOrUrnAnyType(tx, ctx.orgId, ctx.changeObjectId);
@@ -135,7 +149,12 @@ export async function evaluateLifecycleGate(
 
   return {
     verdict: outcome.verdict,
-    inputContext: { ...outcome.inputContext, fromState: ctx.fromState, toState: ctx.toState, explicitGatesBound: explicitlyBound.length },
+    inputContext: {
+      ...outcome.inputContext,
+      fromState: ctx.fromState,
+      toState: ctx.toState,
+      explicitGatesBound: explicitlyBound.length
+    },
     reasonTree: outcome.reasonTree,
     freezeOverrides: outcome.freezeOverrides
   };
@@ -162,12 +181,20 @@ export async function evaluateWaveGate(
   deps: GateDeps
 ): Promise<GateVerdict> {
   const scopeCondition = ctx.topologyObjectId
-    ? or(eq(gateBindings.topologyObjectId, ctx.topologyObjectId), isNull(gateBindings.topologyObjectId))
+    ? or(
+        eq(gateBindings.topologyObjectId, ctx.topologyObjectId),
+        isNull(gateBindings.topologyObjectId)
+      )
     : isNull(gateBindings.topologyObjectId);
   const explicitlyBound = await boundControlRefs(
     tx,
     ctx.orgId,
-    and(eq(gateBindings.orgId, ctx.orgId), eq(gateBindings.scopeKind, "wave_boundary"), scopeCondition, eq(gateBindings.waveIndex, ctx.waveIndex))
+    and(
+      eq(gateBindings.orgId, ctx.orgId),
+      eq(gateBindings.scopeKind, "wave_boundary"),
+      scopeCondition,
+      eq(gateBindings.waveIndex, ctx.waveIndex)
+    )
   );
 
   const outcome = await evaluateGovernanceGate(tx, deps.sandbox, deps.host, {

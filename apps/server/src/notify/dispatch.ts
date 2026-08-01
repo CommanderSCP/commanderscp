@@ -49,7 +49,9 @@ export async function dispatchNotification(
       ]);
       const result = await host.notification(binding.pluginInstanceId).send(msg);
       if (!result.delivered) {
-        console.error(`[notify] org ${orgId} binding ${binding.id} delivery failed: ${result.detail ?? "no detail"}`);
+        console.error(
+          `[notify] org ${orgId} binding ${binding.id} delivery failed: ${result.detail ?? "no detail"}`
+        );
       }
     } catch (err) {
       console.error(`[notify] org ${orgId} binding ${binding.id} threw:`, err);

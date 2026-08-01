@@ -29,7 +29,9 @@ export async function getControlBinding(
   const rows = await tx
     .select()
     .from(controlBindings)
-    .where(and(eq(controlBindings.orgId, orgId), eq(controlBindings.controlObjectId, controlObjectId)))
+    .where(
+      and(eq(controlBindings.orgId, orgId), eq(controlBindings.controlObjectId, controlObjectId))
+    )
     .limit(1);
   return rows[0];
 }
@@ -42,7 +44,10 @@ export interface UpsertControlBindingInput {
   config?: unknown;
 }
 
-export async function upsertControlBinding(tx: TenantTx, input: UpsertControlBindingInput): Promise<ControlBindingRow> {
+export async function upsertControlBinding(
+  tx: TenantTx,
+  input: UpsertControlBindingInput
+): Promise<ControlBindingRow> {
   // Control instance ids are caller-supplied and share ONE flat PluginHost keyspace with
   // executor/notification instances — they must not squat the reserved `execution-system:<id>`
   // namespace (see assertNotReservedInstanceId).
@@ -98,7 +103,10 @@ export interface ControlRunRow {
   createdAt: Date;
 }
 
-export async function insertControlRun(tx: TenantTx, input: InsertControlRunInput): Promise<ControlRunRow> {
+export async function insertControlRun(
+  tx: TenantTx,
+  input: InsertControlRunInput
+): Promise<ControlRunRow> {
   const [row] = await tx
     .insert(controlRuns)
     .values({
@@ -140,7 +148,11 @@ export async function latestControlRun(
   return rows[0] as unknown as ControlRunRow | undefined;
 }
 
-export async function listControlRunsForChange(tx: TenantTx, orgId: string, changeObjectId: string): Promise<ControlRunRow[]> {
+export async function listControlRunsForChange(
+  tx: TenantTx,
+  orgId: string,
+  changeObjectId: string
+): Promise<ControlRunRow[]> {
   const rows = await tx
     .select()
     .from(controlRuns)

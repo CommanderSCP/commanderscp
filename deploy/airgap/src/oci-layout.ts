@@ -75,7 +75,11 @@ export async function verifyOciLayoutIntegrity(ociDir: string): Promise<OciLayou
   try {
     algDirs = await readdir(blobsRoot);
   } catch (err) {
-    mismatches.push({ relativePath: "blobs", reason: "missing-blob", detail: `blobs/ directory unreadable: ${(err as Error).message}` });
+    mismatches.push({
+      relativePath: "blobs",
+      reason: "missing-blob",
+      detail: `blobs/ directory unreadable: ${(err as Error).message}`
+    });
     return mismatches;
   }
 
@@ -84,7 +88,11 @@ export async function verifyOciLayoutIntegrity(ociDir: string): Promise<OciLayou
       // Every image in this bundle is produced by this package's own skopeo invocation, which
       // always yields sha256 blobs. A different algorithm directory showing up is itself
       // suspicious (or at minimum unsupported) — flag it rather than silently skipping it.
-      mismatches.push({ relativePath: `blobs/${alg}`, reason: "blob-digest-mismatch", detail: `unexpected digest algorithm directory (only sha256 is supported)` });
+      mismatches.push({
+        relativePath: `blobs/${alg}`,
+        reason: "blob-digest-mismatch",
+        detail: `unexpected digest algorithm directory (only sha256 is supported)`
+      });
       continue;
     }
     const algDir = path.join(blobsRoot, alg);
@@ -108,17 +116,29 @@ export async function verifyOciLayoutIntegrity(ociDir: string): Promise<OciLayou
     const manifestBlobPath = path.join(blobsRoot, "sha256", hex);
     const actual = await sha256File(manifestBlobPath).catch(() => null);
     if (actual === null) {
-      mismatches.push({ relativePath: "index.json", reason: "missing-blob", detail: `index.json points at manifest ${claimedDigest} but blobs/sha256/${hex} does not exist` });
+      mismatches.push({
+        relativePath: "index.json",
+        reason: "missing-blob",
+        detail: `index.json points at manifest ${claimedDigest} but blobs/sha256/${hex} does not exist`
+      });
     } else if (`sha256:${actual}` !== claimedDigest) {
       // Structurally unreachable given the per-blob loop above already checks this file, but
       // kept as an explicit, named assertion — this is the specific property
       // ("index.json's claimed digest is the manifest's real digest") the milestone brief cares
       // about, and a reader should be able to find it checked by name, not inferred from the
       // generic blob loop above.
-      mismatches.push({ relativePath: "index.json", reason: "manifest-digest-mismatch", detail: `index.json claims ${claimedDigest}, blob content hashes to sha256:${actual}` });
+      mismatches.push({
+        relativePath: "index.json",
+        reason: "manifest-digest-mismatch",
+        detail: `index.json claims ${claimedDigest}, blob content hashes to sha256:${actual}`
+      });
     }
   } catch (err) {
-    mismatches.push({ relativePath: "index.json", reason: "missing-blob", detail: (err as Error).message });
+    mismatches.push({
+      relativePath: "index.json",
+      reason: "missing-blob",
+      detail: (err as Error).message
+    });
   }
 
   return mismatches;

@@ -108,7 +108,10 @@ export async function backfillSourceMappings(
       )
       .limit(2);
     if (matches.length === 0) {
-      skipped.push({ objectName: m.objectName, reason: `no live component named '${m.objectName}'` });
+      skipped.push({
+        objectName: m.objectName,
+        reason: `no live component named '${m.objectName}'`
+      });
       continue;
     }
     if (matches.length > 1) {

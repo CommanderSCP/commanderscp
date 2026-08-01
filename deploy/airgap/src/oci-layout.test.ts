@@ -21,7 +21,13 @@ async function makeFakeOciLayout(dir: string, manifestBytes: string): Promise<st
     JSON.stringify({
       schemaVersion: 2,
       mediaType: "application/vnd.oci.image.index.v1+json",
-      manifests: [{ mediaType: "application/vnd.oci.image.manifest.v1+json", digest: `sha256:${digest}`, size: manifestBytes.length }]
+      manifests: [
+        {
+          mediaType: "application/vnd.oci.image.manifest.v1+json",
+          digest: `sha256:${digest}`,
+          size: manifestBytes.length
+        }
+      ]
     }),
     "utf8"
   );
@@ -93,7 +99,11 @@ describe("verifyOciLayoutIntegrity — the OCI-layout tamper-detection gate", ()
       await writeFile(path.join(dir, "blobs", "sha256", hex), '{"tampered":"manifest"}', "utf8");
 
       const issues = await verifyOciLayoutIntegrity(dir);
-      expect(issues.some((i) => i.reason === "blob-digest-mismatch" && i.relativePath === `blobs/sha256/${hex}`)).toBe(true);
+      expect(
+        issues.some(
+          (i) => i.reason === "blob-digest-mismatch" && i.relativePath === `blobs/sha256/${hex}`
+        )
+      ).toBe(true);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

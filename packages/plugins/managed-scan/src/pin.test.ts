@@ -79,7 +79,10 @@ describe("openscap pin drift gate (M13.3b — the second managed-scan method)", 
     const pinnedImage = readPin(OPENSCAP_PIN_ENV, "OPENSCAP_PINNED_IMAGE");
     const dockerfile = readFileSync(DOCKERFILE, "utf8");
     const argMatch = /ARG\s+OPENSCAP_IMAGE=(\S+)/.exec(dockerfile);
-    expect(argMatch, "apps/runner-scan/Dockerfile must set `ARG OPENSCAP_IMAGE=<pin>`").not.toBeNull();
+    expect(
+      argMatch,
+      "apps/runner-scan/Dockerfile must set `ARG OPENSCAP_IMAGE=<pin>`"
+    ).not.toBeNull();
     expect(argMatch![1]).toBe(pinnedImage);
     // The FINAL FROM must resolve to that ARG (content-addressed, no floating tag).
     expect(dockerfile).toMatch(/FROM\s+\$\{OPENSCAP_IMAGE\}/);
@@ -91,7 +94,10 @@ describe("openscap pin drift gate (M13.3b — the second managed-scan method)", 
     const pinnedVersion = readPin(OPENSCAP_PIN_ENV, "OPENSCAP_PINNED_VERSION");
     const dockerfile = readFileSync(DOCKERFILE, "utf8");
     const argMatch = /ARG\s+OPENSCAP_PINNED_VERSION=(\S+)/.exec(dockerfile);
-    expect(argMatch, "apps/runner-scan/Dockerfile must set `ARG OPENSCAP_PINNED_VERSION=<pin>`").not.toBeNull();
+    expect(
+      argMatch,
+      "apps/runner-scan/Dockerfile must set `ARG OPENSCAP_PINNED_VERSION=<pin>`"
+    ).not.toBeNull();
     expect(argMatch![1]).toBe(pinnedVersion);
   });
 
@@ -111,11 +117,20 @@ describe("openscap pin drift gate (M13.3b — the second managed-scan method)", 
     // (--enablerepo=<pin.env OPENSCAP_INSTALL_REPO>) with the rolling repos disabled (--disablerepo=*),
     // so the tool version is reproducible from the pin rather than whatever the repos serve at build.
     const installRepo = readPin(OPENSCAP_PIN_ENV, "OPENSCAP_INSTALL_REPO");
-    expect(installRepo, "OPENSCAP_INSTALL_REPO must name the frozen repo the Dockerfile installs from").toBeTruthy();
+    expect(
+      installRepo,
+      "OPENSCAP_INSTALL_REPO must name the frozen repo the Dockerfile installs from"
+    ).toBeTruthy();
     const dockerfile = readFileSync(DOCKERFILE, "utf8");
-    const installLine = /dnf\s+install[^\n]*openscap-scanner[^\n]*/.exec(dockerfile.replace(/\\\n\s*/g, " "));
+    const installLine = /dnf\s+install[^\n]*openscap-scanner[^\n]*/.exec(
+      dockerfile.replace(/\\\n\s*/g, " ")
+    );
     expect(installLine, "Dockerfile must `dnf install ... openscap-scanner ...`").not.toBeNull();
-    expect(installLine![0], "install must disable the rolling repos (--disablerepo=*)").toMatch(/--disablerepo=(["']?)\*\1/);
-    expect(installLine![0], "install must enable only the pinned frozen repo").toContain(`--enablerepo=${installRepo}`);
+    expect(installLine![0], "install must disable the rolling repos (--disablerepo=*)").toMatch(
+      /--disablerepo=(["']?)\*\1/
+    );
+    expect(installLine![0], "install must enable only the pinned frozen repo").toContain(
+      `--enablerepo=${installRepo}`
+    );
   });
 });

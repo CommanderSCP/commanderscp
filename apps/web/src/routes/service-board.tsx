@@ -27,7 +27,13 @@ import type { ChangeState } from "@scp/schemas";
 
 /** A "Why?" link into the blocked change's Decisions timeline (its `#decision-<id>` anchor) —
  *  same explainability surface the Phase-1 pipeline view links to (charter principle 6). */
-function WhyLink({ changeId, decisionId }: { changeId: string; decisionId: string }): React.JSX.Element {
+function WhyLink({
+  changeId,
+  decisionId
+}: {
+  changeId: string;
+  decisionId: string;
+}): React.JSX.Element {
   return (
     <Link
       to="/changes/$id"
@@ -296,7 +302,11 @@ export function freezeVisibilityUnknownOf(board: { unknownFields: string[] }): b
  * is exactly the kind of number a reader checks against a clock. Both are shown, each named for
  * what it is; the factor between them is never recomputed here.
  */
-export function BoardAsOfLabel({ asOf }: { asOf: ServiceBoardAsOf | null }): React.JSX.Element | null {
+export function BoardAsOfLabel({
+  asOf
+}: {
+  asOf: ServiceBoardAsOf | null;
+}): React.JSX.Element | null {
   if (!asOf) return null;
   const when = asOf.at ? formatDate(asOf.at) : "never";
   // Exhaustive on purpose: "unknown" is a transfer recorded before the transport was stored, and it
@@ -417,13 +427,19 @@ export function ServiceBoardPage(): React.JSX.Element {
               {service.name}
             </h1>
             {serviceFreeze && (
-              <Badge variant="secondary" title={`Frozen until ${formatDate(serviceFreeze.endsAt)}: ${serviceFreeze.reason}`} data-testid="board-service-freeze">
+              <Badge
+                variant="secondary"
+                title={`Frozen until ${formatDate(serviceFreeze.endsAt)}: ${serviceFreeze.reason}`}
+                data-testid="board-service-freeze"
+              >
                 Frozen
               </Badge>
             )}
           </div>
           <p className="font-mono text-xs text-slate-500">{service.urn}</p>
-          <p className="mt-1 text-sm text-slate-500">Service release board · Layer A (real data only)</p>
+          <p className="mt-1 text-sm text-slate-500">
+            Service release board · Layer A (real data only)
+          </p>
           {/* DESIGN §13: label the upstream the board depends on, never present it as live status. */}
           <BoardAsOfLabel asOf={board.asOf} />
         </div>
@@ -493,9 +509,9 @@ export function ServiceBoardPage(): React.JSX.Element {
           className="w-fit rounded border border-dashed border-amber-400 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800"
           data-testid="board-change-visibility-unknown"
         >
-          Change visibility is limited on this instance: a federation peer&apos;s sync scope does not
-          carry change objects, so a component with no change here may simply be one whose change was
-          never sent. The Stable count is not an all-clear.
+          Change visibility is limited on this instance: a federation peer&apos;s sync scope does
+          not carry change objects, so a component with no change here may simply be one whose
+          change was never sent. The Stable count is not an all-clear.
         </p>
       )}
 
@@ -504,18 +520,18 @@ export function ServiceBoardPage(): React.JSX.Element {
           className="w-fit rounded border border-dashed border-amber-400 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800"
           data-testid="board-freeze-visibility-unknown"
         >
-          Freeze visibility is limited to this domain: freezes are never replicated between federated
-          instances, so an unfrozen row means &quot;no freeze declared here&quot; — not &quot;no freeze
-          applies&quot;.
+          Freeze visibility is limited to this domain: freezes are never replicated between
+          federated instances, so an unfrozen row means &quot;no freeze declared here&quot; — not
+          &quot;no freeze applies&quot;.
         </p>
       )}
 
       <p className="text-xs text-slate-400">
-        Per-wave image version/digest and component health are not modeled yet (Layer B) and are shown
-        as &quot;—&quot;. Freezes are read-only here; declaring or lifting one lands in a later controls
-        phase. A change driven by another domain is replicated here read-only: this instance can show
-        the state that domain last reported, but its waves, blocked state and approvals are marked
-        &quot;unknown here&quot; rather than rendered as clear.
+        Per-wave image version/digest and component health are not modeled yet (Layer B) and are
+        shown as &quot;—&quot;. Freezes are read-only here; declaring or lifting one lands in a
+        later controls phase. A change driven by another domain is replicated here read-only: this
+        instance can show the state that domain last reported, but its waves, blocked state and
+        approvals are marked &quot;unknown here&quot; rather than rendered as clear.
       </p>
     </div>
   );

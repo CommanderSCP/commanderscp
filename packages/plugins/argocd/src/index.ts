@@ -640,7 +640,11 @@ async function discover(ctx: PluginContext): Promise<DiscoveryProposal> {
     // P3b: if the run named an execution-system, propose the binding too so `accept` wires
     // coordination in the same step (externalRef = the app name → trigger()/observe() hit it).
     if (config.executionSystemId) {
-      bindings.push({ objectName: name, executionSystemId: config.executionSystemId, externalRef: name });
+      bindings.push({
+        objectName: name,
+        executionSystemId: config.executionSystemId,
+        externalRef: name
+      });
     }
     // M12 P5 (owner Q3, github-webhook path): a source_mapping from the app's git repo, so pushes to
     // it correlate to this component. `source_kind:'github'`, `repoPattern` = the `owner/repo` SLUG

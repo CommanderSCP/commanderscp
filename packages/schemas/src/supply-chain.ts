@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { ScanDbSourceSchema, ScanDbStalenessClassSchema, ScanDbThresholdFiredSchema } from "./scan-db.js";
+import {
+  ScanDbSourceSchema,
+  ScanDbStalenessClassSchema,
+  ScanDbThresholdFiredSchema
+} from "./scan-db.js";
 
 /**
  * Supply-chain governance evidence (DESIGN §10, ADR-0013 "scan as a boundary-authorization gate",
@@ -88,7 +92,6 @@ export type ScanMethod = z.infer<typeof ScanMethodSchema>;
 export function usesTrivyDb(method: ScanMethod): boolean {
   return method === "trivy" || method === "trivy-vm";
 }
-
 
 // ===========================================================================================
 // M17.5 — SCOPED SCAN-REQUIREMENT POLICIES (ADR-0016), most-restrictive-wins over six tiers.
@@ -343,11 +346,10 @@ export const SbomRefSchema = z.strictObject({
   specVersion: z.string().optional(),
   /** The SBOM DOCUMENT's content digest. Accepts `sha256:<hex>`, a bare 64-hex string, or a
    *  `<ref>@sha256:<hex>` form; normalized to `sha256:<lowercase-hex>` when persisted. */
-  digest: z
-    .string()
-    .refine((v) => sbomDigestHex(v) !== undefined, {
-      message: "digest must carry a sha256 digest (sha256:<64-hex>, <ref>@sha256:<64-hex>, or bare 64-hex)"
-    }),
+  digest: z.string().refine((v) => sbomDigestHex(v) !== undefined, {
+    message:
+      "digest must carry a sha256 digest (sha256:<64-hex>, <ref>@sha256:<64-hex>, or bare 64-hex)"
+  }),
   /** WHERE the document lives — an OCI referrer ref, registry URL, or artifact-store URI. SCP stores
    *  the string and never fetches it as part of persisting the reference. */
   location: z.string().min(1),

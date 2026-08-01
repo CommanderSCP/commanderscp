@@ -10,13 +10,13 @@ truth every consumer reads.
 
 ## What is pinned
 
-| | |
-|---|---|
-| Tool | [aquasecurity/trivy](https://github.com/aquasecurity/trivy) |
-| Version | **v0.58.1** (`Version` reported by `trivy version`) |
-| Image ref (**what the runner builds FROM**) | `aquasec/trivy@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7` — the **multi-arch index (manifest-list) digest** for tag `v0.58.1` |
-| linux/amd64 platform digest (production runner arch, provenance + drift-asserted) | `sha256:de81be41be9665a7b761680cd4bb570313a923154b994c79b49b5a55f1a55e35` |
-| License | Apache-2.0 (upstream) |
+|                                                                                   |                                                                                                                                                             |
+| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tool                                                                              | [aquasecurity/trivy](https://github.com/aquasecurity/trivy)                                                                                                 |
+| Version                                                                           | **v0.58.1** (`Version` reported by `trivy version`)                                                                                                         |
+| Image ref (**what the runner builds FROM**)                                       | `aquasec/trivy@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7` — the **multi-arch index (manifest-list) digest** for tag `v0.58.1` |
+| linux/amd64 platform digest (production runner arch, provenance + drift-asserted) | `sha256:de81be41be9665a7b761680cd4bb570313a923154b994c79b49b5a55f1a55e35`                                                                                   |
+| License                                                                           | Apache-2.0 (upstream)                                                                                                                                       |
 
 ## Why the INDEX digest, not the amd64 PLATFORM digest (the deliberate deviation from cosign/skopeo)
 
@@ -59,7 +59,7 @@ E6-exempt like the SBOM (proposal §13.3).
      | jq -r '.manifests[] | select(.platform.architecture=="amd64" and .platform.os=="linux") | .digest'
    ```
 4. Confirm the flags `run.sh` depends on are still accepted — `trivy image --input --format json
-   --skip-db-update --offline-scan --scanners vuln --exit-code 0 --output` — by scanning a local
+--skip-db-update --offline-scan --scanners vuln --exit-code 0 --output` — by scanning a local
    OCI layout **behind a closed proxy** (`HTTPS_PROXY=http://127.0.0.1:1`). `unknown flag` is not
    acceptable; deprecation warnings are fine.
 5. Update `pin.env` (version, index digest, amd64 digest), then update the `ARG TRIVY_IMAGE`

@@ -148,7 +148,8 @@ export function registerPlanRoutes(app: FastifyInstance, deps: AppDeps): void {
     config: {
       openapi: {
         operationId: "applyPlan",
-        summary: "Apply a pending plan transactionally (create/update/delete objects + relationships)",
+        summary:
+          "Apply a pending plan transactionally (create/update/delete objects + relationships)",
         tags: ["plans"]
       }
     },

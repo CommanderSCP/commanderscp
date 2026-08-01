@@ -30,7 +30,11 @@ import type { GateDeps } from "../coordination/gates.js";
 import { triggerRollback } from "../coordination/rollback.js";
 import { getLatestPlanForChange } from "../coordination/plan-service.js";
 import { buildBoundarySegment } from "../coordination/boundary-segment.js";
-import { getDecision, listDecisions, listDecisionsForSubject } from "../coordination/decisions-repo.js";
+import {
+  getDecision,
+  listDecisions,
+  listDecisionsForSubject
+} from "../coordination/decisions-repo.js";
 import { listControlRunsForChange } from "../governance/controls-repo.js";
 import { conflict } from "../errors.js";
 
@@ -243,7 +247,12 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
     url: "/api/v1/changes/:id/explain",
     schema: {
       params: ChangeIdParamSchema,
-      response: { 200: ChangeExplainResponseSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
+      response: {
+        200: ChangeExplainResponseSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
     },
     config: {
       openapi: {
@@ -336,7 +345,8 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
           },
           gateDeps
         );
-        if (result.verdict === "block") return { blocked: result.blockedReason, decisionId: result.decision.id };
+        if (result.verdict === "block")
+          return { blocked: result.blockedReason, decisionId: result.decision.id };
         return { change: await getChange(tx, auth.orgId, request.params.id) };
       });
       if ("blocked" in outcome) {
@@ -385,11 +395,14 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
             actorObjectId: auth.subjectObjectId,
             requestId: request.id,
             reason: request.body.reason ?? null,
-            overrideFreeze: request.body.overrideFreeze ? { reason: request.body.reason ?? "" } : undefined
+            overrideFreeze: request.body.overrideFreeze
+              ? { reason: request.body.reason ?? "" }
+              : undefined
           },
           gateDeps
         );
-        if (result.verdict === "block") return { blocked: result.blockedReason, decisionId: result.decision.id };
+        if (result.verdict === "block")
+          return { blocked: result.blockedReason, decisionId: result.decision.id };
         return { change: await getChange(tx, auth.orgId, request.params.id) };
       });
       if ("blocked" in outcome) {
@@ -460,7 +473,11 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
       response: { 200: DecisionListResponseSchema, 401: ProblemSchema, 403: ProblemSchema }
     },
     config: {
-      openapi: { operationId: "listDecisions", summary: "List Decision records", tags: ["decisions"] }
+      openapi: {
+        operationId: "listDecisions",
+        summary: "List Decision records",
+        tags: ["decisions"]
+      }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
@@ -485,7 +502,11 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
       response: { 200: DecisionSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
     },
     config: {
-      openapi: { operationId: "getDecision", summary: "Get a Decision record by id", tags: ["decisions"] }
+      openapi: {
+        operationId: "getDecision",
+        summary: "Get a Decision record by id",
+        tags: ["decisions"]
+      }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);

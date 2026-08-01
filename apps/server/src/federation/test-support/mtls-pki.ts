@@ -104,17 +104,17 @@ let nextSerial = 0x2000;
 /** Issues a leaf certificate signed by `ca`, optionally carrying a SAN URI (the identity
  *  `federation/mtls-enforcement.ts` reads). Each call gets a fresh, distinct serial number so
  *  `revokeLeafCert` can target exactly one cert without touching the rest. */
-export function issueLeafCert(
-  ca: TestCa,
-  opts: { name: string; sanUri?: string }
-): TestLeafCert {
+export function issueLeafCert(ca: TestCa, opts: { name: string; sanUri?: string }): TestLeafCert {
   const keyFile = join(ca.dir, `${opts.name}.key`);
   const csrFile = join(ca.dir, `${opts.name}.csr`);
   const certFile = join(ca.dir, `${opts.name}.crt`);
   const extFile = join(ca.dir, `${opts.name}.ext`);
   run(ca.dir, ["genrsa", "-out", keyFile, "2048"]);
   run(ca.dir, ["req", "-new", "-key", keyFile, "-out", csrFile, "-subj", `/CN=${opts.name}`]);
-  writeFileSync(extFile, `subjectAltName = ${opts.sanUri ? `URI:${opts.sanUri}` : "DNS:localhost"}\n`);
+  writeFileSync(
+    extFile,
+    `subjectAltName = ${opts.sanUri ? `URI:${opts.sanUri}` : "DNS:localhost"}\n`
+  );
   const serial = (nextSerial++).toString(16);
   run(ca.dir, [
     "x509",

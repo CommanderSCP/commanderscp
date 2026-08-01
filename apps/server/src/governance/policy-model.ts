@@ -43,7 +43,8 @@ export type PolicyEnforcement = "advisory" | "recommended" | "required";
 /** Mirrors `@scp/plugin-api`'s `ControlOutcomeStatus` (DESIGN §10.2) — re-declared here (rather
  *  than imported) so this module stays a zero-dependency pure-function module, matching its own
  *  module doc's "everything testable as a pure function" discipline. */
-export type ControlOutcomeStatusLike = "pass" | "fail" | "warning" | "skipped" | "timed_out" | "expired";
+export type ControlOutcomeStatusLike =
+  "pass" | "fail" | "warning" | "skipped" | "timed_out" | "expired";
 
 const ENFORCEMENT_SEVERITY: Record<PolicyEnforcement, number> = {
   advisory: 0,
@@ -90,7 +91,11 @@ export interface MatchedPolicy {
   effects: PolicyEffect[];
   /** How this policy matched (for the reason tree — DESIGN §10.1 "explainability is the return
    *  value"): which ancestor object's scope declaration matched, and how. */
-  matchedAt: { objectId: string; depth: number; via: "objectRef" | "selector" | "group" | "unscoped" };
+  matchedAt: {
+    objectId: string;
+    depth: number;
+    via: "objectRef" | "selector" | "group" | "unscoped";
+  };
   emergencyPolicy: boolean;
   /** DESIGN §9.4: "Triggers: automatic (gate/control failure policy...) or manual" — when true,
    *  a wave-target failure under this policy's scope triggers an automatic rollback
@@ -147,7 +152,10 @@ export function mergeContributorEffects(contributors: MatchedPolicy[]): {
       }
     });
   }
-  return { requireControls: [...requireControls].sort(), requireApprovals: [...approvalsByKey.values()] };
+  return {
+    requireControls: [...requireControls].sort(),
+    requireApprovals: [...approvalsByKey.values()]
+  };
 }
 
 /** Strictest enforcement across a set of levels (max severity), `advisory` for an empty set. */

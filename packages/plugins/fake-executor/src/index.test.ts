@@ -131,19 +131,31 @@ describe("FakeExecutorPlugin (unit, in-memory state)", () => {
     const plugin = createFakeExecutorPlugin();
     const ctx = testCtx();
 
-    const first = await plugin.trigger(ctx, { kind: "sync", targetRef: "svc-a", idempotencyKey: "wave-target-1" });
+    const first = await plugin.trigger(ctx, {
+      kind: "sync",
+      targetRef: "svc-a",
+      idempotencyKey: "wave-target-1"
+    });
     const firstStatus = await plugin.status(ctx, first);
     expect(firstStatus.stateRef).toBe("v0");
 
     // Same key again (simulates the engine retrying after a crash between trigger() and its own
     // result-commit) — must return the IDENTICAL externalId and NOT bump the version.
-    const retry = await plugin.trigger(ctx, { kind: "sync", targetRef: "svc-a", idempotencyKey: "wave-target-1" });
+    const retry = await plugin.trigger(ctx, {
+      kind: "sync",
+      targetRef: "svc-a",
+      idempotencyKey: "wave-target-1"
+    });
     expect(retry.externalId).toBe(first.externalId);
     const retryStatus = await plugin.status(ctx, retry);
     expect(retryStatus.stateRef).toBe("v0");
 
     // A genuinely different key (a different wave target) mints a fresh run, bumping the version.
-    const second = await plugin.trigger(ctx, { kind: "sync", targetRef: "svc-a", idempotencyKey: "wave-target-2" });
+    const second = await plugin.trigger(ctx, {
+      kind: "sync",
+      targetRef: "svc-a",
+      idempotencyKey: "wave-target-2"
+    });
     expect(second.externalId).not.toBe(first.externalId);
     const secondStatus = await plugin.status(ctx, second);
     expect(secondStatus.stateRef).toBe("v1");

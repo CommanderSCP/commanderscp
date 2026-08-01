@@ -188,7 +188,11 @@ const campaignTreeSpecArb: fc.Arbitrary<CampaignTreeSpec> = fc.record({
  *  `"topology-first"` or `"campaign-first"` order — both legal, since neither depends on the
  *  other), and a standalone initiative — every construction order a real IaC author could legally
  *  choose, given `Campaign`/`ReleaseTopology` need the services to exist first. */
-function buildCampaignTree(spec: CampaignTreeSpec, serviceOrder: ["a", "b"] | ["b", "a"], topologyOrder: "topology-first" | "campaign-first"): Stack {
+function buildCampaignTree(
+  spec: CampaignTreeSpec,
+  serviceOrder: ["a", "b"] | ["b", "a"],
+  topologyOrder: "topology-first" | "campaign-first"
+): Stack {
   const app = new App();
   const stack = new Stack(app, spec.stackName);
 

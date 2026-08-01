@@ -292,7 +292,9 @@ export async function buildApp(
       } catch {
         reply
           .status(503)
-          .send("Web UI is not built — run `pnpm --filter @scp/web build` (apps/web/dist missing).");
+          .send(
+            "Web UI is not built — run `pnpm --filter @scp/web build` (apps/web/dist missing)."
+          );
         return;
       }
       reply.type("text/html").send(cachedIndexHtml);

@@ -26,10 +26,7 @@ import {
   updateObject,
   upsertObjectByUrn
 } from "../graph/objects-repo.js";
-import {
-  containmentDomainIdFromWire,
-  listObjectsQueryFromWire
-} from "../domain-id-edge.js";
+import { containmentDomainIdFromWire, listObjectsQueryFromWire } from "../domain-id-edge.js";
 import { assertPolicyScopeWithinAuthority } from "../governance/policy-scope-authz.js";
 
 function idempotencyKey(request: FastifyRequest): string | undefined {
@@ -93,7 +90,12 @@ export const GOVERNANCE_TYPED_REGISTRY_RESOURCES: TypedRegistryConfig[] = [
     // CRITICAL #1b: bind the policy's DECLARED scope to the author's own authority.
     validateWrite: assertPolicyScopeWithinAuthority
   },
-  { typeId: "control", basePath: "controls", resourceName: "Control", writePermission: "policy:write" }
+  {
+    typeId: "control",
+    basePath: "controls",
+    resourceName: "Control",
+    writePermission: "policy:write"
+  }
 ];
 
 /**
@@ -396,8 +398,7 @@ export function registerTypedRegistryRoutes(
               tx,
               auth.orgId,
               containmentDomainIdFromWire(request.body.domainId) ?? undefined
-            )) ??
-            auth.orgId);
+            )) ?? auth.orgId);
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,

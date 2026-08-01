@@ -124,7 +124,11 @@ export function PipelineWaveCard({
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-1.5">
           {kinds.map((k) => (
-            <Badge key={`${k.category}::${k.type}`} variant="secondary" data-testid="pipeline-wave-kind-badge">
+            <Badge
+              key={`${k.category}::${k.type}`}
+              variant="secondary"
+              data-testid="pipeline-wave-kind-badge"
+            >
               {k.category} · {k.type}
             </Badge>
           ))}
@@ -151,7 +155,9 @@ export function PipelineWaveCard({
                 <Badge variant={waveStatusVariant(target.status)}>{target.status}</Badge>
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-500">
-                <span>{target.category} · {target.type}</span>
+                <span>
+                  {target.category} · {target.type}
+                </span>
                 {/* Per-wave version: the REAL snapshot reconcile observed from status(), never
                     fabricated. Prefer the deployed image tag/digest (ADR-0008 signal 1) — a better
                     human version than the git SHA — and demote the synced git revision (decision 1)
@@ -217,7 +223,11 @@ export function PipelineWaveCard({
                     <span
                       className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-600"
                       data-testid="pipeline-wave-observed-rollout"
-                      title={rollout.message ? `rollout: ${rollout.message}` : "observed rollout state (read-only)"}
+                      title={
+                        rollout.message
+                          ? `rollout: ${rollout.message}`
+                          : "observed rollout state (read-only)"
+                      }
                     >
                       rollout {parts.join(" · ")}
                     </span>

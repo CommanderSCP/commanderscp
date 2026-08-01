@@ -16,7 +16,10 @@ import { assertNotReservedInstanceId } from "../coordination/executor-bindings-r
 export type NotificationSeverity = "info" | "warning" | "critical";
 const SEVERITY_RANK: Record<NotificationSeverity, number> = { info: 0, warning: 1, critical: 2 };
 
-export function meetsSeverityThreshold(minSeverity: NotificationSeverity, actual: NotificationSeverity): boolean {
+export function meetsSeverityThreshold(
+  minSeverity: NotificationSeverity,
+  actual: NotificationSeverity
+): boolean {
   return SEVERITY_RANK[actual] >= SEVERITY_RANK[minSeverity];
 }
 
@@ -53,8 +56,14 @@ function toRow(row: {
   };
 }
 
-export async function listNotificationBindings(tx: TenantTx, orgId: string): Promise<NotificationBindingRow[]> {
-  const rows = await tx.select().from(notificationBindings).where(eq(notificationBindings.orgId, orgId));
+export async function listNotificationBindings(
+  tx: TenantTx,
+  orgId: string
+): Promise<NotificationBindingRow[]> {
+  const rows = await tx
+    .select()
+    .from(notificationBindings)
+    .where(eq(notificationBindings.orgId, orgId));
   return rows.map(toRow);
 }
 
@@ -116,10 +125,19 @@ export async function upsertNotificationBinding(
   return toRow(row!);
 }
 
-export async function deleteNotificationBinding(tx: TenantTx, orgId: string, pluginInstanceId: string): Promise<void> {
+export async function deleteNotificationBinding(
+  tx: TenantTx,
+  orgId: string,
+  pluginInstanceId: string
+): Promise<void> {
   await tx
     .delete(notificationBindings)
-    .where(and(eq(notificationBindings.pluginInstanceId, pluginInstanceId), eq(notificationBindings.orgId, orgId)));
+    .where(
+      and(
+        eq(notificationBindings.pluginInstanceId, pluginInstanceId),
+        eq(notificationBindings.orgId, orgId)
+      )
+    );
 }
 
 /** Same allowlist discipline as `executor-bindings-repo.ts`'s `KNOWN_EXECUTOR_MODULES` — a free-form

@@ -113,10 +113,9 @@ describe("M17.3 E4: cosign signing-keypair management", () => {
     // Org B, querying for org A's row explicitly, sees NOTHING (RLS filters cross-org).
     const rawB = await RawScpAppClient.connect();
     await rawB.setOrgContext(orgBId);
-    const crossOrg = await rawB.query(
-      "SELECT * FROM instance_cosign_keys WHERE org_id = $1",
-      [orgAId]
-    );
+    const crossOrg = await rawB.query("SELECT * FROM instance_cosign_keys WHERE org_id = $1", [
+      orgAId
+    ]);
     await rawB.close();
     expect(crossOrg.rows).toHaveLength(0);
 

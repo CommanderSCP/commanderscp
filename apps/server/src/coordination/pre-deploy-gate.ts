@@ -104,7 +104,10 @@ export const PRE_DEPLOY_ARTIFACT_VERIFY_PASSED_AUDIT_ACTION =
 /** An artifact set as an order-independent, comparable key — the identity an `allow` verdict is
  *  ABOUT. Two verdicts cover "the same verified set" iff these match. */
 function artifactSetKey(artifacts: { type: string; digest: string }[]): string {
-  return artifacts.map((a) => `${a.type}:${a.digest}`).sort().join("|");
+  return artifacts
+    .map((a) => `${a.type}:${a.digest}`)
+    .sort()
+    .join("|");
 }
 
 /** The authorized artifact set a persisted verdict covered, read defensively out of its opaque
@@ -290,7 +293,8 @@ export async function runPreDeployArtifactGate(
         importedFromDomain: change.importedFromDomain,
         authorizedArtifacts: manifestRef.artifacts.map((a) => ({ type: a.type, digest: a.digest })),
         failing:
-          result?.failing.map((f) => ({ type: f.type, digest: f.digest, reason: f.reason })) ?? null,
+          result?.failing.map((f) => ({ type: f.type, digest: f.digest, reason: f.reason })) ??
+          null,
         peerHasCosignKey: Boolean(cosignPublicKeyPem)
       },
       reasonTree: { summary: blockReason }

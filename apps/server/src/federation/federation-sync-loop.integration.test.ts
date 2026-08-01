@@ -49,10 +49,7 @@ describe("M14.4 federation-sync loop — the poke wake at the pg-boss level", ()
     return attempt ? Date.parse(attempt) : null;
   }
 
-  async function waitFor<T>(
-    probe: () => Promise<T | null>,
-    timeoutMs = 20_000
-  ): Promise<T> {
+  async function waitFor<T>(probe: () => Promise<T | null>, timeoutMs = 20_000): Promise<T> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       const value = await probe();

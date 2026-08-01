@@ -17,21 +17,21 @@ out below.
 
 ## What is pinned
 
-| | |
-|---|---|
-| Tool | [containers/skopeo](https://github.com/containers/skopeo) |
-| Version | **1.22.2** (`skopeo --version` reports `skopeo version 1.22.2 commit: c766fdc4c1ff9525fa6a38f860430f10646124b3`; note: **no leading `v`**, unlike cosign) |
-| Image ref (**what we actually use**) | `quay.io/skopeo/stable@sha256:8b23fe434af822adf71bc7c8674a8dfab379771aa1400fb81ff655a5cecfca87` — the **linux/amd64 platform manifest** for tag `v1.22.2` |
-| Multi-arch index digest (provenance only) | `sha256:c7d3c512612f52805023cd38351081dad7e2729fc13d14b701e47c7c8bdd6615` |
-| Path inside the upstream image | `/usr/bin/skopeo` (Fedora-based image; mode `0755`, 26,006,776 B, `sha256:da3115824eadde2a920eda0b96241c2f7e5f91ce03b6b41d7d49361365832645`) |
-| Paths inside the SCP image | `/opt/scp/bin/skopeo` (wrapper) → `/opt/scp/libexec/skopeo/{skopeo, lib/*}` (real binary + its library closure + loader) |
-| License | Apache-2.0 (`LICENSE-skopeo`); the vendored `.so` files are unmodified Fedora-built libraries redistributed from the upstream image under their own licenses (glibc/libgpgme LGPL, etc.) |
+|                                           |                                                                                                                                                                                          |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tool                                      | [containers/skopeo](https://github.com/containers/skopeo)                                                                                                                                |
+| Version                                   | **1.22.2** (`skopeo --version` reports `skopeo version 1.22.2 commit: c766fdc4c1ff9525fa6a38f860430f10646124b3`; note: **no leading `v`**, unlike cosign)                                |
+| Image ref (**what we actually use**)      | `quay.io/skopeo/stable@sha256:8b23fe434af822adf71bc7c8674a8dfab379771aa1400fb81ff655a5cecfca87` — the **linux/amd64 platform manifest** for tag `v1.22.2`                                |
+| Multi-arch index digest (provenance only) | `sha256:c7d3c512612f52805023cd38351081dad7e2729fc13d14b701e47c7c8bdd6615`                                                                                                                |
+| Path inside the upstream image            | `/usr/bin/skopeo` (Fedora-based image; mode `0755`, 26,006,776 B, `sha256:da3115824eadde2a920eda0b96241c2f7e5f91ce03b6b41d7d49361365832645`)                                             |
+| Paths inside the SCP image                | `/opt/scp/bin/skopeo` (wrapper) → `/opt/scp/libexec/skopeo/{skopeo, lib/*}` (real binary + its library closure + loader)                                                                 |
+| License                                   | Apache-2.0 (`LICENSE-skopeo`); the vendored `.so` files are unmodified Fedora-built libraries redistributed from the upstream image under their own licenses (glibc/libgpgme LGPL, etc.) |
 
 ## Why an image digest, not a downloaded release binary
 
 For cosign this was a size-driven choice; for skopeo it is not even a choice: **upstream skopeo
 publishes no release binaries at all** ([their install docs](https://github.com/containers/skopeo/blob/main/install.md)
-say so explicitly) — `quay.io/skopeo/stable` *is* the official binary distribution. A digest pin
+say so explicitly) — `quay.io/skopeo/stable` _is_ the official binary distribution. A digest pin
 is also strictly stronger than any tag or URL+sha256: the digest is the content hash of the
 entire image, it is what the registry re-verifies on every pull, and a mutable tag cannot be
 re-pointed underneath it. Same precedent chain as `tools/cosign` and `apps/runner-iac`'s pinned
@@ -41,7 +41,7 @@ OpenTofu image.
 
 `quay.io/skopeo/stable:v1.22.2` is a multi-arch index (amd64/arm64/ppc64le/s390x). Referencing
 the index makes the binary you get depend on the **build host's** architecture; referencing the
-linux/amd64 *platform* manifest digest makes the ref resolve to exactly one artifact everywhere —
+linux/amd64 _platform_ manifest digest makes the ref resolve to exactly one artifact everywhere —
 the same bytes on a CI runner, an arm64 laptop, or an air-gapped mirror.
 
 ### Why linux/amd64 only
@@ -132,10 +132,10 @@ official image is the strongest available anchor.)
 `packages/cosign/src/skopeo-bin.ts` is the one place that answers "which skopeo, and is it
 ours?" — the same pinned-vs-probe split as `resolveCosign()`, in the same package:
 
-| Path | Resolved from | `pinned` | Version check |
-|---|---|---|---|
-| Vendored | `/opt/scp/bin/skopeo` (in-image), or `SCP_SKOPEO_BIN` | `true` | **fail closed**: `skopeo --version` must equal the pin, or `assertPinnedSkopeoVersion()` refuses to proceed |
-| Operator-supplied | `skopeo` on `PATH` | `false` | none — we did not vet it |
+| Path              | Resolved from                                         | `pinned` | Version check                                                                                               |
+| ----------------- | ----------------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------- |
+| Vendored          | `/opt/scp/bin/skopeo` (in-image), or `SCP_SKOPEO_BIN` | `true`   | **fail closed**: `skopeo --version` must equal the pin, or `assertPinnedSkopeoVersion()` refuses to proceed |
+| Operator-supplied | `skopeo` on `PATH`                                    | `false`  | none — we did not vet it                                                                                    |
 
 The vendored path is `/opt/scp/bin`, deliberately **not** `/usr/local/bin`, so a Homebrew/apt
 skopeo can never be mistaken for the vetted pin.
@@ -154,7 +154,7 @@ calls it yet, and no behavior changed anywhere**. It is NOT for the air-gap rele
 and — like the vendored cosign — it must never become part of verifying the air-gap bundle that
 carries it.
 
-CI note for c2: when relay tests need the *pinned* binary on a runner, extract it from
+CI note for c2: when relay tests need the _pinned_ binary on a runner, extract it from
 `SKOPEO_PINNED_IMAGE` the way `scripts/install-pinned-cosign.sh` does for cosign (the wrapper +
 libexec layout must be reproduced, or simply run the tests against the built image). Today's CI
 keeps its apt/`PATH` skopeo for the release-path suites — do not switch those.
@@ -164,10 +164,10 @@ keeps its apt/`PATH` skopeo for the release-path suites — do not switch those.
 Built with `docker build -t scp:<tag> .` on the same daemon, same context, before and after
 (2026-07-22, Docker Engine 29.5.2 under colima):
 
-| | uncompressed (sum of `docker history`) | as stored/pulled (`docker inspect --format '{{.Size}}'`) |
-|---|---|---|
-| before | 895.7 MB | 247,125,516 B (247.1 MB) |
-| after | 931.6 MB | 262,006,375 B (262.0 MB) |
+|           | uncompressed (sum of `docker history`)                                    | as stored/pulled (`docker inspect --format '{{.Size}}'`)    |
+| --------- | ------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| before    | 895.7 MB                                                                  | 247,125,516 B (247.1 MB)                                    |
+| after     | 931.6 MB                                                                  | 262,006,375 B (262.0 MB)                                    |
 | **delta** | **+35.9 MB** (26.0 MB binary + 9.8 MB libs/loader + ~1 kB wrapper/policy) | **+14,880,859 B = +14.9 MB** (the bundle compresses ~2.4:1) |
 
 So: **+35.9 MB on disk, +14.9 MB to pull** — roughly a quarter of what the cosign pin cost

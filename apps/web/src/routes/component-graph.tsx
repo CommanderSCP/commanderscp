@@ -69,7 +69,10 @@ export function ComponentGraphPage(): React.JSX.Element {
 
       // 2. Every consumes/depends_on edge incident to those components, plus the typed neighbor
       // objects (names for external nodes). One traverse per component — bounded fan-out.
-      const edgeById = new Map<string, { id: string; fromId: string; toId: string; typeId: string }>();
+      const edgeById = new Map<
+        string,
+        { id: string; fromId: string; toId: string; typeId: string }
+      >();
       const objById = new Map<string, GraphObject>();
       for (const c of components) objById.set(c.id, c);
 
@@ -181,10 +184,7 @@ export function ComponentGraphPage(): React.JSX.Element {
             { label: "Component", color: "#7c3aed" },
             { label: "Other service (external)", color: "#94a3b8", dashed: true }
           ]}
-          edges={[
-            { label: "internal link" },
-            { label: "cross-service", dashed: true }
-          ]}
+          edges={[{ label: "internal link" }, { label: "cross-service", dashed: true }]}
         />
       </div>
 

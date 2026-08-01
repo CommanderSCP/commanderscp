@@ -1,6 +1,11 @@
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
-import { categoryOfType, type ChangePlan, type ChangeWaveTarget, type ExecutorType } from "@scp/schemas";
+import {
+  categoryOfType,
+  type ChangePlan,
+  type ChangeWaveTarget,
+  type ExecutorType
+} from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changePlans, changeWaveTargets, changeWaves, relationships } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
@@ -205,7 +210,8 @@ export async function getLatestPlanForChange(
   changeObjectId: string
 ): Promise<ChangePlan | null> {
   const planRow = await tx.query.changePlans.findFirst({
-    where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.orgId, orgId), eqOp(t.changeObjectId, changeObjectId)),
+    where: (t, { eq: eqOp, and: andOp }) =>
+      andOp(eqOp(t.orgId, orgId), eqOp(t.changeObjectId, changeObjectId)),
     orderBy: (t, { desc }) => [desc(t.createdAt)]
   });
   if (!planRow) return null;
@@ -222,7 +228,9 @@ export async function getLatestPlanForChange(
       : await tx
           .select()
           .from(changeWaveTargets)
-          .where(and(eq(changeWaveTargets.orgId, orgId), inArray(changeWaveTargets.waveId, waveIds)));
+          .where(
+            and(eq(changeWaveTargets.orgId, orgId), inArray(changeWaveTargets.waveId, waveIds))
+          );
 
   return toChangePlanShape(planRow, waveRows, targetRows);
 }

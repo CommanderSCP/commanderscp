@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { PluginContext, ScopedHttpRequest, ScopedHttpResponse } from "@scp/plugin-api";
 import { createGithubCheckControlPlugin } from "./index.js";
 
-function testCtx(config: unknown, requestImpl?: (req: ScopedHttpRequest) => Promise<ScopedHttpResponse>): PluginContext {
+function testCtx(
+  config: unknown,
+  requestImpl?: (req: ScopedHttpRequest) => Promise<ScopedHttpResponse>
+): PluginContext {
   return {
     orgId: "org-1",
     scopeKey: "domain-1",
@@ -35,11 +38,17 @@ describe("github-check plugin", () => {
       };
     });
 
-    const outcome = await plugin.evaluate(ctx, { changeId: "c1", controlId: "ctl1", context: { commitSha: "abc123" } });
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { commitSha: "abc123" }
+    });
 
     expect(outcome.status).toBe("pass");
     expect(seenRequest?.method).toBe("GET");
-    expect(seenRequest?.url).toBe("https://api.github.com/repos/acme/widgets/commits/abc123/check-runs");
+    expect(seenRequest?.url).toBe(
+      "https://api.github.com/repos/acme/widgets/commits/abc123/check-runs"
+    );
     expect(seenRequest?.headers?.authorization).toBe("Bearer gh-token");
   });
 
@@ -48,9 +57,17 @@ describe("github-check plugin", () => {
     let seenUrl: string | undefined;
     const ctx = testCtx({ ...BASE_CONFIG, expectedRef: "operator-pinned-sha" }, async (req) => {
       seenUrl = req.url;
-      return { status: 200, headers: {}, body: { check_runs: [{ name: "build", status: "completed", conclusion: "success" }] } };
+      return {
+        status: 200,
+        headers: {},
+        body: { check_runs: [{ name: "build", status: "completed", conclusion: "success" }] }
+      };
     });
-    await plugin.evaluate(ctx, { changeId: "c1", controlId: "ctl1", context: { commitSha: "from-context-sha" } });
+    await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { commitSha: "from-context-sha" }
+    });
     expect(seenUrl).toContain("/from-context-sha/");
   });
 
@@ -59,7 +76,11 @@ describe("github-check plugin", () => {
     let seenUrl: string | undefined;
     const ctx = testCtx({ ...BASE_CONFIG, expectedRef: "operator-pinned-sha" }, async (req) => {
       seenUrl = req.url;
-      return { status: 200, headers: {}, body: { check_runs: [{ name: "build", status: "completed", conclusion: "success" }] } };
+      return {
+        status: 200,
+        headers: {},
+        body: { check_runs: [{ name: "build", status: "completed", conclusion: "success" }] }
+      };
     });
     await plugin.evaluate(ctx, { changeId: "c1", controlId: "ctl1", context: {} });
     expect(seenUrl).toContain("/operator-pinned-sha/");
@@ -75,14 +96,22 @@ describe("github-check plugin", () => {
   it("missing owner/repo config fails closed", async () => {
     const plugin = createGithubCheckControlPlugin();
     const ctx = testCtx({ token: "gh-token" });
-    const outcome = await plugin.evaluate(ctx, { changeId: "c1", controlId: "ctl1", context: { commitSha: "abc" } });
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { commitSha: "abc" }
+    });
     expect(outcome.status).toBe("fail");
   });
 
   it("no auth token resolvable fails closed", async () => {
     const plugin = createGithubCheckControlPlugin();
     const ctx = testCtx({ owner: "acme", repo: "widgets" });
-    const outcome = await plugin.evaluate(ctx, { changeId: "c1", controlId: "ctl1", context: { commitSha: "abc" } });
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { commitSha: "abc" }
+    });
     expect(outcome.status).toBe("fail");
   });
 
@@ -96,21 +125,41 @@ describe("github-check plugin", () => {
       })),
       secrets: { get: async (key) => (key === "gh-pat" ? "resolved-token" : undefined) }
     };
-    const outcome = await plugin.evaluate(ctx, { changeId: "c1", controlId: "ctl1", context: { commitSha: "abc" } });
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { commitSha: "abc" }
+    });
     expect(outcome.status).toBe("pass");
   });
 
   it("a 404 (no check runs reported yet) maps to 'expired', not 'fail'", async () => {
     const plugin = createGithubCheckControlPlugin();
-    const ctx = testCtx(BASE_CONFIG, async () => ({ status: 404, headers: {}, body: { message: "No commit found" } }));
-    const outcome = await plugin.evaluate(ctx, { changeId: "c1", controlId: "ctl1", context: { commitSha: "abc" } });
+    const ctx = testCtx(BASE_CONFIG, async () => ({
+      status: 404,
+      headers: {},
+      body: { message: "No commit found" }
+    }));
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { commitSha: "abc" }
+    });
     expect(outcome.status).toBe("expired");
   });
 
   it("zero check runs on a 200 response maps to 'expired' (CI hasn't started)", async () => {
     const plugin = createGithubCheckControlPlugin();
-    const ctx = testCtx(BASE_CONFIG, async () => ({ status: 200, headers: {}, body: { check_runs: [] } }));
-    const outcome = await plugin.evaluate(ctx, { changeId: "c1", controlId: "ctl1", context: { commitSha: "abc" } });
+    const ctx = testCtx(BASE_CONFIG, async () => ({
+      status: 200,
+      headers: {},
+      body: { check_runs: [] }
+    }));
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { commitSha: "abc" }
+    });
     expect(outcome.status).toBe("expired");
   });
 
@@ -121,7 +170,11 @@ describe("github-check plugin", () => {
       headers: {},
       body: { check_runs: [{ name: "build", status: "in_progress", conclusion: null }] }
     }));
-    const outcome = await plugin.evaluate(ctx, { changeId: "c1", controlId: "ctl1", context: { commitSha: "abc" } });
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { commitSha: "abc" }
+    });
     expect(outcome.status).toBe("expired");
   });
 
@@ -132,7 +185,11 @@ describe("github-check plugin", () => {
       headers: {},
       body: { check_runs: [{ name: "build", status: "completed", conclusion: "failure" }] }
     }));
-    const outcome = await plugin.evaluate(ctx, { changeId: "c1", controlId: "ctl1", context: { commitSha: "abc" } });
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { commitSha: "abc" }
+    });
     expect(outcome.status).toBe("fail");
     expect(outcome.detail).toContain("build=failure");
   });
@@ -149,7 +206,11 @@ describe("github-check plugin", () => {
         ]
       }
     }));
-    const outcome = await plugin.evaluate(ctx, { changeId: "c1", controlId: "ctl1", context: { commitSha: "abc" } });
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { commitSha: "abc" }
+    });
     expect(outcome.status).toBe("pass");
   });
 
@@ -160,14 +221,22 @@ describe("github-check plugin", () => {
       headers: {},
       body: { check_runs: [{ name: "lint", status: "completed", conclusion: "success" }] }
     }));
-    const outcome = await plugin.evaluate(ctx, { changeId: "c1", controlId: "ctl1", context: { commitSha: "abc" } });
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { commitSha: "abc" }
+    });
     expect(outcome.status).toBe("expired");
   });
 
   it("times out -> 'timed_out' when the API never responds within timeoutMs", async () => {
     const plugin = createGithubCheckControlPlugin();
     const ctx = testCtx({ ...BASE_CONFIG, timeoutMs: 20 }, () => new Promise(() => {}));
-    const outcome = await plugin.evaluate(ctx, { changeId: "c1", controlId: "ctl1", context: { commitSha: "abc" } });
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { commitSha: "abc" }
+    });
     expect(outcome.status).toBe("timed_out");
   });
 
@@ -176,15 +245,27 @@ describe("github-check plugin", () => {
     const ctx = testCtx(BASE_CONFIG, async () => {
       throw new Error("ECONNREFUSED");
     });
-    const outcome = await plugin.evaluate(ctx, { changeId: "c1", controlId: "ctl1", context: { commitSha: "abc" } });
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { commitSha: "abc" }
+    });
     expect(outcome.status).toBe("fail");
     expect(outcome.detail).toContain("ECONNREFUSED");
   });
 
   it("a non-2xx/non-404 HTTP response maps to 'fail' with the status code in evidence", async () => {
     const plugin = createGithubCheckControlPlugin();
-    const ctx = testCtx(BASE_CONFIG, async () => ({ status: 500, headers: {}, body: "internal error" }));
-    const outcome = await plugin.evaluate(ctx, { changeId: "c1", controlId: "ctl1", context: { commitSha: "abc" } });
+    const ctx = testCtx(BASE_CONFIG, async () => ({
+      status: 500,
+      headers: {},
+      body: "internal error"
+    }));
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { commitSha: "abc" }
+    });
     expect(outcome.status).toBe("fail");
     expect(outcome.evidence).toMatchObject({ httpStatus: 500 });
   });

@@ -39,10 +39,19 @@ export function registerInitiativeRoutes(app: FastifyInstance, deps: AppDeps): v
     url: "/api/v1/initiatives",
     schema: {
       body: CreateInitiativeRequestSchema,
-      response: { 201: InitiativeSchema, 400: ProblemSchema, 401: ProblemSchema, 403: ProblemSchema }
+      response: {
+        201: InitiativeSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema
+      }
     },
     config: {
-      openapi: { operationId: "proposeInitiative", summary: "Propose an Initiative grouping one or more Campaigns", tags: ["initiatives"] }
+      openapi: {
+        operationId: "proposeInitiative",
+        summary: "Propose an Initiative grouping one or more Campaigns",
+        tags: ["initiatives"]
+      }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
@@ -80,7 +89,11 @@ export function registerInitiativeRoutes(app: FastifyInstance, deps: AppDeps): v
       response: { 200: InitiativeListResponseSchema, 401: ProblemSchema, 403: ProblemSchema }
     },
     config: {
-      openapi: { operationId: "listInitiatives", summary: "List initiatives", tags: ["initiatives"] }
+      openapi: {
+        operationId: "listInitiatives",
+        summary: "List initiatives",
+        tags: ["initiatives"]
+      }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
@@ -102,7 +115,12 @@ export function registerInitiativeRoutes(app: FastifyInstance, deps: AppDeps): v
     url: "/api/v1/initiatives/:id",
     schema: {
       params: InitiativeIdParamSchema,
-      response: { 200: InitiativeRollupResponseSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
+      response: {
+        200: InitiativeRollupResponseSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
     },
     config: {
       openapi: {
@@ -121,7 +139,11 @@ export function registerInitiativeRoutes(app: FastifyInstance, deps: AppDeps): v
           scopeObjectId: auth.orgId
         });
         const initiative = await getInitiative(tx, auth.orgId, request.params.id);
-        const { campaigns, rollupStatus } = await computeInitiativeRollupFor(tx, auth.orgId, request.params.id);
+        const { campaigns, rollupStatus } = await computeInitiativeRollupFor(
+          tx,
+          auth.orgId,
+          request.params.id
+        );
         return { initiative, campaigns, rollupStatus };
       });
       reply.status(200).send(result);
@@ -134,10 +156,20 @@ export function registerInitiativeRoutes(app: FastifyInstance, deps: AppDeps): v
     schema: {
       params: InitiativeIdParamSchema,
       body: AddInitiativeCampaignRequestSchema,
-      response: { 204: z.undefined(), 400: ProblemSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
+      response: {
+        204: z.undefined(),
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
     },
     config: {
-      openapi: { operationId: "addInitiativeCampaign", summary: "Add a member campaign to an initiative", tags: ["initiatives"] }
+      openapi: {
+        operationId: "addInitiativeCampaign",
+        summary: "Add a member campaign to an initiative",
+        tags: ["initiatives"]
+      }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);

@@ -54,7 +54,11 @@ export function renderManifestSh(manifest: BundleManifest): string {
   return lines.join("\n");
 }
 
-export function buildManifest(images: BundleImage[], bundleVersion: string, builtAt: string): BundleManifest {
+export function buildManifest(
+  images: BundleImage[],
+  bundleVersion: string,
+  builtAt: string
+): BundleManifest {
   return {
     bundleVersion,
     builtAt,

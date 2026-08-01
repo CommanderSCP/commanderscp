@@ -105,7 +105,9 @@ export function GraphExplorerPage(): React.JSX.Element {
             No related objects found for this query.
           </div>
         )}
-        {idOrUrn && <GraphCanvas data={graphQuery.data ?? { objects: [], edges: [] }} rootId={idOrUrn} />}
+        {idOrUrn && (
+          <GraphCanvas data={graphQuery.data ?? { objects: [], edges: [] }} rootId={idOrUrn} />
+        )}
       </div>
     </div>
   );

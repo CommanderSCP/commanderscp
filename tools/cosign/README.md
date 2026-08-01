@@ -12,15 +12,15 @@ vendors into the SCP runtime image, plus the single source of truth every consum
 
 ## What is pinned
 
-| | |
-|---|---|
-| Tool | [sigstore/cosign](https://github.com/sigstore/cosign) |
-| Version | **v3.1.2** (`GitVersion` reported by `cosign version`; GitCommit `193d2153431f8bb0d945a4c1ee721872f73add67`, built 2026-07-17) |
-| Image ref (**what we actually use**) | `ghcr.io/sigstore/cosign/cosign@sha256:bea051df6a6d3bc84288b6db098df38a81d87b7ed226f34d22aaae1bc329c2b7` — the **linux/amd64 platform manifest** for tag `v3.1.2` |
-| Multi-arch index digest (provenance only) | `sha256:d91bc4e7e95e8d2f549c747a72dc174f90579e410a1695f57f686674f84ce849` |
-| Path inside the upstream image | `/ko-app/cosign` (ko-built distroless image; mode `0555`, 141,146,020 B, `sha256:4ebe4c079c4d5667cd1ce4b38219a64da665295e8a071e97f4e727182d8a080d`) |
-| Path inside the SCP image | `/opt/scp/bin/cosign` |
-| License | Apache-2.0 (`LICENSE-cosign`; the image also carries `io.artifacthub.package.license=Apache-2.0`) |
+|                                           |                                                                                                                                                                   |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tool                                      | [sigstore/cosign](https://github.com/sigstore/cosign)                                                                                                             |
+| Version                                   | **v3.1.2** (`GitVersion` reported by `cosign version`; GitCommit `193d2153431f8bb0d945a4c1ee721872f73add67`, built 2026-07-17)                                    |
+| Image ref (**what we actually use**)      | `ghcr.io/sigstore/cosign/cosign@sha256:bea051df6a6d3bc84288b6db098df38a81d87b7ed226f34d22aaae1bc329c2b7` — the **linux/amd64 platform manifest** for tag `v3.1.2` |
+| Multi-arch index digest (provenance only) | `sha256:d91bc4e7e95e8d2f549c747a72dc174f90579e410a1695f57f686674f84ce849`                                                                                         |
+| Path inside the upstream image            | `/ko-app/cosign` (ko-built distroless image; mode `0555`, 141,146,020 B, `sha256:4ebe4c079c4d5667cd1ce4b38219a64da665295e8a071e97f4e727182d8a080d`)               |
+| Path inside the SCP image                 | `/opt/scp/bin/cosign`                                                                                                                                             |
+| License                                   | Apache-2.0 (`LICENSE-cosign`; the image also carries `io.artifacthub.package.license=Apache-2.0`)                                                                 |
 
 ## Why an image digest, not a downloaded release binary
 
@@ -38,7 +38,7 @@ already owns that supply chain".
 ### Why the platform digest, not the index digest
 
 `ghcr.io/sigstore/cosign/cosign:v3.1.2` is a multi-arch index. Referencing the index makes the
-binary you get depend on the **build host's** architecture. Referencing the linux/amd64 *platform*
+binary you get depend on the **build host's** architecture. Referencing the linux/amd64 _platform_
 manifest digest makes the ref resolve to exactly one artifact everywhere — the same bytes on a CI
 runner, an arm64 laptop, or an air-gapped mirror.
 
@@ -75,10 +75,10 @@ hand, pin the hash, never re-derive trust at build time.
 
 `deploy/airgap/src/cosign-bin.ts` is the one place that answers "which cosign, and is it ours?":
 
-| Path | Resolved from | `pinned` | Flag strategy | Version check |
-|---|---|---|---|---|
-| Vendored | `/opt/scp/bin/cosign` (in-image), or `SCP_COSIGN_BIN` | `true` | **static** known-good flag set — no `--help` probe on a signing hot path | **fail closed**: `cosign version` must equal the pin, or it refuses to sign/verify |
-| Operator-supplied | `cosign` on `PATH` | `false` | the pre-existing **version-adaptive** probe (`--use-signing-config` only when `sign-blob --help` advertises it) | none — we did not vet it |
+| Path              | Resolved from                                         | `pinned` | Flag strategy                                                                                                   | Version check                                                                      |
+| ----------------- | ----------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Vendored          | `/opt/scp/bin/cosign` (in-image), or `SCP_COSIGN_BIN` | `true`   | **static** known-good flag set — no `--help` probe on a signing hot path                                        | **fail closed**: `cosign version` must equal the pin, or it refuses to sign/verify |
+| Operator-supplied | `cosign` on `PATH`                                    | `false`  | the pre-existing **version-adaptive** probe (`--use-signing-config` only when `sign-blob --help` advertises it) | none — we did not vet it                                                           |
 
 The vendored path is `/opt/scp/bin`, deliberately **not** `/usr/local/bin`, so a Homebrew/apt
 cosign can never be mistaken for the vetted pin.
@@ -102,10 +102,10 @@ touches that trust model.
 Built with `docker build -t scp:<tag> .` on the same daemon, same context, before and after
 (2026-07-20, Docker Engine 29.6.1 under colima):
 
-| | uncompressed (sum of `docker history`) | as stored/pulled (`docker inspect --format '{{.Size}}'`) |
-|---|---|---|
-| before | 752.7 MB | 189,111,356 B (189.1 MB) |
-| after | 893.7 MB | 246,675,734 B (246.7 MB) |
+|           | uncompressed (sum of `docker history`)                          | as stored/pulled (`docker inspect --format '{{.Size}}'`)         |
+| --------- | --------------------------------------------------------------- | ---------------------------------------------------------------- |
+| before    | 752.7 MB                                                        | 189,111,356 B (189.1 MB)                                         |
+| after     | 893.7 MB                                                        | 246,675,734 B (246.7 MB)                                         |
 | **delta** | **+141.0 MB** (the binary is exactly 141,146,020 B = 134.6 MiB) | **+57,564,378 B = +57.6 MB** (the binary compresses to ~57.6 MB) |
 
 So: **+141.1 MB on disk, +57.6 MB to pull** — a ~19 % increase on the uncompressed image. That is

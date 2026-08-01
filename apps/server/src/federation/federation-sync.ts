@@ -212,7 +212,10 @@ export type PeerSyncCadence = "poke" | "poll";
  *     expressed as a pure function of two timestamps (no counters — replica-safe).
  */
 export function peerSyncCadence(
-  peer: Pick<FederationPeerRow, "pokeMode" | "lastPokeReceivedAt" | "lastPullAttemptAt" | "lastPullSuccessAt">,
+  peer: Pick<
+    FederationPeerRow,
+    "pokeMode" | "lastPokeReceivedAt" | "lastPullAttemptAt" | "lastPullSuccessAt"
+  >,
   inputs: Pick<PeerCadenceInputs, "hasClientCerts">
 ): PeerSyncCadence {
   if (!peer.pokeMode) return "poll";

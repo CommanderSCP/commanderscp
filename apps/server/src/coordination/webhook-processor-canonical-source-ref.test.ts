@@ -79,7 +79,10 @@ describe("canonicalizeSourceRef: the report body's supply-chain fields become ca
   });
 
   it("normalizes the SBOM document digest to sha256:<lowercase-hex> (same normalization the scan control applies), so references compare byte-for-byte", () => {
-    const upper = { ...reportBody, sbom: { ...reportBody.sbom, digest: "SHA256:" + "1C".repeat(32) } };
+    const upper = {
+      ...reportBody,
+      sbom: { ...reportBody.sbom, digest: "SHA256:" + "1C".repeat(32) }
+    };
     const sourceRef = canonicalizeSourceRef(upper, extractHint("terraform", {}, upper));
     expect((sourceRef.sbom as { digest: string }).digest).toBe(SBOM_DIGEST);
   });
@@ -99,7 +102,11 @@ describe("canonicalizeSourceRef: the report body's supply-chain fields become ca
 
   it("a MALFORMED sbom reference is dropped rather than throwing — ingress must not wedge on one bad supply-chain field, and the raw payload is still preserved for forensics", () => {
     // `digest` is a tag, not a sha256 digest -> the reference cannot be bound to anything.
-    const bad = { repo: "acme/api", status: "applied", sbom: { format: "cyclonedx", digest: "v1.2.3", location: "x" } };
+    const bad = {
+      repo: "acme/api",
+      status: "applied",
+      sbom: { format: "cyclonedx", digest: "v1.2.3", location: "x" }
+    };
     const hint = extractHint("terraform", {}, bad);
     // No TYPED reference is minted from it...
     expect(hint.sbom).toBeUndefined();

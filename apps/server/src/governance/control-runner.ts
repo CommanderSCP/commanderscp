@@ -96,10 +96,16 @@ export async function ensureControlRun(
   }
 
   if (!input.force) {
-    const existing = await latestControlRun(tx, input.orgId, input.changeObjectId, input.controlObjectId);
+    const existing = await latestControlRun(
+      tx,
+      input.orgId,
+      input.changeObjectId,
+      input.controlObjectId
+    );
     if (existing) {
       const stillFresh =
-        existing.status !== "expired" || Date.now() - existing.createdAt.getTime() < EXPIRED_RECHECK_INTERVAL_MS;
+        existing.status !== "expired" ||
+        Date.now() - existing.createdAt.getTime() < EXPIRED_RECHECK_INTERVAL_MS;
       if (stillFresh) return existing.status;
     }
   }
@@ -218,7 +224,11 @@ export async function readExistingControlOutcomes(
 
 /** Resolves a control object's own graph-side `category` (DESIGN §10.2) for evidence/reason-tree
  *  purposes — best-effort, never throws (a dangling control ref just yields `undefined`). */
-export async function tryGetControlCategory(tx: TenantTx, orgId: string, controlObjectId: string): Promise<string | undefined> {
+export async function tryGetControlCategory(
+  tx: TenantTx,
+  orgId: string,
+  controlObjectId: string
+): Promise<string | undefined> {
   try {
     const obj = await getObjectByIdOrUrnAnyType(tx, orgId, controlObjectId);
     const properties = obj.properties as { category?: string };

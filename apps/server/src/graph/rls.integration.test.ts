@@ -431,7 +431,9 @@ describe("RLS: adversarial cross-org probes", () => {
        ON CONFLICT (org_id) DO NOTHING`,
       [randomUUID(), orgAId]
     );
-    const visibleFromOwnOrg = await raw.query("SELECT id FROM instance_keys WHERE org_id = $1", [orgAId]);
+    const visibleFromOwnOrg = await raw.query("SELECT id FROM instance_keys WHERE org_id = $1", [
+      orgAId
+    ]);
     expect(visibleFromOwnOrg.rows).toHaveLength(1);
     await raw.close();
 

@@ -221,9 +221,7 @@ export function mapGiteaWebhookEventToHint(
       };
     }
     case "pull_request": {
-      const pr = p.pull_request as
-        | { head?: { sha?: string }; number?: number }
-        | undefined;
+      const pr = p.pull_request as { head?: { sha?: string }; number?: number } | undefined;
       // Gitea nests the PR number at the top level (`p.number`) as well as inside `pull_request`;
       // prefer the object's own number, falling back to the top-level one.
       const number = pr?.number ?? (p.number as number | undefined);
@@ -238,9 +236,7 @@ export function mapGiteaWebhookEventToHint(
       return { repo, correlationKey: release?.tag_name, path: release?.target_commitish };
     }
     case "package": {
-      const pkg = p.package as
-        | { name?: string; version?: string; type?: string }
-        | undefined;
+      const pkg = p.package as { name?: string; version?: string; type?: string } | undefined;
       if (!pkg?.name) return null;
       const version = pkg.version;
       const isDigest = typeof version === "string" && version.startsWith("sha256:");
@@ -450,7 +446,11 @@ async function triggerCI(ctx: PluginContext, intent: TriggerIntent): Promise<Ext
 
   const run = await correlateDispatchedRun(ctx, config, dispatchedAtMs);
   const externalId = run ? `action_run::${run.id}` : `workflow_dispatch::${markerKey}`;
-  ctx.logger.info("gitea: workflow_dispatch triggered", { workflowId, ref, correlatedRunId: run?.id });
+  ctx.logger.info("gitea: workflow_dispatch triggered", {
+    workflowId,
+    ref,
+    correlatedRunId: run?.id
+  });
   return { externalId, url: run?.html_url };
 }
 

@@ -58,8 +58,16 @@ import {
  */
 const BATCH_LIMIT = 25;
 
-function logCampaignError(orgId: string, campaignObjectId: string, step: string, err: unknown): void {
-  console.error(`[campaign-reconcile] org ${orgId} campaign ${campaignObjectId} ${step} failed (will retry next tick):`, err);
+function logCampaignError(
+  orgId: string,
+  campaignObjectId: string,
+  step: string,
+  err: unknown
+): void {
+  console.error(
+    `[campaign-reconcile] org ${orgId} campaign ${campaignObjectId} ${step} failed (will retry next tick):`,
+    err
+  );
 }
 
 async function reconcileOneCampaign(
@@ -72,7 +80,9 @@ async function reconcileOneCampaign(
   const gateDeps: GateDeps = { sandbox, host };
   const campaignObjectId = campaignObject.id;
 
-  let plan = await withTenantTx(db, orgId, (tx) => getLatestCampaignPlan(tx, orgId, campaignObjectId));
+  let plan = await withTenantTx(db, orgId, (tx) =>
+    getLatestCampaignPlan(tx, orgId, campaignObjectId)
+  );
 
   if (!plan) {
     const properties = campaignObject.properties as Record<string, unknown>;
@@ -116,7 +126,8 @@ async function reconcileOneCampaign(
         // — a URN would fail response validation), and every OTHER reconcile tick would silently
         // repeat this same resolution work indefinitely instead of doing it once.
         const targetsChanged =
-          targetObjectIds.length !== rawTargets.length || targetObjectIds.some((id, i) => id !== rawTargets[i]);
+          targetObjectIds.length !== rawTargets.length ||
+          targetObjectIds.some((id, i) => id !== rawTargets[i]);
         const topologyChanged = topologyObjectId !== null && topologyObjectId !== rawTopology;
         if (targetsChanged || topologyChanged) {
           await updateObject(tx, {
@@ -215,7 +226,9 @@ async function reconcileOneCampaign(
   }
 
   if (activeWave.targets.length === 0) {
-    await withTenantTx(db, orgId, (tx) => markCampaignWaveTerminal(tx, orgId, activeWave.id, "succeeded"));
+    await withTenantTx(db, orgId, (tx) =>
+      markCampaignWaveTerminal(tx, orgId, activeWave.id, "succeeded")
+    );
     return;
   }
 
@@ -248,7 +261,11 @@ async function reconcileOneCampaign(
         kind: "gate",
         subjectId: campaignObjectId,
         verdict: gate.verdict,
-        inputContext: { ...gate.inputContext, waveId: activeWave.id, waveIndex: activeWave.waveIndex },
+        inputContext: {
+          ...gate.inputContext,
+          waveId: activeWave.id,
+          waveIndex: activeWave.waveIndex
+        },
         reasonTree: gate.reasonTree
       });
       if (gate.verdict === "block") {
@@ -294,7 +311,8 @@ async function reconcileOneCampaign(
       try {
         await withTenantTx(db, orgId, async (tx) => {
           const targetObject = await tx.query.objects.findFirst({
-            where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.orgId, orgId), eqOp(t.id, target.targetObjectId))
+            where: (t, { eq: eqOp, and: andOp }) =>
+              andOp(eqOp(t.orgId, orgId), eqOp(t.id, target.targetObjectId))
           });
           const { change } = await proposeChange(tx, {
             orgId,
@@ -320,7 +338,12 @@ async function reconcileOneCampaign(
           await markCampaignWaveTargetProposed(tx, orgId, target.id, change.id);
         });
       } catch (err) {
-        logCampaignError(orgId, campaignObjectId, `wave ${activeWave.waveIndex} target ${target.targetObjectId} propose`, err);
+        logCampaignError(
+          orgId,
+          campaignObjectId,
+          `wave ${activeWave.waveIndex} target ${target.targetObjectId} propose`,
+          err
+        );
       }
       continue;
     }
@@ -335,28 +358,46 @@ async function reconcileOneCampaign(
         return row?.state ?? null;
       });
       if (state === "accepted") {
-        await withTenantTx(db, orgId, (tx) => markCampaignWaveTargetTerminal(tx, orgId, target.id, "succeeded"));
+        await withTenantTx(db, orgId, (tx) =>
+          markCampaignWaveTargetTerminal(tx, orgId, target.id, "succeeded")
+        );
       } else if (state === "cancelled" || state === "rolled_back") {
         anyFailed = true;
-        await withTenantTx(db, orgId, (tx) => markCampaignWaveTargetTerminal(tx, orgId, target.id, "failed"));
+        await withTenantTx(db, orgId, (tx) =>
+          markCampaignWaveTargetTerminal(tx, orgId, target.id, "failed")
+        );
       } else {
         allTerminal = false; // proposed/evaluated/coordinated/waiting/executing/validating — still in flight
       }
     } catch (err) {
       allTerminal = false;
-      logCampaignError(orgId, campaignObjectId, `wave ${activeWave.waveIndex} target ${target.targetObjectId} poll`, err);
+      logCampaignError(
+        orgId,
+        campaignObjectId,
+        `wave ${activeWave.waveIndex} target ${target.targetObjectId} poll`,
+        err
+      );
     }
   }
 
   if (!allTerminal) return;
-  await withTenantTx(db, orgId, (tx) => markCampaignWaveTerminal(tx, orgId, activeWave.id, anyFailed ? "failed" : "succeeded"));
+  await withTenantTx(db, orgId, (tx) =>
+    markCampaignWaveTerminal(tx, orgId, activeWave.id, anyFailed ? "failed" : "succeeded")
+  );
 }
 
 /** One org's campaign-reconciliation pass — called from `coordination/reconcile.ts`'s
  *  `reconcileOrgTick`, right alongside the change-advancement steps, so campaigns and their member
  *  changes progress on the SAME 1s tick rather than a separate schedule. */
-export async function reconcileCampaignsOrgTick(db: Db, orgId: string, host: PluginHost, sandbox: CelSandbox): Promise<void> {
-  const rows = await withTenantTx(db, orgId, (tx) => listActiveCampaignObjectIds(tx, orgId, BATCH_LIMIT));
+export async function reconcileCampaignsOrgTick(
+  db: Db,
+  orgId: string,
+  host: PluginHost,
+  sandbox: CelSandbox
+): Promise<void> {
+  const rows = await withTenantTx(db, orgId, (tx) =>
+    listActiveCampaignObjectIds(tx, orgId, BATCH_LIMIT)
+  );
   for (const campaignObject of rows) {
     try {
       await reconcileOneCampaign(db, orgId, campaignObject, host, sandbox);
@@ -369,7 +410,11 @@ export async function reconcileCampaignsOrgTick(db: Db, orgId: string, host: Plu
 /** Every org, one `reconcileCampaignsOrgTick` each — the campaign-scoped sibling of
  *  `reconcile.ts`'s `runReconcileSweep`, kept separate only because it needs its own org-list
  *  query; wired into the same sweep, not a second pg-boss job. */
-export async function runCampaignReconcileSweep(db: Db, host: PluginHost, sandbox: CelSandbox): Promise<void> {
+export async function runCampaignReconcileSweep(
+  db: Db,
+  host: PluginHost,
+  sandbox: CelSandbox
+): Promise<void> {
   const orgRows = await db.select({ id: orgs.id }).from(orgs);
   for (const org of orgRows) {
     try {

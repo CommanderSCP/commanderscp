@@ -41,7 +41,11 @@ export async function loadWavesWithTargets(
 /** The current `status` column of one wave, fresh — used by `reconcile.ts`'s pending-wave-gate
  *  branch (M8 hardening MINOR #5) to re-check, INSIDE the per-change advisory lock, whether a
  *  racing tick already evaluated this wave's gate before this one acquired the lock. */
-export async function getWaveStatus(tx: TenantTx, orgId: string, waveId: string): Promise<WaveRow["status"] | undefined> {
+export async function getWaveStatus(
+  tx: TenantTx,
+  orgId: string,
+  waveId: string
+): Promise<WaveRow["status"] | undefined> {
   const [row] = await tx
     .select({ status: changeWaves.status })
     .from(changeWaves)
@@ -53,7 +57,13 @@ export async function markWaveRunning(tx: TenantTx, orgId: string, waveId: strin
   await tx
     .update(changeWaves)
     .set({ status: "running", startedAt: new Date() })
-    .where(and(eq(changeWaves.orgId, orgId), eq(changeWaves.id, waveId), eq(changeWaves.status, "pending")));
+    .where(
+      and(
+        eq(changeWaves.orgId, orgId),
+        eq(changeWaves.id, waveId),
+        eq(changeWaves.status, "pending")
+      )
+    );
 }
 
 export async function markWaveTerminal(
@@ -221,7 +231,9 @@ export function observedStateFrom(
   const rollout = status.observed?.rollout;
   if (rollout && Object.keys(rollout).length > 0) result.rollout = rollout;
 
-  return result.revision !== undefined || result.images !== undefined || result.rollout !== undefined
+  return result.revision !== undefined ||
+    result.images !== undefined ||
+    result.rollout !== undefined
     ? result
     : undefined;
 }

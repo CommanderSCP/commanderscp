@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { PluginContext, ScopedHttpRequest, ScopedHttpResponse } from "@scp/plugin-api";
 import { createWebhookControlPlugin } from "./index.js";
 
-function testCtx(config: unknown, requestImpl?: (req: ScopedHttpRequest) => Promise<ScopedHttpResponse>): PluginContext {
+function testCtx(
+  config: unknown,
+  requestImpl?: (req: ScopedHttpRequest) => Promise<ScopedHttpResponse>
+): PluginContext {
   return {
     orgId: "org-1",
     scopeKey: "domain-1",
@@ -24,12 +27,20 @@ describe("webhook-control plugin", () => {
       return { status: 200, headers: {}, body: { status: "pass", evidence: { scanId: "abc" } } };
     });
 
-    const outcome = await plugin.evaluate(ctx, { changeId: "c1", controlId: "ctl1", context: { foo: "bar" } });
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { foo: "bar" }
+    });
 
     expect(outcome).toEqual({ status: "pass", detail: undefined, evidence: { scanId: "abc" } });
     expect(seenRequest?.method).toBe("POST");
     expect(seenRequest?.url).toBe("https://example.invalid/hook");
-    expect(seenRequest?.body).toEqual({ changeId: "c1", controlId: "ctl1", context: { foo: "bar" } });
+    expect(seenRequest?.body).toEqual({
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { foo: "bar" }
+    });
   });
 
   it("maps a 2xx fail response", async () => {

@@ -21,7 +21,7 @@ describe("run", () => {
   });
 
   it("passes extra env vars through without discarding process.env", () => {
-    const { stdout } = run("sh", ["-c", "echo \"$SCP_AIRGAP_TEST_VAR\""], {
+    const { stdout } = run("sh", ["-c", 'echo "$SCP_AIRGAP_TEST_VAR"'], {
       log: false,
       env: { SCP_AIRGAP_TEST_VAR: "marker-value" }
     });

@@ -97,7 +97,9 @@ export function registerScanDbRoutes(app: FastifyInstance, deps: AppDeps): void 
   typed.route({
     method: "GET",
     url: "/api/v1/instance/scan-db/staleness-policy",
-    schema: { response: { 200: ScanDbStalenessPolicySchema, 401: ProblemSchema, 403: ProblemSchema } },
+    schema: {
+      response: { 200: ScanDbStalenessPolicySchema, 401: ProblemSchema, 403: ProblemSchema }
+    },
     config: {
       openapi: {
         operationId: "getScanDbStalenessPolicy",
@@ -162,7 +164,12 @@ export function registerScanDbRoutes(app: FastifyInstance, deps: AppDeps): void 
     url: "/api/v1/instance/scan-db/refresh",
     schema: {
       body: RefreshScanDbRequestSchema,
-      response: { 200: RefreshScanDbResponseSchema, 400: ProblemSchema, 401: ProblemSchema, 403: ProblemSchema }
+      response: {
+        200: RefreshScanDbResponseSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema
+      }
     },
     config: {
       openapi: {
@@ -185,7 +192,9 @@ export function registerScanDbRoutes(app: FastifyInstance, deps: AppDeps): void 
           detail: `refreshed to trivy-db schema v${meta.Version}, UpdatedAt ${meta.UpdatedAt}`
         });
       } catch (err) {
-        throw badRequest(`scan-db refresh failed: ${err instanceof Error ? err.message : String(err)}`);
+        throw badRequest(
+          `scan-db refresh failed: ${err instanceof Error ? err.message : String(err)}`
+        );
       }
     }
   });
@@ -198,7 +207,12 @@ export function registerScanDbRoutes(app: FastifyInstance, deps: AppDeps): void 
     url: "/api/v1/instance/scan-db/load",
     schema: {
       body: LoadScanDbRequestSchema,
-      response: { 200: LoadScanDbResponseSchema, 400: ProblemSchema, 401: ProblemSchema, 403: ProblemSchema }
+      response: {
+        200: LoadScanDbResponseSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema
+      }
     },
     config: {
       openapi: {
@@ -228,7 +242,9 @@ export function registerScanDbRoutes(app: FastifyInstance, deps: AppDeps): void 
           detail: `loaded operator-signed trivy-db schema v${meta.Version}, UpdatedAt ${meta.UpdatedAt}`
         });
       } catch (err) {
-        throw badRequest(`scan-db load refused: ${err instanceof Error ? err.message : String(err)}`);
+        throw badRequest(
+          `scan-db load refused: ${err instanceof Error ? err.message : String(err)}`
+        );
       }
     }
   });

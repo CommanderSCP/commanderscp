@@ -130,7 +130,9 @@ async function createPolicy(admin: ScpClient, org: TestOrg, opts: CreatePolicyOp
       ...(opts.condition ? { condition: opts.condition } : {}),
       effects,
       ...(opts.emergencyPolicy !== undefined ? { emergencyPolicy: opts.emergencyPolicy } : {}),
-      ...(opts.autoRollbackOnFailure !== undefined ? { autoRollbackOnFailure: opts.autoRollbackOnFailure } : {})
+      ...(opts.autoRollbackOnFailure !== undefined
+        ? { autoRollbackOnFailure: opts.autoRollbackOnFailure }
+        : {})
     }
   });
 }
@@ -158,10 +160,13 @@ async function createWebhookControl(
 }
 
 async function waitForValidating(admin: ScpClient, changeId: string, timeoutMs = 25_000) {
-  return waitUntil(async () => (await admin.changes.get(changeId)).state === "validating" || undefined, {
-    describe: `change ${changeId} reaches 'validating'`,
-    timeoutMs
-  });
+  return waitUntil(
+    async () => (await admin.changes.get(changeId)).state === "validating" || undefined,
+    {
+      describe: `change ${changeId} reaches 'validating'`,
+      timeoutMs
+    }
+  );
 }
 
 /** A required policy scoped directly to a change's own (single) target ALSO gates that target's
@@ -202,7 +207,11 @@ async function waitForControlRun(
 /** Asserts a change has NOT progressed past `executing` after a grace period long enough for
  *  several reconcile ticks (1s interval) to have had their chance — the direct way to observe "the
  *  wave stayed blocked" without racing the reconcile loop's own timing. */
-async function assertStaysExecuting(admin: ScpClient, changeId: string, graceMs = 3_000): Promise<void> {
+async function assertStaysExecuting(
+  admin: ScpClient,
+  changeId: string,
+  graceMs = 3_000
+): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, graceMs));
   const change = await admin.changes.get(changeId);
   expect(change.state).toBe("executing");
@@ -219,7 +228,11 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     server = await listenTestServer({
       withEventRelay: true,
       withReconcileLoop: true,
-      pluginHostOptions: { callTimeoutMs: 15_000, restartBackoffBaseMs: 50, maxRestartBackoffMs: 300 }
+      pluginHostOptions: {
+        callTimeoutMs: 15_000,
+        restartBackoffBaseMs: 50,
+        maxRestartBackoffMs: 300
+      }
     });
   });
 
@@ -242,7 +255,10 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const domain = await admin.domains.create({ name: "sw-domain" });
     const siblingDomain = await admin.domains.create({ name: "sw-sibling-domain" });
     const service = await admin.services.create({ name: "sw-service", domainId: domain.id });
-    const component = await createTestComponent(admin, { name: "sw-component", domainId: service.id });
+    const component = await createTestComponent(admin, {
+      name: "sw-component",
+      domainId: service.id
+    });
 
     await createPolicy(admin, org, {
       name: "prod-security",
@@ -297,7 +313,12 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       .filter((e) => e.kind === "requireControls")
       .map((e) => e.detail.controlObjectId as string)
       .sort();
-    expect(controlIds).toEqual(["component-control", "domain-control", "org-control", "service-control"]);
+    expect(controlIds).toEqual([
+      "component-control",
+      "domain-control",
+      "org-control",
+      "service-control"
+    ]);
     expect((entry!.contributingPolicyVersions as unknown[]).length).toBe(4);
 
     // Required + none of the 4 controls has ever run -> blocks (fails closed, never a silent pass).
@@ -308,7 +329,10 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     // wave-boundary gate can never satisfy them. Cancel it rather than leaving it to occupy the
     // shared reconcile loop's every-tick attention (and the resulting per-tick 'blocked' Decision
     // inserts) for the remaining lifetime of this describe block's server.
-    await admin.changes.cancel(change.id, "test cleanup: resolution-only fixture, never meant to execute");
+    await admin.changes.cancel(
+      change.id,
+      "test cleanup: resolution-only fixture, never meant to execute"
+    );
   });
 
   // -----------------------------------------------------------------------------------------
@@ -322,7 +346,10 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
     const domain = await admin.domains.create({ name: "cb-domain" });
-    const component = await createTestComponent(admin, { name: "cb-component", domainId: domain.id });
+    const component = await createTestComponent(admin, {
+      name: "cb-component",
+      domainId: domain.id
+    });
     const realControl = await createWebhookControl(admin, org, {
       urnSuffix: "cb-real-scan",
       webhookUrl: webhook.url,
@@ -353,9 +380,9 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     // i.e. the false-condition contributor did NOT neutralize it. Assert via a dry-run evaluate
     // that the required control effect is present and unsatisfied.
     const evalResult = await admin.policyEvaluate(change.id);
-    const entry = (evalResult.reasonTree as { policies: Array<Record<string, unknown>> }).policies.find(
-      (p) => p.name === "prod-security"
-    );
+    const entry = (
+      evalResult.reasonTree as { policies: Array<Record<string, unknown>> }
+    ).policies.find((p) => p.name === "prod-security");
     expect(entry).toBeDefined();
     expect(entry!.fired).toBe(true);
     expect(entry!.enforcement).toBe("required");
@@ -384,11 +411,16 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
     const domain = await admin.domains.create({ name: "sa-domain" });
-    const component = await createTestComponent(admin, { name: "sa-component", domainId: domain.id });
+    const component = await createTestComponent(admin, {
+      name: "sa-component",
+      domainId: domain.id
+    });
 
     // Administrator holds 'policy:write' (M4 migration) — bind it at the COMPONENT only, so this
     // author's policy authority is exactly that component and below.
-    const author = await createTestUser(server, org, [{ role: "Administrator", scope: component.id }]);
+    const author = await createTestUser(server, org, [
+      { role: "Administrator", scope: component.id }
+    ]);
     const authorClient = new ScpClient({ baseUrl: server.baseUrl, token: author.token });
 
     // (a) org-wide (UNSCOPED) policy, even placed at their own component → 403 (needs org-root authority).
@@ -454,11 +486,16 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
     const domain = await admin.domains.create({ name: "gpb-domain" });
-    const component = await createTestComponent(admin, { name: "gpb-component", domainId: domain.id });
+    const component = await createTestComponent(admin, {
+      name: "gpb-component",
+      domainId: domain.id
+    });
 
     // Exploit (a): a component-scoped Administrator — holds 'policy:write' ONLY at `component` —
     // tries the generic endpoint instead of the typed route CRITICAL #1b already blocks.
-    const author = await createTestUser(server, org, [{ role: "Administrator", scope: component.id }]);
+    const author = await createTestUser(server, org, [
+      { role: "Administrator", scope: component.id }
+    ]);
     const authorClient = new ScpClient({ baseUrl: server.baseUrl, token: author.token });
     const exploitA = await expectApiError(() =>
       authorClient.object("policy").create({
@@ -508,7 +545,9 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
         properties: { enforcement: "recommended" }
       })
     ).rejects.toMatchObject({ status: 403 });
-    await expect(admin.object("policy").delete(legitPolicy.id)).rejects.toMatchObject({ status: 403 });
+    await expect(admin.object("policy").delete(legitPolicy.id)).rejects.toMatchObject({
+      status: 403
+    });
 
     // The policy is untouched by any of the blocked calls — still 'advisory', still live.
     const stillLegit = await admin.policies.get(legitPolicy.id);
@@ -520,7 +559,10 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
     const domain = await admin.domains.create({ name: "iac-pb-domain" });
-    const component = await createTestComponent(admin, { name: "iac-pb-component", domainId: domain.id });
+    const component = await createTestComponent(admin, {
+      name: "iac-pb-component",
+      domainId: domain.id
+    });
 
     const stackName = `stack-${randomUUID().slice(0, 8)}`;
     const policyUrn = `urn:scp:${stackName}:policy:evil`;
@@ -577,7 +619,9 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     // Non-regression: the SAME author's apply succeeds for a policy scoped to their OWN component —
     // IaC still legitimately manages policy objects, just under the same authority binding the
     // typed route enforces.
-    const scopedPlan = await authorClient.plans.create(manifestWithPolicy({ objectRef: component.id }));
+    const scopedPlan = await authorClient.plans.create(
+      manifestWithPolicy({ objectRef: component.id })
+    );
     const { summary } = await authorClient.plans.apply(scopedPlan.id);
     expect(summary).toMatchObject({ creates: 1 });
     const created = await admin.object("policy").get(policyUrn);
@@ -633,7 +677,10 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
         requireApprovals: { count: 1, fromRole: "Approver", scope: org.orgId }
       });
 
-      const change = await admin.changes.propose({ name: "hybrid-fail-change", targets: [target.id] });
+      const change = await admin.changes.propose({
+        name: "hybrid-fail-change",
+        targets: [target.id]
+      });
 
       // Satisfy the approval half up front — materializes from wave 0's own gate check, not from
       // 'validating' (see waitForApprovalRequest's doc comment).
@@ -658,7 +705,11 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       ).find((p) => p.name === "hybrid-release");
       expect(policyEntry).toBeDefined();
       const controlEffect = (
-        policyEntry!.effects as Array<{ kind: string; satisfied: boolean; detail: Record<string, unknown> }>
+        policyEntry!.effects as Array<{
+          kind: string;
+          satisfied: boolean;
+          detail: Record<string, unknown>;
+        }>
       ).find((e) => e.kind === "requireControls");
       expect(controlEffect?.satisfied).toBe(false);
       expect(controlEffect?.detail.outcome).toBe("fail");
@@ -685,7 +736,10 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
         requireApprovals: { count: 1, fromRole: "Approver", scope: org.orgId }
       });
 
-      const change = await admin.changes.propose({ name: "hybrid-pass-change", targets: [target.id] });
+      const change = await admin.changes.propose({
+        name: "hybrid-pass-change",
+        targets: [target.id]
+      });
 
       const approvalRequest = await waitForApprovalRequest(admin, change.id);
       // The control passes, but no approval has been cast yet -> the wave stays blocked, so the
@@ -708,7 +762,10 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       // by controlObjectId.
       const explained = await admin.changes.explain(change.id);
       const allowDecision = explained.decisions.find(
-        (d) => d.kind === "transition" && d.verdict === "allow" && (d.inputContext.toState as string) === "accepted"
+        (d) =>
+          d.kind === "transition" &&
+          d.verdict === "allow" &&
+          (d.inputContext.toState as string) === "accepted"
       );
       expect(allowDecision).toBeDefined();
       // transition.ts: `decision.reasonTree = { summary, gate: gate.reasonTree }` — the per-policy
@@ -716,13 +773,15 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       // (evaluate.ts's `GovernanceEvaluationResult.reasonTree.policies`), nested under `gate` here;
       // `inputContext.gate` (gate-orchestrator.ts's `GateOutcome.inputContext`) is a different,
       // coarser object (matchedPolicyCount/effectivePolicyCount) with no `policies` array at all.
-      const gateReasonTree = (allowDecision!.reasonTree as { gate?: { policies?: Array<Record<string, unknown>> } })
-        .gate;
+      const gateReasonTree = (
+        allowDecision!.reasonTree as { gate?: { policies?: Array<Record<string, unknown>> } }
+      ).gate;
       const policyEntry = gateReasonTree?.policies?.find((p) => p.name === "hybrid-release");
       expect(policyEntry).toBeDefined();
-      expect((policyEntry!.contributingPolicyVersions as Array<{ policyObjectId: string }>)[0]?.policyObjectId).toBe(
-        (await admin.policies.get(`urn:scp:${org.orgId}:policy:hybrid-pass`)).id
-      );
+      expect(
+        (policyEntry!.contributingPolicyVersions as Array<{ policyObjectId: string }>)[0]
+          ?.policyObjectId
+      ).toBe((await admin.policies.get(`urn:scp:${org.orgId}:policy:hybrid-pass`)).id);
 
       const controlRunEntry = explained.controlRuns.find((r) => r.controlObjectId === control.id);
       expect(controlRunEntry).toBeDefined();
@@ -762,7 +821,9 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     // wave's own target), not from 'validating' — see waitForApprovalRequest's doc comment.
     const approvalRequest = await waitForApprovalRequest(admin, change.id);
 
-    const nonMemberErr = await expectApiError(() => clientNonMember.approvals.vote(approvalRequest.id));
+    const nonMemberErr = await expectApiError(() =>
+      clientNonMember.approvals.vote(approvalRequest.id)
+    );
     expect(nonMemberErr.status).toBe(403);
 
     await clientA.approvals.vote(approvalRequest.id);
@@ -843,7 +904,11 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const approverClient = new ScpClient({ baseUrl: server.baseUrl, token: approver.token });
     await approverClient.approvals.vote(approvalRequest.id);
 
-    const edges = await admin.relationships.list({ fromId: approver.objectId, toId: change.id, typeId: "approves" });
+    const edges = await admin.relationships.list({
+      fromId: approver.objectId,
+      toId: change.id,
+      typeId: "approves"
+    });
     expect(edges.items.length).toBeGreaterThanOrEqual(1);
     const deleteErr = await expectApiError(() => admin.relationships.delete(edges.items[0]!.id));
     expect(deleteErr.status).toBe(403);
@@ -861,7 +926,10 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
     const service = await admin.services.create({ name: "sk-service" });
-    const component = await createTestComponent(admin, { name: "sk-component", domainId: service.id });
+    const component = await createTestComponent(admin, {
+      name: "sk-component",
+      domainId: service.id
+    });
 
     await createPolicy(admin, org, {
       name: "service-approval",
@@ -879,8 +947,13 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const approvalRequest = await waitForApprovalRequest(admin, change.id);
     expect(approvalRequest.scopeObjectId).toBe(service.id);
 
-    const serviceApprover = await createTestUser(server, org, [{ role: "Approver", scope: service.id }]);
-    const serviceApproverClient = new ScpClient({ baseUrl: server.baseUrl, token: serviceApprover.token });
+    const serviceApprover = await createTestUser(server, org, [
+      { role: "Approver", scope: service.id }
+    ]);
+    const serviceApproverClient = new ScpClient({
+      baseUrl: server.baseUrl,
+      token: serviceApprover.token
+    });
     await serviceApproverClient.approvals.vote(approvalRequest.id);
     const satisfied = await admin.approvals.get(approvalRequest.id);
     expect(satisfied.status).toBe("satisfied");
@@ -911,7 +984,10 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     // thing linking C to S is the `contains` edge, exactly as migration 0021 registers it
     // (service --contains--> component, walked backwards). Do not "fix" this to `domainId:
     // service.id`: that would re-create the sibling test above and stop covering this bug.
-    const component = await createTestComponent(admin, { name: "skc-component", service: service.id });
+    const component = await createTestComponent(admin, {
+      name: "skc-component",
+      service: service.id
+    });
 
     await createPolicy(admin, org, {
       name: "service-approval-contains",
@@ -930,8 +1006,13 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
 
     // ... and the resolved scope is genuinely satisfiable: an Approver bound at the SERVICE (not at
     // the component, not at the org root) can vote it to quorum.
-    const serviceApprover = await createTestUser(server, org, [{ role: "Approver", scope: service.id }]);
-    const serviceApproverClient = new ScpClient({ baseUrl: server.baseUrl, token: serviceApprover.token });
+    const serviceApprover = await createTestUser(server, org, [
+      { role: "Approver", scope: service.id }
+    ]);
+    const serviceApproverClient = new ScpClient({
+      baseUrl: server.baseUrl,
+      token: serviceApprover.token
+    });
     await serviceApproverClient.approvals.vote(approvalRequest.id);
     const satisfied = await admin.approvals.get(approvalRequest.id);
     expect(satisfied.status).toBe("satisfied");
@@ -974,8 +1055,13 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     // the two highest-blast-radius bypass permissions are Owner-only. MAJOR #6: an unauthorized
     // override is now a 409 carrying decision_id (a real, audited rejected-transition Decision),
     // not a bare 403 that leaves no trace.
-    const administrator = await createTestUser(server, org, [{ role: "Administrator", scope: org.orgId }]);
-    const administratorClient = new ScpClient({ baseUrl: server.baseUrl, token: administrator.token });
+    const administrator = await createTestUser(server, org, [
+      { role: "Administrator", scope: org.orgId }
+    ]);
+    const administratorClient = new ScpClient({
+      baseUrl: server.baseUrl,
+      token: administrator.token
+    });
     const unauthorizedOverride = await expectApiError(() =>
       administratorClient.changes.accept(change.id, "let me through please", true)
     );
@@ -987,12 +1073,18 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     expect(JSON.stringify(rejectDecision.reasonTree)).toMatch(/override rejected/i);
 
     // Owner HAS 'freeze:override' but omits the mandatory reason — also a rejected-override 409.
-    const missingReason = await expectApiError(() => admin.changes.accept(change.id, undefined, true));
+    const missingReason = await expectApiError(() =>
+      admin.changes.accept(change.id, undefined, true)
+    );
     expect(missingReason.status).toBe(409);
     expect(missingReason.problem?.decision_id).toBeTruthy();
 
     // Owner, with a reason, succeeds.
-    const accepted = await admin.changes.accept(change.id, "hotfix approved by incident commander", true);
+    const accepted = await admin.changes.accept(
+      change.id,
+      "hotfix approved by incident commander",
+      true
+    );
     expect(accepted.state).toBe("accepted");
 
     const auditPage = await admin.auditEvents.list({ limit: 100 });
@@ -1025,13 +1117,22 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const service = await admin.services.create({ name: "sf-service" });
     // Same real shape as the keyword test: domain_id stays the org root; the `contains` edge is the
     // only link. A domain_id-only walk cannot see the service from the component.
-    const contained = await createTestComponent(admin, { name: "sf-contained", service: service.id });
+    const contained = await createTestComponent(admin, {
+      name: "sf-contained",
+      service: service.id
+    });
     // Negative control (the orphan-import case): a component the service does NOT contain. Guards
     // against a "fix" that over-blocks by scooping up unrelated objects.
     const unrelated = await createTestComponent(admin, { name: "sf-unrelated" });
 
-    const frozenChange = await admin.changes.propose({ name: "sf-frozen-change", targets: [contained.id] });
-    const freeChange = await admin.changes.propose({ name: "sf-free-change", targets: [unrelated.id] });
+    const frozenChange = await admin.changes.propose({
+      name: "sf-frozen-change",
+      targets: [contained.id]
+    });
+    const freeChange = await admin.changes.propose({
+      name: "sf-free-change",
+      targets: [unrelated.id]
+    });
     await waitForValidating(admin, frozenChange.id);
     await waitForValidating(admin, freeChange.id);
 
@@ -1070,7 +1171,10 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
     const service = await admin.services.create({ name: "mf-service" });
-    const component = await createTestComponent(admin, { name: "mf-component", domainId: service.id });
+    const component = await createTestComponent(admin, {
+      name: "mf-component",
+      domainId: service.id
+    });
     const change = await admin.changes.propose({ name: "mf-change", targets: [component.id] });
     await waitForValidating(admin, change.id);
 
@@ -1079,8 +1183,20 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const endsAt = new Date(now + 3_600_000).toISOString();
     // TWO simultaneous freezes over the change's scope: a narrow one at the component, a broader
     // one at the org root.
-    await admin.freezes.create({ scopeObjectId: component.id, name: "component-freeze", startsAt, endsAt, reason: "narrow" });
-    await admin.freezes.create({ scopeObjectId: org.orgId, name: "org-freeze", startsAt, endsAt, reason: "broad org-wide freeze" });
+    await admin.freezes.create({
+      scopeObjectId: component.id,
+      name: "component-freeze",
+      startsAt,
+      endsAt,
+      reason: "narrow"
+    });
+    await admin.freezes.create({
+      scopeObjectId: org.orgId,
+      name: "org-freeze",
+      startsAt,
+      endsAt,
+      reason: "broad org-wide freeze"
+    });
 
     // An actor who can ACCEPT (Administrator at org root grants object:write, the route-level
     // permission the accept endpoint checks — but NOT freeze:override, which is Owner-only) AND
@@ -1102,7 +1218,11 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
 
     // The org-root Owner (admin) holds freeze:override at org root, which covers BOTH freezes via
     // containment → the override succeeds and BOTH freezes are individually audited.
-    const accepted = await admin.changes.accept(change.id, "incident: overriding both freezes", true);
+    const accepted = await admin.changes.accept(
+      change.id,
+      "incident: overriding both freezes",
+      true
+    );
     expect(accepted.state).toBe("accepted");
 
     const auditPage = await admin.auditEvents.list({ limit: 200 });
@@ -1123,7 +1243,11 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
 
     const member = await createTestUser(server, org, [{ role: "Operator", scope: org.orgId }]);
     const nonMember = await createTestUser(server, org, [{ role: "Operator", scope: org.orgId }]);
-    await admin.relationships.create({ typeId: "member_of", fromId: member.objectId, toId: group.id });
+    await admin.relationships.create({
+      typeId: "member_of",
+      fromId: member.objectId,
+      toId: group.id
+    });
 
     await createPolicy(admin, org, {
       name: "group-gate",
@@ -1136,12 +1260,20 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const memberClient = new ScpClient({ baseUrl: server.baseUrl, token: member.token });
     const nonMemberClient = new ScpClient({ baseUrl: server.baseUrl, token: nonMember.token });
 
-    const changeAsMember = await memberClient.changes.propose({ name: "as-member", targets: [target.id] });
+    const changeAsMember = await memberClient.changes.propose({
+      name: "as-member",
+      targets: [target.id]
+    });
     await waitForValidating(memberClient, changeAsMember.id);
-    const memberBlocked = await expectApiError(() => memberClient.changes.accept(changeAsMember.id));
+    const memberBlocked = await expectApiError(() =>
+      memberClient.changes.accept(changeAsMember.id)
+    );
     expect(memberBlocked.status).toBe(409);
 
-    const changeAsNonMember = await nonMemberClient.changes.propose({ name: "as-non-member", targets: [target.id] });
+    const changeAsNonMember = await nonMemberClient.changes.propose({
+      name: "as-non-member",
+      targets: [target.id]
+    });
     await waitForValidating(nonMemberClient, changeAsNonMember.id);
     const accepted = await nonMemberClient.changes.accept(changeAsNonMember.id);
     expect(accepted.state).toBe("accepted");
@@ -1184,7 +1316,10 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
 
       // Non-emergency change against the SAME target: the normal required policy applies (it is
       // NOT filtered out for a non-emergency change) and can never be satisfied -> stays parked.
-      const normalChange = await admin.changes.propose({ name: "normal-change", targets: [target.id] });
+      const normalChange = await admin.changes.propose({
+        name: "normal-change",
+        targets: [target.id]
+      });
       await assertStaysExecuting(admin, normalChange.id, 4_000);
 
       // Emergency change, proposed by a permitted actor (the bootstrap admin holds Owner, which
@@ -1208,9 +1343,11 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
         return typeof gate?.emergencyNote === "string";
       });
       expect(emergencyDecision).toBeDefined();
-      expect(String((emergencyDecision!.reasonTree as { gate: { emergencyNote: string } }).gate.emergencyNote)).toMatch(
-        /emergency/i
-      );
+      expect(
+        String(
+          (emergencyDecision!.reasonTree as { gate: { emergencyNote: string } }).gate.emergencyNote
+        )
+      ).toMatch(/emergency/i);
     });
 
     it("a non-permitted actor cannot flag a change emergency (403) — the SAME actor can still propose an ordinary change", async () => {
@@ -1221,15 +1358,27 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       // Administrator: object:write (can propose ordinary changes) but deliberately NOT
       // change:emergency (Owner-only per the M4 migration — the two highest-blast-radius bypass
       // permissions, freeze:override and change:emergency, are never granted to Administrator).
-      const administrator = await createTestUser(server, org, [{ role: "Administrator", scope: org.orgId }]);
-      const administratorClient = new ScpClient({ baseUrl: server.baseUrl, token: administrator.token });
+      const administrator = await createTestUser(server, org, [
+        { role: "Administrator", scope: org.orgId }
+      ]);
+      const administratorClient = new ScpClient({
+        baseUrl: server.baseUrl,
+        token: administrator.token
+      });
 
       const err = await expectApiError(() =>
-        administratorClient.changes.propose({ name: "attempted-emergency", targets: [target.id], emergency: true })
+        administratorClient.changes.propose({
+          name: "attempted-emergency",
+          targets: [target.id],
+          emergency: true
+        })
       );
       expect(err.status).toBe(403);
 
-      const ordinary = await administratorClient.changes.propose({ name: "ordinary-change", targets: [target.id] });
+      const ordinary = await administratorClient.changes.propose({
+        name: "ordinary-change",
+        targets: [target.id]
+      });
       expect(ordinary.emergency).toBe(false);
     });
   });
@@ -1268,7 +1417,10 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
             Results: [
               {
                 Target: "registry.test/app:1.0 (alpine 3.19)",
-                Vulnerabilities: sev.map((s, i) => ({ VulnerabilityID: `CVE-2026-${9000 + i}`, Severity: s }))
+                Vulnerabilities: sev.map((s, i) => ({
+                  VulnerabilityID: `CVE-2026-${9000 + i}`,
+                  Severity: s
+                }))
               }
             ]
           })
@@ -1293,14 +1445,23 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     async function createScanControl(
       admin: ScpClient,
       org: TestOrg,
-      opts: { urnSuffix: string; digest: string; severities?: string[]; expectedDigest?: string; threshold?: Record<string, number> }
+      opts: {
+        urnSuffix: string;
+        digest: string;
+        severities?: string[];
+        expectedDigest?: string;
+        threshold?: Record<string, number>;
+      }
     ) {
       const control = await admin.controls.create({
         name: `scan-control-${opts.urnSuffix}`,
         urn: `urn:scp:${org.orgId}:control:${opts.urnSuffix}`,
         properties: { category: "security" }
       });
-      const params = new URLSearchParams({ digest: opts.digest, sev: (opts.severities ?? []).join(",") });
+      const params = new URLSearchParams({
+        digest: opts.digest,
+        sev: (opts.severities ?? []).join(",")
+      });
       await admin.controls.putBinding(control.id, {
         pluginModule: "scan-result-control",
         pluginInstanceId: `scan-${control.id}`,
@@ -1339,13 +1500,18 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
         requireControlIds: [control.id]
       });
 
-      const change = await admin.changes.propose({ name: "scan-fail-change", targets: [target.id] });
+      const change = await admin.changes.propose({
+        name: "scan-fail-change",
+        targets: [target.id]
+      });
 
       // The control genuinely runs (real subprocess, real Trivy-JSON fetch) and reports 'fail'.
       const run = await waitForControlRun(admin, change.id, control.id, "fail");
       // Evidence is the TYPED scan verdict — digest bound (match), counts, threshold applied.
       expect(run.evidence).toMatchObject({ scanner: "trivy", digestMatch: true });
-      expect((run.evidence as { severityCounts: { critical: number } }).severityCounts.critical).toBe(1);
+      expect(
+        (run.evidence as { severityCounts: { critical: number } }).severityCounts.critical
+      ).toBe(1);
 
       // Failed required control -> the wave can never start -> the change stays 'executing'.
       await assertStaysExecuting(admin, change.id);
@@ -1357,7 +1523,11 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
         (gateBlock!.reasonTree as { policies?: Array<Record<string, unknown>> }).policies ?? []
       ).find((p) => p.name === "scan-gate");
       const controlEffect = (
-        policyEntry!.effects as Array<{ kind: string; satisfied: boolean; detail: Record<string, unknown> }>
+        policyEntry!.effects as Array<{
+          kind: string;
+          satisfied: boolean;
+          detail: Record<string, unknown>;
+        }>
       ).find((e) => e.kind === "requireControls");
       expect(controlEffect?.satisfied).toBe(false);
       expect(controlEffect?.detail.outcome).toBe("fail");
@@ -1382,7 +1552,10 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
         requireControlIds: [control.id]
       });
 
-      const change = await admin.changes.propose({ name: "scan-pass-change", targets: [target.id] });
+      const change = await admin.changes.propose({
+        name: "scan-pass-change",
+        targets: [target.id]
+      });
 
       await waitForControlRun(admin, change.id, control.id, "pass");
       await waitForValidating(admin, change.id);
@@ -1420,10 +1593,17 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
         requireControlIds: [control.id]
       });
 
-      const change = await admin.changes.propose({ name: "scan-mismatch-change", targets: [target.id] });
+      const change = await admin.changes.propose({
+        name: "scan-mismatch-change",
+        targets: [target.id]
+      });
 
       const run = await waitForControlRun(admin, change.id, control.id, "fail");
-      expect(run.evidence).toMatchObject({ digestMatch: false, artifactDigest: OTHER_DIGEST, expectedDigest: MATCH_DIGEST });
+      expect(run.evidence).toMatchObject({
+        digestMatch: false,
+        artifactDigest: OTHER_DIGEST,
+        expectedDigest: MATCH_DIGEST
+      });
       expect(run.detail).toMatch(/digest mismatch/i);
 
       // Clean but mismatched -> still blocked: the wave stays parked.
@@ -1541,7 +1721,10 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
 
       const target = await createTestComponent(admin, { name: "scan-report-target" });
       const repo = `acme/${randomUUID().slice(0, 8)}`;
-      await admin.changeSources.createMapping("terraform", { repoPattern: repo, component: target.id });
+      await admin.changeSources.createMapping("terraform", {
+        repoPattern: repo,
+        component: target.id
+      });
 
       const control = await createScanControl(admin, org, {
         urnSuffix: "scan-report-route",
@@ -1577,7 +1760,9 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
           scannerVersion: "0.58.1"
         }
       });
-      await withTenantTx(server.deps.db, org.orgId, (tx) => processChangeSourceEvents(tx, org.orgId));
+      await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        processChangeSourceEvents(tx, org.orgId)
+      );
 
       const changeObjectId = await waitUntil(
         async () => {
@@ -1641,7 +1826,10 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
      *  invoked again (not served from `control_runs`' cache) after the M10.4 expired-cooldown
      *  bypass fires. */
     async function startGithubCheckSource(): Promise<
-      TestWebhookServer & { setState(ref: string, state: CheckRunFixtureState): void; callCountFor(ref: string): number }
+      TestWebhookServer & {
+        setState(ref: string, state: CheckRunFixtureState): void;
+        callCountFor(ref: string): number;
+      }
     > {
       const states = new Map<string, CheckRunFixtureState>();
       const counts = new Map<string, number>();
@@ -1682,7 +1870,11 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
      *  fixture above. No `expectedRef` is ever configured — the ONLY ref the plugin can bind
      *  against is `context.commitSha`, which the gate threads from the change's own
      *  `sourceRef.sha` (`gate-orchestrator.ts`'s `resolveChangeCommitSha`). */
-    async function createGithubCheckControl(admin: ScpClient, org: TestOrg, opts: { urnSuffix: string }) {
+    async function createGithubCheckControl(
+      admin: ScpClient,
+      org: TestOrg,
+      opts: { urnSuffix: string }
+    ) {
       const control = await admin.controls.create({
         name: `gh-check-${opts.urnSuffix}`,
         urn: `urn:scp:${org.orgId}:control:${opts.urnSuffix}`,
@@ -1720,7 +1912,11 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       const sha = "a1b2c3d4e5".repeat(4);
       checkSource.setState(sha, { conclusion: "success" });
 
-      const change = await admin.changes.propose({ name: "gh-check-pass-change", targets: [target.id], sourceRef: { sha } });
+      const change = await admin.changes.propose({
+        name: "gh-check-pass-change",
+        targets: [target.id],
+        sourceRef: { sha }
+      });
 
       await waitForControlRun(admin, change.id, control.id, "pass");
       await waitForValidating(admin, change.id);
@@ -1745,7 +1941,11 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       const sha = "f1e2d3c4b5".repeat(4);
       checkSource.setState(sha, { conclusion: "failure" });
 
-      const change = await admin.changes.propose({ name: "gh-check-fail-change", targets: [target.id], sourceRef: { sha } });
+      const change = await admin.changes.propose({
+        name: "gh-check-fail-change",
+        targets: [target.id],
+        sourceRef: { sha }
+      });
 
       await waitForControlRun(admin, change.id, control.id, "fail");
       await assertStaysExecuting(admin, change.id);
@@ -1756,7 +1956,9 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
       const target = await createTestComponent(admin, { name: "gh-check-inflight-target" });
-      const control = await createGithubCheckControl(admin, org, { urnSuffix: "gh-check-inflight" });
+      const control = await createGithubCheckControl(admin, org, {
+        urnSuffix: "gh-check-inflight"
+      });
       await createPolicy(admin, org, {
         name: "ci-gate",
         urnSuffix: "gh-check-inflight-policy",
@@ -1768,7 +1970,11 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       const sha = "0f1e2d3c4b".repeat(4);
       checkSource.setState(sha, { conclusion: "pending" });
 
-      const change = await admin.changes.propose({ name: "gh-check-inflight-change", targets: [target.id], sourceRef: { sha } });
+      const change = await admin.changes.propose({
+        name: "gh-check-inflight-change",
+        targets: [target.id],
+        sourceRef: { sha }
+      });
 
       await waitForControlRun(admin, change.id, control.id, "expired");
       const callsWhileInFlight = checkSource.callCountFor(sha);
@@ -1814,8 +2020,14 @@ describe("governance integration: automatic rollback on wave failure", () => {
     server = await listenTestServer({
       withEventRelay: true,
       withReconcileLoop: true,
-      pluginHostOptions: { callTimeoutMs: 8_000, restartBackoffBaseMs: 50, maxRestartBackoffMs: 300 },
-      fakeExecutorConfig: { forcePhase: { [autoRollbackTargetId]: "failed", [parkedTargetId]: "failed" } }
+      pluginHostOptions: {
+        callTimeoutMs: 8_000,
+        restartBackoffBaseMs: 50,
+        maxRestartBackoffMs: 300
+      },
+      fakeExecutorConfig: {
+        forcePhase: { [autoRollbackTargetId]: "failed", [parkedTargetId]: "failed" }
+      }
     });
   });
 
@@ -1827,7 +2039,10 @@ describe("governance integration: automatic rollback on wave failure", () => {
     const org = await createTestOrg(server, "auto-rollback");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
-    const target = await createTestComponent(admin, { id: autoRollbackTargetId, name: "auto-rollback-target" });
+    const target = await createTestComponent(admin, {
+      id: autoRollbackTargetId,
+      name: "auto-rollback-target"
+    });
     await createPolicy(admin, org, {
       name: "auto-rollback-policy",
       urnSuffix: "auto-rollback",
@@ -1866,13 +2081,20 @@ describe("governance integration: automatic rollback on wave failure", () => {
     await waitUntil(
       async () => {
         const explained = await admin.changes.explain(rollbackChangeObjectId);
-        return explained.decisions.some((d) => d.kind === "wave_target" && d.verdict === "block") ? true : undefined;
+        return explained.decisions.some((d) => d.kind === "wave_target" && d.verdict === "block")
+          ? true
+          : undefined;
       },
-      { describe: `rollback change ${rollbackChangeObjectId}'s own wave is observed failing`, timeoutMs: 15_000 }
+      {
+        describe: `rollback change ${rollbackChangeObjectId}'s own wave is observed failing`,
+        timeoutMs: 15_000
+      }
     );
     await new Promise((resolve) => setTimeout(resolve, 3_000));
     const rollbackExplained = await admin.changes.explain(rollbackChangeObjectId);
-    expect(rollbackExplained.decisions.filter((d) => d.kind === "rollback_trigger")).toHaveLength(0);
+    expect(rollbackExplained.decisions.filter((d) => d.kind === "rollback_trigger")).toHaveLength(
+      0
+    );
   });
 
   it("a failed wave with NO autoRollbackOnFailure policy stays parked for manual rollback (M3 behavior unchanged)", async () => {

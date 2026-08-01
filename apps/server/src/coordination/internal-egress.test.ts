@@ -17,7 +17,9 @@ import {
 describe("assertNotReservedInstanceId — reserved execution-system instance namespace", () => {
   it("rejects a caller-supplied id squatting the reserved prefix", () => {
     expect(() =>
-      assertNotReservedInstanceId(`${EXECUTION_SYSTEM_INSTANCE_PREFIX}019f5da9-7a22-75aa-b134-8db9d49218c7`)
+      assertNotReservedInstanceId(
+        `${EXECUTION_SYSTEM_INSTANCE_PREFIX}019f5da9-7a22-75aa-b134-8db9d49218c7`
+      )
     ).toThrow(/reserved/);
     expect(() => assertNotReservedInstanceId("execution-system:anything")).toThrow(/reserved/);
     // Bare prefix alone is still inside the namespace.
@@ -25,7 +27,13 @@ describe("assertNotReservedInstanceId — reserved execution-system instance nam
   });
 
   it("allows ordinary caller-chosen instance ids", () => {
-    for (const id of ["my-argocd", "github-prod", "execution", "execution-system", "exec-system:x"]) {
+    for (const id of [
+      "my-argocd",
+      "github-prod",
+      "execution",
+      "execution-system",
+      "exec-system:x"
+    ]) {
       expect(() => assertNotReservedInstanceId(id)).not.toThrow();
     }
   });
@@ -64,9 +72,7 @@ describe("resolveInternalEgress — two-layer (operator allowlist AND declared i
 
   it("permits ONLY when both layers agree", () => {
     process.env[ENV] = "argocd-server.argocd.svc.cluster.local";
-    expect(
-      resolveInternalEgress("http://argocd-server.argocd.svc.cluster.local", true)
-    ).toBe(true);
+    expect(resolveInternalEgress("http://argocd-server.argocd.svc.cluster.local", true)).toBe(true);
   });
 
   it("REFUSES when the tenant declares intent but the operator never allowlisted the host (the SSRF regression)", () => {
@@ -102,16 +108,16 @@ describe("resolveInternalEgress — two-layer (operator allowlist AND declared i
   it("matches on HOST only — not scheme, port, path, or a substring of the allowlisted name", () => {
     process.env[ENV] = "argocd-server.argocd.svc.cluster.local";
     // Same host, different scheme/port/path ⇒ still the same allowlisted host.
-    expect(resolveInternalEgress("https://argocd-server.argocd.svc.cluster.local:443/api", true)).toBe(
-      true
-    );
+    expect(
+      resolveInternalEgress("https://argocd-server.argocd.svc.cluster.local:443/api", true)
+    ).toBe(true);
     // A look-alike host an attacker controls must NOT match by prefix/suffix/substring.
     expect(resolveInternalEgress("http://evil-argocd-server.argocd.svc.cluster.local", true)).toBe(
       false
     );
-    expect(resolveInternalEgress("http://argocd-server.argocd.svc.cluster.local.evil.com", true)).toBe(
-      false
-    );
+    expect(
+      resolveInternalEgress("http://argocd-server.argocd.svc.cluster.local.evil.com", true)
+    ).toBe(false);
   });
 
   it("accepts a comma-separated list, tolerates whitespace, and is case-insensitive", () => {

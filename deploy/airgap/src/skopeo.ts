@@ -30,9 +30,13 @@ export function skopeoAvailable(): boolean {
  */
 export function resolveDockerDaemonHost(): string | undefined {
   try {
-    const out = execFileSync("docker", ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"], {
-      encoding: "utf8"
-    }).trim();
+    const out = execFileSync(
+      "docker",
+      ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+      {
+        encoding: "utf8"
+      }
+    ).trim();
     return out.startsWith("unix://") ? out : undefined;
   } catch {
     return undefined;
@@ -51,7 +55,10 @@ export interface CopyToOciOptions {
 
 /** `skopeo copy <src> oci:<destDir>:<destTag>` — produces a single-platform OCI-layout directory. */
 export function copyToOciLayout(opts: CopyToOciOptions): void {
-  const src = opts.sourceType === "docker-daemon" ? `docker-daemon:${opts.sourceRef}` : `docker://${opts.sourceRef}`;
+  const src =
+    opts.sourceType === "docker-daemon"
+      ? `docker-daemon:${opts.sourceRef}`
+      : `docker://${opts.sourceRef}`;
   const dest = `oci:${opts.destDir}:${opts.destTag}`;
   const args = ["copy"];
   if (opts.sourceType === "docker-daemon" && opts.daemonHost) {
@@ -60,4 +67,3 @@ export function copyToOciLayout(opts: CopyToOciOptions): void {
   args.push(src, dest);
   run("skopeo", args);
 }
-

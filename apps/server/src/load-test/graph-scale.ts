@@ -166,8 +166,13 @@ function buildTopology(rand: () => number): Topology {
   }
 
   const remainingEdgeBudget = Math.max(TARGET_TOTAL_EDGES - spineEdgeCount, 0);
-  const bulkSourceNodeCount = bulkLayerIds.slice(0, BULK_LAYERS - 1).reduce((n, l) => n + l.length, 0);
-  const bulkFanout = Math.max(1, Math.round(remainingEdgeBudget / Math.max(bulkSourceNodeCount, 1)));
+  const bulkSourceNodeCount = bulkLayerIds
+    .slice(0, BULK_LAYERS - 1)
+    .reduce((n, l) => n + l.length, 0);
+  const bulkFanout = Math.max(
+    1,
+    Math.round(remainingEdgeBudget / Math.max(bulkSourceNodeCount, 1))
+  );
   for (let l = 0; l < BULK_LAYERS - 1; l++) {
     const fromLayer = bulkLayerIds[l]!;
     const toLayer = bulkLayerIds[l + 1]!;
@@ -317,7 +322,9 @@ async function main(): Promise<void> {
     const deepSummary = summarize(deepLatencies);
     const randomSummary = summarize(randomLatencies);
 
-    console.log("\n=== RESULTS (single dev laptop, Testcontainers postgres:16 — informational only) ===");
+    console.log(
+      "\n=== RESULTS (single dev laptop, Testcontainers postgres:16 — informational only) ==="
+    );
     console.log(
       `Graph: ${topology.objectRows.length} objects, ${topology.edgeRows.length} edges ` +
         `(spine: ${SPINE_CHAIN_COUNT} linear chains x ${SPINE_CHAIN_LENGTH} nodes, branching=1; ` +

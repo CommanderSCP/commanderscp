@@ -139,7 +139,9 @@ export async function runWatchdogSweep(
           slaMs,
           stalledForMs,
           checkedAt: now.toISOString(),
-          ...(waitingDetail?.unsatisfied ? { unsatisfiedRequirements: waitingDetail.unsatisfied } : {}),
+          ...(waitingDetail?.unsatisfied
+            ? { unsatisfiedRequirements: waitingDetail.unsatisfied }
+            : {}),
           ...(waitingDetail?.malformed ? { malformedRequires: waitingDetail.malformed } : {})
         },
         reasonTree: {
@@ -230,7 +232,11 @@ export const WATCHDOG_SWEEP_INTERVAL_SECONDS = 60;
 /** One full sweep: every org, one `runWatchdogSweep` each, same tenant scoping as the reconcile
  *  loop's `runReconcileSweep`. Errors in one org's sweep are caught and logged so they never take
  *  down the sweep (or the pg-boss job) for every other org. */
-export async function runWatchdogSweepForAllOrgs(db: Db, host: PluginHost, masterKey: Buffer): Promise<void> {
+export async function runWatchdogSweepForAllOrgs(
+  db: Db,
+  host: PluginHost,
+  masterKey: Buffer
+): Promise<void> {
   const orgRows = await db.select({ id: orgs.id }).from(orgs);
   for (const org of orgRows) {
     try {

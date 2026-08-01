@@ -162,10 +162,7 @@ export async function listPeerKeyWindows(
  * import applies only entries with sequence beyond that, a rotated-away/compromised key can never
  * verify content that will ever be applied — never by a self-declared timestamp.
  */
-export function verificationKeyForSequence(
-  keys: PeerKeyWindow[],
-  sequence: number
-): string | null {
+export function verificationKeyForSequence(keys: PeerKeyWindow[], sequence: number): string | null {
   for (const key of keys) {
     if (
       key.effectiveFromSequence < sequence &&

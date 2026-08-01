@@ -62,12 +62,16 @@ describe("executor-binding primitives (M12 P5c)", () => {
 
     const items = await admin.executors.listBindings(comp.id);
     expect(items.map((b) => b.type)).toEqual(["infrastructure"]);
-    await expect(admin.executors.getBinding(comp.id, "configuration")).rejects.toMatchObject({ status: 404 });
+    await expect(admin.executors.getBinding(comp.id, "configuration")).rejects.toMatchObject({
+      status: 404
+    });
   });
 
   it("deleting a nonexistent binding is a 404", async () => {
     const comp = await createTestComponent(admin, { name: `c-${randomUUID().slice(0, 8)}` });
-    await expect(admin.executors.deleteBinding(comp.id, "infrastructure")).rejects.toMatchObject({ status: 404 });
+    await expect(admin.executors.deleteBinding(comp.id, "infrastructure")).rejects.toMatchObject({
+      status: 404
+    });
   });
 
   it("repurposes a binding (configuration → infrastructure) — the relabel primitive", async () => {
@@ -76,8 +80,12 @@ describe("executor-binding primitives (M12 P5c)", () => {
 
     const relabelled = await admin.executors.repurposeBinding(comp.id, "infrastructure"); // from defaults to configuration
     expect(relabelled.type).toBe("infrastructure");
-    expect((await admin.executors.getBinding(comp.id, "infrastructure")).type).toBe("infrastructure");
-    await expect(admin.executors.getBinding(comp.id, "configuration")).rejects.toMatchObject({ status: 404 });
+    expect((await admin.executors.getBinding(comp.id, "infrastructure")).type).toBe(
+      "infrastructure"
+    );
+    await expect(admin.executors.getBinding(comp.id, "configuration")).rejects.toMatchObject({
+      status: 404
+    });
   });
 
   it("refuses a repurpose that would collide with an existing binding at the target Type (409)", async () => {
@@ -86,7 +94,9 @@ describe("executor-binding primitives (M12 P5c)", () => {
     await putBinding(comp.id, "infrastructure");
 
     // configuration → infrastructure would create a 2nd infrastructure binding — UNIQUE(org,target,type) forbids it.
-    await expect(admin.executors.repurposeBinding(comp.id, "infrastructure", "configuration")).rejects.toMatchObject({
+    await expect(
+      admin.executors.repurposeBinding(comp.id, "infrastructure", "configuration")
+    ).rejects.toMatchObject({
       status: 409
     });
     // Nothing changed — both Types still present.
@@ -130,9 +140,15 @@ describe("executor-binding primitives (M12 P5c)", () => {
     const viewer = await createTestUser(server, org, [{ role: "Viewer", scope: org.orgId }]);
     const client = new ScpClient({ baseUrl: server.baseUrl, token: viewer.token });
 
-    await expect(client.executors.deleteBinding(comp.id, "configuration")).rejects.toMatchObject({ status: 403 });
-    await expect(client.executors.repurposeBinding(comp.id, "infrastructure")).rejects.toMatchObject({ status: 403 });
+    await expect(client.executors.deleteBinding(comp.id, "configuration")).rejects.toMatchObject({
+      status: 403
+    });
+    await expect(
+      client.executors.repurposeBinding(comp.id, "infrastructure")
+    ).rejects.toMatchObject({ status: 403 });
     // The binding survived both refused writes.
-    expect((await admin.executors.listBindings(comp.id)).map((b) => b.type)).toEqual(["configuration"]);
+    expect((await admin.executors.listBindings(comp.id)).map((b) => b.type)).toEqual([
+      "configuration"
+    ]);
   });
 });

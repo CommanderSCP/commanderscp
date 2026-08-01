@@ -53,7 +53,11 @@ export function decodeCursor(cursor: string): { createdAt: Date; id: string } | 
  * @param idCol the tiebreak uuid column (`id`, or e.g. `object_id` where that is the PK)
  * @param cursor the decoded cursor to page strictly after
  */
-export function keysetAfter(createdAtCol: PgColumn, idCol: PgColumn, cursor: { createdAt: Date; id: string }): SQL {
+export function keysetAfter(
+  createdAtCol: PgColumn,
+  idCol: PgColumn,
+  cursor: { createdAt: Date; id: string }
+): SQL {
   // Cast the cursor's id to the tiebreak column's OWN sql type (`uuid` for most rows, `text` for
   // the string-keyed type registry) so the row-comparison operands match. The type name comes from
   // the schema via `getSQLType()`, never from user input; the id value stays a bound parameter.

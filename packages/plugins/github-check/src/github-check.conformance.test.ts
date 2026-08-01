@@ -28,6 +28,10 @@ runControlConformanceSuite("github-check", async () => {
   return {
     plugin,
     ctx,
-    request: { changeId: "conformance-change", controlId: "conformance-control", context: { commitSha: "abc123" } }
+    request: {
+      changeId: "conformance-change",
+      controlId: "conformance-control",
+      context: { commitSha: "abc123" }
+    }
   };
 });

@@ -56,7 +56,10 @@ afterAll(() => {
 });
 
 runExecutorConformanceSuite("pipeline-generic", async () => {
-  const statePath = join(await mkdtemp(join(tmpdir(), "pipeline-generic-conformance-")), "state.json");
+  const statePath = join(
+    await mkdtemp(join(tmpdir(), "pipeline-generic-conformance-")),
+    "state.json"
+  );
   const build = (): {
     plugin: ReturnType<typeof createPipelineGenericExecutorPlugin>;
     ctx: ReturnType<typeof realHttpPluginContext>;

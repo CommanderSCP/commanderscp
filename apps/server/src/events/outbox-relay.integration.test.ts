@@ -143,7 +143,10 @@ describe("outbox-relay: never marks a NATS-bound event processed unless the JetS
         );
         return result.rows[0]?.processed_at ? result.rows[0] : undefined;
       },
-      { describe: "the outbox row is marked processed once the NATS sink recovers", timeoutMs: 5_000 }
+      {
+        describe: "the outbox row is marked processed once the NATS sink recovers",
+        timeoutMs: 5_000
+      }
     );
   }, 20_000);
 });

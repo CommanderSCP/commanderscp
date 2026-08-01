@@ -1,6 +1,11 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
-import { ChangeRequirementSchema, SbomRefSchema, normalizeSbomDigest, type SbomRef } from "@scp/schemas";
+import {
+  ChangeRequirementSchema,
+  SbomRefSchema,
+  normalizeSbomDigest,
+  type SbomRef
+} from "@scp/schemas";
 import { webhookAdapterForSourceKind } from "./webhook-adapters.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changeSourceEvents } from "../db/schema.js";
@@ -106,7 +111,9 @@ function genericHint(payload: unknown): ExtractedHint {
     path: typeof p.path === "string" ? p.path : undefined,
     correlationKey: typeof p.correlationKey === "string" ? p.correlationKey : undefined,
     artifactDigest:
-      typeof p.artifactDigest === "string" && p.artifactDigest.length > 0 ? p.artifactDigest : undefined,
+      typeof p.artifactDigest === "string" && p.artifactDigest.length > 0
+        ? p.artifactDigest
+        : undefined,
     // Best-effort: a malformed `sbom` on an otherwise-valid delivery is DROPPED, never a throw —
     // an unparseable supply-chain reference must not wedge ingress for the whole tick (the raw
     // payload is still preserved verbatim in `sourceRef`, so nothing is lost for forensics).
@@ -196,7 +203,10 @@ export function canonicalizeSourceRef(
   if (hint.sbom) {
     // Normalize the SBOM DOCUMENT's digest to `sha256:<lowercase-hex>` so what is persisted always
     // compares byte-for-byte (same normalization `scan-result-control` applies to a Trivy digest).
-    sourceRef.sbom = { ...hint.sbom, digest: normalizeSbomDigest(hint.sbom.digest) ?? hint.sbom.digest };
+    sourceRef.sbom = {
+      ...hint.sbom,
+      digest: normalizeSbomDigest(hint.sbom.digest) ?? hint.sbom.digest
+    };
   } else if ("sbom" in raw) {
     // The body carried an `sbom` that did NOT validate as a reference. The CONTRACT M17.3 reads is
     // "`sourceRef.sbom`, when present, IS a valid `SbomRef`" — so an invalid one must not sit under

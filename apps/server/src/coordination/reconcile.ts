@@ -1079,7 +1079,12 @@ async function triggerWaveTarget(
         // ever snapshot from a prior run of the SAME executor. A prior succeeded run under a
         // DIFFERENT executor carries an executorRef this `client` can't interpret; calling its
         // status() with a foreign ref throws (e.g. argocd 403) and wedges the wave forever.
-        const latestSucceeded = await findLatestSucceededExecution(tx, orgId, targetObjectId, instanceId);
+        const latestSucceeded = await findLatestSucceededExecution(
+          tx,
+          orgId,
+          targetObjectId,
+          instanceId
+        );
         if (latestSucceeded?.executorRef) {
           const priorStatus = await client.status(latestSucceeded.executorRef as ExecutorRef);
           priorStateRef = priorStatus.stateRef ?? null;

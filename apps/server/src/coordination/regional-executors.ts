@@ -61,7 +61,11 @@ function regionBindingSignal(binding: ExecutorBindingRow | undefined): {
 } {
   const bound = binding !== undefined;
   const pluginModule = binding?.pluginModule ?? null;
-  return { bound, pluginModule, isExpectedModule: pluginModule === REGIONAL_EXECUTOR_EXPECTED_MODULE };
+  return {
+    bound,
+    pluginModule,
+    isExpectedModule: pluginModule === REGIONAL_EXECUTOR_EXPECTED_MODULE
+  };
 }
 
 /**
@@ -139,7 +143,8 @@ export async function buildRegionalExecutorView(
       seenRegions.set(target.region, target.name);
     }
 
-    const regionLabel = target.region.length > 0 ? `region '${target.region}'` : `deployment-target '${target.name}'`;
+    const regionLabel =
+      target.region.length > 0 ? `region '${target.region}'` : `deployment-target '${target.name}'`;
     if (!bound) {
       problems.push(
         `${regionLabel} has no '${type}' executor binding — bind an Argo CD execution-system to it before deploying environment '${environment}'`

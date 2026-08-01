@@ -262,8 +262,11 @@ describe("SubprocessPluginHost: egress guard enforcement (M7 SSRF mitigation)", 
           .delivered
       ).toBe(true);
       expect(
-        (await host.notification("es-ungranted").send({ subject: "s", body: "b", severity: "info" }))
-          .delivered
+        (
+          await host
+            .notification("es-ungranted")
+            .send({ subject: "s", body: "b", severity: "info" })
+        ).delivered
       ).toBe(false);
       expect(hits).toBe(1); // only the granted instance ever reached the loopback server
     } finally {

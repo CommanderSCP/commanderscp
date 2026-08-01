@@ -37,13 +37,19 @@ describe("change target-authority (M12 P4B Phase 2)", () => {
   it("SECURITY: propose is refused for a target OUTSIDE the actor's authority, but allowed WITHIN it — isolating the target check from the domain check", async () => {
     // `outsideTarget` sits at the org root (default domain); `ownTarget` sits inside a domain the
     // narrow actor administers. The actor holds Administrator ONLY at `ownDomain`.
-    const outsideTarget = await createTestComponent(admin, { name: `chg-outside-${randomUUID().slice(0, 8)}` });
-    const ownDomain = await admin.domains.create({ name: `chg-own-domain-${randomUUID().slice(0, 8)}` });
+    const outsideTarget = await createTestComponent(admin, {
+      name: `chg-outside-${randomUUID().slice(0, 8)}`
+    });
+    const ownDomain = await admin.domains.create({
+      name: `chg-own-domain-${randomUUID().slice(0, 8)}`
+    });
     const ownTarget = await createTestComponent(admin, {
       name: `chg-own-${randomUUID().slice(0, 8)}`,
       domainId: ownDomain.id
     });
-    const narrow = await createTestUser(server, org, [{ role: "Administrator", scope: ownDomain.id }]);
+    const narrow = await createTestUser(server, org, [
+      { role: "Administrator", scope: ownDomain.id }
+    ]);
     const narrowClient = new ScpClient({ baseUrl: server.baseUrl, token: narrow.token });
 
     // domainId = ownDomain PASSES the change's domain-level `object:write` check, so a rejection here
@@ -71,18 +77,25 @@ describe("change target-authority (M12 P4B Phase 2)", () => {
   });
 
   it("SECURITY: the generic /objects/change endpoint refuses every write verb, even for the org-root admin", async () => {
-    const target = await createTestComponent(admin, { name: `chg-generic-${randomUUID().slice(0, 8)}` });
+    const target = await createTestComponent(admin, {
+      name: `chg-generic-${randomUUID().slice(0, 8)}`
+    });
 
     // create via the generic route → 403, even for the full-authority admin: an unconditional
     // type-level block, not a permission gap. Without it, this bypasses proposeChange's whole
     // lifecycle (state machine, plan) AND the per-target check above.
     await expect(
-      admin.object("change").create({ name: "sneaky-change-via-generic", properties: { targets: [target.id] } })
+      admin
+        .object("change")
+        .create({ name: "sneaky-change-via-generic", properties: { targets: [target.id] } })
     ).rejects.toMatchObject({ status: 403 });
 
     // PATCH/DELETE a legitimately-proposed change → 403: nobody can flip a coordinated change's
     // routing `type` (P4A) or `requires`/`provides` (P4B) mid-flight, or delete it out from under the engine.
-    const legit = await admin.changes.propose({ name: "legit-change-for-generic-block", targets: [target.id] });
+    const legit = await admin.changes.propose({
+      name: "legit-change-for-generic-block",
+      targets: [target.id]
+    });
     await expect(
       admin.object("change").update(legit.id, { properties: { type: "infrastructure" } })
     ).rejects.toMatchObject({ status: 403 });

@@ -32,7 +32,12 @@ import {
   pokeDownstreamPeersForOrg,
   type PokeSendOutcome
 } from "./poke-sender.js";
-import { createTestCa, issueLeafCert, opensslAvailable, type TestCa } from "./test-support/mtls-pki.js";
+import {
+  createTestCa,
+  issueLeafCert,
+  opensslAvailable,
+  type TestCa
+} from "./test-support/mtls-pki.js";
 import { asTrustDomainId, type TrustDomainId } from "@scp/schemas";
 
 /**
@@ -342,9 +347,7 @@ describe.skipIf(!opensslAvailable())("M14.3 commander poke sender (mTLS, two-dom
       tx
         .update(federationPeers)
         .set({ baseUrl: httpBaseUrl })
-        .where(
-          and(eq(federationPeers.orgId, commander.orgId), eq(federationPeers.id, badDomainId))
-        )
+        .where(and(eq(federationPeers.orgId, commander.orgId), eq(federationPeers.id, badDomainId)))
     );
 
     const skipped: string[] = [];
@@ -357,9 +360,9 @@ describe.skipIf(!opensslAvailable())("M14.3 commander poke sender (mTLS, two-dom
     // Not a target at all: no "sent", no "refused", no "error" — it never entered the dial loop.
     expect(outcomes.map((o) => o.peerDomainId)).not.toContain(badDomainId);
     // The skip is observable at debug so an operator can tell it apart from a poll-mode peer.
-    expect(skipped.some((m) => m.includes("non-mTLS baseUrl") && m.includes("downgraded-outpost"))).toBe(
-      true
-    );
+    expect(
+      skipped.some((m) => m.includes("non-mTLS baseUrl") && m.includes("downgraded-outpost"))
+    ).toBe(true);
     // The healthy https peer is still poked — the fail-closed skip is per-peer, not a round abort.
     expect(bySent(outcomes)).toContain(outpost.self.domainId);
 
@@ -369,9 +372,7 @@ describe.skipIf(!opensslAvailable())("M14.3 commander poke sender (mTLS, two-dom
       tx
         .update(federationPeers)
         .set({ pokeMode: false })
-        .where(
-          and(eq(federationPeers.orgId, commander.orgId), eq(federationPeers.id, badDomainId))
-        )
+        .where(and(eq(federationPeers.orgId, commander.orgId), eq(federationPeers.id, badDomainId)))
     );
   });
 

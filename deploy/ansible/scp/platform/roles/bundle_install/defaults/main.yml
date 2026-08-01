@@ -22,10 +22,10 @@ scp_registry: ""
 scp_cosign_pubkey: ""
 
 # Pass-throughs to install.sh (all optional).
-scp_helm_namespace: ""       # --namespace (helm mode only)
-scp_helm_release_name: scp   # --release-name (helm mode only)
+scp_helm_namespace: "" # --namespace (helm mode only)
+scp_helm_release_name: scp # --release-name (helm mode only)
 scp_insecure_registry: false # --insecure-registry (self-signed/HTTP registry you control)
-scp_dry_run: false           # --dry-run (verify + retarget-push, skip the final helm/compose apply)
+scp_dry_run: false # --dry-run (verify + retarget-push, skip the final helm/compose apply)
 
 # Health check after install/upgrade. The compose eval stack publishes the api on host port 8080.
 scp_health_url: "http://127.0.0.1:8080/healthz"
