@@ -48,10 +48,14 @@ export function buildAirgapCompose(sourceYamlText: string): string {
 
   const scp = services.get("scp");
   if (!isMap(scp)) {
-    throw new Error("compose file has no 'services.scp' — cannot retarget the scpd image reference");
+    throw new Error(
+      "compose file has no 'services.scp' — cannot retarget the scpd image reference"
+    );
   }
   if (!scp.has("build")) {
-    throw new Error("services.scp has no 'build' key — expected the dev compose file to build from source (nothing to retarget into an image: ref)");
+    throw new Error(
+      "services.scp has no 'build' key — expected the dev compose file to build from source (nothing to retarget into an image: ref)"
+    );
   }
   scp.delete("build");
   // Put `image:` first for readability — cosmetic only, doesn't affect parsing.
@@ -59,7 +63,9 @@ export function buildAirgapCompose(sourceYamlText: string): string {
 
   const postgres = services.get("postgres");
   if (!isMap(postgres)) {
-    throw new Error("compose file has no 'services.postgres' — cannot retarget the postgres image reference");
+    throw new Error(
+      "compose file has no 'services.postgres' — cannot retarget the postgres image reference"
+    );
   }
   postgres.set("image", POSTGRES_IMAGE_PLACEHOLDER);
 

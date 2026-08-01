@@ -65,7 +65,10 @@ export interface CompilePlanInput {
 }
 
 /** Builds `node -> set of nodes it depends on`, restricted to `nodes`. */
-function buildDependencyMap(nodes: readonly string[], edges: readonly DependsOnEdge[]): Map<string, Set<string>> {
+function buildDependencyMap(
+  nodes: readonly string[],
+  edges: readonly DependsOnEdge[]
+): Map<string, Set<string>> {
   const nodeSet = new Set(nodes);
   const deps = new Map<string, Set<string>>();
   for (const n of nodes) deps.set(n, new Set());
@@ -130,7 +133,11 @@ export function compilePlan(input: CompilePlanInput): CompilePlanResult {
       if (!targetSet.has(t)) return { ok: false, error: "unknown_target", target: t };
     }
     if (wave.mode === "parallel") {
-      steps.push({ name: wave.name ?? null, targets: [...wave.targets], requiresFanIn: wave.requiresFanIn });
+      steps.push({
+        name: wave.name ?? null,
+        targets: [...wave.targets],
+        requiresFanIn: wave.requiresFanIn
+      });
       for (const t of wave.targets) assigned.add(t);
     } else {
       for (const t of wave.targets) {

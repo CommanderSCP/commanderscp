@@ -83,8 +83,7 @@ describe("federation sync_scope asymmetry: refused fail-closed, diagnosed accura
   let cursorAfterWidenPair: SyncCursor;
   let thinnedWhilePermittedRefusal: ProblemError;
   let rewidenOutcome:
-    | { ok: true; result: ImportSyncBundleResult }
-    | { ok: false; refusal: ProblemError };
+    { ok: true; result: ImportSyncBundleResult } | { ok: false; refusal: ProblemError };
   let cursorAfterRewiden: SyncCursor;
   let postRewidenResult: ImportSyncBundleResult;
   let cursorAfterPostRewiden: SyncCursor;
@@ -417,8 +416,7 @@ describe("federation sync_scope asymmetry: refused fail-closed, diagnosed accura
     // reopen it: with the permit in force, the ONLY relaxed check is the first entry's link to an
     // anchor this side never recorded. Gaps are still fatal.
     expect(thinnedWhilePermittedRefusal.status).toBe(409);
-    const message =
-      thinnedWhilePermittedRefusal.detail ?? thinnedWhilePermittedRefusal.message;
+    const message = thinnedWhilePermittedRefusal.detail ?? thinnedWhilePermittedRefusal.message;
     expect(message).toMatch(/is not gap-free/);
     // ...and it says, truthfully, that the permit was in force and was not what failed.
     expect(message).toMatch(/one-shot re-anchor permit IS already in force/);
@@ -472,7 +470,9 @@ describe("federation sync_scope asymmetry: refused fail-closed, diagnosed accura
     expect(message).not.toMatch(/^journal chain from peer .* is not gap-free/);
     expect(message).toMatch(/could not be anchored: this side has NO recorded anchor/);
     expect(message).toMatch(/compared against the genesis hash/);
-    expect(message).toMatch(new RegExp(`cursor sits at sequence ${cursorAfterPostRewiden.sequence}`));
+    expect(message).toMatch(
+      new RegExp(`cursor sits at sequence ${cursorAfterPostRewiden.sequence}`)
+    );
 
     // (b) AND THE RECOVERY IS THE ONE THAT ACTUALLY WORKS — the operator-side widen that issues the
     // permit, not "align the scopes and re-export" (which is inert for this state).
@@ -743,7 +743,7 @@ describe("federation sync_scope full re-pair (R1): the ALREADY-WEDGED population
 
     const thinned = await expectRefused(thinAboveCursor(bundle, cursor.sequence));
     expect(thinned.status).toBe(409);
-    expect((thinned.detail ?? thinned.message)).toMatch(/is not gap-free/);
+    expect(thinned.detail ?? thinned.message).toMatch(/is not gap-free/);
     expect((thinned.detail ?? thinned.message).toLowerCase()).not.toContain("tamper");
 
     const skewed = await expectRefused(startAboveCursorPlusOne(bundle, cursor.sequence));
@@ -775,8 +775,8 @@ describe("federation sync_scope full re-pair (R1): the ALREADY-WEDGED population
     const cursor = await outpostCursor();
     const thinned = await expectRefused(thinAboveCursor(await exportToOutpost(), cursor.sequence));
     expect(thinned.status).toBe(409);
-    expect((thinned.detail ?? thinned.message)).toMatch(/is not gap-free/);
-    expect((thinned.detail ?? thinned.message)).toMatch(/a real anchor IS recorded for that peer/);
+    expect(thinned.detail ?? thinned.message).toMatch(/is not gap-free/);
+    expect(thinned.detail ?? thinned.message).toMatch(/a real anchor IS recorded for that peer/);
   });
 });
 

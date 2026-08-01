@@ -45,7 +45,11 @@ function reqEnv(name: string): string {
 
 /** Poll `fn` until it resolves truthy or the deadline passes — the bundled Argo CD Deployments and
  *  their initial-admin secret come up asynchronously after the post-install hook fires. */
-async function waitFor<T>(what: string, fn: () => Promise<T | undefined>, timeoutMs = 300_000): Promise<T> {
+async function waitFor<T>(
+  what: string,
+  fn: () => Promise<T | undefined>,
+  timeoutMs = 300_000
+): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   let lastErr: unknown;
   for (;;) {
@@ -56,14 +60,20 @@ async function waitFor<T>(what: string, fn: () => Promise<T | undefined>, timeou
       lastErr = err;
     }
     if (Date.now() > deadline) {
-      throw new Error(`[argocd-autowire] timed out waiting for ${what}${lastErr ? `: ${String(lastErr)}` : ""}`);
+      throw new Error(
+        `[argocd-autowire] timed out waiting for ${what}${lastErr ? `: ${String(lastErr)}` : ""}`
+      );
     }
     await new Promise((r) => setTimeout(r, 3_000));
   }
 }
 
 /** Read a key out of a k8s Secret via the in-cluster API using the pod's ServiceAccount token. */
-async function readK8sSecretKey(namespace: string, name: string, key: string): Promise<string | undefined> {
+async function readK8sSecretKey(
+  namespace: string,
+  name: string,
+  key: string
+): Promise<string | undefined> {
   const [token, ca] = await Promise.all([
     readFile(`${K8S_SA_DIR}/token`, "utf8"),
     readFile(`${K8S_SA_DIR}/ca.crt`, "utf8").catch(() => undefined)
@@ -72,9 +82,12 @@ async function readK8sSecretKey(namespace: string, name: string, key: string): P
   // presents the cluster CA. We pin trust by passing it via NODE_EXTRA_CA_CERTS in the Job spec, so
   // here a plain fetch to the in-cluster API validates normally.
   void ca;
-  const res = await fetch(`https://kubernetes.default.svc/api/v1/namespaces/${namespace}/secrets/${name}`, {
-    headers: { authorization: `Bearer ${token.trim()}`, accept: "application/json" }
-  });
+  const res = await fetch(
+    `https://kubernetes.default.svc/api/v1/namespaces/${namespace}/secrets/${name}`,
+    {
+      headers: { authorization: `Bearer ${token.trim()}`, accept: "application/json" }
+    }
+  );
   if (res.status === 404) return undefined;
   if (!res.ok) throw new Error(`k8s GET secret ${namespace}/${name} → HTTP ${res.status}`);
   const body = (await res.json()) as { data?: Record<string, string> };
@@ -94,7 +107,11 @@ async function argocdLogin(baseUrl: string, password: string): Promise<string> {
   return body.token;
 }
 
-async function argocdMintAccountToken(baseUrl: string, adminJwt: string, account: string): Promise<string> {
+async function argocdMintAccountToken(
+  baseUrl: string,
+  adminJwt: string,
+  account: string
+): Promise<string> {
   const res = await fetch(`${baseUrl}/api/v1/account/${encodeURIComponent(account)}/token`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${adminJwt}` },
@@ -118,7 +135,9 @@ async function main(): Promise<void> {
   const account = reqEnv("SCP_ARGOCD_ACCOUNT");
   const tokenSecretKey = reqEnv("SCP_ARGOCD_TOKEN_SECRET_KEY");
 
-  console.log(`[argocd-autowire] waiting for Argo CD admin secret ${adminSecretNs}/${adminSecretName}...`);
+  console.log(
+    `[argocd-autowire] waiting for Argo CD admin secret ${adminSecretNs}/${adminSecretName}...`
+  );
   const adminPassword = await waitFor("argocd-initial-admin-secret", () =>
     readK8sSecretKey(adminSecretNs, adminSecretName, "password")
   );
@@ -146,7 +165,12 @@ async function main(): Promise<void> {
       );
     }
     await withTenantTx(db, orgId, (tx) =>
-      putSecret(tx, { orgId, key: tokenSecretKey, value: scopedToken, masterKey: config.secretsMasterKey })
+      putSecret(tx, {
+        orgId,
+        key: tokenSecretKey,
+        value: scopedToken,
+        masterKey: config.secretsMasterKey
+      })
     );
     console.log(
       `[argocd-autowire] done — scoped Argo CD token stored as SCP secret '${tokenSecretKey}' (org ${orgId}). ` +

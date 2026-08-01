@@ -159,9 +159,7 @@ export async function buildBoundarySegment(
     // The receiving side reports its OWN verdict, and only its own. Latest verdict wins — a change
     // re-verified after remediation is described by its current outcome, and `listDecisionsForSubject`
     // already returns oldest-first.
-    const verdicts = decisions.filter(
-      (d) => d.kind === PRE_DEPLOY_ARTIFACT_VERIFY_DECISION_KIND
-    );
+    const verdicts = decisions.filter((d) => d.kind === PRE_DEPLOY_ARTIFACT_VERIFY_DECISION_KIND);
     const latest = verdicts[verdicts.length - 1];
     if (!latest) {
       // Received, no verdict recorded. Includes the deliberate case where the pre-deploy gate's

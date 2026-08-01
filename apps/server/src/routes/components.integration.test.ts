@@ -122,7 +122,10 @@ describe("components: strict create-in-service (M12 P5a)", () => {
     expect(noSvc.statusCode, noSvc.body).toBe(400);
 
     // Create branch, with service -> 201 + edge.
-    const created = await admin.components.upsertByUrn(urn, { name: "put-created", service: svc.id });
+    const created = await admin.components.upsertByUrn(urn, {
+      name: "put-created",
+      service: svc.id
+    });
     expect(created.name).toBe("put-created");
     const edges = await admin.relationships.list({ typeId: "contains", toId: created.id });
     expect(edges.items).toHaveLength(1);
@@ -132,7 +135,10 @@ describe("components: strict create-in-service (M12 P5a)", () => {
     // move verb, so the component stays contained by its ORIGINAL service even if a different one is
     // named. Update the name to prove the update path ran.
     const other = await admin.services.create({ name: `svc-${randomUUID().slice(0, 8)}` });
-    const updated = await admin.components.upsertByUrn(urn, { name: "put-renamed", service: other.id });
+    const updated = await admin.components.upsertByUrn(urn, {
+      name: "put-renamed",
+      service: other.id
+    });
     expect(updated.name).toBe("put-renamed");
     expect(updated.id).toBe(created.id);
     const after = await admin.relationships.list({ typeId: "contains", toId: created.id });
@@ -174,9 +180,9 @@ describe("components: strict create-in-service (M12 P5a)", () => {
     const user = await createTestUser(server, org, [{ role: "Operator", scope: unrelated.id }]);
     const client = new ScpClient({ baseUrl: server.baseUrl, token: user.token });
 
-    await expect(client.components.create({ name: "sneaky", service: target.id })).rejects.toMatchObject(
-      { status: 403 }
-    );
+    await expect(
+      client.components.create({ name: "sneaky", service: target.id })
+    ).rejects.toMatchObject({ status: 403 });
   });
 
   it("rejects an unauthenticated create (401)", async () => {
@@ -256,7 +262,9 @@ describe("components: assign / atomic move into a service (M12 P5b)", () => {
       status: 400
     });
     // subject ref is a service, not a component → 400
-    await expect(admin.components.setService(svc.id, svc.id)).rejects.toMatchObject({ status: 400 });
+    await expect(admin.components.setService(svc.id, svc.id)).rejects.toMatchObject({
+      status: 400
+    });
   });
 
   it("assign is authority-gated at BOTH endpoints — a subject that can write the component but not the service is refused", async () => {
@@ -345,7 +353,9 @@ describe("components: driving-case merge (M12 P5d)", () => {
     await putBinding(survivor.id, "configuration");
     await putBinding(loser.id, "configuration");
 
-    await expect(admin.components.merge(survivor.id, loser.id)).rejects.toMatchObject({ status: 409 });
+    await expect(admin.components.merge(survivor.id, loser.id)).rejects.toMatchObject({
+      status: 409
+    });
     // Nothing moved — loser still alive with its binding.
     await expect(admin.components.get(loser.id)).resolves.toBeTruthy();
     expect(await typesOf(survivor.id)).toEqual(["configuration"]);
@@ -365,7 +375,9 @@ describe("components: driving-case merge (M12 P5d)", () => {
     const loser = await createTestComponent(admin, { name: `lose-${rand()}`, service: svc.id });
     await putBinding(loser.id, "configuration");
 
-    await expect(admin.components.merge(survivor.id, loser.id)).rejects.toMatchObject({ status: 409 });
+    await expect(admin.components.merge(survivor.id, loser.id)).rejects.toMatchObject({
+      status: 409
+    });
     await expect(admin.components.get(loser.id)).resolves.toBeTruthy(); // untouched
   });
 
@@ -376,7 +388,9 @@ describe("components: driving-case merge (M12 P5d)", () => {
     // A freshly-proposed change on the survivor is in-flight (non-terminal).
     await admin.changes.propose({ name: "in-flight", targets: [survivor.id] });
 
-    await expect(admin.components.merge(survivor.id, loser.id)).rejects.toMatchObject({ status: 409 });
+    await expect(admin.components.merge(survivor.id, loser.id)).rejects.toMatchObject({
+      status: 409
+    });
     await expect(admin.components.get(loser.id)).resolves.toBeTruthy();
   });
 
@@ -394,7 +408,9 @@ describe("components: driving-case merge (M12 P5d)", () => {
 
     const user = await createTestUser(server, org, [{ role: "Operator", scope: survivor.id }]);
     const client = new ScpClient({ baseUrl: server.baseUrl, token: user.token });
-    await expect(client.components.merge(survivor.id, loser.id)).rejects.toMatchObject({ status: 403 });
+    await expect(client.components.merge(survivor.id, loser.id)).rejects.toMatchObject({
+      status: 403
+    });
     await expect(admin.components.get(loser.id)).resolves.toBeTruthy(); // nothing happened
   });
 });

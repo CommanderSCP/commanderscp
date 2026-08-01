@@ -155,7 +155,9 @@ describe("M13.2b s3-compatible DeliveryTarget — real MinIO round-trip", () => 
         endpoint: "https://attacker-controlled.example:9000",
         bucket: BUCKET
       });
-      throw new Error("expected assertDeliveryTargetRooted to refuse the out-of-allowlist endpoint");
+      throw new Error(
+        "expected assertDeliveryTargetRooted to refuse the out-of-allowlist endpoint"
+      );
     } catch (err) {
       detail = (err as { detail?: string }).detail ?? "";
     }
@@ -202,7 +204,11 @@ describe("M13.2b s3-compatible DeliveryTarget — real MinIO round-trip", () => 
         vaultCreds!
       );
       expect(written).toBe(`s3://${BUCKET}/vaulted/scp-promotion-vaulted.scpbundle`);
-      const got = await s3Get(resolved.outboundS3!, creds, "vaulted/scp-promotion-vaulted.scpbundle");
+      const got = await s3Get(
+        resolved.outboundS3!,
+        creds,
+        "vaulted/scp-promotion-vaulted.scpbundle"
+      );
       expect(got.toString("utf8")).toBe("{}");
     } finally {
       await domain?.close();

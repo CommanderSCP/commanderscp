@@ -27,7 +27,10 @@ import {
   BoundarySegmentStrip,
   NoBoundarySegment
 } from "../components/pipeline/BoundarySegmentStrip";
-import { PipelineWaveCard, type PipelineWaveTargetLinks } from "../components/pipeline/PipelineWaveCard";
+import {
+  PipelineWaveCard,
+  type PipelineWaveTargetLinks
+} from "../components/pipeline/PipelineWaveCard";
 
 interface PromotionVerdict {
   state: PromotionState;
@@ -194,7 +197,13 @@ function finalGate(
 
 /** A "Why?" link into the change-detail Decisions timeline (its `#decision-<id>` anchor). Keeps the
  *  full explainability surface in one place rather than duplicating the timeline on this view. */
-function WhyLink({ changeId, decisionId }: { changeId: string; decisionId: string }): React.JSX.Element {
+function WhyLink({
+  changeId,
+  decisionId
+}: {
+  changeId: string;
+  decisionId: string;
+}): React.JSX.Element {
   return (
     <Link
       to="/changes/$id"
@@ -251,7 +260,10 @@ export function ChangePipelinePage(): React.JSX.Element {
       const bindingLists = await Promise.all(
         targetIds.map(
           async (tid) =>
-            [tid, await client.executors.listBindings(tid).catch(() => [] as ExecutorBinding[])] as const
+            [
+              tid,
+              await client.executors.listBindings(tid).catch(() => [] as ExecutorBinding[])
+            ] as const
         )
       );
       const bindingsByTarget: Record<string, ExecutorBinding[]> = Object.fromEntries(bindingLists);
@@ -342,7 +354,10 @@ export function ChangePipelinePage(): React.JSX.Element {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-semibold text-slate-900" data-testid="pipeline-change-name">
+            <h1
+              className="text-2xl font-semibold text-slate-900"
+              data-testid="pipeline-change-name"
+            >
               {change.name}
             </h1>
             <Badge variant={stateBadgeVariant(change.state)}>{change.state}</Badge>
@@ -388,7 +403,11 @@ export function ChangePipelinePage(): React.JSX.Element {
                     {req.satisfiedByChangeId && (
                       <>
                         {" · "}
-                        <Link to="/changes/$id" params={{ id: req.satisfiedByChangeId }} className="underline">
+                        <Link
+                          to="/changes/$id"
+                          params={{ id: req.satisfiedByChangeId }}
+                          className="underline"
+                        >
                           by change
                         </Link>
                       </>
@@ -471,7 +490,9 @@ export function ChangePipelinePage(): React.JSX.Element {
                     label={gate.label}
                     detail={gate.detail}
                     why={
-                      gate.decisionId ? <WhyLink changeId={id} decisionId={gate.decisionId} /> : undefined
+                      gate.decisionId ? (
+                        <WhyLink changeId={id} decisionId={gate.decisionId} />
+                      ) : undefined
                     }
                   />
                 )}

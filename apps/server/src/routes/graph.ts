@@ -75,7 +75,12 @@ export function registerGraphRoutes(app: FastifyInstance, deps: AppDeps): void {
     url: "/api/v1/graph/traverse",
     schema: {
       querystring: TraverseRequestSchema,
-      response: { 200: TraverseResultSchema, 401: ProblemSchema, 403: ProblemSchema, 408: ProblemSchema }
+      response: {
+        200: TraverseResultSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        408: ProblemSchema
+      }
     },
     config: {
       openapi: {

@@ -41,7 +41,11 @@ describe("resolvePolicies — stricter-wins resolution matrix (table-driven)", (
         matchedAt: { objectId: "org", depth: 0, via: "unscoped" }
       })
     ]);
-    expect(effective).toMatchObject({ name: "prod-security", enforcement: "required", requireControls: ["security-scan"] });
+    expect(effective).toMatchObject({
+      name: "prod-security",
+      enforcement: "required",
+      requireControls: ["security-scan"]
+    });
   });
 
   it("domain-level ADDS a control on top of org-level (union, local-adds-strictness)", () => {
@@ -64,20 +68,44 @@ describe("resolvePolicies — stricter-wins resolution matrix (table-driven)", (
 
   it("CAN'T-WEAKEN: a domain-level 'advisory' instance never downgrades an org-level 'required' instance of the same policy", () => {
     const [effective] = resolvePolicies([
-      matched({ name: "prod-security", enforcement: "required", matchedAt: { objectId: "org", depth: 0, via: "objectRef" } }),
-      matched({ name: "prod-security", enforcement: "advisory", matchedAt: { objectId: "domain-1", depth: 1, via: "objectRef" } })
+      matched({
+        name: "prod-security",
+        enforcement: "required",
+        matchedAt: { objectId: "org", depth: 0, via: "objectRef" }
+      }),
+      matched({
+        name: "prod-security",
+        enforcement: "advisory",
+        matchedAt: { objectId: "domain-1", depth: 1, via: "objectRef" }
+      })
     ]);
     expect(effective!.enforcement).toBe("required");
   });
 
   it("CAN'T-WEAKEN, symmetric: order of matches passed in never changes the resolved enforcement", () => {
     const orgFirst = resolvePolicies([
-      matched({ name: "p", enforcement: "required", matchedAt: { objectId: "org", depth: 0, via: "objectRef" } }),
-      matched({ name: "p", enforcement: "advisory", matchedAt: { objectId: "domain", depth: 1, via: "objectRef" } })
+      matched({
+        name: "p",
+        enforcement: "required",
+        matchedAt: { objectId: "org", depth: 0, via: "objectRef" }
+      }),
+      matched({
+        name: "p",
+        enforcement: "advisory",
+        matchedAt: { objectId: "domain", depth: 1, via: "objectRef" }
+      })
     ]);
     const domainFirst = resolvePolicies([
-      matched({ name: "p", enforcement: "advisory", matchedAt: { objectId: "domain", depth: 1, via: "objectRef" } }),
-      matched({ name: "p", enforcement: "required", matchedAt: { objectId: "org", depth: 0, via: "objectRef" } })
+      matched({
+        name: "p",
+        enforcement: "advisory",
+        matchedAt: { objectId: "domain", depth: 1, via: "objectRef" }
+      }),
+      matched({
+        name: "p",
+        enforcement: "required",
+        matchedAt: { objectId: "org", depth: 0, via: "objectRef" }
+      })
     ]);
     expect(orgFirst[0]!.enforcement).toBe("required");
     expect(domainFirst[0]!.enforcement).toBe("required");
@@ -85,9 +113,21 @@ describe("resolvePolicies — stricter-wins resolution matrix (table-driven)", (
 
   it("service-level raises recommended org policy to required (3-level chain: org -> domain -> service)", () => {
     const [effective] = resolvePolicies([
-      matched({ name: "p", enforcement: "recommended", matchedAt: { objectId: "org", depth: 0, via: "objectRef" } }),
-      matched({ name: "p", enforcement: "recommended", matchedAt: { objectId: "domain", depth: 1, via: "objectRef" } }),
-      matched({ name: "p", enforcement: "required", matchedAt: { objectId: "service", depth: 2, via: "objectRef" } })
+      matched({
+        name: "p",
+        enforcement: "recommended",
+        matchedAt: { objectId: "org", depth: 0, via: "objectRef" }
+      }),
+      matched({
+        name: "p",
+        enforcement: "recommended",
+        matchedAt: { objectId: "domain", depth: 1, via: "objectRef" }
+      }),
+      matched({
+        name: "p",
+        enforcement: "required",
+        matchedAt: { objectId: "service", depth: 2, via: "objectRef" }
+      })
     ]);
     expect(effective!.enforcement).toBe("required");
   });
@@ -139,7 +179,11 @@ describe("resolvePolicies — stricter-wins resolution matrix (table-driven)", (
       })
     ]);
     expect(effective!.requireApprovals).toHaveLength(1);
-    expect(effective!.requireApprovals[0]).toMatchObject({ count: 2, fromRole: "Approver", scope: "org" });
+    expect(effective!.requireApprovals[0]).toMatchObject({
+      count: 2,
+      fromRole: "Approver",
+      scope: "org"
+    });
   });
 
   it("DIFFERENT (fromRole, scope) requireApprovals pairs stay as SEPARATE entries (not merged)", () => {
@@ -162,8 +206,16 @@ describe("resolvePolicies — stricter-wins resolution matrix (table-driven)", (
 
   it("policies with DIFFERENT names never merge — each resolves independently", () => {
     const effective = resolvePolicies([
-      matched({ name: "prod-security", enforcement: "required", matchedAt: { objectId: "org", depth: 0, via: "objectRef" } }),
-      matched({ name: "cost-control", enforcement: "advisory", matchedAt: { objectId: "org", depth: 0, via: "objectRef" } })
+      matched({
+        name: "prod-security",
+        enforcement: "required",
+        matchedAt: { objectId: "org", depth: 0, via: "objectRef" }
+      }),
+      matched({
+        name: "cost-control",
+        enforcement: "advisory",
+        matchedAt: { objectId: "org", depth: 0, via: "objectRef" }
+      })
     ]);
     expect(effective).toHaveLength(2);
     expect(effective.find((e) => e.name === "prod-security")!.enforcement).toBe("required");
@@ -186,7 +238,11 @@ describe("resolvePolicies — property: order-independence and can't-weaken (fas
         (enforcements, depths) => {
           const n = Math.min(enforcements.length, depths.length);
           const group: MatchedPolicy[] = Array.from({ length: n }, (_, i) =>
-            matched({ name: "p", enforcement: enforcements[i]!, matchedAt: { objectId: `o${i}`, depth: depths[i]!, via: "objectRef" } })
+            matched({
+              name: "p",
+              enforcement: enforcements[i]!,
+              matchedAt: { objectId: `o${i}`, depth: depths[i]!, via: "objectRef" }
+            })
           );
           const expectedMax = enforcements.slice(0, n).includes("required")
             ? "required"
@@ -209,7 +265,13 @@ describe("resolvePolicies — property: order-independence and can't-weaken (fas
   it("the effective enforcement is NEVER weaker than any single contributor's own enforcement", () => {
     fc.assert(
       fc.property(fc.array(enforcementArb, { minLength: 1, maxLength: 8 }), (enforcements) => {
-        const group = enforcements.map((e, i) => matched({ name: "p", enforcement: e, matchedAt: { objectId: `o${i}`, depth: i, via: "objectRef" } }));
+        const group = enforcements.map((e, i) =>
+          matched({
+            name: "p",
+            enforcement: e,
+            matchedAt: { objectId: `o${i}`, depth: i, via: "objectRef" }
+          })
+        );
         const [effective] = resolvePolicies(group);
         for (const e of enforcements) {
           expect(isAtLeastAsStrict(effective!.enforcement, e)).toBe(true);
@@ -222,7 +284,10 @@ describe("resolvePolicies — property: order-independence and can't-weaken (fas
   it("the effective requireControls set is a SUPERSET of every contributor's own controls (can never drop one)", () => {
     fc.assert(
       fc.property(
-        fc.array(fc.array(fc.constantFrom("a", "b", "c", "d", "e"), { maxLength: 4 }), { minLength: 1, maxLength: 6 }),
+        fc.array(fc.array(fc.constantFrom("a", "b", "c", "d", "e"), { maxLength: 4 }), {
+          minLength: 1,
+          maxLength: 6
+        }),
         (controlLists) => {
           const group = controlLists.map((controls, i) =>
             matched({

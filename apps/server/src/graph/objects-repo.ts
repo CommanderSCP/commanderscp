@@ -18,10 +18,7 @@ import { validateProperties } from "./property-validation.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { eventBus } from "../events/event-bus.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
-import {
-  assertOutpostPeerBinding,
-  isPeerBoundObjectType
-} from "../federation/outpost-binding.js";
+import { assertOutpostPeerBinding, isPeerBoundObjectType } from "../federation/outpost-binding.js";
 import { appendJournalEntry } from "../federation/journal-repo.js";
 import type { JournalEntryKind } from "@scp/schemas";
 import { canonicalJson } from "../util/canonical-json.js";

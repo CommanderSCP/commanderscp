@@ -29,7 +29,12 @@ import { FEDERATION_SYNC_QUEUE, federationSyncOrgTick } from "./federation-sync.
 import { pokeRateLimiter } from "./poke-rate-limit.js";
 import { pokeDownstreamPeersForOrg } from "./poke-sender.js";
 import type { FederationClientMtls } from "./federation-outbound.js";
-import { createTestCa, issueLeafCert, opensslAvailable, type TestCa } from "./test-support/mtls-pki.js";
+import {
+  createTestCa,
+  issueLeafCert,
+  opensslAvailable,
+  type TestCa
+} from "./test-support/mtls-pki.js";
 
 /**
  * M14.4 (test i) — THE THREE-HOP POKE CHAIN, end to end over real mTLS listeners and three genuinely
@@ -141,204 +146,207 @@ async function bootDomain(label: string, ca: TestCa): Promise<Domain> {
   };
 }
 
-describe.skipIf(!opensslAvailable())("M14.4 three-hop poke chain (commander -> retrans -> outpost)", () => {
-  let ca: TestCa;
-  let commander: Domain;
-  let retrans: Domain;
-  let outpost: Domain;
-  let commanderMtls: FederationClientMtls;
-  let retransMtls: FederationClientMtls;
-  let outpostMtls: FederationClientMtls;
+describe.skipIf(!opensslAvailable())(
+  "M14.4 three-hop poke chain (commander -> retrans -> outpost)",
+  () => {
+    let ca: TestCa;
+    let commander: Domain;
+    let retrans: Domain;
+    let outpost: Domain;
+    let commanderMtls: FederationClientMtls;
+    let retransMtls: FederationClientMtls;
+    let outpostMtls: FederationClientMtls;
 
-  function clientCertFor(domain: Domain, label: string): FederationClientMtls {
-    const leaf = issueLeafCert(ca, {
-      name: `${label}-client-${randomUUID()}`,
-      sanUri: federationPeerSanUri(domain.self.domainId)
+    function clientCertFor(domain: Domain, label: string): FederationClientMtls {
+      const leaf = issueLeafCert(ca, {
+        name: `${label}-client-${randomUUID()}`,
+        sanUri: federationPeerSanUri(domain.self.domainId)
+      });
+      return {
+        cert: leaf.certPem.toString("utf8"),
+        key: leaf.keyPem.toString("utf8"),
+        ca: ca.caCrtPem.toString("utf8")
+      };
+    }
+
+    async function outboxCount(domain: Domain): Promise<number> {
+      const rows = await withTenantTx(domain.db, domain.orgId, (tx) =>
+        tx.select({ id: outbox.id }).from(outbox).where(eq(outbox.orgId, domain.orgId))
+      );
+      return rows.length;
+    }
+
+    beforeAll(async () => {
+      ca = createTestCa();
+      commander = await bootDomain("cmd", ca);
+      retrans = await bootDomain("rtx", ca);
+      outpost = await bootDomain("out", ca);
+
+      commanderMtls = clientCertFor(commander, "cmd");
+      retransMtls = clientCertFor(retrans, "rtx");
+      outpostMtls = clientCertFor(outpost, "out");
+
+      // Dial SANs (DNS:localhost), not the bound 127.0.0.1 — the dialer validates the server cert.
+      const commanderUrl = `https://localhost:${commander.port}`;
+      const retransUrl = `https://localhost:${retrans.port}`;
+      const outpostUrl = `https://localhost:${outpost.port}`;
+
+      const keys = {
+        commander: await withTenantTx(commander.db, commander.orgId, (tx) =>
+          ensureInstanceKey(tx, commander.orgId)
+        ),
+        retrans: await withTenantTx(retrans.db, retrans.orgId, (tx) =>
+          ensureInstanceKey(tx, retrans.orgId)
+        ),
+        outpost: await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+          ensureInstanceKey(tx, outpost.orgId)
+        )
+      };
+
+      // COMMANDER knows the retrans as a downstream poke target.
+      await withTenantTx(commander.db, commander.orgId, (tx) =>
+        pairPeer(tx, {
+          orgId: commander.orgId,
+          domainId: retrans.self.domainId,
+          name: "the-retrans",
+          role: "retrans",
+          publicKey: keys.retrans.publicKey,
+          baseUrl: retransUrl,
+          pokeMode: true
+        })
+      );
+      // RETRANS knows the commander UPSTREAM (pull source + poke consent) and the outpost DOWNSTREAM.
+      await withTenantTx(retrans.db, retrans.orgId, (tx) =>
+        pairPeer(tx, {
+          orgId: retrans.orgId,
+          domainId: commander.self.domainId,
+          name: "the-commander",
+          role: "commander",
+          publicKey: keys.commander.publicKey,
+          baseUrl: commanderUrl,
+          pokeMode: true
+        })
+      );
+      await withTenantTx(retrans.db, retrans.orgId, (tx) =>
+        pairPeer(tx, {
+          orgId: retrans.orgId,
+          domainId: outpost.self.domainId,
+          name: "the-outpost",
+          role: "outpost",
+          publicKey: keys.outpost.publicKey,
+          baseUrl: outpostUrl,
+          pokeMode: true
+        })
+      );
+      // OUTPOST knows the retrans as ITS upstream (`commander` role = "what I pull from").
+      await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+        pairPeer(tx, {
+          orgId: outpost.orgId,
+          domainId: retrans.self.domainId,
+          name: "the-retrans",
+          role: "commander",
+          publicKey: keys.retrans.publicKey,
+          baseUrl: retransUrl,
+          pokeMode: true
+        })
+      );
+
+      // Something at the top of the chain for the retrans to import.
+      await withTenantTx(commander.db, commander.orgId, (tx) =>
+        createObject(tx, {
+          orgId: commander.orgId,
+          domainId: null,
+          typeId: "service",
+          actorObjectId: commander.orgId,
+          requestId: "m14-4-chain-seed",
+          name: "chain-origin-service",
+          properties: { tier: "critical" }
+        })
+      );
+    }, 240_000);
+
+    afterAll(async () => {
+      await outpost?.close();
+      await retrans?.close();
+      await commander?.close();
     });
-    return {
-      cert: leaf.certPem.toString("utf8"),
-      key: leaf.keyPem.toString("utf8"),
-      ca: ca.caCrtPem.toString("utf8")
-    };
+
+    beforeEach(() => {
+      pokeRateLimiter.reset();
+    });
+
+    it("HOP 1+2: the commander pokes the retrans; the retrans's IMPORT produces the ONWARD poke and the outpost pulls", async () => {
+      // ---- HOP 1: commander -> retrans (contentless, mTLS, best-effort).
+      const hop1 = await pokeDownstreamPeersForOrg(commander.db, commander.orgId, {
+        bearer: retrans.adminToken,
+        mtls: commanderMtls
+      });
+      expect(hop1).toHaveLength(1);
+      expect(hop1[0]!.outcome).toBe("sent");
+      expect(retrans.sends).toContain(FEDERATION_SYNC_QUEUE);
+      // D2: the retrans can now legitimately go sparse on its commander — pokes DO arrive.
+      const retransUpstream = await withTenantTx(retrans.db, retrans.orgId, (tx) =>
+        getPeerByIdOrName(tx, retrans.orgId, commander.self.domainId)
+      );
+      expect(retransUpstream.lastPokeReceivedAt).not.toBeNull();
+
+      // ---- The retrans's poke-woken (FORCED) tick pulls + imports from the commander.
+      const outboxBefore = await outboxCount(retrans);
+      const pulled = await federationSyncOrgTick(retrans.db, retrans.orgId, {
+        env: { SCP_FEDERATION_SYNC_BEARER: commander.adminToken },
+        mtls: retransMtls,
+        force: true
+      });
+      expect(pulled).toHaveLength(1);
+      expect(pulled[0]!.outcome).toBe("imported");
+      expect(pulled[0]!.appliedEntries ?? 0).toBeGreaterThan(0);
+
+      // THE CAUSAL LINK: applying entries wrote outbox rows in the SAME transaction. The onward poke
+      // is derived from THOSE rows (the sender hangs off the outbox relay) — it is not a forwarded
+      // copy of the poke that arrived.
+      const outboxAfter = await outboxCount(retrans);
+      expect(outboxAfter).toBeGreaterThan(outboxBefore);
+
+      // ---- HOP 2: retrans -> outpost, exactly as the outbox relay would drive it.
+      const hop2 = await pokeDownstreamPeersForOrg(retrans.db, retrans.orgId, {
+        bearer: outpost.adminToken,
+        mtls: retransMtls
+      });
+      expect(hop2).toHaveLength(1);
+      expect(hop2[0]!.outcome).toBe("sent");
+      expect(outpost.sends).toContain(FEDERATION_SYNC_QUEUE);
+      const outpostUpstream = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+        getPeerByIdOrName(tx, outpost.orgId, retrans.self.domainId)
+      );
+      expect(outpostUpstream.lastPokeReceivedAt).not.toBeNull();
+
+      // ---- And the outpost's poke-woken tick really does pull from the retrans.
+      const outpostPull = await federationSyncOrgTick(outpost.db, outpost.orgId, {
+        env: { SCP_FEDERATION_SYNC_BEARER: retrans.adminToken },
+        mtls: outpostMtls,
+        force: true
+      });
+      expect(outpostPull).toHaveLength(1);
+      expect(outpostPull[0]!.outcome).toBe("imported");
+    }, 120_000);
+
+    it("REPLAY TERMINATES THE CHAIN: a byte-identical re-import applies nothing and produces NO onward poke", async () => {
+      const outboxBefore = await outboxCount(retrans);
+
+      // The same pull again — the cursor has already advanced, so this re-import is a no-op.
+      const replay = await federationSyncOrgTick(retrans.db, retrans.orgId, {
+        env: { SCP_FEDERATION_SYNC_BEARER: commander.adminToken },
+        mtls: retransMtls,
+        force: true
+      });
+      expect(replay).toHaveLength(1);
+      expect(replay[0]!.outcome).toBe("imported");
+      expect(replay[0]!.appliedEntries ?? 0).toBe(0);
+
+      // ZERO new outbox rows => the outbox relay has nothing to hand the poke sender => NO onward
+      // poke. The chain terminates by CONSTRUCTION — no hop counter, no TTL, and therefore not a
+      // single byte of content inside the contentless signal.
+      expect(await outboxCount(retrans)).toBe(outboxBefore);
+    }, 120_000);
   }
-
-  async function outboxCount(domain: Domain): Promise<number> {
-    const rows = await withTenantTx(domain.db, domain.orgId, (tx) =>
-      tx.select({ id: outbox.id }).from(outbox).where(eq(outbox.orgId, domain.orgId))
-    );
-    return rows.length;
-  }
-
-  beforeAll(async () => {
-    ca = createTestCa();
-    commander = await bootDomain("cmd", ca);
-    retrans = await bootDomain("rtx", ca);
-    outpost = await bootDomain("out", ca);
-
-    commanderMtls = clientCertFor(commander, "cmd");
-    retransMtls = clientCertFor(retrans, "rtx");
-    outpostMtls = clientCertFor(outpost, "out");
-
-    // Dial SANs (DNS:localhost), not the bound 127.0.0.1 — the dialer validates the server cert.
-    const commanderUrl = `https://localhost:${commander.port}`;
-    const retransUrl = `https://localhost:${retrans.port}`;
-    const outpostUrl = `https://localhost:${outpost.port}`;
-
-    const keys = {
-      commander: await withTenantTx(commander.db, commander.orgId, (tx) =>
-        ensureInstanceKey(tx, commander.orgId)
-      ),
-      retrans: await withTenantTx(retrans.db, retrans.orgId, (tx) =>
-        ensureInstanceKey(tx, retrans.orgId)
-      ),
-      outpost: await withTenantTx(outpost.db, outpost.orgId, (tx) =>
-        ensureInstanceKey(tx, outpost.orgId)
-      )
-    };
-
-    // COMMANDER knows the retrans as a downstream poke target.
-    await withTenantTx(commander.db, commander.orgId, (tx) =>
-      pairPeer(tx, {
-        orgId: commander.orgId,
-        domainId: retrans.self.domainId,
-        name: "the-retrans",
-        role: "retrans",
-        publicKey: keys.retrans.publicKey,
-        baseUrl: retransUrl,
-        pokeMode: true
-      })
-    );
-    // RETRANS knows the commander UPSTREAM (pull source + poke consent) and the outpost DOWNSTREAM.
-    await withTenantTx(retrans.db, retrans.orgId, (tx) =>
-      pairPeer(tx, {
-        orgId: retrans.orgId,
-        domainId: commander.self.domainId,
-        name: "the-commander",
-        role: "commander",
-        publicKey: keys.commander.publicKey,
-        baseUrl: commanderUrl,
-        pokeMode: true
-      })
-    );
-    await withTenantTx(retrans.db, retrans.orgId, (tx) =>
-      pairPeer(tx, {
-        orgId: retrans.orgId,
-        domainId: outpost.self.domainId,
-        name: "the-outpost",
-        role: "outpost",
-        publicKey: keys.outpost.publicKey,
-        baseUrl: outpostUrl,
-        pokeMode: true
-      })
-    );
-    // OUTPOST knows the retrans as ITS upstream (`commander` role = "what I pull from").
-    await withTenantTx(outpost.db, outpost.orgId, (tx) =>
-      pairPeer(tx, {
-        orgId: outpost.orgId,
-        domainId: retrans.self.domainId,
-        name: "the-retrans",
-        role: "commander",
-        publicKey: keys.retrans.publicKey,
-        baseUrl: retransUrl,
-        pokeMode: true
-      })
-    );
-
-    // Something at the top of the chain for the retrans to import.
-    await withTenantTx(commander.db, commander.orgId, (tx) =>
-      createObject(tx, {
-        orgId: commander.orgId,
-        domainId: null,
-        typeId: "service",
-        actorObjectId: commander.orgId,
-        requestId: "m14-4-chain-seed",
-        name: "chain-origin-service",
-        properties: { tier: "critical" }
-      })
-    );
-  }, 240_000);
-
-  afterAll(async () => {
-    await outpost?.close();
-    await retrans?.close();
-    await commander?.close();
-  });
-
-  beforeEach(() => {
-    pokeRateLimiter.reset();
-  });
-
-  it("HOP 1+2: the commander pokes the retrans; the retrans's IMPORT produces the ONWARD poke and the outpost pulls", async () => {
-    // ---- HOP 1: commander -> retrans (contentless, mTLS, best-effort).
-    const hop1 = await pokeDownstreamPeersForOrg(commander.db, commander.orgId, {
-      bearer: retrans.adminToken,
-      mtls: commanderMtls
-    });
-    expect(hop1).toHaveLength(1);
-    expect(hop1[0]!.outcome).toBe("sent");
-    expect(retrans.sends).toContain(FEDERATION_SYNC_QUEUE);
-    // D2: the retrans can now legitimately go sparse on its commander — pokes DO arrive.
-    const retransUpstream = await withTenantTx(retrans.db, retrans.orgId, (tx) =>
-      getPeerByIdOrName(tx, retrans.orgId, commander.self.domainId)
-    );
-    expect(retransUpstream.lastPokeReceivedAt).not.toBeNull();
-
-    // ---- The retrans's poke-woken (FORCED) tick pulls + imports from the commander.
-    const outboxBefore = await outboxCount(retrans);
-    const pulled = await federationSyncOrgTick(retrans.db, retrans.orgId, {
-      env: { SCP_FEDERATION_SYNC_BEARER: commander.adminToken },
-      mtls: retransMtls,
-      force: true
-    });
-    expect(pulled).toHaveLength(1);
-    expect(pulled[0]!.outcome).toBe("imported");
-    expect(pulled[0]!.appliedEntries ?? 0).toBeGreaterThan(0);
-
-    // THE CAUSAL LINK: applying entries wrote outbox rows in the SAME transaction. The onward poke
-    // is derived from THOSE rows (the sender hangs off the outbox relay) — it is not a forwarded
-    // copy of the poke that arrived.
-    const outboxAfter = await outboxCount(retrans);
-    expect(outboxAfter).toBeGreaterThan(outboxBefore);
-
-    // ---- HOP 2: retrans -> outpost, exactly as the outbox relay would drive it.
-    const hop2 = await pokeDownstreamPeersForOrg(retrans.db, retrans.orgId, {
-      bearer: outpost.adminToken,
-      mtls: retransMtls
-    });
-    expect(hop2).toHaveLength(1);
-    expect(hop2[0]!.outcome).toBe("sent");
-    expect(outpost.sends).toContain(FEDERATION_SYNC_QUEUE);
-    const outpostUpstream = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
-      getPeerByIdOrName(tx, outpost.orgId, retrans.self.domainId)
-    );
-    expect(outpostUpstream.lastPokeReceivedAt).not.toBeNull();
-
-    // ---- And the outpost's poke-woken tick really does pull from the retrans.
-    const outpostPull = await federationSyncOrgTick(outpost.db, outpost.orgId, {
-      env: { SCP_FEDERATION_SYNC_BEARER: retrans.adminToken },
-      mtls: outpostMtls,
-      force: true
-    });
-    expect(outpostPull).toHaveLength(1);
-    expect(outpostPull[0]!.outcome).toBe("imported");
-  }, 120_000);
-
-  it("REPLAY TERMINATES THE CHAIN: a byte-identical re-import applies nothing and produces NO onward poke", async () => {
-    const outboxBefore = await outboxCount(retrans);
-
-    // The same pull again — the cursor has already advanced, so this re-import is a no-op.
-    const replay = await federationSyncOrgTick(retrans.db, retrans.orgId, {
-      env: { SCP_FEDERATION_SYNC_BEARER: commander.adminToken },
-      mtls: retransMtls,
-      force: true
-    });
-    expect(replay).toHaveLength(1);
-    expect(replay[0]!.outcome).toBe("imported");
-    expect(replay[0]!.appliedEntries ?? 0).toBe(0);
-
-    // ZERO new outbox rows => the outbox relay has nothing to hand the poke sender => NO onward
-    // poke. The chain terminates by CONSTRUCTION — no hop counter, no TTL, and therefore not a
-    // single byte of content inside the contentless signal.
-    expect(await outboxCount(retrans)).toBe(outboxBefore);
-  }, 120_000);
-});
+);

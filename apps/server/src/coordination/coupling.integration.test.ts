@@ -38,7 +38,11 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     server = await listenTestServer({
       withEventRelay: true,
       withReconcileLoop: true,
-      pluginHostOptions: { callTimeoutMs: 8_000, restartBackoffBaseMs: 50, maxRestartBackoffMs: 300 }
+      pluginHostOptions: {
+        callTimeoutMs: 8_000,
+        restartBackoffBaseMs: 50,
+        maxRestartBackoffMs: 300
+      }
     });
     org = await createTestOrg(server, "coupling");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
@@ -140,7 +144,13 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     expect(explained.waitStatus).not.toBeNull();
     expect(explained.waitStatus!.waiting).toBe(true);
     expect(explained.waitStatus!.requirements).toEqual([
-      { key: "feat-x", at: infra.id, atName: "explain-infra", satisfied: false, satisfiedByChangeId: null }
+      {
+        key: "feat-x",
+        at: infra.id,
+        atName: "explain-infra",
+        satisfied: false,
+        satisfiedByChangeId: null
+      }
     ]);
 
     // Provide it; the waiter releases.
@@ -200,8 +210,14 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     const app = await createTestComponent(admin, { name: "report-app" });
     const infraRepo = `acme/report-infra-${randomUUID().slice(0, 8)}`;
     const appRepo = `acme/report-app-${randomUUID().slice(0, 8)}`;
-    await admin.changeSources.createMapping("terraform", { repoPattern: infraRepo, component: infra.id });
-    await admin.changeSources.createMapping("terraform", { repoPattern: appRepo, component: app.id });
+    await admin.changeSources.createMapping("terraform", {
+      repoPattern: infraRepo,
+      component: infra.id
+    });
+    await admin.changeSources.createMapping("terraform", {
+      repoPattern: appRepo,
+      component: app.id
+    });
 
     // The app pipeline reports WITH a requirement — its change must park, exactly as a direct
     // `POST /changes` with the same `requires` does.
@@ -453,10 +469,16 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     // clock-injection seam, same as coordination.integration.test.ts's watchdog tests.
     const farFuture = new Date(Date.now() + 25 * 60 * 60_000);
     const flags = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      runWatchdogSweep(tx, org.orgId, createInMemoryFakeHost(), server.deps.config.secretsMasterKey, {
-        requestId: "coupling-watchdog-test",
-        now: farFuture
-      })
+      runWatchdogSweep(
+        tx,
+        org.orgId,
+        createInMemoryFakeHost(),
+        server.deps.config.secretsMasterKey,
+        {
+          requestId: "coupling-watchdog-test",
+          now: farFuture
+        }
+      )
     );
     const flagged = flags.find((f) => f.changeObjectId === waiter.id);
     expect(flagged).toBeDefined();
@@ -519,8 +541,7 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     const explained = await admin.changes.explain(rollback.id);
     const waitingTransitions = explained.decisions.filter(
       (d) =>
-        d.kind === "transition" &&
-        (d.inputContext as { toState?: string }).toState === "waiting"
+        d.kind === "transition" && (d.inputContext as { toState?: string }).toState === "waiting"
     );
     expect(waitingTransitions).toHaveLength(0);
     expect(explained.waitStatus).toBeNull();
@@ -676,7 +697,11 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
       }
     ]);
     expect(inputContext.ambiguousProviders).toEqual([
-      { key: "reused-key", at: infra.id, providerChangeObjectIds: expect.arrayContaining([providerA.id, providerB.id]) }
+      {
+        key: "reused-key",
+        at: infra.id,
+        providerChangeObjectIds: expect.arrayContaining([providerA.id, providerB.id])
+      }
     ]);
     expect(inputContext.ambiguousProviders![0]!.providerChangeObjectIds).toHaveLength(2);
   }, 60_000);

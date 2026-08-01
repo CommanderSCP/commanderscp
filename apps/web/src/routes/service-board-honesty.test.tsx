@@ -196,8 +196,10 @@ describe("service board summary: an unassessable count is never dressed as a suc
 
     // The premise is asserted too: if the success styling itself were renamed, this test must fail
     // rather than pass vacuously.
-    expect(statMarkup(html, "board-summary-stable"), "premise: Stable really is the success variant")
-      .toContain("bg-green-600");
+    expect(
+      statMarkup(html, "board-summary-stable"),
+      "premise: Stable really is the success variant"
+    ).toContain("bg-green-600");
     expect(statMarkup(html, "board-summary-not-driven-here")).not.toContain("bg-green-600");
     expect(html).toContain(">Not driven here</div>");
   });

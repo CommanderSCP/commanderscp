@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { existsSync } from "node:fs";
-import { ASSETS_DIR, BUILD_AND_TEST_DOC, COMPOSE_FILE, DESIGN_DOC, HELM_CHART_DIR, REPO_ROOT } from "./repo-paths.js";
+import {
+  ASSETS_DIR,
+  BUILD_AND_TEST_DOC,
+  COMPOSE_FILE,
+  DESIGN_DOC,
+  HELM_CHART_DIR,
+  REPO_ROOT
+} from "./repo-paths.js";
 
 describe("repo-paths — resolution sanity", () => {
   it("resolves REPO_ROOT to a directory containing this monorepo's root package.json", () => {

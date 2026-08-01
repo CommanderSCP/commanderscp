@@ -8,24 +8,15 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { roleBindings, roles } from "../db/schema.js";
 import { createObject } from "../graph/objects-repo.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
-import {
-  ensureInstanceCosignKey,
-  getInstanceCosignPublicKey
-} from "../governance/cosign-keys.js";
+import { ensureInstanceCosignKey, getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
 import { materializeApprovalRequest, castApprovalVote } from "../governance/approvals-repo.js";
 import { ensureFederationSelf, type FederationSelf } from "../federation/self-repo.js";
 import { pairPeer } from "../federation/peers-repo.js";
 import { getCursor } from "../federation/cursors-repo.js";
 import { exportSyncBundle } from "../federation/export-repo.js";
 import { importSyncBundle } from "../federation/import-repo.js";
-import {
-  exportPromotionBundle,
-  importPromotionBundle
-} from "../federation/promotion-repo.js";
-import type {
-  ArtifactRegistryReader,
-  ResolvedBlob
-} from "../federation/artifact-verify.js";
+import { exportPromotionBundle, importPromotionBundle } from "../federation/promotion-repo.js";
+import type { ArtifactRegistryReader, ResolvedBlob } from "../federation/artifact-verify.js";
 import {
   createIsolatedDomain,
   type IsolatedDomain
@@ -211,7 +202,9 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
   /** An {@link ArtifactRegistryReader} serving exactly the bytes/signature it is given — the seam
    *  the production `LocationRegistryReader` fills from the outpost's local registry. Injecting it
    *  keeps the REAL cosign verification while needing no registry container and no network. */
-  function readerServing(blob: { bytes: Buffer; signature: string } | null): ArtifactRegistryReader {
+  function readerServing(
+    blob: { bytes: Buffer; signature: string } | null
+  ): ArtifactRegistryReader {
     return {
       resolveOci: async () => null,
       resolveBlob: async (): Promise<ResolvedBlob | null> =>
@@ -296,9 +289,9 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
     );
 
   const runGateAtOutpost = (changeId: string, reader: ArtifactRegistryReader) =>
-    withTenantTx(outpost.db, outpost.orgId, (tx) =>
-      getChangeRow(tx, outpost.orgId, changeId)
-    ).then((row) => runPreDeployArtifactGate(outpost.db, outpost.orgId, row, reader));
+    withTenantTx(outpost.db, outpost.orgId, (tx) => getChangeRow(tx, outpost.orgId, changeId)).then(
+      (row) => runPreDeployArtifactGate(outpost.db, outpost.orgId, row, reader)
+    );
 
   // -------------------------------------------------------------------------------------------
   // (1) THE REAL TRANSFER, both sides — and the commander's honest silence about validation.
@@ -546,7 +539,10 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
       expect(segment.validate.authorizedArtifactCount, scenario).toBeNull();
       expect(segment.unknownFields, scenario).toContain("validate.state");
       // The transfer half of the same rule: an exporting instance never claims the peer received it.
-      expect(segment.transfer.hops.every((h) => h.status === "created"), scenario).toBe(true);
+      expect(
+        segment.transfer.hops.every((h) => h.status === "created"),
+        scenario
+      ).toBe(true);
     }
   });
 });

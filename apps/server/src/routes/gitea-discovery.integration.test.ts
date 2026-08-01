@@ -177,8 +177,7 @@ describe("M15.3a: gitea-discovery import loop (BYO Gitea → proposal → accept
     const component = components[0]!;
     expect(component.name).toBe("service-a");
     const sourceMapping = component.properties?.sourceMapping as
-      | { sourceKind?: string; repoPattern?: string; pathPattern?: string }
-      | undefined;
+      { sourceKind?: string; repoPattern?: string; pathPattern?: string } | undefined;
     expect(sourceMapping?.sourceKind).toBe("gitea");
     expect(sourceMapping?.repoPattern).toBe(OWNER_REPO);
     expect(sourceMapping?.pathPattern).toBe("service-a/**");

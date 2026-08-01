@@ -35,7 +35,12 @@ import {
 } from "./federation-sync.js";
 import type { FederationClientMtls } from "./federation-outbound.js";
 import { listPeers } from "./peers-repo.js";
-import { createTestCa, issueLeafCert, opensslAvailable, type TestCa } from "./test-support/mtls-pki.js";
+import {
+  createTestCa,
+  issueLeafCert,
+  opensslAvailable,
+  type TestCa
+} from "./test-support/mtls-pki.js";
 import { TrustDomainId } from "@scp/schemas";
 
 /**
@@ -76,10 +81,7 @@ interface Domain {
 /** Creates a fresh Postgres database in the shared Testcontainers container, migrates + provisions
  *  it, boots a REAL Fastify app on it (with optional federation-server-mTLS env), and mints an org +
  *  admin token + federation self. The commander passes `mtlsEnv`; the outpost passes `{}`. */
-async function bootDomain(
-  label: string,
-  mtlsEnv: Record<string, string> = {}
-): Promise<Domain> {
+async function bootDomain(label: string, mtlsEnv: Record<string, string> = {}): Promise<Domain> {
   dbCounter += 1;
   const dbName = `fedsync_${label}_${Date.now()}_${dbCounter}`
     .toLowerCase()
@@ -284,12 +286,7 @@ describe.skipIf(!opensslAvailable())("M14.0 outpost live-pull over mTLS (two-dom
       tx
         .select()
         .from(decisions)
-        .where(
-          and(
-            eq(decisions.orgId, outpost.orgId),
-            eq(decisions.id, outcome.decisionId!)
-          )
-        )
+        .where(and(eq(decisions.orgId, outpost.orgId), eq(decisions.id, outcome.decisionId!)))
         .limit(1)
     );
     expect(decision[0]?.kind).toBe(FEDERATION_SYNC_DECISION_KIND);
@@ -353,10 +350,7 @@ describe.skipIf(!opensslAvailable())("M14.4 scheduler mode — poke vs poll cade
         .update(federationPeers)
         .set(patch)
         .where(
-          and(
-            eq(federationPeers.orgId, outpost.orgId),
-            eq(federationPeers.id, commanderPeerId)
-          )
+          and(eq(federationPeers.orgId, outpost.orgId), eq(federationPeers.id, commanderPeerId))
         )
     );
   }

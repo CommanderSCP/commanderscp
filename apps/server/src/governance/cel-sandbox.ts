@@ -96,7 +96,9 @@ export function checkStaticComplexity(expression: string): void {
       depth -= 1;
     }
     if (maxDepth > CEL_MAX_NESTING_DEPTH) {
-      throw new CelSandboxError(`CEL expression exceeds max nesting depth (${CEL_MAX_NESTING_DEPTH})`);
+      throw new CelSandboxError(
+        `CEL expression exceeds max nesting depth (${CEL_MAX_NESTING_DEPTH})`
+      );
     }
   }
 }
@@ -132,9 +134,7 @@ export function checkContextComplexity(context: Record<string, unknown>): string
   return null;
 }
 
-export type CelEvalResult =
-  | { ok: true; value: unknown }
-  | { ok: false; error: string };
+export type CelEvalResult = { ok: true; value: unknown } | { ok: false; error: string };
 
 /** Upper bound on any error string this sandbox returns. Nothing this module GENERATES comes close
  *  (they are short constants); the bound exists for the one error class it FORWARDS — cel-js's own
@@ -280,11 +280,22 @@ export class CelSandbox {
       stdout: false,
       stderr: false
     });
-    const entry: PoolWorker = { worker, pending: new Map(), nextId: 1, ready: false, readyWaiters: [] };
+    const entry: PoolWorker = {
+      worker,
+      pending: new Map(),
+      nextId: 1,
+      ready: false,
+      readyWaiters: []
+    };
 
     worker.on(
       "message",
-      (msg: { ready: true } | { id: number; ok: true; value: unknown } | { id: number; ok: false; error: string }) => {
+      (
+        msg:
+          | { ready: true }
+          | { id: number; ok: true; value: unknown }
+          | { id: number; ok: false; error: string }
+      ) => {
         if ("ready" in msg) {
           entry.ready = true;
           const waiters = entry.readyWaiters;
@@ -426,13 +437,17 @@ let sharedSandbox: CelSandbox | undefined;
  *  gate-evaluation concurrency (MAJOR #3). */
 export function getSharedCelSandbox(): CelSandbox {
   const envPool = Number.parseInt(process.env.SCP_CEL_POOL_SIZE ?? "", 10);
-  sharedSandbox ??= new CelSandbox(Number.isFinite(envPool) && envPool > 0 ? { poolSize: envPool } : {});
+  sharedSandbox ??= new CelSandbox(
+    Number.isFinite(envPool) && envPool > 0 ? { poolSize: envPool } : {}
+  );
   return sharedSandbox;
 }
 
 /** Test-only: replaces the shared sandbox (e.g. with a shorter timeout) and returns the previous
  *  one so a test can restore it. */
-export function setSharedCelSandboxForTest(sandbox: CelSandbox | undefined): CelSandbox | undefined {
+export function setSharedCelSandboxForTest(
+  sandbox: CelSandbox | undefined
+): CelSandbox | undefined {
   const previous = sharedSandbox;
   sharedSandbox = sandbox;
   return previous;

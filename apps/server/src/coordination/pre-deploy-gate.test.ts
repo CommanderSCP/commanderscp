@@ -17,7 +17,9 @@ vi.mock("../db/tenant-tx.js", () => ({
   )
 }));
 vi.mock("../federation/peers-repo.js", () => ({
-  currentPeerCosignPublicKey: vi.fn(async () => "-----BEGIN PUBLIC KEY-----\nmock\n-----END PUBLIC KEY-----")
+  currentPeerCosignPublicKey: vi.fn(
+    async () => "-----BEGIN PUBLIC KEY-----\nmock\n-----END PUBLIC KEY-----"
+  )
 }));
 vi.mock("../federation/artifact-verify.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../federation/artifact-verify.js")>();
@@ -36,7 +38,10 @@ vi.mock("./decisions-repo.js", () => ({
 vi.mock("../audit/audit-repo.js", () => ({ appendAuditEvent: vi.fn(async () => undefined) }));
 vi.mock("./changes-repo.js", () => ({ markChangeReconcileBlocked: vi.fn() }));
 
-import { verifyAuthorizedArtifactSet, type ArtifactRegistryReader } from "../federation/artifact-verify.js";
+import {
+  verifyAuthorizedArtifactSet,
+  type ArtifactRegistryReader
+} from "../federation/artifact-verify.js";
 import { runPreDeployArtifactGate } from "./pre-deploy-gate.js";
 import type { ChangeRow } from "./changes-repo.js";
 import type { Db } from "../db/client.js";

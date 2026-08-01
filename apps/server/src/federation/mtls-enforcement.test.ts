@@ -34,7 +34,9 @@ describe("federation SAN URI identity (ADR-0001)", () => {
   });
 
   it("rejects (returns null) a URI SAN with a different scheme (e.g. spiffe://)", () => {
-    expect(parsePeerDomainIdFromSanUri("URI:spiffe://example.org/ns/default/sa/child-domain")).toBeNull();
+    expect(
+      parsePeerDomainIdFromSanUri("URI:spiffe://example.org/ns/default/sa/child-domain")
+    ).toBeNull();
   });
 
   it("rejects (returns null) a urn:scp:domain: value that isn't a valid UUID", () => {

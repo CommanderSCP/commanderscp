@@ -77,12 +77,17 @@ async function runInstallSh(
   args: string[],
   opts: { cwd: string; env?: NodeJS.ProcessEnv }
 ): Promise<
-  { ok: true; stdout: string; stderr: string } | { ok: false; stdout: string; stderr: string; exitCode: number | null }
+  | { ok: true; stdout: string; stderr: string }
+  | { ok: false; stdout: string; stderr: string; exitCode: number | null }
 > {
   const copiedScript = path.join(opts.cwd, "install.sh");
   await copyFile(INSTALL_SH, copiedScript);
   try {
-    const result = run("bash", [copiedScript, ...args], { cwd: opts.cwd, env: opts.env, log: false });
+    const result = run("bash", [copiedScript, ...args], {
+      cwd: opts.cwd,
+      env: opts.env,
+      log: false
+    });
     return { ok: true, ...result };
   } catch (err) {
     if (err instanceof CommandError) {
@@ -99,11 +104,14 @@ describe("install.sh: refuses to run without an EXTERNAL pubkey (no in-bundle fa
     // install.sh must ever say, with zero bundle contents at all, is "no external public key".
     const dir = await makeTempDir();
     try {
-      const result = await runInstallSh(["--registry", "example.com/scp", "--mode", "compose", "--dry-run"], {
-        cwd: dir,
-        // Strip SCP_COSIGN_PUBKEY in case the ambient test environment happens to have it set.
-        env: { ...process.env, SCP_COSIGN_PUBKEY: "" }
-      });
+      const result = await runInstallSh(
+        ["--registry", "example.com/scp", "--mode", "compose", "--dry-run"],
+        {
+          cwd: dir,
+          // Strip SCP_COSIGN_PUBKEY in case the ambient test environment happens to have it set.
+          env: { ...process.env, SCP_COSIGN_PUBKEY: "" }
+        }
+      );
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("unreachable");
       expect(result.stderr).toMatch(/no external public key supplied/i);
@@ -133,7 +141,15 @@ describe.skipIf(!installShToolingAvailable())(
         );
 
         const result = await runInstallSh(
-          ["--registry", "example.com/scp", "--pubkey", legitKey.pubKeyPath, "--mode", "helm", "--dry-run"],
+          [
+            "--registry",
+            "example.com/scp",
+            "--pubkey",
+            legitKey.pubKeyPath,
+            "--mode",
+            "helm",
+            "--dry-run"
+          ],
           { cwd: dir }
         );
         // Gets PAST the CHECKSUMS.txt signature gate (the thing this suite is about) — it then
@@ -177,7 +193,15 @@ describe.skipIf(!installShToolingAvailable())(
         // The honest operator runs install.sh with THEIR OWN, out-of-band-obtained pubkey — the
         // legit one, which the attacker's re-signed bundle does NOT match.
         const result = await runInstallSh(
-          ["--registry", "example.com/scp", "--pubkey", legitKey.pubKeyPath, "--mode", "helm", "--dry-run"],
+          [
+            "--registry",
+            "example.com/scp",
+            "--pubkey",
+            legitKey.pubKeyPath,
+            "--mode",
+            "helm",
+            "--dry-run"
+          ],
           { cwd: dir }
         );
         expect(result.ok).toBe(false);

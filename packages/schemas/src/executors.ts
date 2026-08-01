@@ -86,10 +86,13 @@ export const CreateExecutorBindingRequestSchema = z
      *  apply), so this is what distinguishes them. Omitted ⇒ 'configuration' (the server default). */
     type: ExecutorTypeSchema.optional()
   })
-  .refine((b) => (b.executionSystemId ? !b.pluginModule : Boolean(b.pluginModule && b.pluginInstanceId)), {
-    message:
-      "provide EITHER executionSystemId (execution-system-backed) OR pluginModule + pluginInstanceId (inline) — not both, and not neither"
-  });
+  .refine(
+    (b) => (b.executionSystemId ? !b.pluginModule : Boolean(b.pluginModule && b.pluginInstanceId)),
+    {
+      message:
+        "provide EITHER executionSystemId (execution-system-backed) OR pluginModule + pluginInstanceId (inline) — not both, and not neither"
+    }
+  );
 export type CreateExecutorBindingRequest = z.infer<typeof CreateExecutorBindingRequestSchema>;
 
 export const ExecutorBindingSchema = z.object({

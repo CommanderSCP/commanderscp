@@ -126,7 +126,6 @@ export const CreateComponentRequestSchema = CreateObjectRequestSchema.extend({
 });
 export type CreateComponentRequest = z.infer<typeof CreateComponentRequestSchema>;
 
-
 export const UpdateObjectRequestSchema = z.object({
   name: z.string().min(1).max(500).optional(),
   domainId: z.string().uuid().nullable().optional(),

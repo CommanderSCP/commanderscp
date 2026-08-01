@@ -18,7 +18,13 @@ import {
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { v7 as uuidv7 } from "uuid";
-import { changes, changeSourceEvents, changeWaveTargets, decisions, objects } from "../db/schema.js";
+import {
+  changes,
+  changeSourceEvents,
+  changeWaveTargets,
+  decisions,
+  objects
+} from "../db/schema.js";
 import { processChangeSourceEvents } from "./webhook-processor.js";
 import { createSourceMapping } from "./source-mappings-repo.js";
 import { createObject } from "../graph/objects-repo.js";
@@ -207,7 +213,10 @@ describe("coordination engine: full fake-executor loop", () => {
       externalRef: externalName
     });
 
-    const change = await admin.changes.propose({ name: "coordinate an imported app", targets: [comp.id] });
+    const change = await admin.changes.propose({
+      name: "coordinate an imported app",
+      targets: [comp.id]
+    });
     expect(change.state).toBe("proposed");
 
     const target = await waitUntil(
@@ -248,7 +257,10 @@ describe("coordination engine: full fake-executor loop", () => {
     });
     expect(binding.pluginInstanceId).toBe(`execution-system:${sys.id}`);
 
-    const change = await admin.changes.propose({ name: "coordinate via execution-system", targets: [comp.id] });
+    const change = await admin.changes.propose({
+      name: "coordinate via execution-system",
+      targets: [comp.id]
+    });
     expect(change.state).toBe("proposed");
 
     const target = await waitUntil(
@@ -1127,7 +1139,10 @@ describe("coordination engine: multi-replica trigger claim is single-flight (M8 
 
   async function waveTargetIdFor(targetObjectId: string): Promise<string> {
     const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, targetObjectId))
+      tx
+        .select()
+        .from(changeWaveTargets)
+        .where(eq(changeWaveTargets.targetObjectId, targetObjectId))
     );
     expect(rows).toHaveLength(1);
     expect(rows[0]!.status).toBe("pending");
@@ -1235,7 +1250,10 @@ describe("coordination engine: multi-replica trigger claim is single-flight (M8 
       await waitUntil(
         async () => {
           const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-            tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, targetObjectId))
+            tx
+              .select()
+              .from(changeWaveTargets)
+              .where(eq(changeWaveTargets.targetObjectId, targetObjectId))
           );
           const row = rows[0];
           return row && row.status !== "pending" && row.status !== "triggering" ? row : undefined;
@@ -1338,7 +1356,8 @@ describe("coordination engine: evaluated->coordinated plan compilation is single
     // latest one looks fine" (which duplicate-plan-row bugs can still pass), but a hard count.
     const plans = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.query.changePlans.findMany({
-        where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.orgId, org.orgId), eqOp(t.changeObjectId, changeObjectId))
+        where: (t, { eq: eqOp, and: andOp }) =>
+          andOp(eqOp(t.orgId, org.orgId), eqOp(t.changeObjectId, changeObjectId))
       })
     );
     expect(plans).toHaveLength(1);
@@ -1346,7 +1365,10 @@ describe("coordination engine: evaluated->coordinated plan compilation is single
     // And exactly one wave_target row for this target — the same observable symptom the
     // pre-fix bug produced (two distinct waveIds for the same targetObjectId).
     const waveTargetRows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, targetObjectId))
+      tx
+        .select()
+        .from(changeWaveTargets)
+        .where(eq(changeWaveTargets.targetObjectId, targetObjectId))
     );
     expect(waveTargetRows).toHaveLength(1);
   }, 30_000);
@@ -1374,7 +1396,11 @@ describe("coordination engine: webhook-event processing is single-flight across 
   });
 
   it("N concurrent processChangeSourceEvents calls racing the SAME unprocessed event row: exactly ONE Change is ever proposed", async () => {
-    const componentObjectId = await createComponentViaInject(server, org, `webhook-race-comp-${randomSuffix()}`);
+    const componentObjectId = await createComponentViaInject(
+      server,
+      org,
+      `webhook-race-comp-${randomSuffix()}`
+    );
     const repo = `webhook-race-org/${randomSuffix()}`;
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
       createSourceMapping(tx, {
@@ -1520,7 +1546,8 @@ describe("coordination engine: wave-gate evaluation is single-flight (M8 hardeni
   }
 
   it("N genuinely concurrent reconcileOrgTick calls racing the SAME pending wave's gate: exactly ONE gate Decision is ever recorded", async () => {
-    const { changeObjectId, targetObjectId } = await createExecutingChangeWithPendingWave("wave-gate-race-target");
+    const { changeObjectId, targetObjectId } =
+      await createExecutingChangeWithPendingWave("wave-gate-race-target");
 
     // Sanity: the wave genuinely has never been GATED yet — the manual walk above writes
     // `kind: "transition"` Decisions for each transitionChange call, but zero `kind: "gate"`
@@ -1546,14 +1573,23 @@ describe("coordination engine: wave-gate evaluation is single-flight (M8 hardeni
     const CONCURRENT_REPLICAS = 8;
     await Promise.all(
       Array.from({ length: CONCURRENT_REPLICAS }, () =>
-        reconcileOrgTick(server.deps.db, org.orgId, host, getSharedCelSandbox(), server.deps.config.secretsMasterKey)
+        reconcileOrgTick(
+          server.deps.db,
+          org.orgId,
+          host,
+          getSharedCelSandbox(),
+          server.deps.config.secretsMasterKey
+        )
       )
     );
 
     // The wave genuinely progressed past `pending` (proves SOME tick won the race and did the
     // real work, not that every tick just silently no-op'd).
     const waveTargetRows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.targetObjectId, targetObjectId))
+      tx
+        .select()
+        .from(changeWaveTargets)
+        .where(eq(changeWaveTargets.targetObjectId, targetObjectId))
     );
     expect(waveTargetRows).toHaveLength(1);
     expect(waveTargetRows[0]!.status).not.toBe("pending");
@@ -1641,7 +1677,9 @@ describe("coordination engine: same-repo change_source_events do not collide on 
       tx
         .select()
         .from(changeSourceEvents)
-        .where(and(eq(changeSourceEvents.orgId, org.orgId), inArray(changeSourceEvents.id, eventIds)))
+        .where(
+          and(eq(changeSourceEvents.orgId, org.orgId), inArray(changeSourceEvents.id, eventIds))
+        )
     );
     expect(eventRows).toHaveLength(EVENT_COUNT);
     for (const row of eventRows) {
@@ -1657,7 +1695,9 @@ describe("coordination engine: same-repo change_source_events do not collide on 
       tx
         .select({ id: objects.id, urn: objects.urn })
         .from(objects)
-        .where(and(eq(objects.orgId, org.orgId), inArray(objects.id, [...resultingIds] as string[])))
+        .where(
+          and(eq(objects.orgId, org.orgId), inArray(objects.id, [...resultingIds] as string[]))
+        )
     );
     expect(changeObjects).toHaveLength(EVENT_COUNT);
     expect(new Set(changeObjects.map((o) => o.urn)).size).toBe(EVENT_COUNT);
@@ -1692,7 +1732,11 @@ describe("coordination engine: observed deployed-image threading (P4C)", () => {
     server = await listenTestServer({
       withEventRelay: true,
       withReconcileLoop: true,
-      pluginHostOptions: { callTimeoutMs: 8_000, restartBackoffBaseMs: 50, maxRestartBackoffMs: 300 },
+      pluginHostOptions: {
+        callTimeoutMs: 8_000,
+        restartBackoffBaseMs: 50,
+        maxRestartBackoffMs: 300
+      },
       fakeExecutorConfig: { imagesByTarget: { [imageTargetId]: deployedImages } }
     });
   });
@@ -1706,7 +1750,10 @@ describe("coordination engine: observed deployed-image threading (P4C)", () => {
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
     // Explicit id so the boot-time `imagesByTarget` config (above) names THIS target.
-    const target = await createTestComponent(admin, { id: imageTargetId, name: "observed-images-target" });
+    const target = await createTestComponent(admin, {
+      id: imageTargetId,
+      name: "observed-images-target"
+    });
     expect(target.id).toBe(imageTargetId);
 
     const change = await admin.changes.propose({
@@ -1760,7 +1807,11 @@ describe("coordination engine: observed rollout threading (P4D)", () => {
     server = await listenTestServer({
       withEventRelay: true,
       withReconcileLoop: true,
-      pluginHostOptions: { callTimeoutMs: 8_000, restartBackoffBaseMs: 50, maxRestartBackoffMs: 300 },
+      pluginHostOptions: {
+        callTimeoutMs: 8_000,
+        restartBackoffBaseMs: 50,
+        maxRestartBackoffMs: 300
+      },
       fakeExecutorConfig: { rolloutByTarget: { [rolloutTargetId]: observedRollout } }
     });
   });
@@ -1774,7 +1825,10 @@ describe("coordination engine: observed rollout threading (P4D)", () => {
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
 
     // Explicit id so the boot-time `rolloutByTarget` config (above) names THIS target.
-    const target = await createTestComponent(admin, { id: rolloutTargetId, name: "observed-rollout-target" });
+    const target = await createTestComponent(admin, {
+      id: rolloutTargetId,
+      name: "observed-rollout-target"
+    });
     expect(target.id).toBe(rolloutTargetId);
 
     const change = await admin.changes.propose({

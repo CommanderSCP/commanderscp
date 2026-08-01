@@ -61,7 +61,10 @@ async function startTrivySource(): Promise<TrivySource> {
         Results: [
           {
             Target: "registry.test/app:1.0 (alpine 3.19)",
-            Vulnerabilities: sev.map((s, i) => ({ VulnerabilityID: `CVE-2026-${7000 + i}`, Severity: s }))
+            Vulnerabilities: sev.map((s, i) => ({
+              VulnerabilityID: `CVE-2026-${7000 + i}`,
+              Severity: s
+            }))
           }
         ]
       })
@@ -78,18 +81,30 @@ async function startTrivySource(): Promise<TrivySource> {
   };
 }
 
-async function waitForControlRun(admin: ScpClient, changeId: string, controlId: string, status: string) {
+async function waitForControlRun(
+  admin: ScpClient,
+  changeId: string,
+  controlId: string,
+  status: string
+) {
   return waitUntil(
     async () => {
       const runs = await admin.controlRuns.listForChange(changeId);
       const run = runs.items.find((r) => r.controlObjectId === controlId);
       return run?.status === status ? run : undefined;
     },
-    { describe: `control ${controlId} on change ${changeId} reports '${status}'`, timeoutMs: 25_000 }
+    {
+      describe: `control ${controlId} on change ${changeId} reports '${status}'`,
+      timeoutMs: 25_000
+    }
   );
 }
 
-async function assertStaysExecuting(admin: ScpClient, changeId: string, graceMs = 3_000): Promise<void> {
+async function assertStaysExecuting(
+  admin: ScpClient,
+  changeId: string,
+  graceMs = 3_000
+): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, graceMs));
   expect((await admin.changes.get(changeId)).state).toBe("executing");
 }
@@ -122,7 +137,11 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
       withEventRelay: true,
       withReconcileLoop: true,
       operatorToken: OPERATOR_TOKEN,
-      pluginHostOptions: { callTimeoutMs: 15_000, restartBackoffBaseMs: 50, maxRestartBackoffMs: 300 }
+      pluginHostOptions: {
+        callTimeoutMs: 15_000,
+        restartBackoffBaseMs: 50,
+        maxRestartBackoffMs: 300
+      }
     });
     // The operator credential is deployment-level, but the route still requires an authenticated
     // principal, so the operator client logs in as SOME org's admin. That is deliberately not what
@@ -184,9 +203,15 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
    *  org-and-below resolver walks. */
   async function buildChain(admin: ScpClient, label: string) {
     const containmentDomain = await admin.object("domain").create({ name: `dom-${label}` });
-    const service = await admin.object("service").create({ name: `svc-${label}`, domainId: containmentDomain.id });
+    const service = await admin
+      .object("service")
+      .create({ name: `svc-${label}`, domainId: containmentDomain.id });
     const component = await createOrphanComponent(admin, `comp-${label}`);
-    await admin.relationships.create({ typeId: "contains", fromId: service.id, toId: component.id });
+    await admin.relationships.create({
+      typeId: "contains",
+      fromId: service.id,
+      toId: component.id
+    });
     return { containmentDomain, service, component };
   }
 
@@ -239,7 +264,12 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     return control;
   }
 
-  async function requireScanControl(admin: ScpClient, name: string, scopeObjectId: string, controlId: string) {
+  async function requireScanControl(
+    admin: ScpClient,
+    name: string,
+    scopeObjectId: string,
+    controlId: string
+  ) {
     return admin.policies.create({
       name,
       properties: {
@@ -270,16 +300,25 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     const { containmentDomain, service, component } = await buildChain(admin, "six-tier");
 
     await scanFloorPolicy(admin, "floor-org", org.orgId, { maxMedium: 7, maxLow: 70 });
-    await scanFloorPolicy(admin, "floor-containment-domain", containmentDomain.id, { maxLow: 6, maxCritical: 60 });
+    await scanFloorPolicy(admin, "floor-containment-domain", containmentDomain.id, {
+      maxLow: 6,
+      maxCritical: 60
+    });
     await scanFloorPolicy(admin, "floor-service", service.id, { maxCritical: 5, maxHigh: 50 });
     await scanFloorPolicy(admin, "floor-component", component.id, { maxHigh: 4 });
 
     // A verdict comfortably inside the merged ceiling, so the outcome is `pass` and the evidence is
     // recorded on a change that also ACCEPTS (i.e. this is the real gate, not a parked one).
-    const control = await scanControl(admin, org, { suffix: "six-tier", severities: ["MEDIUM", "LOW"] });
+    const control = await scanControl(admin, org, {
+      suffix: "six-tier",
+      severities: ["MEDIUM", "LOW"]
+    });
     await requireScanControl(admin, "scan-gate", component.id, control.id);
 
-    const change = await admin.changes.propose({ name: "six-tier-change", targets: [component.id] });
+    const change = await admin.changes.propose({
+      name: "six-tier-change",
+      targets: [component.id]
+    });
     const run = await waitForControlRun(admin, change.id, control.id, "pass");
     const evidence = run.evidence as unknown as ScanEvidenceShape;
 
@@ -313,16 +352,26 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     const adminA = new ScpClient({ baseUrl: server.baseUrl, token: orgA.adminToken });
     const chainA = await buildChain(adminA, "arm1");
     await scanFloorPolicy(adminA, "floor-org", orgA.orgId, { maxHigh: 5 });
-    const controlA = await scanControl(adminA, orgA, { suffix: "arm1", severities: ["HIGH", "HIGH"] });
+    const controlA = await scanControl(adminA, orgA, {
+      suffix: "arm1",
+      severities: ["HIGH", "HIGH"]
+    });
     await requireScanControl(adminA, "scan-gate", chainA.component.id, controlA.id);
 
-    const changeA = await adminA.changes.propose({ name: "arm1-change", targets: [chainA.component.id] });
+    const changeA = await adminA.changes.propose({
+      name: "arm1-change",
+      targets: [chainA.component.id]
+    });
     const runA = await waitForControlRun(adminA, changeA.id, controlA.id, "pass");
     expect((runA.evidence as unknown as ScanEvidenceShape).threshold.maxHigh).toBe(5);
-    await waitUntil(async () => ((await adminA.changes.get(changeA.id)).state === "validating" ? true : undefined), {
-      describe: `change ${changeA.id} reaches 'validating'`,
-      timeoutMs: 25_000
-    });
+    await waitUntil(
+      async () =>
+        (await adminA.changes.get(changeA.id)).state === "validating" ? true : undefined,
+      {
+        describe: `change ${changeA.id} reaches 'validating'`,
+        timeoutMs: 25_000
+      }
+    );
     expect((await adminA.changes.accept(changeA.id)).state).toBe("accepted");
 
     // ARM 2 — the SAME org floor, plus a COMPONENT floor that TIGHTENS maxHigh to 0. Identical
@@ -332,10 +381,16 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     const chainB = await buildChain(adminB, "arm2");
     await scanFloorPolicy(adminB, "floor-org", orgB.orgId, { maxHigh: 5 });
     await scanFloorPolicy(adminB, "floor-component", chainB.component.id, { maxHigh: 0 });
-    const controlB = await scanControl(adminB, orgB, { suffix: "arm2", severities: ["HIGH", "HIGH"] });
+    const controlB = await scanControl(adminB, orgB, {
+      suffix: "arm2",
+      severities: ["HIGH", "HIGH"]
+    });
     await requireScanControl(adminB, "scan-gate", chainB.component.id, controlB.id);
 
-    const changeB = await adminB.changes.propose({ name: "arm2-change", targets: [chainB.component.id] });
+    const changeB = await adminB.changes.propose({
+      name: "arm2-change",
+      targets: [chainB.component.id]
+    });
     const runB = await waitForControlRun(adminB, changeB.id, controlB.id, "fail");
     const evidenceB = runB.evidence as unknown as ScanEvidenceShape;
     expect(evidenceB.threshold.maxHigh).toBe(0); // the component TIGHTENED the org's 5 to 0
@@ -345,12 +400,19 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     await assertStaysExecuting(adminB, changeB.id);
     const explained = await adminB.changes.explain(changeB.id);
     const gateBlock = explained.decisions.find((d) => d.kind === "gate" && d.verdict === "block");
-    expect(gateBlock, "a blocked promotion must persist a Decision (charter principle 6)").toBeDefined();
-    const policyEntry = ((gateBlock!.reasonTree as { policies?: Array<Record<string, unknown>> }).policies ?? []).find(
-      (p) => p.name === "scan-gate"
-    );
+    expect(
+      gateBlock,
+      "a blocked promotion must persist a Decision (charter principle 6)"
+    ).toBeDefined();
+    const policyEntry = (
+      (gateBlock!.reasonTree as { policies?: Array<Record<string, unknown>> }).policies ?? []
+    ).find((p) => p.name === "scan-gate");
     const controlEffect = (
-      policyEntry!.effects as Array<{ kind: string; satisfied: boolean; detail: Record<string, unknown> }>
+      policyEntry!.effects as Array<{
+        kind: string;
+        satisfied: boolean;
+        detail: Record<string, unknown>;
+      }>
     ).find((e) => e.kind === "requireControls");
     expect(controlEffect?.satisfied).toBe(false);
     expect(controlEffect?.detail.outcome).toBe("fail");
@@ -371,18 +433,34 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     const adminFalse = new ScpClient({ baseUrl: server.baseUrl, token: orgFalse.adminToken });
     const chainFalse = await buildChain(adminFalse, "cond-false");
     await scanFloorPolicy(adminFalse, "floor-org", orgFalse.orgId, { maxHigh: 5 });
-    await scanFloorPolicy(adminFalse, "floor-conditional", chainFalse.component.id, { maxHigh: 0 }, "1 == 2");
-    const controlFalse = await scanControl(adminFalse, orgFalse, { suffix: "cond-false", severities: ["HIGH", "HIGH"] });
+    await scanFloorPolicy(
+      adminFalse,
+      "floor-conditional",
+      chainFalse.component.id,
+      { maxHigh: 0 },
+      "1 == 2"
+    );
+    const controlFalse = await scanControl(adminFalse, orgFalse, {
+      suffix: "cond-false",
+      severities: ["HIGH", "HIGH"]
+    });
     await requireScanControl(adminFalse, "scan-gate", chainFalse.component.id, controlFalse.id);
 
-    const changeFalse = await adminFalse.changes.propose({ name: "cond-false-change", targets: [chainFalse.component.id] });
+    const changeFalse = await adminFalse.changes.propose({
+      name: "cond-false-change",
+      targets: [chainFalse.component.id]
+    });
     const runFalse = await waitForControlRun(adminFalse, changeFalse.id, controlFalse.id, "pass");
     const evidenceFalse = runFalse.evidence as unknown as ScanEvidenceShape;
     expect(evidenceFalse.threshold.maxHigh).toBe(5); // the org floor, NOT the false-condition 0
     // ...and the non-firing policy is not even named as a contributor, so the Decision cannot
     // attribute the ceiling to a policy that never applied.
-    expect((evidenceFalse.thresholdContributors ?? []).map((c) => c.source).join(",")).not.toMatch(/floor-conditional/);
-    expect((evidenceFalse.thresholdContributors ?? []).some((c) => c.source.includes("floor-org"))).toBe(true);
+    expect((evidenceFalse.thresholdContributors ?? []).map((c) => c.source).join(",")).not.toMatch(
+      /floor-conditional/
+    );
+    expect(
+      (evidenceFalse.thresholdContributors ?? []).some((c) => c.source.includes("floor-org"))
+    ).toBe(true);
 
     // ARM 2 — byte-for-byte the same fixture, condition flipped to always-TRUE. Now it fires and
     // tightens maxHigh to 0, and the same two HIGHs block.
@@ -390,15 +468,29 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     const adminTrue = new ScpClient({ baseUrl: server.baseUrl, token: orgTrue.adminToken });
     const chainTrue = await buildChain(adminTrue, "cond-true");
     await scanFloorPolicy(adminTrue, "floor-org", orgTrue.orgId, { maxHigh: 5 });
-    await scanFloorPolicy(adminTrue, "floor-conditional", chainTrue.component.id, { maxHigh: 0 }, "1 == 1");
-    const controlTrue = await scanControl(adminTrue, orgTrue, { suffix: "cond-true", severities: ["HIGH", "HIGH"] });
+    await scanFloorPolicy(
+      adminTrue,
+      "floor-conditional",
+      chainTrue.component.id,
+      { maxHigh: 0 },
+      "1 == 1"
+    );
+    const controlTrue = await scanControl(adminTrue, orgTrue, {
+      suffix: "cond-true",
+      severities: ["HIGH", "HIGH"]
+    });
     await requireScanControl(adminTrue, "scan-gate", chainTrue.component.id, controlTrue.id);
 
-    const changeTrue = await adminTrue.changes.propose({ name: "cond-true-change", targets: [chainTrue.component.id] });
+    const changeTrue = await adminTrue.changes.propose({
+      name: "cond-true-change",
+      targets: [chainTrue.component.id]
+    });
     const runTrue = await waitForControlRun(adminTrue, changeTrue.id, controlTrue.id, "fail");
     const evidenceTrue = runTrue.evidence as unknown as ScanEvidenceShape;
     expect(evidenceTrue.threshold.maxHigh).toBe(0);
-    expect((evidenceTrue.thresholdContributors ?? []).some((c) => c.source.includes("floor-conditional"))).toBe(true);
+    expect(
+      (evidenceTrue.thresholdContributors ?? []).some((c) => c.source.includes("floor-conditional"))
+    ).toBe(true);
     expect(runTrue.detail).toMatch(/exceeds/i);
 
     // ARM 3 — the SAME fixture, ADVISORY enforcement, but the condition cannot be EVALUATED (it
@@ -412,18 +504,32 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     const adminErr = new ScpClient({ baseUrl: server.baseUrl, token: orgErr.adminToken });
     const chainErr = await buildChain(adminErr, "cond-error");
     await scanFloorPolicy(adminErr, "floor-org", orgErr.orgId, { maxHigh: 5 });
-    await scanFloorPolicy(adminErr, "floor-conditional", chainErr.component.id, { maxHigh: 0 }, 'subject.labels.nope == "x"');
-    const controlErr = await scanControl(adminErr, orgErr, { suffix: "cond-error", severities: ["HIGH", "HIGH"] });
+    await scanFloorPolicy(
+      adminErr,
+      "floor-conditional",
+      chainErr.component.id,
+      { maxHigh: 0 },
+      'subject.labels.nope == "x"'
+    );
+    const controlErr = await scanControl(adminErr, orgErr, {
+      suffix: "cond-error",
+      severities: ["HIGH", "HIGH"]
+    });
     await requireScanControl(adminErr, "scan-gate", chainErr.component.id, controlErr.id);
 
-    const changeErr = await adminErr.changes.propose({ name: "cond-error-change", targets: [chainErr.component.id] });
+    const changeErr = await adminErr.changes.propose({
+      name: "cond-error-change",
+      targets: [chainErr.component.id]
+    });
     const runErr = await waitForControlRun(adminErr, changeErr.id, controlErr.id, "fail");
     const evidenceErr = runErr.evidence as unknown as ScanEvidenceShape;
     expect(evidenceErr.threshold.maxHigh).toBe(0); // the unevaluable ceiling STILL tightened the org's 5 to 0
     expect(runErr.detail).toMatch(/exceeds/i);
     // ...and the erroring policy IS named as a contributor, so the block explains itself (charter
     // principle 6) — it is NOT silently dropped the way an advisory require* effect would be.
-    expect((evidenceErr.thresholdContributors ?? []).some((c) => c.source.includes("floor-conditional"))).toBe(true);
+    expect(
+      (evidenceErr.thresholdContributors ?? []).some((c) => c.source.includes("floor-conditional"))
+    ).toBe(true);
     // The block is a real, audited gate Decision — not merely a control-run status.
     await assertStaysExecuting(adminErr, changeErr.id);
     const explainedErr = await adminErr.changes.explain(changeErr.id);
@@ -467,18 +573,27 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
       "1 == 2",
       `urn:scp:${org.orgId}:policy:floor-multi-false`
     );
-    const control = await scanControl(admin, org, { suffix: "precision", severities: ["HIGH", "HIGH"] });
+    const control = await scanControl(admin, org, {
+      suffix: "precision",
+      severities: ["HIGH", "HIGH"]
+    });
     await requireScanControl(admin, "scan-gate", chain.component.id, control.id);
 
-    const change = await admin.changes.propose({ name: "precision-change", targets: [chain.component.id] });
+    const change = await admin.changes.propose({
+      name: "precision-change",
+      targets: [chain.component.id]
+    });
     const run = await waitForControlRun(admin, change.id, control.id, "pass");
     const evidence = run.evidence as unknown as ScanEvidenceShape;
     // The errored contributor's LOOSER 5 applied; the cleanly-false sibling's 0 did NOT.
     expect(evidence.threshold.maxHigh).toBe(5);
-    await waitUntil(async () => ((await admin.changes.get(change.id)).state === "validating" ? true : undefined), {
-      describe: `change ${change.id} reaches 'validating'`,
-      timeoutMs: 25_000
-    });
+    await waitUntil(
+      async () => ((await admin.changes.get(change.id)).state === "validating" ? true : undefined),
+      {
+        describe: `change ${change.id} reaches 'validating'`,
+        timeoutMs: 25_000
+      }
+    );
     expect((await admin.changes.accept(change.id)).state).toBe("accepted");
   });
 
@@ -503,7 +618,10 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
       });
       await requireScanControl(admin, "scan-gate", chain.component.id, control.id);
 
-      const change = await admin.changes.propose({ name: `${label}-change`, targets: [chain.component.id] });
+      const change = await admin.changes.propose({
+        name: `${label}-change`,
+        targets: [chain.component.id]
+      });
       const run = await waitForControlRun(admin, change.id, control.id, "fail");
       const evidence = run.evidence as unknown as ScanEvidenceShape;
       expect(evidence.threshold.maxHigh, `${label} must be bound by the platform floor`).toBe(0);
@@ -540,7 +658,10 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     //    `app.current_org_id` exactly as a real request does. This is the strongest possible form
     //    of the assertion: even with full application-layer cooperation, the write cannot land.
     for (const [what, statement] of [
-      ["INSERT", sql`INSERT INTO scan_requirement_floors (tier, origin, max_high) VALUES ('platform', 'federated', 99)`],
+      [
+        "INSERT",
+        sql`INSERT INTO scan_requirement_floors (tier, origin, max_high) VALUES ('platform', 'federated', 99)`
+      ],
       ["UPDATE", sql`UPDATE scan_requirement_floors SET max_high = 99`],
       ["DELETE", sql`DELETE FROM scan_requirement_floors`]
     ] as const) {
@@ -562,12 +683,18 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     // 3. THE API. The tenant's own org admin — the most privileged tenant principal there is —
     //    cannot author a floor, because no RBAC permission grants it.
     const err = await expectApiError(() =>
-      admin.instanceScanFloors.put("platform", { origin: "local", maxHigh: 99 }, "not-the-operator-token")
+      admin.instanceScanFloors.put(
+        "platform",
+        { origin: "local", maxHigh: 99 },
+        "not-the-operator-token"
+      )
     );
     expect(err.status).toBe(403);
 
     // The floor is unchanged after all of that.
-    expect((await admin.instanceScanFloors.list()).find((f) => f.tier === "platform")?.maxHigh).toBe(0);
+    expect(
+      (await admin.instanceScanFloors.list()).find((f) => f.tier === "platform")?.maxHigh
+    ).toBe(0);
   });
 
   it("(d) a tenant cannot LOOSEN the resolved floor — an org-scoped policy asking for a laxer ceiling than the platform floor changes nothing at the real gate", async () => {
@@ -590,7 +717,10 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     });
     await requireScanControl(admin, "scan-gate", chain.component.id, control.id);
 
-    const change = await admin.changes.propose({ name: "loosen-change", targets: [chain.component.id] });
+    const change = await admin.changes.propose({
+      name: "loosen-change",
+      targets: [chain.component.id]
+    });
     const run = await waitForControlRun(admin, change.id, control.id, "fail");
     // MIN(0, 999, 999, 999, 999, 999) = 0. A child may only TIGHTEN.
     expect((run.evidence as unknown as ScanEvidenceShape).threshold.maxHigh).toBe(0);
@@ -616,7 +746,10 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
       configThreshold: { maxCritical: 0, maxHigh: 0 }
     });
     await requireScanControl(adminY, "scan-gate", chainY.component.id, controlY.id);
-    const changeY = await adminY.changes.propose({ name: "iso-y-change", targets: [chainY.component.id] });
+    const changeY = await adminY.changes.propose({
+      name: "iso-y-change",
+      targets: [chainY.component.id]
+    });
     const runY = await waitForControlRun(adminY, changeY.id, controlY.id, "pass");
     // No tier contributed for Y — so the gate threaded nothing, the control fell back to Y's own
     // per-binding config, and X's ceilings are nowhere in Y's evidence.
@@ -627,7 +760,10 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     // ...and X's own gate really was bound by X's own ceiling (so the fixture isn't vacuous).
     const controlX = await scanControl(adminX, orgX, { suffix: "iso-x", severities: ["MEDIUM"] });
     await requireScanControl(adminX, "scan-gate", chainX.component.id, controlX.id);
-    const changeX = await adminX.changes.propose({ name: "iso-x-change", targets: [chainX.component.id] });
+    const changeX = await adminX.changes.propose({
+      name: "iso-x-change",
+      targets: [chainX.component.id]
+    });
     const runX = await waitForControlRun(adminX, changeX.id, controlX.id, "fail");
     expect((runX.evidence as unknown as ScanEvidenceShape).threshold.maxMedium).toBe(0);
   });
@@ -638,7 +774,10 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
   // -----------------------------------------------------------------------------------------
 
   it("(e) resolution is ORDER-INDEPENDENT: the same tier set authored in a different order yields an identical effective threshold at the real gate", async () => {
-    await setInstanceFloors({ platform: { maxCritical: 3, maxHigh: 9 }, trustDomain: { maxHigh: 2, maxMedium: 8 } });
+    await setInstanceFloors({
+      platform: { maxCritical: 3, maxHigh: 9 },
+      trustDomain: { maxHigh: 2, maxMedium: 8 }
+    });
 
     // Two orgs with IDENTICAL tier contributions, authored in OPPOSITE order. Creation order is
     // what drives `listPolicyCandidates`' row order, and therefore the order contributions reach
@@ -653,7 +792,10 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
       const chain = await buildChain(admin, `order-${label}`);
       const byTier: Record<string, { id: string; threshold: Record<string, number> }> = {
         org: { id: org.orgId, threshold: { maxCritical: 7, maxMedium: 4 } },
-        containment_domain: { id: chain.containmentDomain.id, threshold: { maxLow: 5, maxHigh: 6 } },
+        containment_domain: {
+          id: chain.containmentDomain.id,
+          threshold: { maxLow: 5, maxHigh: 6 }
+        },
         service: { id: chain.service.id, threshold: { maxCritical: 1, maxLow: 9 } },
         component: { id: chain.component.id, threshold: { maxMedium: 3, maxHigh: 9 } }
       };
@@ -664,7 +806,10 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
 
       const control = await scanControl(admin, org, { suffix: `order-${label}`, severities: [] });
       await requireScanControl(admin, "scan-gate", chain.component.id, control.id);
-      const change = await admin.changes.propose({ name: `order-${label}-change`, targets: [chain.component.id] });
+      const change = await admin.changes.propose({
+        name: `order-${label}-change`,
+        targets: [chain.component.id]
+      });
       const run = await waitForControlRun(admin, change.id, control.id, "pass");
       resolved.push((run.evidence as unknown as ScanEvidenceShape).threshold);
     }
@@ -683,8 +828,16 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     // so pin it exhaustively. This is the reason no precedence/ordering logic may ever be added to
     // the resolver: the documented containment-domain-vs-service tie would make it undefined.
     const contributors: ScanThresholdContribution[] = [
-      { tier: "platform", source: "instance:platform:local", threshold: { maxCritical: 3, maxHigh: 9 } },
-      { tier: "trust_domain", source: "instance:trust_domain:local", threshold: { maxHigh: 2, maxMedium: 8 } },
+      {
+        tier: "platform",
+        source: "instance:platform:local",
+        threshold: { maxCritical: 3, maxHigh: 9 }
+      },
+      {
+        tier: "trust_domain",
+        source: "instance:trust_domain:local",
+        threshold: { maxHigh: 2, maxMedium: 8 }
+      },
       { tier: "org", source: "policy:org", threshold: { maxCritical: 7, maxMedium: 4 } },
       { tier: "containment_domain", source: "policy:dom", threshold: { maxLow: 5, maxHigh: 6 } },
       { tier: "service", source: "policy:svc", threshold: { maxCritical: 1, maxLow: 9 } },
@@ -692,7 +845,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     ];
     const expected = { maxCritical: 1, maxHigh: 2, maxMedium: 3, maxLow: 5 };
 
-    const permute = <T,>(items: T[]): T[][] =>
+    const permute = <T>(items: T[]): T[][] =>
       items.length <= 1
         ? [items]
         : items.flatMap((item, i) =>
@@ -723,7 +876,10 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     });
     await requireScanControl(admin, "scan-gate", chain.component.id, control.id);
 
-    const change = await admin.changes.propose({ name: "fallback-change", targets: [chain.component.id] });
+    const change = await admin.changes.propose({
+      name: "fallback-change",
+      targets: [chain.component.id]
+    });
     const run = await waitForControlRun(admin, change.id, control.id, "fail");
     const evidence = run.evidence as unknown as ScanEvidenceShape;
     expect(evidence.threshold).toEqual({ maxCritical: 0, maxHigh: 0, maxMedium: 0 });

@@ -337,7 +337,9 @@ function ComponentServiceCard({
         </div>
         {setServiceMutation.isError && (
           <p className="text-sm text-red-600">
-            {setServiceMutation.error instanceof Error ? setServiceMutation.error.message : "Failed"}
+            {setServiceMutation.error instanceof Error
+              ? setServiceMutation.error.message
+              : "Failed"}
           </p>
         )}
       </CardContent>

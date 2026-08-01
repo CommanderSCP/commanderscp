@@ -324,8 +324,8 @@ describe("plans: @scp/iac server-side plan/apply", () => {
   it("apply on a nonexistent plan id is a 404", async () => {
     const org = await createTestOrg(server, "plans-404");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    await expect(
-      admin.plans.apply("0198f2a0-0000-7000-8000-0000000000ff")
-    ).rejects.toMatchObject({ status: 404 });
+    await expect(admin.plans.apply("0198f2a0-0000-7000-8000-0000000000ff")).rejects.toMatchObject({
+      status: 404
+    });
   });
 });

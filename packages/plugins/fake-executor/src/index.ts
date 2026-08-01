@@ -160,9 +160,7 @@ export class FakeExecutorPlugin implements ExecutorPlugin {
     // honoring the `since` watermark on `occurredAt` so an advanced cursor returns only newer ones.
     const events = readConfig(ctx.config).observeEvents ?? [];
     if (!since?.token) return events;
-    return events.filter(
-      (e) => typeof e.occurredAt === "string" && e.occurredAt > since.token
-    );
+    return events.filter((e) => typeof e.occurredAt === "string" && e.occurredAt > since.token);
   }
 
   async trigger(ctx: PluginContext, intent: TriggerIntent): Promise<ExternalRunRef> {
@@ -184,11 +182,16 @@ export class FakeExecutorPlugin implements ExecutorPlugin {
         idempotencyKey: intent.idempotencyKey,
         externalId: existing.externalId
       });
-      return { externalId: existing.externalId, url: `fake-executor://${targetRef}/${existing.externalId}` };
+      return {
+        externalId: existing.externalId,
+        url: `fake-executor://${targetRef}/${existing.externalId}`
+      };
     }
 
     const isRollback = intent.kind === "rollback";
-    const version = isRollback ? coercePriorStateRef(intent.priorStateRef) : (existing?.version ?? -1) + 1;
+    const version = isRollback
+      ? coercePriorStateRef(intent.priorStateRef)
+      : (existing?.version ?? -1) + 1;
     const externalId = mintExternalId(targetRef);
 
     state.targets[targetRef] = {
@@ -216,7 +219,10 @@ export class FakeExecutorPlugin implements ExecutorPlugin {
       // Reporting "pending" rather than throwing is what keeps a killed-and-respawned subprocess
       // (which, with a shared statePath, would NOT hit this branch — see module doc) from ever
       // looking like a hard failure to the reconciliation loop.
-      return { phase: "pending", detail: "fake-executor: unknown run (fresh state or superseded ref)" };
+      return {
+        phase: "pending",
+        detail: "fake-executor: unknown run (fresh state or superseded ref)"
+      };
     }
 
     const cfg = readConfig(ctx.config);

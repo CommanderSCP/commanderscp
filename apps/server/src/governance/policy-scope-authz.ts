@@ -28,8 +28,7 @@ export async function assertPolicyScopeWithinAuthority(
   args: { orgId: string; actorObjectId: string; properties: Record<string, unknown> | undefined }
 ): Promise<void> {
   const scope = (args.properties?.scope ?? undefined) as
-    | { objectRef?: unknown; selector?: unknown; group?: unknown }
-    | undefined;
+    { objectRef?: unknown; selector?: unknown; group?: unknown } | undefined;
 
   const boundedRef =
     scope && typeof scope.objectRef === "string" && !scope.selector && !scope.group
@@ -41,7 +40,9 @@ export async function assertPolicyScopeWithinAuthority(
     try {
       refId = (await getObjectByIdOrUrnAnyType(tx, args.orgId, boundedRef)).id;
     } catch {
-      throw badRequest(`policy scope.objectRef '${boundedRef}' does not resolve to an object in this org`);
+      throw badRequest(
+        `policy scope.objectRef '${boundedRef}' does not resolve to an object in this org`
+      );
     }
     const ok = await hasPermission(tx, {
       orgId: args.orgId,

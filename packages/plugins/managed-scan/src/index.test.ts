@@ -18,7 +18,11 @@ interface DockerCall {
   args: string[];
 }
 const dockerCalls: DockerCall[] = [];
-let startBehavior: { ok: boolean; stdout: string; stderr: string } = { ok: true, stdout: "ok", stderr: "" };
+let startBehavior: { ok: boolean; stdout: string; stderr: string } = {
+  ok: true,
+  stdout: "ok",
+  stderr: ""
+};
 
 vi.mock("node:child_process", () => {
   return {
@@ -33,7 +37,8 @@ vi.mock("node:child_process", () => {
       if (sub === "create") {
         cb(null, { stdout: "scan-container-abc\n", stderr: "" });
       } else if (sub === "start") {
-        if (startBehavior.ok) cb(null, { stdout: startBehavior.stdout, stderr: startBehavior.stderr });
+        if (startBehavior.ok)
+          cb(null, { stdout: startBehavior.stdout, stderr: startBehavior.stderr });
         else {
           const err = Object.assign(new Error("container exited non-zero"), {
             stdout: startBehavior.stdout,
@@ -84,7 +89,11 @@ describe("@scp/plugin-managed-scan: container isolation", () => {
     const plugin = createManagedScanExecutorPlugin();
     const ref = await plugin.trigger(ctx(), {
       kind: "custom",
-      parameters: { method: "trivy", inputDir: join(scratch, "oci"), outputDir: join(scratch, "out") }
+      parameters: {
+        method: "trivy",
+        inputDir: join(scratch, "oci"),
+        outputDir: join(scratch, "out")
+      }
     });
     const create = createCall();
     expect(create).toBeDefined();
@@ -97,7 +106,9 @@ describe("@scp/plugin-managed-scan: container isolation", () => {
     expect(args.join(" ")).not.toContain("docker.sock");
     // Subject copied IN to /work/image, evidence copied OUT of /work/out.
     const cpIn = dockerCalls.find((c) => c.args[0] === "cp" && c.args[2]?.endsWith(":/work/image"));
-    const cpOut = dockerCalls.find((c) => c.args[0] === "cp" && c.args[1]?.endsWith(":/work/out/."));
+    const cpOut = dockerCalls.find(
+      (c) => c.args[0] === "cp" && c.args[1]?.endsWith(":/work/out/.")
+    );
     expect(cpIn).toBeDefined();
     expect(cpOut).toBeDefined();
     // Container destroyed unconditionally.
@@ -109,7 +120,11 @@ describe("@scp/plugin-managed-scan: container isolation", () => {
     const plugin = createManagedScanExecutorPlugin();
     await plugin.trigger(ctx({ networkMode: "bridge-for-test" }), {
       kind: "custom",
-      parameters: { method: "trivy", inputDir: join(scratch, "oci"), outputDir: join(scratch, "out") }
+      parameters: {
+        method: "trivy",
+        inputDir: join(scratch, "oci"),
+        outputDir: join(scratch, "out")
+      }
     });
     const args = createCall()!.args;
     expect(args[args.indexOf("--network") + 1]).toBe("bridge-for-test");
@@ -147,7 +162,11 @@ describe("@scp/plugin-managed-scan: openscap dispatch (M13.3b)", () => {
     const plugin = createManagedScanExecutorPlugin();
     await plugin.trigger(ctx(), {
       kind: "custom",
-      parameters: { method: "openscap", inputDir: join(scratch, "oci"), outputDir: join(scratch, "out") }
+      parameters: {
+        method: "openscap",
+        inputDir: join(scratch, "oci"),
+        outputDir: join(scratch, "out")
+      }
     });
     const args = createCall()!.args;
     const imageIdx = args.indexOf("scp-runner-scan:vetted");
@@ -160,7 +179,11 @@ describe("@scp/plugin-managed-scan: trivy-vm dispatch (13.3a machine-image arm)"
     const plugin = createManagedScanExecutorPlugin();
     const ref = await plugin.trigger(ctx(), {
       kind: "custom",
-      parameters: { method: "trivy-vm", inputDir: join(scratch, "oci"), outputDir: join(scratch, "out") }
+      parameters: {
+        method: "trivy-vm",
+        inputDir: join(scratch, "oci"),
+        outputDir: join(scratch, "out")
+      }
     });
     const args = createCall()!.args;
     const imageIdx = args.indexOf("scp-runner-scan:vetted");
@@ -172,9 +195,9 @@ describe("@scp/plugin-managed-scan: trivy-vm dispatch (13.3a machine-image arm)"
     expect(args).not.toContain("-v");
     expect(args.join(" ")).not.toContain("docker.sock");
     // Subject copied IN to /work/image (the machine image rides the same copy-in seam), evidence out.
-    expect(
-      dockerCalls.some((c) => c.args[0] === "cp" && c.args[2]?.endsWith(":/work/image"))
-    ).toBe(true);
+    expect(dockerCalls.some((c) => c.args[0] === "cp" && c.args[2]?.endsWith(":/work/image"))).toBe(
+      true
+    );
     expect(dockerCalls.some((c) => c.args[0] === "cp" && c.args[1]?.endsWith(":/work/out/."))).toBe(
       true
     );
@@ -197,7 +220,9 @@ describe("@scp/plugin-managed-scan: trivy-vm dispatch (13.3a machine-image arm)"
     // A `trivy vm` scan reads the SAME vulnerability DB as `trivy image`; if the pre-load env were
     // wired for `trivy` only, this arm would silently scan against the image-baked (stale) DB.
     expect(args).toContain("SCP_SCAN_DB_DIR=/work/db");
-    expect(dockerCalls.some((c) => c.args[0] === "cp" && c.args[2]?.endsWith(":/work/db"))).toBe(true);
+    expect(dockerCalls.some((c) => c.args[0] === "cp" && c.args[2]?.endsWith(":/work/db"))).toBe(
+      true
+    );
   });
 
   it("a non-zero trivy-vm run (e.g. an unrecognized disk format) is reported FAILED", async () => {
@@ -212,7 +237,11 @@ describe("@scp/plugin-managed-scan: trivy-vm dispatch (13.3a machine-image arm)"
     const plugin = createManagedScanExecutorPlugin();
     const ref = await plugin.trigger(ctx(), {
       kind: "custom",
-      parameters: { method: "trivy-vm", inputDir: join(scratch, "oci"), outputDir: join(scratch, "out") }
+      parameters: {
+        method: "trivy-vm",
+        inputDir: join(scratch, "oci"),
+        outputDir: join(scratch, "out")
+      }
     });
     const st = await plugin.status(ctx(), ref);
     expect(st.phase).toBe("failed");
@@ -226,7 +255,11 @@ describe("@scp/plugin-managed-scan: fail-closed", () => {
     const plugin = createManagedScanExecutorPlugin();
     const ref = await plugin.trigger(ctx(), {
       kind: "custom",
-      parameters: { method: "grype", inputDir: join(scratch, "oci"), outputDir: join(scratch, "out") }
+      parameters: {
+        method: "grype",
+        inputDir: join(scratch, "oci"),
+        outputDir: join(scratch, "out")
+      }
     });
     expect(dockerCalls).toHaveLength(0);
     const st = await plugin.status(ctx(), ref);
@@ -246,7 +279,11 @@ describe("@scp/plugin-managed-scan: fail-closed", () => {
     const plugin = createManagedScanExecutorPlugin();
     const ref = await plugin.trigger(ctx(), {
       kind: "custom",
-      parameters: { method: "trivy", inputDir: join(scratch, "oci"), outputDir: join(scratch, "out") }
+      parameters: {
+        method: "trivy",
+        inputDir: join(scratch, "oci"),
+        outputDir: join(scratch, "out")
+      }
     });
     const st = await plugin.status(ctx(), ref);
     expect(st.phase).toBe("failed");

@@ -483,7 +483,8 @@ export function managedScanServerSettings(): {
   return {
     runnerImage: process.env.SCP_MANAGED_SCAN_RUNNER_IMAGE,
     networkMode: process.env.SCP_MANAGED_SCAN_NETWORK_MODE ?? "none",
-    workspaceRoot: process.env.SCP_MANAGED_SCAN_WORKSPACE_ROOT ?? join(tmpdir(), "scp-managed-scan"),
+    workspaceRoot:
+      process.env.SCP_MANAGED_SCAN_WORKSPACE_ROOT ?? join(tmpdir(), "scp-managed-scan"),
     dbCacheDir: dbCacheDir && dbCacheDir.trim().length > 0 ? dbCacheDir.trim() : undefined
   };
 }
@@ -562,7 +563,10 @@ export async function resolveExecutorPluginInstance(
     };
     // Layer 2 (declared intent) is checked against layer 1 (the operator's env allowlist) inside
     // resolveInternalEgress — the property alone NEVER grants anything.
-    allowInternalEgress = resolveInternalEgress(props.serverUrl, props.allowInternalEgress === true);
+    allowInternalEgress = resolveInternalEgress(
+      props.serverUrl,
+      props.allowInternalEgress === true
+    );
     // Pin egress to the system's OWN host (server-governed), so an internal-egress grant can only ever
     // reach the registered system — never a tenant-chosen `binding.allowedHosts` entry. This, not the
     // permission gate alone, is what keeps the allowance narrow (egress-guard.ts, MAJOR #6).

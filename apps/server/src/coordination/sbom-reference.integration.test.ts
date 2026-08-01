@@ -69,9 +69,14 @@ describe("M17.2 SBOM reference: a typed report's SBOM reference round-trips onto
   }
 
   it("an executor's report carrying an SBOM REFERENCE (+ its artifact digest) persists both canonical keys on the change — reference only, never a document", async () => {
-    const component = await createTestComponent(admin, { name: `sbom-comp-${randomUUID().slice(0, 8)}` });
+    const component = await createTestComponent(admin, {
+      name: `sbom-comp-${randomUUID().slice(0, 8)}`
+    });
     const repo = `acme/${randomUUID().slice(0, 8)}`;
-    await admin.changeSources.createMapping("terraform", { repoPattern: repo, component: component.id });
+    await admin.changeSources.createMapping("terraform", {
+      repoPattern: repo,
+      component: component.id
+    });
 
     const artifactDigest = "sha256:" + "a1".repeat(32);
     const sbomDigest = "sha256:" + "b2".repeat(32);
@@ -128,9 +133,14 @@ describe("M17.2 SBOM reference: a typed report's SBOM reference round-trips onto
   });
 
   it("a report WITHOUT an sbom still works unchanged — the field is optional, so every pre-M17.2 reporter keeps reporting", async () => {
-    const component = await createTestComponent(admin, { name: `sbom-none-${randomUUID().slice(0, 8)}` });
+    const component = await createTestComponent(admin, {
+      name: `sbom-none-${randomUUID().slice(0, 8)}`
+    });
     const repo = `acme/${randomUUID().slice(0, 8)}`;
-    await admin.changeSources.createMapping("terraform", { repoPattern: repo, component: component.id });
+    await admin.changeSources.createMapping("terraform", {
+      repoPattern: repo,
+      component: component.id
+    });
 
     const { eventId } = await admin.changeSources.report("terraform", {
       status: "planned",
@@ -146,9 +156,14 @@ describe("M17.2 SBOM reference: a typed report's SBOM reference round-trips onto
   });
 
   it("M10.6: SCP exposes NO way to STORE SBOM BYTES — an attempt to smuggle the document inside the reference is REFUSED (400), not silently stripped", async () => {
-    const component = await createTestComponent(admin, { name: `sbom-bytes-${randomUUID().slice(0, 8)}` });
+    const component = await createTestComponent(admin, {
+      name: `sbom-bytes-${randomUUID().slice(0, 8)}`
+    });
     const repo = `acme/${randomUUID().slice(0, 8)}`;
-    await admin.changeSources.createMapping("terraform", { repoPattern: repo, component: component.id });
+    await admin.changeSources.createMapping("terraform", {
+      repoPattern: repo,
+      component: component.id
+    });
 
     const before = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.select().from(changeSourceEvents)
@@ -180,7 +195,9 @@ describe("M17.2 SBOM reference: a typed report's SBOM reference round-trips onto
     expect(JSON.stringify(body)).not.toContain("bomFormat");
 
     // The whole report is refused — no event was ever created for it to leave a half-persisted trace.
-    const after = await withTenantTx(server.deps.db, org.orgId, (tx) => tx.select().from(changeSourceEvents));
+    const after = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(changeSourceEvents)
+    );
     expect(after.length).toBe(before.length);
   });
 

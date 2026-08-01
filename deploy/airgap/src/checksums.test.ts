@@ -29,7 +29,9 @@ describe("sha256Bytes / sha256File", () => {
   });
 
   it("produces the well-known sha256 of an empty string", () => {
-    expect(sha256Bytes("")).toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    expect(sha256Bytes("")).toBe(
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
   });
 });
 
@@ -125,7 +127,14 @@ describe("verifyChecksums — the tamper-detection gate", () => {
       await rm(path.join(dir, "file.txt"));
 
       const mismatches = await verifyChecksums(dir, entries);
-      expect(mismatches).toEqual([{ relativePath: "file.txt", expected: entries[0]!.digest, actual: undefined, reason: "missing-on-disk" }]);
+      expect(mismatches).toEqual([
+        {
+          relativePath: "file.txt",
+          expected: entries[0]!.digest,
+          actual: undefined,
+          reason: "missing-on-disk"
+        }
+      ]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -141,7 +150,14 @@ describe("verifyChecksums — the tamper-detection gate", () => {
       await writeFile(path.join(dir, "sneaky.txt"), "malicious payload", "utf8");
 
       const mismatches = await verifyChecksums(dir, entries);
-      expect(mismatches).toEqual([{ relativePath: "sneaky.txt", expected: undefined, actual: undefined, reason: "unexpected-extra-file" }]);
+      expect(mismatches).toEqual([
+        {
+          relativePath: "sneaky.txt",
+          expected: undefined,
+          actual: undefined,
+          reason: "unexpected-extra-file"
+        }
+      ]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

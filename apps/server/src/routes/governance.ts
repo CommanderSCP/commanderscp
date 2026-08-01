@@ -59,12 +59,18 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
     schema: {
       params: RegistryIdOrUrnParamSchema,
       body: CreateControlBindingRequestSchema,
-      response: { 200: ControlBindingSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
+      response: {
+        200: ControlBindingSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
     },
     config: {
       openapi: {
         operationId: "putControlBinding",
-        summary: "Bind a Control to a ControlPlugin instance (DESIGN §10.2 — swapping the impl changes only this)",
+        summary:
+          "Bind a Control to a ControlPlugin instance (DESIGN §10.2 — swapping the impl changes only this)",
         tags: ["controls"]
       }
     },
@@ -72,7 +78,8 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
       const auth = await requireAuth(deps, request);
       const binding = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const control = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.idOrUrn);
-        if (control.typeId !== "control") throw notFound(`'${request.params.idOrUrn}' is not a control object`);
+        if (control.typeId !== "control")
+          throw notFound(`'${request.params.idOrUrn}' is not a control object`);
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
@@ -150,7 +157,11 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
       response: { 200: ApprovalRequestListResponseSchema, 401: ProblemSchema, 403: ProblemSchema }
     },
     config: {
-      openapi: { operationId: "listApprovals", summary: "List approval requests, optionally filtered by change", tags: ["approvals"] }
+      openapi: {
+        operationId: "listApprovals",
+        summary: "List approval requests, optionally filtered by change",
+        tags: ["approvals"]
+      }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
@@ -162,9 +173,15 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
           scopeObjectId: auth.orgId
         });
         if (!request.query.changeId) {
-          throw badRequest("changeId is required (M4: approvals are always listed scoped to a change)");
+          throw badRequest(
+            "changeId is required (M4: approvals are always listed scoped to a change)"
+          );
         }
-        const changeObject = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.query.changeId);
+        const changeObject = await getObjectByIdOrUrnAnyType(
+          tx,
+          auth.orgId,
+          request.query.changeId
+        );
         const requests = await listApprovalRequestsForChange(tx, auth.orgId, changeObject.id);
         const items = await Promise.all(
           requests.map(async (r) => {
@@ -196,10 +213,19 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
     url: "/api/v1/approvals/:id",
     schema: {
       params: ApprovalIdParamSchema,
-      response: { 200: ApprovalRequestSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
+      response: {
+        200: ApprovalRequestSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
     },
     config: {
-      openapi: { operationId: "getApproval", summary: "Get an approval request by id", tags: ["approvals"] }
+      openapi: {
+        operationId: "getApproval",
+        summary: "Get an approval request by id",
+        tags: ["approvals"]
+      }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
@@ -244,7 +270,11 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
       }
     },
     config: {
-      openapi: { operationId: "listApprovalVotes", summary: "List votes cast on an approval request", tags: ["approvals"] }
+      openapi: {
+        operationId: "listApprovalVotes",
+        summary: "List votes cast on an approval request",
+        tags: ["approvals"]
+      }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
@@ -288,7 +318,8 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
     config: {
       openapi: {
         operationId: "castApprovalVote",
-        summary: "Cast a vote on an approval request (DESIGN §10.2 — N-of-M quorum, one vote per subject, always self-attested)",
+        summary:
+          "Cast a vote on an approval request (DESIGN §10.2 — N-of-M quorum, one vote per subject, always self-attested)",
         tags: ["approvals"]
       }
     },
@@ -339,12 +370,20 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
       response: { 201: FreezeSchema, 400: ProblemSchema, 401: ProblemSchema, 403: ProblemSchema }
     },
     config: {
-      openapi: { operationId: "createFreeze", summary: "Declare a freeze window over a scope (DESIGN §10.3)", tags: ["freezes"] }
+      openapi: {
+        operationId: "createFreeze",
+        summary: "Declare a freeze window over a scope (DESIGN §10.3)",
+        tags: ["freezes"]
+      }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const freeze = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        const scopeObject = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.body.scopeObjectId);
+        const scopeObject = await getObjectByIdOrUrnAnyType(
+          tx,
+          auth.orgId,
+          request.body.scopeObjectId
+        );
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
@@ -460,12 +499,18 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
     url: "/api/v1/policy-evaluate",
     schema: {
       body: PolicyEvaluateRequestSchema,
-      response: { 200: PolicyEvaluateResponseSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
+      response: {
+        200: PolicyEvaluateResponseSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
     },
     config: {
       openapi: {
         operationId: "policyEvaluate",
-        summary: "Dry-run governance evaluation for a change — verdict + reason tree, no transition attempted",
+        summary:
+          "Dry-run governance evaluation for a change — verdict + reason tree, no transition attempted",
         tags: ["policies"]
       }
     },
@@ -479,7 +524,9 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
           scopeObjectId: auth.orgId
         });
         const changeObject = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.body.changeId);
-        const targetObjectIds = targetObjectIdsOf(changeObject.properties as Record<string, unknown>);
+        const targetObjectIds = targetObjectIdsOf(
+          changeObject.properties as Record<string, unknown>
+        );
         const outcome = await evaluateGovernanceGate(tx, gateDeps.sandbox, null, {
           orgId: auth.orgId,
           changeObjectId: changeObject.id,

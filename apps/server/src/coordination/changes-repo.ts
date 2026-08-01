@@ -33,7 +33,10 @@ type ObjectRow = typeof objects.$inferSelect;
  *  `originDomainId` is typed as plain `string` (not `ObjectRow`'s branded `TrustDomainId`) so
  *  `GraphObject.originDomainId` (also plain `string` on the wire schema) satisfies it directly —
  *  a `TrustDomainId` is itself always a valid `string`, so an `ObjectRow` still satisfies this too. */
-type ObjectLike = Pick<ObjectRow, "id" | "urn" | "name"> & { properties: unknown; originDomainId: string };
+type ObjectLike = Pick<ObjectRow, "id" | "urn" | "name"> & {
+  properties: unknown;
+  originDomainId: string;
+};
 
 export function toChangeShape(change: ChangeRow, object: ObjectLike): Change {
   return {
@@ -155,7 +158,11 @@ export async function proposeChange(
   const requiresValue = resolvedRequires;
   // Strip any caller-supplied `provides`/`requires` from the raw properties so the ONLY values
   // stored are the computed ones above (the resolved typed field, or `provides`'s explicit fallback).
-  const { provides: _rawProvides, requires: _rawRequires, ...restProperties } = input.properties ?? {};
+  const {
+    provides: _rawProvides,
+    requires: _rawRequires,
+    ...restProperties
+  } = input.properties ?? {};
 
   let topologyObjectId: string | undefined;
   let topologyVersion: number | undefined;
@@ -451,9 +458,7 @@ export interface ParsedRequires {
  * the one change that carries the junk. Propose-time typed validation (Zod + `at` resolution) is
  * unchanged — these entries can only arrive PAST the API.
  */
-export function requiresOf(
-  properties: Record<string, unknown> | null | undefined
-): ParsedRequires {
+export function requiresOf(properties: Record<string, unknown> | null | undefined): ParsedRequires {
   const requires = properties?.requires;
   if (requires === undefined || requires === null) return { requirements: [], malformed: [] };
   if (!Array.isArray(requires)) return { requirements: [], malformed: [requires] };
@@ -495,9 +500,7 @@ export function requiresOf(
  * let junk reach `getExecutorBinding`, which matches no binding and silently falls back to the
  * default fake-executor — a "nothing happened, no error" failure.
  */
-export function typeOf(
-  properties: Record<string, unknown> | null | undefined
-): ExecutorType {
+export function typeOf(properties: Record<string, unknown> | null | undefined): ExecutorType {
   const raw = properties?.type;
   if (raw === undefined || raw === null) return "configuration";
   if (ExecutorTypeSchema.options.includes(raw as ExecutorType)) return raw as ExecutorType;

@@ -168,14 +168,12 @@ export async function advanceCursor(
         )
       );
   } else {
-    await tx
-      .insert(syncCursors)
-      .values({
-        orgId,
-        peerDomainId,
-        originDomainId,
-        lastAppliedSeq: sequence,
-        lastAppliedRowHash: rowHash
-      });
+    await tx.insert(syncCursors).values({
+      orgId,
+      peerDomainId,
+      originDomainId,
+      lastAppliedSeq: sequence,
+      lastAppliedRowHash: rowHash
+    });
   }
 }

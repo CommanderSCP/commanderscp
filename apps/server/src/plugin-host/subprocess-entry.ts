@@ -207,7 +207,12 @@ function stderrLogger(instanceId: string): Logger {
  * tenant bindings default to, and which a tenant controls).
  * Metadata/link-local stay blocked for these modules too.
  */
-const OPERATOR_PLANE_MODULES = new Set(["webhook-control", "scan-result-control", "github-check", "federation-https"]);
+const OPERATOR_PLANE_MODULES = new Set([
+  "webhook-control",
+  "scan-result-control",
+  "github-check",
+  "federation-https"
+]);
 
 /**
  * M8 hardening (DESIGN.md §13, BUILD_AND_TEST.md §8 M8 item 6, "Federation mTLS transport
@@ -224,9 +229,7 @@ const OPERATOR_PLANE_MODULES = new Set(["webhook-control", "scan-result-control"
  * client cert" — a misconfigured mTLS setup that quietly falls back to unauthenticated transport
  * is a false sense of security worse than an obvious boot failure.
  */
-function loadFederationMtlsMaterial():
-  | { cert: string; key: string; ca?: string }
-  | undefined {
+function loadFederationMtlsMaterial(): { cert: string; key: string; ca?: string } | undefined {
   const certFile = process.env.SCP_FEDERATION_MTLS_CERT_FILE;
   const keyFile = process.env.SCP_FEDERATION_MTLS_KEY_FILE;
   const caFile = process.env.SCP_FEDERATION_MTLS_CA_FILE;

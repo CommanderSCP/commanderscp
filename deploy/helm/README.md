@@ -99,6 +99,7 @@ gets the real check for free via `pnpm test`.
 
 **Verified end to end against a real `kind` cluster** while building this chart (`helm install` →
 golden path via the real API → `helm upgrade` → `helm rollback`):
+
 - Fresh `helm install` with `postgres.evalInCluster.enabled=true`: all pods (api ×2, worker ×2,
   postgres-eval ×1) reach Ready; login → register a service → list services all succeed through a
   port-forwarded real HTTP client — the M0 golden path, end to end, through this chart.
@@ -116,6 +117,7 @@ claim, and a genuinely network-isolated cluster for the air-gap egress claim) is
 **Two real bugs were caught and fixed by this live-cluster verification**, beyond anything `helm
 template`/`helm lint`/`tools/helm-verify` alone would catch (all three are static-rendering tools —
 none of them actually starts Postgres or exchanges a password):
+
 1. The eval Postgres NetworkPolicy ingress gap (`templates/networkpolicy.yaml`) — the eval
    Postgres pod is itself selected by the default-deny policy, so it also needed an explicit
    ingress allow; without it, connections timed out (dropped, not refused) rather than failing
@@ -177,10 +179,10 @@ follow-up work. `managedIac.enabled` defaults to `false`.
 This chart ships THREE separate mTLS-related values blocks. They cover different points in the
 transport path and are not interchangeable — pick based on where TLS terminates in your topology.
 
-| Values key | What it controls | Direction | Enforced by |
-|---|---|---|---|
-| `federation.mtls` | CLIENT-side certificate **presentation** — when THIS domain acts as an OUTPOST dialing a commander, `federation-https` presents a real client cert. | Outbound (this domain -> a commander) | `apps/server/src/plugin-host/subprocess-entry.ts`'s `loadFederationMtlsMaterial`, proven by `plugin-host/federation-mtls.test.ts` |
-| `ingress.mtls` | EDGE server-side **verification** — nginx ingress-controller annotations that require+verify an incoming client cert before any request reaches the `api` Service. | Inbound, TLS terminated at the ingress | `templates/ingress.yaml` (nginx-specific annotations), verified structurally by `tools/helm-verify` |
+| Values key              | What it controls                                                                                                                                                                                                                                                     | Direction                                 | Enforced by                                                                                                                                                              |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `federation.mtls`       | CLIENT-side certificate **presentation** — when THIS domain acts as an OUTPOST dialing a commander, `federation-https` presents a real client cert.                                                                                                                  | Outbound (this domain -> a commander)     | `apps/server/src/plugin-host/subprocess-entry.ts`'s `loadFederationMtlsMaterial`, proven by `plugin-host/federation-mtls.test.ts`                                        |
+| `ingress.mtls`          | EDGE server-side **verification** — nginx ingress-controller annotations that require+verify an incoming client cert before any request reaches the `api` Service.                                                                                                   | Inbound, TLS terminated at the ingress    | `templates/ingress.yaml` (nginx-specific annotations), verified structurally by `tools/helm-verify`                                                                      |
 | `federation.serverMtls` | IN-APP server-side **verification** (M9.3, [ADR-0001](../../docs/adr/0001-in-app-federation-mtls.md)) — apps/server's OWN Fastify listener terminates TLS itself and verifies an incoming peer's client cert, fail-closed, on the three federation transport routes. | Inbound, TLS terminated by the app itself | `apps/server/src/federation/mtls-enforcement.ts` + `config.ts`'s `loadFederationServerMtlsConfig`, proven by `federation/mtls.integration.test.ts`'s attack-matrix suite |
 
 **`federation.mtls.enabled: true`** mounts a `kubernetes.io/tls`-shaped Secret and wires real
@@ -191,6 +193,7 @@ qualification, which overstated it. **On its own it does NOT make this domain's 
 a COMMANDER, verify an incoming outpost's client certificate** — that needs one of the two rows below.
 
 **Precedence / which to pick:**
+
 - **TLS terminated at an ingress** (the common k8s shape) -> use `ingress.mtls`. When enabled, it
   adds nginx ingress-controller annotations (`auth-tls-verify-client: "on"`,
   `auth-tls-secret: <ns>/<ingress.mtls.caSecretName>`) that make the ingress controller itself
@@ -244,23 +247,23 @@ from Helm until this chart grows a value for it. That was a standing gap through
 below now exist, and `tools/helm-verify` asserts each one **both ways** (absent on a default render,
 present and correct when enabled) so the next one cannot be forgotten silently.
 
-| Values key | Env | Notes |
-|---|---|---|
-| `federation.sync.*` | `SCP_FEDERATION_SYNC_LOOP` + cadences | M14.0/M14.4 live-pull. Off by default. |
-| `federation.relay.inbox.*` | `SCP_INBOX_LOOP`, tick interval | M13.1a staging-node ingest. Off by default. |
-| `federation.relay.autoRelay.*` | `SCP_RETRANS_AUTO_RELAY` + interval/attempts/lease | M13.1b unattended byte egress. Off by default; belongs on the **low-side** retrans only. |
-| `artifactChannel.*` | `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` / `_BLOB_BASE_URLS` / `_INSECURE_HOSTS` | ADR-0019 §4. Fail-closed when unset. |
-| `operatorApi.enabled` | `SCP_OPERATOR_TOKEN` (secretKeyRef) | Requires `appSecrets.existingSecret`; render fails fast without it. |
-| `internalBaseUrl` | `SCP_INTERNAL_BASE_URL` | How this instance names itself to a human — the CLI device-login URL. |
-| `api.role` | `SCP_ROLE` on the api pods | `api` (default) or `all`. |
+| Values key                     | Env                                                                       | Notes                                                                                    |
+| ------------------------------ | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `federation.sync.*`            | `SCP_FEDERATION_SYNC_LOOP` + cadences                                     | M14.0/M14.4 live-pull. Off by default.                                                   |
+| `federation.relay.inbox.*`     | `SCP_INBOX_LOOP`, tick interval                                           | M13.1a staging-node ingest. Off by default.                                              |
+| `federation.relay.autoRelay.*` | `SCP_RETRANS_AUTO_RELAY` + interval/attempts/lease                        | M13.1b unattended byte egress. Off by default; belongs on the **low-side** retrans only. |
+| `artifactChannel.*`            | `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` / `_BLOB_BASE_URLS` / `_INSECURE_HOSTS` | ADR-0019 §4. Fail-closed when unset.                                                     |
+| `operatorApi.enabled`          | `SCP_OPERATOR_TOKEN` (secretKeyRef)                                       | Requires `appSecrets.existingSecret`; render fails fast without it.                      |
+| `internalBaseUrl`              | `SCP_INTERNAL_BASE_URL`                                                   | How this instance names itself to a human — the CLI device-login URL.                    |
+| `api.role`                     | `SCP_ROLE` on the api pods                                                | `api` (default) or `all`.                                                                |
 
 **Still NOT settable, and why.** The retrans **byte plumbing** — `SCP_RELAY_OUT_DIR` / `IN_DIR` /
 `BLOB_OUT_DIR`, `SCP_RELAY_SOURCE_REPO` / `DEST_REPO` / `CERT_DIR`, and the `SCP_DELIVERY_ROOTS`
 that must bound them — has no values key yet. This is deliberate rather than overlooked: a CDS drop
 directory is polled by a **third-party intake watcher**, so it needs a volume shape (RWX PVC,
 `existingClaim`, hostPath, CSI) that is a deployment-topology decision, and `readOnlyRootFilesystem:
-true` forbids improvising one. A retrans can therefore be *switched on* here but not yet *given
-somewhere to drop*; both loops resolve no target and defer with a named problem, consuming no
+true` forbids improvising one. A retrans can therefore be _switched on_ here but not yet _given
+somewhere to drop_; both loops resolve no target and defer with a named problem, consuming no
 attempt. Same for the managed-scan runner (`SCP_MANAGED_SCAN_RUNNER_IMAGE`) — note the chart
 currently provisions the scan-DB PVC (`scanDbCache`) for a scanner it cannot start.
 

@@ -89,8 +89,7 @@ function startTestServer(): Promise<TestServerHandle> {
         get lastRequestAuthorized() {
           return lastRequestAuthorized;
         },
-        close: () =>
-          new Promise<void>((res) => server.close(() => res()))
+        close: () => new Promise<void>((res) => server.close(() => res()))
       });
     });
     server.on("error", reject);
@@ -155,7 +154,9 @@ describe("federation-https mTLS client certificate (M8 hardening)", () => {
     ]);
 
     await expect(
-      host.federationTransport("federation-mtls-none").pull({ domainId: "parent-domain", sequence: 0 })
+      host
+        .federationTransport("federation-mtls-none")
+        .pull({ domainId: "parent-domain", sequence: 0 })
     ).rejects.toThrow();
     // No request the server's handler ever ran ever got authorized — the socket was refused at
     // the TLS layer, before any HTTP semantics existed.
@@ -180,7 +181,9 @@ describe("federation-https mTLS client certificate (M8 hardening)", () => {
     ]);
 
     await expect(
-      host.federationTransport("federation-mtls-bad").pull({ domainId: "parent-domain", sequence: 0 })
+      host
+        .federationTransport("federation-mtls-bad")
+        .pull({ domainId: "parent-domain", sequence: 0 })
     ).rejects.toThrow();
     expect(testServer.lastRequestAuthorized).toBeUndefined();
   });
@@ -199,7 +202,9 @@ describe("federation-https mTLS client certificate (M8 hardening)", () => {
     ]);
 
     const spawnCall = spawnSpy.mock.calls.find(
-      (call) => (call[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env?.SCP_PLUGIN_INSTANCE_ID === "not-federation"
+      (call) =>
+        (call[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env?.SCP_PLUGIN_INSTANCE_ID ===
+        "not-federation"
     );
     const env = (spawnCall?.[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
     expect(env).toBeDefined();

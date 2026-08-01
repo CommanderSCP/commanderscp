@@ -142,10 +142,13 @@ const pinnedPresent = (() => {
   return resolved.pinned && cosignReportedVersion(resolved.bin) !== null;
 })();
 
-describe.skipIf(!pinnedPresent)("cosign pin: the resolved pinned binary IS the pinned release", () => {
-  it("reports exactly the pinned version", () => {
-    const resolved = resolveCosign();
-    expect(cosignReportedVersion(resolved.bin)).toBe(PINNED_COSIGN_VERSION);
-    expect(() => assertPinnedCosignVersion(resolved)).not.toThrow();
-  });
-});
+describe.skipIf(!pinnedPresent)(
+  "cosign pin: the resolved pinned binary IS the pinned release",
+  () => {
+    it("reports exactly the pinned version", () => {
+      const resolved = resolveCosign();
+      expect(cosignReportedVersion(resolved.bin)).toBe(PINNED_COSIGN_VERSION);
+      expect(() => assertPinnedCosignVersion(resolved)).not.toThrow();
+    });
+  }
+);

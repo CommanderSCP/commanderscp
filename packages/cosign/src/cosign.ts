@@ -68,11 +68,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import {
-  assertPinnedCosignVersion,
-  resolveCosign,
-  type ResolvedCosign
-} from "./cosign-bin.js";
+import { assertPinnedCosignVersion, resolveCosign, type ResolvedCosign } from "./cosign-bin.js";
 import { run } from "./exec.js";
 
 /**
@@ -125,7 +121,9 @@ export async function resolveSigningKey(scratchDir: string): Promise<SigningKey>
     let pubKeyPath = process.env.COSIGN_PUBLIC_KEY;
     if (!pubKeyPath) {
       pubKeyPath = path.join(scratchDir, "derived-cosign.pub");
-      const { stdout } = run(cosign().bin, ["public-key", "--key", envKey], { env: { COSIGN_PASSWORD: password } });
+      const { stdout } = run(cosign().bin, ["public-key", "--key", envKey], {
+        env: { COSIGN_PASSWORD: password }
+      });
       await writeFile(pubKeyPath, stdout, "utf8");
     }
     return { keyPath: envKey, pubKeyPath, password, isEphemeral: false };
@@ -142,7 +140,9 @@ export async function resolveSigningKey(scratchDir: string): Promise<SigningKey>
       "\n\n"
   );
   const prefix = path.join(scratchDir, "ephemeral-cosign");
-  run(cosign().bin, ["generate-key-pair", "--output-key-prefix", prefix], { env: { COSIGN_PASSWORD: "" } });
+  run(cosign().bin, ["generate-key-pair", "--output-key-prefix", prefix], {
+    env: { COSIGN_PASSWORD: "" }
+  });
   return { keyPath: `${prefix}.key`, pubKeyPath: `${prefix}.pub`, password: "", isEphemeral: true };
 }
 
@@ -226,7 +226,11 @@ export interface VerifyResult {
 }
 
 /** `cosign verify-blob` against a detached signature file. Never throws — a verification failure is a normal, expected outcome for a tampered bundle, reported as `{ ok: false }`, not an exception. */
-export function verifyBlobDetached(filePath: string, sigPath: string, pubKeyPath: string): VerifyResult {
+export function verifyBlobDetached(
+  filePath: string,
+  sigPath: string,
+  pubKeyPath: string
+): VerifyResult {
   try {
     const { stdout, stderr } = run(cosign().bin, [
       "verify-blob",

@@ -44,7 +44,14 @@ beforeAll(() => {
     .matchHeader("authorization", authHeader)
     .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
     .reply(200, () => ({
-      workflow_runs: [{ id: Date.now(), status: "success", head_sha: "a".repeat(40), created_at: new Date().toISOString() }]
+      workflow_runs: [
+        {
+          id: Date.now(),
+          status: "success",
+          head_sha: "a".repeat(40),
+          created_at: new Date().toISOString()
+        }
+      ]
     }))
     .persist();
 
@@ -52,7 +59,11 @@ beforeAll(() => {
   nock(base)
     .matchHeader("authorization", authHeader)
     .get(new RegExp(`/repos/${config.owner}/${config.repo}/actions/runs/\\d+$`))
-    .reply(200, (uri: string) => ({ id: Number(uri.split("/").pop()), status: "success", head_sha: "a".repeat(40) }))
+    .reply(200, (uri: string) => ({
+      id: Number(uri.split("/").pop()),
+      status: "success",
+      head_sha: "a".repeat(40)
+    }))
     .persist();
 
   // abort(): cancel ANY correlated run id.
@@ -96,7 +107,10 @@ runExecutorConformanceSuite("gitea", async () => {
   // A durable statePath (fresh per factory() call) so the cross-restart dedup test reads on-disk
   // state, not the first instance's memory (MAJOR #4).
   const statePath = join(await mkdtemp(join(tmpdir(), "gitea-conformance-")), "state.json");
-  const build = (): { plugin: ReturnType<typeof createGiteaExecutorPlugin>; ctx: PluginContext } => ({
+  const build = (): {
+    plugin: ReturnType<typeof createGiteaExecutorPlugin>;
+    ctx: PluginContext;
+  } => ({
     plugin: createGiteaExecutorPlugin(),
     ctx: buildTestCtx({ ...config, statePath })
   });

@@ -11,16 +11,16 @@ the single source of truth every consumer reads.
 
 ## What is pinned
 
-| | |
-|---|---|
-| Tool | [OpenSCAP](https://github.com/OpenSCAP/openscap) (`oscap`) + [SCAP Security Guide](https://github.com/ComplianceAsCode/content) datastreams |
-| oscap version | **1.4.0** (`oscap --version`) — installed from the Fedora GA **frozen** release repo, **fail-closed asserted** at build (not the rolling `updates` repo) |
-| SSG content version | **0.1.74** (`scap-security-guide`, same frozen release repo) |
-| Image ref (**what the runner's FINAL stage builds FROM**) | `fedora@sha256:f1a3fab47bcb3c3ddf3135d5ee7ba8b7b25f2e809a47440936212a3a50957f3d` — the **multi-arch index (manifest-list) digest** for Fedora 41 |
-| linux/amd64 platform digest (production runner arch, provenance + drift-asserted) | `sha256:68bb1ba893be0c05991b2df55bc6571862bab7526fd6053b1ebacd53a2a75366` |
-| Install repo (frozen snapshot; `--disablerepo=* --enablerepo=fedora`) | `fedora` (Fedora 41 GA release tree — immutable) |
-| SCAP content path | `/usr/share/xml/scap/ssg/content/` (`ssg-<os>-ds.xml` datastreams — e.g. `ssg-debian11-ds.xml`, `ssg-ol8-ds.xml`, `ssg-fedora-ds.xml`) |
-| License | LGPL-2.1 (openscap) / BSD-3-Clause (SSG content) |
+|                                                                                   |                                                                                                                                                          |
+| --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tool                                                                              | [OpenSCAP](https://github.com/OpenSCAP/openscap) (`oscap`) + [SCAP Security Guide](https://github.com/ComplianceAsCode/content) datastreams              |
+| oscap version                                                                     | **1.4.0** (`oscap --version`) — installed from the Fedora GA **frozen** release repo, **fail-closed asserted** at build (not the rolling `updates` repo) |
+| SSG content version                                                               | **0.1.74** (`scap-security-guide`, same frozen release repo)                                                                                             |
+| Image ref (**what the runner's FINAL stage builds FROM**)                         | `fedora@sha256:f1a3fab47bcb3c3ddf3135d5ee7ba8b7b25f2e809a47440936212a3a50957f3d` — the **multi-arch index (manifest-list) digest** for Fedora 41         |
+| linux/amd64 platform digest (production runner arch, provenance + drift-asserted) | `sha256:68bb1ba893be0c05991b2df55bc6571862bab7526fd6053b1ebacd53a2a75366`                                                                                |
+| Install repo (frozen snapshot; `--disablerepo=* --enablerepo=fedora`)             | `fedora` (Fedora 41 GA release tree — immutable)                                                                                                         |
+| SCAP content path                                                                 | `/usr/share/xml/scap/ssg/content/` (`ssg-<os>-ds.xml` datastreams — e.g. `ssg-debian11-ds.xml`, `ssg-ol8-ds.xml`, `ssg-fedora-ds.xml`)                   |
+| License                                                                           | LGPL-2.1 (openscap) / BSD-3-Clause (SSG content)                                                                                                         |
 
 ## Why a Fedora base (not a vendored binary like cosign/skopeo/trivy)
 
@@ -44,7 +44,7 @@ asserted by the drift test as the production target arch.
 The **Fedora image is digest-pinned** AND `oscap` + SSG are installed **only from the frozen Fedora
 GA release repo** (`--disablerepo=* --enablerepo=fedora` in the Dockerfile) — an immutable snapshot
 Fedora never republishes into — **not** the rolling `updates`/`updates-testing` repos. Installing
-from those rolling repos is what previously made the exact tool version *float* at build time (the
+from those rolling repos is what previously made the exact tool version _float_ at build time (the
 repo served whatever was latest); scoping the install to the GA release tree makes the oscap + SSG
 versions **reproducible from the pin**. The build then **asserts the exact version fail-closed**:
 
@@ -60,7 +60,7 @@ same content-addressed discipline the Trivy/cosign/skopeo pins already enforce.
 default must equal `OPENSCAP_PINNED_VERSION`, the fail-closed `grep -qF` assertion must be present,
 and the install must be scoped to the frozen repo (no floating default set).
 
-A *fully* offline, sha256-per-RPM mirror of the closure **and** the SCAP-content `type: "blob"`
+A _fully_ offline, sha256-per-RPM mirror of the closure **and** the SCAP-content `type: "blob"`
 cross-boundary transport is **13.3b part 2** — a disconnected build host still needs a local mirror
 of the Fedora GA release tree until then; the reproducibility guarantee here is the frozen GA
 snapshot plus the fail-closed version assertion.

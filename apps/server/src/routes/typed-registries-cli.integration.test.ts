@@ -119,9 +119,9 @@ describe("CLI: M2 typed registry + ownership commands", () => {
 
       // Without --service: commander refuses the required option before any request goes out
       // (non-zero exit → `run()` rejects). This is the CLI half of create-strict.
-      await expect(
-        cli.run(["component", "register", "--name", "cli-orphan"])
-      ).rejects.toThrow(/service/i);
+      await expect(cli.run(["component", "register", "--name", "cli-orphan"])).rejects.toThrow(
+        /service/i
+      );
     } finally {
       await cli.cleanup();
     }
@@ -132,8 +132,18 @@ describe("CLI: M2 typed registry + ownership commands", () => {
     const cli: CliInvocation = await startCliSession(server.baseUrl);
     try {
       await cli.run(["login", "--username", org.adminUsername, "--password", org.adminPassword]);
-      const svcA = await cli.runJson<{ id: string }>(["service", "register", "--name", "cli-svc-a"]);
-      const svcB = await cli.runJson<{ id: string }>(["service", "register", "--name", "cli-svc-b"]);
+      const svcA = await cli.runJson<{ id: string }>([
+        "service",
+        "register",
+        "--name",
+        "cli-svc-a"
+      ]);
+      const svcB = await cli.runJson<{ id: string }>([
+        "service",
+        "register",
+        "--name",
+        "cli-svc-b"
+      ]);
       const comp = await cli.runJson<{ id: string }>([
         "component",
         "register",
@@ -176,7 +186,11 @@ describe("CLI: M2 typed registry + ownership commands", () => {
         svc.id
       ]);
 
-      const mapping = await cli.runJson<{ componentObjectId: string; repoPattern: string; sourceKind: string }>([
+      const mapping = await cli.runJson<{
+        componentObjectId: string;
+        repoPattern: string;
+        sourceKind: string;
+      }>([
         "change-source",
         "create-mapping",
         "github",
@@ -210,7 +224,12 @@ describe("CLI: M2 typed registry + ownership commands", () => {
     const cli: CliInvocation = await startCliSession(server.baseUrl);
     try {
       await cli.run(["login", "--username", org.adminUsername, "--password", org.adminPassword]);
-      const svc = await cli.runJson<{ id: string }>(["service", "register", "--name", "cli-bf-svc"]);
+      const svc = await cli.runJson<{ id: string }>([
+        "service",
+        "register",
+        "--name",
+        "cli-bf-svc"
+      ]);
       await cli.runJson<{ id: string }>([
         "component",
         "register",
@@ -223,7 +242,9 @@ describe("CLI: M2 typed registry + ownership commands", () => {
       const proposal = JSON.stringify({
         objects: [],
         relationships: [],
-        sourceMappings: [{ objectName: "cli-bf-comp", sourceKind: "github", repoPattern: "acme/bf" }]
+        sourceMappings: [
+          { objectName: "cli-bf-comp", sourceKind: "github", repoPattern: "acme/bf" }
+        ]
       });
       const result = await cli.runJson<{ createdSourceMappingIds: string[]; skipped: unknown[] }>([
         "discovery",
@@ -240,5 +261,4 @@ describe("CLI: M2 typed registry + ownership commands", () => {
       await cli.cleanup();
     }
   });
-
 });

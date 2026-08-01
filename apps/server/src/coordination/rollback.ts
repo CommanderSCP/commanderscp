@@ -46,7 +46,11 @@ export async function triggerRollback(
   input: TriggerRollbackInput
 ): Promise<TriggerRollbackResult> {
   const original = await getChangeRow(tx, input.orgId, input.originalChangeObjectId);
-  const originalObject = await getObjectByIdOrUrnAnyType(tx, input.orgId, input.originalChangeObjectId);
+  const originalObject = await getObjectByIdOrUrnAnyType(
+    tx,
+    input.orgId,
+    input.originalChangeObjectId
+  );
 
   // S10 single-writer guard (tracked-security-followups): checked BEFORE the state-machine
   // validation below — "you don't own this change" is a more fundamental refusal than "wrong
@@ -72,7 +76,9 @@ export async function triggerRollback(
 
   const targetObjectIds = targetObjectIdsOf(originalObject.properties);
   if (targetObjectIds.length === 0) {
-    throw badRequest(`change '${input.originalChangeObjectId}' has no recorded targets to roll back`);
+    throw badRequest(
+      `change '${input.originalChangeObjectId}' has no recorded targets to roll back`
+    );
   }
 
   const { change: rollbackChange } = await proposeChange(tx, {

@@ -153,7 +153,11 @@ describe("atomicInstallDb", () => {
         await writeFile(join(staging, "trivy.db"), "newer-db-bytes");
         await writeFile(
           join(staging, "metadata.json"),
-          JSON.stringify({ Version: EXPECTED_TRIVY_DB_SCHEMA_VERSION, UpdatedAt: new Date().toISOString(), NextUpdate: "" })
+          JSON.stringify({
+            Version: EXPECTED_TRIVY_DB_SCHEMA_VERSION,
+            UpdatedAt: new Date().toISOString(),
+            NextUpdate: ""
+          })
         );
       });
       expect(await read(join(cache, "db", "trivy.db"), "utf8")).toBe("newer-db-bytes");
@@ -188,7 +192,13 @@ describe("atomicInstallDb", () => {
       await expect(
         atomicInstallDb(cache, "refreshed", async (staging) => {
           await mkdir(staging, { recursive: true });
-          await writeFile(join(staging, "metadata.json"), JSON.stringify({ Version: EXPECTED_TRIVY_DB_SCHEMA_VERSION, UpdatedAt: new Date().toISOString() }));
+          await writeFile(
+            join(staging, "metadata.json"),
+            JSON.stringify({
+              Version: EXPECTED_TRIVY_DB_SCHEMA_VERSION,
+              UpdatedAt: new Date().toISOString()
+            })
+          );
         })
       ).rejects.toThrow(/no trivy\.db/);
     } finally {

@@ -74,7 +74,9 @@ export async function compileAndPersistCampaignPlan(
   });
 
   if (!result.ok) {
-    throw badRequest(`campaign plan compilation failed: ${result.error} — ${JSON.stringify(result)}`);
+    throw badRequest(
+      `campaign plan compilation failed: ${result.error} — ${JSON.stringify(result)}`
+    );
   }
 
   const [planRow] = await tx
@@ -128,7 +130,9 @@ export async function compileAndPersistCampaignPlan(
   return toCampaignPlanShape(planRow, waveRows, targetRows);
 }
 
-function toCampaignWaveTargetShape(row: typeof campaignWaveTargets.$inferSelect): CampaignWaveTarget {
+function toCampaignWaveTargetShape(
+  row: typeof campaignWaveTargets.$inferSelect
+): CampaignWaveTarget {
   return {
     id: row.id,
     waveId: row.waveId,
@@ -175,7 +179,8 @@ export async function getLatestCampaignPlan(
   campaignObjectId: string
 ): Promise<CampaignPlan | null> {
   const planRow = await tx.query.campaignPlans.findFirst({
-    where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.orgId, orgId), eqOp(t.campaignObjectId, campaignObjectId)),
+    where: (t, { eq: eqOp, and: andOp }) =>
+      andOp(eqOp(t.orgId, orgId), eqOp(t.campaignObjectId, campaignObjectId)),
     orderBy: (t, { desc }) => [desc(t.createdAt)]
   });
   if (!planRow) return null;
@@ -192,12 +197,18 @@ export async function getLatestCampaignPlan(
       : await tx
           .select()
           .from(campaignWaveTargets)
-          .where(and(eq(campaignWaveTargets.orgId, orgId), inArray(campaignWaveTargets.waveId, waveIds)));
+          .where(
+            and(eq(campaignWaveTargets.orgId, orgId), inArray(campaignWaveTargets.waveId, waveIds))
+          );
 
   return toCampaignPlanShape(planRow, waveRows, targetRows);
 }
 
-export async function markCampaignPlanCompleted(tx: TenantTx, orgId: string, planId: string): Promise<void> {
+export async function markCampaignPlanCompleted(
+  tx: TenantTx,
+  orgId: string,
+  planId: string
+): Promise<void> {
   await tx
     .update(campaignPlans)
     .set({ status: "completed" })

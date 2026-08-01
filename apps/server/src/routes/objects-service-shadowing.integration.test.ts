@@ -31,7 +31,9 @@ import {
  *     validator against the shadowing handler's actual bytes.
  */
 
-const SPEC_PATH = fileURLToPath(new URL("../../../../tools/openapi/openapi.v1.json", import.meta.url));
+const SPEC_PATH = fileURLToPath(
+  new URL("../../../../tools/openapi/openapi.v1.json", import.meta.url)
+);
 
 const HTTP_METHODS = ["get", "post", "put", "patch", "delete"] as const;
 

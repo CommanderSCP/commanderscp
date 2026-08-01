@@ -121,7 +121,12 @@ function signBody(body: string, secret: string): string {
  *  API-first-parity rule — the SDK's OWN implementation of this exact route is exercised by
  *  named-queries.integration.test.ts and friends elsewhere). */
 async function postWebhook(baseUrl: string, token: string, seq: number): Promise<Response> {
-  const payload = { repo: "loadtest/repo", path: "irrelevant", correlationKey: `loadtest-${seq}`, seq };
+  const payload = {
+    repo: "loadtest/repo",
+    path: "irrelevant",
+    correlationKey: `loadtest-${seq}`,
+    seq
+  };
   const body = JSON.stringify(payload);
   const signature = signBody(body, WEBHOOK_SECRET);
   return fetch(`${baseUrl}/change-sources/${SOURCE_KIND}/webhook`, {
@@ -183,7 +188,11 @@ async function runEventPathPhase(
   const writeTimeByObjectId = new Map<string, number>();
   const sseArrivalByObjectId = new Map<string, number>();
   const onEvent = (evt: RelayedEvent): void => {
-    if (evt.type === "scp.object.created" && evt.subject && !sseArrivalByObjectId.has(evt.subject)) {
+    if (
+      evt.type === "scp.object.created" &&
+      evt.subject &&
+      !sseArrivalByObjectId.has(evt.subject)
+    ) {
       sseArrivalByObjectId.set(evt.subject, Date.now());
     }
   };
@@ -361,12 +370,16 @@ async function main(): Promise<void> {
       console.log(
         `    delivered ${r.sseDeliveredCount}/${EVENT_PATH_COUNT} within ${DELIVERY_GRACE_MS}ms grace`
       );
-      console.log(formatSummary("  outbox -> pg-boss latency       ", summarize(r.bossLatenciesMs)));
+      console.log(
+        formatSummary("  outbox -> pg-boss latency       ", summarize(r.bossLatenciesMs))
+      );
       console.log(
         `    delivered ${r.bossDeliveredCount}/${EVENT_PATH_COUNT} within ${DELIVERY_GRACE_MS}ms grace`
       );
       if (r.backend === "nats") {
-        console.log(formatSummary("  outbox -> NATS JetStream latency", summarize(r.natsLatenciesMs)));
+        console.log(
+          formatSummary("  outbox -> NATS JetStream latency", summarize(r.natsLatenciesMs))
+        );
         console.log(
           `    delivered ${r.natsDeliveredCount}/${EVENT_PATH_COUNT} within ${DELIVERY_GRACE_MS}ms grace`
         );

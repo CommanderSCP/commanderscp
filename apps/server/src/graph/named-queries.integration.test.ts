@@ -397,25 +397,23 @@ describe("named graph queries: property test — reachability-CTE dedup preserve
     const { db, pool } = directDbHandle();
     const raw = await RawScpAppClient.connect();
     try {
-      const graphArb = fc
-        .integer({ min: 3, max: 12 })
-        .chain((numNodes) =>
-          fc.record({
-            numNodes: fc.constant(numNodes),
-            // Deliberately dense relative to numNodes (up to 4x) to make convergence/fan-in and
-            // cycles likely, not just occasional — a sparse random graph rarely exercises the
-            // pathological shape this fix targets.
-            edges: fc.array(
-              fc.record({
-                from: fc.nat({ max: numNodes - 1 }),
-                to: fc.nat({ max: numNodes - 1 })
-              }),
-              { minLength: 0, maxLength: numNodes * 4 }
-            ),
-            startIdx: fc.nat({ max: numNodes - 1 }),
-            maxDepth: fc.integer({ min: 1, max: 10 })
-          })
-        );
+      const graphArb = fc.integer({ min: 3, max: 12 }).chain((numNodes) =>
+        fc.record({
+          numNodes: fc.constant(numNodes),
+          // Deliberately dense relative to numNodes (up to 4x) to make convergence/fan-in and
+          // cycles likely, not just occasional — a sparse random graph rarely exercises the
+          // pathological shape this fix targets.
+          edges: fc.array(
+            fc.record({
+              from: fc.nat({ max: numNodes - 1 }),
+              to: fc.nat({ max: numNodes - 1 })
+            }),
+            { minLength: 0, maxLength: numNodes * 4 }
+          ),
+          startIdx: fc.nat({ max: numNodes - 1 }),
+          maxDepth: fc.integer({ min: 1, max: 10 })
+        })
+      );
 
       await fc.assert(
         fc.asyncProperty(graphArb, async ({ numNodes, edges, startIdx, maxDepth }) => {
@@ -438,9 +436,10 @@ describe("named graph queries: property test — reachability-CTE dedup preserve
               runNamedQuery(tx, orgId, queryName, params)
             );
             const actualIds = new Set(result.objects.map((o) => o.id));
-            expect(actualIds, `${queryName} (maxDepth=${maxDepth}) mismatched the naive BFS oracle`).toEqual(
-              expectedIds
-            );
+            expect(
+              actualIds,
+              `${queryName} (maxDepth=${maxDepth}) mismatched the naive BFS oracle`
+            ).toEqual(expectedIds);
           }
         }),
         { numRuns: 75 }
@@ -507,10 +506,14 @@ describe("named graph queries: performance regression — high fan-in no longer 
           maxDepth
         };
         const start = performance.now();
-        const result = await withTenantTx(db, orgId, (tx) => runNamedQuery(tx, orgId, queryName, params));
+        const result = await withTenantTx(db, orgId, (tx) =>
+          runNamedQuery(tx, orgId, queryName, params)
+        );
         const elapsedMs = performance.now() - start;
 
-        expect(result.objects, `${queryName} returned the wrong node set`).toHaveLength(expectedCount);
+        expect(result.objects, `${queryName} returned the wrong node set`).toHaveLength(
+          expectedCount
+        );
         expect(new Set(result.objects.map((o) => o.id)).size).toBe(expectedCount); // no duplicates
         // Comfortably fast — the old path-array implementation running this exact shape measured
         // 7+ minutes / disk exhaustion (M8 PR body); well under the 5s production

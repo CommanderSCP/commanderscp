@@ -3,7 +3,17 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { DesiredStateManifestSchema } from "@scp/schemas";
-import { App, Campaign, Component, Initiative, ReleaseTopology, Service, Stack, Team, synthToFile } from "./index.js";
+import {
+  App,
+  Campaign,
+  Component,
+  Initiative,
+  ReleaseTopology,
+  Service,
+  Stack,
+  Team,
+  synthToFile
+} from "./index.js";
 import { canonicalJson } from "./canonical.js";
 
 /**
@@ -155,7 +165,9 @@ describe("@scp/iac: example stack synth", () => {
       expect(parsed.stackName).toBe("file-stack");
       // Canonical (sorted-key) JSON — property keys come back alphabetically, regardless of the
       // insertion order the caller used when constructing `properties`.
-      expect(raw.trimEnd()).toBe('{"objects":[{"labels":{},"name":"Svc","properties":{"a":1,"b":2},"typeId":"service","urn":"urn:scp:file-stack:service:svc"}],"relationships":[],"stackName":"file-stack"}');
+      expect(raw.trimEnd()).toBe(
+        '{"objects":[{"labels":{},"name":"Svc","properties":{"a":1,"b":2},"typeId":"service","urn":"urn:scp:file-stack:service:svc"}],"relationships":[],"stackName":"file-stack"}'
+      );
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -272,7 +284,10 @@ describe("@scp/iac: campaign/initiative/release-topology synth", () => {
     const stack = new Stack(app, "release-platform-3");
     const api = new Service(stack, "api", { name: "API" });
 
-    const campaign = new Campaign(stack, "bare-campaign", { name: "Bare Campaign", targets: [api] });
+    const campaign = new Campaign(stack, "bare-campaign", {
+      name: "Bare Campaign",
+      targets: [api]
+    });
 
     const manifest = stack.synth();
     expect(manifest.objects.find((o) => o.urn === campaign.urn)?.properties).toEqual({
@@ -296,16 +311,16 @@ describe("@scp/iac: campaign/initiative/release-topology synth", () => {
     // `.coordinates()` synth method to declare initiative membership in IaC (it would only ever
     // produce a manifest that 403s at apply). Initiative membership is added via the
     // authority-checked `POST /initiatives/{id}/campaigns` API instead.
-    expect(
-      (initiative as unknown as { coordinates?: unknown }).coordinates
-    ).toBeUndefined();
+    expect((initiative as unknown as { coordinates?: unknown }).coordinates).toBeUndefined();
 
     const manifest = stack.synth();
     // No `coordinates` edge is synthesizable — the manifest carries only the objects and any
     // NON-system-managed edges (none here).
     expect(manifest.relationships.filter((r) => r.typeId === "coordinates")).toEqual([]);
     const initiativeObject = manifest.objects.find((o) => o.urn === initiative.urn);
-    expect(initiativeObject?.properties).toEqual({ description: "Multi-year modernization effort" });
+    expect(initiativeObject?.properties).toEqual({
+      description: "Multi-year modernization effort"
+    });
     expect(campaignA.urn).toBeTruthy(); // campaign is still a valid standalone construct
     expect(DesiredStateManifestSchema.safeParse(manifest).success).toBe(true);
   });

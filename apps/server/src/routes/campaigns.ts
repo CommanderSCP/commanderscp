@@ -112,7 +112,11 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
       response: { 200: CampaignSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
     },
     config: {
-      openapi: { operationId: "getCampaign", summary: "Get a campaign by id (status is derived live)", tags: ["campaigns"] }
+      openapi: {
+        operationId: "getCampaign",
+        summary: "Get a campaign by id (status is derived live)",
+        tags: ["campaigns"]
+      }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
@@ -134,12 +138,18 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
     url: "/api/v1/campaigns/:id/explain",
     schema: {
       params: CampaignIdParamSchema,
-      response: { 200: CampaignExplainResponseSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
+      response: {
+        200: CampaignExplainResponseSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
     },
     config: {
       openapi: {
         operationId: "explainCampaign",
-        summary: "The campaign, its compiled plan (member Changes resolved), and every Decision made about it",
+        summary:
+          "The campaign, its compiled plan (member Changes resolved), and every Decision made about it",
         tags: ["campaigns"]
       }
     },

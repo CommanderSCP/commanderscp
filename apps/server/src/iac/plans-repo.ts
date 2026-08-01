@@ -14,7 +14,11 @@ import {
   resolveDomainId,
   updateObject
 } from "../graph/objects-repo.js";
-import { createRelationship, deleteRelationship, listRelationships } from "../graph/relationships-repo.js";
+import {
+  createRelationship,
+  deleteRelationship,
+  listRelationships
+} from "../graph/relationships-repo.js";
 import { isGovernanceManagedObjectType } from "../governance/governance-managed-types.js";
 import { isPeerBoundObjectType } from "../federation/outpost-binding.js";
 import { isSystemManagedRelationshipType } from "../graph/system-managed-relationships.js";
@@ -277,7 +281,11 @@ export async function getPlanById(tx: TenantTx, orgId: string, id: string): Prom
 }
 
 /** Locks the plan row for the duration of the apply transaction — two concurrent applies of the same plan can't both succeed. */
-async function lockPlan(tx: TenantTx, orgId: string, id: string): Promise<typeof plans.$inferSelect> {
+async function lockPlan(
+  tx: TenantTx,
+  orgId: string,
+  id: string
+): Promise<typeof plans.$inferSelect> {
   const rows = await tx
     .select()
     .from(plans)
@@ -595,6 +603,12 @@ export async function executePlanDiff(
 
   for (const entry of diff.objects) {
     if (entry.action !== "delete") continue;
-    await deleteObject(tx, { orgId, typeId: entry.typeId, actorObjectId, requestId, idOrUrn: entry.urn });
+    await deleteObject(tx, {
+      orgId,
+      typeId: entry.typeId,
+      actorObjectId,
+      requestId,
+      idOrUrn: entry.urn
+    });
   }
 }

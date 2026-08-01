@@ -167,7 +167,8 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     // @scp/cosign's sign-blob: no Rekor upload, and `--use-signing-config=false` only on builds that
     // have the flag (version-adaptive, mirroring signBlobFlags' probe).
     const resolved = resolveCosign();
-    if (resolved.source === "missing") throw new Error("cosign binary not found for the M17.4(b) suite");
+    if (resolved.source === "missing")
+      throw new Error("cosign binary not found for the M17.4(b) suite");
     cosignBin = resolved.bin;
     const signHelp = execFileSync(cosignBin, ["sign", "--help"], { encoding: "utf8" });
     imageSignFlags = [
@@ -180,7 +181,9 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     // Pair the exporting peer E5-COMPLETE: its cosign verification public key registered — the key
     // `currentPeerCosignPublicKey` resolves and the gate trusts. Plus a PRE-E5 peer with none.
     const ed25519 = () =>
-      generateKeyPairSync("ed25519").publicKey.export({ format: "der", type: "spki" }).toString("base64");
+      generateKeyPairSync("ed25519")
+        .publicKey.export({ format: "der", type: "spki" })
+        .toString("base64");
     await withTenantTx(server.deps.db, org.orgId, async (tx) => {
       await pairPeer(tx, {
         orgId: org.orgId,
@@ -206,8 +209,12 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     delete process.env.SCP_ARTIFACT_INSECURE_HOSTS;
     await server?.close();
     await registry?.stop();
-    await new Promise<void>((resolve) => (blobServer ? blobServer.close(() => resolve()) : resolve()));
-    await new Promise<void>((resolve) => (forbiddenServer ? forbiddenServer.close(() => resolve()) : resolve()));
+    await new Promise<void>((resolve) =>
+      blobServer ? blobServer.close(() => resolve()) : resolve()
+    );
+    await new Promise<void>((resolve) =>
+      forbiddenServer ? forbiddenServer.close(() => resolve()) : resolve()
+    );
     if (scratch) await rm(scratch, { recursive: true, force: true });
   });
 
@@ -221,7 +228,9 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
   async function pushImage(repo: string, seed: string): Promise<{ ref: string; digest: string }> {
     async function pushBlob(bytes: Buffer): Promise<{ digest: string; size: number }> {
       const digest = sha256(bytes);
-      const start = await fetch(`http://${registryHost}/v2/${repo}/blobs/uploads/`, { method: "POST" });
+      const start = await fetch(`http://${registryHost}/v2/${repo}/blobs/uploads/`, {
+        method: "POST"
+      });
       if (start.status !== 202) throw new Error(`blob upload start: HTTP ${start.status}`);
       const loc = start.headers.get("location") ?? "";
       const url = new URL(loc.startsWith("http") ? loc : `http://${registryHost}${loc}`);
@@ -250,8 +259,18 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
       JSON.stringify({
         schemaVersion: 2,
         mediaType: "application/vnd.oci.image.manifest.v1+json",
-        config: { mediaType: "application/vnd.oci.image.config.v1+json", digest: config.digest, size: config.size },
-        layers: [{ mediaType: "application/vnd.oci.image.layer.v1.tar", digest: layer.digest, size: layer.size }]
+        config: {
+          mediaType: "application/vnd.oci.image.config.v1+json",
+          digest: config.digest,
+          size: config.size
+        },
+        layers: [
+          {
+            mediaType: "application/vnd.oci.image.layer.v1.tar",
+            digest: layer.digest,
+            size: layer.size
+          }
+        ]
       })
     );
     const digest = sha256(manifest);
@@ -331,7 +350,11 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
           // Presence of the (a)-verified manifest is what scopes the gate; its inner shape was
           // already cosign-verified at import and is not re-parsed by (b).
           ...(withManifest
-            ? { promotionManifest: { artifacts: artifacts.map((a) => ({ type: a.type, digest: a.digest })) } }
+            ? {
+                promotionManifest: {
+                  artifacts: artifacts.map((a) => ({ type: a.type, digest: a.digest }))
+                }
+              }
             : {})
         },
         ...(opts.requiresKeys
@@ -376,10 +399,15 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
   const passAuditFor = (changeId: string) =>
     withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.select().from(auditEvents).where(eq(auditEvents.subjectId, changeId))
-    ).then((rows) => rows.filter((e) => e.action === PRE_DEPLOY_ARTIFACT_VERIFY_PASSED_AUDIT_ACTION));
+    ).then((rows) =>
+      rows.filter((e) => e.action === PRE_DEPLOY_ARTIFACT_VERIFY_PASSED_AUDIT_ACTION)
+    );
 
   /** The three fail-closed invariants every BLOCK case must satisfy. */
-  async function expectBlocked(changeId: string, componentId: string): Promise<{ decisionId: string; reason: string }> {
+  async function expectBlocked(
+    changeId: string,
+    componentId: string
+  ): Promise<{ decisionId: string; reason: string }> {
     // 1. The deploy never fired: the change never left `coordinated`, its wave target was never
     //    handed to any executor.
     const row = await changeRow(changeId);
@@ -403,7 +431,10 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(audit[0]!.decisionId).toBe(decision.id);
     expect(audit[0]!.rowHash).toEqual(expect.any(String));
 
-    return { decisionId: decision.id, reason: (decision.reasonTree as { summary?: string }).summary ?? "" };
+    return {
+      decisionId: decision.id,
+      reason: (decision.reasonTree as { summary?: string }).summary ?? ""
+    };
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -424,7 +455,13 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
 
     const { changeId, componentId } = await proposeImportedChange([
       { type: "oci", digest: image.digest, location: image.ref, signatureRef: "registry-attached" },
-      { type: "blob", digest: blob.digest, location: blob.location, signatureRef: blob.signatureRef, format: "cyclonedx" }
+      {
+        type: "blob",
+        digest: blob.digest,
+        location: blob.location,
+        signatureRef: blob.signatureRef,
+        format: "cyclonedx"
+      }
     ]);
 
     await tick();
@@ -446,8 +483,11 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(gateDecisions).toHaveLength(1);
     expect(gateDecisions[0]!.verdict).toBe("allow");
     expect(
-      (gateDecisions[0]!.inputContext as { authorizedArtifacts?: { digest: string }[] })
-        .authorizedArtifacts?.map((a) => a.digest).sort()
+      (
+        gateDecisions[0]!.inputContext as { authorizedArtifacts?: { digest: string }[] }
+      ).authorizedArtifacts
+        ?.map((a) => a.digest)
+        .sort()
     ).toEqual([image.digest, blob.digest].sort());
     expect(await gateAuditFor(changeId)).toHaveLength(0); // ...and NOT the `.blocked` action.
 
@@ -495,7 +535,13 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     );
 
     const { changeId, componentId } = await proposeImportedChange([
-      { type: "blob", digest: blob.digest, location: blob.location, signatureRef: blob.signatureRef, format: "cyclonedx" }
+      {
+        type: "blob",
+        digest: blob.digest,
+        location: blob.location,
+        signatureRef: blob.signatureRef,
+        format: "cyclonedx"
+      }
     ]);
 
     await tick();
@@ -511,8 +557,19 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     const absentImageRef = `${registryHost}/scp/never-loaded@sha256:${"0".repeat(64)}`;
     // ...and a blob whose location 404s. BOTH must fail closed — nothing deploys on a partial load.
     const { changeId, componentId } = await proposeImportedChange([
-      { type: "oci", digest: `sha256:${"0".repeat(64)}`, location: absentImageRef, signatureRef: "registry-attached" },
-      { type: "blob", digest: `sha256:${"1".repeat(64)}`, location: `${blobBaseUrl}/never-loaded`, signatureRef: `${blobBaseUrl}/never-loaded.sig`, format: "cyclonedx" }
+      {
+        type: "oci",
+        digest: `sha256:${"0".repeat(64)}`,
+        location: absentImageRef,
+        signatureRef: "registry-attached"
+      },
+      {
+        type: "blob",
+        digest: `sha256:${"1".repeat(64)}`,
+        location: `${blobBaseUrl}/never-loaded`,
+        signatureRef: `${blobBaseUrl}/never-loaded.sig`,
+        format: "cyclonedx"
+      }
     ]);
 
     await tick();
@@ -521,7 +578,8 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
 
     // The Decision's inputContext names BOTH failing artifacts — the operator's remediation list.
     const [decision] = await gateDecisionsFor(changeId);
-    const failing = (decision!.inputContext as { failing: Array<{ type: string; reason: string }> }).failing;
+    const failing = (decision!.inputContext as { failing: Array<{ type: string; reason: string }> })
+      .failing;
     expect(failing).toHaveLength(2);
     expect(failing.map((f) => f.type).sort()).toEqual(["blob", "oci"]);
     expect(failing.find((f) => f.type === "blob")!.reason).toMatch(/absent/i);
@@ -570,7 +628,13 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(decoy.digest).not.toBe(authorizedDigest);
 
     const { changeId, componentId } = await proposeImportedChange([
-      { type: "blob", digest: authorizedDigest, location: decoy.location, signatureRef: decoy.signatureRef, format: "cyclonedx" }
+      {
+        type: "blob",
+        digest: authorizedDigest,
+        location: decoy.location,
+        signatureRef: decoy.signatureRef,
+        format: "cyclonedx"
+      }
     ]);
 
     await tick();
@@ -617,7 +681,12 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     const decoyHost = new URL(forbiddenUrl).host; // host:port — reachable, NOT allowlisted
     const digest = sha256(Buffer.from(`oci-host-axis-${randomUUID()}`));
     const { changeId, componentId } = await proposeImportedChange([
-      { type: "oci", digest, location: `${decoyHost}/scp/exfil@${digest}`, signatureRef: "registry-attached" }
+      {
+        type: "oci",
+        digest,
+        location: `${decoyHost}/scp/exfil@${digest}`,
+        signatureRef: "registry-attached"
+      }
     ]);
 
     await tick();
@@ -664,7 +733,14 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     signImage(image.ref, exporterKey.keyPath); // even a GOOD signature can't be verified without the key
 
     const { changeId, componentId } = await proposeImportedChange(
-      [{ type: "oci", digest: image.digest, location: image.ref, signatureRef: "registry-attached" }],
+      [
+        {
+          type: "oci",
+          digest: image.digest,
+          location: image.ref,
+          signatureRef: "registry-attached"
+        }
+      ],
       { fromDomain: keylessDomainId }
     );
 
@@ -679,7 +755,9 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
   it("SCOPE (e1): a domain-local change with no manifest deploys normally, completely ungated", async () => {
     // An ordinary local change — no import, no manifest. Nothing in its registry/bytes world exists
     // (the artifact digest below is pure fiction), and the gate must never even look.
-    const component = await createTestComponent(admin, { name: `m174b-local-${randomUUID().slice(0, 8)}` });
+    const component = await createTestComponent(admin, {
+      name: `m174b-local-${randomUUID().slice(0, 8)}`
+    });
     const change = await admin.changes.propose({
       name: "ordinary domain-local release",
       targets: [component.id]
@@ -706,7 +784,13 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     // verified manifest. M17.4(a) accepted it (no downgrade — the peer has no cosign key), and (b)
     // must leave it exactly as before: unverifiable-but-honest legacy, NOT a block.
     const { changeId, componentId } = await proposeImportedChange(
-      [{ type: "oci", digest: `sha256:${"7".repeat(64)}`, location: `${registryHost}/scp/legacy@sha256:${"7".repeat(64)}` }],
+      [
+        {
+          type: "oci",
+          digest: `sha256:${"7".repeat(64)}`,
+          location: `${registryHost}/scp/legacy@sha256:${"7".repeat(64)}`
+        }
+      ],
       { fromDomain: keylessDomainId, withManifest: false }
     );
 
@@ -762,7 +846,14 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     // Gated shape (verified manifest + one real artifact) AND an unsatisfiable prerequisite, so it
     // parks in `waiting` and is re-swept indefinitely instead of leaving for `executing`.
     const { changeId } = await proposeImportedChange(
-      [{ type: "oci", digest: image.digest, location: image.ref, signatureRef: "registry-attached" }],
+      [
+        {
+          type: "oci",
+          digest: image.digest,
+          location: image.ref,
+          signatureRef: "registry-attached"
+        }
+      ],
       { requiresKeys: [`never-provided-${randomUUID().slice(0, 8)}`] }
     );
 
@@ -817,11 +908,20 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(imageB.digest).not.toBe(imageA.digest);
 
     const { changeId } = await proposeImportedChange([
-      { type: "oci", digest: imageA.digest, location: imageA.ref, signatureRef: "registry-attached" }
+      {
+        type: "oci",
+        digest: imageA.digest,
+        location: imageA.ref,
+        signatureRef: "registry-attached"
+      }
     ]);
 
     // First gate run: authorized set = { imageA }. Persists allow #1.
-    const first = await runPreDeployArtifactGate(server.deps.db, org.orgId, await changeRow(changeId));
+    const first = await runPreDeployArtifactGate(
+      server.deps.db,
+      org.orgId,
+      await changeRow(changeId)
+    );
     expect(first.blocked).toBe(false);
     expect(first.decisionId).toEqual(expect.any(String));
 
@@ -834,7 +934,14 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
           sourceRef: {
             promotedFromDomain: exporterDomainId,
             artifactDigests: [imageB.digest],
-            artifacts: [{ type: "oci", digest: imageB.digest, location: imageB.ref, signatureRef: "registry-attached" }],
+            artifacts: [
+              {
+                type: "oci",
+                digest: imageB.digest,
+                location: imageB.ref,
+                signatureRef: "registry-attached"
+              }
+            ],
             promotionManifest: { artifacts: [{ type: "oci", digest: imageB.digest }] }
           }
         })
@@ -842,7 +949,11 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     );
 
     // Second gate run: authorized set = { imageB } now. Must NOT return the first allow's id.
-    const second = await runPreDeployArtifactGate(server.deps.db, org.orgId, await changeRow(changeId));
+    const second = await runPreDeployArtifactGate(
+      server.deps.db,
+      org.orgId,
+      await changeRow(changeId)
+    );
     expect(second.blocked).toBe(false);
     expect(second.decisionId).toEqual(expect.any(String));
     expect(second.decisionId).not.toBe(first.decisionId); // a NEW verdict — the stale allow must not shadow it.
@@ -858,8 +969,9 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     const secondDecision = gateDecisions.find((d) => d.id === second.decisionId);
     expect(secondDecision).toBeDefined();
     expect(
-      (secondDecision!.inputContext as { authorizedArtifacts?: { digest: string }[] })
-        .authorizedArtifacts?.map((a) => a.digest)
+      (
+        secondDecision!.inputContext as { authorizedArtifacts?: { digest: string }[] }
+      ).authorizedArtifacts?.map((a) => a.digest)
     ).toEqual([imageB.digest]);
 
     // And exactly two `.passed` audit events — a fresh one for the second, genuinely-new verdict,

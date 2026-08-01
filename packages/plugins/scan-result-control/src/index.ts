@@ -103,7 +103,8 @@ function resolveExpectedDigest(ctx: PluginContext, req: ControlRequest): string 
   const fromContext = (req.context as { artifactDigest?: unknown }).artifactDigest;
   if (typeof fromContext === "string" && fromContext.length > 0) return fromContext;
   const config = ctx.config as ScanResultControlConfig;
-  if (typeof config.expectedDigest === "string" && config.expectedDigest.length > 0) return config.expectedDigest;
+  if (typeof config.expectedDigest === "string" && config.expectedDigest.length > 0)
+    return config.expectedDigest;
   return undefined;
 }
 
@@ -148,7 +149,8 @@ function countSeverities(raw: TrivyResultJson): ScanEvidence["severityCounts"] {
 function resolveScannerVersion(raw: TrivyResultJson, config: ScanResultControlConfig): string {
   if (typeof raw.trivyVersion === "string" && raw.trivyVersion.length > 0) return raw.trivyVersion;
   if (typeof raw.Version === "string" && raw.Version.length > 0) return raw.Version;
-  if (typeof config.scannerVersion === "string" && config.scannerVersion.length > 0) return config.scannerVersion;
+  if (typeof config.scannerVersion === "string" && config.scannerVersion.length > 0)
+    return config.scannerVersion;
   return "unknown";
 }
 
@@ -164,7 +166,9 @@ function resolveScannerVersion(raw: TrivyResultJson, config: ScanResultControlCo
  * than governance resolved. That is exactly the "silent pass" this plugin exists to prevent, so the
  * caller fails closed on it (`"malformed"`).
  */
-function resolveContextThreshold(req: ControlRequest): EffectiveScanThreshold | undefined | "malformed" {
+function resolveContextThreshold(
+  req: ControlRequest
+): EffectiveScanThreshold | undefined | "malformed" {
   const raw = (req.context as { scanThreshold?: unknown }).scanThreshold;
   if (raw === undefined || raw === null) return undefined;
   const parsed = EffectiveScanThresholdSchema.safeParse(raw);
@@ -195,7 +199,11 @@ function resolveContextThreshold(req: ControlRequest): EffectiveScanThreshold | 
 function resolveThreshold(
   config: ScanResultControlConfig,
   scoped: EffectiveScanThreshold | undefined
-): { threshold: ScanThreshold; source: "config" | "scoped" | "mixed" | "default"; sources: ScanThresholdSourceMap } {
+): {
+  threshold: ScanThreshold;
+  source: "config" | "scoped" | "mixed" | "default";
+  sources: ScanThresholdSourceMap;
+} {
   const fromConfig = config.threshold ?? {};
   const fromScoped = scoped?.threshold ?? {};
   /** The tighter of the two, plus WHICH one supplied it. A tie is attributed to `scoped`: the
@@ -204,7 +212,8 @@ function resolveThreshold(
     fromConfigValue: number | undefined,
     fromScopedValue: number | undefined
   ): { value: number | undefined; source: ScanThresholdSource } => {
-    if (fromConfigValue === undefined && fromScopedValue === undefined) return { value: undefined, source: "default" };
+    if (fromConfigValue === undefined && fromScopedValue === undefined)
+      return { value: undefined, source: "default" };
     if (fromScopedValue === undefined) return { value: fromConfigValue, source: "config" };
     if (fromConfigValue === undefined) return { value: fromScopedValue, source: "scoped" };
     return fromConfigValue < fromScopedValue
@@ -227,7 +236,11 @@ function resolveThreshold(
   // `config`. Saying `"config"` here would misdescribe the Decision's own inputs (charter principle
   // 6) even though the per-severity `sources` map stays honest.
   const source: "config" | "scoped" | "mixed" | "default" =
-    decided.size > 1 ? "mixed" : decided.size === 1 ? ([...decided][0] as "config" | "scoped") : "default";
+    decided.size > 1
+      ? "mixed"
+      : decided.size === 1
+        ? ([...decided][0] as "config" | "scoped")
+        : "default";
 
   return {
     threshold: {
@@ -243,11 +256,15 @@ function resolveThreshold(
 
 /** Every severity whose count exceeds its applied ceiling — named, so the fail detail can say which
  *  ceiling was breached AND which source supplied it. */
-function breachedSeverities(counts: ScanEvidence["severityCounts"], threshold: ScanThreshold): Array<keyof ScanThresholdSourceMap> {
+function breachedSeverities(
+  counts: ScanEvidence["severityCounts"],
+  threshold: ScanThreshold
+): Array<keyof ScanThresholdSourceMap> {
   const breached: Array<keyof ScanThresholdSourceMap> = [];
   if (counts.critical > threshold.maxCritical) breached.push("maxCritical");
   if (counts.high > threshold.maxHigh) breached.push("maxHigh");
-  if (threshold.maxMedium !== undefined && counts.medium > threshold.maxMedium) breached.push("maxMedium");
+  if (threshold.maxMedium !== undefined && counts.medium > threshold.maxMedium)
+    breached.push("maxMedium");
   if (threshold.maxLow !== undefined && counts.low > threshold.maxLow) breached.push("maxLow");
   return breached;
 }
@@ -287,12 +304,18 @@ export function createScanResultControlPlugin(): ControlPlugin {
           headers: { accept: "application/json", ...(config.headers ?? {}) }
         })
         .then((response) => ({ kind: "response" as const, response }))
-        .catch((err: unknown) => ({ kind: "error" as const, message: err instanceof Error ? err.message : String(err) }));
+        .catch((err: unknown) => ({
+          kind: "error" as const,
+          message: err instanceof Error ? err.message : String(err)
+        }));
 
       const result = await Promise.race([call, timeout(timeoutMs)]);
 
       if (result === "timeout") {
-        return fail(`scan-result-control: no scan result within ${timeoutMs}ms`, { url: config.url, timeoutMs });
+        return fail(`scan-result-control: no scan result within ${timeoutMs}ms`, {
+          url: config.url,
+          timeoutMs
+        });
       }
       if (result.kind === "error") {
         return fail(`scan-result-control: fetch failed — ${result.message}`, { url: config.url });
@@ -308,22 +331,32 @@ export function createScanResultControlPlugin(): ControlPlugin {
 
       const raw = response.body;
       if (!raw || typeof raw !== "object") {
-        return fail("scan-result-control: scan source did not return a JSON object (unparseable Trivy result)", {
-          url: config.url
-        });
+        return fail(
+          "scan-result-control: scan source did not return a JSON object (unparseable Trivy result)",
+          {
+            url: config.url
+          }
+        );
       }
 
       const trivy = raw as TrivyResultJson;
       const scanned = scannedDigest(trivy);
       if (!scanned) {
-        return fail("scan-result-control: Trivy result carries no artifact digest — cannot verify the digest binding", {
-          url: config.url,
-          expectedDigest
-        });
+        return fail(
+          "scan-result-control: Trivy result carries no artifact digest — cannot verify the digest binding",
+          {
+            url: config.url,
+            expectedDigest
+          }
+        );
       }
 
       const counts = countSeverities(trivy);
-      const { threshold, source: thresholdSource, sources: thresholdSources } = resolveThreshold(config, scoped);
+      const {
+        threshold,
+        source: thresholdSource,
+        sources: thresholdSources
+      } = resolveThreshold(config, scoped);
       const digestMatch = digestHex(scanned) === digestHex(expectedDigest);
 
       const evidence: ScanEvidence = ScanEvidenceSchema.parse({
@@ -356,7 +389,9 @@ export function createScanResultControlPlugin(): ControlPlugin {
       if (breached.length > 0) {
         // Name the breached ceilings AND the source that actually supplied each one — a block must
         // never cite "the scoped threshold" when the per-binding config set the deciding value.
-        const breachDetail = breached.map((k) => `${k}=${threshold[k]} (from ${thresholdSources[k]})`).join(", ");
+        const breachDetail = breached
+          .map((k) => `${k}=${threshold[k]} (from ${thresholdSources[k]})`)
+          .join(", ");
         return {
           status: "fail",
           detail: `scan-result-control: verdict exceeds ${thresholdSource === "scoped" || thresholdSource === "mixed" ? "the effective (most-restrictive-wins) " : ""}threshold — breached ${breachDetail}; counts critical=${counts.critical}, high=${counts.high}, medium=${counts.medium}, low=${counts.low}${

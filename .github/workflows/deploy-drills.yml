@@ -129,7 +129,7 @@ jobs:
 
   airgap-drill:
     name: "air-gap: bundle -> local registry -> Calico zero-egress kind install"
-    needs: ansible-drill  # serialized (see ansible-drill for why this ordering is kept)
+    needs: ansible-drill # serialized (see ansible-drill for why this ordering is kept)
     if: >-
       always() && (
       github.event_name == 'schedule' ||
@@ -171,7 +171,7 @@ jobs:
 
   bundled-argocd-drill:
     name: "bundled Argo CD: install -> live token mint+store -> scoped-token auth -> idempotent re-mint"
-    needs: airgap-drill  # serialized (see ansible-drill for why this ordering is kept)
+    needs: airgap-drill # serialized (see ansible-drill for why this ordering is kept)
     if: >-
       always() && (
       github.event_name == 'schedule' ||

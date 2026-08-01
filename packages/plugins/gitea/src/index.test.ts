@@ -110,7 +110,11 @@ describe("mapGiteaWebhookEventToHint", () => {
         head_commit: { id: "1".repeat(40) },
         repository: { full_name: "acme/widgets" }
       })
-    ).toEqual({ repo: "acme/widgets", commitSha: "1".repeat(40), correlationKey: "refs/heads/main" });
+    ).toEqual({
+      repo: "acme/widgets",
+      commitSha: "1".repeat(40),
+      correlationKey: "refs/heads/main"
+    });
   });
 
   it("maps pull_request using the top-level number Gitea nests it at", () => {
@@ -119,7 +123,11 @@ describe("mapGiteaWebhookEventToHint", () => {
       pull_request: { head: { sha: "2".repeat(40) } },
       repository: { full_name: "acme/widgets" }
     });
-    expect(hint).toEqual({ repo: "acme/widgets", commitSha: "2".repeat(40), correlationKey: "pr-7" });
+    expect(hint).toEqual({
+      repo: "acme/widgets",
+      commitSha: "2".repeat(40),
+      correlationKey: "pr-7"
+    });
   });
 
   it("maps release to tag_name/target_commitish", () => {
@@ -214,7 +222,11 @@ describe("trigger() — workflow_dispatch", () => {
 
     const ref = await plugin.trigger(ctx, {
       kind: "workflow_dispatch",
-      parameters: { workflowId: "deploy.yml", ref: "release/1.0", inputs: { environment: "staging" } }
+      parameters: {
+        workflowId: "deploy.yml",
+        ref: "release/1.0",
+        inputs: { environment: "staging" }
+      }
     });
     expect(ref.externalId).toBe(`action_run::${runId}`);
     dispatchScope.done();
@@ -245,7 +257,9 @@ describe("trigger() — workflow_dispatch", () => {
   it("throws a clear Error when no workflowId is available, WITHOUT any HTTP call", async () => {
     const config = buildGiteaConfig({ defaultWorkflowId: undefined });
     const ctx = buildTestCtx(config);
-    await expect(plugin.trigger(ctx, { kind: "workflow_dispatch" })).rejects.toThrow(/no workflowId/);
+    await expect(plugin.trigger(ctx, { kind: "workflow_dispatch" })).rejects.toThrow(
+      /no workflowId/
+    );
   });
 
   it("resolves the PAT from ctx.secrets when only tokenSecretKey is configured", async () => {
@@ -260,7 +274,9 @@ describe("trigger() — workflow_dispatch", () => {
     const pollScope = nock(apiBase(config))
       .matchHeader("authorization", "token resolved-secret-pat")
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
-      .reply(200, { workflow_runs: [{ id: 1, status: "running", created_at: new Date().toISOString() }] });
+      .reply(200, {
+        workflow_runs: [{ id: 1, status: "running", created_at: new Date().toISOString() }]
+      });
 
     const ref = await plugin.trigger(ctx, { kind: "workflow_dispatch" });
     expect(ref.externalId).toBe("action_run::1");
@@ -286,7 +302,9 @@ describe("trigger() idempotency — in-memory dedup cache", () => {
     const pollScope = nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
-      .reply(200, { workflow_runs: [{ id: runId, status: "running", created_at: new Date().toISOString() }] });
+      .reply(200, {
+        workflow_runs: [{ id: runId, status: "running", created_at: new Date().toISOString() }]
+      });
 
     const intent = { kind: "workflow_dispatch" as const, idempotencyKey: `mem-${randomKey()}` };
     const first = await plugin.trigger(ctx, intent);
@@ -324,7 +342,9 @@ describe("trigger() idempotency — file-backed dedup cache", () => {
     const pollScope = nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
-      .reply(200, { workflow_runs: [{ id: runId, status: "running", created_at: new Date().toISOString() }] });
+      .reply(200, {
+        workflow_runs: [{ id: runId, status: "running", created_at: new Date().toISOString() }]
+      });
 
     const intent = { kind: "workflow_dispatch" as const, idempotencyKey: "file-backed-key" };
     const first = await plugin.trigger(ctx, intent);
@@ -368,7 +388,8 @@ describe("status() — single Gitea status enum", () => {
     expect(s.progress).toBe(1);
   });
   it("failure -> failed", async () => expect((await statusFor("failure")).phase).toBe("failed"));
-  it("cancelled -> aborted", async () => expect((await statusFor("cancelled")).phase).toBe("aborted"));
+  it("cancelled -> aborted", async () =>
+    expect((await statusFor("cancelled")).phase).toBe("aborted"));
   it("an unknown status maps to running (safe default, not a crash)", async () =>
     expect((await statusFor("some-future-status")).phase).toBe("running"));
 
@@ -476,7 +497,9 @@ describe("observe() polling — commits, runs, and package pushes", () => {
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/packages/${config.owner}`)
-      .reply(200, [{ type: "container", name: "widgets", version: "1.4.0", created_at: "2026-07-02T00:00:00Z" }]);
+      .reply(200, [
+        { type: "container", name: "widgets", version: "1.4.0", created_at: "2026-07-02T00:00:00Z" }
+      ]);
 
     const events = await plugin.observe(ctx);
     const pkgEvent = events.find((e) => e.correlation.correlationKey === "widgets:1.4.0");
@@ -495,7 +518,11 @@ describe("observe() polling — commits, runs, and package pushes", () => {
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
-      .reply(200, { workflow_runs: [{ id: 55, status: "success", head_sha: runSha, created_at: "2026-07-01T00:05:00Z" }] });
+      .reply(200, {
+        workflow_runs: [
+          { id: 55, status: "success", head_sha: runSha, created_at: "2026-07-01T00:05:00Z" }
+        ]
+      });
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/packages/${config.owner}`)
@@ -532,7 +559,10 @@ describe("observe() polling — commits, runs, and package pushes", () => {
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
       .reply(200, { workflow_runs: [] });
-    nock(base).matchHeader("authorization", authHeader).get(`/packages/${config.owner}`).reply(200, []);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/packages/${config.owner}`)
+      .reply(200, []);
 
     const events = await plugin.observe(ctx);
     const polledPush = events.find((e) => e.kind === "push");
@@ -550,7 +580,10 @@ describe("observe() polling — commits, runs, and package pushes", () => {
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
       .reply(200, { workflow_runs: [] });
-    nock(base).matchHeader("authorization", authHeader).get(`/packages/${config.owner}`).reply(200, []);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/packages/${config.owner}`)
+      .reply(200, []);
 
     await expect(plugin.observe(ctx)).resolves.toEqual([]);
   });

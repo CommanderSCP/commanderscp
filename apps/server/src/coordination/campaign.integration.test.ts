@@ -48,11 +48,17 @@ async function startTestWebhookServer(): Promise<TestWebhookServer> {
   const { port } = server.address() as AddressInfo;
   return {
     url: `http://127.0.0.1:${port}/webhook`,
-    close: () => new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())))
+    close: () =>
+      new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())))
   };
 }
 
-async function createFailingControl(admin: ScpClient, org: TestOrg, urnSuffix: string, webhookUrl: string) {
+async function createFailingControl(
+  admin: ScpClient,
+  org: TestOrg,
+  urnSuffix: string,
+  webhookUrl: string
+) {
   const control = await admin.controls.create({
     name: `control-${urnSuffix}`,
     urn: `urn:scp:${org.orgId}:control:${urnSuffix}`,
@@ -66,7 +72,13 @@ async function createFailingControl(admin: ScpClient, org: TestOrg, urnSuffix: s
   return control;
 }
 
-async function requireControlOn(admin: ScpClient, org: TestOrg, urnSuffix: string, targetObjectId: string, controlId: string) {
+async function requireControlOn(
+  admin: ScpClient,
+  org: TestOrg,
+  urnSuffix: string,
+  targetObjectId: string,
+  controlId: string
+) {
   return admin.policies.create({
     name: `policy-${urnSuffix}`,
     urn: `urn:scp:${org.orgId}:policy:${urnSuffix}`,
@@ -98,7 +110,11 @@ describe("campaigns & initiatives (M5)", () => {
     server = await listenTestServer({
       withEventRelay: true,
       withReconcileLoop: true,
-      pluginHostOptions: { callTimeoutMs: 8_000, restartBackoffBaseMs: 50, maxRestartBackoffMs: 300 }
+      pluginHostOptions: {
+        callTimeoutMs: 8_000,
+        restartBackoffBaseMs: 50,
+        maxRestartBackoffMs: 300
+      }
     });
     org = await createTestOrg(server, "campaigns");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
@@ -156,10 +172,14 @@ describe("campaigns & initiatives (M5)", () => {
     expect(coordinatesEdges.items.some((e) => e.toId === wave0MemberChangeId)).toBe(true);
 
     // --- wave 0 (infra, no policy) reaches 'validating', gets accepted by a human ------------
-    await waitUntil(async () => (await admin.changes.get(wave0MemberChangeId)).state === "validating" || undefined, {
-      describe: `member change ${wave0MemberChangeId} reaches 'validating'`,
-      timeoutMs: 20_000
-    });
+    await waitUntil(
+      async () =>
+        (await admin.changes.get(wave0MemberChangeId)).state === "validating" || undefined,
+      {
+        describe: `member change ${wave0MemberChangeId} reaches 'validating'`,
+        timeoutMs: 20_000
+      }
+    );
     const accepted = await admin.changes.accept(wave0MemberChangeId);
     expect(accepted.state).toBe("accepted");
 
@@ -185,7 +205,9 @@ describe("campaigns & initiatives (M5)", () => {
     expect(stillBlockedExplain.plan!.waves[1]!.targets[0]!.memberChangeObjectId).toBeNull();
     // A campaign-level gate Decision was written for the block, carrying a resolvable id
     // (DESIGN §6/§10.4: every blocked verdict is explainable).
-    const gateBlockDecision = stillBlockedExplain.decisions.find((d) => d.kind === "gate" && d.verdict === "block");
+    const gateBlockDecision = stillBlockedExplain.decisions.find(
+      (d) => d.kind === "gate" && d.verdict === "block"
+    );
     expect(gateBlockDecision).toBeDefined();
 
     // --- campaign status aggregates correctly: blocked (the actionable fact), not "active" ----
@@ -193,16 +215,23 @@ describe("campaigns & initiatives (M5)", () => {
     expect(campaignStatus.status).toBe("blocked");
 
     // --- campaign-scoped rollback reverts the ACCEPTED target only, each producing a Decision --
-    const rollbackResult = await admin.campaigns.rollback(campaign.id, "test: revert wave 0 while wave 1 is blocked");
+    const rollbackResult = await admin.campaigns.rollback(
+      campaign.id,
+      "test: revert wave 0 while wave 1 is blocked"
+    );
     expect(rollbackResult.rolledBack).toHaveLength(1);
     expect(rollbackResult.rolledBack[0]!.originalChangeObjectId).toBe(wave0MemberChangeId);
     // app's member change was never accepted (never even proposed) — not eligible, correctly skipped.
     expect(rollbackResult.skipped.some((s) => s.originalChangeObjectId === app.id)).toBe(false);
 
-    await waitUntil(async () => (await admin.changes.get(wave0MemberChangeId)).state === "rolled_back" || undefined, {
-      describe: `member change ${wave0MemberChangeId} reaches 'rolled_back'`,
-      timeoutMs: 20_000
-    });
+    await waitUntil(
+      async () =>
+        (await admin.changes.get(wave0MemberChangeId)).state === "rolled_back" || undefined,
+      {
+        describe: `member change ${wave0MemberChangeId} reaches 'rolled_back'`,
+        timeoutMs: 20_000
+      }
+    );
 
     const finalStatus = await admin.campaigns.get(campaign.id);
     expect(finalStatus.status).toBe("rolled_back");
@@ -232,13 +261,19 @@ describe("campaigns & initiatives (M5)", () => {
    *  "nothing shipped" assertions below could pass vacuously against a stalled reconciler. */
   async function awaitReconcilerPass(client: ScpClient, label: string): Promise<void> {
     const canaryTarget = await createTestComponent(client, { name: `${label}-canary-target` });
-    const canary = await client.campaigns.propose({ name: `${label} liveness canary`, targets: [canaryTarget.id] });
+    const canary = await client.campaigns.propose({
+      name: `${label} liveness canary`,
+      targets: [canaryTarget.id]
+    });
     await waitUntil(
       async () => {
         const e = await client.campaigns.explain(canary.id);
         return e.plan?.waves[0]?.targets[0]?.memberChangeObjectId ?? undefined;
       },
-      { describe: `${label}: liveness canary's member change is proposed (proves the reconciler is ticking this org)`, timeoutMs: 20_000 }
+      {
+        describe: `${label}: liveness canary's member change is proposed (proves the reconciler is ticking this org)`,
+        timeoutMs: 20_000
+      }
     );
   }
 
@@ -279,10 +314,14 @@ describe("campaigns & initiatives (M5)", () => {
     // of every forward-progress signal), masking the `failed` reading this test is about. Cancel
     // from `validating` — a settled state on the member's own lifecycle, so there is no race with
     // the reconciler concurrently transitioning it.
-    await waitUntil(async () => (await failAdmin.changes.get(wave0MemberChangeId)).state === "validating" || undefined, {
-      describe: `wave 0 member change ${wave0MemberChangeId} reaches 'validating'`,
-      timeoutMs: 20_000
-    });
+    await waitUntil(
+      async () =>
+        (await failAdmin.changes.get(wave0MemberChangeId)).state === "validating" || undefined,
+      {
+        describe: `wave 0 member change ${wave0MemberChangeId} reaches 'validating'`,
+        timeoutMs: 20_000
+      }
+    );
     const cancelled = await failAdmin.changes.cancel(wave0MemberChangeId, "test: wave 0 fails");
     expect(cancelled.state).toBe("cancelled");
 
@@ -311,7 +350,11 @@ describe("campaigns & initiatives (M5)", () => {
     expect((await failAdmin.campaigns.get(campaign.id)).status).toBe("failed");
     // No `coordinates` edge to any member change for wave 1's target either — the propose path
     // writes the edge in the same transaction, so its absence double-checks nothing was created.
-    const edges = await failAdmin.relationships.list({ fromId: campaign.id, typeId: "coordinates", limit: 50 });
+    const edges = await failAdmin.relationships.list({
+      fromId: campaign.id,
+      typeId: "coordinates",
+      limit: 50
+    });
     expect(edges.items).toHaveLength(1); // wave 0's member change, and only that one
     expect(edges.items[0]!.toId).toBe(wave0MemberChangeId);
   }, 60_000);
@@ -324,7 +367,10 @@ describe("campaigns & initiatives (M5)", () => {
     const failAdmin = new ScpClient({ baseUrl: server.baseUrl, token: failOrg.adminToken });
 
     const target = await createTestComponent(failAdmin, { name: "failwave-only-target" });
-    const campaign = await failAdmin.campaigns.propose({ name: "single-wave campaign that fails", targets: [target.id] });
+    const campaign = await failAdmin.campaigns.propose({
+      name: "single-wave campaign that fails",
+      targets: [target.id]
+    });
 
     const memberChangeId = await waitUntil(
       async () => {
@@ -333,10 +379,13 @@ describe("campaigns & initiatives (M5)", () => {
       },
       { describe: "the only wave's member Change is proposed", timeoutMs: 20_000 }
     );
-    await waitUntil(async () => (await failAdmin.changes.get(memberChangeId)).state === "validating" || undefined, {
-      describe: `member change ${memberChangeId} reaches 'validating'`,
-      timeoutMs: 20_000
-    });
+    await waitUntil(
+      async () => (await failAdmin.changes.get(memberChangeId)).state === "validating" || undefined,
+      {
+        describe: `member change ${memberChangeId} reaches 'validating'`,
+        timeoutMs: 20_000
+      }
+    );
     await failAdmin.changes.cancel(memberChangeId, "test: the only wave fails");
 
     await waitUntil(
@@ -356,7 +405,10 @@ describe("campaigns & initiatives (M5)", () => {
   it("initiative roll-up traversal aggregates MULTIPLE campaigns with MIXED statuses (real graph query), via both propose-with-campaigns and add-campaign, and is org-scoped", async () => {
     // Campaign 1 -> completed (its member change accepted).
     const t1 = await createTestComponent(admin, { name: "camp-rollup-completed-target" });
-    const completedCampaign = await admin.campaigns.propose({ name: "rollup-completed campaign", targets: [t1.id] });
+    const completedCampaign = await admin.campaigns.propose({
+      name: "rollup-completed campaign",
+      targets: [t1.id]
+    });
     const memberChangeId = await waitUntil(
       async () => {
         const e = await admin.campaigns.explain(completedCampaign.id);
@@ -364,13 +416,17 @@ describe("campaigns & initiatives (M5)", () => {
       },
       { describe: "completed campaign's member change is proposed", timeoutMs: 20_000 }
     );
-    await waitUntil(async () => (await admin.changes.get(memberChangeId)).state === "validating" || undefined, {
-      describe: `member change ${memberChangeId} reaches 'validating'`,
-      timeoutMs: 20_000
-    });
+    await waitUntil(
+      async () => (await admin.changes.get(memberChangeId)).state === "validating" || undefined,
+      {
+        describe: `member change ${memberChangeId} reaches 'validating'`,
+        timeoutMs: 20_000
+      }
+    );
     await admin.changes.accept(memberChangeId);
     await waitUntil(
-      async () => (await admin.campaigns.get(completedCampaign.id)).status === "completed" || undefined,
+      async () =>
+        (await admin.campaigns.get(completedCampaign.id)).status === "completed" || undefined,
       { describe: `campaign ${completedCampaign.id} reaches 'completed'`, timeoutMs: 20_000 }
     );
 
@@ -378,7 +434,10 @@ describe("campaigns & initiatives (M5)", () => {
     const t2 = await createTestComponent(admin, { name: "camp-rollup-blocked-target" });
     const failingControl = await createFailingControl(admin, org, "rollup-fail", webhook.url);
     await requireControlOn(admin, org, "rollup-fail-policy", t2.id, failingControl.id);
-    const blockedCampaign = await admin.campaigns.propose({ name: "rollup-blocked campaign", targets: [t2.id] });
+    const blockedCampaign = await admin.campaigns.propose({
+      name: "rollup-blocked campaign",
+      targets: [t2.id]
+    });
     await waitUntil(
       async () => (await admin.campaigns.get(blockedCampaign.id)).status === "blocked" || undefined,
       { describe: `campaign ${blockedCampaign.id} reaches 'blocked'`, timeoutMs: 20_000 }
@@ -406,7 +465,9 @@ describe("campaigns & initiatives (M5)", () => {
     // by traversal, a named graph query over the existing engine"), org-scoped like every other
     // named query — now aggregating TWO campaigns with MIXED statuses through the real traversal.
     const graphResult = await admin.graph.query("initiative-rollup", { objectId: initiative.id });
-    expect(new Set(graphResult.objects.map((o) => o.id))).toEqual(new Set([completedCampaign.id, blockedCampaign.id]));
+    expect(new Set(graphResult.objects.map((o) => o.id))).toEqual(
+      new Set([completedCampaign.id, blockedCampaign.id])
+    );
     expect(graphResult.counts).toEqual({ "status:completed": 1, "status:blocked": 1 });
 
     // Cross-tenant leakage check: a second org's admin can never see the first org's initiative
@@ -427,7 +488,10 @@ describe("campaigns & initiatives (M5)", () => {
     const viewerClient = new ScpClient({ baseUrl: server.baseUrl, token: viewer.token });
 
     const err = await expectApiError(() =>
-      viewerClient.campaigns.propose({ name: "should be forbidden", targets: [restrictedTarget.id] })
+      viewerClient.campaigns.propose({
+        name: "should be forbidden",
+        targets: [restrictedTarget.id]
+      })
     );
     expect(err.status).toBe(403);
 
@@ -438,7 +502,10 @@ describe("campaigns & initiatives (M5)", () => {
 
   it("SECURITY: linking a campaign into an initiative requires relationship:write at BOTH endpoints", async () => {
     const t = await createTestComponent(admin, { name: "camp-initiative-authz-target" });
-    const campaign = await admin.campaigns.propose({ name: "authz-probe campaign", targets: [t.id] });
+    const campaign = await admin.campaigns.propose({
+      name: "authz-probe campaign",
+      targets: [t.id]
+    });
 
     const viewer = await createTestUser(server, org, [{ role: "Viewer", scope: "self" }]);
     const viewerClient = new ScpClient({ baseUrl: server.baseUrl, token: viewer.token });
@@ -459,14 +526,18 @@ describe("campaigns & initiatives (M5)", () => {
   // -----------------------------------------------------------------------------------------
 
   it("SECURITY: the generic /api/v1/objects/campaign endpoint refuses every write verb, even for the org-root admin", async () => {
-    const restrictedTarget = await createTestComponent(admin, { name: "camp-generic-bypass-target" });
+    const restrictedTarget = await createTestComponent(admin, {
+      name: "camp-generic-bypass-target"
+    });
 
     // Exploit: an actor with object:write ONLY at a domain they own tries the generic endpoint to
     // plant a campaign targeting an object OUTSIDE their authority — proposeCampaign's per-target
     // check would catch this at /campaigns, so the exploit specifically targets the endpoint that
     // (before this fix) skipped it entirely.
     const domain = await admin.domains.create({ name: "camp-generic-bypass-domain" });
-    const narrowActor = await createTestUser(server, org, [{ role: "Administrator", scope: domain.id }]);
+    const narrowActor = await createTestUser(server, org, [
+      { role: "Administrator", scope: domain.id }
+    ]);
     const narrowClient = new ScpClient({ baseUrl: server.baseUrl, token: narrowActor.token });
     const exploit = await expectApiError(() =>
       narrowClient.object("campaign").create({
@@ -480,12 +551,17 @@ describe("campaigns & initiatives (M5)", () => {
     // Unconditional type-level block — even the org-root admin (who has full authority over the
     // target) is refused via this path, proving it's not a permission gap.
     const adminExploit = await expectApiError(() =>
-      admin.object("campaign").create({ name: "still-refused", properties: { targets: [restrictedTarget.id] } })
+      admin
+        .object("campaign")
+        .create({ name: "still-refused", properties: { targets: [restrictedTarget.id] } })
     );
     expect(adminExploit.status).toBe(403);
 
     // PATCH/PUT/DELETE refused too, for a campaign that legitimately exists via /campaigns.
-    const legit = await admin.campaigns.propose({ name: "legit-for-generic-block-test", targets: [restrictedTarget.id] });
+    const legit = await admin.campaigns.propose({
+      name: "legit-for-generic-block-test",
+      targets: [restrictedTarget.id]
+    });
     await expect(
       admin.object("campaign").update(legit.id, { properties: { targets: [restrictedTarget.id] } })
     ).rejects.toMatchObject({ status: 403 });
@@ -495,7 +571,10 @@ describe("campaigns & initiatives (M5)", () => {
   it("SECURITY: IaC plan/apply binds a campaign manifest's declared targets to the actor's own authority", async () => {
     const restrictedTarget = await createTestComponent(admin, { name: "camp-iac-bypass-target" });
     const ownDomain = await admin.domains.create({ name: "camp-iac-bypass-own-domain" });
-    const ownTarget = await createTestComponent(admin, { name: "camp-iac-bypass-own-target", domainId: ownDomain.id });
+    const ownTarget = await createTestComponent(admin, {
+      name: "camp-iac-bypass-own-target",
+      domainId: ownDomain.id
+    });
 
     const narrowActor = await createTestUser(server, org, [
       { role: "Viewer", scope: org.orgId }, // POST /plans needs object:read at org root
@@ -576,7 +655,10 @@ describe("campaigns & initiatives (M5)", () => {
         const e = await admin.campaigns.explain(created.id);
         return e.plan && e.plan.waves.length === 2 ? e : undefined;
       },
-      { describe: `IaC-authored campaign ${created.id} plan compiles to 2 waves`, timeoutMs: 20_000 }
+      {
+        describe: `IaC-authored campaign ${created.id} plan compiles to 2 waves`,
+        timeoutMs: 20_000
+      }
     );
     const waves = explained.plan!.waves;
     // If URN resolution were broken, both targets would land in ONE wave (no depends_on edge
@@ -595,20 +677,33 @@ describe("campaigns & initiatives (M5)", () => {
 
   it("SECURITY: the generic POST /relationships endpoint refuses a `coordinates` edge (system-managed, 403)", async () => {
     const target = await createTestComponent(admin, { name: "camp-coord-block-target" });
-    const campaign = await admin.campaigns.propose({ name: "coord-block campaign", targets: [target.id] });
-    const someChange = await admin.changes.propose({ name: "coord-block unrelated change", targets: [target.id] });
+    const campaign = await admin.campaigns.propose({
+      name: "coord-block campaign",
+      targets: [target.id]
+    });
+    const someChange = await admin.changes.propose({
+      name: "coord-block unrelated change",
+      targets: [target.id]
+    });
 
     // An actor could hold org-wide relationship:write (e.g. an Operator) — the type-level block
     // fires regardless, BEFORE any endpoint authority/type check, exactly like `approves`.
     const err = await expectApiError(() =>
-      admin.relationships.create({ typeId: "coordinates", fromId: campaign.id, toId: someChange.id })
+      admin.relationships.create({
+        typeId: "coordinates",
+        fromId: campaign.id,
+        toId: someChange.id
+      })
     );
     expect(err.status).toBe(403);
   });
 
   it("SECURITY: an IaC manifest declaring a raw `coordinates` relationship is refused at apply (403)", async () => {
     const target = await createTestComponent(admin, { name: "camp-iac-coord-target" });
-    const campaign = await admin.campaigns.propose({ name: "iac-coord campaign", targets: [target.id] });
+    const campaign = await admin.campaigns.propose({
+      name: "iac-coord campaign",
+      targets: [target.id]
+    });
 
     const stackName = `camp-iac-coord-${randomUUID().slice(0, 8)}`;
     const manifest: DesiredStateManifest = {
@@ -622,7 +717,11 @@ describe("campaigns & initiatives (M5)", () => {
     const plan = await admin.plans.create(manifest);
     await expect(admin.plans.apply(plan.id)).rejects.toMatchObject({ status: 403 });
     // No `coordinates` edge was created.
-    const edges = await admin.relationships.list({ fromId: campaign.id, typeId: "coordinates", limit: 20 });
+    const edges = await admin.relationships.list({
+      fromId: campaign.id,
+      typeId: "coordinates",
+      limit: 20
+    });
     expect(edges.items).toHaveLength(0);
   });
 
@@ -630,7 +729,10 @@ describe("campaigns & initiatives (M5)", () => {
     // The TRUE member: a campaign targeting its own object, accepted (a real, plan-compiled,
     // rollback-eligible member).
     const trueTarget = await createTestComponent(admin, { name: "camp-stray-true-target" });
-    const campaign = await admin.campaigns.propose({ name: "stray-edge campaign", targets: [trueTarget.id] });
+    const campaign = await admin.campaigns.propose({
+      name: "stray-edge campaign",
+      targets: [trueTarget.id]
+    });
     const trueMemberChangeId = await waitUntil(
       async () => {
         const e = await admin.campaigns.explain(campaign.id);
@@ -638,10 +740,13 @@ describe("campaigns & initiatives (M5)", () => {
       },
       { describe: "true member change proposed", timeoutMs: 20_000 }
     );
-    await waitUntil(async () => (await admin.changes.get(trueMemberChangeId)).state === "validating" || undefined, {
-      describe: `true member ${trueMemberChangeId} reaches 'validating'`,
-      timeoutMs: 20_000
-    });
+    await waitUntil(
+      async () => (await admin.changes.get(trueMemberChangeId)).state === "validating" || undefined,
+      {
+        describe: `true member ${trueMemberChangeId} reaches 'validating'`,
+        timeoutMs: 20_000
+      }
+    );
     await admin.changes.accept(trueMemberChangeId);
 
     // The INJECTED member: a completely unrelated Change, driven to a rollback-eligible state
@@ -651,11 +756,17 @@ describe("campaigns & initiatives (M5)", () => {
     // prevent. If campaign rollback trusted raw `coordinates` edges (the pre-fix behavior), this
     // change WOULD be swept into the rollback.
     const injectedTarget = await createTestComponent(admin, { name: "camp-stray-injected-target" });
-    const injectedChange = await admin.changes.propose({ name: "injected-not-a-member", targets: [injectedTarget.id] });
-    await waitUntil(async () => (await admin.changes.get(injectedChange.id)).state === "validating" || undefined, {
-      describe: `injected change ${injectedChange.id} reaches 'validating'`,
-      timeoutMs: 20_000
+    const injectedChange = await admin.changes.propose({
+      name: "injected-not-a-member",
+      targets: [injectedTarget.id]
     });
+    await waitUntil(
+      async () => (await admin.changes.get(injectedChange.id)).state === "validating" || undefined,
+      {
+        describe: `injected change ${injectedChange.id} reaches 'validating'`,
+        timeoutMs: 20_000
+      }
+    );
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
       createRelationship(tx, {
         orgId: org.orgId,
@@ -668,21 +779,30 @@ describe("campaigns & initiatives (M5)", () => {
     );
 
     // Roll back the campaign.
-    const rollbackResult = await admin.campaigns.rollback(campaign.id, "stray-edge test: revert true members only");
+    const rollbackResult = await admin.campaigns.rollback(
+      campaign.id,
+      "stray-edge test: revert true members only"
+    );
 
     // The TRUE member is rolled back; the INJECTED change is NOT in the rolledBack set...
     const rolledBackIds = rollbackResult.rolledBack.map((r) => r.originalChangeObjectId);
     expect(rolledBackIds).toContain(trueMemberChangeId);
     expect(rolledBackIds).not.toContain(injectedChange.id);
     // ...and is not even mentioned in `skipped` (it's simply not a member — never enumerated).
-    expect(rollbackResult.skipped.map((s) => s.originalChangeObjectId)).not.toContain(injectedChange.id);
+    expect(rollbackResult.skipped.map((s) => s.originalChangeObjectId)).not.toContain(
+      injectedChange.id
+    );
 
     // ...and the injected change never leaves 'validating' (never rolled_back) — the definitive
     // proof it was never touched.
-    await waitUntil(async () => (await admin.changes.get(trueMemberChangeId)).state === "rolled_back" || undefined, {
-      describe: `true member ${trueMemberChangeId} reaches 'rolled_back'`,
-      timeoutMs: 20_000
-    });
+    await waitUntil(
+      async () =>
+        (await admin.changes.get(trueMemberChangeId)).state === "rolled_back" || undefined,
+      {
+        describe: `true member ${trueMemberChangeId} reaches 'rolled_back'`,
+        timeoutMs: 20_000
+      }
+    );
     const injectedState = (await admin.changes.get(injectedChange.id)).state;
     expect(injectedState).toBe("validating");
   }, 60_000);

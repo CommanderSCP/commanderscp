@@ -29,7 +29,13 @@ export type ScanDbSource = z.infer<typeof ScanDbSourceSchema>;
 /** The staleness classification of the DB the runner would consume, against the active policy.
  *  `fresh`/`warn` still scan (warn is surfaced in evidence + the Decision); `hard-fail`/`missing`/
  *  `corrupt` FAIL CLOSED (no scan → no evidence → E6 refuses). */
-export const ScanDbStalenessClassSchema = z.enum(["fresh", "warn", "hard-fail", "missing", "corrupt"]);
+export const ScanDbStalenessClassSchema = z.enum([
+  "fresh",
+  "warn",
+  "hard-fail",
+  "missing",
+  "corrupt"
+]);
 export type ScanDbStalenessClass = z.infer<typeof ScanDbStalenessClassSchema>;
 
 /** Which staleness threshold (if any) the DB's age tripped. */

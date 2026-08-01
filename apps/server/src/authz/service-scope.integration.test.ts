@@ -98,9 +98,9 @@ describe("RBAC: a service-scoped binding reaches its components (and nothing els
   it("DENIES: a binding at ANOTHER service does not reach this service's components", async () => {
     const user = await createTestUser(server, org, [{ role: "Operator", scope: otherSvcId }]);
     const client = new ScpClient({ baseUrl: server.baseUrl, token: user.token });
-    await expect(
-      client.components.update(compId, { labels: { hacked: "yes" } })
-    ).rejects.toThrow(/forbidden/i);
+    await expect(client.components.update(compId, { labels: { hacked: "yes" } })).rejects.toThrow(
+      /forbidden/i
+    );
   });
 
   it("DENIES: a service-scoped binding does not reach an UNASSIGNED component (no contains edge)", async () => {
@@ -155,8 +155,8 @@ describe("RBAC: a service-scoped binding reaches its components (and nothing els
 
     await admin.relationships.delete(edge.id);
     // The walk filters `deleted_at IS NULL`; a deleted edge conferring authz would be a real hole.
-    await expect(
-      client.components.update(comp.id, { labels: { y: "2" } })
-    ).rejects.toThrow(/forbidden/i);
+    await expect(client.components.update(comp.id, { labels: { y: "2" } })).rejects.toThrow(
+      /forbidden/i
+    );
   });
 });

@@ -49,7 +49,9 @@ describe("harbor webhook-source: a PUSH_ARTIFACT correlates end-to-end into a Ch
   });
 
   it("a Bearer-PAT-authed Harbor PUSH_ARTIFACT (no signature header) proposes a Change correlated to the mapped component with sourceRef.artifact_digest set", async () => {
-    const component = await createTestComponent(admin, { name: `harbor-comp-${randomUUID().slice(0, 8)}` });
+    const component = await createTestComponent(admin, {
+      name: `harbor-comp-${randomUUID().slice(0, 8)}`
+    });
     const repo = `acme/${randomUUID().slice(0, 8)}`;
     const digest = "sha256:" + "ab".repeat(32);
 
@@ -122,10 +124,15 @@ describe("harbor webhook-source: a PUSH_ARTIFACT correlates end-to-end into a Ch
   });
 
   it("a non-mappable Harbor event (SCANNING_COMPLETED) is ingested but proposes NO Change — its scan-gate feed is a deferred M17.1 follow-on, not silently mis-mapped", async () => {
-    const component = await createTestComponent(admin, { name: `harbor-scan-${randomUUID().slice(0, 8)}` });
+    const component = await createTestComponent(admin, {
+      name: `harbor-scan-${randomUUID().slice(0, 8)}`
+    });
     const repo = `acme/${randomUUID().slice(0, 8)}`;
     const digest = "sha256:" + "ef".repeat(32);
-    await admin.changeSources.createMapping("harbor", { repoPattern: repo, component: component.id });
+    await admin.changeSources.createMapping("harbor", {
+      repoPattern: repo,
+      component: component.id
+    });
 
     const payload = {
       type: "SCANNING_COMPLETED",

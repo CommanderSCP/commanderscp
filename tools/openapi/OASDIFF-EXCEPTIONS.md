@@ -49,7 +49,7 @@ the branch-protection override, not a suppression in the script.
 **What breaks (deliberate, one-time):** two independent renames land in one batch, because they
 would otherwise cost two separate `/v1` exceptions for one vocabulary decision.
 
-*D5 — the change-lifecycle approval gate:*
+_D5 — the change-lifecycle approval gate:_
 
 - **Route path renamed:** `POST /v1/changes/{id}/promote` → `POST /v1/changes/{id}/accept`
   (path removed + added).
@@ -60,7 +60,7 @@ would otherwise cost two separate `/v1` exceptions for one vocabulary decision.
   `/changes/{id}/explain`, `/changes/{id}/cancel|accept|rollback`, and the campaign rollback
   response's nested `rollbackChange` — and as a **request** value on `GET /changes?state=`.
 
-*D6 — the service release board (`GET /v1/services/{idOrUrn}/board`), response body only:*
+_D6 — the service release board (`GET /v1/services/{idOrUrn}/board`), response body only:_
 
 - Response field renamed `currentStage` → `currentWave`.
 - Response field renamed `stages` → `waves`.

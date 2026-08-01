@@ -50,7 +50,9 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
   it("executor binding PUT/GET round-trips against a real Component target", async () => {
     const org = await createTestOrg(server, "m7-executor-binding");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const component = await createTestComponent(admin, { name: `comp-${randomUUID().slice(0, 8)}` });
+    const component = await createTestComponent(admin, {
+      name: `comp-${randomUUID().slice(0, 8)}`
+    });
 
     const binding = await admin.executors.putBinding(component.id, {
       pluginModule: "fake-executor",
@@ -73,7 +75,9 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
   it("executor binding defaults externalRef to null when omitted (backward-compatible with pre-M12 bindings)", async () => {
     const org = await createTestOrg(server, "m12-executor-external-ref-null");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const component = await createTestComponent(admin, { name: `comp-${randomUUID().slice(0, 8)}` });
+    const component = await createTestComponent(admin, {
+      name: `comp-${randomUUID().slice(0, 8)}`
+    });
     const binding = await admin.executors.putBinding(component.id, {
       pluginModule: "fake-executor",
       pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`
@@ -171,7 +175,11 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     await admin.secrets.put("sys-token", { value: "t" });
     const sys = await admin.object("execution-system").create({
       name: `sys-${randomUUID().slice(0, 8)}`,
-      properties: { kind: "fake-executor", serverUrl: "https://argocd.x", tokenSecretKey: "sys-token" }
+      properties: {
+        kind: "fake-executor",
+        serverUrl: "https://argocd.x",
+        tokenSecretKey: "sys-token"
+      }
     });
     const appName = `imported-app-${randomUUID().slice(0, 8)}`;
 
@@ -179,7 +187,9 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     // of that component (by NAME) to the system.
     const result = await admin.discovery.accept({
       proposal: {
-        objects: [{ typeId: "component", name: appName, properties: { argocdApplication: appName } }],
+        objects: [
+          { typeId: "component", name: appName, properties: { argocdApplication: appName } }
+        ],
         relationships: [],
         bindings: [{ objectName: appName, executionSystemId: sys.id, externalRef: appName }]
       }
@@ -260,7 +270,9 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
   it("webhook signature verification is fail-closed once a secret is configured: bad signature 401s and is never persisted, a valid one is accepted and correlates", async () => {
     const org = await createTestOrg(server, "m7-webhook-sig");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const component = await createTestComponent(admin, { name: `comp-${randomUUID().slice(0, 8)}` });
+    const component = await createTestComponent(admin, {
+      name: `comp-${randomUUID().slice(0, 8)}`
+    });
     const secret = "integration-test-webhook-secret";
     const repo = `m7-org/${randomUUID().slice(0, 8)}`;
 
@@ -366,9 +378,14 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
   it("a typed report persists a change_source_event and correlates into a Change via its source mapping", async () => {
     const org = await createTestOrg(server, "p4b-report-correlates");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const component = await createTestComponent(admin, { name: `comp-${randomUUID().slice(0, 8)}` });
+    const component = await createTestComponent(admin, {
+      name: `comp-${randomUUID().slice(0, 8)}`
+    });
     const repo = `report-org/${randomUUID().slice(0, 8)}`;
-    await admin.changeSources.createMapping("terraform", { repoPattern: repo, component: component.id });
+    await admin.changeSources.createMapping("terraform", {
+      repoPattern: repo,
+      component: component.id
+    });
 
     const res = await admin.changeSources.report("terraform", {
       status: "applied",
@@ -389,11 +406,15 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     // Exactly the persist-then-process outcome the raw webhook produces: a Change targeting the
     // mapped component. Proves the typed body's top-level `repo` reached `genericHint` correlation.
     const changes = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      tx.select({ id: objects.id, properties: objects.properties }).from(objects).where(eq(objects.typeId, "change"))
+      tx
+        .select({ id: objects.id, properties: objects.properties })
+        .from(objects)
+        .where(eq(objects.typeId, "change"))
     );
-    const mine = changes.filter((c) =>
-      Array.isArray((c.properties as { targets?: unknown }).targets) &&
-      ((c.properties as { targets: string[] }).targets).includes(component.id)
+    const mine = changes.filter(
+      (c) =>
+        Array.isArray((c.properties as { targets?: unknown }).targets) &&
+        (c.properties as { targets: string[] }).targets.includes(component.id)
     );
     expect(mine).toHaveLength(1);
   });
@@ -436,7 +457,10 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     const { changeSourceEvents } = await import("../db/schema.js");
     const { eq } = await import("drizzle-orm");
     const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      tx.select({ id: changeSourceEvents.id }).from(changeSourceEvents).where(eq(changeSourceEvents.orgId, org.orgId))
+      tx
+        .select({ id: changeSourceEvents.id })
+        .from(changeSourceEvents)
+        .where(eq(changeSourceEvents.orgId, org.orgId))
     );
     expect(rows).toHaveLength(2); // the identical pair collapsed to one; the errored one is the second
   });
@@ -463,7 +487,9 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
   it("REJECTS an executor binding whose pluginModule is unknown or the WRONG KIND (e.g. a ControlPlugin/DiscoveryPlugin/NotificationPlugin module) — at WRITE time, not just dispatch", async () => {
     const org = await createTestOrg(server, "m8-executor-module-allowlist");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const component = await createTestComponent(admin, { name: `comp-${randomUUID().slice(0, 8)}` });
+    const component = await createTestComponent(admin, {
+      name: `comp-${randomUUID().slice(0, 8)}`
+    });
 
     for (const wrongModule of [
       "bogus-module-that-does-not-exist",
@@ -514,7 +540,9 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
   it("REJECTS a managed-iac binding whose config tries to set server-governed fields (runnerImage/networkMode)", async () => {
     const org = await createTestOrg(server, "m7-managed-iac-reject");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const component = await createTestComponent(admin, { name: `comp-${randomUUID().slice(0, 8)}` });
+    const component = await createTestComponent(admin, {
+      name: `comp-${randomUUID().slice(0, 8)}`
+    });
 
     for (const evilConfig of [
       { runnerImage: "attacker/evil:latest" },
@@ -551,7 +579,9 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
       await import("../coordination/executor-bindings-repo.js");
     const org = await createTestOrg(server, "m7-managed-iac-inject");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const component = await createTestComponent(admin, { name: `comp-${randomUUID().slice(0, 8)}` });
+    const component = await createTestComponent(admin, {
+      name: `comp-${randomUUID().slice(0, 8)}`
+    });
 
     const savedEnv = {
       image: process.env.SCP_MANAGED_IAC_RUNNER_IMAGE,

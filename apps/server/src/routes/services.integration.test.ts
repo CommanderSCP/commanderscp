@@ -210,7 +210,10 @@ describe("services: release board (Phase 2, Layer A)", () => {
     expect(missing.statusCode, missing.body).toBe(404);
 
     // 401 — no credentials.
-    const anon = await server.app.inject({ method: "GET", url: `/api/v1/services/${svc.id}/board` });
+    const anon = await server.app.inject({
+      method: "GET",
+      url: `/api/v1/services/${svc.id}/board`
+    });
     expect(anon.statusCode).toBe(401);
 
     // 403 — a subject scoped only to an unrelated object has no object:read on this service.

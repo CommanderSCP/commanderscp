@@ -146,7 +146,10 @@ export function InitiativeListPage(): React.JSX.Element {
               />
             </div>
             <div className="flex flex-col gap-1.5">
-              <label htmlFor="initiative-description" className="text-sm font-medium text-slate-700">
+              <label
+                htmlFor="initiative-description"
+                className="text-sm font-medium text-slate-700"
+              >
                 Description (optional)
               </label>
               <Input

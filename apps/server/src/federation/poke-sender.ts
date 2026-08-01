@@ -161,7 +161,9 @@ export async function pokeDownstreamPeersForOrg(
     // Belt-and-braces fail-closed: never send a poke plain-HTTP to an https peer with no client cert.
     // (`sendPokeToPeer` → `federationDialJson` also refuses this, but skipping here avoids the dial.)
     if (federationPeerRequiresMtls(baseUrl) && !ctx.mtls) {
-      log(`peer '${peer.name}' requires mTLS but no client cert configured — poke not sent (fail-closed)`);
+      log(
+        `peer '${peer.name}' requires mTLS but no client cert configured — poke not sent (fail-closed)`
+      );
       outcomes.push({
         peerDomainId: peer.id,
         outcome: "refused",
@@ -175,7 +177,9 @@ export async function pokeDownstreamPeersForOrg(
         outcomes.push({ peerDomainId: peer.id, outcome: "sent", detail: `HTTP ${status}` });
       } else {
         // A refused/rate-limited/erroring receiver — best-effort, so log+drop, never retry-to-confirm.
-        log(`poke to '${peer.name}' returned HTTP ${status} — dropped (best-effort; safety-net heals)`);
+        log(
+          `poke to '${peer.name}' returned HTTP ${status} — dropped (best-effort; safety-net heals)`
+        );
         outcomes.push({ peerDomainId: peer.id, outcome: "error", detail: `HTTP ${status}` });
       }
     } catch (err) {

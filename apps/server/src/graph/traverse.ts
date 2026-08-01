@@ -1,5 +1,10 @@
 import { sql } from "drizzle-orm";
-import type { SubgraphRequest, SubgraphResult, TraverseRequest, TraverseResult } from "@scp/schemas";
+import type {
+  SubgraphRequest,
+  SubgraphResult,
+  TraverseRequest,
+  TraverseResult
+} from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { mapRawObjectRow, type RawObjectRow } from "./raw-row-mappers.js";
 import { sqlIn, sqlInOrAlways } from "./sql-helpers.js";

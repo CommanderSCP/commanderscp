@@ -52,6 +52,6 @@ scripts/scp-bundled.sh render argocd        # print the manifest to stdout, appl
 
 ## What stays in the main `commanderscp` chart
 
-Only the *slim* integration the SCP pods themselves need: the Argo CD auto-wire hook Job and the
+Only the _slim_ integration the SCP pods themselves need: the Argo CD auto-wire hook Job and the
 `allow-argocd` NetworkPolicy egress rule, gated on
 `bundledExecutor.argocd.{enabled,namespace}`. The heavy vendored manifests live here.

@@ -46,13 +46,18 @@ function testCtx(
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     secrets: { get: async () => undefined },
     http: {
-      request: requestImpl ?? (async () => ({ status: 200, headers: {}, body: trivyResult({ digest: DIGEST_A }) }))
+      request:
+        requestImpl ??
+        (async () => ({ status: 200, headers: {}, body: trivyResult({ digest: DIGEST_A }) }))
     },
     config
   };
 }
 
-const baseConfig: ScanResultControlConfig = { url: "https://scan.invalid/result.json", expectedDigest: DIGEST_A };
+const baseConfig: ScanResultControlConfig = {
+  url: "https://scan.invalid/result.json",
+  expectedDigest: DIGEST_A
+};
 
 describe("scan-result-control plugin", () => {
   it("PASSES a clean verdict whose scanned digest matches the change's artifact digest, and emits typed evidence", async () => {
@@ -60,7 +65,11 @@ describe("scan-result-control plugin", () => {
     let seen: ScopedHttpRequest | undefined;
     const ctx = testCtx(baseConfig, async (req) => {
       seen = req;
-      return { status: 200, headers: {}, body: trivyResult({ digest: DIGEST_A, severities: ["MEDIUM", "LOW"] }) };
+      return {
+        status: 200,
+        headers: {},
+        body: trivyResult({ digest: DIGEST_A, severities: ["MEDIUM", "LOW"] })
+      };
     });
 
     const outcome = await plugin.evaluate(ctx, { changeId: "c1", controlId: "ctl1", context: {} });
@@ -104,20 +113,27 @@ describe("scan-result-control plugin", () => {
 
   it("honors a configurable threshold — HIGH under maxHigh passes, over maxHigh fails", async () => {
     const plugin = createScanResultControlPlugin();
-    const config: ScanResultControlConfig = { ...baseConfig, threshold: { maxCritical: 0, maxHigh: 2 } };
+    const config: ScanResultControlConfig = {
+      ...baseConfig,
+      threshold: { maxCritical: 0, maxHigh: 2 }
+    };
     const twoHighs = testCtx(config, async () => ({
       status: 200,
       headers: {},
       body: trivyResult({ digest: DIGEST_A, severities: ["HIGH", "HIGH"] })
     }));
-    expect((await plugin.evaluate(twoHighs, { changeId: "c1", controlId: "ctl1", context: {} })).status).toBe("pass");
+    expect(
+      (await plugin.evaluate(twoHighs, { changeId: "c1", controlId: "ctl1", context: {} })).status
+    ).toBe("pass");
 
     const threeHighs = testCtx(config, async () => ({
       status: 200,
       headers: {},
       body: trivyResult({ digest: DIGEST_A, severities: ["HIGH", "HIGH", "HIGH"] })
     }));
-    expect((await plugin.evaluate(threeHighs, { changeId: "c1", controlId: "ctl1", context: {} })).status).toBe("fail");
+    expect(
+      (await plugin.evaluate(threeHighs, { changeId: "c1", controlId: "ctl1", context: {} })).status
+    ).toBe("fail");
   });
 
   it("FAILS on a DIGEST MISMATCH — a clean scan of a DIFFERENT artifact must NOT authorize the change", async () => {
@@ -180,7 +196,11 @@ describe("scan-result-control plugin", () => {
 
   it("FAILS CLOSED on an unparseable / non-object body", async () => {
     const plugin = createScanResultControlPlugin();
-    const ctx = testCtx(baseConfig, async () => ({ status: 200, headers: {}, body: "this is not trivy json" }));
+    const ctx = testCtx(baseConfig, async () => ({
+      status: 200,
+      headers: {},
+      body: "this is not trivy json"
+    }));
     const outcome = await plugin.evaluate(ctx, { changeId: "c1", controlId: "ctl1", context: {} });
     expect(outcome.status).toBe("fail");
     expect(outcome.detail).toMatch(/unparseable/);
@@ -232,11 +252,14 @@ describe("scan-result-control plugin", () => {
 
   it("M17.5: context.scanThreshold TIGHTENS a looser per-binding config.threshold (the scoped floor wins)", async () => {
     const plugin = createScanResultControlPlugin();
-    const ctx = testCtx({ ...baseConfig, threshold: { maxCritical: 99, maxHigh: 99 } }, async () => ({
-      status: 200,
-      headers: {},
-      body: trivyResult({ digest: DIGEST_A, severities: ["HIGH"] })
-    }));
+    const ctx = testCtx(
+      { ...baseConfig, threshold: { maxCritical: 99, maxHigh: 99 } },
+      async () => ({
+        status: 200,
+        headers: {},
+        body: trivyResult({ digest: DIGEST_A, severities: ["HIGH"] })
+      })
+    );
     const outcome = await plugin.evaluate(ctx, {
       changeId: "c1",
       controlId: "ctl1",
@@ -297,11 +320,14 @@ describe("scan-result-control plugin", () => {
 
   it("M17.5: a PRESENT-but-malformed context.scanThreshold FAILS CLOSED rather than silently using the looser per-binding threshold", async () => {
     const plugin = createScanResultControlPlugin();
-    const ctx = testCtx({ ...baseConfig, threshold: { maxCritical: 99, maxHigh: 99 } }, async () => ({
-      status: 200,
-      headers: {},
-      body: trivyResult({ digest: DIGEST_A })
-    }));
+    const ctx = testCtx(
+      { ...baseConfig, threshold: { maxCritical: 99, maxHigh: 99 } },
+      async () => ({
+        status: 200,
+        headers: {},
+        body: trivyResult({ digest: DIGEST_A })
+      })
+    );
     const outcome = await plugin.evaluate(ctx, {
       changeId: "c1",
       controlId: "ctl1",

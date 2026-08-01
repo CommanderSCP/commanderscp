@@ -3,12 +3,21 @@ import type { PluginHost } from "../plugin-host/contract.js";
 import type { CelSandbox } from "./cel-sandbox.js";
 import { matchPoliciesForTargets } from "./policy-resolve.js";
 import { resolvePolicies } from "./policy-model.js";
-import { buildCelContext, evaluateFiredPolicies, resolveFiredPolicies, type PolicyEvaluationContext } from "./evaluate.js";
+import {
+  buildCelContext,
+  evaluateFiredPolicies,
+  resolveFiredPolicies,
+  type PolicyEvaluationContext
+} from "./evaluate.js";
 import { ensureControlRuns, readExistingControlOutcomes } from "./control-runner.js";
 import { materializeApprovalRequest, quorumStatus } from "./approvals-repo.js";
 import { activeFreezesForScopes, type FreezeRow } from "./freezes-repo.js";
 import { hasPermission } from "../authz/resolve.js";
-import { containmentChain, containmentScopeIds, nearestAncestorOfKind } from "../graph/containment.js";
+import {
+  containmentChain,
+  containmentScopeIds,
+  nearestAncestorOfKind
+} from "../graph/containment.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { getChangeRow } from "../coordination/changes-repo.js";
 import { resolveEffectiveScanThreshold } from "./scan-requirements.js";
@@ -95,7 +104,10 @@ async function checkFreeze(
   for (const freeze of active) {
     const label = freeze.name ?? freeze.id;
     if (!ctx.overrideFreeze) {
-      return { blocked: { freeze, reason: `active freeze '${label}' (${freeze.reason})` }, overrides: null };
+      return {
+        blocked: { freeze, reason: `active freeze '${label}' (${freeze.reason})` },
+        overrides: null
+      };
     }
     if (!ctx.overrideFreeze.reason.trim()) {
       return {
@@ -118,7 +130,11 @@ async function checkFreeze(
         overrides: null
       };
     }
-    overrides.push({ freezeId: freeze.id, reason: ctx.overrideFreeze.reason, scopeObjectId: freeze.scopeObjectId });
+    overrides.push({
+      freezeId: freeze.id,
+      reason: ctx.overrideFreeze.reason,
+      scopeObjectId: freeze.scopeObjectId
+    });
   }
   return { blocked: null, overrides };
 }
@@ -131,11 +147,21 @@ async function checkFreeze(
 async function graphFactsFor(tx: TenantTx, orgId: string, targetObjectId: string) {
   const owners = await tx.query.relationships.findMany({
     where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
-      andOp(eqOp(t.orgId, orgId), eqOp(t.typeId, "owns"), eqOp(t.toId, targetObjectId), isNullOp(t.deletedAt))
+      andOp(
+        eqOp(t.orgId, orgId),
+        eqOp(t.typeId, "owns"),
+        eqOp(t.toId, targetObjectId),
+        isNullOp(t.deletedAt)
+      )
   });
   const dependents = await tx.query.relationships.findMany({
     where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
-      andOp(eqOp(t.orgId, orgId), eqOp(t.typeId, "depends_on"), eqOp(t.toId, targetObjectId), isNullOp(t.deletedAt))
+      andOp(
+        eqOp(t.orgId, orgId),
+        eqOp(t.typeId, "depends_on"),
+        eqOp(t.toId, targetObjectId),
+        isNullOp(t.deletedAt)
+      )
   });
   return {
     ownerIds: owners.map((o) => o.fromId),
@@ -146,13 +172,14 @@ async function graphFactsFor(tx: TenantTx, orgId: string, targetObjectId: string
 
 /** Scope-KIND keyword → the `object_types.id` an ancestor of that kind carries. `organization`
  *  is special-cased to the org root object below (whose id === orgId). */
-const APPROVAL_SCOPE_KEYWORDS: Record<string, "organization" | "domain" | "service" | "component"> = {
-  organization: "organization",
-  org: "organization",
-  domain: "domain",
-  service: "service",
-  component: "component"
-};
+const APPROVAL_SCOPE_KEYWORDS: Record<string, "organization" | "domain" | "service" | "component"> =
+  {
+    organization: "organization",
+    org: "organization",
+    domain: "domain",
+    service: "service",
+    component: "component"
+  };
 
 /**
  * Resolves a `requireApprovals.scope` value (MAJOR #5). DESIGN §10.1's own example writes a scope
@@ -248,10 +275,15 @@ async function resolveChangeCommitSha(
   const row = await getChangeRow(tx, orgId, changeObjectId).catch(() => null);
   const sourceRef = (row?.sourceRef ?? {}) as Record<string, unknown>;
   const direct =
-    sourceRef.commit_sha ?? sourceRef.commitSha ?? sourceRef.sha ?? sourceRef.after ?? sourceRef.checkout_sha;
+    sourceRef.commit_sha ??
+    sourceRef.commitSha ??
+    sourceRef.sha ??
+    sourceRef.after ??
+    sourceRef.checkout_sha;
   if (typeof direct === "string" && direct.length > 0) return direct;
   const headCommit = sourceRef.head_commit as { id?: unknown } | undefined;
-  if (headCommit && typeof headCommit.id === "string" && headCommit.id.length > 0) return headCommit.id;
+  if (headCommit && typeof headCommit.id === "string" && headCommit.id.length > 0)
+    return headCommit.id;
   return undefined;
 }
 
@@ -317,14 +349,27 @@ export async function prewarmGovernanceForChange(
   // eventual host-less lifecycle gate agree on which conditions fired — otherwise a control the
   // real gate needs but prewarm never ran would starve the accept gate (which only READS).
   const primaryTarget = input.targetObjectIds[0];
-  const subjectObject = primaryTarget ? await getObjectByIdOrUrnAnyType(tx, input.orgId, primaryTarget).catch(() => null) : null;
+  const subjectObject = primaryTarget
+    ? await getObjectByIdOrUrnAnyType(tx, input.orgId, primaryTarget).catch(() => null)
+    : null;
   const graphFacts = primaryTarget
     ? await graphFactsFor(tx, input.orgId, primaryTarget)
     : { ownerIds: [], dependentIds: [], domainIds: [] };
   const celContext = buildCelContext({
-    change: { id: input.changeObjectId, emergency: false, targets: input.targetObjectIds, sourceKind: null, correlationKey: null },
+    change: {
+      id: input.changeObjectId,
+      emergency: false,
+      targets: input.targetObjectIds,
+      sourceKind: null,
+      correlationKey: null
+    },
     subject: subjectObject
-      ? { id: subjectObject.id, typeId: subjectObject.typeId, name: subjectObject.name, labels: subjectObject.labels }
+      ? {
+          id: subjectObject.id,
+          typeId: subjectObject.typeId,
+          name: subjectObject.name,
+          labels: subjectObject.labels
+        }
       : null,
     graph: graphFacts,
     controlOutcomes: {},
@@ -332,7 +377,9 @@ export async function prewarmGovernanceForChange(
     time: new Date().toISOString(),
     actor: { id: input.actorObjectId }
   });
-  const fired = (await resolveFiredPolicies(sandbox, effectivePolicies, celContext)).filter((fp) => fp.fired);
+  const fired = (await resolveFiredPolicies(sandbox, effectivePolicies, celContext)).filter(
+    (fp) => fp.fired
+  );
 
   const allControlIds = [...new Set(fired.flatMap((fp) => fp.requireControls))];
   if (allControlIds.length > 0) {
@@ -401,12 +448,23 @@ export async function evaluateGovernanceGate(
     return {
       verdict: "block",
       inputContext: {
-        freeze: { id: freeze.id, scopeObjectId: freeze.scopeObjectId, endsAt: freeze.endsAt.toISOString() },
+        freeze: {
+          id: freeze.id,
+          scopeObjectId: freeze.scopeObjectId,
+          endsAt: freeze.endsAt.toISOString()
+        },
         ...(ctx.overrideFreeze ? { overrideRejected: reason } : {})
       },
       reasonTree: {
-        summary: ctx.overrideFreeze ? `freeze override rejected: ${reason}` : `blocked by ${reason}`,
-        freeze: { id: freeze.id, name: freeze.name, scopeObjectId: freeze.scopeObjectId, reason: freeze.reason }
+        summary: ctx.overrideFreeze
+          ? `freeze override rejected: ${reason}`
+          : `blocked by ${reason}`,
+        freeze: {
+          id: freeze.id,
+          name: freeze.name,
+          scopeObjectId: freeze.scopeObjectId,
+          reason: freeze.reason
+        }
       }
     };
   }
@@ -430,20 +488,34 @@ export async function evaluateGovernanceGate(
       effectivePolicies = emergencyPolicies;
       emergencyNote = `emergency change: evaluating only the ${emergencyPolicies.length} configured emergency polic${emergencyPolicies.length === 1 ? "y" : "ies"} (${emergencyPolicies.map((p) => p.name).join(", ")}), normal required policies bypassed`;
     } else {
-      emergencyNote = "emergency change: no emergencyPolicy configured for this org — proceeding ungated (fully audited)";
+      emergencyNote =
+        "emergency change: no emergencyPolicy configured for this org — proceeding ungated (fully audited)";
       effectivePolicies = [];
     }
   }
 
   const primaryTarget = ctx.targetObjectIds[0];
-  const subjectObject = primaryTarget ? await getObjectByIdOrUrnAnyType(tx, ctx.orgId, primaryTarget).catch(() => null) : null;
+  const subjectObject = primaryTarget
+    ? await getObjectByIdOrUrnAnyType(tx, ctx.orgId, primaryTarget).catch(() => null)
+    : null;
   const graphFacts = primaryTarget
     ? await graphFactsFor(tx, ctx.orgId, primaryTarget)
     : { ownerIds: [], dependentIds: [], domainIds: [] };
   const celContext = buildCelContext({
-    change: { id: ctx.changeObjectId, emergency: ctx.emergency, targets: ctx.targetObjectIds, sourceKind: null, correlationKey: null },
+    change: {
+      id: ctx.changeObjectId,
+      emergency: ctx.emergency,
+      targets: ctx.targetObjectIds,
+      sourceKind: null,
+      correlationKey: null
+    },
     subject: subjectObject
-      ? { id: subjectObject.id, typeId: subjectObject.typeId, name: subjectObject.name, labels: subjectObject.labels }
+      ? {
+          id: subjectObject.id,
+          typeId: subjectObject.typeId,
+          name: subjectObject.name,
+          labels: subjectObject.labels
+        }
       : null,
     graph: graphFacts,
     controlOutcomes: {},
@@ -458,7 +530,9 @@ export async function evaluateGovernanceGate(
   const fired = await resolveFiredPolicies(sandbox, effectivePolicies, celContext);
 
   // Only run/materialize what the FIRING policies require (never the "if everything fired" summary).
-  const allControlIds = [...new Set(fired.filter((fp) => fp.fired).flatMap((fp) => fp.requireControls))];
+  const allControlIds = [
+    ...new Set(fired.filter((fp) => fp.fired).flatMap((fp) => fp.requireControls))
+  ];
   const controlOutcomes = host
     ? await ensureControlRuns(tx, host, {
         orgId: ctx.orgId,

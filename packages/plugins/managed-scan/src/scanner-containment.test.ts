@@ -108,7 +108,9 @@ const NODE_SPAWN_INVOCATION = new RegExp(
 );
 
 export function invocationHits(text: string): string[] {
-  return text.split("\n").filter((line) => SHELL_INVOCATION.test(line) || NODE_SPAWN_INVOCATION.test(line));
+  return text
+    .split("\n")
+    .filter((line) => SHELL_INVOCATION.test(line) || NODE_SPAWN_INVOCATION.test(line));
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -128,7 +130,9 @@ describe("scanner containment: the scanners exist ONLY in the scp-runner-scan im
     );
     // The root `Dockerfile` (the scpd runtime image) MUST be in this set — if it were not, the
     // assertion below would pass without ever having looked at the image that matters most.
-    expect(dockerfiles, "the scpd runtime image must be covered by this check").toContain("Dockerfile");
+    expect(dockerfiles, "the scpd runtime image must be covered by this check").toContain(
+      "Dockerfile"
+    );
 
     const offenders = dockerfiles
       .map((p) => ({ path: p, hits: dockerfileScannerHits(read(p)) }))
@@ -157,7 +161,10 @@ describe("scanner containment: the scanners exist ONLY in the scp-runner-scan im
         // This file defines the detector patterns; matching itself proves nothing.
         !p.endsWith("scanner-containment.test.ts")
     );
-    expect(candidates.length, "the invocation sweep must actually have files to read").toBeGreaterThan(50);
+    expect(
+      candidates.length,
+      "the invocation sweep must actually have files to read"
+    ).toBeGreaterThan(50);
 
     const offenders = candidates
       .map((p) => ({ path: p, hits: invocationHits(read(p)) }))
@@ -190,8 +197,12 @@ describe("scanner containment: the scanners exist ONLY in the scp-runner-scan im
  */
 describe("scanner-containment detectors actually detect (negative controls)", () => {
   it("dockerfileScannerHits flags real provisioning lines", () => {
-    expect(dockerfileScannerHits("RUN dnf install -y openscap-scanner scap-security-guide")).toHaveLength(1);
-    expect(dockerfileScannerHits("COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy")).toHaveLength(1);
+    expect(
+      dockerfileScannerHits("RUN dnf install -y openscap-scanner scap-security-guide")
+    ).toHaveLength(1);
+    expect(
+      dockerfileScannerHits("COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy")
+    ).toHaveLength(1);
     expect(dockerfileScannerHits("RUN apt-get install -y trivy")).toHaveLength(1);
     // …and does not flag an unrelated image.
     expect(dockerfileScannerHits("RUN apt-get install -y ca-certificates curl")).toHaveLength(0);
@@ -215,6 +226,8 @@ describe("scanner-containment detectors actually detect (negative controls)", ()
     expect(invocationHits("// the trivy DB is baked at build time")).toHaveLength(0);
     expect(invocationHits("TRIVY_PINNED_VERSION=0.58.1")).toHaveLength(0);
     expect(invocationHits('if (method === "trivy-vm") { … }')).toHaveLength(0);
-    expect(invocationHits('await execFileAsync(docker, ["create", image, "trivy"])')).toHaveLength(0);
+    expect(invocationHits('await execFileAsync(docker, ["create", image, "trivy"])')).toHaveLength(
+      0
+    );
   });
 });

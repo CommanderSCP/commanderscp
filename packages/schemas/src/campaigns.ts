@@ -82,7 +82,9 @@ export type RollbackCampaignRequest = z.infer<typeof RollbackCampaignRequestSche
  *  `skipped` names every member Change that was NOT eligible (never accepted, already rolled
  *  back, etc.) and why — never silently dropped. */
 export const RollbackCampaignResponseSchema = z.object({
-  rolledBack: z.array(z.object({ originalChangeObjectId: z.string().uuid(), rollbackChange: ChangeSchema })),
+  rolledBack: z.array(
+    z.object({ originalChangeObjectId: z.string().uuid(), rollbackChange: ChangeSchema })
+  ),
   skipped: z.array(z.object({ originalChangeObjectId: z.string().uuid(), reason: z.string() }))
 });
 export type RollbackCampaignResponse = z.infer<typeof RollbackCampaignResponseSchema>;

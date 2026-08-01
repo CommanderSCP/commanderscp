@@ -28,12 +28,18 @@ export function registerServiceRoutes(app: FastifyInstance, deps: AppDeps): void
     url: "/api/v1/services/:idOrUrn/board",
     schema: {
       params: RegistryIdOrUrnParamSchema,
-      response: { 200: ServiceBoardResponseSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
+      response: {
+        200: ServiceBoardResponseSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
     },
     config: {
       openapi: {
         operationId: "getServiceBoard",
-        summary: "The service release board — its components, each's latest change per-wave status, and a releasing/blocked/stable summary",
+        summary:
+          "The service release board — its components, each's latest change per-wave status, and a releasing/blocked/stable summary",
         tags: ["services"]
       }
     },

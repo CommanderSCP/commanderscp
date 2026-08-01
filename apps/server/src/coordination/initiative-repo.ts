@@ -178,12 +178,20 @@ export async function proposeInitiative(
  *  both-endpoint authz as `proposeInitiative`'s loop. */
 export async function addCampaignToInitiative(
   tx: TenantTx,
-  input: { orgId: string; actorObjectId: string; requestId: string; initiativeObjectId: string; campaignIdOrUrn: string }
+  input: {
+    orgId: string;
+    actorObjectId: string;
+    requestId: string;
+    initiativeObjectId: string;
+    campaignIdOrUrn: string;
+  }
 ): Promise<void> {
   const initiative = await getObjectByIdOrUrnAnyType(tx, input.orgId, input.initiativeObjectId);
-  if (initiative.typeId !== "initiative") throw badRequest(`'${input.initiativeObjectId}' is not an initiative`);
+  if (initiative.typeId !== "initiative")
+    throw badRequest(`'${input.initiativeObjectId}' is not an initiative`);
   const campaign = await getObjectByIdOrUrnAnyType(tx, input.orgId, input.campaignIdOrUrn);
-  if (campaign.typeId !== "campaign") throw badRequest(`'${input.campaignIdOrUrn}' is not a campaign`);
+  if (campaign.typeId !== "campaign")
+    throw badRequest(`'${input.campaignIdOrUrn}' is not a campaign`);
 
   await authorize(tx, {
     orgId: input.orgId,
@@ -211,7 +219,12 @@ export async function addCampaignToInitiative(
 async function fetchInitiativeObject(tx: TenantTx, orgId: string, id: string): Promise<ObjectRow> {
   const row = await tx.query.objects.findFirst({
     where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
-      andOp(eqOp(t.orgId, orgId), eqOp(t.id, id), eqOp(t.typeId, "initiative"), isNullOp(t.deletedAt))
+      andOp(
+        eqOp(t.orgId, orgId),
+        eqOp(t.id, id),
+        eqOp(t.typeId, "initiative"),
+        isNullOp(t.deletedAt)
+      )
   });
   if (!row) throw notFound(`initiative '${id}' not found`);
   return row;
@@ -232,7 +245,11 @@ export async function listInitiatives(
   query: ListInitiativesQuery
 ): Promise<{ items: Initiative[]; nextCursor: string | null }> {
   const cursor = query.cursor ? decodeCursor(query.cursor) : null;
-  const conditions = [eq(objects.orgId, orgId), eq(objects.typeId, "initiative"), sql`${objects.deletedAt} IS NULL`];
+  const conditions = [
+    eq(objects.orgId, orgId),
+    eq(objects.typeId, "initiative"),
+    sql`${objects.deletedAt} IS NULL`
+  ];
   if (cursor) {
     conditions.push(keysetAfter(objects.createdAt, objects.id, cursor));
   }

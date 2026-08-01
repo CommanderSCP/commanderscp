@@ -106,7 +106,11 @@ async function readTrivyDbMetadataFrom(dir: string): Promise<MetadataRead> {
   }
   return {
     kind: "ok",
-    metadata: { Version: d.Version, UpdatedAt: d.UpdatedAt, NextUpdate: typeof d.NextUpdate === "string" ? d.NextUpdate : "" }
+    metadata: {
+      Version: d.Version,
+      UpdatedAt: d.UpdatedAt,
+      NextUpdate: typeof d.NextUpdate === "string" ? d.NextUpdate : ""
+    }
   };
 }
 
@@ -171,11 +175,13 @@ export function classifyScanDbStaleness(input: ScanDbClassifyInput): ScanDbClass
       updatedAt: null,
       nextUpdate: null,
       scannable: false,
-      detail: "scan DB cache is configured but holds no trivy.db — fail-closed (no scan → no evidence → E6 refuses)"
+      detail:
+        "scan DB cache is configured but holds no trivy.db — fail-closed (no scan → no evidence → E6 refuses)"
     };
   }
   if (input.metadata.kind !== "ok") {
-    const reason = input.metadata.kind === "missing" ? "metadata.json absent" : input.metadata.reason;
+    const reason =
+      input.metadata.kind === "missing" ? "metadata.json absent" : input.metadata.reason;
     return {
       staleness: "corrupt",
       thresholdFired: "none",
@@ -296,9 +302,11 @@ export async function readScanDbStalenessPolicy(db: Db): Promise<ScanDbStaleness
 
 /** The effective bounds, tolerant of a missing db handle (falls back to built-in defaults) — used by
  *  the runner, which classifies without a tenant context of its own. */
-export async function resolveActiveStalenessBounds(
-  db: Db | undefined
-): Promise<{ softMaxAgeHours: number; hardMaxAgeHours: number; policy: ScanDbStalenessPolicy | null }> {
+export async function resolveActiveStalenessBounds(db: Db | undefined): Promise<{
+  softMaxAgeHours: number;
+  hardMaxAgeHours: number;
+  policy: ScanDbStalenessPolicy | null;
+}> {
   if (!db) {
     return {
       softMaxAgeHours: DEFAULT_SCAN_DB_SOFT_MAX_AGE_HOURS,
@@ -320,7 +328,10 @@ export async function resolveActiveStalenessBounds(
 
 /** The full status of the DB the runner would consume — the API projection + the block reason a
  *  Decision would cite. `cacheDir` undefined ⇒ the baked-image fallback (no staleness gate). */
-export async function readScanDbStatus(db: Db | undefined, cacheDir: string | undefined): Promise<ScanDbStatus> {
+export async function readScanDbStatus(
+  db: Db | undefined,
+  cacheDir: string | undefined
+): Promise<ScanDbStatus> {
   const { softMaxAgeHours, hardMaxAgeHours } = await resolveActiveStalenessBounds(db);
   if (!cacheDir) {
     // No cache: the runner uses the image-baked DB. We cannot introspect its age from here (it lives
@@ -339,11 +350,14 @@ export async function readScanDbStatus(db: Db | undefined, cacheDir: string | un
       thresholdFired: "none",
       activeSoftMaxAgeHours: softMaxAgeHours,
       activeHardMaxAgeHours: hardMaxAgeHours,
-      detail: "no DB cache configured — the runner uses the image-baked DB (as stale as the image; no staleness gate)"
+      detail:
+        "no DB cache configured — the runner uses the image-baked DB (as stale as the image; no staleness gate)"
     };
   }
   const present = dbFilePresent(cacheDir);
-  const metadata = present ? await readTrivyDbMetadataFrom(dbDir(cacheDir)) : ({ kind: "missing" } as MetadataRead);
+  const metadata = present
+    ? await readTrivyDbMetadataFrom(dbDir(cacheDir))
+    : ({ kind: "missing" } as MetadataRead);
   const c = classifyScanDbStaleness({
     now: new Date(),
     dbFilePresent: present,
@@ -352,7 +366,7 @@ export async function readScanDbStatus(db: Db | undefined, cacheDir: string | un
     hardMaxAgeHours,
     expectedSchemaVersion: EXPECTED_TRIVY_DB_SCHEMA_VERSION
   });
-  const source: ScanDbSource = present ? (await readSource(cacheDir)) ?? "refreshed" : "absent";
+  const source: ScanDbSource = present ? ((await readSource(cacheDir)) ?? "refreshed") : "absent";
   return {
     cacheConfigured: true,
     present,
@@ -430,13 +444,16 @@ export async function atomicInstallDb(
 async function extractDbFilesInto(archivePath: string, destDbDir: string): Promise<void> {
   const scratch = await mkdtemp(join(tmpdir(), "scp-scan-db-x-"));
   try {
-    await execFileAsync("tar", ["-xf", archivePath, "-C", scratch], { maxBuffer: 256 * 1024 * 1024 });
+    await execFileAsync("tar", ["-xf", archivePath, "-C", scratch], {
+      maxBuffer: 256 * 1024 * 1024
+    });
     const found = new Map<string, string>();
     async function walk(dir: string): Promise<void> {
       for (const entry of await readdir(dir, { withFileTypes: true })) {
         const p = join(dir, entry.name);
         if (entry.isDirectory()) await walk(p);
-        else if (entry.name === "trivy.db" || entry.name === "metadata.json") found.set(entry.name, p);
+        else if (entry.name === "trivy.db" || entry.name === "metadata.json")
+          found.set(entry.name, p);
       }
     }
     await walk(scratch);
@@ -550,24 +567,34 @@ export interface LoadScanDbBlobInput {
  * blob / wrong key / digest mismatch is REFUSED with NO cache write.
  */
 export async function loadScanDbBlob(input: LoadScanDbBlobInput): Promise<TrivyDbMetadata> {
-  if (!existsSync(input.blobPath)) throw new Error(`scan-db load: blob '${input.blobPath}' not found`);
-  if (!existsSync(input.signaturePath)) throw new Error(`scan-db load: signature '${input.signaturePath}' not found`);
-  if (!existsSync(input.publicKeyPath)) throw new Error(`scan-db load: public key '${input.publicKeyPath}' not found`);
+  if (!existsSync(input.blobPath))
+    throw new Error(`scan-db load: blob '${input.blobPath}' not found`);
+  if (!existsSync(input.signaturePath))
+    throw new Error(`scan-db load: signature '${input.signaturePath}' not found`);
+  if (!existsSync(input.publicKeyPath))
+    throw new Error(`scan-db load: public key '${input.publicKeyPath}' not found`);
 
   const bytes = await readFile(input.blobPath);
   // DIGEST BINDING (defence in depth over the signature): the bytes must hash to the operator's
   // stated digest, when given. The cosign detached-signature verify below is the trust anchor.
   if (input.expectedDigest) {
     const want = normalizeSha256(input.expectedDigest);
-    if (!want) throw new Error(`scan-db load: expectedDigest '${input.expectedDigest}' is not a sha256 digest`);
+    if (!want)
+      throw new Error(
+        `scan-db load: expectedDigest '${input.expectedDigest}' is not a sha256 digest`
+      );
     const got = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
     if (got !== want) {
-      throw new Error(`scan-db load: blob hashes to ${got} but expected ${want} — refusing (no cache write)`);
+      throw new Error(
+        `scan-db load: blob hashes to ${got} but expected ${want} — refusing (no cache write)`
+      );
     }
   }
   const verdict = verifyBlobDetached(input.blobPath, input.signaturePath, input.publicKeyPath);
   if (!verdict.ok) {
-    throw new Error(`scan-db load: cosign detached-signature verification FAILED — refusing (no cache write): ${verdict.detail}`);
+    throw new Error(
+      `scan-db load: cosign detached-signature verification FAILED — refusing (no cache write): ${verdict.detail}`
+    );
   }
   // Only now, with the bytes proven authentic, extract + atomically install (with schema assertion).
   return atomicInstallDb(input.cacheDir, "operator-loaded", async (stagingDb) => {

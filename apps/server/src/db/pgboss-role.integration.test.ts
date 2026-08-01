@@ -184,33 +184,38 @@ describe("scp_pgboss: schema-scoped role probe", () => {
     }
   ];
 
-  describe.each(TENANT_TABLES)("scp_pgboss CANNOT touch public.$table — permission-denied (42501)", ({ table, insert }) => {
-    it("SELECT is permission-denied, not an RLS-emptied result", async () => {
-      const raw = await RawScpPgBossClient.connect();
-      await expect(raw.query(`SELECT * FROM public.${table}`)).rejects.toMatchObject({ code: "42501" });
-      await raw.close();
-    });
+  describe.each(TENANT_TABLES)(
+    "scp_pgboss CANNOT touch public.$table — permission-denied (42501)",
+    ({ table, insert }) => {
+      it("SELECT is permission-denied, not an RLS-emptied result", async () => {
+        const raw = await RawScpPgBossClient.connect();
+        await expect(raw.query(`SELECT * FROM public.${table}`)).rejects.toMatchObject({
+          code: "42501"
+        });
+        await raw.close();
+      });
 
-    it("INSERT is permission-denied", async () => {
-      const raw = await RawScpPgBossClient.connect();
-      await expect(raw.query(insert)).rejects.toMatchObject({ code: "42501" });
-      await raw.close();
-    });
+      it("INSERT is permission-denied", async () => {
+        const raw = await RawScpPgBossClient.connect();
+        await expect(raw.query(insert)).rejects.toMatchObject({ code: "42501" });
+        await raw.close();
+      });
 
-    it("UPDATE is permission-denied", async () => {
-      const raw = await RawScpPgBossClient.connect();
-      await expect(
-        raw.query(`UPDATE public.${table} SET org_id = org_id WHERE org_id = gen_random_uuid()`)
-      ).rejects.toMatchObject({ code: "42501" });
-      await raw.close();
-    });
+      it("UPDATE is permission-denied", async () => {
+        const raw = await RawScpPgBossClient.connect();
+        await expect(
+          raw.query(`UPDATE public.${table} SET org_id = org_id WHERE org_id = gen_random_uuid()`)
+        ).rejects.toMatchObject({ code: "42501" });
+        await raw.close();
+      });
 
-    it("DELETE is permission-denied", async () => {
-      const raw = await RawScpPgBossClient.connect();
-      await expect(
-        raw.query(`DELETE FROM public.${table} WHERE org_id = gen_random_uuid()`)
-      ).rejects.toMatchObject({ code: "42501" });
-      await raw.close();
-    });
-  });
+      it("DELETE is permission-denied", async () => {
+        const raw = await RawScpPgBossClient.connect();
+        await expect(
+          raw.query(`DELETE FROM public.${table} WHERE org_id = gen_random_uuid()`)
+        ).rejects.toMatchObject({ code: "42501" });
+        await raw.close();
+      });
+    }
+  );
 });

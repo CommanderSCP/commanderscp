@@ -66,7 +66,11 @@ describe("signBlobFlags — keyful/offline invariants (never Fulcio/Rekor)", () 
   it("ALWAYS disables the Rekor upload and requests the legacy detached format", async () => {
     const signBlobFlags = await freshSignBlobFlags();
     for (const pinned of [true, false]) {
-      const flags = signBlobFlags({ bin: pinned ? "/opt/scp/bin/cosign" : olderShim, pinned, source: pinned ? "vendored" : "path" });
+      const flags = signBlobFlags({
+        bin: pinned ? "/opt/scp/bin/cosign" : olderShim,
+        pinned,
+        source: pinned ? "vendored" : "path"
+      });
       expect(flags).toContain("--tlog-upload=false");
       expect(flags).toContain("--new-bundle-format=false");
       // No signing flow here may ever reference a public transparency/CA service.
@@ -80,7 +84,11 @@ describe("signBlobFlags — PINNED path is a static known-good constant (no --he
     const signBlobFlags = await freshSignBlobFlags();
     // A pinned resolution whose bin does not even exist: if this probed `--help` it would fail,
     // proving the pinned branch never shells out.
-    const flags = signBlobFlags({ bin: "/nonexistent/pinned/cosign", pinned: true, source: "override" });
+    const flags = signBlobFlags({
+      bin: "/nonexistent/pinned/cosign",
+      pinned: true,
+      source: "override"
+    });
     expect(flags).toEqual([
       "--tlog-upload=false",
       "--new-bundle-format=false",
@@ -117,7 +125,11 @@ describe("resolveCosign — the E1 pin-vs-probe branch", () => {
   it("SCP_COSIGN_BIN override => pinned (override wins over everything)", async () => {
     process.env[COSIGN_BIN_ENV] = "/some/pinned/cosign";
     const resolveCosign = await freshResolveCosign();
-    expect(resolveCosign()).toEqual({ bin: "/some/pinned/cosign", pinned: true, source: "override" });
+    expect(resolveCosign()).toEqual({
+      bin: "/some/pinned/cosign",
+      pinned: true,
+      source: "override"
+    });
   });
 
   it("a cosign found on PATH (our fake shim) resolves as UNPINNED, source=path", async () => {

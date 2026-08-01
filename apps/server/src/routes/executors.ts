@@ -85,7 +85,10 @@ import {
   listSecretKeys,
   resolveSecretRefs
 } from "../secrets/secrets-repo.js";
-import { createSourceMapping, backfillSourceMappings } from "../coordination/source-mappings-repo.js";
+import {
+  createSourceMapping,
+  backfillSourceMappings
+} from "../coordination/source-mappings-repo.js";
 
 /** The `DiscoveryPlugin` modules (`github-discovery`, `gitea-discovery`, `gitlab-discovery`,
  *  `argocd-discovery`) — same allowlist discipline as `executor-bindings-repo.ts`'s
@@ -461,7 +464,12 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     url: "/api/v1/executors/:idOrUrn/bindings",
     schema: {
       params: RegistryIdOrUrnParamSchema,
-      response: { 200: ExecutorBindingListResponseSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
+      response: {
+        200: ExecutorBindingListResponseSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
     },
     config: {
       openapi: {
@@ -474,7 +482,12 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
       const auth = await requireAuth(deps, request);
       const items = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const target = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.idOrUrn);
-        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "object:read", scopeObjectId: target.id });
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:read",
+          scopeObjectId: target.id
+        });
         return listExecutorBindingsForTarget(tx, auth.orgId, target.id);
       });
       reply.status(200).send({ items });
@@ -489,7 +502,12 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     schema: {
       params: RegistryIdOrUrnParamSchema,
       querystring: z.object({ type: ExecutorTypeSchema.optional() }),
-      response: { 200: ExecutorBindingSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema }
+      response: {
+        200: ExecutorBindingSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
     },
     config: {
       openapi: {
@@ -502,11 +520,18 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
       const auth = await requireAuth(deps, request);
       const binding = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const target = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.idOrUrn);
-        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "object:write", scopeObjectId: target.id });
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:write",
+          scopeObjectId: target.id
+        });
         const type = request.query.type ?? DEFAULT_BINDING_TYPE;
         const row = await deleteExecutorBinding(tx, auth.orgId, target.id, type);
         if (!row) {
-          throw notFound(`no '${type}' executor binding configured for '${request.params.idOrUrn}'`);
+          throw notFound(
+            `no '${type}' executor binding configured for '${request.params.idOrUrn}'`
+          );
         }
         return row;
       });
@@ -524,7 +549,13 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
       params: RegistryIdOrUrnParamSchema,
       querystring: z.object({ type: ExecutorTypeSchema.optional() }),
       body: RepurposeExecutorBindingRequestSchema,
-      response: { 200: ExecutorBindingSchema, 401: ProblemSchema, 403: ProblemSchema, 404: ProblemSchema, 409: ProblemSchema }
+      response: {
+        200: ExecutorBindingSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema,
+        409: ProblemSchema
+      }
     },
     config: {
       openapi: {
@@ -537,11 +568,24 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
       const auth = await requireAuth(deps, request);
       const binding = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const target = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.idOrUrn);
-        await authorize(tx, { orgId: auth.orgId, subjectObjectId: auth.subjectObjectId, permission: "object:write", scopeObjectId: target.id });
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:write",
+          scopeObjectId: target.id
+        });
         const fromType = request.query.type ?? DEFAULT_BINDING_TYPE;
-        const row = await setExecutorBindingType(tx, auth.orgId, target.id, fromType, request.body.type);
+        const row = await setExecutorBindingType(
+          tx,
+          auth.orgId,
+          target.id,
+          fromType,
+          request.body.type
+        );
         if (!row) {
-          throw notFound(`no '${fromType}' executor binding configured for '${request.params.idOrUrn}'`);
+          throw notFound(
+            `no '${fromType}' executor binding configured for '${request.params.idOrUrn}'`
+          );
         }
         return row;
       });
@@ -619,7 +663,9 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
       const auth = await requireAuth(deps, request);
       // M8 hardening — same write-time allowlist as the executor-binding route above.
       if (!isKnownNotificationModule(request.body.pluginModule)) {
-        throw badRequest(`unknown or non-notification plugin module '${request.body.pluginModule}'`);
+        throw badRequest(
+          `unknown or non-notification plugin module '${request.body.pluginModule}'`
+        );
       }
       validatePluginConfig(request.body.pluginModule, request.body.config);
       const binding = await withTenantTx(deps.db, auth.orgId, async (tx) => {
@@ -967,7 +1013,12 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           createdSourceMappingIds.push(created.id);
         }
 
-        return { createdObjectIds, createdRelationshipIds, createdBindingIds, createdSourceMappingIds };
+        return {
+          createdObjectIds,
+          createdRelationshipIds,
+          createdBindingIds,
+          createdSourceMappingIds
+        };
       });
       reply.status(201).send(result);
     }
@@ -982,12 +1033,17 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     url: "/api/v1/discovery/backfill-source-mappings",
     schema: {
       body: BackfillSourceMappingsRequestSchema,
-      response: { 200: BackfillSourceMappingsResponseSchema, 401: ProblemSchema, 403: ProblemSchema }
+      response: {
+        200: BackfillSourceMappingsResponseSchema,
+        401: ProblemSchema,
+        403: ProblemSchema
+      }
     },
     config: {
       openapi: {
         operationId: "backfillSourceMappings",
-        summary: "Backfill source_mappings onto already-imported components (matches a discovery proposal's mappings to existing components by name)",
+        summary:
+          "Backfill source_mappings onto already-imported components (matches a discovery proposal's mappings to existing components by name)",
         tags: ["discovery"]
       }
     },

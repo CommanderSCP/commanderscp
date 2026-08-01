@@ -59,16 +59,16 @@ describe("skopeo pin: every copy of the pin agrees with tools/skopeo/pin.env", (
     expect(dockerfile).toContain(
       `COPY --from=skopeo ${pin.SKOPEO_UPSTREAM_PATH} ${pin.SKOPEO_LIBEXEC_DIR}/skopeo`
     );
-    expect(dockerfile).toContain(
-      `COPY tools/skopeo/skopeo-wrapper.sh ${pin.SKOPEO_VENDORED_PATH}`
-    );
+    expect(dockerfile).toContain(`COPY tools/skopeo/skopeo-wrapper.sh ${pin.SKOPEO_VENDORED_PATH}`);
     expect(dockerfile).toContain("COPY tools/skopeo/policy.json /etc/containers/policy.json");
   });
 
   it("the wrapper runs the vendored binary against the vendored loader, from the libexec dir", () => {
     const wrapper = readRepoFile("tools/skopeo/skopeo-wrapper.sh");
     expect(wrapper).toContain(`d=${pin.SKOPEO_LIBEXEC_DIR}`);
-    expect(wrapper).toContain('exec "$d/lib/ld-linux-x86-64.so.2" --library-path "$d/lib" "$d/skopeo" "$@"');
+    expect(wrapper).toContain(
+      'exec "$d/lib/ld-linux-x86-64.so.2" --library-path "$d/lib" "$d/skopeo" "$@"'
+    );
   });
 
   it("the release path is untouched: install.sh still uses the operator's PATH skopeo", () => {
@@ -146,10 +146,13 @@ const pinnedPresent = (() => {
   return resolved.pinned && skopeoReportedVersion(resolved.bin) !== null;
 })();
 
-describe.skipIf(!pinnedPresent)("skopeo pin: the resolved pinned binary IS the pinned release", () => {
-  it("reports exactly the pinned version", () => {
-    const resolved = resolveSkopeo();
-    expect(skopeoReportedVersion(resolved.bin)).toBe(PINNED_SKOPEO_VERSION);
-    expect(() => assertPinnedSkopeoVersion(resolved)).not.toThrow();
-  });
-});
+describe.skipIf(!pinnedPresent)(
+  "skopeo pin: the resolved pinned binary IS the pinned release",
+  () => {
+    it("reports exactly the pinned version", () => {
+      const resolved = resolveSkopeo();
+      expect(skopeoReportedVersion(resolved.bin)).toBe(PINNED_SKOPEO_VERSION);
+      expect(() => assertPinnedSkopeoVersion(resolved)).not.toThrow();
+    });
+  }
+);

@@ -33,7 +33,10 @@ async function verifyDirectory(bundleRoot: string, pubKeyPath: string): Promise<
   try {
     manifest = parseManifestJson(await readFile(manifestPath, "utf8"));
   } catch (err) {
-    findings.push({ scope: "manifest.json", detail: `unreadable/invalid: ${(err as Error).message}` });
+    findings.push({
+      scope: "manifest.json",
+      detail: `unreadable/invalid: ${(err as Error).message}`
+    });
     manifest = null;
   }
 
@@ -44,7 +47,10 @@ async function verifyDirectory(bundleRoot: string, pubKeyPath: string): Promise<
 
       const integrityIssues = await verifyOciLayoutIntegrity(ociDir);
       for (const issue of integrityIssues) {
-        findings.push({ scope, detail: `OCI layout integrity: ${issue.relativePath} ${issue.reason} — ${issue.detail}` });
+        findings.push({
+          scope,
+          detail: `OCI layout integrity: ${issue.relativePath} ${issue.reason} — ${issue.detail}`
+        });
       }
 
       let actualDigest: string | null = null;
@@ -65,11 +71,17 @@ async function verifyDirectory(bundleRoot: string, pubKeyPath: string): Promise<
       if (digestFileContent === null) {
         findings.push({ scope, detail: `${digestFile} missing` });
       } else if (digestFileContent.trim() !== image.manifestDigest) {
-        findings.push({ scope, detail: `${digestFile} content (${digestFileContent.trim()}) does not match manifest.json's recorded digest (${image.manifestDigest})` });
+        findings.push({
+          scope,
+          detail: `${digestFile} content (${digestFileContent.trim()}) does not match manifest.json's recorded digest (${image.manifestDigest})`
+        });
       } else {
         const sigResult = cosignMod.verifyBlobDetached(digestFile, `${digestFile}.sig`, pubKeyPath);
         if (!sigResult.ok) {
-          findings.push({ scope, detail: `cosign signature INVALID for ${image.name}.digest: ${sigResult.detail}` });
+          findings.push({
+            scope,
+            detail: `cosign signature INVALID for ${image.name}.digest: ${sigResult.detail}`
+          });
         }
       }
     }
@@ -83,12 +95,18 @@ async function verifyDirectory(bundleRoot: string, pubKeyPath: string): Promise<
   } else {
     const sigResult = cosignMod.verifyBlobDetached(checksumsPath, checksumsSigPath, pubKeyPath);
     if (!sigResult.ok) {
-      findings.push({ scope: "CHECKSUMS.txt", detail: `cosign signature INVALID: ${sigResult.detail}` });
+      findings.push({
+        scope: "CHECKSUMS.txt",
+        detail: `cosign signature INVALID: ${sigResult.detail}`
+      });
     }
     const entries = parseChecksums(checksumsText);
     const mismatches = await verifyChecksums(bundleRoot, entries);
     for (const m of mismatches) {
-      findings.push({ scope: `CHECKSUMS.txt:${m.relativePath}`, detail: `${m.reason} (expected ${m.expected ?? "n/a"}, actual ${m.actual ?? "n/a"})` });
+      findings.push({
+        scope: `CHECKSUMS.txt:${m.relativePath}`,
+        detail: `${m.reason} (expected ${m.expected ?? "n/a"}, actual ${m.actual ?? "n/a"})`
+      });
     }
   }
 
@@ -100,9 +118,15 @@ async function main(): Promise<void> {
   program
     .name("verify-bundle")
     .description("Cosign-verify a CommanderSCP air-gap bundle (fails loudly on any tamper)")
-    .requiredOption("--pubkey <path>", "public key to verify against (obtain independently of the artifact under test)")
+    .requiredOption(
+      "--pubkey <path>",
+      "public key to verify against (obtain independently of the artifact under test)"
+    )
     .option("--dir <path>", "path to an already-extracted bundle directory")
-    .option("--tarball <path>", "path to a scp-bundle-<version>.tar.gz (verified as a whole, then extracted and checked)")
+    .option(
+      "--tarball <path>",
+      "path to a scp-bundle-<version>.tar.gz (verified as a whole, then extracted and checked)"
+    )
     .parse(process.argv);
 
   const opts = program.opts<{ pubkey: string; dir?: string; tarball?: string }>();
@@ -123,7 +147,10 @@ async function main(): Promise<void> {
     process.stderr.write(`verifying tarball signature: ${tarballPath}\n`);
     const outerResult = cosignMod.verifyBlobDetached(tarballPath, sigPath, opts.pubkey);
     if (!outerResult.ok) {
-      findings.push({ scope: "tarball", detail: `cosign signature INVALID: ${outerResult.detail}` });
+      findings.push({
+        scope: "tarball",
+        detail: `cosign signature INVALID: ${outerResult.detail}`
+      });
       // Fail fast here — if the tarball itself doesn't verify, extracting and checking its
       // contents individually would just be re-deriving the same "yes, it's tampered" answer the
       // hard way, and risks running `tar` against a maliciously-crafted archive unnecessarily.
@@ -136,7 +163,9 @@ async function main(): Promise<void> {
     const entries = await readdir(extractDir);
     const first = entries[0];
     if (entries.length !== 1 || !first) {
-      throw new Error(`expected exactly one top-level directory in ${tarballPath}, found: ${entries.join(", ") || "(empty)"}`);
+      throw new Error(
+        `expected exactly one top-level directory in ${tarballPath}, found: ${entries.join(", ") || "(empty)"}`
+      );
     }
     bundleRoot = path.join(extractDir, first);
   } else {
@@ -168,6 +197,8 @@ function printAndExit(findings: Finding[]): void {
 }
 
 main().catch((err) => {
-  process.stderr.write(`\nverify-bundle failed: ${err instanceof Error ? err.message : String(err)}\n`);
+  process.stderr.write(
+    `\nverify-bundle failed: ${err instanceof Error ? err.message : String(err)}\n`
+  );
   process.exitCode = 1;
 });

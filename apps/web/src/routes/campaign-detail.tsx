@@ -194,7 +194,10 @@ function RollbackCampaignDialog({
         </DialogHeader>
         <form className="flex flex-col gap-3" onSubmit={handleSubmit}>
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="rollback-campaign-reason" className="text-sm font-medium text-slate-700">
+            <label
+              htmlFor="rollback-campaign-reason"
+              className="text-sm font-medium text-slate-700"
+            >
               Reason
             </label>
             <Input

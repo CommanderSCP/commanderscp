@@ -124,7 +124,10 @@ describe("M13.3a scanner-assignment registry (Testcontainers)", () => {
     expect(cleared.methods).toEqual([]);
 
     // Restore the seed default so later assertions/suites see a clean instance-global table.
-    await operator.scannerAssignments.put({ executorType: "image", methods: ["trivy"] }, OPERATOR_TOKEN);
+    await operator.scannerAssignments.put(
+      { executorType: "image", methods: ["trivy"] },
+      OPERATOR_TOKEN
+    );
   });
 
   it("(resolveScannersForType) resolves seeded, empty, and unknown types against the real table", async () => {
@@ -155,7 +158,10 @@ describe("M13.3a scanner-assignment registry (Testcontainers)", () => {
     //    role (NOSUPERUSER, NOBYPASSRLS); `withTenantTx` sets `app.current_org_id` as a real request
     //    does. Even with full application cooperation the write cannot land.
     for (const [what, statement] of [
-      ["INSERT", sql`INSERT INTO scanner_assignments (executor_type, methods) VALUES ('image', '["openscap"]'::jsonb)`],
+      [
+        "INSERT",
+        sql`INSERT INTO scanner_assignments (executor_type, methods) VALUES ('image', '["openscap"]'::jsonb)`
+      ],
       ["UPDATE", sql`UPDATE scanner_assignments SET methods = '["openscap"]'::jsonb`],
       ["DELETE", sql`DELETE FROM scanner_assignments`]
     ] as const) {
@@ -177,14 +183,17 @@ describe("M13.3a scanner-assignment registry (Testcontainers)", () => {
     // 3. THE API. The tenant's own org admin — the most privileged tenant principal — cannot author
     //    an assignment, because no RBAC permission grants it (403, not a fallback to a tenant cred).
     const err = await expectApiError(() =>
-      admin.scannerAssignments.put({ executorType: "image", methods: ["openscap"] }, "not-the-operator-token")
+      admin.scannerAssignments.put(
+        { executorType: "image", methods: ["openscap"] },
+        "not-the-operator-token"
+      )
     );
     expect(err.status).toBe(403);
 
     // The seed is unchanged after all of that.
-    expect((await admin.scannerAssignments.list()).find((a) => a.executorType === "image")?.methods).toEqual([
-      "trivy"
-    ]);
+    expect(
+      (await admin.scannerAssignments.list()).find((a) => a.executorType === "image")?.methods
+    ).toEqual(["trivy"]);
   });
 
   it("(gate-invisible widening) a 'trivy' scan-evidence fixture parses UNCHANGED after the enum widening", () => {

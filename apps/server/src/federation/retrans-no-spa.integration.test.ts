@@ -37,7 +37,7 @@ describe("M16.3 P3: a role:retrans instance never serves the management SPA", ()
       expect(res.status).toBe(404);
       expect(res.headers.get("content-type")).toMatch(/json/);
       const body = await res.text();
-      expect(body).not.toContain("<div id=\"root\">");
+      expect(body).not.toContain('<div id="root">');
 
       // A client-side SPA route must not fall through to the built shell either — there is no
       // shell to fall through to.
@@ -59,7 +59,11 @@ describe("M16.3 P3: a role:retrans instance never serves the management SPA", ()
 
       // A real (if unauthenticated) API route still resolves as the API, not the withheld UI —
       // proves this is a UI-specific gate, not "retrans breaks HTTP".
-      const apiRoute = await fetch(`${rootOrigin}/api/v1/auth/login`, { method: "POST", body: "{}", headers: { "content-type": "application/json" } });
+      const apiRoute = await fetch(`${rootOrigin}/api/v1/auth/login`, {
+        method: "POST",
+        body: "{}",
+        headers: { "content-type": "application/json" }
+      });
       expect(apiRoute.status).not.toBe(404);
       expect(apiRoute.headers.get("content-type")).toMatch(/json/);
     } finally {
@@ -78,7 +82,7 @@ describe("M16.3 P3: a role:retrans instance never serves the management SPA", ()
         expect(res.status).toBe(200);
         expect(res.headers.get("content-type")).toMatch(/text\/html/);
         const body = await res.text();
-        expect(body).toContain("<div id=\"root\">");
+        expect(body).toContain('<div id="root">');
       } finally {
         await server.close();
       }

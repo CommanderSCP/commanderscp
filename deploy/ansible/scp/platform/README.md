@@ -22,7 +22,7 @@ a key obtained out-of-band, and copies it to the target host itself.
 1. copy the signed bundle tarball AND the external `scp_cosign_pubkey` to the host and extract the
    bundle;
 2. run `install.sh --registry <your-registry> --pubkey <the copied external key> --mode
-   <helm|compose> …` — which cosign-verifies against that external key, registry-retargets,
+<helm|compose> …` — which cosign-verifies against that external key, registry-retargets,
    applies (helm upgrade --install / docker compose up -d), and would abort on any
    verification/digest failure;
 3. health-check the running instance (`/healthz` == 200).

@@ -43,7 +43,11 @@ describe("M16.3 P1: an outpost instance serves its own local UI (apps/web/dist)"
     // Designate this domain `outpost` (DESIGN §13 / ADR-0004) — the scenario M16.3 is actually
     // about: an outpost domain instance, not a bare/unset one.
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      initFederationSelf(tx, { orgId: org.orgId, name: `outpost-${randomUUID().slice(0, 8)}`, role: "outpost" })
+      initFederationSelf(tx, {
+        orgId: org.orgId,
+        name: `outpost-${randomUUID().slice(0, 8)}`,
+        role: "outpost"
+      })
     );
 
     // `server.baseUrl` is `${address}/api/v1` (test-support/harness.ts) — strip the API prefix to
@@ -62,7 +66,7 @@ describe("M16.3 P1: an outpost instance serves its own local UI (apps/web/dist)"
     const body = await res.text();
     // The built Vite SPA shell (apps/web/dist/index.html) — not the M0 server-rendered stub (long
     // deleted, app.ts's own doc comment) and not the "Web UI is not built" 503 fallback string.
-    expect(body).toContain("<div id=\"root\">");
+    expect(body).toContain('<div id="root">');
     expect(body).not.toContain("Web UI is not built");
   });
 
@@ -82,7 +86,9 @@ describe("M16.3 P1: an outpost instance serves its own local UI (apps/web/dist)"
   });
 
   it("a domain-local component round-trips through the generated SDK on this same outpost instance", async () => {
-    const created = await createTestComponent(admin, { name: `outpost-local-${randomUUID().slice(0, 8)}` });
+    const created = await createTestComponent(admin, {
+      name: `outpost-local-${randomUUID().slice(0, 8)}`
+    });
     const fetched = await admin.components.get(created.id);
     expect(fetched.id).toBe(created.id);
     expect(fetched.name).toBe(created.name);

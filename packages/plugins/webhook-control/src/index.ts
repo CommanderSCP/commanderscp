@@ -12,7 +12,13 @@
  * (plugin-host/subprocess-entry.ts) — `ctx.http` is therefore already the host-mediated, scoped
  * HTTP client (DESIGN §11's `PluginContext.http`), not a raw `fetch` this plugin owns.
  */
-import type { ControlOutcome, ControlOutcomeStatus, ControlPlugin, ControlRequest, PluginContext } from "@scp/plugin-api";
+import type {
+  ControlOutcome,
+  ControlOutcomeStatus,
+  ControlPlugin,
+  ControlRequest,
+  PluginContext
+} from "@scp/plugin-api";
 
 export interface WebhookControlConfig {
   /** The org's webhook endpoint — receives `POST { changeId, controlId, context }`. */
@@ -28,7 +34,14 @@ export interface WebhookControlConfig {
   timeoutMs?: number;
 }
 
-const KNOWN_STATUSES: ControlOutcomeStatus[] = ["pass", "fail", "warning", "skipped", "timed_out", "expired"];
+const KNOWN_STATUSES: ControlOutcomeStatus[] = [
+  "pass",
+  "fail",
+  "warning",
+  "skipped",
+  "timed_out",
+  "expired"
+];
 
 function isKnownStatus(value: unknown): value is ControlOutcomeStatus {
   return typeof value === "string" && (KNOWN_STATUSES as string[]).includes(value);
@@ -45,7 +58,11 @@ export function createWebhookControlPlugin(): ControlPlugin {
       const timeoutMs = config.timeoutMs ?? 10_000;
 
       if (!config.url) {
-        return { status: "fail", detail: "webhook-control: no 'url' configured on this binding", evidence: {} };
+        return {
+          status: "fail",
+          detail: "webhook-control: no 'url' configured on this binding",
+          evidence: {}
+        };
       }
 
       const call = ctx.http
@@ -71,7 +88,11 @@ export function createWebhookControlPlugin(): ControlPlugin {
         };
       }
       if (result.kind === "error") {
-        return { status: "fail", detail: `webhook-control: request failed — ${result.message}`, evidence: { url: config.url } };
+        return {
+          status: "fail",
+          detail: `webhook-control: request failed — ${result.message}`,
+          evidence: { url: config.url }
+        };
       }
 
       const { response } = result;
@@ -83,7 +104,8 @@ export function createWebhookControlPlugin(): ControlPlugin {
         };
       }
 
-      const body = response.body as { status?: unknown; evidence?: unknown; detail?: unknown } | undefined;
+      const body = response.body as
+        { status?: unknown; evidence?: unknown; detail?: unknown } | undefined;
       if (!body || !isKnownStatus(body.status)) {
         return {
           status: "fail",
@@ -95,7 +117,10 @@ export function createWebhookControlPlugin(): ControlPlugin {
       return {
         status: body.status,
         detail: typeof body.detail === "string" ? body.detail : undefined,
-        evidence: (body.evidence && typeof body.evidence === "object" ? (body.evidence as Record<string, unknown>) : {}) ?? {}
+        evidence:
+          (body.evidence && typeof body.evidence === "object"
+            ? (body.evidence as Record<string, unknown>)
+            : {}) ?? {}
       };
     }
   };

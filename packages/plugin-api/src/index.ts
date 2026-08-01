@@ -95,13 +95,7 @@ export interface Cursor {
 }
 
 export type ExecutorEventKind =
-  | "push"
-  | "pull_request"
-  | "workflow_run"
-  | "deployment"
-  | "release"
-  | "sync"
-  | "custom";
+  "push" | "pull_request" | "workflow_run" | "deployment" | "release" | "sync" | "custom";
 
 /** Correlation hints (DESIGN §9.2) an observed event carries for matching against `source_mappings`. */
 export interface ExecutorEventCorrelation {
@@ -214,7 +208,8 @@ export interface ControlRequest {
   context: Record<string, unknown>;
 }
 
-export type ControlOutcomeStatus = "pass" | "fail" | "warning" | "skipped" | "timed_out" | "expired";
+export type ControlOutcomeStatus =
+  "pass" | "fail" | "warning" | "skipped" | "timed_out" | "expired";
 
 export interface ControlOutcome {
   status: ControlOutcomeStatus;
@@ -350,12 +345,7 @@ export interface DiscoveryPlugin {
 // -------------------------------------------------------------------------------------------
 
 export type PluginKind =
-  | "executor"
-  | "control"
-  | "identity"
-  | "notification"
-  | "federation-transport"
-  | "discovery";
+  "executor" | "control" | "identity" | "notification" | "federation-transport" | "discovery";
 
 export interface PluginManifest {
   id: string;

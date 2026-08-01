@@ -9,7 +9,14 @@ import { CursorPageQuerySchema, cursorPageResponseSchema } from "./common.js";
  * freezes.
  */
 
-export const ControlOutcomeStatusSchema = z.enum(["pass", "fail", "warning", "skipped", "timed_out", "expired"]);
+export const ControlOutcomeStatusSchema = z.enum([
+  "pass",
+  "fail",
+  "warning",
+  "skipped",
+  "timed_out",
+  "expired"
+]);
 export type ControlOutcomeStatus = z.infer<typeof ControlOutcomeStatusSchema>;
 
 export const ControlRunSchema = z.object({

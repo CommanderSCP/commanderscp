@@ -64,7 +64,8 @@ function toApi(row: FloorRow): InstanceScanFloor {
     maxMedium: row.max_medium,
     maxLow: row.max_low,
     note: row.note,
-    updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at)
+    updatedAt:
+      row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at)
   };
 }
 

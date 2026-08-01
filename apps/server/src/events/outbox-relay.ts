@@ -162,7 +162,10 @@ export function startOutboxRelay(
         try {
           onEventsRelayed([...relayedOrgIds]);
         } catch (err) {
-          console.error("[outbox-relay] onEventsRelayed hook threw (ignored — batch already committed)", err);
+          console.error(
+            "[outbox-relay] onEventsRelayed hook threw (ignored — batch already committed)",
+            err
+          );
         }
       }
     } catch (err) {

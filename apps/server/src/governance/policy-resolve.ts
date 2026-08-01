@@ -106,7 +106,10 @@ export interface MatchPoliciesInput {
  * matches the same target-chain-object more than once (can't happen with today's three match
  * kinds, but the Map keeps this function safe if a future scope kind could double-match).
  */
-export async function matchPoliciesForTargets(tx: TenantTx, input: MatchPoliciesInput): Promise<MatchedPolicy[]> {
+export async function matchPoliciesForTargets(
+  tx: TenantTx,
+  input: MatchPoliciesInput
+): Promise<MatchedPolicy[]> {
   const candidates = await listPolicyCandidates(tx, input.orgId);
   if (candidates.length === 0) return [];
 
@@ -127,7 +130,11 @@ export async function matchPoliciesForTargets(tx: TenantTx, input: MatchPolicies
     const emergencyPolicy = candidate.properties.emergencyPolicy ?? false;
     const autoRollbackOnFailure = candidate.properties.autoRollbackOnFailure ?? false;
 
-    const record = (objectId: string, depth: number, via: MatchedPolicy["matchedAt"]["via"]): void => {
+    const record = (
+      objectId: string,
+      depth: number,
+      via: MatchedPolicy["matchedAt"]["via"]
+    ): void => {
       const key = `${candidate.id}::${objectId}`;
       if (matches.has(key)) return;
       matches.set(key, {

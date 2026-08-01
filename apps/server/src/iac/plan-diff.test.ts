@@ -141,7 +141,14 @@ describe("iac/plan-diff: computePlanDiff", () => {
     const manifest: ResolvedManifest = {
       stackName: STACK,
       objects: [
-        { urn, typeId: "service", name: "Billing API v2", domainId: null, properties: {}, labels: {} }
+        {
+          urn,
+          typeId: "service",
+          name: "Billing API v2",
+          domainId: null,
+          properties: {},
+          labels: {}
+        }
       ],
       relationships: []
     };
@@ -296,7 +303,14 @@ describe("iac/plan-diff: computePlanDiff", () => {
     const diff = computePlanDiff(manifest, snapshot);
     expect(diff.summary).toEqual({ creates: 0, updates: 0, deletes: 0, noops: 1 });
     expect(diff.relationships).toEqual([
-      { kind: "relationship", action: "noop", typeId: "depends_on", fromUrn, toUrn, reason: "matches current state" }
+      {
+        kind: "relationship",
+        action: "noop",
+        typeId: "depends_on",
+        fromUrn,
+        toUrn,
+        reason: "matches current state"
+      }
     ]);
   });
 
@@ -443,13 +457,22 @@ describe("iac/plan-diff: uncontainedComponentCreates (strict create-in-service, 
     // edge. The prune produces a `contains` DELETE, which must NOT satisfy the create.
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [
-        { urn: SVC, typeId: "service", name: SVC, domainId: null, properties: {}, labels: managedLabels(STACK) }
+        {
+          urn: SVC,
+          typeId: "service",
+          name: SVC,
+          domainId: null,
+          properties: {},
+          labels: managedLabels(STACK)
+        }
       ],
       managedRelationships: [{ typeId: "contains", fromUrn: SVC, toUrn: COMP }],
       existingRelationships: [{ typeId: "contains", fromUrn: SVC, toUrn: COMP }]
     };
     const diff = diffOf([obj(COMP, "component"), obj(SVC, "service")], [], snapshot);
-    expect(diff.relationships.some((r) => r.typeId === "contains" && r.action === "delete")).toBe(true);
+    expect(diff.relationships.some((r) => r.typeId === "contains" && r.action === "delete")).toBe(
+      true
+    );
     expect(uncontainedComponentCreates(diff)).toEqual([COMP]);
   });
 
@@ -493,8 +516,8 @@ describe("iac/plan-diff: isStackManaged / managedLabels", () => {
     expect(isStackManaged(managedLabels("my-stack"), "other-stack")).toBe(false);
     expect(isStackManaged({}, "my-stack")).toBe(false);
     expect(isStackManaged(null, "my-stack")).toBe(false);
-    expect(isStackManaged({ "scp:managed-by": "not-iac", "scp:stack": "my-stack" }, "my-stack")).toBe(
-      false
-    );
+    expect(
+      isStackManaged({ "scp:managed-by": "not-iac", "scp:stack": "my-stack" }, "my-stack")
+    ).toBe(false);
   });
 });

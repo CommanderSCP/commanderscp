@@ -79,7 +79,8 @@ describe("M13.3b-ii offline scan-DB pre-load + staleness + operator-load", () =>
 
   beforeAll(async () => {
     const resolved = resolveSkopeo();
-    if (resolved.source === "missing") throw new Error("skopeo binary not found (vendored or PATH)");
+    if (resolved.source === "missing")
+      throw new Error("skopeo binary not found (vendored or PATH)");
     skopeoBin = resolved.bin;
 
     [scanImageRef, domain, registry] = await Promise.all([
@@ -98,7 +99,17 @@ describe("M13.3b-ii offline scan-DB pre-load + staleness + operator-load", () =>
     cleanRepo = `${registryHost}/scp/clean`;
     await execFileAsync(
       skopeoBin,
-      ["copy", "--override-os", "linux", "--override-arch", "amd64", "--preserve-digests", "--dest-tls-verify=false", CLEAN_SRC, `docker://${cleanRepo}:subject`],
+      [
+        "copy",
+        "--override-os",
+        "linux",
+        "--override-arch",
+        "amd64",
+        "--preserve-digests",
+        "--dest-tls-verify=false",
+        CLEAN_SRC,
+        `docker://${cleanRepo}:subject`
+      ],
       { timeout: 240_000, maxBuffer: 64 * 1024 * 1024 }
     );
     const { stdout } = await execFileAsync(
@@ -112,10 +123,15 @@ describe("M13.3b-ii offline scan-DB pre-load + staleness + operator-load", () =>
     // with db/trivy.db + db/metadata.json). `docker cp` from a created (unstarted) container.
     goodCache = join(scratch, "good-cache");
     await mkdir(goodCache, { recursive: true });
-    const { stdout: cidOut } = await execFileAsync("docker", ["create", scanImageRef, "trivy"], { timeout: 60_000 });
+    const { stdout: cidOut } = await execFileAsync("docker", ["create", scanImageRef, "trivy"], {
+      timeout: 60_000
+    });
     const cid = cidOut.trim();
     try {
-      await execFileAsync("docker", ["cp", `${cid}:/root/.cache/trivy/.`, goodCache], { timeout: 120_000, maxBuffer: 256 * 1024 * 1024 });
+      await execFileAsync("docker", ["cp", `${cid}:/root/.cache/trivy/.`, goodCache], {
+        timeout: 120_000,
+        maxBuffer: 256 * 1024 * 1024
+      });
     } finally {
       await execFileAsync("docker", ["rm", "-f", cid], { timeout: 30_000 }).catch(() => undefined);
     }
@@ -196,7 +212,9 @@ describe("M13.3b-ii offline scan-DB pre-load + staleness + operator-load", () =>
   }
 
   async function managedEvidenceFor(changeId: string) {
-    const runs = await withTenantTx(domain.db, domain.orgId, (tx) => listControlRunsForChange(tx, domain.orgId, changeId));
+    const runs = await withTenantTx(domain.db, domain.orgId, (tx) =>
+      listControlRunsForChange(tx, domain.orgId, changeId)
+    );
     return runs.filter((r) => r.controlObjectId === MANAGED_SCAN_CONTROL_OBJECT_ID);
   }
 
@@ -254,7 +272,9 @@ describe("M13.3b-ii offline scan-DB pre-load + staleness + operator-load", () =>
     await setPolicy(TINY, HUGE);
     const warnChange = await proposeCleanImageChange();
     const warnOutcome = await exportClean(warnChange);
-    expect(warnOutcome.refused, warnOutcome.refused ? warnOutcome.reason : "expected export").toBe(false);
+    expect(warnOutcome.refused, warnOutcome.refused ? warnOutcome.reason : "expected export").toBe(
+      false
+    );
     const runs = await managedEvidenceFor(warnChange);
     expect(runs).toHaveLength(1);
     const ev = ScanEvidenceSchema.parse(runs[0]!.evidence);
@@ -267,7 +287,10 @@ describe("M13.3b-ii offline scan-DB pre-load + staleness + operator-load", () =>
   it("(d) operator-load verifies a cosign-signed DB blob and REFUSES a tampered / wrong-key one (no cache write)", async () => {
     // Build a DB blob = tar.gz of the real cache's db/ dir (trivy.db + metadata.json).
     const blob = join(scratch, "db-blob.tar.gz");
-    await execFileAsync("tar", ["-czf", blob, "-C", goodCache, "db"], { timeout: 120_000, maxBuffer: 256 * 1024 * 1024 });
+    await execFileAsync("tar", ["-czf", blob, "-C", goodCache, "db"], {
+      timeout: 120_000,
+      maxBuffer: 256 * 1024 * 1024
+    });
     const bytes = await readFile(blob);
 
     const key = await generateKeyPair();
@@ -279,7 +302,12 @@ describe("M13.3b-ii offline scan-DB pre-load + staleness + operator-load", () =>
 
     // GOOD load → accepted into a fresh cache; the DB lands.
     const loadCache = join(scratch, `load-cache-${randomUUID()}`);
-    const meta = await loadScanDbBlob({ cacheDir: loadCache, blobPath: blob, signaturePath: sigPath, publicKeyPath: pubPath });
+    const meta = await loadScanDbBlob({
+      cacheDir: loadCache,
+      blobPath: blob,
+      signaturePath: sigPath,
+      publicKeyPath: pubPath
+    });
     expect(meta.Version).toBeGreaterThan(0);
     await readFile(join(loadCache, "db", "trivy.db"));
     const sidecar = JSON.parse(await readFile(join(loadCache, "scp-scan-db-source.json"), "utf8"));
@@ -291,7 +319,12 @@ describe("M13.3b-ii offline scan-DB pre-load + staleness + operator-load", () =>
     await writeFile(otherPub, other.publicKeyPem, "utf8");
     const wrongKeyCache = join(scratch, `wrongkey-cache-${randomUUID()}`);
     await expect(
-      loadScanDbBlob({ cacheDir: wrongKeyCache, blobPath: blob, signaturePath: sigPath, publicKeyPath: otherPub })
+      loadScanDbBlob({
+        cacheDir: wrongKeyCache,
+        blobPath: blob,
+        signaturePath: sigPath,
+        publicKeyPath: otherPub
+      })
     ).rejects.toThrow(/verification FAILED|refusing/i);
     await expect(readFile(join(wrongKeyCache, "db", "trivy.db"))).rejects.toThrow();
 
@@ -301,7 +334,12 @@ describe("M13.3b-ii offline scan-DB pre-load + staleness + operator-load", () =>
     await appendFile(tamperedBlob, Buffer.from("corrupt"));
     const tamperCache = join(scratch, `tamper-cache-${randomUUID()}`);
     await expect(
-      loadScanDbBlob({ cacheDir: tamperCache, blobPath: tamperedBlob, signaturePath: sigPath, publicKeyPath: pubPath })
+      loadScanDbBlob({
+        cacheDir: tamperCache,
+        blobPath: tamperedBlob,
+        signaturePath: sigPath,
+        publicKeyPath: pubPath
+      })
     ).rejects.toThrow(/verification FAILED|refusing/i);
     await expect(readFile(join(tamperCache, "db", "trivy.db"))).rejects.toThrow();
   }, 180_000);

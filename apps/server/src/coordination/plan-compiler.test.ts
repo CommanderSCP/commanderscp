@@ -5,7 +5,10 @@ import { compilePlan, type DependsOnEdge } from "./plan-compiler.js";
 describe("coordination/plan-compiler — pure toposort mode (no topology)", () => {
   it("a single target with no dependencies is one wave", () => {
     const result = compilePlan({ targets: ["a"], dependsOn: [] });
-    expect(result).toEqual({ ok: true, waves: [{ waveIndex: 0, name: null, targets: ["a"], requiresFanIn: false }] });
+    expect(result).toEqual({
+      ok: true,
+      waves: [{ waveIndex: 0, name: null, targets: ["a"], requiresFanIn: false }]
+    });
   });
 
   it("independent targets fan out into the same wave", () => {
@@ -82,7 +85,9 @@ describe("coordination/plan-compiler — pure toposort mode (no topology)", () =
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.waves).toEqual([{ waveIndex: 0, name: null, targets: ["a"], requiresFanIn: false }]);
+    expect(result.waves).toEqual([
+      { waveIndex: 0, name: null, targets: ["a"], requiresFanIn: false }
+    ]);
   });
 
   it("is deterministic: identical input always produces an identical plan", () => {
@@ -157,7 +162,11 @@ describe("coordination/plan-compiler — explicit topology mode", () => {
       dependsOn: [],
       topologyWaves: [{ mode: "parallel", targets: ["a", "not-in-this-change"] }]
     });
-    expect(result).toMatchObject({ ok: false, error: "unknown_target", target: "not-in-this-change" });
+    expect(result).toMatchObject({
+      ok: false,
+      error: "unknown_target",
+      target: "not-in-this-change"
+    });
   });
 
   it("rejects a topology that schedules a dependency AFTER its dependent", () => {

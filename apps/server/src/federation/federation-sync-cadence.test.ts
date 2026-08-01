@@ -82,19 +82,19 @@ describe("M14.4 resolveSparseIntervalSeconds — the D1 knob (env-resolved, clam
   });
 
   it("a value above 43200 is CAPPED (pg-boss asserts singletonSeconds <= archiveSeconds = 12h)", () => {
-    expect(resolveSparseIntervalSeconds({ SCP_FEDERATION_SYNC_SPARSE_INTERVAL_SECONDS: "86400" })).toBe(
-      FEDERATION_SYNC_SPARSE_INTERVAL_MAX_SECONDS
-    );
+    expect(
+      resolveSparseIntervalSeconds({ SCP_FEDERATION_SYNC_SPARSE_INTERVAL_SECONDS: "86400" })
+    ).toBe(FEDERATION_SYNC_SPARSE_INTERVAL_MAX_SECONDS);
     expect(FEDERATION_SYNC_SPARSE_INTERVAL_MAX_SECONDS).toBe(43_200);
   });
 
   it("an in-range value is used verbatim; junk falls back to the default", () => {
-    expect(resolveSparseIntervalSeconds({ SCP_FEDERATION_SYNC_SPARSE_INTERVAL_SECONDS: "1800" })).toBe(
-      1800
-    );
-    expect(resolveSparseIntervalSeconds({ SCP_FEDERATION_SYNC_SPARSE_INTERVAL_SECONDS: "nope" })).toBe(
-      900
-    );
+    expect(
+      resolveSparseIntervalSeconds({ SCP_FEDERATION_SYNC_SPARSE_INTERVAL_SECONDS: "1800" })
+    ).toBe(1800);
+    expect(
+      resolveSparseIntervalSeconds({ SCP_FEDERATION_SYNC_SPARSE_INTERVAL_SECONDS: "nope" })
+    ).toBe(900);
   });
 
   it("is resolved from the PASSED env every call — not frozen at import (a later env change is seen)", () => {
@@ -111,9 +111,9 @@ describe("M14.4 isPeerDue — the due-gate truth table", () => {
   // (see FEDERATION_SYNC_STARTUP_REASON). What NULL-is-due buys is drizzle/0038 needing no backfill.
   it("NEVER ATTEMPTED (null) is always due — every pre-0038 row survives the gate untouched", () => {
     expect(isPeerDue(peer(), T0, inputs)).toBe(true);
-    expect(isPeerDue(peer({ pokeMode: true, lastPokeReceivedAt: T0.toISOString() }), T0, inputs)).toBe(
-      true
-    );
+    expect(
+      isPeerDue(peer({ pokeMode: true, lastPokeReceivedAt: T0.toISOString() }), T0, inputs)
+    ).toBe(true);
   });
 
   it("POLL-MODE: due once per FREQUENT interval, not before", () => {

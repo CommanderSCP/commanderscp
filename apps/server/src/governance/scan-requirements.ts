@@ -141,7 +141,9 @@ function parseScanThresholdEffect(effect: unknown): PartialScanThreshold | undef
  * be written as a pure function") so the order-independence property is unit-testable without a
  * database, and integration-testable at the real gate.
  */
-export function mergeScanThresholds(contributors: ScanThresholdContribution[]): EffectiveScanThreshold {
+export function mergeScanThresholds(
+  contributors: ScanThresholdContribution[]
+): EffectiveScanThreshold {
   const threshold: PartialScanThreshold = {};
   for (const contribution of contributors) {
     for (const key of SEVERITY_KEYS) {
@@ -221,11 +223,13 @@ function ceilingContributorKeys(firedPolicies: FiredPolicy[]): Set<string> {
   const keys = new Set<string>();
   for (const fp of firedPolicies) {
     if (fp.fired) {
-      for (const c of fp.contributingPolicyVersions) keys.add(`${c.policyObjectId}::${c.policyVersion}`);
+      for (const c of fp.contributingPolicyVersions)
+        keys.add(`${c.policyObjectId}::${c.policyVersion}`);
     }
     // Fail closed on an unevaluable condition — regardless of `fired`, regardless of enforcement,
     // and ONLY for the contributors that actually errored (never a cleanly-false sibling).
-    for (const c of fp.conditionErrorPolicyVersions) keys.add(`${c.policyObjectId}::${c.policyVersion}`);
+    for (const c of fp.conditionErrorPolicyVersions)
+      keys.add(`${c.policyObjectId}::${c.policyVersion}`);
   }
   return keys;
 }

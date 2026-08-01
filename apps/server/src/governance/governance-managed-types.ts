@@ -19,7 +19,10 @@
  * Adding a new governance-owned type later means updating this one set and re-checking the two
  * call sites above — not re-auditing every write path in the codebase from scratch.
  */
-export const GOVERNANCE_MANAGED_OBJECT_TYPE_IDS: ReadonlySet<string> = new Set(["policy", "control"]);
+export const GOVERNANCE_MANAGED_OBJECT_TYPE_IDS: ReadonlySet<string> = new Set([
+  "policy",
+  "control"
+]);
 
 export function isGovernanceManagedObjectType(typeId: string): boolean {
   return GOVERNANCE_MANAGED_OBJECT_TYPE_IDS.has(typeId);

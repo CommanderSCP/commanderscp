@@ -245,8 +245,7 @@ export function mapGitlabWebhookEventToHint(
     case "Merge Request Hook": {
       // ASSUMED (GitLab): the MR object nests its own iid + last_commit sha under object_attributes.
       const attrs = p.object_attributes as
-        | { iid?: number; last_commit?: { id?: string } }
-        | undefined;
+        { iid?: number; last_commit?: { id?: string } } | undefined;
       return {
         repo,
         commitSha: attrs?.last_commit?.id,
@@ -255,9 +254,7 @@ export function mapGitlabWebhookEventToHint(
     }
     case "Pipeline Hook": {
       // ASSUMED (GitLab): pipeline id/sha/ref under object_attributes.
-      const attrs = p.object_attributes as
-        | { id?: number; sha?: string; ref?: string }
-        | undefined;
+      const attrs = p.object_attributes as { id?: number; sha?: string; ref?: string } | undefined;
       return {
         repo,
         commitSha: attrs?.sha,
@@ -296,8 +293,7 @@ interface GitlabPipeline {
  *  lives in `@scp/git-provider-core`; this hook only ever runs for a genuinely new key. */
 async function triggerCI(ctx: PluginContext, intent: TriggerIntent): Promise<ExternalRunRef> {
   const config = asConfig(ctx.config);
-  const ref =
-    (intent.parameters?.ref as string | undefined) ?? config.defaultRef ?? "main";
+  const ref = (intent.parameters?.ref as string | undefined) ?? config.defaultRef ?? "main";
   // GitLab expects pipeline variables as an array of { key, value }; accept a caller-friendly
   // Record and normalize. Never fabricated — an absent `variables` sends none.
   const rawVars = intent.parameters?.variables as Record<string, string> | undefined;

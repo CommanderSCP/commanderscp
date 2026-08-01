@@ -72,7 +72,9 @@ describe("graph query statement_timeout guardrail", () => {
       // A FRESH transaction on the same pool must see Postgres's own default statement_timeout
       // (effectively unbounded for this test's purposes) — a 300ms sleep must complete cleanly,
       // proving the earlier 50ms bound never leaked onto a reused pooled connection.
-      const rows = await withTenantTx(db, orgId, (tx) => tx.execute(sql`SELECT pg_sleep(0.3), 1 AS ok`));
+      const rows = await withTenantTx(db, orgId, (tx) =>
+        tx.execute(sql`SELECT pg_sleep(0.3), 1 AS ok`)
+      );
       expect(rows.rows[0]).toMatchObject({ ok: 1 });
     } finally {
       await pool.end();
@@ -170,7 +172,9 @@ describe("GET /api/v1/graph/query/:name — GraphQueryTimeoutError maps to HTTP 
     const originDomainId = randomUUID();
     // Same RBAC note as the CTE-fix suite below: point every synthetic object's domain_id at the
     // real org root so the admin's org-root role binding actually covers them.
-    const orgRootObjectId = await withTenantTx(db, org.orgId, (tx) => getOrgRootObjectId(tx, org.orgId));
+    const orgRootObjectId = await withTenantTx(db, org.orgId, (tx) =>
+      getOrgRootObjectId(tx, org.orgId)
+    );
     const targetId = randomUUID();
     const predecessorIds = Array.from({ length: WIDTH }, () => randomUUID());
     const allIds = [targetId, ...predecessorIds];
@@ -296,7 +300,9 @@ describe("GET /api/v1/graph/query/impact-of — high fan-in no longer blows up (
     // island, and the admin's org-root role binding would never match. Point every synthetic
     // object's domain_id at the REAL org root object (one hop to the admin's actual scope) so
     // this test exercises normal RBAC, not a bypass of it.
-    const orgRootObjectId = await withTenantTx(db, org.orgId, (tx) => getOrgRootObjectId(tx, org.orgId));
+    const orgRootObjectId = await withTenantTx(db, org.orgId, (tx) =>
+      getOrgRootObjectId(tx, org.orgId)
+    );
     let lastLayerNodeId = "";
     try {
       await raw.setOrgContext(org.orgId);

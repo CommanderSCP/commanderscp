@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { readFile } from "node:fs/promises";
-import { buildAirgapCompose, POSTGRES_IMAGE_PLACEHOLDER, SCPD_IMAGE_PLACEHOLDER } from "./compose-retarget.js";
+import {
+  buildAirgapCompose,
+  POSTGRES_IMAGE_PLACEHOLDER,
+  SCPD_IMAGE_PLACEHOLDER
+} from "./compose-retarget.js";
 import { COMPOSE_FILE } from "./repo-paths.js";
 
 const SAMPLE = `
@@ -64,7 +68,9 @@ services:
   });
 
   it("throws when the compose file has no services.scp/services.postgres at all", () => {
-    expect(() => buildAirgapCompose("services:\n  other:\n    image: x\n")).toThrow(/services\.scp/);
+    expect(() => buildAirgapCompose("services:\n  other:\n    image: x\n")).toThrow(
+      /services\.scp/
+    );
     expect(() =>
       buildAirgapCompose("services:\n  scp:\n    build:\n      context: ../..\n")
     ).toThrow(/services\.postgres/);
@@ -75,7 +81,9 @@ describe("buildAirgapCompose — against the real deploy/compose/docker-compose.
   it("transforms the actual repo file without throwing, catching drift between this module and the real compose file's shape", async () => {
     const real = await readFile(COMPOSE_FILE, "utf8");
     const out = buildAirgapCompose(real);
-    const parsed = parseYaml(out) as { services: { scp: Record<string, unknown>; postgres: Record<string, unknown> } };
+    const parsed = parseYaml(out) as {
+      services: { scp: Record<string, unknown>; postgres: Record<string, unknown> };
+    };
     expect(parsed.services.scp.image).toBe(SCPD_IMAGE_PLACEHOLDER);
     expect(parsed.services.scp.build).toBeUndefined();
     expect(parsed.services.postgres.image).toBe(POSTGRES_IMAGE_PLACEHOLDER);

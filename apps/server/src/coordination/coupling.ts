@@ -60,7 +60,11 @@ export async function requirementStatuses(
       LIMIT 1
     `);
     const satisfiedBy = result.rows[0]?.change_object_id ?? null;
-    statuses.push({ ...req, satisfied: satisfiedBy !== null, satisfiedByChangeObjectId: satisfiedBy });
+    statuses.push({
+      ...req,
+      satisfied: satisfiedBy !== null,
+      satisfiedByChangeObjectId: satisfiedBy
+    });
   }
   return statuses;
 }
@@ -121,7 +125,11 @@ const DIAGNOSTIC_LIMIT = 20;
  * evaluated, rather than trying to catch or coerce it — the row is simply not a source of
  * suggestions, and every well-formed provider at the scope is unaffected.
  */
-export async function listProvidedKeysAtScope(tx: TenantTx, orgId: string, at: string): Promise<string[]> {
+export async function listProvidedKeysAtScope(
+  tx: TenantTx,
+  orgId: string,
+  at: string
+): Promise<string[]> {
   const scopeProbe = JSON.stringify({ targets: [at] });
   const result = await tx.execute<{ key: string }>(sql`
     SELECT DISTINCT key
@@ -183,7 +191,11 @@ export async function ambiguousProvidersFor(
       LIMIT ${DIAGNOSTIC_LIMIT}
     `);
     if (result.rows.length > 1) {
-      ambiguous.push({ key: s.key, at: s.at, providerChangeObjectIds: result.rows.map((r) => r.change_object_id) });
+      ambiguous.push({
+        key: s.key,
+        at: s.at,
+        providerChangeObjectIds: result.rows.map((r) => r.change_object_id)
+      });
     }
   }
   return ambiguous;

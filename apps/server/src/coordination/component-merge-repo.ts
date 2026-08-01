@@ -67,7 +67,11 @@ async function anyInFlightChangeTargets(
 
 /** True if the loser participates in ANY live relationship (as either endpoint) — the signal that it
  *  is not a fresh binding-only orphan, so the (unimplemented) general graph-rewrite would be needed. */
-async function hasLiveRelationships(tx: TenantTx, orgId: string, objectId: string): Promise<boolean> {
+async function hasLiveRelationships(
+  tx: TenantTx,
+  orgId: string,
+  objectId: string
+): Promise<boolean> {
   const asFrom = await listRelationships(tx, orgId, { fromId: objectId, limit: 1 });
   if (asFrom.items.length > 0) return true;
   const asTo = await listRelationships(tx, orgId, { toId: objectId, limit: 1 });
@@ -94,7 +98,9 @@ export async function mergeComponents(
 ): Promise<MergeComponentsResult> {
   const survivor = await getObjectByIdOrUrnAnyType(tx, input.orgId, input.survivorIdOrUrn);
   if (survivor.typeId !== "component") {
-    throw badRequest(`survivor '${input.survivorIdOrUrn}' is a '${survivor.typeId}', not a component`);
+    throw badRequest(
+      `survivor '${input.survivorIdOrUrn}' is a '${survivor.typeId}', not a component`
+    );
   }
   const loser = await getObjectByIdOrUrnAnyType(tx, input.orgId, input.loserIdOrUrn);
   if (loser.typeId !== "component") {
@@ -106,8 +112,18 @@ export async function mergeComponents(
 
   // Authority over BOTH components: re-pointing a binding is a write on the losing and gaining target
   // (the bar `PUT`/`DELETE /binding` require), and soft-deleting the loser needs its own object:write.
-  await authorize(tx, { orgId: input.orgId, subjectObjectId: input.actorObjectId, permission: "object:write", scopeObjectId: survivor.id });
-  await authorize(tx, { orgId: input.orgId, subjectObjectId: input.actorObjectId, permission: "object:write", scopeObjectId: loser.id });
+  await authorize(tx, {
+    orgId: input.orgId,
+    subjectObjectId: input.actorObjectId,
+    permission: "object:write",
+    scopeObjectId: survivor.id
+  });
+  await authorize(tx, {
+    orgId: input.orgId,
+    subjectObjectId: input.actorObjectId,
+    permission: "object:write",
+    scopeObjectId: loser.id
+  });
 
   // Scope guard: the loser must be a fresh binding-only orphan. Any live edge (contains, owns,
   // depends_on, consumes, …) means the general graph-rewrite would be required — out of scope (§2.4).

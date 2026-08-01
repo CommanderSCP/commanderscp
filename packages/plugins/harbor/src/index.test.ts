@@ -75,7 +75,9 @@ describe("mapHarborWebhookEventToHint — PUSH_ARTIFACT → { repo, artifactDige
   });
 
   it("a PUSH_ARTIFACT carrying neither repo nor digest yields null rather than an empty, uncorrelatable hint", () => {
-    expect(mapHarborWebhookEventToHint("PUSH_ARTIFACT", { type: "PUSH_ARTIFACT", event_data: {} })).toBeNull();
+    expect(
+      mapHarborWebhookEventToHint("PUSH_ARTIFACT", { type: "PUSH_ARTIFACT", event_data: {} })
+    ).toBeNull();
     expect(mapHarborWebhookEventToHint("PUSH_ARTIFACT", {})).toBeNull();
     expect(mapHarborWebhookEventToHint("PUSH_ARTIFACT", null)).toBeNull();
   });
