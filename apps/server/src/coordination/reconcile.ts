@@ -492,6 +492,24 @@ async function advanceValidatingChanges(
           actorObjectId: SYSTEM_ACTOR_ID
         })
       );
+      // ROUND-ROBIN BUMP — same starvation class as the `waiting` and `executing` paths, caught by
+      // sweeping for the property rather than the symptom. This loop NEVER writes the change row:
+      // `prewarmGovernanceForChange` materializes approval requests and control runs, and nothing
+      // here transitions the change (validating -> accepted is driven by the lifecycle gate, not by
+      // this sweep). So a validating change's `updated_at` is frozen from the moment it arrives,
+      // and >BATCH_LIMIT of them would permanently own this batch and starve the rest out of
+      // governance prewarm — meaning the newest changes would never get an approval request
+      // materialized, and so could never be approved.
+      //
+      // NOT YET BITING, and pinned here so it cannot start silently: the homelab instance holds 7
+      // validating changes against a BATCH_LIMIT of 25. The `executing` instance of this same bug
+      // ran undetected for 13 days; this is the identical hazard two states over.
+      await withTenantTx(db, orgId, (tx) =>
+        tx
+          .update(changes)
+          .set({ updatedAt: new Date() })
+          .where(and(eq(changes.orgId, orgId), eq(changes.objectId, change.objectId)))
+      );
     } catch (err) {
       logChangeError(orgId, change, "validating-governance-prewarm", err);
     }
@@ -704,7 +722,37 @@ async function reconcileExecutingChange(
         `[reconcile] org ${orgId} change ${change.objectId} wave ${activeWave.waveIndex} blocked by governance — decision ${gateOutcome.decisionId} (scp decision get ${gateOutcome.decisionId}); re-evaluated every tick until it clears`
       );
     }
-    if (gateOutcome.kind !== "running") return;
+    if (gateOutcome.kind !== "running") {
+      // ROUND-ROBIN BUMP — THE SAME STARVATION FIX `advanceWaitingChanges` ALREADY APPLIES, and
+      // the reason it must be here too. A gate-blocked wave stays `pending` and its change stays
+      // `executing` (deliberately never parked — see the persist-on-change comment above), so
+      // WITHOUT this write the change's `updated_at` never moves again. `listChangeRowsInStates`
+      // serves oldest-`updated_at`-first capped at BATCH_LIMIT, so >BATCH_LIMIT permanently-blocked
+      // changes occupy every slot of every tick, forever, and every change queued behind them is
+      // NEVER EVALUATED EVEN ONCE.
+      //
+      // MEASURED IN PRODUCTION (homelab, 2026-08-01), which is why this is a bug report and not a
+      // hypothetical: 25 changes blocked on one un-approved prod policy held the batch from
+      // 2026-07-19 11:04 onward. Of the 231 changes proposed after that instant, ZERO had a single
+      // gate Decision — not one had ever been looked at. The last wave target to dispatch anywhere
+      // on the instance did so at 11:01 that morning. Coordination had been fully stopped for 13
+      // days behind green health checks, because the engine only ever saw the same 25 rows.
+      //
+      // Bumping an examined-but-still-blocked change to the back of the queue round-robins the
+      // batch across ALL of them, so every change is served within a few ticks no matter how many
+      // are stuck. The gate is still re-evaluated on the change's turn — which is what lets an
+      // approval granted elsewhere unblock it — just not to the exclusion of everything else.
+      //
+      // `state_entered_at` is deliberately NOT touched (same as the waiting path): the watchdog's
+      // stall SLA must keep measuring from when the change actually entered `executing`.
+      await withTenantTx(db, orgId, (tx) =>
+        tx
+          .update(changes)
+          .set({ updatedAt: new Date() })
+          .where(and(eq(changes.orgId, orgId), eq(changes.objectId, change.objectId)))
+      );
+      return;
+    }
   }
 
   // Unified target reconciliation: every non-terminal target gets either a trigger attempt
