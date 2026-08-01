@@ -68,7 +68,7 @@ Managed-scan evidence is **commander-resident** (owner decision D5): the runner'
 - **"Managed execution is never a default" governs execution of changes.** The managed scanner is **read-only with respect to the scanned subject**: it analyzes artifacts and emits evidence; it never modifies, deploys, or provisions anything, and it executes no change — the amendment says so in terms. Running it as a default step of promotion therefore does not make change-execution a default.
 - **Graph-native (principle 2):** the scanner registry is registry rows, not new top-level tables.
 - **Postgres-only required dependency (principle 4):** the evidence store is Postgres-backed; no new stateful service.
-- **Air-gap first-class (principle 5):** scanners and their data are vendored/pre-loaded; runners scan with DB downloads disabled; offline scanner data (trivy-db, SCAP content) crosses boundaries as `type: "blob"` artifacts on the existing byte channel (proposal §13.3).
+- **Air-gap first-class (principle 5):** scanners and their data are vendored/pre-loaded; runners scan with DB downloads disabled; the trivy-db is refreshed directly when connected or **operator-loaded** across the CDS when not — the commander has no into-commander byte channel, so the DB never rides the relay/bundle path (proposal §13.3, M13.3b-ii); SCAP content has no OCI upstream and stays baked into the runner image.
 - **Explainability (principle 6):** scan verdicts persist as Decisions; a refusing E6 export carries a `decision_id`, unchanged.
 
 ## Consequences

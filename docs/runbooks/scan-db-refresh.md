@@ -103,10 +103,19 @@ API — the operator placed the bytes after carrying them across the boundary.
 Only the **trivy-db** has an OCI upstream to skopeo-refresh / repackage-as-blob. The **SCAP Security
 Guide** datastreams OpenSCAP evaluates against have **no OCI upstream**, so they stay **baked** into
 the runner image (installed from the frozen Fedora GA release repo at a pinned version — see
-`apps/runner-scan/Dockerfile`). The runner honors an **optional** operator-supplied SCAP override dir
-(`SCP_SCAN_SCAP_DIR`, copied to `/work/scap`) for a hand-carried datastream, but there is no
-refresh/load flow for SSG: to move SSG content forward you rebuild (and re-pin) the runner image. The
-staleness policy applies to the trivy-db only.
+`apps/runner-scan/Dockerfile`). The staleness policy applies to the trivy-db only.
+
+**The `SCP_SCAN_SCAP_DIR` override is runner/plugin plumbing only — there is no `scan-db load`-style
+seam for it on a deployed commander.** The runner honors an optional override dir
+(`SCP_SCAN_SCAP_DIR`, mounted at `/work/scap` — `apps/runner-scan/run.sh`) for a hand-carried
+datastream, and `packages/plugins/managed-scan` will pass it through to the container (`docker cp`
+into `/work/scap`) *if* it is given a `scanScapDir`. But nothing server-side ever populates that
+parameter today — `promotion-scan-step.ts` only ever wires the trivy-db cache dir
+(`SCP_MANAGED_SCAN_DB_CACHE`) through to the runner invocation, never a SCAP dir. So the override is
+true of the runner image in isolation, and false of any deployed commander: there is no operator
+command that gets a hand-carried SCAP datastream into a running commander's scans. To move SSG content
+forward today you rebuild (and re-pin) the runner image; a `scan-db`-style load/cache seam for SCAP is
+tracked as follow-up work, not something this runbook can walk you through yet.
 
 ## Verifying
 

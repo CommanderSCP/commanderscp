@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1560 1080" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1560 1140" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
   <defs>
     <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
@@ -7,7 +7,7 @@
       <path d="M0,0 L10,5 L0,10 z" fill="#0f766e"/>
     </marker>
   </defs>
-  <rect width="1560" height="1080" fill="#ffffff"/>
+  <rect width="1560" height="1140" fill="#ffffff"/>
 
   <text x="40" y="44" font-size="22" font-weight="700" fill="#0f172a">CommanderSCP — Commander Instance (Global Coordination Layer)</text>
   <text x="40" y="68" font-size="13" fill="#64748b">One scpd image · api + worker roles · PostgreSQL is the only required stateful dependency · same binary as every outpost</text>
@@ -31,7 +31,7 @@
   <text x="272" y="164" font-size="10" fill="#475569">public /v1 API only</text>
 
   <!-- instance outer -->
-  <rect x="40" y="168" width="1210" height="822" rx="14" fill="none" stroke="#334155" stroke-width="2"/>
+  <rect x="40" y="168" width="1210" height="900" rx="14" fill="none" stroke="#334155" stroke-width="2"/>
   <text x="60" y="192" font-size="13" font-weight="700" fill="#334155">scpd — commander instance · one container image · api / worker role flag</text>
 
   <!-- api role -->
@@ -81,7 +81,7 @@
   <text x="429" y="510" text-anchor="middle" font-size="8.5" fill="#475569">outbox</text>
 
   <!-- federation engine -->
-  <rect x="854" y="210" width="372" height="300" rx="10" fill="#f0fdfa" stroke="#0f766e"/>
+  <rect x="854" y="210" width="372" height="354" rx="10" fill="#f0fdfa" stroke="#0f766e"/>
   <text x="866" y="234" font-size="13" font-weight="700" fill="#0f766e">Federation Engine — commander side</text>
   <g font-size="11.5" fill="#134e4a">
     <rect x="866" y="246" width="348" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#5eead4"/>
@@ -94,84 +94,87 @@
     <text x="876" y="423">Outpost-initiated mTLS — pull config · push status</text>
     <rect x="866" y="446" width="348" height="44" rx="6" fill="#ffffff" opacity="0.75" stroke="#5eead4"/>
     <text x="876" y="473">Bundle export/import — .scpbundle for air-gap</text>
+    <rect x="866" y="496" width="348" height="44" rx="6" fill="#ecfdf5" opacity="0.9" stroke="#0f766e" stroke-width="1.4"/>
+    <text x="876" y="513">Promotion scan step (ADR-0020): scan → evaluate</text>
+    <text x="876" y="530">→ sign (E6) → export · scp-managed-scan runner</text>
   </g>
   <line x1="824" y1="300" x2="854" y2="300" stroke="#0f766e" stroke-width="1.4" marker-end="url(#arrTeal)"/>
 
   <!-- global config authority -->
-  <rect x="854" y="524" width="372" height="148" rx="10" fill="#fefce8" stroke="#a16207"/>
-  <text x="866" y="546" font-size="12.5" font-weight="700" fill="#a16207">Authoritative global config — origin: commander</text>
+  <rect x="854" y="584" width="372" height="148" rx="10" fill="#fefce8" stroke="#a16207"/>
+  <text x="866" y="606" font-size="12.5" font-weight="700" fill="#a16207">Authoritative global config — origin: commander</text>
   <g font-size="11" fill="#713f12">
-    <rect x="866" y="558" width="118" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
-    <text x="925" y="577" text-anchor="middle">domain registry</text>
-    <rect x="992" y="558" width="96" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
-    <text x="1040" y="577" text-anchor="middle">org + teams</text>
-    <rect x="1096" y="558" width="112" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
-    <text x="1152" y="577" text-anchor="middle">global policies</text>
-    <rect x="866" y="596" width="136" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
-    <text x="934" y="615" text-anchor="middle">release topologies</text>
-    <rect x="1010" y="596" width="170" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
-    <text x="1095" y="615" text-anchor="middle">campaigns · initiatives</text>
-    <rect x="866" y="634" width="140" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
-    <text x="936" y="653" text-anchor="middle">control definitions</text>
-    <text x="1016" y="653" font-size="10.5" font-style="italic" fill="#a16207">single-writer · read-only at outposts</text>
+    <rect x="866" y="618" width="118" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
+    <text x="925" y="637" text-anchor="middle">domain registry</text>
+    <rect x="992" y="618" width="96" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
+    <text x="1040" y="637" text-anchor="middle">org + teams</text>
+    <rect x="1096" y="618" width="112" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
+    <text x="1152" y="637" text-anchor="middle">global policies</text>
+    <rect x="866" y="656" width="136" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
+    <text x="934" y="675" text-anchor="middle">release topologies</text>
+    <rect x="1010" y="656" width="170" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
+    <text x="1095" y="675" text-anchor="middle">campaigns · initiatives</text>
+    <rect x="866" y="694" width="140" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
+    <text x="936" y="713" text-anchor="middle">control definitions</text>
+    <text x="1016" y="713" font-size="10.5" font-style="italic" fill="#a16207">single-writer · read-only at outposts</text>
   </g>
 
   <!-- plugin host (under worker/federation columns only) -->
-  <rect x="444" y="680" width="782" height="92" rx="10" fill="#fff7ed" stroke="#c2410c"/>
-  <text x="456" y="702" font-size="12.5" font-weight="700" fill="#c2410c">Plugin host — one subprocess per plugin · JSON-RPC over stdio · timeouts · restart with backoff</text>
+  <rect x="444" y="740" width="782" height="92" rx="10" fill="#fff7ed" stroke="#c2410c"/>
+  <text x="456" y="762" font-size="12.5" font-weight="700" fill="#c2410c">Plugin host — one subprocess per plugin · JSON-RPC over stdio · timeouts · restart with backoff</text>
   <g font-size="11" fill="#7c2d12">
-    <rect x="456" y="712" width="110" height="34" rx="6" fill="#ffffff" opacity="0.8" stroke="#fed7aa"/>
-    <text x="511" y="733" text-anchor="middle">oidc identity</text>
-    <rect x="574" y="712" width="96" height="34" rx="6" fill="#ffffff" opacity="0.8" stroke="#fed7aa"/>
-    <text x="622" y="733" text-anchor="middle">local-auth</text>
-    <rect x="678" y="712" width="100" height="34" rx="6" fill="#ffffff" opacity="0.8" stroke="#fed7aa"/>
-    <text x="728" y="733" text-anchor="middle">smtp-notify</text>
-    <rect x="786" y="712" width="122" height="34" rx="6" fill="#ffffff" opacity="0.8" stroke="#fed7aa"/>
-    <text x="847" y="733" text-anchor="middle">webhook-notify</text>
-    <rect x="916" y="712" width="126" height="34" rx="6" fill="#ffffff" opacity="0.8" stroke="#fed7aa"/>
-    <text x="979" y="733" text-anchor="middle">webhook-control</text>
-    <text x="456" y="764" font-size="10.5" font-style="italic" fill="#9a3412">executor plugins typically run in outpost domains — see outpost-instance diagram</text>
+    <rect x="456" y="772" width="110" height="34" rx="6" fill="#ffffff" opacity="0.8" stroke="#fed7aa"/>
+    <text x="511" y="793" text-anchor="middle">oidc identity</text>
+    <rect x="574" y="772" width="96" height="34" rx="6" fill="#ffffff" opacity="0.8" stroke="#fed7aa"/>
+    <text x="622" y="793" text-anchor="middle">local-auth</text>
+    <rect x="678" y="772" width="100" height="34" rx="6" fill="#ffffff" opacity="0.8" stroke="#fed7aa"/>
+    <text x="728" y="793" text-anchor="middle">smtp-notify</text>
+    <rect x="786" y="772" width="122" height="34" rx="6" fill="#ffffff" opacity="0.8" stroke="#fed7aa"/>
+    <text x="847" y="793" text-anchor="middle">webhook-notify</text>
+    <rect x="916" y="772" width="126" height="34" rx="6" fill="#ffffff" opacity="0.8" stroke="#fed7aa"/>
+    <text x="979" y="793" text-anchor="middle">webhook-control</text>
+    <text x="456" y="824" font-size="10.5" font-style="italic" fill="#9a3412">executor plugins typically run in outpost domains — see outpost-instance diagram</text>
   </g>
-  <line x1="700" y1="662" x2="700" y2="678" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)"/>
+  <line x1="700" y1="662" x2="700" y2="738" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)"/>
 
   <!-- postgres -->
-  <rect x="64" y="790" width="920" height="176" rx="10" fill="#f0fdf4" stroke="#15803d"/>
-  <text x="76" y="814" font-size="13" font-weight="700" fill="#15803d">PostgreSQL 16 — the system of record (only required stateful dependency)</text>
+  <rect x="64" y="850" width="920" height="176" rx="10" fill="#f0fdf4" stroke="#15803d"/>
+  <text x="76" y="874" font-size="13" font-weight="700" fill="#15803d">PostgreSQL 16 — the system of record (only required stateful dependency)</text>
   <g font-size="11" fill="#14532d">
-    <rect x="76" y="826" width="230" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
-    <text x="191" y="846" text-anchor="middle">objects + relationships (graph)</text>
-    <rect x="314" y="826" width="110" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
-    <text x="369" y="846" text-anchor="middle">type registry</text>
-    <rect x="432" y="826" width="150" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
-    <text x="507" y="846" text-anchor="middle">policies · topologies</text>
-    <rect x="590" y="826" width="230" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
-    <text x="705" y="846" text-anchor="middle">changes · campaigns · initiatives</text>
-    <rect x="76" y="866" width="90" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
-    <text x="121" y="886" text-anchor="middle">decisions</text>
-    <rect x="174" y="866" width="290" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
-    <text x="319" y="886" text-anchor="middle">audit chain — hash-linked · INSERT-only</text>
-    <rect x="472" y="866" width="70" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
-    <text x="507" y="886" text-anchor="middle">outbox</text>
-    <rect x="550" y="866" width="105" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
-    <text x="602" y="886" text-anchor="middle">pg-boss jobs</text>
-    <rect x="663" y="866" width="105" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
-    <text x="715" y="886" text-anchor="middle">sync journal</text>
-    <rect x="776" y="866" width="110" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
-    <text x="831" y="886" text-anchor="middle">role bindings</text>
-    <text x="76" y="946" font-size="10.5" font-style="italic" fill="#166534">org_id on every row + Row-Level Security · audit events written in the same transaction as the action</text>
+    <rect x="76" y="886" width="230" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
+    <text x="191" y="906" text-anchor="middle">objects + relationships (graph)</text>
+    <rect x="314" y="886" width="110" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
+    <text x="369" y="906" text-anchor="middle">type registry</text>
+    <rect x="432" y="886" width="150" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
+    <text x="507" y="906" text-anchor="middle">policies · topologies</text>
+    <rect x="590" y="886" width="230" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
+    <text x="705" y="906" text-anchor="middle">changes · campaigns · initiatives</text>
+    <rect x="76" y="926" width="90" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
+    <text x="121" y="946" text-anchor="middle">decisions</text>
+    <rect x="174" y="926" width="290" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
+    <text x="319" y="946" text-anchor="middle">audit chain — hash-linked · INSERT-only</text>
+    <rect x="472" y="926" width="70" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
+    <text x="507" y="946" text-anchor="middle">outbox</text>
+    <rect x="550" y="926" width="105" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
+    <text x="602" y="946" text-anchor="middle">pg-boss jobs</text>
+    <rect x="663" y="926" width="105" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
+    <text x="715" y="946" text-anchor="middle">sync journal</text>
+    <rect x="776" y="926" width="110" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
+    <text x="831" y="946" text-anchor="middle">role bindings</text>
+    <text x="76" y="1006" font-size="10.5" font-style="italic" fill="#166534">org_id on every row + Row-Level Security · audit events written in the same transaction as the action</text>
   </g>
-  <line x1="240" y1="664" x2="240" y2="788" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)" marker-start="url(#arr)"/>
-  <text x="250" y="730" font-size="9.5" fill="#475569">SQL · RLS</text>
+  <line x1="240" y1="664" x2="240" y2="848" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)" marker-start="url(#arr)"/>
+  <text x="250" y="756" font-size="9.5" fill="#475569">SQL · RLS</text>
 
   <!-- nats + object storage -->
-  <rect x="1000" y="790" width="226" height="80" rx="10" fill="#f0fdfa" stroke="#0f766e" stroke-dasharray="6 4"/>
-  <text x="1113" y="820" text-anchor="middle" font-size="11.5" font-weight="700" fill="#0f766e">NATS JetStream (optional)</text>
-  <text x="1113" y="838" text-anchor="middle" font-size="10" fill="#134e4a">EventBus backend for high volume</text>
-  <text x="1113" y="854" text-anchor="middle" font-size="10" fill="#134e4a">never required</text>
-  <rect x="1000" y="882" width="226" height="84" rx="10" fill="#f0fdf4" stroke="#15803d"/>
-  <text x="1113" y="910" text-anchor="middle" font-size="11.5" font-weight="700" fill="#15803d">Object storage</text>
-  <text x="1113" y="928" text-anchor="middle" font-size="10" fill="#14532d">filesystem default · S3 optional</text>
-  <text x="1113" y="944" text-anchor="middle" font-size="10" fill="#14532d">bundles · evidence · audit anchors</text>
+  <rect x="1000" y="850" width="226" height="80" rx="10" fill="#f0fdfa" stroke="#0f766e" stroke-dasharray="6 4"/>
+  <text x="1113" y="880" text-anchor="middle" font-size="11.5" font-weight="700" fill="#0f766e">NATS JetStream (optional)</text>
+  <text x="1113" y="898" text-anchor="middle" font-size="10" fill="#134e4a">EventBus backend for high volume</text>
+  <text x="1113" y="914" text-anchor="middle" font-size="10" fill="#134e4a">never required</text>
+  <rect x="1000" y="942" width="226" height="84" rx="10" fill="#f0fdf4" stroke="#15803d"/>
+  <text x="1113" y="970" text-anchor="middle" font-size="11.5" font-weight="700" fill="#15803d">Object storage</text>
+  <text x="1113" y="988" text-anchor="middle" font-size="10" fill="#14532d">filesystem default · S3 optional</text>
+  <text x="1113" y="1004" text-anchor="middle" font-size="10" fill="#14532d">bundles · evidence · audit anchors</text>
 
   <!-- outposts (right) -->
   <text x="1290" y="204" font-size="13" font-weight="700" fill="#334155">Outpost domain instances</text>
@@ -188,23 +191,30 @@
   <text x="1405" y="444" text-anchor="middle" font-size="10" fill="#475569">bundle files · removable media</text>
   <text x="1405" y="480" text-anchor="middle" font-size="9.5" fill="#0f766e">.scpbundle ⇄ sneakernet · hand-fill</text>
 
+  <rect x="1290" y="484" width="230" height="64" rx="10" fill="#eff6ff" stroke="#1d4ed8" stroke-dasharray="6 4"/>
+  <text x="1405" y="510" text-anchor="middle" font-size="11.5" font-weight="700" fill="#1e3a8a">Retrans — CDS boundary</text>
+  <text x="1405" y="528" text-anchor="middle" font-size="10" fill="#1e40af">third instance shape (role: retrans)</text>
+  <text x="1405" y="544" text-anchor="middle" font-size="9.5" fill="#1d4ed8">validates commander signature only</text>
+
   <line x1="1250" y1="252" x2="1290" y2="252" stroke="#0f766e" stroke-width="1.8" marker-end="url(#arrTeal)" marker-start="url(#arrTeal)"/>
   <line x1="1250" y1="342" x2="1290" y2="342" stroke="#0f766e" stroke-width="1.8" marker-end="url(#arrTeal)" marker-start="url(#arrTeal)"/>
   <line x1="1250" y1="432" x2="1290" y2="432" stroke="#0f766e" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#arrTeal)" marker-start="url(#arrTeal)"/>
+  <line x1="1226" y1="516" x2="1290" y2="516" stroke="#1d4ed8" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#arrTeal)"/>
+  <text x="1233" y="510" font-size="8.5" fill="#1d4ed8">signed artifacts</text>
 
-  <rect x="1290" y="520" width="230" height="150" rx="10" fill="#f8fafc" stroke="#64748b" stroke-dasharray="5 4"/>
-  <text x="1302" y="544" font-size="11.5" font-weight="700" fill="#334155">Commander UI — cross-domain view</text>
-  <text x="1302" y="564" font-size="10.5" fill="#475569">every domain · sync freshness</text>
-  <text x="1302" y="582" font-size="10.5" fill="#475569">in-flight changes per domain</text>
-  <text x="1302" y="600" font-size="10.5" fill="#475569">campaign / initiative roll-up</text>
-  <text x="1302" y="618" font-size="10.5" fill="#475569">air-gapped: last-known + transfer status</text>
-  <text x="1302" y="642" font-size="10" font-style="italic" fill="#64748b">outpost-initiated only — commander never</text>
-  <text x="1302" y="658" font-size="10" font-style="italic" fill="#64748b">dials an outpost or edits its data</text>
+  <rect x="1290" y="568" width="230" height="150" rx="10" fill="#f8fafc" stroke="#64748b" stroke-dasharray="5 4"/>
+  <text x="1302" y="592" font-size="11.5" font-weight="700" fill="#334155">Commander UI — cross-domain view</text>
+  <text x="1302" y="612" font-size="10.5" fill="#475569">every domain · sync freshness</text>
+  <text x="1302" y="630" font-size="10.5" fill="#475569">in-flight changes per domain</text>
+  <text x="1302" y="648" font-size="10.5" fill="#475569">campaign / initiative roll-up</text>
+  <text x="1302" y="666" font-size="10.5" fill="#475569">air-gapped: last-known + transfer status</text>
+  <text x="1302" y="690" font-size="10" font-style="italic" fill="#64748b">outpost-initiated only — commander never</text>
+  <text x="1302" y="706" font-size="10" font-style="italic" fill="#64748b">dials an outpost or edits its data</text>
 
   <!-- legend -->
-  <line x1="40" y1="1024" x2="90" y2="1024" stroke="#0f766e" stroke-width="1.8"/>
-  <text x="98" y="1028" font-size="10.5" fill="#475569">connected sync — mTLS HTTPS journal pull</text>
-  <line x1="360" y1="1024" x2="410" y2="1024" stroke="#0f766e" stroke-width="1.8" stroke-dasharray="6 4"/>
-  <text x="418" y="1028" font-size="10.5" fill="#475569">air-gap file transfer (.scpbundle)</text>
-  <text x="660" y="1028" font-size="10.5" fill="#475569">every export Ed25519-signed + hash-chained · every import verified before apply</text>
+  <line x1="40" y1="1084" x2="90" y2="1084" stroke="#0f766e" stroke-width="1.8"/>
+  <text x="98" y="1088" font-size="10.5" fill="#475569">connected sync — mTLS HTTPS journal pull</text>
+  <line x1="360" y1="1084" x2="410" y2="1084" stroke="#0f766e" stroke-width="1.8" stroke-dasharray="6 4"/>
+  <text x="418" y="1088" font-size="10.5" fill="#475569">air-gap file transfer (.scpbundle)</text>
+  <text x="660" y="1088" font-size="10.5" fill="#475569">every export Ed25519-signed + hash-chained · every import verified before apply</text>
 </svg>
