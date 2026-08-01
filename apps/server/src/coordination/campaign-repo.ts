@@ -266,27 +266,36 @@ export function campaignTargetObjectIdsOf(
 }
 
 /**
- * The campaign reconciler's batch-fetch, mirroring `changes-repo.ts`'s `listChangeRowsInStates`
- * shape (`ORDER BY updated_at ASC LIMIT n`).
+ * Every non-terminal campaign in the org — no plan yet, or a LATEST plan that is not
+ * `completed`/`aborted` — the reconciler's batch-fetch, mirroring `changes-repo.ts`'s
+ * `listChangeRowsInStates` shape (`ORDER BY updated_at ASC LIMIT n`).
  *
- * CORRECTED 2026-08-01 — this doc previously read "Every non-terminal (no plan yet, or plan not yet
- * fully completed/aborted) campaign in the org", and the query DOES NOT DO THAT. Its WHERE clause
- * is `org_id`, `type_id = 'campaign'`, `deleted_at IS NULL` and nothing else: a campaign whose
- * latest plan is `completed` or `aborted` is still returned, every tick, forever.
- * `reconcileOneCampaign` then early-returns on it having done nothing. The name says "Active", the
- * doc said "non-terminal", the query says "all of them" — and only the query runs.
+ * THE DOC SAID THIS FOR MONTHS AND THE QUERY DID NOT DO IT. Until 2026-08-01 the WHERE clause was
+ * `org_id` + `type_id = 'campaign'` + `deleted_at IS NULL` and nothing else, so a campaign whose
+ * latest plan was `completed` or `aborted` came back every tick forever and `reconcileOneCampaign`
+ * early-returned on it having done nothing. The name said "Active", the doc said "non-terminal",
+ * the query said "all of them" — and only the query runs.
  *
- * Consequence, now contained rather than fixed: terminal campaigns consume batch slots. That was a
- * STARVATION vector until `reconcileCampaignsOrgTick` began round-robin bumping every campaign it
- * examines (see the bump's comment there) — with the bump, a terminal campaign yields its slot on
- * the next tick instead of holding it forever, so no campaign is starved. What remains is wasted
- * work: every terminal campaign is re-fetched and re-early-returned for the life of the org.
+ * WHY THE PREDICATE IS SHAPED LIKE THIS. A campaign can have SEVERAL plans (a re-plan writes a new
+ * row rather than mutating the old one), so the test is not "has no terminal plan" — it is "the
+ * LATEST plan is not terminal". Those differ exactly where it is most dangerous: a campaign that
+ * completed one plan and was then RE-PLANNED has a terminal plan AND an active one, and the naive
+ * predicate would exclude it from the reconciler forever. Over-inclusion (the old behaviour) wastes
+ * a batch slot; wrong exclusion silently strands a live campaign, which is far worse — so the
+ * inner `DISTINCT ON` picks the latest row per campaign FIRST and only then tests its status.
  *
- * FOLLOW-UP (deliberately not done here): add the real predicate — "the LATEST plan by created_at
- * is not `completed`/`aborted`". It needs care, because a campaign may have several plans and
- * `getLatestCampaignPlan` picks by `created_at DESC` with no tiebreak; a filter that gets this
- * wrong would exclude ACTIVE campaigns, which is far worse than today's over-inclusion. Not worth
- * risking in the same change that fixed the starvation class.
+ * `ORDER BY created_at DESC, id DESC` MATCHES `campaign-plan-service.ts`'s `getLatestCampaignPlan`
+ * EXACTLY, and both had to gain the `id` tiebreak together. `created_at` defaults to `now()`, which
+ * in Postgres is TRANSACTION time, so two plans written in one transaction tie byte-for-byte and
+ * "latest" was decided by planner order. If this filter and that reader disagreed under a tie, a
+ * campaign could be excluded here as terminal while the reader handed the reconciler an ACTIVE plan
+ * — a campaign that is never driven and reports no error anywhere. `id` is UUIDv7, so it is both
+ * deterministic and time-ordered.
+ *
+ * `campaign_object_id` is NOT NULL, so the `NOT IN` carries no three-valued-logic hazard.
+ *
+ * The reconciler's own `plan.status === "completed" || "aborted"` early-return STAYS as defence in
+ * depth — this filter is an efficiency and honesty fix, not the safety boundary.
  */
 export async function listActiveCampaignObjectIds(
   tx: TenantTx,
@@ -300,7 +309,16 @@ export async function listActiveCampaignObjectIds(
       and(
         eq(objects.orgId, orgId),
         eq(objects.typeId, "campaign"),
-        sql`${objects.deletedAt} IS NULL`
+        sql`${objects.deletedAt} IS NULL`,
+        sql`${objects.id} NOT IN (
+          SELECT latest.campaign_object_id FROM (
+            SELECT DISTINCT ON (p.campaign_object_id) p.campaign_object_id, p.status
+            FROM campaign_plans p
+            WHERE p.org_id = ${orgId}
+            ORDER BY p.campaign_object_id, p.created_at DESC, p.id DESC
+          ) latest
+          WHERE latest.status IN ('completed', 'aborted')
+        )`
       )
     )
     .orderBy(asc(objects.updatedAt))

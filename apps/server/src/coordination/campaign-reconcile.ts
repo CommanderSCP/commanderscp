@@ -418,10 +418,16 @@ export async function reconcileCampaignsOrgTick(
     // operator clearing the block is noticed) freezes its `updated_at` forever, and 25 of them
     // starve every campaign behind them. A campaign that is merely PROGRESSING freezes it too.
     //
-    // Bumped unconditionally, for every campaign examined — including one that early-returns on a
-    // terminal plan — because the requirement is "took its turn", not "made progress". Unlike the
-    // change-side loops there is no cheap in-loop signal for which of the two happened, and
-    // bumping both is correct for fairness either way.
+    // Bumped unconditionally, for every campaign examined, because the requirement is "took its
+    // turn", not "made progress". Unlike the change-side loops there is no cheap in-loop signal for
+    // which of the two happened, and bumping both is correct for fairness either way.
+    //
+    // STILL REQUIRED AFTER THE ACTIVE-FILTER FIX, and it is worth being explicit about why, because
+    // the filter looks like it makes this redundant and does not. `listActiveCampaignObjectIds` now
+    // excludes campaigns whose LATEST plan is terminal, which removes the *finished* campaigns from
+    // the batch — but the starvation case was never those. It is a campaign that is legitimately
+    // ACTIVE and blocked (or merely progressing) while writing nothing to its `objects` row. The
+    // filter shrinks the candidate set; only the bump makes the set ROTATE.
     //
     // NOT YET BITING: the homelab holds 0 campaigns. Fixed before it can, because this class has
     // now cost real production downtime once and its symptom (silence) is indistinguishable from

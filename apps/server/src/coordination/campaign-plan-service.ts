@@ -181,7 +181,18 @@ export async function getLatestCampaignPlan(
   const planRow = await tx.query.campaignPlans.findFirst({
     where: (t, { eq: eqOp, and: andOp }) =>
       andOp(eqOp(t.orgId, orgId), eqOp(t.campaignObjectId, campaignObjectId)),
-    orderBy: (t, { desc }) => [desc(t.createdAt)]
+    // `(createdAt, id)` DESC, not `createdAt` alone. `created_at` defaults to `now()`, which in
+    // Postgres is TRANSACTION time — so two plans written in the same transaction carry a
+    // BYTE-IDENTICAL timestamp and "latest" was genuinely ambiguous, resolved by whatever order the
+    // planner happened to return. `id` is UUIDv7 (time-ordered), so it is both a deterministic
+    // tiebreak and the right one.
+    //
+    // This is not cosmetic: `campaign-repo.ts`'s `listActiveCampaignObjectIds` now filters on "the
+    // LATEST plan is not terminal", and that filter and this reader MUST agree on which plan is
+    // latest. If they disagreed under a tie, a campaign could be filtered out of the reconciler's
+    // batch as terminal while this function handed the reconciler an ACTIVE plan — a campaign that
+    // is never driven and shows no error. Both now order by the same tuple.
+    orderBy: (t, { desc }) => [desc(t.createdAt), desc(t.id)]
   });
   if (!planRow) return null;
 
