@@ -6,8 +6,7 @@ import {
   operationsOf,
   templateToRegExp,
   undeclaredCalls,
-  unexpectedCalls,
-  UNDECLARED_BY_DESIGN
+  unexpectedCalls
 } from "./openapi-conformance.js";
 
 /**
@@ -78,33 +77,34 @@ describe("openapi conformance: the matcher can actually reject", () => {
   });
 
   /**
-   * THE ONE EXEMPTION, pinned in both directions.
+   * THE EXEMPTION IS GONE, and this is what replaced it.
    *
-   * `GET /api/v1/events/stream` (the SSE live-update channel) is registered as a raw `app.get`, so
-   * the emitter never sees it, and `use-event-stream.ts` opens it with a hand-built URL from
-   * `RootLayout` — on EVERY page. Without an exemption the sweep would fail on every run for a
-   * pre-existing M2 gap; without these assertions the exemption could quietly grow into a list that
-   * excuses whatever the sweep happens to catch.
+   * `GET /api/v1/events/stream` (the SSE live-update channel) used to be the sweep's one carve-out:
+   * a raw `app.get` the emitter never saw, opened by `use-event-stream.ts` from `RootLayout` — on
+   * EVERY page — with a hand-built URL and a raw `EventSource`. The SSE API-parity work declared the
+   * operation and moved the UI onto the generated SDK, so it is now DECLARED and passes on its own
+   * merits. Asserting that here (rather than just deleting the old tests) is what stops a
+   * regression that dropped the declaration from silently reinstating the gap.
    */
-  it("still FLAGS the SSE stream as undeclared — the exemption is an exemption, not an absence", () => {
+  it("accepts the SSE stream as a DECLARED operation — no carve-out involved", () => {
     const sse = { method: "GET", path: "/events/stream" };
-    expect(isDeclaredOperation(operations, sse)).toBe(false);
-    expect(undeclaredCalls(operations, [sse])).toEqual([sse]);
+    expect(isDeclaredOperation(operations, sse)).toBe(true);
+    expect(undeclaredCalls(operations, [sse])).toEqual([]);
+    expect(unexpectedCalls(operations, [sse])).toEqual([]);
   });
 
-  it("exempts exactly that one call, and nothing else", () => {
-    expect(UNDECLARED_BY_DESIGN).toEqual([{ method: "GET", path: "/events/stream" }]);
-
-    const sse = { method: "GET", path: "/events/stream" };
+  it("exempts nothing at all — an undeclared call is unexpected, whatever it is", () => {
     const madeUp = { method: "GET", path: "/made/up" };
-    expect(unexpectedCalls(operations, [sse])).toEqual([]);
-    // A different METHOD on the same path is NOT exempt — the exemption is one operation, not a path.
+    // The stream is GET-only; the old exemption was one operation, and now there is none.
     expect(unexpectedCalls(operations, [{ method: "POST", path: "/events/stream" }])).toEqual([
       { method: "POST", path: "/events/stream" }
     ]);
     expect(unexpectedCalls(operations, [madeUp])).toEqual([madeUp]);
     expect(
-      unexpectedCalls(operations, [sse, { method: "GET", path: "/federation/status" }])
+      unexpectedCalls(operations, [
+        { method: "GET", path: "/events/stream" },
+        { method: "GET", path: "/federation/status" }
+      ])
     ).toEqual([]);
   });
 

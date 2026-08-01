@@ -318,7 +318,8 @@ Plus a generic bounded `/graph/traverse` (direction, relationship-type set, max 
   graph/query/{name}  graph/traverse
   plans/              plans/{id}:apply             # server-side desired-state reconciliation
   federation/{peers,exports,imports,journal}
-  events/stream                                    # SSE (grafted): live UI/CLI updates
+  events/stream                                    # SSE (grafted): live UI/CLI updates — declared
+                                                   # as text/event-stream (ADR-0025), SDK-consumed
 /api/v1/openapi.json
 ```
 
@@ -697,7 +698,7 @@ Two domains never write one object. When a non-owning domain must contribute to 
 - **React 18 + TypeScript + Vite SPA**, built to static assets, **served by the Fastify server** — no separate UI service, no BFF, no SSR.
 - **Consumes only the generated `@scp/sdk`** against the public `/v1` API, authenticating with the same OIDC/local flows. The UI is the permanent proof of API-first: it literally cannot do anything the SDK/CLI can't.
 - TanStack Router + TanStack Query; Tailwind CSS + shadcn/ui; **Cytoscape.js** graph/impact visualization fed by the same named graph-query endpoints; wave/topology progression views over plan rows.
-- **Live updates via SSE** from `/events/stream` (grafted) — nearly free once the outbox exists, and it removes UI polling.
+- **Live updates via SSE** from `/events/stream` (grafted) — nearly free once the outbox exists, and it removes UI polling. It is a **declared operation like any other** ([ADR-0025](adr/0025-sse-contract-parity.md)): the 200 is `text/event-stream` carrying `RelayedEventSchema`, so the generator emits `streamEvents` and the SPA consumes `client.events.stream()` — no raw `EventSource`, no hand-built URL, and every frame validated by the same generated validator as any 2xx body (ADR-0023). Reconnection/backoff/`Last-Event-ID` is owned explicitly by the SDK, because the generated SSE client alone does **not** reconnect after a clean server close.
 - **Zero external requests:** all assets (fonts, icons, scripts) ship in the image — a hard air-gap requirement.
 - Every blocked or acted-upon item renders a "Why?" link to its Decision record.
 

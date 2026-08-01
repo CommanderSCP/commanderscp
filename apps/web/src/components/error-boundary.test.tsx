@@ -106,7 +106,7 @@ describe("ErrorBoundary", () => {
 describe("the boundary is MOUNTED around the router outlet", () => {
   it("RootLayout contains a throwing route instead of white-screening", async () => {
     // The router `Outlet` stands in for whatever route is active; `useEventStream` opens a real
-    // EventSource, which has no place in a component test.
+    // network connection to the live event stream, which has no place in a component test.
     vi.doMock("@tanstack/react-router", () => ({
       Outlet: () => {
         throw new Error("a route blew up");

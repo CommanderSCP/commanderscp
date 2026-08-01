@@ -225,7 +225,11 @@ import {
   listPluginManifests as listPluginManifestsRequest,
   runDiscovery as runDiscoveryRequest,
   acceptDiscoveryProposal as acceptDiscoveryProposalRequest,
-  backfillSourceMappings as backfillSourceMappingsRequest
+  backfillSourceMappings as backfillSourceMappingsRequest,
+  // The live event stream (`GET /events/stream`) — a generated SSE operation like any other
+  // generated operation, `responseValidator` included, since the SSE API-parity work declared it
+  // in the contract.
+  streamEvents as streamEventsRequest
 } from "./generated/sdk.gen.js";
 import type {
   ApplyPlanResponse,
@@ -360,10 +364,12 @@ import type {
   AcceptDiscoveryRequest,
   AcceptDiscoveryResponse,
   BackfillSourceMappingsResponse,
-  ServiceBoardResponse
+  ServiceBoardResponse,
+  RelayedEvent
 } from "@scp/schemas";
 import { ScpApiError, ScpResponseValidationError } from "./errors.js";
 import { installResponseValidationErrors } from "./response-validation.js";
+import { resilientEventStream, type EventStreamOptions } from "./event-stream.js";
 
 export interface ScpClientOptions {
   /** e.g. http://localhost:8080/api/v1 */
@@ -1929,5 +1935,37 @@ export class ScpClient {
       });
       return unwrap(result);
     }
+  };
+
+  // -----------------------------------------------------------------------------------------
+  // The live event stream (`GET /events/stream`, DESIGN §6/§8). Every frame is validated against
+  // the contract schema before it is yielded — the generated `responseValidator` runs per frame,
+  // exactly as it does per JSON body everywhere else (ADR-0023), which is what closes that ADR's
+  // named "not in the spec at all" hole.
+  // -----------------------------------------------------------------------------------------
+
+  readonly events = {
+    /**
+     * The caller's org's events, as an async iterator that reconnects on its own — the SDK
+     * replacement for the browser `EventSource` `apps/web` used to open by hand.
+     *
+     * `sseMaxRetryAttempts: 1` deliberately switches the generated client's internal retry OFF so
+     * that one policy in `event-stream.ts` covers BOTH failure modes; the generated loop only ever
+     * covered the error one, and a clean server close would otherwise end the stream silently.
+     *
+     * Pass `signal` to stop: nothing else ends the iteration.
+     */
+    stream: (options: EventStreamOptions = {}): AsyncGenerator<RelayedEvent, void, void> =>
+      resilientEventStream(
+        ({ signal, headers, onError }) =>
+          streamEventsRequest({
+            client: this.client,
+            signal,
+            headers,
+            sseMaxRetryAttempts: 1,
+            onSseError: onError
+          }),
+        options
+      )
   };
 }
