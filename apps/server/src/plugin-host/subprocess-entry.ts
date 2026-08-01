@@ -82,6 +82,10 @@ async function loadPlugin(moduleName: string): Promise<LoadedPlugin> {
       const mod = await import("@scp/plugin-scan-result-control");
       return { kind: "control", plugin: mod.createScanResultControlPlugin() };
     }
+    case "github-check": {
+      const mod = await import("@scp/plugin-github-check");
+      return { kind: "control", plugin: mod.createGithubCheckControlPlugin() };
+    }
     case "github": {
       const mod = await import("@scp/plugin-github");
       return { kind: "executor", plugin: mod.createGithubExecutorPlugin() };
@@ -117,6 +121,10 @@ async function loadPlugin(moduleName: string): Promise<LoadedPlugin> {
     case "terraform": {
       const mod = await import("@scp/plugin-terraform");
       return { kind: "executor", plugin: mod.createTerraformExecutorPlugin() };
+    }
+    case "pipeline-generic": {
+      const mod = await import("@scp/plugin-pipeline-generic");
+      return { kind: "executor", plugin: mod.createPipelineGenericExecutorPlugin() };
     }
     case "managed-iac": {
       const mod = await import("@scp/plugin-managed-iac");

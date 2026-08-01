@@ -89,11 +89,18 @@ export interface FederationTransportPluginClient {
  * same charter-enumerated pattern): the thin orchestrator behind the commander's promotion scan
  * step, launching ephemeral `scp-runner-scan` containers (ADR-0020 §1). Like `managed-iac` it is a
  * `KNOWN_EXECUTOR_MODULE` and gets server-injected runner settings (executor-bindings-repo.ts).
+ * M10.4 adds `github-check`, a third `ControlPlugin` (sibling of `webhook-control`/
+ * `scan-result-control`): turns a GitHub Check Run/status verdict for the change's own commit
+ * into gate evidence (BUILD_AND_TEST.md §8 M10.4). M10.6 adds `pipeline-generic`, the generic
+ * URL-templated `ExecutorPlugin` extracted from `terraform`'s Mode-1 shape (`terraform` becomes a
+ * preset of it — same `KNOWN_EXECUTOR_MODULE` allowlist, own module name so an operator can bind
+ * the generic executor directly for a pipeline with no dedicated plugin).
  */
 export type PluginModule =
   | "fake-executor"
   | "webhook-control"
   | "scan-result-control"
+  | "github-check"
   | "github"
   | "github-discovery"
   | "gitea"
@@ -103,6 +110,7 @@ export type PluginModule =
   | "argocd"
   | "argocd-discovery"
   | "terraform"
+  | "pipeline-generic"
   | "managed-iac"
   | "managed-scan"
   | "webhook-notify"

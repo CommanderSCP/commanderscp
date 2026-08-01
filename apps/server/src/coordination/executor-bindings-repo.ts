@@ -358,6 +358,7 @@ export const KNOWN_EXECUTOR_MODULES: PluginModule[] = [
   "gitlab",
   "argocd",
   "terraform",
+  "pipeline-generic",
   "managed-iac",
   "managed-scan"
 ];

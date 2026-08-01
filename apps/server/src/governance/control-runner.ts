@@ -12,8 +12,15 @@ import { getObjectByIdOrUrnAnyType, isUuid } from "../graph/objects-repo.js";
 // would only ever produce a safe-but-confusing RPC "unknown method 'evaluate'" failure; excluding
 // it keeps this allowlist an honest description of what a control binding can actually reach.
 // M17.1 adds "scan-result-control" (a ControlPlugin sibling of webhook-control that turns a
-// coordinated Trivy scan verdict into gate evidence).
-const KNOWN_CONTROL_MODULES: PluginHostInstanceConfig["module"][] = ["webhook-control", "scan-result-control"];
+// coordinated Trivy scan verdict into gate evidence). M10.4 adds "github-check" (a third
+// ControlPlugin sibling: turns a GitHub Check Run/status verdict for the change's own commit into
+// gate evidence — the concrete "CI green for digest X" wave-gate control, BUILD_AND_TEST.md §8
+// M10.4).
+const KNOWN_CONTROL_MODULES: PluginHostInstanceConfig["module"][] = [
+  "webhook-control",
+  "scan-result-control",
+  "github-check"
+];
 
 function isKnownPluginModule(value: string): value is PluginHostInstanceConfig["module"] {
   return (KNOWN_CONTROL_MODULES as string[]).includes(value);
@@ -42,11 +49,32 @@ export interface EnsureControlRunInput {
 }
 
 /**
+ * M10.4 — how long a cached `"expired"` outcome is treated as still-fresh before `ensureControlRun`
+ * calls the plugin again. `"expired"` is `github-check`'s "CI has not concluded yet, please
+ * re-check later" signal: a wave gate is often asked before CI on the target commit has even
+ * started, and returning `"fail"` for that would be WRONG — `"fail"`/`"pass"`/every other status
+ * below is cached FOREVER (this function's own doc comment: "a control result is a historical
+ * fact, not continuously re-polled"), which would PERMANENTLY deadlock the wave the instant this
+ * control was ever asked before CI concluded.
+ *
+ * Without this cooldown, exempting `"expired"` from caching entirely would re-run the plugin (and
+ * insert a new `control_runs` row) on EVERY reconcile tick — the exact unbounded-growth pattern
+ * `coordination/reconcile.ts`'s wave-gate Decision persistence already hit and fixed
+ * (`insertDecisionIfChanged`: 1.44 GB/day from a byte-identical row every ~2s tick). This bounds
+ * both the `control_runs` growth rate and the external API call rate to at most once per interval
+ * per pending change, while still eventually noticing CI concluding. Every OTHER status
+ * (`pass`/`fail`/`warning`/`skipped`/`timed_out`) is unaffected — cached forever, unchanged from
+ * M4/M17.1, since only `github-check` ever produces `"expired"`.
+ */
+const EXPIRED_RECHECK_INTERVAL_MS = 30_000;
+
+/**
  * Ensures a `control_runs` row exists for (changeObjectId, controlObjectId) — running it via its
- * bound ControlPlugin instance if no run exists yet (or `force`). Never throws for a plugin-side
- * failure: an unreachable/erroring binding produces a `fail` outcome (with the error captured in
- * evidence) rather than propagating, so one bad control binding can't abort an entire gate
- * evaluation the way an uncaught exception would.
+ * bound ControlPlugin instance if no run exists yet (or `force`, or a cached `"expired"` outcome
+ * older than `EXPIRED_RECHECK_INTERVAL_MS`). Never throws for a plugin-side failure: an
+ * unreachable/erroring binding produces a `fail` outcome (with the error captured in evidence)
+ * rather than propagating, so one bad control binding can't abort an entire gate evaluation the
+ * way an uncaught exception would.
  */
 export async function ensureControlRun(
   tx: TenantTx,
@@ -69,7 +97,11 @@ export async function ensureControlRun(
 
   if (!input.force) {
     const existing = await latestControlRun(tx, input.orgId, input.changeObjectId, input.controlObjectId);
-    if (existing) return existing.status;
+    if (existing) {
+      const stillFresh =
+        existing.status !== "expired" || Date.now() - existing.createdAt.getTime() < EXPIRED_RECHECK_INTERVAL_MS;
+      if (stillFresh) return existing.status;
+    }
   }
 
   const binding = await getControlBinding(tx, input.orgId, input.controlObjectId);
