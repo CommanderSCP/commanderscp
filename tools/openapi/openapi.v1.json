@@ -46291,7 +46291,8 @@
                               "type": "string",
                               "enum": [
                                 "trivy",
-                                "openscap"
+                                "openscap",
+                                "trivy-vm"
                               ]
                             }
                           },
@@ -46438,7 +46439,8 @@
                       "type": "string",
                       "enum": [
                         "trivy",
-                        "openscap"
+                        "openscap",
+                        "trivy-vm"
                       ]
                     }
                   }
@@ -46478,7 +46480,8 @@
                         "type": "string",
                         "enum": [
                           "trivy",
-                          "openscap"
+                          "openscap",
+                          "trivy-vm"
                         ]
                       }
                     },

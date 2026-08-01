@@ -155,6 +155,72 @@ describe("@scp/plugin-managed-scan: openscap dispatch (M13.3b)", () => {
   });
 });
 
+describe("@scp/plugin-managed-scan: trivy-vm dispatch (13.3a machine-image arm)", () => {
+  it("dispatches trivy-vm with NO trailing args and the SAME isolation as trivy", async () => {
+    const plugin = createManagedScanExecutorPlugin();
+    const ref = await plugin.trigger(ctx(), {
+      kind: "custom",
+      parameters: { method: "trivy-vm", inputDir: join(scratch, "oci"), outputDir: join(scratch, "out") }
+    });
+    const args = createCall()!.args;
+    const imageIdx = args.indexOf("scp-runner-scan:vetted");
+    // The machine-image arm takes no profile/datastream — the method IS the whole argv tail.
+    expect(args.slice(imageIdx + 1)).toEqual(["trivy-vm"]);
+    // The isolation model is not relaxed for a bigger subject: still --network none, still no bind
+    // mount (a multi-GiB disk is `docker cp`'d in like everything else), still no docker.sock.
+    expect(args[args.indexOf("--network") + 1]).toBe("none");
+    expect(args).not.toContain("-v");
+    expect(args.join(" ")).not.toContain("docker.sock");
+    // Subject copied IN to /work/image (the machine image rides the same copy-in seam), evidence out.
+    expect(
+      dockerCalls.some((c) => c.args[0] === "cp" && c.args[2]?.endsWith(":/work/image"))
+    ).toBe(true);
+    expect(dockerCalls.some((c) => c.args[0] === "cp" && c.args[1]?.endsWith(":/work/out/."))).toBe(
+      true
+    );
+    expect(dockerCalls.some((c) => c.args[0] === "rm" && c.args.includes("-f"))).toBe(true);
+    expect((await plugin.status(ctx(), ref)).phase).toBe("succeeded");
+  });
+
+  it("carries the pre-loaded Trivy DB into a machine-image scan (the DB seam is not trivy-only)", async () => {
+    const plugin = createManagedScanExecutorPlugin();
+    await plugin.trigger(ctx(), {
+      kind: "custom",
+      parameters: {
+        method: "trivy-vm",
+        inputDir: join(scratch, "oci"),
+        outputDir: join(scratch, "out"),
+        scanDbDir: join(scratch, "db")
+      }
+    });
+    const args = createCall()!.args;
+    // A `trivy vm` scan reads the SAME vulnerability DB as `trivy image`; if the pre-load env were
+    // wired for `trivy` only, this arm would silently scan against the image-baked (stale) DB.
+    expect(args).toContain("SCP_SCAN_DB_DIR=/work/db");
+    expect(dockerCalls.some((c) => c.args[0] === "cp" && c.args[2]?.endsWith(":/work/db"))).toBe(true);
+  });
+
+  it("a non-zero trivy-vm run (e.g. an unrecognized disk format) is reported FAILED", async () => {
+    // run.sh exits 4 when it cannot resolve exactly one machine-image disk from the layout — the
+    // fail-closed refusal. The orchestrator must surface that as a FAILED run so the commander
+    // deposits no evidence and E6 refuses; it must never be smoothed into a clean result.
+    startBehavior = {
+      ok: false,
+      stdout: "",
+      stderr: "scp-runner-scan: trivy-vm — expected exactly ONE machine-image disk file"
+    };
+    const plugin = createManagedScanExecutorPlugin();
+    const ref = await plugin.trigger(ctx(), {
+      kind: "custom",
+      parameters: { method: "trivy-vm", inputDir: join(scratch, "oci"), outputDir: join(scratch, "out") }
+    });
+    const st = await plugin.status(ctx(), ref);
+    expect(st.phase).toBe("failed");
+    expect(st.detail).toContain("scan FAILED");
+    expect(st.detail).toContain("ONE machine-image disk");
+  });
+});
+
 describe("@scp/plugin-managed-scan: fail-closed", () => {
   it("an unsupported method fails CLOSED without touching docker", async () => {
     const plugin = createManagedScanExecutorPlugin();

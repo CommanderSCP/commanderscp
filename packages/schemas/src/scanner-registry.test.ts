@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ScanEvidenceSchema, ScanMethodSchema } from "./supply-chain.js";
+import { ScanEvidenceSchema, ScanMethodSchema, usesTrivyDb } from "./supply-chain.js";
 import {
   PutScannerAssignmentRequestSchema,
   ScannerAssignmentSchema
@@ -7,21 +7,47 @@ import {
 
 /**
  * M13.3a — the scanner-method enum widening + scanner-assignment registry schemas (ADR-0020 §2).
- * These are the SCHEMA-level invariants the build rests on: the enum accepts both methods, the
- * evidence-widening is additive (a `trivy` document still parses, an `openscap` one now parses too),
- * and the registry write body validates the executor Type + methods.
+ * These are the SCHEMA-level invariants the build rests on: the enum accepts every shipped method
+ * (`trivy`, `openscap`, and the 13.3a machine-image arm `trivy-vm`), the evidence-widening is
+ * additive (a `trivy` document still parses, the newer ones parse too), the Trivy-DB predicate
+ * classifies every enum member, and the registry write body validates the executor Type + methods.
  */
 
 describe("ScanMethodSchema", () => {
-  it("accepts trivy and openscap", () => {
+  it("accepts trivy, openscap and trivy-vm", () => {
     expect(ScanMethodSchema.safeParse("trivy").success).toBe(true);
     expect(ScanMethodSchema.safeParse("openscap").success).toBe(true);
+    // 13.3a machine-image arm.
+    expect(ScanMethodSchema.safeParse("trivy-vm").success).toBe(true);
   });
 
   it("rejects anything else", () => {
     expect(ScanMethodSchema.safeParse("grype").success).toBe(false);
     expect(ScanMethodSchema.safeParse("").success).toBe(false);
     expect(ScanMethodSchema.safeParse(1).success).toBe(false);
+    // Near-misses on the new value — the enum is exact, not prefix-matched.
+    expect(ScanMethodSchema.safeParse("trivy-vm-experimental").success).toBe(false);
+    expect(ScanMethodSchema.safeParse("trivyvm").success).toBe(false);
+  });
+});
+
+/**
+ * `usesTrivyDb` is the ONE predicate every Trivy-DB-dependent concern routes through (the M13.3b-ii
+ * offline pre-load seam, the staleness gate, the `scanDb*` evidence fields). Its whole reason to
+ * exist is that a `method === "trivy"` comparison would let the machine-image arm slip past the
+ * staleness gate and scan against an unclassified DB — so it is pinned EXHAUSTIVELY over the enum:
+ * a new method added without a decision about its DB dependence fails here, not in production.
+ */
+describe("usesTrivyDb — exhaustive over ScanMethodSchema", () => {
+  it("is true for every Trivy-family method and false for OpenSCAP", () => {
+    expect(usesTrivyDb("trivy")).toBe(true);
+    expect(usesTrivyDb("trivy-vm")).toBe(true);
+    expect(usesTrivyDb("openscap")).toBe(false);
+  });
+
+  it("classifies EVERY enum member (no method is left unclassified)", () => {
+    const classified = new Set(["trivy", "trivy-vm", "openscap"]);
+    expect([...ScanMethodSchema.options].sort()).toEqual([...classified].sort());
   });
 });
 
@@ -42,6 +68,11 @@ describe("ScanEvidenceSchema.scanner widening (ADDITIVE, gate-invisible)", () =>
 
   it("now accepts scanner: 'openscap' (the widening)", () => {
     const parsed = ScanEvidenceSchema.safeParse({ ...base, scanner: "openscap" });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("now accepts scanner: 'trivy-vm' (the machine-image arm, 13.3a)", () => {
+    const parsed = ScanEvidenceSchema.safeParse({ ...base, scanner: "trivy-vm" });
     expect(parsed.success).toBe(true);
   });
 
@@ -83,5 +114,14 @@ describe("scanner-assignment registry schemas", () => {
     expect(
       PutScannerAssignmentRequestSchema.safeParse({ executorType: "image", methods: ["grype"] }).success
     ).toBe(false);
+  });
+
+  it("accepts the machine-image assignment the 0048 seed writes (infrastructure -> trivy-vm)", () => {
+    expect(
+      PutScannerAssignmentRequestSchema.safeParse({
+        executorType: "infrastructure",
+        methods: ["trivy-vm"]
+      }).success
+    ).toBe(true);
   });
 });

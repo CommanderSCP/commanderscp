@@ -48,12 +48,14 @@ import type {
   OutpostConfigReconcileResult,
   OutpostTrustTier,
   UpdateFederationPeerRequest,
-  SyncScope
+  SyncScope,
+  ScanMethod
 } from "@scp/schemas";
 import {
   DesiredStateManifestSchema,
   outpostClaimantTokens,
-  OutpostTrustTierSchema
+  OutpostTrustTierSchema,
+  ScanMethodSchema
 } from "@scp/schemas";
 // Node-only hashing (`node:crypto`) — deliberately a separate subpath from `@scp/schemas`'
 // default entry, which `apps/web` also imports (browser build) — see audit-chain.ts's module doc.
@@ -2685,16 +2687,24 @@ export function buildProgram(): Command {
           .split(",")
           .map((m) => m.trim())
           .filter(Boolean);
+        // Validate against the SCHEMA's method set, never a hand-copied literal list: a new managed
+        // scan method (13.3a added `trivy-vm`) must not need a matching edit here to be usable, and
+        // a stale copy would reject a method the server accepts.
+        const parsedMethods: ScanMethod[] = [];
         for (const m of methods) {
-          if (m !== "trivy" && m !== "openscap") {
-            throw new Error(`--methods entries must be 'trivy' or 'openscap' (got '${m}')`);
+          const parsed = ScanMethodSchema.safeParse(m);
+          if (!parsed.success) {
+            throw new Error(
+              `--methods entries must be one of ${ScanMethodSchema.options.join("|")} (got '${m}')`
+            );
           }
+          parsedMethods.push(parsed.data);
         }
         const client = await clientFromStoredCredentials(opts);
         const assignment = await client.scannerAssignments.put(
           {
             executorType: opts.type as (typeof validTypes)[number],
-            methods: methods as ("trivy" | "openscap")[]
+            methods: parsedMethods
           },
           operatorToken
         );

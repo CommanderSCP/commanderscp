@@ -3539,7 +3539,11 @@ export const zListScannerAssignmentsResponse = z.object({
             'infrastructure',
             'configuration'
         ]),
-        methods: z.array(z.enum(['trivy', 'openscap'])),
+        methods: z.array(z.enum([
+            'trivy',
+            'openscap',
+            'trivy-vm'
+        ])),
         updatedAt: z.string()
     }))
 });
@@ -3556,7 +3560,11 @@ export const zPutScannerAssignmentResponse = z.object({
         'infrastructure',
         'configuration'
     ]),
-    methods: z.array(z.enum(['trivy', 'openscap'])),
+    methods: z.array(z.enum([
+        'trivy',
+        'openscap',
+        'trivy-vm'
+    ])),
     updatedAt: z.string()
 });
 
