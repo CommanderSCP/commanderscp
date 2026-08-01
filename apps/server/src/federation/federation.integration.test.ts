@@ -27,6 +27,7 @@ import { getCursor } from "./cursors-repo.js";
 import { createOverlay, getMergedOverlayView } from "./overlay-repo.js";
 import { handFillObject } from "./handfill-repo.js";
 import { proposeChange, getChange, requiresOf } from "../coordination/changes-repo.js";
+import { enforceLocalChangeAuthority } from "../coordination/transition.js";
 import { materializeApprovalRequest, castApprovalVote } from "../governance/approvals-repo.js";
 import { insertControlRun } from "../governance/controls-repo.js";
 import { getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
@@ -745,7 +746,10 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
           overlayName: "sneaky-component"
         })
       )
-    ).rejects.toMatchObject({ status: 403, detail: expect.stringMatching(/must belong to a service/i) });
+    ).rejects.toMatchObject({
+      status: 403,
+      detail: expect.stringMatching(/must belong to a service/i)
+    });
   });
 
   it("SECURITY: a policy overlay may only ADD strictness, never weaken the base's enforcement", async () => {
@@ -1017,6 +1021,71 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     expect(localChange.urn).toBe(result.localChangeUrn);
   });
 
+  it("S10 PRECONDITION PIN: an imported promotion's change object is LOCALLY originated (origin != provenance), so the single-writer guard permits B to drive it", async () => {
+    // THE REGRESSION THIS EXISTS TO PREVENT (S10, `enforceLocalChangeAuthority`'s doc comment):
+    // that guard refuses a change whose graph object's `originDomainId` is not this domain. It is
+    // only safe to key on `originDomainId` BECAUSE `importPromotionBundle` calls `proposeChange`
+    // FRESH in the receiver — control genuinely transfers, and the exporting domain is recorded
+    // separately as `changes.imported_from_domain`. A guard keyed on `importedFromDomain` instead
+    // would refuse B every verb on every change it ever accepted by promotion. Nothing pinned that
+    // precondition before: it was an argument in a comment, and a refactor of `importPromotionBundle`
+    // that stamped the exporter as the origin would have broken promotion acceptance silently.
+    const { changeId } = await proposeApprovedChangeInA();
+    const result = await importPromotionBundle(
+      domainB.db,
+      domainB.orgId,
+      await exportBundleA(changeId)
+    );
+
+    const selfB = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      ensureFederationSelf(tx, domainB.orgId)
+    );
+    const imported = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      getObjectByIdOrUrnAnyType(tx, domainB.orgId, result.localChangeObjectId)
+    );
+
+    // 1. THE TWO FIELDS ARE DISTINCT, ON THE SAME ROW. Origin is B (authority transferred);
+    //    provenance is A (where it came from). A guard reading the wrong one fails right here.
+    expect(imported.originDomainId).toBe(selfB.domainId);
+    expect(imported.originDomainId).not.toBe(selfA.domainId);
+    const [importedRow] = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      tx
+        .select({ importedFromDomain: changes.importedFromDomain })
+        .from(changes)
+        .where(
+          and(eq(changes.orgId, domainB.orgId), eq(changes.objectId, result.localChangeObjectId))
+        )
+    );
+    expect(importedRow!.importedFromDomain).toBe(selfA.domainId);
+
+    // 2. THE GUARD ITSELF ALLOWS IT — asserted against the real function, not inferred from (1).
+    //    This is the assertion that would go red if the guard were re-keyed on provenance.
+    const authority = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      enforceLocalChangeAuthority(tx, {
+        orgId: domainB.orgId,
+        changeObjectId: result.localChangeObjectId,
+        originDomainId: imported.originDomainId,
+        actorObjectId: domainB.orgId,
+        requestId: "s10-precondition-pin"
+      })
+    );
+    expect(authority.ok).toBe(true);
+
+    // 3. NEGATIVE CONTROL: the same guard, same change, keyed on the PROVENANCE domain — i.e. what
+    //    the wrong implementation would have passed — is REFUSED. Without this arm, (2) passing
+    //    could just mean the guard permits everything.
+    const wrongKey = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      enforceLocalChangeAuthority(tx, {
+        orgId: domainB.orgId,
+        changeObjectId: result.localChangeObjectId,
+        originDomainId: importedRow!.importedFromDomain!,
+        actorObjectId: domainB.orgId,
+        requestId: "s10-precondition-pin-negative"
+      })
+    );
+    expect(wrongKey.ok).toBe(false);
+  });
+
   it("M12 P4B §8 Q2 round-trip: promotion STRIPS `requires` (imported change can never park in `waiting`), PRESERVES `provides` verbatim, and records the strip Decision", async () => {
     // The change in A carries BOTH halves of a coupling: it provides `feature-a` and requires
     // `infra-ready` at its own target (a real object in A, so propose-time `at` resolution passes).
@@ -1094,10 +1163,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     // The imported change's projection row exists and is in `proposed` — the coupling strip never
     // pre-advances the local lifecycle; local gates still apply from the start.
     const importedRow = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
-      tx
-        .select()
-        .from(changes)
-        .where(eq(changes.objectId, result.localChangeObjectId))
+      tx.select().from(changes).where(eq(changes.objectId, result.localChangeObjectId))
     );
     expect(importedRow[0]!.state).toBe("proposed");
   });
@@ -1231,9 +1297,9 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     expect(computeBundleChecksum(promotionChecksumPayload(bundle))).toBe(bundle.checksum);
     // Stripping artifacts[] leaves the checksum unchanged (it was never in the payload).
     const { artifacts: _dropped, ...withoutArtifacts } = bundle;
-    expect(computeBundleChecksum(promotionChecksumPayload(withoutArtifacts as PromotionBundle))).toBe(
-      bundle.checksum
-    );
+    expect(
+      computeBundleChecksum(promotionChecksumPayload(withoutArtifacts as PromotionBundle))
+    ).toBe(bundle.checksum);
   });
 
   it("E3 CHECKSUM byte-identity holds when artifacts[] is stripped (the field was never in the checksum)", async () => {
@@ -1252,16 +1318,16 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
       ensureInstanceKey(tx, domainA.orgId)
     );
     expect(computeBundleChecksum(promotionChecksumPayload(oldBundle))).toBe(oldBundle.checksum);
-    expect(verifyBundleSignature(oldBundle.checksum, oldBundle.bundleSignature, aKey.publicKey)).toBe(
-      true
-    );
+    expect(
+      verifyBundleSignature(oldBundle.checksum, oldBundle.bundleSignature, aKey.publicKey)
+    ).toBe(true);
 
     // BUT M17.4(a) now BINDS artifacts[] via the cosign manifest (which enumerates [oci, sbom]) — so
     // stripping the typed set while the manifest still claims it is a DETECTED set-equality violation
     // (the Ed25519 layer is blind to it; the cosign layer is not). Rejected fail-closed.
-    await expect(
-      importPromotionBundle(domainB.db, domainB.orgId, oldBundle)
-    ).rejects.toMatchObject({ status: 409 });
+    await expect(importPromotionBundle(domainB.db, domainB.orgId, oldBundle)).rejects.toMatchObject(
+      { status: 409 }
+    );
   });
 
   it("E3 OLD->NEW: a v1 bundle with NO artifacts[] imports cleanly (optional, undefined)", async () => {
@@ -1273,7 +1339,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     // enumerates the — here empty — artifact set, so the whole-bundle JSON is no longer the right
     // proxy; assert the E3 invariant precisely on the checksum payload instead.)
     expect(bundle.artifacts).toBeUndefined();
-    expect(JSON.stringify(promotionChecksumPayload(bundle))).not.toContain("\"artifacts\"");
+    expect(JSON.stringify(promotionChecksumPayload(bundle))).not.toContain('"artifacts"');
     expect(computeBundleChecksum(promotionChecksumPayload(bundle))).toBe(bundle.checksum);
     expect(bundle.artifactDigests).toEqual([]);
 
@@ -1316,9 +1382,10 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
       ...bundle,
       artifactDigests: [...bundle.artifactDigests, "sha256:" + "e".repeat(64)]
     };
-    await expect(
-      importPromotionBundle(domainB.db, domainB.orgId, tampered)
-    ).rejects.toMatchObject({ status: 409, detail: expect.stringMatching(/checksum mismatch/) });
+    await expect(importPromotionBundle(domainB.db, domainB.orgId, tampered)).rejects.toMatchObject({
+      status: 409,
+      detail: expect.stringMatching(/checksum mismatch/)
+    });
   });
 
   // -----------------------------------------------------------------------------------------
@@ -1329,7 +1396,9 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
   // -----------------------------------------------------------------------------------------
 
   it("E6 HARD-GATE: a substantive artifact with a FAILED scan is REFUSED at export with a decision_id", async () => {
-    const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts, { seedScan: false });
+    const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts, {
+      seedScan: false
+    });
     // Seed a FAILED scan for the OCI artifact — a present-but-failing outcome must still refuse.
     await seedScanOutcome(changeId, OCI_DIGEST, { status: "fail" });
 
@@ -1351,7 +1420,9 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
   });
 
   it("E6 UNIVERSAL/FAIL-CLOSED: a substantive artifact with NO scan outcome is REFUSED", async () => {
-    const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts, { seedScan: false });
+    const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts, {
+      seedScan: false
+    });
     // No scan seeded at all — a MISSING scan refuses exactly like a failed one (universal gate).
     const outcome = await exportPromotionBundle(domainA.db, {
       orgId: domainA.orgId,
@@ -1365,7 +1436,9 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
   });
 
   it("E6 DIGEST-BINDING: a passing scan of a DIFFERENT digest does NOT satisfy the gate (refused)", async () => {
-    const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts, { seedScan: false });
+    const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts, {
+      seedScan: false
+    });
     // A passing scan, but of some OTHER image — digestMatch true against the WRONG digest must not
     // authorize this artifact (defense-in-depth boundary re-check of M17.1's digest binding).
     const otherDigest = "sha256:" + "f".repeat(64);
@@ -1390,7 +1463,9 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     expect(bundle.promotionManifest!.exporterDomainId).toBe(bundle.header.exporterDomainId);
     expect(bundle.promotionManifest!.peerDomainId).toBe(bundle.header.peerDomainId);
     expect(bundle.promotionManifest!.changeUrn).toBe(bundle.change.urn);
-    expect(bundle.promotionManifest!.artifacts.map((a) => a.digest)).toEqual(bundle.artifactDigests);
+    expect(bundle.promotionManifest!.artifacts.map((a) => a.digest)).toEqual(
+      bundle.artifactDigests
+    );
 
     // verify-blob the manifest with domain A's cosign PUBLIC key (E5) — proves a real signature.
     const cosignPub = await getInstanceCosignPublicKey(domainA.db, domainA.orgId);
@@ -1464,9 +1539,9 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     // bundle from an E6-capable peer as a DOWNGRADE attack — rejected fail-closed (the receiver refuses
     // to silently accept the strictly-weaker Ed25519-only bundle). The genuine pre-E5 back-compat path
     // (no cosign key registered → ACCEPT) is covered in the M17.4(a) receiver-verify block below.
-    await expect(
-      importPromotionBundle(domainB.db, domainB.orgId, oldBundle)
-    ).rejects.toMatchObject({ status: 409 });
+    await expect(importPromotionBundle(domainB.db, domainB.orgId, oldBundle)).rejects.toMatchObject(
+      { status: 409 }
+    );
   });
 
   it("E6 SWAP-DEFENSE: a manifestSignature does NOT verify against a DIFFERENT bundle's manifest", async () => {
@@ -1612,10 +1687,25 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     // Exports exactly like the unlabeled passing case: one oci artifact, self-binding manifest.
     expect(bundle.artifacts).toEqual([{ type: "oci", digest: DEV_DIGEST }]);
     expect(bundle.promotionManifest!.artifacts).toEqual([{ type: "oci", digest: DEV_DIGEST }]);
-    // The forged label never enters the manifest, the checksum payload, or the artifact set — it
-    // lived only in sourceRef.classification/origin/devPipeline, none of which any of those read.
+    // The forged label never enters the MANIFEST or the ARTIFACT SET — it lives only in
+    // sourceRef.classification/origin/devPipeline, which neither of those reads.
     expect(JSON.stringify(bundle.promotionManifest)).not.toContain("classification");
     expect(JSON.stringify(bundle.promotionManifest)).not.toContain("devPipeline");
+
+    // CORRECTION (2026-08-01): an earlier version of this comment also claimed the label "never
+    // enters the checksum payload". IT DOES — `promotionChecksumPayload` includes `change`
+    // wholesale, and the label lives in `change.sourceRef`. That was a false statement sitting
+    // next to true assertions, which is the most durable kind of wrong comment, so it is pinned
+    // here as a fact rather than deleted.
+    //
+    // It is not a defect: ADR-0018 §4 permits DESCRIPTIVE labels, and being inside the checksum is
+    // the SAFE direction — it means a label cannot be altered in flight without invalidating the
+    // signature. Inertness is about what the GATE reads, not about what is covered by integrity
+    // protection. The two assertions above, plus the refusal case in the test before this one, are
+    // what actually establish it.
+    const checksumPayload = JSON.stringify(promotionChecksumPayload(bundle));
+    expect(checksumPayload).toContain("classification");
+    expect(computeBundleChecksum(promotionChecksumPayload(bundle))).toBe(bundle.checksum);
   });
 
   it("LABEL INERTNESS: an instance-scoped scan-requirement floor (the ADR-0016 origin='local' discriminator) has ZERO effect on E6 — the gate consults no scan-requirement policy at all", async () => {
@@ -1759,7 +1849,8 @@ describe("M17.4(a) / M15.2 receiver manifest verification (Testcontainers)", () 
         sourceRef
       })
     );
-    const oci = typeof sourceRef.artifact_digest === "string" ? sourceRef.artifact_digest : undefined;
+    const oci =
+      typeof sourceRef.artifact_digest === "string" ? sourceRef.artifact_digest : undefined;
     if (oci) await seedPassingScan(change.id, oci);
 
     const outcome = await exportPromotionBundle(commander.db, {
@@ -1905,9 +1996,12 @@ describe("M14.1 Federation: per-peer poke-mode (Testcontainers)", () => {
     // A second domain stands in for the peer being paired — we only need its domainId + a real
     // Ed25519 public key (the pairing exchange values); no live handshake is performed.
     const peer = await createIsolatedDomain("m14PokePeer");
-    peerSelf = await withTenantTx(peer.db, peer.orgId, (tx) => ensureFederationSelf(tx, peer.orgId));
-    peerKeyPublic = (await withTenantTx(peer.db, peer.orgId, (tx) => ensureInstanceKey(tx, peer.orgId)))
-      .publicKey;
+    peerSelf = await withTenantTx(peer.db, peer.orgId, (tx) =>
+      ensureFederationSelf(tx, peer.orgId)
+    );
+    peerKeyPublic = (
+      await withTenantTx(peer.db, peer.orgId, (tx) => ensureInstanceKey(tx, peer.orgId))
+    ).publicKey;
     await peer.close();
   }, 60_000);
 
@@ -1997,7 +2091,9 @@ describe("M14.1 Federation: per-peer poke-mode (Testcontainers)", () => {
 
   it("pokeMode=true with NO baseUrl (null) is REJECTED by the pair-time guard", async () => {
     // Fresh, never-paired peer → no existing baseUrl to fall back on → effective baseUrl is null.
-    await expectGuardRejection(pairWith({ domainId: asTrustDomainId(randomUUID()), pokeMode: true }));
+    await expectGuardRejection(
+      pairWith({ domainId: asTrustDomainId(randomUUID()), pokeMode: true })
+    );
   });
 
   it("the guard honors an EXISTING https baseUrl on re-pair when baseUrl is omitted", async () => {
@@ -2120,8 +2216,14 @@ describe("M14.4 GET /federation/status effectiveCadence — agrees with the sche
     certDir = await mkdtemp(path.join(tmpdir(), "scp-m144-status-certs-"));
     realCert = path.join(certDir, "client.crt");
     realKey = path.join(certDir, "client.key");
-    await writeFile(realCert, "-----BEGIN CERTIFICATE-----\nnot-a-real-cert\n-----END CERTIFICATE-----\n");
-    await writeFile(realKey, "-----BEGIN PRIVATE KEY-----\nnot-a-real-key\n-----END PRIVATE KEY-----\n");
+    await writeFile(
+      realCert,
+      "-----BEGIN CERTIFICATE-----\nnot-a-real-cert\n-----END CERTIFICATE-----\n"
+    );
+    await writeFile(
+      realKey,
+      "-----BEGIN PRIVATE KEY-----\nnot-a-real-key\n-----END PRIVATE KEY-----\n"
+    );
 
     for (const k of [
       "SCP_FEDERATION_MTLS_CERT_FILE",

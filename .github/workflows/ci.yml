@@ -46,13 +46,23 @@ jobs:
       - run: pnpm build
 
   static-checks:
-    name: "2. Static checks (lint + typecheck)"
+    name: "2. Static checks (format + lint + typecheck)"
     runs-on: ubuntu-latest
     needs: build
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - run: pnpm build
+      # `format:check` existed as a root script from the beginning and was referenced by NO
+      # workflow, so 229 files had drifted out of Prettier's shape with nothing to notice. Wired
+      # here (owner decision 2026-08-01: reformat the repo, then gate it) rather than as its own
+      # job: it is a static check on the same checkout as lint/typecheck, and it is reachable from
+      # the required gate through this job exactly as they are.
+      #
+      # It runs FIRST because it is the cheapest of the three and its failure is the most trivially
+      # fixable — `pnpm format` and commit. A contributor should not wait out a typecheck to be
+      # told about whitespace.
+      - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck
 
@@ -151,7 +161,13 @@ jobs:
       # still the job that GUARANTEES the assertions run — but it means this stage's result is no
       # longer independent of GitHub's runner-image contents. cosign and skopeo are NOT
       # pre-installed, and the tamper suite requires all three, so it still skips here as designed.
-      - run: pnpm test
+      #
+      # `--coverage`, not a bare `pnpm test`: the per-app `vitest.config.ts` files now carry
+      # coverage THRESHOLDS (owner decision 2026-08-01), and a threshold only fails a run when
+      # coverage is actually collected. Without this flag the thresholds would be decorative —
+      # which is precisely the state §7 was in when it claimed "≥80%" while configuring nothing.
+      # Turbo forwards everything after `--` to each package's `test` script.
+      - run: pnpm test -- --coverage
 
   helm-verify:
     name: "4b. Helm hardened-defaults gate (tools/helm-verify)"
@@ -283,18 +299,31 @@ jobs:
             repo="${upstream%%:*}"
             tag="${upstream##*:}"
             mirror_ref="ghcr.io/commanderscp/mirror/${repo}:${tag}"
+            # An ORG-namespaced repo ("minio/minio") is already fully qualified under docker.io;
+            # only a single-segment OFFICIAL image ("postgres") lives under the implicit
+            # `library/` namespace. Prefixing `library/` unconditionally — as this did before
+            # minio was added — makes `docker pull docker.io/library/minio/minio` a 404.
+            case "$repo" in
+              */*) src="docker.io/${upstream}" ;;
+              *)   src="docker.io/library/${upstream}" ;;
+            esac
             if docker pull "$mirror_ref" >/dev/null 2>&1; then
               echo "cache hit: $mirror_ref already mirrored."
             else
-              echo "cache miss: mirroring docker.io/library/$upstream -> $mirror_ref"
-              docker pull "docker.io/library/${upstream}"
-              docker tag "docker.io/library/${upstream}" "$mirror_ref"
+              echo "cache miss: mirroring $src -> $mirror_ref"
+              docker pull "$src"
+              docker tag "$src" "$mirror_ref"
               docker push "$mirror_ref"
             fi
           }
           mirror postgres:16
           mirror nats:2.10
           mirror registry:2
+          # `federation/delivery-s3.integration.test.ts` starts MinIO via GenericContainer inside
+          # the sharded suite — it was missed when this job was written, so the REQUIRED integration
+          # gate still had one live Docker Hub pull on its path, which is the exact failure mode
+          # this job exists to remove.
+          mirror minio/minio:RELEASE.2025-04-22T22-12-26Z
 
   prod-audit:
     name: "5y. Prod dependency audit (pnpm audit --prod, GHCR-mirrored advisory snapshot)"
@@ -330,9 +359,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - name: Compute the advisory-snapshot tag (content hash of pnpm-lock.yaml)
+      - name: Compute the advisory-snapshot tag (content hash of pnpm-lock.yaml + ISO week)
         id: tag
-        run: echo "ref=ghcr.io/commanderscp/audit-db:$(sha256sum pnpm-lock.yaml | cut -c1-16)" >> "$GITHUB_OUTPUT"
+        # THE WEEK COMPONENT IS THE POINT. Keyed on the lockfile ALONE (as this was), a snapshot
+        # taken once was reused forever: a CVE disclosed tomorrow against a dependency pinned today
+        # could NEVER red this gate, because nothing would ever re-query. That is the failure mode
+        # a dependency-audit gate exists to catch, so the gate was structurally blind to it.
+        #
+        # The lockfile still keys it (a changed dependency set must be re-queried immediately); the
+        # ISO week bounds staleness at 7 days. Weekly, not daily: the advisory endpoint is the ONE
+        # network call in this job, and a daily key multiplies cold-start cost sevenfold for a
+        # disclosure cadence that does not warrant it.
+        #
+        # AIR-GAP: a disconnected runner pre-seeds the week's snapshot into its internal GHCR the
+        # same way it seeds every other mirrored artifact. On a cache miss it cannot serve, this job
+        # FAILS rather than passing on stale data — fail-closed is the correct posture for a
+        # security gate, and a silently-stale audit is worse than a red one.
+        run: |
+          echo "ref=ghcr.io/commanderscp/audit-db:$(sha256sum pnpm-lock.yaml | cut -c1-16)-$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       - name: Pull the cached advisory snapshot, or query once on a cache miss and publish it
@@ -358,8 +402,31 @@ jobs:
             docker cp "$cid:/audit.json" /tmp/audit/audit.json
             docker rm "$cid" >/dev/null
           else
-            echo "cache miss: pnpm-lock.yaml changed since the last snapshot. Querying the registry advisory endpoint ONCE (the only network call in this job) and publishing the result to GHCR."
+            echo "cache miss: new lockfile or new ISO week. Querying the registry advisory endpoint ONCE (the only network call in this job) and publishing the result to GHCR."
+            # `|| true` is REQUIRED on the command (pnpm audit exits non-zero merely BECAUSE it
+            # found vulnerabilities — that is this job's normal, expected path and is graded below,
+            # not here) but it also swallows a genuine failure: a network error, a registry 5xx, or
+            # an auth failure all leave a truncated or empty audit.json behind. That file then
+            # parsed to `{}`, `bad` computed as 0, and the gate PASSED GREEN having measured
+            # nothing. The well-formedness assertion in the next step is what closes that hole; a
+            # malformed snapshot must never reach GHCR to be cached and reused, so it is checked
+            # BEFORE the publish.
             pnpm audit --prod --json > /tmp/audit/audit.json || true
+            node -e '
+              const fs = require("fs");
+              let a;
+              try {
+                a = JSON.parse(fs.readFileSync("/tmp/audit/audit.json", "utf8"));
+              } catch (e) {
+                console.error("::error::the audit query produced unparseable JSON — treating as a FAILED query, not as zero vulnerabilities: " + e.message);
+                process.exit(1);
+              }
+              const v = a && a.metadata && a.metadata.vulnerabilities;
+              if (!v || typeof v !== "object") {
+                console.error("::error::the audit output parsed but carries no metadata.vulnerabilities — the query did not complete. Refusing to cache or grade it.");
+                process.exit(1);
+              }
+            '
             printf 'FROM scratch\nCOPY audit.json /audit.json\n' > /tmp/audit/Dockerfile
             docker build -t "$REF" /tmp/audit
             docker push "$REF"
@@ -368,10 +435,32 @@ jobs:
         run: |
           node -e '
             const fs = require("fs");
-            const a = JSON.parse(fs.readFileSync("/tmp/audit/audit.json", "utf8"));
-            const v = (a && a.metadata && a.metadata.vulnerabilities) || {};
+            let a;
+            try {
+              a = JSON.parse(fs.readFileSync("/tmp/audit/audit.json", "utf8"));
+            } catch (e) {
+              // A CACHED snapshot can be malformed too — an image published before the
+              // well-formedness check above existed, or a truncated `docker cp`. Same rule: an
+              // unreadable measurement is a FAILED gate, never a passed one.
+              console.error("::error::the cached audit snapshot is unparseable — a gate that cannot read its evidence must fail, not pass: " + e.message);
+              process.exit(1);
+            }
+            const v = a && a.metadata && a.metadata.vulnerabilities;
+            if (!v || typeof v !== "object") {
+              console.error("::error::the audit snapshot carries no metadata.vulnerabilities — nothing was measured. Failing closed.");
+              process.exit(1);
+            }
             console.log("prod vulnerabilities:", JSON.stringify(v));
             const bad = (v.high || 0) + (v.critical || 0);
+            // MODERATE is REPORTED, NOT GATED — a deliberate choice, recorded here because the
+            // silence read as an oversight. A moderate prod advisory is frequently unactionable at
+            // disclosure (no patched version yet), and gating on it hands the ability to red `main`
+            // to a third party unrelated to the change under test. High/critical is the blocking
+            // line; the annotation keeps moderates visible so they are triaged rather than unseen.
+            const moderate = v.moderate || 0;
+            if (moderate > 0) {
+              console.log("::warning::" + moderate + " MODERATE prod-dependency vulnerabilities (reported, not gated — see this job'"'"'s comment).");
+            }
             if (bad > 0) {
               console.error("::error::" + bad + " high/critical prod-dependency vulnerabilities in the audit snapshot above.");
               process.exit(1);
@@ -415,6 +504,17 @@ jobs:
     permissions:
       contents: read
       packages: read
+    env:
+      # THE LAST UNMIRRORED DOCKER HUB PULL ON THE REQUIRED GATE'S PATH. Testcontainers starts a
+      # `testcontainers/ryuk` reaper sidecar by default, pulled from Docker Hub on every shard of
+      # every run — so job 4d's mirror closed the postgres/nats/registry/minio holes while this one
+      # stayed open, and a Hub timeout could still red 5z for a reason unrelated to the code.
+      #
+      # DISABLED rather than mirrored, deliberately: ryuk exists to garbage-collect leaked
+      # containers on a LONG-LIVED host. A GitHub-hosted runner is a single-use VM destroyed when
+      # the job ends, so there is nothing for it to reclaim. (A self-hosted runner is the case that
+      # WOULD want it — hence disabled here in the job env, not globally in the test code.)
+      TESTCONTAINERS_RYUK_DISABLED: "true"
     strategy:
       # fail-fast off: a failure in one shard must not cancel the other, so a red run still reports
       # every failing file across both shards (the aggregation gate fails if EITHER shard failed).
@@ -484,7 +584,7 @@ jobs:
       - name: Pull mirrored Testcontainer images and re-tag as the names the tests reference
         run: |
           set -uo pipefail
-          for upstream in postgres:16 nats:2.10 registry:2; do
+          for upstream in postgres:16 nats:2.10 registry:2 minio/minio:RELEASE.2025-04-22T22-12-26Z; do
             repo="${upstream%%:*}"
             tag="${upstream##*:}"
             mirror_ref="ghcr.io/commanderscp/mirror/${repo}:${tag}"

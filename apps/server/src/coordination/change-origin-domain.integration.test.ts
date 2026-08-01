@@ -33,14 +33,21 @@ import {
  * transfers on promotion, by design, so it is never "foreign" there either.
  *
  * What this field IS used for on `change-detail.tsx`: a `ForeignOriginNotice` provenance badge
- * only. It is NOT used to disable Accept/Rollback/Cancel, and correctly so —
- * `apps/server/src/federation/foreign-origin-writes.integration.test.ts` drives a foreign-origin
- * change (fixture-only today, per the paragraph above) through `proposed` AND `validating` and
- * measures the transition verbs answering identically to a local change in both states: the
- * `changes` state-machine transitions never route through `updateObject`'s single-writer guard,
- * so there is no server-side refusal for a client-side gate to mirror. An EARLIER commit on this
- * PR shipped exactly such a gate on the strength of an uncited claim that the server refused it;
- * it did not, and the gate was removed (`fe05666`) once this was measured.
+ * only. It is still NOT used to disable Accept/Rollback/Cancel — but the REASON changed with S10
+ * (PR #171), and the description that used to sit here is now false.
+ *
+ * WAS: "the `changes` state-machine transitions never route through `updateObject`'s single-writer
+ * guard, so there is no server-side refusal for a client-side gate to mirror." That was true, and
+ * it was a GAP — the transition verbs were the one authority hole in the system.
+ * `coordination/transition.ts`'s `enforceLocalChangeAuthority` closed it: accept, rollback and
+ * cancel are all refused with a 409 + `decision_id` on a foreign-origin change, in every state.
+ * `foreign-origin-writes.integration.test.ts` now measures those refusals; the "answering
+ * identically to a local change" and "SUCCEEDS from validating" cases cited here are gone.
+ *
+ * IS: the UI stays ungated on origin so the server's 409 and its `decision_id` reach the operator
+ * instead of being pre-empted client-side (charter principle 6). The earlier gate removed in
+ * `fe05666` was wrong because it simulated an absent enforcement; re-adding one now would be wrong
+ * because it would hide a real one.
  */
 describe("Change.originDomainId (M16.3 P2): the SDK-reachable single-writer-authority field", () => {
   let server: ListeningTestServer;
@@ -58,8 +65,13 @@ describe("Change.originDomainId (M16.3 P2): the SDK-reachable single-writer-auth
   });
 
   it("a locally-proposed change's originDomainId is this instance's own federation domain id", async () => {
-    const component = await createTestComponent(admin, { name: `origin-domain-${randomUUID().slice(0, 8)}` });
-    const change = await admin.changes.propose({ name: "origin-domain v1", targets: [component.id] });
+    const component = await createTestComponent(admin, {
+      name: `origin-domain-${randomUUID().slice(0, 8)}`
+    });
+    const change = await admin.changes.propose({
+      name: "origin-domain v1",
+      targets: [component.id]
+    });
 
     const self = await admin.federation.self();
     expect(change.originDomainId).toBe(self.domainId);

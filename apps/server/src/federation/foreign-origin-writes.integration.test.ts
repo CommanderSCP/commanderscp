@@ -34,15 +34,20 @@ import { createRelationship } from "../graph/relationships-repo.js";
  * `apps/web/src/lib/replica-origin.tsx` and its callers cites a test HERE by name; a gate with no
  * test here is a gate that must not exist.
  *
- * PR #152 REVIEW FIX (E1): the change-lifecycle block below originally only measured accept/
- * rollback against a foreign-origin change sitting in `proposed` — a state neither verb is even
- * legal from (both answer the ordinary wrong-state 409 there, so the arms were indistinguishable
- * from a broken fixture). `validating` is the ONE state `change-detail.tsx`'s `ACCEPTABLE_STATES`
- * (line 42) offers Accept for, and the state the shipped enable-decision actually depends on — so
- * the suite is now extended with a real reconcile loop (`withReconcileLoop`/`withEventRelay` below)
- * to drive a foreign-origin change all the way to `validating` and measure accept/rollback
- * SUCCEEDING there, not merely refusing identically. See "accept SUCCEEDS ... from 'validating'"
- * and "rollback SUCCEEDS ... from 'validating'" near the end of this file.
+ * PR #152 REVIEW FIX (E1), NOW SUPERSEDED BY S10 (PR #171): this block originally only measured
+ * accept/rollback against a foreign-origin change sitting in `proposed` — a state neither verb is
+ * even legal from (both answer the ordinary wrong-state 409 there, so the arms were
+ * indistinguishable from a broken fixture). E1 therefore extended the suite with a real reconcile
+ * loop (`withReconcileLoop`/`withEventRelay` below) to drive a foreign-origin change all the way
+ * to `validating` and measure accept/rollback SUCCEEDING there.
+ *
+ * THOSE TWO TESTS NO LONGER EXIST, and the paths they measured are gone in both directions: the
+ * transition verbs are now refused on authority BEFORE any state check (so `proposed` vs
+ * `validating` no longer distinguishes them), and the reconcile engine SKIPS a foreign-origin
+ * change, so it can never reach `validating` in the first place. The reconcile loop stays enabled
+ * because the engine-skip and resume tests at the end of this file need a genuinely running
+ * engine. Do not go looking for "accept SUCCEEDS ... from 'validating'" — an earlier version of
+ * this comment pointed at it after it had been deleted.
  *
  * HOW "GENUINELY FOREIGN" IS BUILT: `createObject`/`createRelationship` with a `federationImport`
  * context — the exact, and only, code path `federation/import-repo.ts` uses to land a peer's row
@@ -65,7 +70,11 @@ describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIG
     server = await listenTestServer({
       withEventRelay: true,
       withReconcileLoop: true,
-      pluginHostOptions: { callTimeoutMs: 8_000, restartBackoffBaseMs: 50, maxRestartBackoffMs: 300 }
+      pluginHostOptions: {
+        callTimeoutMs: 8_000,
+        restartBackoffBaseMs: 50,
+        maxRestartBackoffMs: 300
+      }
     });
     org = await createTestOrg(server, "foreign-origin-writes");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
@@ -264,7 +273,10 @@ describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIG
     const service = await localObject("service", `chg-svc-${label}`);
     const component = await localObject("component", `chg-comp-${label}`);
     await admin.components.setService(component.id, service.id);
-    const change = await admin.changes.propose({ name: `${label}-change`, targets: [component.id] });
+    const change = await admin.changes.propose({
+      name: `${label}-change`,
+      targets: [component.id]
+    });
     if (!opts.foreign) return change.id;
 
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
@@ -311,8 +323,12 @@ describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIG
   });
 
   it("accept is REFUSED on a foreign-origin change with the single-writer reason — the LOCAL control still gets the ordinary state-machine refusal", async () => {
-    const local = await outcomeOf(admin.changes.accept(await proposeChange("accept-local", { foreign: false })));
-    const foreign = await outcomeOf(admin.changes.accept(await proposeChange("accept-foreign", { foreign: true })));
+    const local = await outcomeOf(
+      admin.changes.accept(await proposeChange("accept-local", { foreign: false }))
+    );
+    const foreign = await outcomeOf(
+      admin.changes.accept(await proposeChange("accept-foreign", { foreign: true }))
+    );
 
     // Local: both changes sit in 'proposed', where accept is illegal regardless — the ordinary
     // state-machine refusal, never mentioning authority.
@@ -332,7 +348,10 @@ describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIG
     // origin for a local change, so the local control arm here is the ordinary bad-request case,
     // not a 409; what matters is that the FOREIGN arm is refused for authority, not state.
     const foreign = await outcomeOf(
-      admin.changes.rollback(await proposeChange("rollback-foreign", { foreign: true }), "measuring")
+      admin.changes.rollback(
+        await proposeChange("rollback-foreign", { foreign: true }),
+        "measuring"
+      )
     );
     expect(foreign.status).toBe(409);
     expect(foreign.detail).toContain("authoritatively owned");
@@ -376,5 +395,61 @@ describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIG
     const decisions = await admin.decisions.list({ subjectId: foreignId, limit: 20 });
     expect(decisions.items).toHaveLength(1);
     expect(decisions.items[0]!.inputContext.trigger).toBe("propose");
+  });
+
+  it("SKIP, NOT PARK: a skipped change RESUMES the moment authority returns — it was never blocked, and nothing had to clear a park", async () => {
+    // THE WHOLE POINT OF "SKIP RATHER THAN PARK" (S10; `enforceLocalChangeAuthority`'s doc
+    // comment: "parking would wedge a change nothing can ever resume"). The test above proves the
+    // engine does not DRIVE a foreign-origin change. On its own that is equally consistent with
+    // the engine having PARKED it — a state that looks identical from outside until someone tries
+    // to resume. This test is the other half, and it is the one that fails if a future refactor
+    // "helpfully" blocks/parks instead of filtering: authority returns to this domain, and the
+    // change advances with NO operator intervention, NO park to clear, NO re-proposal.
+    const changeId = await proposeChange("resume-after-skip", { foreign: true });
+
+    // Let the engine tick at least once while the change is foreign, so "it advanced" below cannot
+    // be explained by the engine simply never having looked at it yet. The control change reaching
+    // `validating` is the proof a full advance cycle elapsed in this window.
+    const controlId = await proposeChange("resume-after-skip-control", { foreign: false });
+    await waitUntil(
+      async () => (await admin.changes.get(controlId)).state === "validating" || undefined,
+      { describe: `control change ${controlId} reaches 'validating'`, timeoutMs: 20_000 }
+    );
+    expect((await admin.changes.get(changeId)).state).toBe("proposed");
+
+    // NOT PARKED — the engine left no block on the row. `reconcile_blocked_at` is what a park
+    // would have set, and it is the field a resume would have had to clear by hand.
+    const parkedWhileForeign = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.execute(
+        sql`select reconcile_blocked_at from changes where object_id = ${changeId} and org_id = ${org.orgId}`
+      )
+    );
+    expect(parkedWhileForeign.rows[0]!.reconcile_blocked_at).toBeNull();
+
+    // AUTHORITY RETURNS. The one and only intervention: the change object becomes locally
+    // originated again (the row state a peer handing control back would produce). Nothing touches
+    // `changes` — no state reset, no park clear, no re-propose.
+    const self = await admin.federation.self();
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.execute(
+        sql`update objects set origin_domain_id = ${self.domainId} where id = ${changeId} and org_id = ${org.orgId}`
+      )
+    );
+
+    // ...and the engine picks it up on its own, from exactly where it was left.
+    await waitUntil(
+      async () => (await admin.changes.get(changeId)).state === "validating" || undefined,
+      {
+        describe: `${changeId} resumes and reaches 'validating' once authority returns`,
+        timeoutMs: 20_000
+      }
+    );
+
+    const resumed = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.execute(
+        sql`select reconcile_blocked_at from changes where object_id = ${changeId} and org_id = ${org.orgId}`
+      )
+    );
+    expect(resumed.rows[0]!.reconcile_blocked_at).toBeNull();
   });
 });

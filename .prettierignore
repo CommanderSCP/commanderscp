@@ -13,3 +13,19 @@ tools/openapi/openapi.v1.json
 CLAUDE.md
 PROJECT_CHARTER.md
 docs/
+
+# Helm chart templates are Go-templated YAML, which is NOT valid YAML — every one of these 21 files
+# opens with `{{- if ... -}}`, and Prettier's YAML parser fails on it outright ("Block collections
+# are not allowed within flow collections"). This is a hard parse error, not a formatting
+# difference: Prettier can neither check nor rewrite them, so leaving them in scope would make
+# `format:check` permanently red and un-fixable. Helm's own `helm lint` / `helm template` (CI job
+# 4b, tools/helm-verify) is what actually validates these files.
+deploy/helm/templates/
+deploy/helm-bundled/templates/
+
+# VENDORED UPSTREAM MANIFESTS — verbatim copies of Argo CD / Argo Workflows / Argo Events / Gitea
+# install YAML, kept byte-identical to the release they were pulled from (charter principle 5: no
+# runtime network calls, everything vendored). Reformatting them would rewrite ~183,000 lines of
+# third-party artifact and, worse, destroy the property that makes them maintainable — a clean
+# `diff` against the next upstream release. They are not ours to restyle.
+deploy/helm-bundled/vendor/
