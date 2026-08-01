@@ -35,9 +35,21 @@ import { federationSelfKey } from "./query-client";
  * per-(org,target,type) LOCAL config — `db/schema.ts`'s `executor_bindings` has no
  * `origin_domain_id` column at all, and `routes/executors.ts` checks only `object:write` RBAC on
  * the target); assigning a foreign-origin component to a service; moving it across a
- * locally-originated edge; merging INTO a foreign-origin survivor; and accept/rollback/cancel on a
- * change (the transition verbs write the `changes` state-machine row and never route through
- * `updateObject`, so they answer a foreign-origin change identically to a local one).
+ * locally-originated edge; and merging INTO a foreign-origin survivor.
+ *
+ * ACCEPT/ROLLBACK/CANCEL WERE ON THAT "ALLOWED" LIST AND NO LONGER ARE (S10, PR #171). The reason
+ * given here — "the transition verbs write the `changes` state-machine row and never route through
+ * `updateObject`, so they answer a foreign-origin change identically to a local one" — was an
+ * accurate description of a GAP, not of intended behaviour, and the gap is now closed:
+ * `coordination/transition.ts`'s `enforceLocalChangeAuthority` refuses all three with a 409 +
+ * `decision_id`, keyed on the change object's `originDomainId`. Measured: "cancel is REFUSED on a
+ * foreign-origin change", "accept is REFUSED …", "rollback is REFUSED …".
+ *
+ * THIS FILE STILL MUST NOT GATE THEM. PR #152 removed exactly such a client-side gate because it
+ * simulated an enforcement the server lacked; now that the server really enforces it, the correct
+ * UI behaviour is to let the request go and render the server's 409 and its `decision_id` — a
+ * client-side pre-block would hide the Decision that makes the refusal explainable (charter
+ * principle 6).
  *
  * HOW THE UI LEARNS "OWN DOMAIN": `GET /federation/self` (SDK: `client.federation.self()`) returns
  * `{domainId, name, role, publicKey}` for THIS instance — an SDK-reachable mechanism that already
@@ -143,7 +155,11 @@ export function replicaGuard(
  *  integration test's two CONTROL cases: PATCH and DELETE both 409) — deliberately NOT a blanket
  *  "nothing works here", because local config against this object (executor bindings, service
  *  assignment) demonstrably still does. */
-export function ForeignOriginNotice({ originDomainId }: { originDomainId: string }): React.JSX.Element {
+export function ForeignOriginNotice({
+  originDomainId
+}: {
+  originDomainId: string;
+}): React.JSX.Element {
   return (
     <span
       className="inline-flex items-center gap-1 rounded border border-dashed border-amber-400 bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-800"

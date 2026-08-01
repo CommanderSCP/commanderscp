@@ -37,8 +37,29 @@ import { configDefaults, defineConfig } from "vitest/config";
  * silently accepting everything. `*.spec.ts` is the Playwright convention this directory already
  * follows, and it is exactly what must not run under Vitest.
  */
+/**
+ * COVERAGE THRESHOLDS — a RATCHET, not a target (owner decision 2026-08-01: "measure, then set the
+ * floor"); see `apps/server/vitest.config.ts` for the full rationale and the §7 correction.
+ *
+ * MEASURED 2026-08-01 on this config: statements/lines 40.25%, branches 77.7%, functions 55.83%.
+ * The floors sit a point or two under each. RAISE them as coverage rises; never lower one to make
+ * a red run green.
+ *
+ * The excluded `e2e/**\/*.spec.ts` Playwright specs are main-only and contribute nothing here, so
+ * these numbers describe the component/unit layer alone.
+ */
 export default defineConfig({
   test: {
-    exclude: [...configDefaults.exclude, "e2e/**/*.spec.ts"]
+    exclude: [...configDefaults.exclude, "e2e/**/*.spec.ts"],
+    coverage: {
+      provider: "v8",
+      reporter: ["text-summary"],
+      thresholds: {
+        statements: 38,
+        branches: 75,
+        functions: 53,
+        lines: 38
+      }
+    }
   }
 });

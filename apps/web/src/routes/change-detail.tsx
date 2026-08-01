@@ -1,7 +1,14 @@
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ScpApiError, type Change, type ChangeState, type ChangeWave, type ChangeWaveTarget, type Decision } from "@scp/sdk";
+import {
+  ScpApiError,
+  type Change,
+  type ChangeState,
+  type ChangeWave,
+  type ChangeWaveTarget,
+  type Decision
+} from "@scp/sdk";
 // M4 governance types: @scp/schemas, not @scp/sdk — @scp/sdk's index.ts only re-exports the M3
 // (and earlier) wire types; M4 never added ApprovalRequest/Freeze/etc. there. Importing
 // @scp/schemas directly here is within bounds (eslint.config.mjs's own restricted-imports rule:
@@ -146,7 +153,9 @@ function WhyLink({ decisionId }: { decisionId: string }): React.JSX.Element {
       className="font-medium text-red-700 underline hover:text-red-900"
       data-testid="why-link"
       onClick={() => {
-        document.getElementById(`decision-${decisionId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+        document
+          .getElementById(`decision-${decisionId}`)
+          ?.scrollIntoView({ behavior: "smooth", block: "center" });
       }}
     >
       Why?
@@ -355,20 +364,22 @@ export function ChangeDetailPage(): React.JSX.Element {
   // These three gate ONLY on change STATE — whether the button is offered AT ALL for this lifecycle
   // state.
   //
-  // M16.3 P2 (REMEASURED): Accept/Rollback/Cancel are deliberately NOT additionally gated on the
-  // change's federation origin. `apps/server/src/federation/foreign-origin-writes.integration.test.ts`
-  // measures cancel SUCCEEDING on a foreign-origin change; accept/rollback answering one
-  // byte-identically to a local change in the same state when that state is `proposed` (same
-  // status, same problem title); AND — the state that actually matters, since `validating` is the
-  // only state `ACCEPTABLE_STATES` above offers Accept for — accept/rollback SUCCEEDING outright
-  // on a foreign-origin change once it reaches `validating`. The transition verbs write the
-  // `changes` state-machine row and never route through `updateObject`, so the single-writer guard
-  // is simply not on this path in any state. The first cut of this milestone disabled all three
-  // anyway, on an uncited claim that the server refuses them. Whether the server SHOULD refuse an
-  // accept on a change another domain drives is a real open question (`service-board.ts` already
-  // models `drivenHere`), but it is a SERVER decision — the UI must not simulate an enforcement
-  // that does not exist. Recorded as an out-of-scope finding in the PR body's "Out of scope —
-  // genuine server-side findings" section (finding (a): foreign-origin accept/rollback/cancel).
+  // Accept/Rollback/Cancel are deliberately NOT additionally gated on the change's federation
+  // origin — and that is STILL correct, though for the opposite reason it used to be.
+  //
+  // WAS (M16.3 P2): the server did not refuse these on a foreign-origin change at all, so a UI
+  // gate would have simulated an enforcement that did not exist — which is exactly the defect PR
+  // #152 removed. That open question ("whether the server SHOULD refuse an accept on a change
+  // another domain drives") is now ANSWERED: S10 / PR #171 added
+  // `coordination/transition.ts`'s `enforceLocalChangeAuthority`, and all three verbs are refused
+  // with a 409 carrying `decision_id`. `foreign-origin-writes.integration.test.ts` measures the
+  // refusals; the "cancel SUCCEEDS" and "accept/rollback SUCCEED from validating" cases this
+  // comment used to cite no longer exist.
+  //
+  // IS: the buttons stay ungated on origin because the server's refusal is the thing worth
+  // showing. Blocking client-side would swallow the 409 and its `decision_id` — the record that
+  // makes the block explainable (charter principle 6) — and would re-introduce a second copy of an
+  // authority rule that lives in one place on the server. State remains the only client-side gate.
   const canCancel = CANCELLABLE_STATES.includes(change.state);
   const canAccept = ACCEPTABLE_STATES.includes(change.state);
   const canRollback = ROLLBACKABLE_STATES.includes(change.state);
@@ -449,7 +460,9 @@ export function ChangeDetailPage(): React.JSX.Element {
 
       {acceptMutation.isError && (
         <p className="text-sm text-red-600" data-testid="accept-error">
-          {acceptMutation.error instanceof Error ? acceptMutation.error.message : "Failed to accept"}
+          {acceptMutation.error instanceof Error
+            ? acceptMutation.error.message
+            : "Failed to accept"}
           {decisionIdOf(acceptMutation.error) && (
             <>
               {" "}
@@ -602,7 +615,9 @@ export function ChangeDetailPage(): React.JSX.Element {
                         {approval.status}
                       </Badge>
                     </div>
-                    <p className="mt-1 text-xs text-slate-500">Requested {formatDate(approval.createdAt)}</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Requested {formatDate(approval.createdAt)}
+                    </p>
                   </div>
                   {approval.status !== "satisfied" && (
                     <Button
@@ -640,7 +655,15 @@ export function ChangeDetailPage(): React.JSX.Element {
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-mono text-xs text-slate-900">{run.controlObjectId}</span>
-                    <Badge variant={run.status === "pass" ? "success" : run.status === "warning" ? "info" : "destructive"}>
+                    <Badge
+                      variant={
+                        run.status === "pass"
+                          ? "success"
+                          : run.status === "warning"
+                            ? "info"
+                            : "destructive"
+                      }
+                    >
                       {run.status}
                     </Badge>
                   </div>
