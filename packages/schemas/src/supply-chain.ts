@@ -328,8 +328,15 @@ export function normalizeSbomDigest(ref: string): string | undefined {
  * `digest` is the SBOM DOCUMENT's own content digest (what the reader must verify the fetched bytes
  * hash to) — it is NOT the artifact digest; the artifact this SBOM describes is the change's own
  * `sourceRef.artifact_digest`, which travels alongside it on the same report.
+ *
+ * M10.6 `.strict()`: this is the field-level half of the M10.6 discipline (`ChangeReportRequestSchema`'s
+ * own doc comment) — SCP has no column, no codec, and no route that stores SBOM bytes, and this is
+ * what makes "no way to smuggle the document inside the reference" an ENFORCED refusal (400 naming
+ * the unknown key) rather than a silent strip. A REFERENCE has a small, closed field set on
+ * purpose; an SBOM DOCUMENT (e.g. a `document`/`bomFormat`/`components` field) is exactly what
+ * `.strict()` now refuses.
  */
-export const SbomRefSchema = z.object({
+export const SbomRefSchema = z.strictObject({
   /** SBOM document format. Two, because these are the two cosign/Trivy actually emit. */
   format: z.enum(["cyclonedx", "spdx"]),
   /** The format's spec version as the producer reported it (e.g. `"1.5"`, `"SPDX-2.3"`). */
