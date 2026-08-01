@@ -140,12 +140,36 @@ describe("EventBus: real backend containers", () => {
         // bypasses RLS entirely (admin/superuser, test-only diagnostics — never how the app
         // itself queries), is proof the WHOLE batch committed, not merely that the in-process SSE
         // EventEmitter (which can't itself fail) happened to fire.
+        //
+        // POLLED, NOT READ ONCE — this fixes a real race, observed failing CI on PR #172 as
+        // "expected null not to be null". The SSE wait above returns as soon as the in-process
+        // EventEmitter has fired for all three events, and the relay publishes to SSE INSIDE the
+        // batch, BEFORE the trailing UPDATE and the COMMIT. So `received.length >= 3` is genuinely
+        // satisfiable while `processed_at` is still NULL, and a bare SELECT here is a coin flip
+        // decided by how fast the commit lands after the last publish. Under full-suite load (49
+        // files, competing 1s-poll timers, one shared Postgres — see the SSE wait's own comment)
+        // it loses that flip. The pg-boss assertion immediately below ALREADY wraps itself in
+        // `waitUntil` for exactly this reason and says so; this one was simply missed.
+        //
+        // This does NOT weaken the assertion. The claim is "the whole batch commits", not "the
+        // batch has already committed by the instant SSE fired" — nothing in the design promises
+        // the latter. A relay that never commits still fails here, on the timeout.
         const admin = new pg.Client({ connectionString: testDatabaseUrl() });
         await admin.connect();
         try {
-          const outboxRows = await admin.query<{ id: string; processed_at: Date | null }>(
-            `SELECT id, processed_at FROM outbox WHERE id = ANY($1::uuid[])`,
-            [eventIds]
+          const outboxRows = await waitUntil(
+            async () => {
+              const rows = await admin.query<{ id: string; processed_at: Date | null }>(
+                `SELECT id, processed_at FROM outbox WHERE id = ANY($1::uuid[])`,
+                [eventIds]
+              );
+              if (rows.rows.length !== 3) return undefined;
+              return rows.rows.every((r) => r.processed_at !== null) ? rows : undefined;
+            },
+            {
+              describe: `all 3 outbox rows reach processed_at for org ${org.orgId} (${backend} backend)`,
+              timeoutMs: 30_000
+            }
           );
           expect(outboxRows.rows).toHaveLength(3);
           for (const row of outboxRows.rows) expect(row.processed_at).not.toBeNull();
