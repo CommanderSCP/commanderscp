@@ -1,9 +1,10 @@
-import type { Change } from "@scp/schemas";
+import type { Change, Decision } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { badRequest } from "../errors.js";
 import { getChangeRow, proposeChange, typeOf, targetObjectIdsOf } from "./changes-repo.js";
 import { insertDecision } from "./decisions-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { enforceLocalChangeAuthority } from "./transition.js";
 
 /**
  * Rollback-as-its-own-Change (DESIGN.md §9.4): "A rollback is its own Change, linked to the
@@ -37,18 +38,38 @@ export interface TriggerRollbackInput {
   trigger?: "manual" | "automatic";
 }
 
+export type TriggerRollbackResult =
+  { ok: true; rollbackChange: Change } | { ok: false; decision: Decision; blockedReason: string };
+
 export async function triggerRollback(
   tx: TenantTx,
   input: TriggerRollbackInput
-): Promise<{ rollbackChange: Change }> {
+): Promise<TriggerRollbackResult> {
   const original = await getChangeRow(tx, input.orgId, input.originalChangeObjectId);
+  const originalObject = await getObjectByIdOrUrnAnyType(tx, input.orgId, input.originalChangeObjectId);
+
+  // S10 single-writer guard (tracked-security-followups): checked BEFORE the state-machine
+  // validation below — "you don't own this change" is a more fundamental refusal than "wrong
+  // state", and must not be masked by it. Keys on the OBJECT's `originDomainId`, never on
+  // `importedFromDomain` — see `transition.ts`'s `enforceLocalChangeAuthority` doc comment.
+  const authority = await enforceLocalChangeAuthority(tx, {
+    orgId: input.orgId,
+    changeObjectId: input.originalChangeObjectId,
+    originDomainId: originalObject.originDomainId,
+    actorObjectId: input.actorObjectId,
+    requestId: input.requestId,
+    reason: input.reason
+  });
+  if (!authority.ok) {
+    return { ok: false, decision: authority.decision, blockedReason: authority.blockedReason };
+  }
+
   if (!["executing", "validating", "accepted"].includes(original.state)) {
     throw badRequest(
       `cannot roll back a change in state '${original.state}' — rollback is only meaningful once a change has executed something (executing/validating/accepted)`
     );
   }
 
-  const originalObject = await getObjectByIdOrUrnAnyType(tx, input.orgId, input.originalChangeObjectId);
   const targetObjectIds = targetObjectIdsOf(originalObject.properties);
   if (targetObjectIds.length === 0) {
     throw badRequest(`change '${input.originalChangeObjectId}' has no recorded targets to roll back`);
@@ -93,5 +114,5 @@ export async function triggerRollback(
     }
   });
 
-  return { rollbackChange };
+  return { ok: true, rollbackChange };
 }

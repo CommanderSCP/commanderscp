@@ -59,6 +59,7 @@ import { resolvePolicies } from "../governance/policy-model.js";
 import { prewarmGovernanceForChange } from "../governance/gate-orchestrator.js";
 import { reconcileCampaignsOrgTick } from "./campaign-reconcile.js";
 import { runPreDeployArtifactGate } from "./pre-deploy-gate.js";
+import { ensureFederationSelf } from "../federation/self-repo.js";
 
 /**
  * The resumable reconciliation loop (DESIGN.md §9.3/§9.4, BUILD_AND_TEST.md §8 M3): "pg-boss
@@ -119,11 +120,20 @@ function logChangeError(orgId: string, change: ChangeRow, step: string, err: unk
  * wasted work and confusing "failed" log lines for something that isn't actually a failure. One
  * coherent multi-replica story: every change is single-flight per tick, everywhere in this file.
  */
-async function advanceProposedChanges(db: Db, orgId: string, gateDeps: GateDeps): Promise<void> {
+async function advanceProposedChanges(
+  db: Db,
+  orgId: string,
+  gateDeps: GateDeps,
+  selfDomainId: string
+): Promise<void> {
   const rows = await withTenantTx(db, orgId, (tx) =>
     listChangeRowsInStates(tx, orgId, ["proposed"], BATCH_LIMIT)
   );
-  for (const { change } of rows) {
+  for (const { change, object } of rows) {
+    // S10 single-writer guard: a read-only replica of a peer's change is never ours to drive —
+    // SKIP silently (no lock, no Decision, no park) rather than attempt a transition the guard
+    // inside `transitionChange` would refuse anyway. See tracked-security-followups.
+    if (object.originDomainId !== selfDomainId) continue;
     const lock = await tryAcquireChangeCoordinationLock(db, change.objectId);
     if (!lock) continue;
     try {
@@ -175,11 +185,18 @@ async function advanceProposedChanges(db: Db, orgId: string, gateDeps: GateDeps)
  * — successfully or not), that is a clean "lost the race, someone else already handled it" no-op
  * — never treated as a compilation failure, so never wrongfully cancelled.
  */
-async function advanceEvaluatedChanges(db: Db, orgId: string, gateDeps: GateDeps): Promise<void> {
+async function advanceEvaluatedChanges(
+  db: Db,
+  orgId: string,
+  gateDeps: GateDeps,
+  selfDomainId: string
+): Promise<void> {
   const rows = await withTenantTx(db, orgId, (tx) =>
     listChangeRowsInStates(tx, orgId, ["evaluated"], BATCH_LIMIT)
   );
   for (const { change, object } of rows) {
+    // S10 single-writer guard — see advanceProposedChanges.
+    if (object.originDomainId !== selfDomainId) continue;
     const lock = await tryAcquireChangeCoordinationLock(db, change.objectId);
     if (!lock) continue; // another tick/replica is genuinely working on this change right now.
     try {
@@ -252,11 +269,18 @@ async function advanceEvaluatedChanges(db: Db, orgId: string, gateDeps: GateDeps
 }
 
 /** Same consistency lock as `advanceProposedChanges` — see its doc comment. */
-async function advanceCoordinatedChanges(db: Db, orgId: string, gateDeps: GateDeps): Promise<void> {
+async function advanceCoordinatedChanges(
+  db: Db,
+  orgId: string,
+  gateDeps: GateDeps,
+  selfDomainId: string
+): Promise<void> {
   const rows = await withTenantTx(db, orgId, (tx) =>
     listChangeRowsInStates(tx, orgId, ["coordinated"], BATCH_LIMIT)
   );
   for (const { change, object } of rows) {
+    // S10 single-writer guard — see advanceProposedChanges.
+    if (object.originDomainId !== selfDomainId) continue;
     const lock = await tryAcquireChangeCoordinationLock(db, change.objectId);
     if (!lock) continue;
     try {
@@ -355,11 +379,18 @@ async function advanceCoordinatedChanges(db: Db, orgId: string, gateDeps: GateDe
  * the routing guard never sends one here, but if one ever lands here anyway (state imported, or a
  * future refactor), it is released immediately rather than held behind a coupling it cannot answer.
  */
-async function advanceWaitingChanges(db: Db, orgId: string, gateDeps: GateDeps): Promise<void> {
+async function advanceWaitingChanges(
+  db: Db,
+  orgId: string,
+  gateDeps: GateDeps,
+  selfDomainId: string
+): Promise<void> {
   const rows = await withTenantTx(db, orgId, (tx) =>
     listChangeRowsInStates(tx, orgId, ["waiting"], BATCH_LIMIT)
   );
   for (const { change, object } of rows) {
+    // S10 single-writer guard — see advanceProposedChanges.
+    if (object.originDomainId !== selfDomainId) continue;
     const lock = await tryAcquireChangeCoordinationLock(db, change.objectId);
     if (!lock) continue;
     try {
@@ -477,12 +508,18 @@ async function advanceExecutingChanges(
   orgId: string,
   host: PluginHost,
   sandbox: CelSandbox,
-  masterKey: Buffer
+  masterKey: Buffer,
+  selfDomainId: string
 ): Promise<void> {
   const rows = await withTenantTx(db, orgId, (tx) =>
     listChangeRowsInStates(tx, orgId, ["executing"], BATCH_LIMIT)
   );
-  for (const { change } of rows) {
+  for (const { change, object } of rows) {
+    // S10 single-writer guard — see advanceProposedChanges. Filtering here also covers every
+    // write `reconcileExecutingChange` might make below it (wave triggers, completeExecution's
+    // transitionChange calls, and the auto-rollback triggerRollback call) without needing a
+    // separate check inside each of those.
+    if (object.originDomainId !== selfDomainId) continue;
     try {
       await reconcileExecutingChange(db, orgId, change, host, sandbox, masterKey);
     } catch (err) {
@@ -1261,16 +1298,22 @@ export async function reconcileOrgTick(
   masterKey: Buffer
 ): Promise<void> {
   const gateDeps: GateDeps = { sandbox, host };
+  // S10 single-writer guard: resolved ONCE per tick (a cheap lazy-create-or-read against
+  // `federation_self`) and threaded into every advance* step below, each of which filters a
+  // read-only replica of a peer's change OUT of its candidate batch before ever attempting a
+  // transition — see tracked-security-followups's "engine SKIP rather than park".
+  const selfDomainId = (await withTenantTx(db, orgId, (tx) => ensureFederationSelf(tx, orgId)))
+    .domainId;
   try {
     await withTenantTx(db, orgId, (tx) => processChangeSourceEvents(tx, orgId));
   } catch (err) {
     console.error(`[reconcile] org ${orgId} change-source-event processing failed:`, err);
   }
-  await advanceProposedChanges(db, orgId, gateDeps);
-  await advanceEvaluatedChanges(db, orgId, gateDeps);
-  await advanceCoordinatedChanges(db, orgId, gateDeps);
-  await advanceWaitingChanges(db, orgId, gateDeps);
-  await advanceExecutingChanges(db, orgId, host, sandbox, masterKey);
+  await advanceProposedChanges(db, orgId, gateDeps, selfDomainId);
+  await advanceEvaluatedChanges(db, orgId, gateDeps, selfDomainId);
+  await advanceCoordinatedChanges(db, orgId, gateDeps, selfDomainId);
+  await advanceWaitingChanges(db, orgId, gateDeps, selfDomainId);
+  await advanceExecutingChanges(db, orgId, host, sandbox, masterKey, selfDomainId);
   await advanceValidatingChanges(db, orgId, host, sandbox);
   // M5 (DESIGN §9.5): campaigns fan out into real M3 Changes above already progress through the
   // exact same steps this tick just ran — this only sequences WHICH wave's member changes get

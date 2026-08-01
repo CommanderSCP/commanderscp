@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { ChangeState, Decision } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { changes } from "../db/schema.js";
+import { changes, objects } from "../db/schema.js";
 import { notFound } from "../errors.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { eventBus } from "../events/event-bus.js";
@@ -11,6 +11,7 @@ import { evaluateLifecycleGate, type GateDeps } from "./gates.js";
 import { insertDecision } from "./decisions-repo.js";
 import { appendJournalEntry } from "../federation/journal-repo.js";
 import { changeStatusContentHash } from "./changes-repo.js";
+import { ensureFederationSelf } from "../federation/self-repo.js";
 
 type ChangeRow = typeof changes.$inferSelect;
 
@@ -38,6 +39,86 @@ export type TransitionResult =
   | { verdict: "allow"; changeRow: ChangeRow; decision: Decision }
   | { verdict: "block"; decision: Decision; blockedReason: string };
 
+export interface LocalAuthorityCheckInput {
+  orgId: string;
+  changeObjectId: string;
+  /** The change's underlying graph object's `originDomainId` (NOT `importedFromDomain` — a
+   *  promoted change's own object is always LOCALLY originated; provenance travels separately.
+   *  See the module doc below and ADR references in `tracked-security-followups`. */
+  originDomainId: string;
+  actorObjectId: string;
+  requestId: string;
+  reason?: string | null;
+}
+
+export type LocalAuthorityResult =
+  { ok: true } | { ok: false; decision: Decision; blockedReason: string };
+
+/**
+ * THE single-writer-authority check for change-transition verbs (S10, `tracked-security-
+ * followups`'s "CHANGE TRANSITIONS BYPASS THE SINGLE-WRITER GUARD"). Shared by `transitionChange`
+ * below and `coordination/rollback.ts`'s `triggerRollback` — the two entry points that can
+ * initiate a write against a change this domain does not authoritatively own.
+ *
+ * KEYS ON `originDomainId`, NEVER `importedFromDomain`. A promoted change's graph OBJECT is
+ * LOCALLY originated (`originDomainId == self`) even though its `importedFromDomain` column
+ * records which peer it was promoted from — that field is provenance, not authority. Keying this
+ * check on `importedFromDomain` would refuse an outpost from ever accepting/rolling back a change
+ * it legitimately owns after accepting a promotion — exactly the regression this must not
+ * introduce. `originDomainId` is the ONLY column `graph/objects-repo.ts::updateObject`'s own
+ * single-writer guard reads, for the identical reason.
+ *
+ * On refusal, persists a `block` Decision + `change.transition.blocked` audit event in the
+ * CALLER's transaction (so both commit together, exactly like `transitionChange`'s own
+ * illegal-transition/gate-block arms below) and RETURNS `{ ok: false }` rather than throwing — the
+ * caller decides whether to surface a 409 (operator-initiated verbs) after its own transaction
+ * commits. Never called from the reconcile ENGINE's write paths: those filter foreign-origin
+ * changes out of their candidate batches before ever attempting a transition, so an engine tick
+ * SKIPS a change it doesn't drive rather than parking it here (see `reconcile.ts`'s per-loop
+ * `selfDomainId` filters) — parking would wedge a change nothing can ever resume.
+ */
+export async function enforceLocalChangeAuthority(
+  tx: TenantTx,
+  input: LocalAuthorityCheckInput
+): Promise<LocalAuthorityResult> {
+  const self = await ensureFederationSelf(tx, input.orgId);
+  if (input.originDomainId === self.domainId) return { ok: true };
+
+  const decision = await insertDecision(tx, {
+    orgId: input.orgId,
+    kind: "transition",
+    subjectId: input.changeObjectId,
+    verdict: "block",
+    inputContext: {
+      originDomainId: input.originDomainId,
+      selfDomainId: self.domainId,
+      actorId: input.actorObjectId,
+      reason: input.reason ?? null
+    },
+    reasonTree: {
+      summary:
+        `refused: change '${input.changeObjectId}' is authoritatively owned by domain ` +
+        `'${input.originDomainId}', not this domain ('${self.domainId}') — single-writer ` +
+        `authority (only the owning domain may transition or roll back this change)`
+    }
+  });
+  await appendAuditEvent(tx, {
+    orgId: input.orgId,
+    actorId: input.actorObjectId,
+    action: "change.transition.blocked",
+    subjectId: input.changeObjectId,
+    reason: input.reason ?? "single-writer authority violation",
+    decisionId: decision.id,
+    requestId: input.requestId
+  });
+  return {
+    ok: false,
+    decision,
+    blockedReason:
+      "change is authoritatively owned by another federation domain — only the owning domain may transition or roll it back"
+  };
+}
+
 /**
  * THE single guarded transition function (DESIGN.md §9.1) — every `changes.state` mutation in the
  * system goes through this, and only this. Must run inside the caller's `withTenantTx` (it does
@@ -45,17 +126,19 @@ export type TransitionResult =
  * the caller is doing in the same request/job.
  *
  * Atomically, in order: (1) locks the change row (`SELECT ... FOR UPDATE`) so two concurrent
- * transition attempts on the same change serialize rather than race; (2) checks legality — a pure
- * function, `coordination/transitions.ts` — then the gate seam (`coordination/gates.ts`);
- * (3) writes EXACTLY ONE Decision recording the verdict either way; (4) ONLY on `verdict: allow`,
- * updates `changes.state` (+ resets the watchdog clock), writes the audit event, and publishes an
- * outbox event.
+ * transition attempts on the same change serialize rather than race; (2) checks single-writer
+ * authority (`enforceLocalChangeAuthority` above) — UNCONDITIONALLY, regardless of caller, so this
+ * is genuinely pinned at the one chokepoint every `changes.state` write shares, not merely at the
+ * HTTP layer; (3) checks legality — a pure function, `coordination/transitions.ts` — then the gate
+ * seam (`coordination/gates.ts`); (4) writes EXACTLY ONE Decision recording the verdict either
+ * way; (5) ONLY on `verdict: allow`, updates `changes.state` (+ resets the watchdog clock), writes
+ * the audit event, and publishes an outbox event.
  *
- * Deliberately does NOT throw for an "expected" block (illegal edge or a failed gate) — it
- * returns `{ verdict: 'block', decision, blockedReason }` and lets the enclosing transaction
- * commit normally, so the Decision (and a `change.transition.blocked` audit event) persist even
- * though nothing about the change itself changed. Route handlers (routes/changes.ts) inspect the
- * result AFTER the transaction has committed and turn a block into a 409 carrying
+ * Deliberately does NOT throw for an "expected" block (foreign authority, illegal edge, or a
+ * failed gate) — it returns `{ verdict: 'block', decision, blockedReason }` and lets the enclosing
+ * transaction commit normally, so the Decision (and a `change.transition.blocked` audit event)
+ * persist even though nothing about the change itself changed. Route handlers (routes/changes.ts)
+ * inspect the result AFTER the transaction has committed and turn a block into a 409 carrying
  * `decision.id` as `decision_id` (DESIGN §6/§10.4). This function only throws for genuinely
  * exceptional conditions (change not found, DB errors) — those DO roll back the transaction, as
  * they should.
@@ -66,12 +149,30 @@ export async function transitionChange(
   gateDeps: GateDeps
 ): Promise<TransitionResult> {
   const rows = await tx
-    .select()
+    .select({ change: changes, originDomainId: objects.originDomainId })
     .from(changes)
+    .innerJoin(objects, eq(changes.objectId, objects.id))
     .where(and(eq(changes.orgId, input.orgId), eq(changes.objectId, input.changeObjectId)))
-    .for("update");
-  const existing = rows[0];
-  if (!existing) throw notFound(`change '${input.changeObjectId}' not found`);
+    .for("update", { of: changes });
+  const row = rows[0];
+  if (!row) throw notFound(`change '${input.changeObjectId}' not found`);
+  const existing = row.change;
+
+  const authority = await enforceLocalChangeAuthority(tx, {
+    orgId: input.orgId,
+    changeObjectId: input.changeObjectId,
+    originDomainId: row.originDomainId,
+    actorObjectId: input.actorObjectId,
+    requestId: input.requestId,
+    reason: input.reason
+  });
+  if (!authority.ok) {
+    return {
+      verdict: "block",
+      decision: authority.decision,
+      blockedReason: authority.blockedReason
+    };
+  }
 
   const fromState = existing.state as ChangeState;
   const toState = input.toState;
