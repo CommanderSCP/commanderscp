@@ -278,7 +278,23 @@ describe("CelSandbox (layer 2: worker-thread isolation)", () => {
     const start = Date.now();
     const hung = await sandbox.evaluate("__HANG__", {});
     expect(hung.ok).toBe(false);
-    expect(Date.now() - start).toBeLessThan(2000); // bounded, not hung forever
+    // BOUNDED, NOT HUNG FOREVER — that is the whole claim, and the number is headroom, not a
+    // latency target. The sandbox's own `timeoutMs` here is 50ms; everything above that is worker
+    // spawn.
+    //
+    // RAISED 2000 -> 5000 (2026-08-01). Job 4 now runs `pnpm test -- --coverage`, and v8
+    // instrumentation makes spawning + loading a worker thread materially slower: this assertion
+    // failed on `main` at 2158ms having passed uninstrumented for months. 5000 keeps the assertion
+    // meaningful — a genuinely hung evaluation blows the 10s test timeout below, so 5s still
+    // separates "bounded" from "wedged" — while not re-litigating worker startup cost on every
+    // loaded CI box.
+    //
+    // This is the ONLY wall-clock assertion in the unit layer (censused 2026-08-01:
+    // `packages/plugins/fake-executor` deliberately uses a fake clock for exactly this reason, and
+    // says so). `plugin-host/host.test.ts`'s `rssGrowthMb < 300` is the same PROPERTY — a resource
+    // bound now measured under instrumentation — and was checked: it has passed every run since
+    // coverage was enabled, so it is left alone rather than pre-emptively loosened.
+    expect(Date.now() - start).toBeLessThan(5000);
 
     // SAME sandbox: the respawned worker (same conditional-hang entry) evaluates a normal
     // expression successfully — proving the pool healed rather than staying wedged.
