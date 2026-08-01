@@ -5,6 +5,7 @@ import { randomUUID, generateKeyPairSync } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, isNull } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
+import pg from "pg";
 import type { SyncBundle, SyncScope } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { ProblemError } from "../errors.js";
@@ -30,6 +31,7 @@ import { materializeApprovalRequest, castApprovalVote } from "../governance/appr
 import { insertControlRun } from "../governance/controls-repo.js";
 import { getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
 import { getDecision } from "../coordination/decisions-repo.js";
+import { listAuditEvents } from "../audit/audit-repo.js";
 import { verifyBlob } from "@scp/cosign";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
 import {
@@ -40,6 +42,7 @@ import {
   computeJournalRowHash,
   signJournalRowHash
 } from "@scp/schemas/federation-journal";
+import { verifyAuditChain } from "@scp/schemas/audit-chain";
 import type { ControlOutcomeStatus, PromotionBundle } from "@scp/schemas";
 import { PromotionBundleSchema } from "@scp/schemas";
 import { TrustDomainId } from "@scp/schemas";
@@ -1513,6 +1516,144 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
         cosignPub.publicKey
       )
     ).toBe(true);
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // M18 (ADR-0018) — THE LEAKAGE TEST. Domain-local dev/beta pipelines are exempt from the E6
+  // scan gate ONLY because they never reach `exportPromotionBundle` (no peer target) — the
+  // exemption is a property of the PATH, never a per-artifact tag (ADR-0018 §1). This proves the
+  // two guarantees the ADR promises: (1) a dev-built digest that IS later promoted to a peer is
+  // REFUSED at E6 exactly like any other unscanned artifact, with a block Decision + decision_id
+  // hash-chained into the audit log in the same transaction — the "exemption" does not follow the
+  // artifact across a boundary (ADR-0018 §2); and (2) an operator-style dev/local classification
+  // label is INERT for enforcement — forging or removing it changes NO gate outcome, because
+  // `evaluatePromotionScanGate` has exactly two pure inputs (substantive artifacts + control-run
+  // scan outcomes) and reads no classification/origin field at all (ADR-0018 §4).
+  // -----------------------------------------------------------------------------------------
+
+  const DEV_DIGEST = "sha256:" + "d".repeat(64);
+
+  it("LEAKAGE: a domain-local dev digest with no passing scan is REFUSED at E6 when promoted to a peer, with a block Decision + hash-chained audit event", async () => {
+    // Models a digest that was built and deployed by a domain-local dev pipeline (never scanned,
+    // because it never crossed a boundary) and is NOW promoted to a federation peer.
+    const { changeId } = await proposeApprovedChangeInA(
+      { artifact_digest: DEV_DIGEST },
+      { seedScan: false }
+    );
+
+    const outcome = await exportPromotionBundle(domainA.db, {
+      orgId: domainA.orgId,
+      peerIdOrName: domainB.orgName,
+      changeIdOrUrn: changeId
+    });
+    expect(outcome.refused).toBe(true);
+    if (!outcome.refused) throw new Error("expected refusal");
+    expect(outcome.reason).toContain(DEV_DIGEST);
+
+    const decision = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      getDecision(tx, domainA.orgId, outcome.decisionId)
+    );
+    expect(decision.verdict).toBe("block");
+    expect(decision.kind).toBe("promotion-export-scan-gate");
+    expect(decision.subjectId).toBe(changeId);
+
+    // The block's audit event is hash-chained into domain A's audit log, in the SAME transaction
+    // as the refusal (promotion-repo.ts). Re-walk the WHOLE chain with the production algorithm
+    // (`verifyAuditChain`, the same one `scp audit verify` runs) rather than hand-checking one row
+    // — this actually proves the chain links, not merely that a row with the right shape exists.
+    const auditEvents = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      listAuditEvents(tx, domainA.orgId, { limit: 10_000 })
+    );
+    expect(auditEvents.nextCursor).toBeNull(); // sanity: didn't truncate the chain
+    expect(verifyAuditChain(auditEvents.items).valid).toBe(true);
+
+    const blockEvent = auditEvents.items.find((e) => e.decisionId === outcome.decisionId);
+    expect(blockEvent).toBeTruthy();
+    expect(blockEvent!.action).toBe("federation.promotion.export.blocked");
+    expect(blockEvent!.subjectId).toBe(changeId);
+    expect(blockEvent!.reason).toContain(DEV_DIGEST);
+  });
+
+  it("LABEL INERTNESS: a forged dev/local classification on an UNSCANNED artifact does NOT grant an exemption — still REFUSED, identically to the unlabeled case", async () => {
+    // Stuff a plausible future operator-label shape (ADR-0018 §4: deploymentTarget
+    // `classification='dev'` / scan-requirement-floor-style `origin='local'`) directly onto the
+    // change's sourceRef — the most literal "forge the label onto a boundary-crossing artifact" a
+    // caller could attempt today, since no dedicated column exists yet. The gate must ignore it.
+    const { changeId } = await proposeApprovedChangeInA(
+      { artifact_digest: DEV_DIGEST, classification: "dev", origin: "local", devPipeline: true },
+      { seedScan: false }
+    );
+
+    const outcome = await exportPromotionBundle(domainA.db, {
+      orgId: domainA.orgId,
+      peerIdOrName: domainB.orgName,
+      changeIdOrUrn: changeId
+    });
+    expect(outcome.refused).toBe(true);
+    if (!outcome.refused) throw new Error("expected refusal");
+    // Byte-identical refusal reason to the unlabeled LEAKAGE case above — the forged label
+    // contributed nothing to the gate's evaluation.
+    expect(outcome.reason).toBe(
+      `export refused: substantive artifact oci:${DEV_DIGEST} has no passing, ` +
+        `digest-bound scan outcome — every cross-boundary artifact must carry a passing scan whose ` +
+        `scanned digest matches (fail-closed, M17.3 E6)`
+    );
+  });
+
+  it("LABEL INERTNESS: a forged dev/local classification alongside a PASSING scan does not alter the exported manifest — the label is not carried anywhere the gate or manifest reads", async () => {
+    const { changeId } = await proposeApprovedChangeInA({
+      artifact_digest: DEV_DIGEST,
+      classification: "dev",
+      origin: "local",
+      devPipeline: true
+    }); // seedScan defaults true — a passing, digest-bound scan exists
+    const bundle = await exportBundleA(changeId);
+
+    // Exports exactly like the unlabeled passing case: one oci artifact, self-binding manifest.
+    expect(bundle.artifacts).toEqual([{ type: "oci", digest: DEV_DIGEST }]);
+    expect(bundle.promotionManifest!.artifacts).toEqual([{ type: "oci", digest: DEV_DIGEST }]);
+    // The forged label never enters the manifest, the checksum payload, or the artifact set — it
+    // lived only in sourceRef.classification/origin/devPipeline, none of which any of those read.
+    expect(JSON.stringify(bundle.promotionManifest)).not.toContain("classification");
+    expect(JSON.stringify(bundle.promotionManifest)).not.toContain("devPipeline");
+  });
+
+  it("LABEL INERTNESS: an instance-scoped scan-requirement floor (the ADR-0016 origin='local' discriminator) has ZERO effect on E6 — the gate consults no scan-requirement policy at all", async () => {
+    // scan_requirement_floors is SELECT-only for the tenant role (governance/scan-requirements.ts) —
+    // write over the admin connection, exactly like the operator PUT route does in production.
+    const adminPool = new pg.Pool({ connectionString: domainA.adminUrl });
+    try {
+      await adminPool.query(
+        `INSERT INTO scan_requirement_floors (tier, origin, max_critical, max_high, max_medium, max_low, note)
+         VALUES ('trust_domain', 'local', 0, 0, 0, 0, 'm18-leakage-test: maximally strict floor')
+         ON CONFLICT (tier, origin) DO UPDATE SET max_critical = 0, max_high = 0, max_medium = 0, max_low = 0`
+      );
+
+      // An UNSCANNED artifact is refused — same as with NO floor configured at all (the floor is not
+      // why it refuses; the missing scan is).
+      const unscanned = await proposeApprovedChangeInA(
+        { artifact_digest: DEV_DIGEST },
+        { seedScan: false }
+      );
+      const refusal = await exportPromotionBundle(domainA.db, {
+        orgId: domainA.orgId,
+        peerIdOrName: domainB.orgName,
+        changeIdOrUrn: unscanned.changeId
+      });
+      expect(refusal.refused).toBe(true);
+
+      // A PASSING, digest-bound scan EXPORTS regardless of the maximally strict floor — E6 never
+      // reads scan_requirement_floors (that table only feeds the org-pipeline severity gate,
+      // governance/scan-requirements.ts, a completely different mechanism from the E6 boundary gate).
+      const scanned = await proposeApprovedChangeInA({ artifact_digest: DEV_DIGEST });
+      const bundle = await exportBundleA(scanned.changeId);
+      expect(bundle.artifacts).toEqual([{ type: "oci", digest: DEV_DIGEST }]);
+    } finally {
+      await adminPool.query(
+        `DELETE FROM scan_requirement_floors WHERE note LIKE 'm18-leakage-test:%'`
+      );
+      await adminPool.end();
+    }
   });
 });
 
