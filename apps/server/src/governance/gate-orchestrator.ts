@@ -224,10 +224,41 @@ async function resolveChangeArtifactDigest(
   return undefined;
 }
 
+/**
+ * M10.4 (`github-check` ControlPlugin) — the commit SHA the change originated from, threaded into
+ * every control-run context as `context.commitSha` exactly like `resolveChangeArtifactDigest`
+ * threads `context.artifactDigest`: so a commit-binding control (github-check, "CI green for THIS
+ * change's commit") binds its verdict to the change's REAL source commit, not to an
+ * operator-typed value on the control binding alone.
+ *
+ * Unlike `artifact_digest`/`sbom`, `webhook-processor.ts`'s `canonicalizeSourceRef` lifts no
+ * canonical `commit_sha` key today — `sourceRef` is the raw delivery payload verbatim (DESIGN §8),
+ * whose shape differs per source kind. This reads the handful of field names the in-tree git
+ * providers' raw payloads actually use for the commit that triggered the change: `sha`/
+ * `commit_sha`/`commitSha` (the flat first-party report shape), GitHub push's `after` or
+ * `head_commit.id`, and GitLab's `checkout_sha`. Best-effort, exactly like
+ * `resolveChangeArtifactDigest`: a missing/malformed field yields `undefined` (never a throw), so
+ * a control this enriches simply falls back to its own operator-pinned config.
+ */
+async function resolveChangeCommitSha(
+  tx: TenantTx,
+  orgId: string,
+  changeObjectId: string
+): Promise<string | undefined> {
+  const row = await getChangeRow(tx, orgId, changeObjectId).catch(() => null);
+  const sourceRef = (row?.sourceRef ?? {}) as Record<string, unknown>;
+  const direct =
+    sourceRef.commit_sha ?? sourceRef.commitSha ?? sourceRef.sha ?? sourceRef.after ?? sourceRef.checkout_sha;
+  if (typeof direct === "string" && direct.length > 0) return direct;
+  const headCommit = sourceRef.head_commit as { id?: unknown } | undefined;
+  if (headCommit && typeof headCommit.id === "string" && headCommit.id.length > 0) return headCommit.id;
+  return undefined;
+}
+
 /** The single control-run context shape both gate sites (prewarm + evaluate) build, so they agree
  *  on what a control sees. `artifactDigest` is included ONLY when the change tracks one — its
  *  absence is meaningful (the control then uses its operator-pinned fallback), so it is never keyed
- *  to `undefined`.
+ *  to `undefined`. M10.4 threads `commitSha` the same way, for `github-check`.
  *
  *  M17.5 (ADR-0016) threads `scanThreshold` through the SAME conditional-context mechanism, on
  *  purpose: the resolved most-restrictive-wins ceiling across the six scan-requirement tiers is
@@ -240,6 +271,7 @@ function buildControlContext(input: {
   targetObjectIds: string[];
   gateRef?: Record<string, unknown>;
   artifactDigest?: string | undefined;
+  commitSha?: string | undefined;
   scanThreshold?: EffectiveScanThreshold | undefined;
 }): Record<string, unknown> {
   return {
@@ -247,6 +279,7 @@ function buildControlContext(input: {
     targetObjectIds: input.targetObjectIds,
     ...(input.gateRef ? { gateRef: input.gateRef } : {}),
     ...(input.artifactDigest ? { artifactDigest: input.artifactDigest } : {}),
+    ...(input.commitSha ? { commitSha: input.commitSha } : {}),
     ...(input.scanThreshold ? { scanThreshold: input.scanThreshold } : {})
   };
 }
@@ -304,6 +337,7 @@ export async function prewarmGovernanceForChange(
   const allControlIds = [...new Set(fired.flatMap((fp) => fp.requireControls))];
   if (allControlIds.length > 0) {
     const artifactDigest = await resolveChangeArtifactDigest(tx, input.orgId, input.changeObjectId);
+    const commitSha = await resolveChangeCommitSha(tx, input.orgId, input.changeObjectId);
     // M17.5: `matches` is already gathered above — hand it to the resolver so the six-tier MIN
     // costs no extra policy round-trip.
     const scanThreshold = await resolveEffectiveScanThreshold(tx, {
@@ -326,6 +360,7 @@ export async function prewarmGovernanceForChange(
         changeId: input.changeObjectId,
         targetObjectIds: input.targetObjectIds,
         artifactDigest,
+        commitSha,
         scanThreshold
       })
     });
@@ -436,6 +471,9 @@ export async function evaluateGovernanceGate(
           targetObjectIds: ctx.targetObjectIds,
           gateRef: ctx.gateRef,
           artifactDigest: await resolveChangeArtifactDigest(tx, ctx.orgId, ctx.changeObjectId),
+          // M10.4 — the change's real source commit, for `github-check` (same threading discipline
+          // as `artifactDigest`).
+          commitSha: await resolveChangeCommitSha(tx, ctx.orgId, ctx.changeObjectId),
           // M17.5 — the six-tier most-restrictive-wins scan ceiling, resolved from the SAME
           // `matches` this gate already computed (ADR-0016 §4 design A).
           scanThreshold: await resolveEffectiveScanThreshold(tx, {

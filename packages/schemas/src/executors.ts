@@ -419,7 +419,20 @@ export type AcceptDiscoveryResponse = z.infer<typeof AcceptDiscoveryResponseSche
 // `change_source_events` row, processed by `coordination/webhook-processor.ts`), not a new one.
 // -------------------------------------------------------------------------------------------
 
-export const ChangeReportRequestSchema = z.object({
+/**
+ * M10.6 (`.strict()`, `additionalProperties:false` — BUILD_AND_TEST.md §8 M10.6): "a REQUIRED
+ * structured-evidence report schema... the discipline that separates it from a 'call any URL'
+ * bus and makes every coordinate-generic verdict real." Before this, an unknown field (a typo, or
+ * an attempt to smuggle something the contract doesn't define — e.g. an SBOM DOCUMENT inside an
+ * SBOM REFERENCE, `SbomRefSchema`'s own `.strict()` a few fields below) was SILENTLY STRIPPED by
+ * Zod's default object parse: the report still 202'd and the extra field just vanished with no
+ * signal, same class of hazard `federation.ts`'s `CreateOutpostConfigRequestSchema` doc comment
+ * describes (review round 5, N6) — a client believing it declared something got a success and
+ * watched the field disappear. Refusing (400, naming the key) costs nothing in the field this
+ * route actually needs open-ended: `planJson` stays `z.unknown()`, so a full plan JSON blob is
+ * still accepted verbatim inside its own declared field.
+ */
+export const ChangeReportRequestSchema = z.strictObject({
   repo: z.string().optional(),
   path: z.string().optional(),
   correlationKey: z.string().optional(),

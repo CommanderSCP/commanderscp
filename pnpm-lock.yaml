@@ -95,6 +95,9 @@ importers:
       '@scp/plugin-github':
         specifier: workspace:*
         version: link:../../packages/plugins/github
+      '@scp/plugin-github-check':
+        specifier: workspace:*
+        version: link:../../packages/plugins/github-check
       '@scp/plugin-gitlab':
         specifier: workspace:*
         version: link:../../packages/plugins/gitlab
@@ -107,6 +110,9 @@ importers:
       '@scp/plugin-managed-scan':
         specifier: workspace:*
         version: link:../../packages/plugins/managed-scan
+      '@scp/plugin-pipeline-generic':
+        specifier: workspace:*
+        version: link:../../packages/plugins/pipeline-generic
       '@scp/plugin-scan-result-control':
         specifier: workspace:*
         version: link:../../packages/plugins/scan-result-control
@@ -480,6 +486,22 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@types/node@22.20.1)(happy-dom@20.11.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
 
+  packages/plugins/github-check:
+    dependencies:
+      '@scp/plugin-api':
+        specifier: workspace:*
+        version: link:../../plugin-api
+    devDependencies:
+      '@scp/plugin-testkit':
+        specifier: workspace:*
+        version: link:../../plugin-testkit
+      typescript:
+        specifier: ~5.8.0
+        version: 5.8.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.20.1)(happy-dom@20.11.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
+
   packages/plugins/gitlab:
     dependencies:
       '@scp/git-provider-core':
@@ -568,6 +590,25 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@types/node@22.20.1)(happy-dom@20.11.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
 
+  packages/plugins/pipeline-generic:
+    dependencies:
+      '@scp/plugin-api':
+        specifier: workspace:*
+        version: link:../../plugin-api
+    devDependencies:
+      '@scp/plugin-testkit':
+        specifier: workspace:*
+        version: link:../../plugin-testkit
+      nock:
+        specifier: ^13.5.0
+        version: 13.5.6
+      typescript:
+        specifier: ~5.8.0
+        version: 5.8.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.20.1)(happy-dom@20.11.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
+
   packages/plugins/scan-result-control:
     dependencies:
       '@scp/plugin-api':
@@ -611,6 +652,9 @@ importers:
       '@scp/plugin-api':
         specifier: workspace:*
         version: link:../../plugin-api
+      '@scp/plugin-pipeline-generic':
+        specifier: workspace:*
+        version: link:../pipeline-generic
     devDependencies:
       '@scp/plugin-testkit':
         specifier: workspace:*

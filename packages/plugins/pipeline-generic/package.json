@@ -1,5 +1,5 @@
 {
-  "name": "@scp/plugin-terraform",
+  "name": "@scp/plugin-pipeline-generic",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -18,7 +18,6 @@
     "vitest": "^3.0.0"
   },
   "dependencies": {
-    "@scp/plugin-api": "workspace:*",
-    "@scp/plugin-pipeline-generic": "workspace:*"
+    "@scp/plugin-api": "workspace:*"
   }
 }

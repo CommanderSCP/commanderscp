@@ -82,6 +82,10 @@ async function loadPlugin(moduleName: string): Promise<LoadedPlugin> {
       const mod = await import("@scp/plugin-scan-result-control");
       return { kind: "control", plugin: mod.createScanResultControlPlugin() };
     }
+    case "github-check": {
+      const mod = await import("@scp/plugin-github-check");
+      return { kind: "control", plugin: mod.createGithubCheckControlPlugin() };
+    }
     case "github": {
       const mod = await import("@scp/plugin-github");
       return { kind: "executor", plugin: mod.createGithubExecutorPlugin() };
@@ -117,6 +121,10 @@ async function loadPlugin(moduleName: string): Promise<LoadedPlugin> {
     case "terraform": {
       const mod = await import("@scp/plugin-terraform");
       return { kind: "executor", plugin: mod.createTerraformExecutorPlugin() };
+    }
+    case "pipeline-generic": {
+      const mod = await import("@scp/plugin-pipeline-generic");
+      return { kind: "executor", plugin: mod.createPipelineGenericExecutorPlugin() };
     }
     case "managed-iac": {
       const mod = await import("@scp/plugin-managed-iac");
@@ -190,13 +198,16 @@ function stderrLogger(instanceId: string): Logger {
  * operator-configured behind `policy:write` (never an ordinary tenant), `scan-result-control`'s
  * scan-verdict source URL is the same (a control binding, same `policy:write` trust tier, and the
  * verdict store is often an in-cluster/on-prem artifact registry reachable only at a private
- * address), and `federation-https` dials on-prem/single-host peers. EVERY tenant-configurable
- * plugin (webhook-notify, github, argocd, terraform, managed-iac) is absent here, so its `ctx.http`
- * cannot be pointed at `127.0.0.1`/`10.x`/... — this gate is on MODULE IDENTITY, not on
- * `allowedHosts` emptiness (which tenant bindings default to, and which a tenant controls).
+ * address), `federation-https` dials on-prem/single-host peers, and `github-check` (M10.4) is the
+ * same `policy:write`-gated control-binding trust tier again — its `apiBaseUrl` legitimately
+ * targets a self-hosted GitHub Enterprise Server at a private address, exactly the on-prem case
+ * `scan-result-control`'s own justification names. EVERY tenant-configurable plugin (webhook-notify,
+ * github, argocd, terraform, managed-iac) is absent here, so its `ctx.http` cannot be pointed at
+ * `127.0.0.1`/`10.x`/... — this gate is on MODULE IDENTITY, not on `allowedHosts` emptiness (which
+ * tenant bindings default to, and which a tenant controls).
  * Metadata/link-local stay blocked for these modules too.
  */
-const OPERATOR_PLANE_MODULES = new Set(["webhook-control", "scan-result-control", "federation-https"]);
+const OPERATOR_PLANE_MODULES = new Set(["webhook-control", "scan-result-control", "github-check", "federation-https"]);
 
 /**
  * M8 hardening (DESIGN.md §13, BUILD_AND_TEST.md §8 M8 item 6, "Federation mTLS transport

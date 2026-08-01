@@ -145,11 +145,14 @@ describe("M17.2 SBOM reference: a typed report's SBOM reference round-trips onto
     expect(sourceRef.artifact_digest).toBeUndefined();
   });
 
-  it("SCP exposes NO way to STORE SBOM BYTES: an attempt to smuggle the document inside the reference is stripped by the typed contract and never persisted", async () => {
+  it("M10.6: SCP exposes NO way to STORE SBOM BYTES — an attempt to smuggle the document inside the reference is REFUSED (400), not silently stripped", async () => {
     const component = await createTestComponent(admin, { name: `sbom-bytes-${randomUUID().slice(0, 8)}` });
     const repo = `acme/${randomUUID().slice(0, 8)}`;
     await admin.changeSources.createMapping("terraform", { repoPattern: repo, component: component.id });
 
+    const before = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(changeSourceEvents)
+    );
     const sbomDigest = "sha256:" + "c3".repeat(32);
     // A raw HTTP call (not the SDK) so we can send a field the typed contract does not define.
     const response = await fetch(`${server.baseUrl}/change-sources/terraform/report`, {
@@ -167,17 +170,29 @@ describe("M17.2 SBOM reference: a typed report's SBOM reference round-trips onto
         }
       })
     });
-    expect(response.status).toBe(202);
-    const { eventId } = (await response.json()) as { eventId: string };
-    const changeObjectId = await processAndResolveChange(eventId);
-    const sourceRef = await readSourceRef(changeObjectId);
 
-    // `SbomRefSchema` defines only reference fields, so the smuggled document is STRIPPED by the
-    // typed contract and never reaches `changes.source_ref`. Reference-in, reference-out — SCP has
-    // no column, no codec, and no route that would store SBOM bytes even if someone sent them.
-    const stored = sourceRef.sbom as Record<string, unknown>;
-    expect(stored.document).toBeUndefined();
-    expect(Object.keys(stored).sort()).toEqual(["digest", "format", "location"]);
-    expect(JSON.stringify(sourceRef)).not.toContain("bomFormat");
+    // M10.6: `SbomRefSchema` is now `.strict()` — a REFERENCE has a small, closed field set, and an
+    // SBOM DOCUMENT smuggled inside it is refused outright rather than silently stripped and
+    // half-persisted. Reference-in, reference-out — SCP has no column, no codec, and no route that
+    // would ever store SBOM bytes even if someone sent them.
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(JSON.stringify(body)).not.toContain("bomFormat");
+
+    // The whole report is refused — no event was ever created for it to leave a half-persisted trace.
+    const after = await withTenantTx(server.deps.db, org.orgId, (tx) => tx.select().from(changeSourceEvents));
+    expect(after.length).toBe(before.length);
+  });
+
+  it("M10.6: an unknown TOP-LEVEL field on the report body is REFUSED (400), not silently stripped", async () => {
+    const repo = `acme/${randomUUID().slice(0, 8)}`;
+    const response = await fetch(`${server.baseUrl}/change-sources/terraform/report`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${org.adminToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ status: "applied", repo, notAFieldTheContractDefines: "smuggled" })
+    });
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(JSON.stringify(body)).toContain("notAFieldTheContractDefines");
   });
 });

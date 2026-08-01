@@ -5,5 +5,5 @@
     "rootDir": "src"
   },
   "include": ["src"],
-  "references": [{ "path": "../pipeline-generic" }]
+  "references": [{ "path": "../../plugin-api" }, { "path": "../../plugin-testkit" }]
 }
