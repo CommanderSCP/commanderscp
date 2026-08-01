@@ -33,6 +33,7 @@ import {
   markWaveRunning,
   markWaveTargetNoExecutor,
   markWaveTargetTriggered,
+  markWaveTargetTriggerFailed,
   markWaveTerminal,
   observedStateFrom,
   updateWaveTargetObserved
@@ -91,6 +92,39 @@ export const RECONCILE_TICK_INTERVAL_SECONDS = 1;
 /** Per-state, per-tick batch cap — bounds one tick's work so a single org's huge backlog can't
  *  starve every other org's turn in the same sweep. */
 const BATCH_LIMIT = 25;
+
+/**
+ * TRIGGER RETRY BACKOFF (measured production storm, homelab 2026-08-01: 19 `argocd trigger: sync
+ * returned HTTP 400` against 12 successful syncs in 15 minutes, every 400 on the SAME target).
+ *
+ * Argo CD refuses a sync while an operation is already running on that Application, and a real
+ * backlog fans many changes onto a handful of Argo apps — so contention is the NORMAL case here,
+ * not an error. With a 1-second tick and no backoff, every contending target re-fired every second
+ * and lost, producing a retry storm that consumed executor capacity and buried genuine failures in
+ * the log.
+ *
+ * Exponential on the target's OWN `attempt` count, so a target that keeps losing the race steps
+ * aside for progressively longer while an uncontended one is unaffected. Deliberately capped, not
+ * unbounded: contention clears on its own, so a target must keep checking back rather than
+ * effectively giving up.
+ */
+const TRIGGER_RETRY_BASE_MS = 2_000;
+const TRIGGER_RETRY_CAP_MS = 5 * 60_000;
+
+/**
+ * How long a target that has already been REFUSED by its executor must wait before re-firing.
+ *
+ * `attempt === 0` returns 0 — no delay — and that is load-bearing, not an optimisation. A tick that
+ * crashes between claiming a target and recording the outcome leaves the row `triggering` with
+ * `attempt` still 0, and `wave-targets-repo.ts`'s crash-recovery contract (plus the M3 suites that
+ * exercise it) requires that row to be retried on the VERY NEXT tick with no time budget. Only a
+ * trigger that actually reached the executor and was refused increments `attempt`, so only a real
+ * refusal is ever backed off.
+ */
+function triggerBackoffMs(attempt: number): number {
+  if (attempt <= 0) return 0;
+  return Math.min(TRIGGER_RETRY_BASE_MS * 2 ** (attempt - 1), TRIGGER_RETRY_CAP_MS);
+}
 
 type ExecutorRef = { externalId: string; url?: string };
 
@@ -783,6 +817,21 @@ async function reconcileExecutingChange(
 
     if (target.status === "pending" || target.status === "triggering") {
       allTerminal = false;
+      // BACKOFF GATE — skip a target whose executor refused it recently (see `triggerBackoffMs`).
+      // `allTerminal` is set false FIRST, deliberately: a backed-off target is still in flight, so
+      // the wave must not be treated as complete while one waits. Skipping here (rather than inside
+      // `triggerWaveTarget`) also avoids taking the advisory trigger-claim lock and re-reading the
+      // binding for a target we already know we are not going to fire this tick.
+      //
+      // GATED ON `triggering`, NOT ON `attempt` ALONE, and that is a correctness requirement rather
+      // than an optimisation: `attempt` is NOT a pure failure counter — `markWaveTargetTriggered`
+      // also sets it to 1 on SUCCESS. A target deliberately put back to `pending` to force a fresh
+      // re-trigger therefore still carries `attempt: 1` from its successful run, and keying only on
+      // the count would silently delay a re-trigger that nothing had refused. Only `triggering`
+      // means "claimed, handed to the executor, and not recorded as succeeded" — which is exactly
+      // the state a refusal leaves behind.
+      const backoffMs = target.status === "triggering" ? triggerBackoffMs(target.attempt) : 0;
+      if (backoffMs > 0 && Date.now() - Date.parse(target.updatedAt) < backoffMs) continue;
       try {
         await triggerWaveTarget(
           db,
@@ -800,8 +849,13 @@ async function reconcileExecutingChange(
           masterKey
         );
       } catch (err) {
+        // "next tick" was true until the backoff landed and is not any more — a refused trigger now
+        // waits `triggerBackoffMs(attempt)`. The retry delay is stated because it is the operator's
+        // main cue that a repeatedly-refused target is stepping aside rather than stuck: a log line
+        // that reappeared every second was itself part of the storm this fixes.
+        const nextDelayMs = triggerBackoffMs(target.attempt + 1);
         console.error(
-          `[reconcile] org ${orgId} change ${change.objectId} target ${target.targetObjectId} trigger failed (will retry next tick):`,
+          `[reconcile] org ${orgId} change ${change.objectId} target ${target.targetObjectId} trigger failed (retry in ~${Math.round(nextDelayMs / 1000)}s):`,
           err
         );
       }
@@ -1146,12 +1200,27 @@ async function triggerWaveTarget(
     if (!claim) return; // no longer pending/triggering — another tick already handled it.
 
     // Step 2 — OUTSIDE any open transaction, on purpose (see doc comment above).
-    const ref = await client.trigger({
-      kind: claim.kind,
-      targetRef: claim.externalRef ?? targetObjectId,
-      priorStateRef: claim.priorStateRef,
-      idempotencyKey
-    });
+    let ref;
+    try {
+      ref = await client.trigger({
+        kind: claim.kind,
+        targetRef: claim.externalRef ?? targetObjectId,
+        priorStateRef: claim.priorStateRef,
+        idempotencyKey
+      });
+    } catch (err) {
+      // Step 3' — the executor REACHED and REFUSED this trigger. Record it so the retry backs off
+      // (`triggerBackoffMs`) instead of re-firing on the next 1s tick. Its own transaction, like
+      // step 3, so the attempt count is durable even though the trigger itself failed.
+      //
+      // Best-effort: if recording the failure ALSO fails, the original executor error is what the
+      // caller must see — swallowing it to report a bookkeeping error would hide the real cause,
+      // and the worst case is simply the un-backed-off retry we had before this change.
+      await withTenantTx(db, orgId, (tx) =>
+        markWaveTargetTriggerFailed(tx, orgId, waveTargetId)
+      ).catch(() => undefined);
+      throw err;
+    }
 
     await withTenantTx(db, orgId, (tx) =>
       markWaveTargetTriggered(tx, orgId, waveTargetId, {

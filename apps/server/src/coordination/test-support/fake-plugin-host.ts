@@ -97,6 +97,61 @@ export interface FiredTriggerCall {
  *  describe blocks in the same file. Callers MUST filter `calls` by `targetRef` (the specific
  *  target object id under test) before asserting anything about call count/order — never assume
  *  `calls` only ever contains entries for the target this particular test created. */
+/**
+ * Wraps a real `PluginHost` and makes `trigger()` throw BEFORE the wrapped call runs, every time,
+ * for any `targetRef` matching `shouldRefuse` — the executor REFUSING the request outright.
+ *
+ * Deliberately a different fault from {@link withFailOnceAfterRealTrigger}, which faults ONCE and
+ * only AFTER the real side effect already fired (a crash in the record window). This one models the
+ * measured production case: Argo CD answering `HTTP 400` because an operation is already running on
+ * that Application, so nothing happened externally and the same answer comes back until the
+ * contention clears. The distinction matters to `triggerWaveTarget` — a crash must be retried
+ * immediately (the row's `attempt` never advanced), a refusal must be backed off.
+ */
+export function withRefusingTrigger(
+  inner: PluginHost,
+  shouldRefuse: (targetRef: string) => boolean = () => true
+): { host: PluginHost; calls: FiredTriggerCall[] } {
+  const calls: FiredTriggerCall[] = [];
+  const host: PluginHost = {
+    start: (configs) => inner.start(configs),
+    stop: () => inner.stop(),
+    control: (instanceId) => inner.control(instanceId),
+    discovery: (instanceId) => inner.discovery(instanceId),
+    notification: (instanceId) => inner.notification(instanceId),
+    federationTransport: (instanceId) => inner.federationTransport(instanceId),
+    executor(instanceId) {
+      const real = inner.executor(instanceId);
+      return {
+        ...real,
+        trigger: async (intent) => {
+          const targetRef = intent.targetRef ?? "";
+          if (shouldRefuse(targetRef)) {
+            calls.push({
+              targetRef,
+              idempotencyKey: intent.idempotencyKey,
+              externalId: "",
+              faulted: true
+            });
+            // Shaped like the real one: `packages/plugins/argocd` surfaces a refusal as an RPC
+            // error whose message carries the HTTP status.
+            throw new Error(`argocd trigger: sync returned HTTP 400 (injected, test only)`);
+          }
+          const result = await real.trigger(intent);
+          calls.push({
+            targetRef,
+            idempotencyKey: intent.idempotencyKey,
+            externalId: result.externalId,
+            faulted: false
+          });
+          return result;
+        }
+      };
+    }
+  };
+  return { host, calls };
+}
+
 export function withFailOnceAfterRealTrigger(
   inner: PluginHost,
   shouldFail: (targetRef: string) => boolean = () => true,
