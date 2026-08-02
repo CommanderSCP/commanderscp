@@ -149,7 +149,10 @@ interface ArgoResourceStatus {
 interface ArgoApplication {
   metadata: { name: string; resourceVersion?: string };
   status?: {
-    sync?: { status?: string; revision?: string };
+    /** `revision` for a SINGLE-source Application; `revisions` (one per source, positional) for a
+     *  MULTI-SOURCE one. Argo CD sets exactly one of the two — never both — so any code reading only
+     *  the singular field silently sees nothing on a multi-source app. */
+    sync?: { status?: string; revision?: string; revisions?: string[] };
     health?: { status?: string };
     operationState?: {
       phase?: string; // Running|Succeeded|Failed|Error|Terminating
@@ -353,6 +356,24 @@ function mapArgoPhase(app: ArgoApplication | undefined): ExecutionStatus {
 // ExecutorPlugin
 // -----------------------------------------------------------------------------------------
 
+/**
+ * The revision(s) an Application is synced to, as ONE deterministic string — the dedupe identity of
+ * its current state. `undefined` when Argo CD reports neither shape (an app that has never synced),
+ * which lets the identity fall back to the reconcile timestamp rather than to a fabricated value
+ * that would collapse different applications onto one key.
+ *
+ * Positional order is preserved for the multi-source case: `revisions` is one entry per declared
+ * source, so re-ordering would make two different deployments look identical.
+ */
+function syncStateRef(app: ArgoApplication): string | undefined {
+  const single = app.status?.sync?.revision;
+  if (single) return single;
+  const many = app.status?.sync?.revisions;
+  if (!Array.isArray(many)) return undefined;
+  const present = many.filter((r): r is string => typeof r === "string" && r.length > 0);
+  return present.length > 0 ? present.join("+") : undefined;
+}
+
 async function observe(ctx: PluginContext, since?: Cursor): Promise<ExecutorEvent[]> {
   const config = asConfig(ctx.config);
   const sinceTime = since?.token ? new Date(since.token).getTime() : 0;
@@ -391,7 +412,17 @@ async function observe(ctx: PluginContext, since?: Cursor): Promise<ExecutorEven
         // no longer produces an event. That is correct for this path — `observe` exists to detect
         // NEW WORK, and a status change on an already-deployed revision is not new work; live status
         // reaches the engine through `status()` on the changes it is already tracking.
+        //
+        // MULTI-SOURCE is the case that makes this two fields instead of one. Argo CD reports a
+        // single-source app's revision in `status.sync.revision` and a multi-source app's in
+        // `status.sync.revisions` — an array, one entry per source, and it sets exactly one of the
+        // two. Reading only the singular field sees NOTHING on a multi-source app: on this estate
+        // that was 36 of 59 applications, all of which kept churning after the first attempt at
+        // this fix. So `commitSha` carries the revision only when there genuinely is one, and
+        // `stateRef` carries the dedupe identity in both shapes — a joined tuple is not a commit
+        // SHA, and putting one in a field named for a commit would lie to every consumer.
         commitSha: app.status?.sync?.revision,
+        stateRef: syncStateRef(app),
         labels: { application: app.metadata.name }
       },
       raw: app
