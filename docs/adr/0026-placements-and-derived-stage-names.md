@@ -1,6 +1,6 @@
 # ADR-0026: No `stage` entity — a stage name is derived, and the (component × place) pair is a `placement`
 
-**Status:** Accepted (2026-08-01). This ADR settles **vocabulary and the object model**; the implementation plan and migration sequence live in the context doc and are separately under review.
+**Status:** Accepted (2026-08-01), **amended 2026-08-02** during implementation — see the amendment under D3 (how a placement's endpoints are stored) and D15/D16/D17 in the [context doc](../proposals/post-import-configuration.md) §0. Nothing in the decisions below is reversed; the amendments settle things the ADR left unsaid or, in one case, stated wrongly. This ADR settles **vocabulary and the object model**; the implementation plan and migration sequence live in the context doc.
 **Context doc:** [docs/proposals/post-import-configuration.md](../proposals/post-import-configuration.md)
 **Relates to:** [ADR-0021](0021-terminology.md) (**D6 reserved the word and deferred the entity — this ADR answers the question it deferred**); [ADR-0017](0017-ownership-refinement.md) §3 (place-role deployment-targets, shipped as M15.6); [ADR-0016](0016-scoped-scan-requirement-policies.md) (a security domain is ambient, not a row); [ADR-0006](0006-fail-closed-on-missing-executor-binding-for-purpose.md) (fail-closed on a missing binding); [ADR-0007](0007-executor-binding-type-taxonomy.md) (the binding Type facet); [ADR-0022](0022-outpost-config-authority-split.md) (the authority-split pattern); [GLOSSARY.md](../GLOSSARY.md) (**authoritative for vocabulary**); [service-component-model.md](../proposals/service-component-model.md)
 
@@ -61,6 +61,16 @@ The pair also already carries state. `change_wave_targets` holds per-row `execut
 ### D3. The word is **`placement`**.
 
 Reserved vocabulary, defined in [GLOSSARY.md](../GLOSSARY.md). Named `<component>@<deployment-target>`, unique on `(org_id, component, deployment_target)`.
+
+> **Amendment, 2026-08-02 — how those endpoints are STORED, which this decision left unsaid.**
+>
+> "Unique on `(org_id, component, deployment_target)`" did not say whether the endpoints are relationships or object properties, and the two are not interchangeable: **nothing can uniquely index across two `relationships` rows.** That is the same constraint this ADR uses below to reject the attributed-relationship alternative, so specifying the endpoints as edges would have contradicted its own reasoning.
+>
+> They are **validated object properties** — the source of truth, covered by a partial unique expression index — with edges to the component and deployment-target **derived** from them and written in the same transaction, so graph traversal and blast-radius still see the pair. One fact in two places is the deliberate cost of satisfying both the uniqueness guarantee and principle 2.
+>
+> The generic `POST /objects/placement` door is refused outright (as `outpost` does), or the typed route's pairing rule is advisory rather than enforced. And the index is load-bearing, not belt-and-braces: implementing `many_to_one` proved the SELECT-then-INSERT race is real — with the app-level check disabled, only the index held.
+>
+> The `@` in the name cannot be carried naively into a derived URN: `slugify` maps `[^a-z0-9]+` to `-` and collapses runs, so `keycloak@commercial-prod` derives `keycloak-commercial-prod` and collides with a literal component of that name.
 
 `instance` — the owner's first phrasing, and the most natural English for it — is **reserved** for one running deployment of the SCP binary, the term the whole federation model rests on. `placement` is unclaimed as a defined term; the eleven bare uses in-tree are generic English about code location and evidence storage, plus one adjacent sense in `import-repo.ts:163` where "LOCAL PLACEMENT" means an object's containment parent. The glossary entry disambiguates all of them.
 
