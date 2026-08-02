@@ -15,7 +15,7 @@ import { SubprocessPluginHost } from "../plugin-host/host.js";
 import { createSourceMapping } from "./source-mappings-repo.js";
 import { upsertExecutorBinding } from "./executor-bindings-repo.js";
 import { processChangeSourceEvents } from "./webhook-processor.js";
-import { runObserveSweep } from "./observe.js";
+import { parseCursorToken, runObserveSweep, watermarkFor } from "./observe.js";
 
 /**
  * M10.2 — the observe()-DRIVER end-to-end (BUILD_AND_TEST.md §8 M10 item 2 DoD): a bound,
@@ -103,7 +103,11 @@ describe("observe()-driver: pull-based change detection (no inbound webhook)", (
         )
     );
     expect(cursor).toHaveLength(1);
-    expect(cursor[0]!.cursorToken).toBe(OCCURRED);
+    // Asserted through `parseCursorToken` rather than against a literal token string: the cursor is
+    // now an ISO watermark PER EVENT KIND, and what this test is actually about is that the
+    // watermark for the kind just observed advanced to that event. Pinning the serialization would
+    // re-break on the next protocol change while proving nothing about the behaviour.
+    expect(watermarkFor(parseCursorToken(cursor[0]!.cursorToken), "push")).toBe(OCCURRED);
 
     // --- ACT 2: the SAME processor the webhook route uses turns it into a Change ---
     await withTenantTx(server.deps.db, org.orgId, (tx) => processChangeSourceEvents(tx, org.orgId));

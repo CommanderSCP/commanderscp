@@ -44,15 +44,81 @@ function sourceKindForModule(pluginModule: string): string {
   return pluginModule;
 }
 
-/** ISO-8601 lexicographic max — the watermark cursor advanced past every event just ingested. */
-function advanceWatermark(events: ExecutorEvent[], current: string | null): string | null {
-  let max = current;
-  for (const ev of events) {
-    if (typeof ev.occurredAt === "string" && (max === null || ev.occurredAt > max)) {
-      max = ev.occurredAt;
+/**
+ * The observe cursor — an ISO-8601 watermark **per event kind**, serialized as a JSON object.
+ *
+ * **It used to be one scalar watermark for the whole instance, and that STARVED an entire resource.**
+ * A git-provider adapter polls two resources with different time bases and merges them
+ * (`git-provider-core`: `[...pollCommits(since), ...pollRuns(since)]`) — commits are stamped with
+ * the author date, workflow runs with the run's creation time. A CI run is always created AFTER the
+ * commit that triggered it, so the run dragged the single watermark past its own commit, and the
+ * next `?since=` query excluded that commit **permanently**. Every push whose CI started in the same
+ * poll window was silently skipped — not delayed, skipped.
+ *
+ * Observed on the homelab: commit `bfddca9` at `02:32:14Z` was never ingested because the
+ * `workflow_run` it triggered, at `02:32:17Z`, advanced the shared cursor three seconds past it.
+ *
+ * Keying by `ev.kind` fixes it for every provider at once, because the split is the same everywhere:
+ * `pollCommits` emits `push`, `pollRuns` emits `workflow_run`, gitea's package poll emits `custom`,
+ * and argocd emits only `sync` (a single-resource adapter, unaffected either way).
+ *
+ * **Backward compatible.** A stored legacy scalar (`"2026-08-02T02:32:17Z"`) is read as the starting
+ * watermark for EVERY kind, so the first tick after this ships behaves exactly as before and then
+ * lets each kind diverge. Nothing re-ingests, and a kind that has never been seen starts from the
+ * legacy value rather than from the beginning of time — which is what stops a first-run flood.
+ */
+export type ObserveWatermarks = Record<string, string>;
+
+/** A watermark must be a parseable timestamp — anything else is corruption, not a cursor, and
+ *  passing it through would reach the provider as a nonsense `?since=` query parameter. */
+function isTimestamp(value: string): boolean {
+  return !Number.isNaN(new Date(value).getTime());
+}
+
+export function parseCursorToken(token: string | null): ObserveWatermarks {
+  if (!token) return {};
+  const trimmed = token.trim();
+  if (!trimmed.startsWith("{")) return isTimestamp(trimmed) ? { _legacy: trimmed } : {};
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: ObserveWatermarks = {};
+    for (const [kind, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof value === "string" && value.length > 0) out[kind] = value;
     }
+    return out;
+  } catch {
+    // An unparseable token is treated as "no watermark" rather than throwing: a corrupt cursor must
+    // not wedge the observe loop for that instance forever. Re-polling is safe — dedupe collapses
+    // anything already ingested.
+    return {};
   }
-  return max;
+}
+
+/** The watermark a given event kind should resume from — its own, else the legacy scalar. */
+export function watermarkFor(marks: ObserveWatermarks, kind: string): string | undefined {
+  return marks[kind] ?? marks._legacy;
+}
+
+/** ISO-8601 lexicographic max, advanced INDEPENDENTLY per event kind. */
+export function advanceWatermarks(
+  events: ExecutorEvent[],
+  current: ObserveWatermarks
+): ObserveWatermarks {
+  const next: ObserveWatermarks = { ...current };
+  for (const ev of events) {
+    if (typeof ev.occurredAt !== "string" || !ev.kind) continue;
+    const seen = next[ev.kind] ?? next._legacy;
+    if (seen === undefined || ev.occurredAt > seen) next[ev.kind] = ev.occurredAt;
+  }
+  return next;
+}
+
+export function serializeCursorToken(marks: ObserveWatermarks): string {
+  // Keys sorted so an unchanged cursor serializes byte-identically and does not churn the row.
+  const sorted: ObserveWatermarks = {};
+  for (const key of Object.keys(marks).sort()) sorted[key] = marks[key] as string;
+  return JSON.stringify(sorted);
 }
 
 /**
@@ -235,7 +301,10 @@ export async function observeOrgTick(
       );
       const events = await client.observe(cursorToken ? { token: cursorToken } : undefined);
 
-      const nextToken = events.length > 0 ? advanceWatermark(events, cursorToken) : cursorToken;
+      const nextToken =
+        events.length > 0
+          ? serializeCursorToken(advanceWatermarks(events, parseCursorToken(cursorToken)))
+          : cursorToken;
       await withTenantTx(db, orgId, async (tx) => {
         if (events.length > 0) {
           await ingestObservedEvents(
