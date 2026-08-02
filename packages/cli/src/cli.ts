@@ -26,8 +26,10 @@ import type {
   Pat,
   Plan,
   PlanDiffSummary,
+  PlanExecutorBindingDiffEntry,
   PlanObjectDiffEntry,
   PlanRelationshipDiffEntry,
+  PlanSourceMappingDiffEntry,
   PolicyEvaluateResponse,
   Relationship,
   RelationshipListResponse,
@@ -718,11 +720,36 @@ async function readManifestFile(manifestPath: string): Promise<DesiredStateManif
   return DesiredStateManifestSchema.parse(parsed);
 }
 
-function diffEntryRow(
-  entry: PlanObjectDiffEntry | PlanRelationshipDiffEntry
-): Record<string, string> {
+type PlanDiffEntry =
+  | PlanObjectDiffEntry
+  | PlanRelationshipDiffEntry
+  | PlanSourceMappingDiffEntry
+  | PlanExecutorBindingDiffEntry;
+
+function diffEntryRow(entry: PlanDiffEntry): Record<string, string> {
   if (entry.kind === "object") {
     return { kind: "object", action: entry.action, ref: entry.urn, reason: entry.reason };
+  }
+  if (entry.kind === "source-mapping") {
+    const glob = [entry.repoPattern ?? "*", entry.pathPattern ?? "*"].join(":");
+    return {
+      kind: "source-mapping",
+      action: entry.action,
+      ref: `${entry.sourceKind}:${glob} --${entry.type}--> ${entry.componentUrn}`,
+      reason: entry.reason
+    };
+  }
+  if (entry.kind === "executor-binding") {
+    const module =
+      entry.target?.executionSystemId != null
+        ? `execution-system ${entry.target.executionSystemId}`
+        : (entry.target?.pluginModule ?? "-");
+    return {
+      kind: "executor-binding",
+      action: entry.action,
+      ref: `${entry.targetUrn} (${entry.type}) -> ${module}`,
+      reason: entry.reason
+    };
   }
   return {
     kind: "relationship",
@@ -742,10 +769,16 @@ function printPlanResult(plan: Plan, output: OutputFormat): void {
     console.log(JSON.stringify(plan, null, 2));
     return;
   }
-  const entries = [...plan.diff.objects, ...plan.diff.relationships];
-  printResult(entries, "table", (item) =>
-    diffEntryRow(item as PlanObjectDiffEntry | PlanRelationshipDiffEntry)
-  );
+  // `sourceMappings`/`executorBindings` are optional on the wire (a plan stored before C1 has
+  // neither) — but they must be PRINTED, or a plan whose only content is bindings shows an empty
+  // table and an operator approves a diff they were never shown.
+  const entries: PlanDiffEntry[] = [
+    ...plan.diff.objects,
+    ...plan.diff.relationships,
+    ...(plan.diff.sourceMappings ?? []),
+    ...(plan.diff.executorBindings ?? [])
+  ];
+  printResult(entries, "table", (item) => diffEntryRow(item as PlanDiffEntry));
   console.log(
     `\nPlan ${plan.id} (${plan.stackName}, status: ${plan.status}): ${summaryLine(plan.diff.summary)}`
   );

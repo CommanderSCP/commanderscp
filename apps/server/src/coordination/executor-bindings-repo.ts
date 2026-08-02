@@ -1,11 +1,11 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { and, eq, exists, isNull, sql } from "drizzle-orm";
+import { and, eq, exists, inArray, isNull, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import { categoryOfType, type ExecutorType, type ExecutorCategory } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { executorBindings, objects } from "../db/schema.js";
-import { conflict, notFound } from "../errors.js";
+import { badRequest, conflict, notFound } from "../errors.js";
 import { isUniqueViolation } from "../db/pg-errors.js";
 import { resolveSecretRefs } from "../secrets/secrets-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
@@ -57,6 +57,42 @@ export type BindingType = ExecutorType;
 /** The Type reconcile resolves by default when a caller names none. Making this explicit (rather than
  *  an inline literal at each call site) keeps the default checkable in one place (ADR-0007). */
 export const DEFAULT_BINDING_TYPE: BindingType = "configuration";
+
+/**
+ * Turns a loaded `execution-system` object into the (module, instance id) identity a binding to it
+ * must carry, rejecting anything that isn't a bindable system. Lives HERE rather than inline in
+ * `routes/executors.ts` because IaC apply (docs/proposals/post-import-configuration.md §8 C1) became
+ * a second door that writes execution-system-backed bindings, and both doors must derive the same
+ * identity and refuse the same inputs — a check that lives in one route handler is a check the next
+ * write path silently doesn't have.
+ *
+ * CALL ORDER MATTERS AND IS THE CALLER'S JOB: authorize `object:write` at `sys.id` BEFORE calling
+ * this. Every rejection below discloses the object's type or properties, so calling it first would
+ * turn it into a type/existence oracle for objects the caller may not read (the reason
+ * `bindTargetToExecutionSystem` authorizes before its own checks, and the reason `plans-repo.ts`
+ * defers this to `executePlanDiff`, after every `authorize()` has run).
+ */
+export function executionSystemBindingIdentity(
+  sys: { id: string; typeId: string; properties: unknown },
+  reference: string
+): { pluginModule: string; pluginInstanceId: string; executionSystemId: string } {
+  if (sys.typeId !== "execution-system") {
+    throw badRequest(`'${reference}' is a '${sys.typeId}', not an execution-system`);
+  }
+  const props = sys.properties as { kind?: string; serverUrl?: string };
+  if (!props.serverUrl) {
+    throw badRequest(`execution-system '${sys.id}' is missing a 'serverUrl' property`);
+  }
+  const pluginModule = (props.kind ?? "").trim();
+  if (!isKnownExecutorModule(pluginModule)) {
+    throw badRequest(`execution-system kind '${pluginModule}' is not a known executor module`);
+  }
+  return {
+    pluginModule,
+    pluginInstanceId: executionSystemInstanceId(sys.id),
+    executionSystemId: sys.id
+  };
+}
 
 export interface ExecutorBindingRow {
   id: string;
@@ -179,6 +215,33 @@ export async function listExecutorBindings(
     .select()
     .from(executorBindings)
     .where(and(eq(executorBindings.orgId, orgId), targetObjectIsLive(tx)));
+  return rows.map(toRow);
+}
+
+/**
+ * Every binding whose target is one of `targetObjectIds` — the IaC ownership-scoped pool (C1: a
+ * binding belongs to the stack that owns its target object). Keeps `targetObjectIsLive`: the caller
+ * derives these ids from live object rows, so it is redundant today, but the property this filter
+ * exists for ("a soft-deleted target should surface no bindings ANYWHERE", M12 P5c) holds for every
+ * list function or none — omitting it here because one caller happens to be safe is exactly how the
+ * next caller inherits the bug.
+ */
+export async function listExecutorBindingsForTargets(
+  tx: TenantTx,
+  orgId: string,
+  targetObjectIds: string[]
+): Promise<ExecutorBindingRow[]> {
+  if (targetObjectIds.length === 0) return [];
+  const rows = await tx
+    .select()
+    .from(executorBindings)
+    .where(
+      and(
+        eq(executorBindings.orgId, orgId),
+        inArray(executorBindings.targetObjectId, targetObjectIds),
+        targetObjectIsLive(tx)
+      )
+    );
   return rows.map(toRow);
 }
 

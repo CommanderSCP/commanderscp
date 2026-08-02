@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import { categoryOfType, type SourceMapping, type ExecutorType } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -148,6 +148,74 @@ export async function backfillSourceMappings(
   }
 
   return { createdSourceMappingIds, skipped };
+}
+
+export interface DeleteSourceMappingsMatchingInput {
+  orgId: string;
+  componentObjectId: string;
+  sourceKind: string;
+  repoPattern: string | null;
+  pathPattern: string | null;
+  type: ExecutorType;
+}
+
+/**
+ * Deletes EVERY `source_mappings` row matching the full identity tuple — the prune primitive IaC
+ * apply needs (docs/proposals/post-import-configuration.md §8 C1), and the first delete path this
+ * table has had (hence migration 0049's DELETE grant). A HARD delete: like `executor_bindings`, a
+ * source mapping is correlation config, not an audited graph object, and the table carries no
+ * `deleted_at`.
+ *
+ * "EVERY matching row", not "one", is deliberate. The table has no unique constraint, and
+ * `POST /discovery/accept` inserts unconditionally, so an estate can hold several byte-identical
+ * mappings (the homelab does). Deleting one would leave a plan that reports `deletes=1` while the
+ * survivor still correlates — and it would come back as a prune candidate on the next plan forever,
+ * so the manifest would never converge. Returns the number of rows removed so the caller can tell a
+ * real prune from a no-op.
+ */
+export async function deleteSourceMappingsMatching(
+  tx: TenantTx,
+  input: DeleteSourceMappingsMatchingInput
+): Promise<number> {
+  const rows = await tx
+    .delete(sourceMappings)
+    .where(
+      and(
+        eq(sourceMappings.orgId, input.orgId),
+        eq(sourceMappings.componentObjectId, input.componentObjectId),
+        eq(sourceMappings.sourceKind, input.sourceKind),
+        input.repoPattern === null
+          ? isNull(sourceMappings.repoPattern)
+          : eq(sourceMappings.repoPattern, input.repoPattern),
+        input.pathPattern === null
+          ? isNull(sourceMappings.pathPattern)
+          : eq(sourceMappings.pathPattern, input.pathPattern),
+        eq(sourceMappings.type, input.type)
+      )
+    )
+    .returning({ id: sourceMappings.id });
+  return rows.length;
+}
+
+/** Every `source_mappings` row whose component is one of `componentObjectIds` — the IaC
+ *  ownership-scoped pool (C1: a mapping belongs to the stack that owns its component). Returns
+ *  nothing for an empty id list rather than scanning the org. */
+export async function listSourceMappingsForComponents(
+  tx: TenantTx,
+  orgId: string,
+  componentObjectIds: string[]
+): Promise<SourceMapping[]> {
+  if (componentObjectIds.length === 0) return [];
+  const rows = await tx
+    .select()
+    .from(sourceMappings)
+    .where(
+      and(
+        eq(sourceMappings.orgId, orgId),
+        inArray(sourceMappings.componentObjectId, componentObjectIds)
+      )
+    );
+  return rows.map(toSourceMapping);
 }
 
 export interface ListSourceMappingsQuery {
