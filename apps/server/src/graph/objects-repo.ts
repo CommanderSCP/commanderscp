@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import {
   asContainmentDomainId,
@@ -7,10 +7,13 @@ import {
   type TrustDomainId
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { objects } from "../db/schema.js";
+import { objects, relationships } from "../db/schema.js";
 import { badRequest, conflict, notFound, preconditionFailed } from "../errors.js";
 import { isUniqueViolation } from "../db/pg-errors.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
+// Value import back into relationships-repo. Not a runtime cycle: relationships-repo imports only a
+// TYPE from here (`FederationImportContext`), which erases at compile time.
+import { deleteRelationship } from "./relationships-repo.js";
 import { computeObjectContentHash } from "./content-hash.js";
 import { deriveUrn } from "./urn.js";
 import { requireObjectType } from "./type-registry-repo.js";
@@ -801,6 +804,63 @@ export async function deleteObject(
       updatedAt: new Date()
     })
     .where(eq(objects.id, existing.id));
+
+  // ---------------------------------------------------------------------------------------------
+  // CASCADE: an object's edges must not outlive the object.
+  //
+  // Deleting an object used to tombstone the object ROW alone, leaving every `relationships` row
+  // touching it with `deleted_at IS NULL` — a live edge to a dead node. Measured on the live homelab
+  // (2026-08-02): soft-deleting one component during the ADR-0026 §6 pair merge took the estate from
+  // 0 such edges to 1, and it had to be cleaned up by hand.
+  //
+  // It is not cosmetic, because the containment walk is built out of those edges.
+  // `graph/containment.ts` route 2 walks `contains` from `r.to_id` to `r.from_id` filtering on the
+  // EDGE's `deleted_at` only, so a dangling edge keeps a deleted service on a live component's chain
+  // — and that chain is what `matchPoliciesForTargets`, `containmentScopeIds` and
+  // `authz/resolve.ts`'s `scopeExpandCte` all read. A policy or role binding scoped at a DELETED
+  // service would go on governing. (The walk now also skips deleted ancestors, which covers the rows
+  // this cascade cannot reach — see below.)
+  //
+  // WHAT THIS DELIBERATELY DOES NOT DO:
+  //
+  //  - it does not run on the FEDERATION IMPORT path. The authoritative domain journals its own
+  //    `relationship_tombstone` entries beside the `object_tombstone`; cascading here would tombstone
+  //    at a revision that authority never issued, and the import would then reject its real entry as
+  //    a stale replay.
+  //  - it does not touch REPLICA edges (`originDomainId !== self`). `deleteRelationship` refuses
+  //    those by design — single-writer authority — so they are skipped rather than attempted. Such an
+  //    edge genuinely can outlive this object until its own authority removes it, which is precisely
+  //    why the reader-side filter in `containment.ts` exists as well: this cascade cannot be
+  //    complete on its own, and a fix that only prevented NEW dangling edges would leave both the
+  //    foreign ones and every row already in the database.
+  //  - it does not run for `removedForeignShadow`, which is local cleanup of a row this domain never
+  //    authored and deliberately does not journal.
+  if (!input.federationImport && !removedForeignShadow) {
+    const self = await ensureFederationSelf(tx, input.orgId);
+    const touching = await tx
+      .select({ id: relationships.id })
+      .from(relationships)
+      .where(
+        and(
+          eq(relationships.orgId, input.orgId),
+          isNull(relationships.deletedAt),
+          eq(relationships.originDomainId, self.domainId),
+          or(eq(relationships.fromId, existing.id), eq(relationships.toId, existing.id))
+        )
+      );
+    for (const edge of touching) {
+      // Reused rather than a bulk UPDATE on purpose: each tombstone gets its own audit event,
+      // journal entry and event-bus publish, exactly as an operator-issued delete would. A bulk
+      // update would silently drop all three, and the federation journal would then describe an
+      // estate whose edges never went away.
+      await deleteRelationship(tx, {
+        orgId: input.orgId,
+        actorObjectId: input.actorObjectId,
+        requestId: input.requestId,
+        id: edge.id
+      });
+    }
+  }
 
   await appendAuditEvent(tx, {
     orgId: input.orgId,
