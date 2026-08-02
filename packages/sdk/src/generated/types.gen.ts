@@ -890,7 +890,7 @@ export type ListRelationshipTypesResponses = {
             } | null;
             fromTypes: Array<string> | null;
             toTypes: Array<string> | null;
-            cardinality: 'one_to_one' | 'one_to_many' | 'many_to_many';
+            cardinality: 'one_to_one' | 'one_to_many' | 'many_to_one' | 'many_to_many';
             isBuiltin: boolean;
             createdAt: string;
         }>;
@@ -909,7 +909,7 @@ export type CreateRelationshipTypeData = {
         };
         fromTypes?: Array<string>;
         toTypes?: Array<string>;
-        cardinality: 'one_to_one' | 'one_to_many' | 'many_to_many';
+        cardinality: 'one_to_one' | 'one_to_many' | 'many_to_one' | 'many_to_many';
     };
     path?: never;
     query?: never;
@@ -967,7 +967,7 @@ export type CreateRelationshipTypeResponses = {
         } | null;
         fromTypes: Array<string> | null;
         toTypes: Array<string> | null;
-        cardinality: 'one_to_one' | 'one_to_many' | 'many_to_many';
+        cardinality: 'one_to_one' | 'one_to_many' | 'many_to_one' | 'many_to_many';
         isBuiltin: boolean;
         createdAt: string;
     };

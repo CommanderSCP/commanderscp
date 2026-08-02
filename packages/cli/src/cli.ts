@@ -1443,7 +1443,11 @@ export function buildProgram(): Command {
     .requiredOption("--display-name <name>", "human-readable display name")
     .option("--from-types <list>", "comma-separated allowed 'from' object types")
     .option("--to-types <list>", "comma-separated allowed 'to' object types")
-    .option("--cardinality <cardinality>", "one_to_one|one_to_many|many_to_many", "many_to_many")
+    .option(
+      "--cardinality <cardinality>",
+      "one_to_one|one_to_many|many_to_one|many_to_many",
+      "many_to_many"
+    )
     .option("--schema <json>", "JSON Schema validating instance properties")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
@@ -1454,7 +1458,7 @@ export function buildProgram(): Command {
           displayName: string;
           fromTypes?: string;
           toTypes?: string;
-          cardinality: "one_to_one" | "one_to_many" | "many_to_many";
+          cardinality: "one_to_one" | "one_to_many" | "many_to_one" | "many_to_many";
           schema?: string;
           baseUrl?: string;
           output: OutputFormat;

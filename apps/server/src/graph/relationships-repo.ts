@@ -53,6 +53,31 @@ function cardinalityToSideConflict(cardinality: string, typeId: string, toId: st
   );
 }
 
+/**
+ * The mirror of `cardinalityToSideConflict` for the FROM side — shared by the app-level
+ * `assertCardinality` pre-check and by the migration-0049 index race backstop, so a component that
+ * already has a pipeline surfaces the SAME message whichever guard fires.
+ */
+function cardinalityFromSideConflict(cardinality: string, typeId: string, fromId: string) {
+  return conflict(
+    `cardinality '${cardinality}' violated: '${fromId}' already has an outgoing '${typeId}' relationship`
+  );
+}
+
+/**
+ * Which side of the edge each cardinality makes singular. Exhaustive BY CONSTRUCTION: an
+ * unrecognised value is absent from this map and `assertCardinality` refuses the write rather than
+ * falling through unenforced (`relationship_types.cardinality` is plain `text` with no CHECK
+ * constraint, so a typo in a migration is reachable). That silent fall-through is exactly the trap
+ * migration 0021 had to design around when `many_to_one` did not exist.
+ */
+const SINGULAR_SIDES: Record<string, { from: boolean; to: boolean }> = {
+  many_to_many: { from: false, to: false },
+  one_to_many: { from: false, to: true },
+  many_to_one: { from: true, to: false },
+  one_to_one: { from: true, to: true }
+};
+
 async function assertCardinality(
   tx: TenantTx,
   orgId: string,
@@ -61,9 +86,17 @@ async function assertCardinality(
   fromId: string,
   toId: string
 ): Promise<void> {
-  if (cardinality === "many_to_many") return;
+  const singular = SINGULAR_SIDES[cardinality];
+  if (!singular) {
+    // Fail closed. Permitting a write under a cardinality nothing can enforce is worse than a 500:
+    // the constraint would read as enforced in the registry and be enforced nowhere.
+    throw new Error(
+      `relationship type '${typeId}' has unenforceable cardinality '${cardinality}' — no enforcement branch exists for it`
+    );
+  }
+  if (!singular.from && !singular.to) return;
 
-  if (cardinality === "one_to_one" || cardinality === "one_to_many") {
+  if (singular.to) {
     // "to" side is singular: this `to_id` may not already have an incoming edge of this type.
     const toClash = await tx.query.relationships.findFirst({
       where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
@@ -78,8 +111,8 @@ async function assertCardinality(
       throw cardinalityToSideConflict(cardinality, typeId, toId);
     }
   }
-  if (cardinality === "one_to_one") {
-    // "from" side is also singular for one_to_one.
+  if (singular.from) {
+    // "from" side is singular: this `from_id` may not already have an outgoing edge of this type.
     const fromClash = await tx.query.relationships.findFirst({
       where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
         andOp(
@@ -90,9 +123,7 @@ async function assertCardinality(
         )
     });
     if (fromClash) {
-      throw conflict(
-        `cardinality '${cardinality}' violated: '${fromId}' already has an outgoing '${typeId}' relationship`
-      );
+      throw cardinalityFromSideConflict(cardinality, typeId, fromId);
     }
   }
 }
@@ -204,6 +235,13 @@ export async function createRelationship(
       // lost at the index. Surface the SAME one-service-per-component 409 the pre-check would have,
       // not the misleading generic "relationship id already exists" below (which blames the id).
       throw cardinalityToSideConflict("one_to_many", input.typeId, input.toId);
+    }
+    if (isUniqueViolation(err, "relationships_releases_via_one_pipeline_per_component")) {
+      // Migration-0049 partial unique index — the FROM-side mirror of the 0022 case above. Two
+      // concurrent `releases_via` creates for the same component both passed `assertCardinality`
+      // under READ COMMITTED (no row lock) and this one lost at the index. Surface the SAME
+      // one-pipeline-per-component 409 the pre-check would have.
+      throw cardinalityFromSideConflict("many_to_one", input.typeId, input.fromId);
     }
     if (isUniqueViolation(err)) throw conflict(`relationship id '${id}' already exists`);
     throw err;

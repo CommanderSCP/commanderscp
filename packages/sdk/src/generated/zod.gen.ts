@@ -234,6 +234,7 @@ export const zListRelationshipTypesResponse = z.object({
         cardinality: z.enum([
             'one_to_one',
             'one_to_many',
+            'many_to_one',
             'many_to_many'
         ]),
         isBuiltin: z.boolean(),
@@ -255,6 +256,7 @@ export const zCreateRelationshipTypeResponse = z.object({
     cardinality: z.enum([
         'one_to_one',
         'one_to_many',
+        'many_to_one',
         'many_to_many'
     ]),
     isBuiltin: z.boolean(),

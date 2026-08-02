@@ -15,11 +15,16 @@ import {
  *
  * These tests exist because the enforcement is SUBTLE and easy to get wrong in a way that looks fine:
  * the domain reads "component is part of a service", but registering `component -> service` with
- * `many_to_one` would be silently unenforced — that cardinality is absent from CardinalitySchema AND
- * has no branch in assertCardinality, so it falls through every check. We therefore register the
- * MIRROR (`service -> component`, `one_to_many`), whose "to side is singular" rule is what actually
- * delivers "one service per component". If someone later "fixes" the direction to read more naturally,
- * these tests fail — which is the point.
+ * `many_to_one` would have been silently unenforced — that cardinality was absent from
+ * CardinalitySchema AND had no branch in assertCardinality, so it fell through every check. We
+ * therefore register the MIRROR (`service -> component`, `one_to_many`), whose "to side is singular"
+ * rule is what actually delivers "one service per component". If someone later "fixes" the direction
+ * to read more naturally, these tests fail — which is the point.
+ *
+ * `many_to_one` IS enforced as of migration 0049 (ADR-0026 D11), and `assertCardinality` now fails
+ * closed on any cardinality it cannot enforce — see cardinality.integration.test.ts. That does not
+ * license flipping this edge: 0022's partial unique index and the authz/policy containment walks all
+ * key on `service -> component`, so the direction below stays exactly as shipped.
  */
 describe("service --contains--> component (membership, one service per component)", () => {
   let server: ListeningTestServer;
