@@ -72,13 +72,34 @@ A one-column key cannot address a two-dimensional grid, so one axis must be mate
 
 ### 1.4 Auto-created changes have exactly one target (D2's evidence)
 
-`webhook-processor.ts:299` calls `proposeChange` once per matched mapping with `targets: [match.componentObjectId]`. Measured:
+`webhook-processor.ts:299` calls `proposeChange` with `targets: [match.componentObjectId]`. Measured:
 
 ```
  1 target  → 277 changes      2 targets → 1 change (rehearsal)      18 targets → 3 changes
 ```
 
 A single-target change has nothing to disagree with.
+
+> **Correction (2026-08-02).** Earlier revisions of this section said the processor calls
+> `proposeChange` **once per matched mapping**, so that a push to a repository with 24 mappings
+> produced 24 separate single-target changes. **That was wrong**, and the mechanism is materially
+> different from what it described.
+>
+> `matchComponentForSource` (`coordination/correlation.ts`) returns **exactly one** component — it
+> iterates mappings ordered by specificity, then oldest-first, and `return`s on the first match.
+> One source event therefore produces **one** change, never a fan-out. Because a `path_pattern`
+> mapping was skipped whenever the event carried no path — and nothing populated a path for a git
+> push — every mapping on a monorepo was necessarily repo-only, all ranked equally, and the oldest
+> won every event forever. On the homelab that meant **45 of 47 source mappings had never fired**,
+> and 286 changes across four repositories had landed on exactly two components.
+>
+> The measured distribution above is unaffected, and **D2 stands more firmly, not less**: a single
+> event cannot produce a multi-target change at all, so the conflict D2 drops could never arise on
+> the automatic path.
+>
+> The routing defect itself is fixed separately (changed-path extraction, `paths` on the
+> correlation hint); §7's `hasSourceMapping` readiness check is unchanged by it, but note that a
+> mapping's *existence* is not evidence it can ever fire.
 
 ### 1.5 Consequence today
 
