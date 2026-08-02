@@ -32,7 +32,8 @@ Audience: a new engineer trying to read the code, and an operator trying to read
 | **deploy / deployment** | The push of an artifact into one environment so it runs there | INDUSTRY-STANDARD |
 | **deployment target** | The graph object type an executor acts on (cluster, host, environment, region) — deliberately broad | SCP-SPECIFIC |
 | **environment** | A named operational tier (dev / gamma / prod) within one security domain | INDUSTRY-STANDARD |
-| **stage** | **Reserved:** one named deployment **place**, spelled `<domain>[-<location>]-<env>`. No such entity exists yet | QUALIFIED-STANDARD *(word-sense precedent only; the definition is ours)* |
+| **stage** | **Reserved:** one named deployment **place**, spelled `<domain>[-<location>]-<env>`. A **derived name**, never a row — [ADR-0026](adr/0026-placements-and-derived-stage-names.md) | QUALIFIED-STANDARD *(word-sense precedent only; the definition is ours)* |
+| **placement** | One component **at** one deployment target — the pair an executor binding attaches to | SCP-SPECIFIC |
 | **wave** | One ordered step of a compiled plan — the **set of one-or-more stages** advanced at once | SCP-SPECIFIC |
 | **change** | The coordinated unit of work; a graph object with a lifecycle state machine | SCP-SPECIFIC |
 | **pipeline** | The ordered path a release travels for one executor **Type** | INDUSTRY-STANDARD |
@@ -264,7 +265,11 @@ That only works if **no segment value itself contains a hyphen**. `us-east` is t
 - The **minority** sense — and ours — has a real precedent: **Kargo's `Stage` CRD** spends the word on a **promotion-target node** ("a stage is a promotion target that represents some desired state") rather than on a pipeline phase. That is genuine support for *what we spend the word on*.
 - **It is not support for our definition.** Kargo has no security-domain axis, and its docs state that a Stage's name denotes an application instance's **purpose** "and not necessarily its location" — i.e. Kargo deliberately declines to bind a Stage to a place. The `<domain>[-<location>]-<env>` place definition is **ours**: SCP-specific, not inherited from Kargo. Do not cite Kargo for it.
 
-**Honest status: no stage entity exists in the schema today.** There is no `stage` table and no `environment` table, and **no stage-grammar compound name such as `commercial-amer-gamma` appears anywhere in the code** (this glossary's and ADR-0021's own illustrative examples aside). "Stage" is *reserved vocabulary that a future entity may fill*, not a description of something built.
+**Honest status: no stage entity exists in the schema today.** There is no `stage` table and no `environment` table, and **no stage-grammar compound name such as `commercial-amer-gamma` appears anywhere in the code** (this glossary's and ADR-0021's own illustrative examples aside).
+
+**The deferred entity question is now answered — there will be no stage entity** ([ADR-0026](adr/0026-placements-and-derived-stage-names.md)). ADR-0021 reserved the word and left "a future entity may fill it" open; that is superseded. A stage is a **derived name**, not a row: computed as `<origin domain>-[<region>-]<environment>` from a `deployment-target` carrying [ADR-0017](adr/0017-ownership-refinement.md) §3's `environment` and optional `region` properties, with the domain segment read from the object's `origin_domain_id` — never from the local instance, or a replicated target would derive two different names. The domain segment is not stored anywhere because a security domain is **ambient** (see that entry). Nothing about the D6 grammar changes; what changes is that the thing filling it is a computation over an existing type rather than a new one.
+
+Two consequences worth stating plainly. **`environment` is not subsumed** — it remains a property on the place-role deployment-target, and is the last segment of the derived name; the missing `environment` entity stays missing, but now has a de facto home. And **not every deployment-target is a stage**: only those carrying `environment` derive a name, exactly the membership convention `regional-executors.ts` already uses to leave plain targets alone.
 
 #### The in-tree misuses, by sense
 
@@ -296,7 +301,29 @@ The follow-on work is therefore **split in two** ([ADR-0021](adr/0021-terminolog
 - **`apps/server/src/graph/named-queries.ts`**, whose hypothetical "stage-domain" is actually *consistent* with the reserved place sense.
 - **The vendored `tools/openapi/bin/oasdiff-linux-amd64` binary**, which matches on byte content only.
 
-**Not to be confused with:** *wave* (the ordering step that **contains** stages), *environment* and *region* (the env and location segments of a stage name), *phase*/*step* (what other CD tools call a stage).
+**Not to be confused with:** *wave* (the ordering step that **contains** stages), *placement* (a component **at** a stage — the pair, not the place), *environment* and *region* (the env and location segments of a stage name), *phase*/*step* (what other CD tools call a stage).
+
+---
+
+### placement
+
+**Definition.** **One component at one deployment target** — the pair that is actually deployed, observed, gated and rolled back. `agentkit-keycloak` at `prod (DOKS hosted)` is one placement; the same component at `gamma (self-host canary)` is another. A component says *what* the software is, a deployment target says *where*, and a placement is the intersection. It is what an executor binding attaches to, and what a wave target names.
+
+A component may have many placements; a deployment target may hold many. **Neither endpoint alone can identify a deployment**, which is the whole reason the type exists — a binding must resolve both which execution system to call and which application inside it, and those are functions of different axes.
+
+**Industry-standard?** No — SCP-specific. The *concept* is not novel: Argo CD's `Application` is the same intersection, an app bound to a destination, and an SCP binding's `external_ref` names one. The *word* is ours. "Application" was unusable because it would collide with both `component` and `service`; "instance" was the first candidate and is reserved (below).
+
+**Not to be confused with:**
+
+- ***instance*** — one running deployment of the SCP binary. Reserved, and the term the federation model rests on (`commander instance`, `outpost instance`). It reads naturally for this concept and must still not be used for it.
+- ***stage*** — the place **alone**. A placement is a component *at* a stage.
+- ***deploy / deployment*** — the per-environment **event**. A placement is the standing thing that event acts on; it exists between deployments and outlives any single change.
+- ***deployment target*** — the place as an executor sees it. A placement pairs a component with one.
+- **the casual sense in `apps/server/src/federation/import-repo.ts:163`**, where *"`domainId` is LOCAL PLACEMENT, not authority"* means an imported object's containment parent. Different axis entirely: where an object sits in the org tree, not where software runs.
+
+**In the code — not built yet.** Reserved by [ADR-0026](adr/0026-placements-and-derived-stage-names.md) and specified in [post-import-configuration.md](proposals/post-import-configuration.md). When built: object type `placement`, named `<component>@<deployment-target>`, unique on `(org_id, component, deployment_target)`, and the referent of both `executor_bindings.target_object_id` and `change_wave_targets.target_object_id`.
+
+Today the same information is carried by **env-suffixed component pairs** — `agentkit-keycloak` and `agentkit-keycloak-prod`, which hold identical `external_ref`s and differ only in which Argo CD they point at. Those are placements wearing a component costume, and they are what the proposal's §6 migrates. Read them as evidence the concept is already load-bearing, not as a naming accident.
 
 ---
 

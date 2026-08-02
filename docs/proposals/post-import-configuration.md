@@ -132,7 +132,7 @@ What lives where — this split is the whole point:
 
 **Placements are declared, never inferred (D8).** Nothing may pair components by name. §1.2's own data shows why: `agentkit-bootstrap` and `agentkit-db-bootstrap-prod` look like a pair and are **different Argo CD applications**, as are `agentkit-selfhost` and `agentkit-hosted`. Declaration happens in the UI or IaC; an undeclared component surfaces as a readiness gap (§7).
 
-**Vocabulary.** `placement` needs a GLOSSARY entry and an ADR-0021 follow-on before implementation. Its "not to be confused with" must cover *instance* (one running deployment of the SCP binary), *stage* (the place alone), *deployment* (the per-environment event), and the casual containment sense in `import-repo.ts:163` (`objects.domain_id` as "local placement").
+**Vocabulary — landed.** `placement` is reserved by [ADR-0026](../adr/0026-placements-and-derived-stage-names.md) and defined in [GLOSSARY.md](../GLOSSARY.md), whose entry disambiguates it from *instance* (one running deployment of the SCP binary), *stage* (the place alone), *deployment* (the per-environment event), *deployment target* (the place as an executor sees it), and the casual containment sense in `import-repo.ts:163`. ADR-0026 also answers the stage-entity question ADR-0021 deferred, and ADR-0021's rejected-alternatives section now points forward to it.
 
 ---
 

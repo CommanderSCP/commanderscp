@@ -228,6 +228,8 @@ Rejected because it has already been tried. ADR-0016 and DESIGN.md both mandate 
 
 Rejected as premature. D6 reserves the *word* and settles its grammar; building the entity is a separate design question (what a stage owns, how it relates to `deployment-target`, and whether it subsumes the missing `environment` concept). The grammar itself is no longer open — the location segment is optional, and a future parser must key on segment count.
 
+**Answered 2026-08-01 by [ADR-0026](0026-placements-and-derived-stage-names.md) — and the answer is that there will be no stage entity at all.** A stage is a *derived name* over a place-role `deployment-target` carrying [ADR-0017](0017-ownership-refinement.md) §3's `environment` and optional `region`, with the domain segment read from `origin_domain_id`. So this section's "premature" holds permanently rather than pending: the three sub-questions above are answered as *nothing* (it is not a row), *it is one*, and *no* (environment remains a property). What did get an entity is the (component × place) pair, reserved as **`placement`** — the concept D6 had no word for, and the reason the deferral could not stay open once one component needed to reach two places.
+
 **Reserving the word is free; reclaiming it is not.** The word has *already* been spent on waves, including in the shipped `/v1` service-board response — see Consequences (iii-b), which is a breaking change. So the honest statement is that reserving now costs nothing further and stops the spend growing, not that the reservation is cost-free in aggregate.
 
 ---
