@@ -37,10 +37,21 @@ function sleep(ms: number): Promise<void> {
  * exactly the boundary this credentials round-trip crosses, so guard it directly here rather than
  * masking the symptom with a blanket test retry: after `login`, poll for a parseable
  * `credentials.json` (bounded, short) before handing control back to the caller.
+ *
+ * BUDGET RAISED 2026-08-02 (CI run 30770220554 job 91556316977). The guard fired for real and still
+ * lost: 5 attempts at `50 * attempt` is 500 ms of total patience, on a shard whose tests took 916 s
+ * — i.e. a heavily loaded runner, which is exactly the condition the delay needs and the condition
+ * under which 500 ms is thinnest. The guard's PURPOSE is to outlast a visibility delay of unknown
+ * length, so a budget that short was never the right shape; this is the same fix, sized honestly.
+ *
+ * Now ~5 s across 16 attempts with the backoff capped, so the tail is patience rather than one long
+ * final sleep. It stays a WAIT, not a retry-the-test: if `credentials.json` never becomes readable
+ * the failure is still loud, still points at this boundary, and still refuses to let a "Not logged
+ * in" error surface later as a confusing assertion failure somewhere unrelated.
  */
 async function waitForCredentials(configDir: string): Promise<void> {
   const credentialsPath = path.join(configDir, "credentials.json");
-  const attempts = 5;
+  const attempts = 16;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       const raw = await readFile(credentialsPath, "utf8");
@@ -53,7 +64,10 @@ async function waitForCredentials(configDir: string): Promise<void> {
             "the CLI's own saveCredentials() should have made it visible before its process exited."
         );
       }
-      await sleep(50 * attempt);
+      // Capped so the total (~5 s) is spread across many checks instead of a few long ones — the
+      // file becomes visible at some unknown moment, so checking OFTEN matters more than waiting
+      // LONG, and an uncapped ramp would spend most of the budget asleep past that moment.
+      await sleep(Math.min(50 * attempt, 500));
     }
   }
 }
