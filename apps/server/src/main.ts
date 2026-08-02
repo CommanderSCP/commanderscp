@@ -1,5 +1,3 @@
-import path from "node:path";
-import os from "node:os";
 import { buildApp } from "./app.js";
 import { loadConfig, loadFederationServerMtlsConfig } from "./config.js";
 import { createDb, createPool } from "./db/client.js";
@@ -10,7 +8,7 @@ import { startPgBoss } from "./events/pgboss.js";
 import { startOutboxRelay } from "./events/outbox-relay.js";
 import { connectNatsFanout, type NatsFanoutHandle } from "./events/nats-fanout.js";
 import { loginAndSeedDemoData } from "./seed.js";
-import { SubprocessPluginHost } from "./plugin-host/host.js";
+import { startPluginHostForRole } from "./plugin-host/host-bootstrap.js";
 import { startReconcileLoop } from "./coordination/reconcile.js";
 import { startObserveLoop } from "./coordination/observe.js";
 import { startWatchdogLoop } from "./coordination/watchdog.js";
@@ -19,12 +17,6 @@ import { startAutoRelayLoop } from "./federation/auto-relay.js";
 import { startFederationSyncLoop } from "./federation/federation-sync.js";
 import { createCommanderPokeSender } from "./federation/poke-sender.js";
 import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
-import {
-  DEFAULT_EXECUTOR_INSTANCE_ID,
-  DEFAULT_EXECUTOR_MODULE,
-  SHARED_PLUGIN_INSTANCE_SCOPE_KEY,
-  SHARED_PLUGIN_INSTANCE_ORG_ID
-} from "./coordination/executor-config.js";
 import type { AppDeps } from "./types.js";
 
 async function main(): Promise<void> {
@@ -84,12 +76,49 @@ async function main(): Promise<void> {
     { info: (msg) => app.log.info(msg), warn: (msg) => app.log.warn(msg) }
   );
 
+  // ---------------------------------------------------------------------------------------------
+  // THE SUBPROCESS PLUGIN HOST — constructed for EVERY role, including `api`.
+  //
+  // It used to be built inside the `all|worker` guard below, next to the loops, so a split
+  // api/worker deployment (the Helm chart's default, and how the homelab runs) left `deps.pluginHost`
+  // undefined on the api process and `POST /discovery/run` answered 400 "discovery requires a
+  // worker-capable process" — on the ONLY process that serves HTTP. Discovery was unreachable in the
+  // topology the chart ships, and the operator-facing remediation ("SCP_ROLE=all") is wrong advice:
+  // it would ALSO start a second reconcile/watchdog/observe loop set beside the worker's.
+  //
+  // The guard conflated two different needs. The LOOPS need pg-boss, the outbox relay and a
+  // single-writer role — that is what `all|worker` protects, and it is unchanged below. Discovery
+  // needs only the ability to dispatch a plugin for the duration of ONE request. Hosting plugins is
+  // not background work, so it does not belong behind a background-work guard.
+  //
+  // What stays role-gated is the shared fake-executor INSTANCE: it exists for the coordination loops
+  // (coordination/executor-config.ts), so an api-only process starts the host with NO pre-registered
+  // instances and pays only for an idle supervisor. Discovery registers its own instance per request
+  // either way, so it never depended on that default.
+  //
+  // Egress is unchanged and was verified before this landed: the chart's executor NetworkPolicies
+  // select every pod of the release rather than the worker alone, and the app-level SSRF egress
+  // guard is per-plugin-instance, not per-process. Neither boundary moves because a different
+  // process dispatches the plugin.
+  // ---------------------------------------------------------------------------------------------
+  const runsBackgroundWork = config.role === "all" || config.role === "worker";
+  const pluginHost = await startPluginHostForRole(deps, config.role);
+  // An api-only process owns nothing else to tear down, so it stops the host itself. The
+  // background-work branch below keeps stopping it in ITS onClose, ordered after the loops that use
+  // it — stopping the host out from under a running reconcile tick is what that ordering avoids.
+  if (!runsBackgroundWork) {
+    app.addHook("onClose", async () => {
+      await pluginHost.stop();
+    });
+  }
+
   // Outbox relay + pg-boss worker skeleton (DESIGN.md §8) — only the roles that own background
-  // work run them; `role=api` stays a pure request server. The relay runs on the runtime pool
+  // work run them; `role=api` stays a pure request server for everything EXCEPT request-scoped
+  // plugin dispatch (see the plugin-host note above). The relay runs on the runtime pool
   // and assumes the outbox-only `scp_relay` role per transaction; pg-boss connects as the
   // schema-scoped `scp_pgboss` login role (M3 tracked security follow-up — pg-boss no longer
   // runs its own schema migrations on the admin/superuser connection).
-  if (config.role === "all" || config.role === "worker") {
+  if (runsBackgroundWork) {
     const boss = await startPgBoss(config.pgBossDatabaseUrl);
     // M14.2 (ADR-0009): expose the job queue to request handlers (mirrors `deps.pluginHost` below)
     // so the inbound federation poke endpoint can enqueue an immediate federation-sync tick — the
@@ -115,23 +144,13 @@ async function main(): Promise<void> {
       onEventsRelayed: (orgIds) => pokeSender.onEventsRelayed(orgIds)
     });
 
-    // M3 coordination engine (BUILD_AND_TEST.md §8 M3, DESIGN.md §9.3/§9.4): the subprocess
-    // plugin host + the resumable reconciliation loop. One shared fake-executor plugin instance
-    // (coordination/executor-config.ts documents why: M3 has no plugin-instance configuration
-    // API yet) with its state file under the OS temp dir — durable across the plugin
-    // SUBPROCESS restarting (the plugin-host isolation DoD scenario), not across this whole
-    // `scpd` process restarting, which is fine: fake-executor is never a real system of record.
-    const pluginHost = new SubprocessPluginHost();
-    deps.pluginHost = pluginHost;
-    await pluginHost.start([
-      {
-        id: DEFAULT_EXECUTOR_INSTANCE_ID,
-        module: DEFAULT_EXECUTOR_MODULE,
-        orgId: SHARED_PLUGIN_INSTANCE_ORG_ID,
-        scopeKey: SHARED_PLUGIN_INSTANCE_SCOPE_KEY,
-        config: { statePath: path.join(os.tmpdir(), "scpd-fake-executor-state.json") }
-      }
-    ]);
+    // M3 coordination engine (BUILD_AND_TEST.md §8 M3, DESIGN.md §9.3/§9.4): the resumable
+    // reconciliation loop, over the plugin host constructed above. The shared fake-executor
+    // instance it relies on (coordination/executor-config.ts documents why: M3 has no
+    // plugin-instance configuration API yet) is registered there under this same role condition,
+    // with its state file under the OS temp dir — durable across the plugin SUBPROCESS restarting
+    // (the plugin-host isolation DoD scenario), not across this whole `scpd` process restarting,
+    // which is fine: fake-executor is never a real system of record.
     const reconcileLoop = await startReconcileLoop(
       boss,
       db,

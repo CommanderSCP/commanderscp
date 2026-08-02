@@ -688,9 +688,10 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
 
   // -----------------------------------------------------------------------------------------
   // Discovery (DESIGN §11 — "proposed objects + relationships, reviewed/accepted into the
-  // graph, never auto-committed"). `/run` executes discover() live via the in-process PluginHost
-  // (present only on role=all|worker — AppDeps.pluginHost's doc comment); `/accept` is the ONLY
-  // path that ever writes what a discovery scan found into the graph.
+  // graph, never auto-committed"). `/run` executes discover() live via the in-process PluginHost,
+  // which `main.ts` constructs for every role including a pure api process (AppDeps.pluginHost's
+  // doc comment records why it used not to); `/accept` is the ONLY path that ever writes what a
+  // discovery scan found into the graph.
   // -----------------------------------------------------------------------------------------
 
   typed.route({
@@ -717,8 +718,13 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
       const auth = await requireAuth(deps, request);
       const host = deps.pluginHost;
       if (!host) {
+        // Reachable only when `buildApp` was handed deps with no host (tests, `openapi:emit`) —
+        // `main.ts` gives every ROLE one, so a deployed process always has it. The old message said
+        // "run SCP_ROLE=all", which was both wrong for a split deployment (it would start a SECOND
+        // reconcile/watchdog/observe loop set beside the worker's) and unactionable, since api is
+        // the only process serving HTTP.
         throw badRequest(
-          "discovery requires a worker-capable process (SCP_ROLE=all or worker) — this process is API-only"
+          "this process has no plugin host, so a live discovery scan cannot be dispatched"
         );
       }
       if (!(KNOWN_DISCOVERY_MODULES as string[]).includes(request.body.pluginModule)) {

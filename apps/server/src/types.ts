@@ -24,14 +24,24 @@ export interface AppDeps {
    *  unchanged. */
   celSandbox?: CelSandbox;
   /**
-   * M7: an in-process `PluginHost`, present only on `role === "all" || "worker"` (main.ts) — a
-   * pure `role === "api"` process has none, same api/worker split `celSandbox`'s doc comment
-   * describes for control evaluation. `routes/executors.ts`'s `POST /discovery/run` is the one API
-   * route that genuinely needs to make a live, on-demand plugin call (a `DiscoveryPlugin.discover()`
-   * scan) rather than deferring to the reconcile loop; it 400s with a clear message when this is
-   * undefined rather than crashing. Every other M7 plugin call (executor trigger/status, control
-   * evaluate, notification send) already runs from worker-side code that has its own `host`
-   * parameter threaded in directly — this is deliberately the ONLY route-layer use.
+   * M7: an in-process `PluginHost`. `main.ts` now constructs one for EVERY role, including a pure
+   * `role === "api"` process — hosting a plugin for the duration of one request is not background
+   * work, so it does not belong behind the background-work guard.
+   *
+   * It used to be built inside that guard, which meant a split api/worker deployment (the Helm
+   * chart's default) left this undefined on the only process serving HTTP, and `POST /discovery/run`
+   * 400'd unconditionally. What remains role-gated is the shared fake-executor INSTANCE, which
+   * exists for the coordination loops; an api-only host starts with none, and discovery registers
+   * its own per request regardless.
+   *
+   * `routes/executors.ts`'s `POST /discovery/run` is the one API route that genuinely needs a live,
+   * on-demand plugin call (a `DiscoveryPlugin.discover()` scan) rather than deferring to the
+   * reconcile loop. It still 400s rather than crashing if this is somehow absent — `buildApp` is
+   * also called directly by tests and `openapi:emit`, which construct deps without a host.
+   *
+   * Every other M7 plugin call (executor trigger/status, control evaluate, notification send) runs
+   * from worker-side code with its own `host` parameter threaded in — this is deliberately the ONLY
+   * route-layer use.
    */
   pluginHost?: PluginHost;
 }
