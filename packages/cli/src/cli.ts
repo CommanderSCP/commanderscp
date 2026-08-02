@@ -1825,6 +1825,78 @@ export function buildProgram(): Command {
       }));
     });
 
+  // `scp placement` — one component at one deployment target (ADR-0026). NOT
+  // `registerTypedResourceCrud`: that template's `create` takes a name and free-form properties,
+  // and a placement is declared by naming BOTH endpoints. There is deliberately no `update` (the
+  // endpoints are the identity) and deliberately no "pair these up by name" convenience (D8).
+  const placementCmd = program
+    .command("placement")
+    .description("Declare where a component runs (component × deployment target)");
+
+  placementCmd
+    .command("declare")
+    .description("Declare a placement — one component at one deployment target")
+    .requiredOption("--component <idOrUrn>", "the component being placed (id or URN)")
+    .requiredOption("--deployment-target <idOrUrn>", "the deployment target it runs at (id or URN)")
+    .option("--name <name>", "display name (defaults to <component>@<deployment-target>)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & { component: string; deploymentTarget: string; name?: string }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const created = await client.placements.create(
+          {
+            component: opts.component,
+            deploymentTarget: opts.deploymentTarget,
+            ...(opts.name !== undefined ? { name: opts.name } : {})
+          },
+          { idempotencyKey: randomUUID() }
+        );
+        printResult(created, opts.output, (item) => objectRow(item as GraphObject));
+      }
+    );
+
+  placementCmd
+    .command("list")
+    .description("List placements, optionally filtered by either end of the pair")
+    .option("--component <idOrUrn>", "only this component's placements (id or URN)")
+    .option("--deployment-target <idOrUrn>", "only placements at this target (id or URN)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { component?: string; deploymentTarget?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const page = await client.placements.list({
+        limit: 100,
+        ...(opts.component !== undefined ? { component: opts.component } : {}),
+        ...(opts.deploymentTarget !== undefined ? { deploymentTarget: opts.deploymentTarget } : {})
+      });
+      printResult(page.items, opts.output, (item) => objectRow(item as GraphObject));
+    });
+
+  placementCmd
+    .command("get <idOrUrn>")
+    .description("Get a placement by id or URN")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrUrn: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const found = await client.placements.get(idOrUrn);
+      printResult(found, opts.output, (item) => objectRow(item as GraphObject));
+    });
+
+  placementCmd
+    .command("withdraw <idOrUrn>")
+    .description("Withdraw a placement (soft delete — frees the pair to be re-declared)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrUrn: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const removed = await client.placements.delete(idOrUrn);
+      printResult(removed, opts.output, (item) => objectRow(item as GraphObject));
+    });
+
   const deploymentTargetCmd = registerTypedResourceCrud(
     program,
     "deployment-target",

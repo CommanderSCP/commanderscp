@@ -32,6 +32,7 @@ import { isGovernanceManagedObjectType } from "../governance/governance-managed-
 import { isCoordinationTargetScopedObjectType } from "../coordination/campaign-scope-authz.js";
 import { isServiceMemberObjectType } from "../graph/service-member-types.js";
 import { isPeerBoundObjectType } from "../federation/outpost-binding.js";
+import { isPairBoundObjectType } from "../graph/pair-bound-types.js";
 
 function idempotencyKey(request: FastifyRequest): string | undefined {
   const header = request.headers["idempotency-key"];
@@ -131,6 +132,25 @@ function assertNotPeerBoundObjectType(type: string): void {
 }
 
 /**
+ * ADR-0026 D2/D3 (owner decision D17): a `placement`'s identity IS a pair of other objects, so it
+ * cannot be created through a door that takes free-form `properties`. This route would store two
+ * UUIDs without resolving them, without checking they name a `component` and a `deployment-target`,
+ * and — decisively — without writing the two derived edges that make the pair traversable, leaving
+ * an island invisible to every impact query. Refused outright; callers go through
+ * `/api/v1/placements`. See `graph/pair-bound-types.ts` for why this is a separate set from the
+ * service-membership one rather than a merged "special types" list.
+ */
+function assertNotPairBoundObjectType(type: string): void {
+  if (isPairBoundObjectType(type)) {
+    throw forbidden(
+      `object type '${type}' is identified by a pair of objects and cannot be created, updated, or ` +
+        `deleted via the generic /api/v1/objects/${type} endpoint — use /api/v1/${type}s, which ` +
+        `requires both endpoints and writes the derived edges atomically`
+    );
+  }
+}
+
+/**
  * Generic `/objects/{type}` endpoints over the full graph model (DESIGN.md §4.1, §6) — works for
  * ANY registered object type, built-in or org-defined via the type registry, with no special
  * casing (BUILD_AND_TEST.md §8 M1 DoD (b)) EXCEPT the governance-owned `policy`/`control` types,
@@ -170,6 +190,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       assertNotCoordinationTargetScopedObjectType(type);
       assertNotServiceMemberObjectType(type);
       assertNotPeerBoundObjectType(type);
+      assertNotPairBoundObjectType(type);
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const scopeObjectId = await resolveDomainId(
           tx,
@@ -309,6 +330,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       assertNotCoordinationTargetScopedObjectType(type);
       assertNotServiceMemberObjectType(type);
       assertNotPeerBoundObjectType(type);
+      assertNotPairBoundObjectType(type);
       const object = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const found = await getObjectByIdOrUrn(tx, auth.orgId, type, idOrUrn);
         await authorize(tx, {
@@ -360,6 +382,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       assertNotCoordinationTargetScopedObjectType(type);
       assertNotServiceMemberObjectType(type);
       assertNotPeerBoundObjectType(type);
+      assertNotPairBoundObjectType(type);
       const object = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const found = await getObjectByIdOrUrn(tx, auth.orgId, type, idOrUrn);
         await authorize(tx, {
@@ -409,6 +432,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       assertNotCoordinationTargetScopedObjectType(type);
       assertNotServiceMemberObjectType(type);
       assertNotPeerBoundObjectType(type);
+      assertNotPairBoundObjectType(type);
       const { object, created } = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const existing = await tx.query.objects.findFirst({
           where: (t, { eq, and }) => and(eq(t.orgId, auth.orgId), eq(t.urn, urn))

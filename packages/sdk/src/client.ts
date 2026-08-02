@@ -48,6 +48,10 @@ import {
   upsertServiceByUrn as upsertServiceByUrnRequest,
   getServiceBoard as getServiceBoardRequest,
   createComponent as createComponentRequest,
+  createPlacement as createPlacementRequest,
+  listPlacements as listPlacementsRequest,
+  getPlacement as getPlacementRequest,
+  deletePlacement as deletePlacementRequest,
   setComponentService as setComponentServiceRequest,
   mergeComponents as mergeComponentsRequest,
   listComponents as listComponentsRequest,
@@ -238,6 +242,7 @@ import type {
   AuthConfig,
   CreateObjectRequest,
   CreateComponentRequest,
+  CreatePlacementRequest,
   UpsertComponentRequest,
   MergeComponentsResponse,
   CreateObjectTypeRequest,
@@ -436,6 +441,14 @@ export interface ListQuery {
 export interface ListObjectsQuery extends ListQuery {
   domainId?: string;
   includeDeleted?: boolean;
+}
+
+/** Wire-INPUT shape (pre-defaults) — the schema's `PlacementListQuery` is the parsed output type. */
+export interface ListPlacementsQuery extends ListObjectsQuery {
+  /** id or URN of a component. */
+  component?: string;
+  /** id or URN of a deployment-target. */
+  deploymentTarget?: string;
 }
 
 export interface ListRelationshipsQuery extends ListQuery {
@@ -1021,6 +1034,39 @@ export class ScpClient {
       }
     };
   })();
+
+  /**
+   * Placements — one component at one deployment target (ADR-0026). Declared, never inferred: there
+   * is no "pair these by name" helper here and there must not be one (D8).
+   *
+   * No `update`: a placement's endpoints ARE its identity, so changing one is a new declaration, not
+   * an edit (see `routes/placements.ts`).
+   */
+  readonly placements = {
+    create: async (
+      req: CreatePlacementRequest,
+      opts: { idempotencyKey?: string } = {}
+    ): Promise<GraphObject> => {
+      const result = await createPlacementRequest({
+        client: this.client,
+        body: req,
+        headers: idempotencyHeaders(opts.idempotencyKey)
+      });
+      return unwrap(result);
+    },
+    list: async (query: ListPlacementsQuery = {}): Promise<ObjectListResponse> => {
+      const result = await listPlacementsRequest({ client: this.client, query });
+      return unwrap(result);
+    },
+    get: async (idOrUrn: string): Promise<GraphObject> => {
+      const result = await getPlacementRequest({ client: this.client, path: { idOrUrn } });
+      return unwrap(result);
+    },
+    delete: async (idOrUrn: string): Promise<GraphObject> => {
+      const result = await deletePlacementRequest({ client: this.client, path: { idOrUrn } });
+      return unwrap(result);
+    }
+  };
 
   readonly deploymentTargets = {
     ...this.typedResource({

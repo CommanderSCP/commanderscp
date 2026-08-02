@@ -5,6 +5,7 @@ import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.j
 import { createRelationship, listRelationships } from "../graph/relationships-repo.js";
 import { isServiceMemberObjectType } from "../graph/service-member-types.js";
 import { isPeerBoundObjectType } from "./outpost-binding.js";
+import { isPairBoundObjectType } from "../graph/pair-bound-types.js";
 
 /**
  * Shared-authority overlays (DESIGN.md §13 "review decision — resolved"): "two domains never
@@ -94,6 +95,20 @@ export async function createOverlay(
     throw forbidden(
       `object type '${input.overlayTypeId}' is commander-authored federation config and cannot be ` +
         `created via an overlay — use /api/v1/federation/outposts, which enforces 'federation:write'`
+    );
+  }
+
+  // ADR-0026 D2/D3, same reasoning one type further: a `placement` is identified by a PAIR of
+  // objects, and overlay takes free-form `overlayProperties` — so this door could mint a placement
+  // with unresolved, untyped endpoint UUIDs and, decisively, with none of the derived edges that
+  // make the pair traversable. Refuse it here exactly as `/objects/placement` does (shared
+  // `graph/pair-bound-types.ts`); declare the placement via `/api/v1/placements` and overlay it
+  // afterward if genuinely needed.
+  if (isPairBoundObjectType(input.overlayTypeId)) {
+    throw forbidden(
+      `object type '${input.overlayTypeId}' is identified by a pair of objects and cannot be created ` +
+        `via an overlay — use /api/v1/${input.overlayTypeId}s, which requires both endpoints and ` +
+        `writes the derived edges atomically`
     );
   }
 

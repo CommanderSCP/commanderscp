@@ -10,6 +10,7 @@ export type {
   LoginResult,
   ListQuery,
   ListObjectsQuery,
+  ListPlacementsQuery,
   ListRelationshipsQuery,
   GraphQueryParams,
   TraverseParams

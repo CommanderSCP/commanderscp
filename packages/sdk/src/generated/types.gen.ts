@@ -6149,6 +6149,359 @@ export type MergeComponentsResponses = {
 
 export type MergeComponentsResponse = MergeComponentsResponses[keyof MergeComponentsResponses];
 
+export type ListPlacementsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+        domainId?: string;
+        includeDeleted?: boolean;
+        component?: string;
+        deploymentTarget?: string;
+    };
+    url: '/placements';
+};
+
+export type ListPlacementsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListPlacementsError = ListPlacementsErrors[keyof ListPlacementsErrors];
+
+export type ListPlacementsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            typeId: string;
+            name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            provenance: 'manual' | null;
+            version: number;
+            createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListPlacementsResponse = ListPlacementsResponses[keyof ListPlacementsResponses];
+
+export type CreatePlacementData = {
+    body: {
+        id?: string;
+        urn?: string;
+        component: string;
+        deploymentTarget: string;
+        name?: string;
+        domainId?: string | null;
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/placements';
+};
+
+export type CreatePlacementErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreatePlacementError = CreatePlacementErrors[keyof CreatePlacementErrors];
+
+export type CreatePlacementResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        provenance: 'manual' | null;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type CreatePlacementResponse = CreatePlacementResponses[keyof CreatePlacementResponses];
+
+export type DeletePlacementData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/placements/{idOrUrn}';
+};
+
+export type DeletePlacementErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeletePlacementError = DeletePlacementErrors[keyof DeletePlacementErrors];
+
+export type DeletePlacementResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        provenance: 'manual' | null;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type DeletePlacementResponse = DeletePlacementResponses[keyof DeletePlacementResponses];
+
+export type GetPlacementData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/placements/{idOrUrn}';
+};
+
+export type GetPlacementErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetPlacementError = GetPlacementErrors[keyof GetPlacementErrors];
+
+export type GetPlacementResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        provenance: 'manual' | null;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type GetPlacementResponse = GetPlacementResponses[keyof GetPlacementResponses];
+
 export type GetServiceBoardData = {
     body?: never;
     path: {
