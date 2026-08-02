@@ -745,6 +745,54 @@ describe("observe()", () => {
     });
   });
 
+  it("carries the SYNCED REVISION, so repeated reconciles of an unchanged app dedupe away", async () => {
+    // `reconciledAt` advances on every Argo CD reconcile whether or not anything changed, so without
+    // the revision an event keyed on (app, reconciledAt) is a new row every ~3 minutes per app —
+    // measured at ~26k rows and ~150 MB a day on a 61-app instance, all describing nothing happening.
+    // The revision is what lets `observedEventIdentity` collapse them onto one row per deployed
+    // revision. Asserted on the VALUE, not merely that the field is set: the whole mechanism depends
+    // on it being the revision and not, say, the resourceVersion.
+    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+    nock(SERVER_URL)
+      .get("/api/v1/applications")
+      .reply(200, {
+        items: [
+          {
+            metadata: { name: "app-synced" },
+            status: {
+              reconciledAt: "2026-08-02T11:32:05.000Z",
+              sync: { status: "Synced", revision: "ff3fd8a3fe615c580b335fbaf69def8024ba56bc" }
+            }
+          }
+        ]
+      });
+
+    const events = await createArgoCdExecutorPlugin().observe(ctx);
+
+    expect(events[0]?.correlation.commitSha).toBe("ff3fd8a3fe615c580b335fbaf69def8024ba56bc");
+  });
+
+  it("omits the revision when Argo CD reports none, rather than inventing one", async () => {
+    // An app that has never synced has no `status.sync.revision`. Leaving it undefined makes the
+    // identity fall back to `occurredAt`, i.e. the pre-existing per-reconcile behaviour — the honest
+    // degradation. Fabricating a placeholder would collapse DIFFERENT apps' events onto one key.
+    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+    nock(SERVER_URL)
+      .get("/api/v1/applications")
+      .reply(200, {
+        items: [
+          {
+            metadata: { name: "app-never-synced" },
+            status: { reconciledAt: "2026-08-02T11:32:05.000Z" }
+          }
+        ]
+      });
+
+    const events = await createArgoCdExecutorPlugin().observe(ctx);
+
+    expect(events[0]?.correlation.commitSha).toBeUndefined();
+  });
+
   it("with no since cursor, returns events for every application that has a reconciledAt", async () => {
     const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
     nock(SERVER_URL)
