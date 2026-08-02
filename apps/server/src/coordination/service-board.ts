@@ -19,6 +19,7 @@ import { scopeCarriesChangeObjects } from "../federation/scope-filter.js";
 import { listUnattachedChangeStatusInStates } from "../federation/unattached-change-status-repo.js";
 import { limitingUpstreamFreshness } from "../federation/upstream-freshness.js";
 import { sqlIn } from "../graph/sql-helpers.js";
+import { placementComponentParentSql } from "../graph/containment.js";
 
 /**
  * Layer-A server projection backing `GET /services/:idOrUrn/board`
@@ -194,9 +195,26 @@ async function latestChangeByComponent(
   const latest = new Map<string, LatestChangeRef>();
 
   // ARM 1 — the local observation. Authoritative for every component it answers for.
+  //
+  // THE PLACEMENT HOP (ADR-0026). A wave target is a component under legacy compilation and a
+  // PLACEMENT under stage-shaped compilation, so `t.target_object_id AS component_id` is only half
+  // true and the `IN (componentIds)` filter matched NOTHING for a stage-shaped plan. Arm 1 would
+  // have returned zero rows for every component and this function would have silently degraded to
+  // arm 2 for the whole board — which is not a smaller answer, it is a DIFFERENT KIND of answer.
+  // Arm 2 is the fallback precisely because it is an unknown rather than an observation, and this
+  // file's own header records what happens when the two are confused: on an outpost, a newer
+  // commander-origin replica hides the outpost's genuinely-observed failure — the one fact it
+  // actually holds. The board would have kept rendering, with the strict-fallback shape it was
+  // built around quietly inverted.
+  //
+  // `placementComponentParentSql` is the SAME fragment `graph/containment.ts` and `authz/resolve.ts`
+  // walk, LATERAL-joined here: one definition of "the component a placement places", including its
+  // guard against a malformed `componentId` casting-error. A legacy component target matches no
+  // placement row, so the LATERAL yields nothing and COALESCE falls through to the target itself —
+  // both shapes read through one query, and the legacy answer is unchanged.
   const planned = await tx.execute<ChangeCandidateRow & { component_id: string }>(sql`
-    SELECT DISTINCT ON (t.target_object_id)
-      t.target_object_id  AS component_id,
+    SELECT DISTINCT ON (comp.component_id)
+      comp.component_id   AS component_id,
       o.id                AS change_id,
       o.name              AS change_name,
       o.properties        AS properties,
@@ -207,10 +225,14 @@ async function latestChangeByComponent(
     JOIN change_plans  p ON p.id = w.plan_id  AND p.org_id = w.org_id
     JOIN changes       c ON c.object_id = p.change_object_id AND c.org_id = p.org_id
     JOIN objects       o ON o.id = c.object_id AND o.org_id = c.org_id
+    LEFT JOIN LATERAL (${placementComponentParentSql(orgId, sql`t.target_object_id`)}) pl ON TRUE
+    CROSS JOIN LATERAL (
+      SELECT COALESCE(pl.parent_id, t.target_object_id) AS component_id
+    ) comp
     WHERE t.org_id = ${orgId}::uuid
       AND o.deleted_at IS NULL
-      AND ${sqlIn("t.target_object_id", componentIds)}
-    ORDER BY t.target_object_id, c.created_at DESC, c.object_id DESC
+      AND ${sqlIn("comp.component_id", componentIds)}
+    ORDER BY comp.component_id, c.created_at DESC, c.object_id DESC
   `);
   for (const row of planned.rows) latest.set(row.component_id, toRef(row, selfDomainId));
 
