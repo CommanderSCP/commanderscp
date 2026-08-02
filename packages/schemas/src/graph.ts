@@ -223,6 +223,47 @@ export const ObjectListQuerySchema = z.object({
 export type ObjectListQuery = z.infer<typeof ObjectListQuerySchema>;
 
 // ---------------------------------------------------------------------------------------------
+// Placements (ADR-0026 D2/D3/D14, post-import-configuration.md §3)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * `POST /placements` — one component at one deployment target.
+ *
+ * Both endpoints are REQUIRED and are the whole point: a placement naming only one of them is not a
+ * placement. Taking them here rather than as free-form `properties` is what lets the route enforce
+ * the pairing rule at the boundary — resolve each ref, type-check it, and write the two derived
+ * edges in the same transaction.
+ *
+ * `strictObject` (not `z.object`) deliberately, following the `outpost` precedent: a plain
+ * `z.object` DROPS an unknown key and still answers 201, so a newer client writing a property an
+ * older server has never heard of would lose the field with no signal. Strict at the operator's
+ * door; the registered property schema stays open on the wire (migration 0050's header explains
+ * why those must differ).
+ */
+export const CreatePlacementRequestSchema = z.strictObject({
+  id: z.string().uuid().optional(),
+  urn: UrnSchema.optional(),
+  /** id or URN of the component being placed. */
+  component: z.string().min(1),
+  /** id or URN of the deployment-target it is placed at. */
+  deploymentTarget: z.string().min(1),
+  /** Defaults to `<component>@<deployment-target>` (ADR-0026 D3) when omitted. */
+  name: z.string().min(1).max(500).optional(),
+  domainId: z.string().uuid().nullable().optional(),
+  labels: JsonRecordSchema.optional()
+});
+export type CreatePlacementRequest = z.infer<typeof CreatePlacementRequestSchema>;
+
+/** `GET /placements` — the generic object list, plus the two pair filters that make it useful. */
+export const PlacementListQuerySchema = ObjectListQuerySchema.extend({
+  /** id or URN of a component — list only that component's placements. */
+  component: z.string().min(1).optional(),
+  /** id or URN of a deployment-target — list only the placements it holds. */
+  deploymentTarget: z.string().min(1).optional()
+});
+export type PlacementListQuery = z.infer<typeof PlacementListQuerySchema>;
+
+// ---------------------------------------------------------------------------------------------
 // Relationships
 // ---------------------------------------------------------------------------------------------
 
