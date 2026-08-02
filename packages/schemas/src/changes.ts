@@ -48,6 +48,15 @@ export const ChangeSchema = z.object({
   topologyVersion: z.number().int().nullable(),
   rollbackOfObjectId: z.string().uuid().nullable(),
   rollbackTriggerReason: z.string().nullable(),
+  /**
+   * WHO cancelled this change (migration 0053). `system` = the engine auto-cancelled it (today: a
+   * plan that would not compile); `user` = a human called cancel. NULL when the change is not
+   * cancelled, or was cancelled before this column existed — deliberately not backfilled, because
+   * inferring it from the old free-text reason would fabricate a fact.
+   *
+   * Optional in the contract so a pre-0053 server's response still validates against this schema.
+   */
+  cancellationKind: z.enum(["system", "user"]).nullable().optional(),
   stateEnteredAt: z.string().datetime(),
   lastHeartbeatAt: z.string().datetime(),
   watchdogFlaggedAt: z.string().datetime().nullable(),

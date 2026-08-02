@@ -9621,6 +9621,7 @@ export type ListChangesResponses = {
             topologyVersion: number | null;
             rollbackOfObjectId: string | null;
             rollbackTriggerReason: string | null;
+            cancellationKind?: 'system' | 'user' | null;
             stateEnteredAt: string;
             lastHeartbeatAt: string;
             watchdogFlaggedAt: string | null;
@@ -9728,6 +9729,7 @@ export type ProposeChangeResponses = {
         topologyVersion: number | null;
         rollbackOfObjectId: string | null;
         rollbackTriggerReason: string | null;
+        cancellationKind?: 'system' | 'user' | null;
         stateEnteredAt: string;
         lastHeartbeatAt: string;
         watchdogFlaggedAt: string | null;
@@ -9810,6 +9812,7 @@ export type GetChangeResponses = {
         topologyVersion: number | null;
         rollbackOfObjectId: string | null;
         rollbackTriggerReason: string | null;
+        cancellationKind?: 'system' | 'user' | null;
         stateEnteredAt: string;
         lastHeartbeatAt: string;
         watchdogFlaggedAt: string | null;
@@ -9893,6 +9896,7 @@ export type ExplainChangeResponses = {
             topologyVersion: number | null;
             rollbackOfObjectId: string | null;
             rollbackTriggerReason: string | null;
+            cancellationKind?: 'system' | 'user' | null;
             stateEnteredAt: string;
             lastHeartbeatAt: string;
             watchdogFlaggedAt: string | null;
@@ -10095,6 +10099,7 @@ export type CancelChangeResponses = {
         topologyVersion: number | null;
         rollbackOfObjectId: string | null;
         rollbackTriggerReason: string | null;
+        cancellationKind?: 'system' | 'user' | null;
         stateEnteredAt: string;
         lastHeartbeatAt: string;
         watchdogFlaggedAt: string | null;
@@ -10191,6 +10196,7 @@ export type AcceptChangeResponses = {
         topologyVersion: number | null;
         rollbackOfObjectId: string | null;
         rollbackTriggerReason: string | null;
+        cancellationKind?: 'system' | 'user' | null;
         stateEnteredAt: string;
         lastHeartbeatAt: string;
         watchdogFlaggedAt: string | null;
@@ -10297,6 +10303,7 @@ export type RollbackChangeResponses = {
         topologyVersion: number | null;
         rollbackOfObjectId: string | null;
         rollbackTriggerReason: string | null;
+        cancellationKind?: 'system' | 'user' | null;
         stateEnteredAt: string;
         lastHeartbeatAt: string;
         watchdogFlaggedAt: string | null;
@@ -13396,6 +13403,7 @@ export type RollbackCampaignResponses = {
                 topologyVersion: number | null;
                 rollbackOfObjectId: string | null;
                 rollbackTriggerReason: string | null;
+                cancellationKind?: 'system' | 'user' | null;
                 stateEnteredAt: string;
                 lastHeartbeatAt: string;
                 watchdogFlaggedAt: string | null;
