@@ -219,12 +219,42 @@ async function observe(
   ctx: PluginContext,
   since?: Cursor
 ): Promise<ExecutorEvent[]> {
-  // Observe cursor protocol: an opaque ISO-8601 watermark in `since.token`. The core owns the
-  // protocol; the adapter interprets the watermark for each resource it polls.
-  const sinceIso = since?.token;
-  const commits = await adapter.pollCommits(ctx, sinceIso);
-  const runs = await adapter.pollRuns(ctx, sinceIso);
+  // Observe cursor protocol: an ISO-8601 watermark PER EVENT KIND, JSON-encoded in `since.token`
+  // (a bare ISO string is the legacy form and applies to every kind). The core owns the protocol;
+  // the adapter interprets the watermark for each resource it polls.
+  //
+  // The two resources below MUST resume from separate watermarks. They have different time bases —
+  // a commit is stamped with its author date, a workflow run with its creation time — and a CI run
+  // is always created AFTER the commit that triggered it. Sharing one watermark therefore let a run
+  // drag the cursor past its own commit, and the next `?since=` query skipped that commit for good.
+  // See `apps/server/src/coordination/observe.ts` for the measured case.
+  const commits = await adapter.pollCommits(ctx, watermarkForKind(since?.token, "push"));
+  const runs = await adapter.pollRuns(ctx, watermarkForKind(since?.token, "workflow_run"));
   return [...commits, ...runs];
+}
+
+/** The watermark one event kind should resume from: its own, else the legacy scalar, else none. */
+export function watermarkForKind(token: string | undefined, kind: string): string | undefined {
+  if (!token) return undefined;
+  const trimmed = token.trim();
+  // Legacy scalar — applies to every kind, but only if it is actually a timestamp. Anything else is
+  // corruption and would otherwise reach the provider as a nonsense `?since=` query parameter.
+  if (!trimmed.startsWith("{")) {
+    return Number.isNaN(new Date(trimmed).getTime()) ? undefined : trimmed;
+  }
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    const marks = parsed as Record<string, unknown>;
+    const own = marks[kind];
+    if (typeof own === "string" && own.length > 0) return own;
+    const legacy = marks._legacy;
+    return typeof legacy === "string" && legacy.length > 0 ? legacy : undefined;
+  } catch {
+    // Unparseable cursor ⇒ poll from the beginning rather than throw. Re-polling is safe: the
+    // server's dedupe collapses anything already ingested.
+    return undefined;
+  }
 }
 
 async function trigger(
