@@ -20,7 +20,10 @@
 | **D9** | The (component × place) pair gets its **own object type**, rather than a second dimension on `executor_bindings`. |
 | **D10** | **No `stage` entity.** A placement points at a `deployment-target`; the stage *name* is derived. |
 | **D11** | Add **`many_to_one`** to `assertCardinality` rather than pointing the pipeline edge backwards. |
-| **D12** | Pipeline resolution **mirrors `containmentChain`** — the existing scope ladder, not a new one. |
+| **D12** | ~~Pipeline resolution mirrors `containmentChain`.~~ **AMENDED by D15** — the walk disclaims providing a single winner across kinds, so it never offered what resolution needs. |
+| **D15** | Resolution uses a **dedicated three-rung walk** (component → service → org root), not `containmentChain`, which is left unchanged. |
+| **D16** | **No `stages` wave key** — it was vestigial from rev 2's withdrawn `stage` entity. Waves name deployment-targets via `targets`; the wave schema gains `additionalProperties: false`. |
+| **D17** | A `placement` stores its endpoints as **validated properties** (source of truth, uniquely indexed) **plus derived edges** written in the same transaction, and refuses the generic `/objects/placement` door. |
 | **D13** | **Do not rename** the six `-prod`-suffixed components; the URN cannot be rewritten. |
 | **D14** | The word is **`placement`**. |
 
@@ -145,7 +148,15 @@ What lives where — this split is the whole point:
 | source mappings | the deployment-target it serves |
 | the pipeline it releases via | its own execution status |
 
-**Identity.** A new builtin object type `placement`, named `<component>@<deployment-target>`, with a unique index on `(org_id, component, deployment_target)`. Created through a typed route requiring both endpoints, which enforces the pairing rule at the boundary.
+**Identity (D17).** A new builtin object type `placement`, created through a typed route requiring both endpoints — and the generic `POST /objects/placement` door is **refused outright**, modelled on how `outpost` solved the same problem. Without that refusal the pairing rule is advisory rather than enforced.
+
+The endpoints are stored as **validated object properties**, which are the source of truth, with a partial unique expression index over both. Edges to the component and the deployment-target are **derived** from those properties and written in the SAME transaction, so graph traversal and blast-radius still see the pair.
+
+This shape is one fact in two places, and that cost is deliberate. The original text here said only "a unique index on `(org_id, component, deployment_target)`" without saying whether the endpoints were properties or relationships — and it matters, because **nothing can uniquely index across two `relationships` rows**. That is the same constraint ADR-0026 used to reject the attributed-relationship alternative, so specifying the endpoints as edges would have contradicted the ADR's own reasoning. Properties are the only form a single index can express; the edges exist so the graph is not blind to the pair.
+
+**The index is load-bearing, not belt-and-braces.** The `many_to_one` work proved the SELECT-then-INSERT race is real: with the app-level check disabled, only the index held. The same applies here.
+
+**URN separator.** `<component>@<deployment-target>` cannot be derived naively — `slugify` maps `[^a-z0-9]+` to `-` and collapses runs, so `keycloak@commercial-prod` becomes `keycloak-commercial-prod` and collides with a literal component of that name. D8 forbids relying on name-based uniqueness anyway (the index is the guarantee), but the URN must not be quietly ambiguous.
 
 **`executor_bindings` does not change.** Its `target_object_id` points at a placement, and `UNIQUE (org_id, target_object_id, type)` is then exactly right: one placement, one `configuration` binding. No migration on that table.
 
@@ -203,12 +214,27 @@ This is the shape `forge-gamma-then-prod` already uses. That object is rehearsal
 
 `assertCardinality` (`relationships-repo.ts:56-79`) has no `many_to_one` today, but the from-side check it needs **already exists** as the second block used by `one_to_one`. Adding the value means running that block and skipping the to-side one, plus a partial unique index on `(org_id, from_id) WHERE type_id='releases_via' AND deleted_at IS NULL` as the race backstop — the mirror of migration `0022` for `contains`, needed for the same reason (the app-level check is read-committed with no row lock).
 
-Resolution order:
+Resolution order (**amended by D15 — see below**):
 
-1. the change's explicit `--topology` — always wins, outside the walk
-2. otherwise walk **`containmentChain`** (`containment.ts:78`) and take the nearest match: component → containing service → containing domain → org root
+1. the change's explicit `--topology` — always wins
+2. the component's own `releases_via`
+3. its owning service's, via the `contains` edge walked inbound
+4. the org root's, via `getOrgRootObjectId`
+5. else `null` — today's single anonymous wave
 
-D12 reuses the existing ladder rather than inventing one. It already encodes service-beats-domain precedence and is the same walk policy resolution, RBAC scope, freeze scope and approval scope use. It also disposes of the org-default problem: the `organization` object exists and every object's `domain_id` points at it, so "the org default pipeline" is a `releases_via` edge on that object — no settings table, which `orgs` (`id, name, created_at`) could not have provided.
+> **D15 (2026-08-02): resolution uses a DEDICATED three-rung walk, NOT `containmentChain`. D12 is amended and this paragraph corrects a wrong claim.**
+>
+> The original text said D12 "reuses the existing ladder rather than inventing one" and that the ladder "already encodes service-beats-domain precedence". **The second claim is false**, and the first rested on it.
+>
+> `containmentChain` (`graph/containment.ts`) walks two axes per hop — the `contains` edge *and* `domain_id` — and its own docblock states that when a component's `domain_id` differs from its service's, the two are "each exactly ONE hop from C and **TIE** … no ordering of these two routes is obviously 'correct'", followed by: *"DO NOT write code that assumes a strict org < domain < service < component ordering across DIFFERENT kinds"* and *"it WOULD become a real precedence bug the moment any code compares depth across differently-named policies to pick a single 'most specific' winner — if you are about to write that, fix this first."*
+>
+> "Take the nearest match" is precisely that code. The walk never offered a single winner across kinds, so reusing it could not have delivered what resolution needs.
+>
+> **Why the three rungs still reach the org.** The org root is reached *via the domain axis* — every object's `domain_id` points at the `organization` object — so dropping that axis would have dropped the org default with it. Rung 4 gets it directly instead, which preserves D4 ("walk past the service") and keeps the org default as a `releases_via` edge on the `organization` object. No settings table is needed, which `orgs` (`id, name, created_at`) could not have provided anyway.
+>
+> **Reachability, measured 2026-08-02.** On the live estate: 0 components whose `domain_id` differs from their service's, 0 `domain`-type objects, 1 distinct `domain_id`. The tie is unreachable there today — so this is not fixing a live break, it is declining to depend on an ordering the walk explicitly disclaims.
+>
+> `containmentChain` is deliberately left unchanged. Its hazard comment is now *more* true, not less: this was the code that was about to write that, and it chose not to. Modifying the walk would also have altered RBAC scope, policy resolution, freeze scope and approval scope — four security-relevant consumers — for a feature none of them needs.
 
 **Resolution lives in `proposeChange`** (`changes-repo.ts:167-176`), not in `webhook-processor.ts`. Several paths create changes, and fixing the caller rather than the single decision point is the incomplete-call-site-census mistake this repo has hit four times (BUILD_AND_TEST.md §4.4). The resolved topology and the rung it came from belong on the change's Decision (principle 6).
 
@@ -346,4 +372,6 @@ Not open questions — decided items that must not be lost:
 - The `releases_via` race backstop index mirrors `0022`, on `from_id` rather than `to_id`.
 - §4's three prerequisites gate everything else in the migration.
 - Fix the two silent hazards in §1.5 alongside: a malformed topology document must fail loudly, and an auto-cancelled change must be distinguishable from a user-cancelled one.
-- A wave carrying both `stages` and `targets` keys must be rejected outright, not resolved by precedence — a silently-preferred key is how `parseTopologyWaves` already loses malformed documents.
+- ~~A wave carrying both `stages` and `targets` keys must be rejected outright.~~ **D16: there is no `stages` key.** It was vestigial from rev 2, which proposed a `stage` ENTITY; D10 withdrew that, and under this revision a wave names deployment-targets via `targets` alone. §5 only ever showed `targets`; the rule described a key nothing defines.
+  The real gap this rule was groping at is narrower and worse: migration `0007`'s wave schema requires `["mode","targets"]`, so a `stages`-only wave is *already* rejected by Ajv — but a wave carrying **unknown extra keys is accepted**, because the schema sets no `additionalProperties: false`. Adding that closes the actual hole and generalises the intent. Check the two live topologies for stray wave keys before tightening, so the migration cannot reject existing data.
+  Authoring waves by derived stage NAME instead of target UUID is a genuinely better operator experience, but it depends on §4's stage-name derivation prerequisites, none of which are met. Deferred, not rejected.
