@@ -34,6 +34,54 @@ export async function preferIndexPlans(tx: TenantTx): Promise<void> {
 }
 
 /**
+ * Refresh `decisions`' planner statistics.
+ *
+ * A suite that seeds tens of thousands of rows and measures IMMEDIATELY is racing autovacuum's
+ * analyze, which is asynchronous — so the planner may be costing the read from stale or default
+ * estimates, and which index it picks can differ run to run on identical data. That is the one
+ * mechanism that plausibly explains `service-board-decision-read-bound` failing once in CI
+ * (`expected 804 to be less than or equal to 10`) and passing on a plain re-run of the SAME commit.
+ *
+ * NOT A PROVEN CAUSE, and worth being honest about: an attempt to reproduce the flip locally
+ * failed. The partial index was chosen with a SQL literal and with a bound parameter, before and
+ * after an explicit ANALYZE, and `latestBlockDecisionForSubject` touched 0 rows every time. This
+ * call removes a real source of run-to-run variance; it is not a fix for a diagnosed bug, and the
+ * plan assertion is what actually pins the intent.
+ */
+export async function refreshDecisionStats(tx: TenantTx): Promise<void> {
+  await tx.execute(sql`ANALYZE decisions`);
+}
+
+/**
+ * The index names an `EXPLAIN` of `query` mentions.
+ *
+ * WHY ASSERT ON THE PLAN AT ALL, when the suite already counts rows. The row count is the honest
+ * measurement — it cannot be gamed, and it is what the bound actually means. But when it fails it
+ * says only "804", which is a number with no diagnosis attached: it does not say WHICH index was
+ * used instead, so the next person starts the investigation from scratch (as happened here). The
+ * plan assertion converts that into a named failure — "served by `decisions_org_subject` instead of
+ * `decisions_org_subject_block_created`" — and it is stable against data volume in a way a row
+ * count is not.
+ *
+ * It does NOT replace the row count. A plan can name the right index and still be slow, and the
+ * count is what would catch that.
+ *
+ * Takes the BUILDER, not a re-typed SQL string, so this explains the exact query production runs —
+ * see `latestBlockDecisionQuery`'s doc comment for why a copy would be worse than no test.
+ */
+export async function indexesInPlan(
+  tx: TenantTx,
+  query: { getSQL: () => ReturnType<typeof sql> }
+): Promise<string[]> {
+  const explained = await tx.execute(sql`EXPLAIN ${query.getSQL()}`);
+  const rows = (explained as unknown as { rows: Array<Record<string, string>> }).rows;
+  const text = rows.map((r) => Object.values(r)[0] ?? "").join("\n");
+  return [...text.matchAll(/(?:Index (?:Only )?Scan|Bitmap Index Scan)[^\n]*?using (\w+)/g)].map(
+    (m) => m[1]!
+  );
+}
+
+/**
  * Index entries returned + sequential-scan rows read for `decisions` IN THIS TRANSACTION.
  *
  * `pg_stat_get_xact_tuples_returned` over every index on `decisions` charges the entries the

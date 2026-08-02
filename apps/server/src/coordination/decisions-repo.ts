@@ -158,12 +158,17 @@ export async function latestDecisionForSubjectKind(
  * than the unbounded read it replaced). With the partial index the descent finds no entry for that
  * (org, subject) and returns immediately: 0.070 ms / 13 buffers, no `Filter` line.
  */
-export async function latestBlockDecisionForSubject(
-  tx: TenantTx,
-  orgId: string,
-  subjectId: string
-): Promise<Decision | undefined> {
-  const rows = await tx
+/**
+ * The block probe AS A BUILDER, so a test can `EXPLAIN` **the exact query this module runs** instead
+ * of a hand-copied approximation in a test file. That copy is the thing that drifts: the whole
+ * bound below is a property of the PLAN, so a test asserting on a re-typed query would keep passing
+ * while the real one silently stopped using drizzle/0046's index.
+ *
+ * `latestBlockDecisionForSubject` is the only caller in `src/`; the plan assertion in
+ * `service-board-decision-read-bound.integration.test.ts` is the other.
+ */
+export function latestBlockDecisionQuery(tx: TenantTx, orgId: string, subjectId: string) {
+  return tx
     .select()
     .from(decisions)
     .where(
@@ -190,6 +195,14 @@ export async function latestBlockDecisionForSubject(
     )
     .orderBy(desc(decisions.createdAt), desc(decisions.id))
     .limit(1);
+}
+
+export async function latestBlockDecisionForSubject(
+  tx: TenantTx,
+  orgId: string,
+  subjectId: string
+): Promise<Decision | undefined> {
+  const rows = await latestBlockDecisionQuery(tx, orgId, subjectId);
   return rows[0] ? toDecision(rows[0]) : undefined;
 }
 

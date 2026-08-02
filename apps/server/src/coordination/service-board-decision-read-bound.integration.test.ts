@@ -9,8 +9,14 @@ import {
 import { withTenantTx } from "../db/tenant-tx.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { proposeChange } from "./changes-repo.js";
+import { latestBlockDecisionQuery } from "./decisions-repo.js";
 import { buildServiceBoard } from "./service-board.js";
-import { decisionRowsTouched, preferIndexPlans } from "./test-support/decision-read-counters.js";
+import {
+  decisionRowsTouched,
+  indexesInPlan,
+  preferIndexPlans,
+  refreshDecisionStats
+} from "./test-support/decision-read-counters.js";
 
 /**
  * THE BOUND ON THE BOARD'S DECISION READ (adversarial review of PR #153, P3).
@@ -188,10 +194,51 @@ describe("service board: the per-row Decision read is bounded, not the change's 
     expect(touched).toBeLessThan(SEEDED_DECISIONS);
   });
 
+  it("the never-blocked probe is SERVED BY drizzle/0046's partial index — named, so a plan flip says which index it flipped to", async () => {
+    // ADDED after this suite went red once in CI ("expected 804 to be less than or equal to 10")
+    // and passed on a plain re-run of the SAME commit. The row count below is the honest
+    // measurement, but when it fails it reports a bare number: it does not say which index served
+    // the read instead, so the investigation restarts from nothing. This arm names it.
+    //
+    // It explains the BUILDER `latestBlockDecisionForSubject` itself runs — not a re-typed copy,
+    // which would keep passing while the real query drifted off the index.
+    const plan = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      await preferIndexPlans(tx);
+      await refreshDecisionStats(tx);
+      return indexesInPlan(tx, latestBlockDecisionQuery(tx, org.orgId, healthyChangeObjectId));
+    });
+
+    expect(plan).toContain("decisions_org_subject_block_created");
+    // The general index is what a flipped plan falls back to. `toContain` on an ARRAY is exact
+    // element equality, not substring — so this does NOT reject the partial index above, whose name
+    // happens to start with the same characters. Do not "fix" it into a substring check.
+    expect(plan).not.toContain("decisions_org_subject");
+
+    // MEASURED, and the reason this arm exists rather than leaning on the row count alone
+    // (mutation-proved 2026-08-01 by removing the `verdict` predicate from the query, so the
+    // partial index no longer applies while still existing):
+    //
+    //   with the partial index  -> plan ["decisions_org_subject_block_created"], 0 rows touched
+    //   query drifted off it    -> plan ["decisions_org_subject"],               2 rows touched
+    //
+    // TWO rows. `LIMIT 1` over the general index with no predicate to discard anything stops at the
+    // first entry, so the drift is CHEAP — the row-count bound below sails through it. A query that
+    // silently stopped matching drizzle/0046 would therefore have gone completely undetected by the
+    // measurement this suite was built around. That is the regression this arm catches and the
+    // count cannot.
+  });
+
   it("reads O(1) rows for a change that NEVER blocked, whose whole history it would otherwise have to walk to say so", async () => {
     const { board, touched } = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
       const service = await getObjectByIdOrUrnAnyType(tx, org.orgId, healthyServiceId);
       await preferIndexPlans(tx);
+      // Seeded rows are written and measured in the same run, which races autovacuum's
+      // asynchronous analyze — so the planner can cost this read from stale or default estimates,
+      // and its index choice can differ run to run on IDENTICAL data. That is the only mechanism
+      // that plausibly explains the one observed CI failure passing on re-run. Removing the
+      // variance is cheap; see `refreshDecisionStats` for the honest caveat that the flip was never
+      // reproduced locally, so this is variance reduction rather than a diagnosed fix.
+      await refreshDecisionStats(tx);
       const before = await decisionRowsTouched(tx);
       const built = await buildServiceBoard(tx, org.orgId, service);
       const after = await decisionRowsTouched(tx);
