@@ -59,6 +59,7 @@ export function toChangeShape(change: ChangeRow, object: ObjectLike): Change {
     topologyVersion: change.topologyVersion,
     rollbackOfObjectId: change.rollbackOfObjectId,
     rollbackTriggerReason: change.rollbackTriggerReason,
+    cancellationKind: (change.cancellationKind as "system" | "user" | null) ?? null,
     stateEnteredAt: change.stateEnteredAt.toISOString(),
     lastHeartbeatAt: change.lastHeartbeatAt.toISOString(),
     watchdogFlaggedAt: change.watchdogFlaggedAt?.toISOString() ?? null,

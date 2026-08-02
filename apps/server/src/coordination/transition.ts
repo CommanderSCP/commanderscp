@@ -12,6 +12,7 @@ import { insertDecision } from "./decisions-repo.js";
 import { appendJournalEntry } from "../federation/journal-repo.js";
 import { changeStatusContentHash } from "./changes-repo.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
+import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 
 type ChangeRow = typeof changes.$inferSelect;
 
@@ -294,7 +295,16 @@ export async function transitionChange(
       lastHeartbeatAt: now,
       watchdogFlaggedAt: null,
       updatedAt: now,
-      ...(toState === "rolled_back" && input.reason ? { rollbackTriggerReason: input.reason } : {})
+      ...(toState === "rolled_back" && input.reason ? { rollbackTriggerReason: input.reason } : {}),
+      // 0053: WHO cancelled, structurally. Both the engine's auto-cancel (reconcile.ts, on a plan
+      // that would not compile) and a human `scp change cancel` land in the same state, and until
+      // this column the only difference was the wording of a free-text reason — so counting
+      // engine-killed changes meant substring-matching an English sentence that any refactor could
+      // silently change. The actor IS the distinction and it is already here: `reconcile.ts` and the
+      // watchdog pass the system sentinel, every human path passes a real subject.
+      ...(toState === "cancelled"
+        ? { cancellationKind: input.actorObjectId === SYSTEM_ACTOR_ID ? "system" : "user" }
+        : {})
     })
     .where(eq(changes.objectId, existing.objectId))
     .returning();

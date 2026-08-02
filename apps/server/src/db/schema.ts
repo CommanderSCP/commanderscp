@@ -410,6 +410,8 @@ export const changes = pgTable(
     /** Set when this Change IS a rollback — DESIGN §9.4 "a rollback is its own Change, linked to the original". */
     rollbackOfObjectId: uuid("rollback_of_object_id"),
     rollbackTriggerReason: text("rollback_trigger_reason"),
+    /** 0053: `system` (engine auto-cancel) | `user`. NULL when not cancelled. */
+    cancellationKind: text("cancellation_kind"),
     // Watchdog (DESIGN §9.4): `state_entered_at` resets on every legal transition; the sweep
     // flags changes with no progress within their per-state SLA (coordination/watchdog.ts).
     stateEnteredAt: timestamp("state_entered_at", { withTimezone: true }).notNull().defaultNow(),

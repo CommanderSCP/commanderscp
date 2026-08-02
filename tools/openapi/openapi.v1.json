@@ -37036,6 +37036,20 @@
                         }
                       ]
                     },
+                    "cancellationKind": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "system",
+                            "user"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "stateEnteredAt": {
                       "type": "string",
                       "format": "date-time",
@@ -37429,6 +37443,20 @@
                               }
                             ]
                           },
+                          "cancellationKind": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "system",
+                                  "user"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "stateEnteredAt": {
                             "type": "string",
                             "format": "date-time",
@@ -37759,6 +37787,20 @@
                       "anyOf": [
                         {
                           "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "cancellationKind": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "system",
+                            "user"
+                          ]
                         },
                         {
                           "type": "null"
@@ -38122,6 +38164,20 @@
                           "anyOf": [
                             {
                               "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "cancellationKind": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "system",
+                                "user"
+                              ]
                             },
                             {
                               "type": "null"
@@ -39200,6 +39256,20 @@
                         }
                       ]
                     },
+                    "cancellationKind": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "system",
+                            "user"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "stateEnteredAt": {
                       "type": "string",
                       "format": "date-time",
@@ -39616,6 +39686,20 @@
                       "anyOf": [
                         {
                           "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "cancellationKind": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "system",
+                            "user"
+                          ]
                         },
                         {
                           "type": "null"
@@ -40039,6 +40123,20 @@
                       "anyOf": [
                         {
                           "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "cancellationKind": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "system",
+                            "user"
+                          ]
                         },
                         {
                           "type": "null"
@@ -51974,6 +52072,20 @@
                                 "anyOf": [
                                   {
                                     "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "cancellationKind": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "system",
+                                      "user"
+                                    ]
                                   },
                                   {
                                     "type": "null"
