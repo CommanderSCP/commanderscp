@@ -33,6 +33,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
 
 const {
   OutpostRow,
+  SelfDomainPanel,
   TrustTierCell,
   TransportCell,
   PendingExportCell,
@@ -549,5 +550,71 @@ describe("outposts overview: the declaration predicate and the peer filter", () 
     expect(isOutpostPeer(outpost)).toBe(true);
     expect(isOutpostPeer(retrans)).toBe(true);
     expect(isOutpostPeer(commander)).toBe(false);
+  });
+});
+
+/**
+ * THIS DOMAIN as an outpost — ADR-0026 §9.2 / owner decision D3.
+ *
+ * The trap this section owns is the mirror of the peer traps above. This domain has NO
+ * `federation_peers` row and NO `outpost` object (ADR-0022 splits those two authorities and self
+ * holds neither), so every sync-shaped field is unsourceable for it. Rendering it as a table row
+ * would mean blanking seven columns — and a blank is exactly what this file exists to forbid. The
+ * panel therefore must not print those fields at all, and must not read as a paired peer.
+ */
+const SELF = {
+  domainId: "11111111-2222-4333-8444-555555555555",
+  name: "commercial",
+  role: "commander" as const,
+  publicKey: "ed25519-pub"
+};
+
+describe("the self-domain panel", () => {
+  it("names this domain and its declared role", () => {
+    const html = renderToStaticMarkup(<SelfDomainPanel self={SELF} />);
+    expect(visibleText(html)).toContain("commercial");
+    expect(html).toContain('data-testid="self-domain-role"');
+  });
+
+  it("never renders a sync, transport, trust-tier or health figure for self", () => {
+    // The load-bearing assertion. Self has no peer row to source ANY of these from, so the honest
+    // rendering is to omit them — not to print a blank, a zero, or an "unknown" that implies the
+    // field could one day be filled for this domain.
+    const text = visibleText(renderToStaticMarkup(<SelfDomainPanel self={SELF} />));
+    for (const forbidden of [
+      "Last sync",
+      "Exported",
+      "Applied at outpost",
+      "Trust tier",
+      "Transport",
+      "Health",
+      "Recent transfers"
+    ]) {
+      expect(text).not.toContain(forbidden);
+    }
+  });
+
+  it("says plainly that this domain is NOT a paired peer", () => {
+    // Without this the panel reads as just another outpost, and an operator would reasonably expect
+    // it to sync — the exact confusion the exemption exists to prevent.
+    expect(visibleText(renderToStaticMarkup(<SelfDomainPanel self={SELF} />))).toContain(
+      "not a paired peer"
+    );
+  });
+
+  it("an UNSET role is called out as undesignated, not printed as a role", () => {
+    // `unset` is the lazily-minted default, not something anyone chose. Printing the literal makes
+    // it read like a fourth role beside commander/outpost/retrans.
+    const text = visibleText(
+      renderToStaticMarkup(<SelfDomainPanel self={{ ...SELF, role: "unset" as const }} />)
+    );
+    expect(text).toContain("not designated");
+    expect(text).toContain("scp federation init");
+  });
+
+  it("renders nothing at all when the server reports no self", () => {
+    // `FederationStatusResponse.self` is nullable. A half-rendered panel with an empty name would
+    // assert a domain identity the server did not give us.
+    expect(renderToStaticMarkup(<SelfDomainPanel self={null} />)).toBe("");
   });
 });
