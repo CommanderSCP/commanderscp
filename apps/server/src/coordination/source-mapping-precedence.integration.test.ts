@@ -54,6 +54,7 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     componentIdOrUrn: string;
     type: ExecutorType;
     repoPattern?: string;
+    pathPattern?: string;
   }) =>
     withTenantTx(server.deps.db, org.orgId, (tx) =>
       createSourceMapping(tx, { orgId: org.orgId, ...input })
@@ -62,6 +63,12 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
   const match = (sourceKind: string, repo: string) =>
     withTenantTx(server.deps.db, org.orgId, (tx) =>
       matchComponentForSource(tx, org.orgId, { sourceKind, repo })
+    );
+
+  /** `match`, plus the event's changed-file set — needed by the path-pattern cases below. */
+  const matchPath = (sourceKind: string, repo: string, paths: string[]) =>
+    withTenantTx(server.deps.db, org.orgId, (tx) =>
+      matchComponentForSource(tx, org.orgId, { sourceKind, repo, paths })
     );
 
   it("the SPECIFIC mapping wins over a catch-all inserted BEFORE it", async () => {
@@ -148,11 +155,15 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     expect(result).toEqual({ componentObjectId: fallbackComponent, type: "configuration" });
   });
 
-  it("two EQUALLY constrained overlapping mappings resolve to the OLDER one", async () => {
-    // Rule 2, pinned. `acme/*` and `acme/app-1` both set exactly one pattern, so they tie on rank
-    // and the exact pattern does NOT beat the wildcard — the older mapping wins. This is the
-    // documented limit of the rank rather than an accident, and it is asserted so that changing it
-    // has to be a decision someone makes on purpose.
+  it("the EXACT pattern beats the wildcard even when the wildcard is OLDER", async () => {
+    // This assertion was inverted on 2026-08-02 (owner decision). It previously pinned the opposite
+    // — that an exact pattern does NOT beat a wildcard and the older mapping wins — as "the
+    // documented limit of the rank rather than an accident", asserted so that changing it had to be
+    // a decision someone makes on purpose. That decision was made; see `correlation.ts`'s "WHY RULE
+    // 2 WAS ADDED" for the estate that forced it.
+    //
+    // The wildcard is created FIRST here on purpose: under the old rank it would win on age, so
+    // this test fails against the old ordering rather than passing for either.
     const sourceKind = `precedence-tie-${uuidv7()}`;
     const suffix = uuidv7();
     const wildcardComponent = await component("wildcard");
@@ -172,6 +183,112 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     });
 
     const result = await match(sourceKind, `acme-${suffix}/app`);
-    expect(result).toEqual({ componentObjectId: wildcardComponent, type: "configuration" });
+    expect(result).toEqual({ componentObjectId: exactComponent, type: "infrastructure" });
+  });
+
+  it("`*` beats `**`, because `*` cannot cross a slash and so matches strictly less", async () => {
+    const sourceKind = `precedence-star-${uuidv7()}`;
+    const suffix = uuidv7();
+    const doubleStar = await component("double-star");
+    const singleStar = await component("single-star");
+
+    await mapping({
+      sourceKind,
+      componentIdOrUrn: doubleStar,
+      type: "configuration",
+      repoPattern: `acme-${suffix}/**`
+    });
+    await mapping({
+      sourceKind,
+      componentIdOrUrn: singleStar,
+      type: "infrastructure",
+      repoPattern: `acme-${suffix}/*`
+    });
+
+    const result = await match(sourceKind, `acme-${suffix}/app`);
+    expect(result).toEqual({ componentObjectId: singleStar, type: "infrastructure" });
+  });
+
+  it("the LONGER literal prefix wins between two same-shaped patterns", async () => {
+    // The homelab case in miniature, and the one the wildcard tier alone cannot decide: both of
+    // these are `**` patterns, so they tie on rule 2a and only the literal-text count separates
+    // them. Without it this falls to creation order — which is exactly the trap that motivated the
+    // change, since 89 real mappings routed correctly only because of the sequence they were made in.
+    const sourceKind = `precedence-literal-${uuidv7()}`;
+    const suffix = uuidv7();
+    const broad = await component("broad");
+    const narrow = await component("narrow");
+
+    await mapping({
+      sourceKind,
+      componentIdOrUrn: broad,
+      type: "configuration",
+      repoPattern: `acme-${suffix}/repo`,
+      pathPattern: "alloy/**"
+    });
+    await mapping({
+      sourceKind,
+      componentIdOrUrn: narrow,
+      type: "infrastructure",
+      repoPattern: `acme-${suffix}/repo`,
+      pathPattern: "alloy/manifests/**"
+    });
+
+    const result = await matchPath(sourceKind, `acme-${suffix}/repo`, [
+      "alloy/manifests/deploy.yaml"
+    ]);
+    expect(result).toEqual({ componentObjectId: narrow, type: "infrastructure" });
+  });
+
+  it("a genuine tie STILL resolves to the older mapping — rule 3 is not removed", async () => {
+    // Specificity settles what it can; identical shapes still fall through to age, so an
+    // established mapping keeps its releases when someone adds an equally specific one later.
+    const sourceKind = `precedence-still-oldest-${uuidv7()}`;
+    const suffix = uuidv7();
+    const older = await component("older");
+    const newer = await component("newer");
+
+    await mapping({
+      sourceKind,
+      componentIdOrUrn: older,
+      type: "configuration",
+      repoPattern: `acme-${suffix}/app`
+    });
+    await mapping({
+      sourceKind,
+      componentIdOrUrn: newer,
+      type: "infrastructure",
+      repoPattern: `acme-${suffix}/app`
+    });
+
+    const result = await match(sourceKind, `acme-${suffix}/app`);
+    expect(result).toEqual({ componentObjectId: older, type: "configuration" });
+  });
+
+  it("a fully-constrained mapping still beats a more SPECIFIC single-pattern one — rule 1 outranks rule 2", async () => {
+    // The ordering between the two rules, pinned. An exact repo-only pattern is more "specific" in
+    // isolation, but setting BOTH globs is the stronger claim and must keep winning — otherwise
+    // adding a path pattern to a mapping could demote it.
+    const sourceKind = `precedence-rule1-first-${uuidv7()}`;
+    const suffix = uuidv7();
+    const bothPatterns = await component("both");
+    const exactRepoOnly = await component("exact-repo-only");
+
+    await mapping({
+      sourceKind,
+      componentIdOrUrn: bothPatterns,
+      type: "configuration",
+      repoPattern: `acme-${suffix}/**`,
+      pathPattern: "**"
+    });
+    await mapping({
+      sourceKind,
+      componentIdOrUrn: exactRepoOnly,
+      type: "infrastructure",
+      repoPattern: `acme-${suffix}/app`
+    });
+
+    const result = await matchPath(sourceKind, `acme-${suffix}/app`, ["anything.yaml"]);
+    expect(result).toEqual({ componentObjectId: bothPatterns, type: "configuration" });
   });
 });

@@ -1,4 +1,5 @@
 import { and, asc, eq, sql } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import type { ExecutorType } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { sourceMappings } from "../db/schema.js";
@@ -43,7 +44,7 @@ export interface SourceMatch {
  * Returns the matching component + its pipeline, or `null` if no `source_mappings` row matches.
  * More than one row can match one event, so the order below is the whole contract of this function.
  *
- * PRECEDENCE — most-constrained first, oldest first to break ties:
+ * PRECEDENCE — most-constrained first, most-specific next, oldest last to break what remains:
  *
  *   1. MOST CONSTRAINED WINS. A mapping is ranked by how many of its two globs it actually sets:
  *      repo+path (2) beats one of them (1) beats a catch-all that sets neither (0). Both patterns
@@ -51,19 +52,32 @@ export interface SourceMatch {
  *      sourceKind and therefore overlaps with every specific mapping beside it — "catch-all plus a
  *      specific override" is a normal operator setup, and this rank is what makes the override
  *      actually override rather than race the fallback.
- *   2. OLDEST WINS (created_at, then id — the primary key, so the order is TOTAL and no two rows
+ *   2. MOST SPECIFIC GLOB WINS (owner decision, 2026-08-02 — this rank previously did NOT exist and
+ *      its absence is what made rule 3 load-bearing; see below). Two sub-keys, in order:
+ *        a. NARROWEST WILDCARD. Per pattern: no wildcard (3) beats `*` (2) beats `**` (1) beats
+ *           unset (0), summed across repo and path. `*` outranks `**` because `*` cannot cross a
+ *           `/` and therefore matches strictly less.
+ *        b. MOST LITERAL TEXT. The count of non-wildcard characters, summed across both patterns.
+ *           This is what separates two patterns of the same shape: `alloy/manifests/**` beats
+ *           `alloy/**` for `alloy/manifests/x.yaml`, which (a) alone cannot express since both are
+ *           `**` patterns.
+ *   3. OLDEST WINS (created_at, then id — the primary key, so the order is TOTAL and no two rows
  *      can tie). Deliberately oldest and not newest: an established mapping keeps its releases when
- *      someone later adds an equally-constrained one. A new ambiguous mapping then visibly never
+ *      someone later adds an equally-specific one. A new ambiguous mapping then visibly never
  *      fires, instead of silently stealing another component's pipeline.
  *
- * Two things this rank deliberately does NOT do, because an operator will otherwise assume they
- * happen (both fall through to rule 2, oldest-wins):
- *   - It does not rank repo-only above path-only, or vice versa. They are equally constrained and
- *     there is no principled reason to prefer either.
- *   - It does not compare glob against glob. `acme/app` and `acme/*` are BOTH rank 1; the exact
- *     pattern does not beat the wildcard one.
- * If either matters to an operator, the fix is a mapping that sets both patterns (rank 2), not a
- * cleverer ranking here.
+ * WHY RULE 2 WAS ADDED. Until 2026-08-02 this function deliberately did not compare glob against
+ * glob, on the reasoning that an operator who needs an override should set both patterns. A real
+ * estate showed the gap: a GitOps monorepo's app-of-apps legitimately claims `bootstrap/**` while
+ * each child application claims its own `bootstrap/<name>-app.yaml`. Both set exactly one pattern,
+ * so both were rank 1 and the winner fell to CREATION ORDER — which meant 89 mappings routed
+ * correctly only because they happened to be created in the right sequence, an ordering that is
+ * invisible in the data and that the next mapping someone adds would silently violate. Making
+ * specificity explicit removes the trap; it does not remove rule 3, which still settles genuine ties.
+ *
+ * One thing this rank still deliberately does NOT do: it does not rank repo-only above path-only,
+ * or vice versa. They are equally constrained and there is no principled reason to prefer either,
+ * so `(a)` and `(b)` sum the two sides symmetrically rather than ordering them.
  *
  * Ordered in SQL rather than sorted in TS so that the precedence cannot be lost by a caller
  * re-querying, and by existing columns rather than a new `priority` column: ordering the data we
@@ -92,6 +106,20 @@ function matchesAnyPath(pattern: string, hint: CorrelationHint): boolean {
   return (hint.paths ?? []).some((candidate) => globMatch(pattern, candidate));
 }
 
+/** Rule 2a: how NARROW a pattern's widest wildcard is — exact 3, `*` 2, `**` 1, unset 0. */
+function wildcardTier(column: AnyPgColumn) {
+  return sql`(case
+    when ${column} is null or ${column} = '' then 0
+    when ${column} like '%**%' then 1
+    when ${column} like '%*%' then 2
+    else 3 end)`;
+}
+
+/** Rule 2b: how much LITERAL text a pattern pins, wildcards removed. */
+function literalLength(column: AnyPgColumn) {
+  return sql`length(replace(replace(coalesce(${column}, ''), '**', ''), '*', ''))`;
+}
+
 export async function matchComponentForSource(
   tx: TenantTx,
   orgId: string,
@@ -102,8 +130,17 @@ export async function matchComponentForSource(
     .from(sourceMappings)
     .where(and(eq(sourceMappings.orgId, orgId), eq(sourceMappings.sourceKind, hint.sourceKind)))
     .orderBy(
+      // Rule 1 — how many globs are set at all.
       sql`(case when ${sourceMappings.repoPattern} is not null then 1 else 0 end
            + case when ${sourceMappings.pathPattern} is not null then 1 else 0 end) desc`,
+      // Rule 2a — narrowest wildcard: exact (3) > `*` (2) > `**` (1) > unset (0). Order matters
+      // inside each CASE: `**` must be tested BEFORE `*`, since a `**` pattern also contains `*`.
+      sql`(${wildcardTier(sourceMappings.repoPattern)} + ${wildcardTier(sourceMappings.pathPattern)}) desc`,
+      // Rule 2b — most literal text, which separates same-shaped patterns (`alloy/manifests/**`
+      // over `alloy/**`). Wildcards are stripped rather than counted so a longer pattern does not
+      // win merely by having more `*` in it.
+      sql`(${literalLength(sourceMappings.repoPattern)} + ${literalLength(sourceMappings.pathPattern)}) desc`,
+      // Rule 3 — the total, stable tiebreak.
       asc(sourceMappings.createdAt),
       asc(sourceMappings.id)
     );
