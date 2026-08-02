@@ -14,6 +14,11 @@ import { badRequest, notFound } from "../errors.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { insertDecision } from "./decisions-repo.js";
+import {
+  resolvePipelineForTargets,
+  type PipelineResolution,
+  type PipelineRung
+} from "./pipeline-resolution.js";
 import { appendJournalEntry } from "../federation/journal-repo.js";
 import { withBoundaryBundleChecksum } from "../federation/boundary-bundle-ref.js";
 
@@ -115,6 +120,28 @@ export interface ProposeChangeInput {
   importedFromDomain?: TrustDomainId;
 }
 
+/** One human-readable line for `scp change explain`, per rung. */
+function pipelineSummary(
+  rung: PipelineRung | "explicit" | null,
+  attachedToObjectId: string | null,
+  reason: PipelineResolution["reason"]
+): string {
+  switch (rung) {
+    case "explicit":
+      return "pipeline set explicitly on the change (no inheritance walk)";
+    case "component":
+      return "pipeline inherited from the target's own releases_via edge";
+    case "service":
+      return `pipeline inherited from the owning service ${attachedToObjectId}`;
+    case "organization":
+      return `pipeline inherited from the org default on ${attachedToObjectId}`;
+    default:
+      return reason === "targets_disagree"
+        ? "no pipeline: the change's targets resolve to different pipelines, so none is inherited"
+        : "no pipeline: no releases_via edge on the target, its service, or the org root";
+  }
+}
+
 /**
  * Creates a Change: a graph object (type `change`) via the existing `createObject` (which itself
  * writes the `change.create` audit event + outbox publish, DESIGN §4.1/§8) plus the `changes`
@@ -122,6 +149,9 @@ export interface ProposeChangeInput {
  * at least one entry from the moment a change exists (DESIGN §10.4). This is NOT a state
  * transition (there is no "from" state) so it does not go through `transitionChange` — but it
  * follows the identical "write the thing + write a Decision" discipline.
+ *
+ * Also the SINGLE POINT where a change acquires its release topology, whether set explicitly or
+ * inherited from the graph (ADR-0026 §5) — see the resolution block below for why it lives here.
  */
 export async function proposeChange(
   tx: TenantTx,
@@ -164,8 +194,24 @@ export async function proposeChange(
     ...restProperties
   } = input.properties ?? {};
 
+  // PIPELINE RESOLUTION (ADR-0026, §5, D4/D15). An explicit `--topology` always wins and is outside
+  // the walk; otherwise the change INHERITS one from the graph.
+  //
+  // This lives HERE, in `proposeChange`, and not in `webhook-processor.ts`. Several paths create
+  // changes — the webhook processor, the API, campaign expansion, federation promotion replay — and
+  // fixing the caller instead of the single decision point is the incomplete-call-site-census
+  // mistake this repo has now paid for five times (BUILD_AND_TEST.md §4.4). Every change that gets
+  // proposed at all gets resolution, by construction.
+  //
+  // `pipelineRung` is carried to the Decision below, not just the topology: principle 6. "Why did
+  // this change get this pipeline?" has four answers — explicit, own edge, service's edge, org
+  // default — and only the rung tells them apart.
   let topologyObjectId: string | undefined;
   let topologyVersion: number | undefined;
+  let pipelineRung: PipelineRung | "explicit" | null = null;
+  let pipelineAttachedTo: string | null = null;
+  let pipelineReason: PipelineResolution["reason"] = null;
+  let pipelinePerTarget: PipelineResolution["perTarget"] = [];
   if (input.topologyIdOrUrn) {
     const topology = await getObjectByIdOrUrnAnyType(tx, input.orgId, input.topologyIdOrUrn);
     if (topology.typeId !== "release-topology") {
@@ -173,6 +219,17 @@ export async function proposeChange(
     }
     topologyObjectId = topology.id;
     topologyVersion = topology.version;
+    pipelineRung = "explicit";
+  } else {
+    const resolution = await resolvePipelineForTargets(tx, input.orgId, targetObjectIds);
+    pipelineReason = resolution.reason;
+    pipelinePerTarget = resolution.perTarget;
+    if (resolution.resolved) {
+      topologyObjectId = resolution.resolved.topologyObjectId;
+      topologyVersion = resolution.resolved.topologyVersion;
+      pipelineRung = resolution.resolved.rung;
+      pipelineAttachedTo = resolution.resolved.attachedToObjectId;
+    }
   }
 
   const object = await createObject(tx, {
@@ -265,12 +322,28 @@ export async function proposeChange(
       actorId: input.actorObjectId,
       targets: targetObjectIds,
       topologyObjectId: topologyObjectId ?? null,
+      // Principle 6: the topology alone cannot explain an inheritance surprise — someone attaches a
+      // pipeline to a service and every component in it silently changes how it releases. The rung
+      // and the object the winning edge hangs off are what answer "why this one?".
+      pipeline: {
+        rung: pipelineRung,
+        attachedToObjectId: pipelineAttachedTo,
+        reason: pipelineReason,
+        // Written only for a genuine inheritance walk (an explicit `--topology` has no per-target
+        // story), and only when there is more than one target — a single-target change's per-target
+        // detail is exactly the fields above, and duplicating it would grow every Decision row for
+        // no information. Decision volume is a live production concern.
+        ...(pipelineRung !== "explicit" && targetObjectIds.length > 1
+          ? { perTarget: pipelinePerTarget }
+          : {})
+      },
       rollbackOfObjectId: input.rollbackOfObjectId ?? null
     },
     reasonTree: {
       summary: input.rollbackOfObjectId
         ? `rollback change proposed for ${targetObjectIds.length} target(s)`
-        : `change proposed for ${targetObjectIds.length} target(s)`
+        : `change proposed for ${targetObjectIds.length} target(s)`,
+      pipeline: pipelineSummary(pipelineRung, pipelineAttachedTo, pipelineReason)
     }
   });
 
