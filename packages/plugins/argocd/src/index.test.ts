@@ -770,6 +770,59 @@ describe("observe()", () => {
     const events = await createArgoCdExecutorPlugin().observe(ctx);
 
     expect(events[0]?.correlation.commitSha).toBe("ff3fd8a3fe615c580b335fbaf69def8024ba56bc");
+    expect(events[0]?.correlation.stateRef).toBe("ff3fd8a3fe615c580b335fbaf69def8024ba56bc");
+  });
+
+  it("a MULTI-SOURCE app dedupes on status.sync.revisions, which the singular field never carries", async () => {
+    // The case the first attempt at this fix missed entirely. Argo CD reports a multi-source app's
+    // revisions in `status.sync.revisions` (an array, one per source) and leaves `revision` unset —
+    // it sets exactly one of the two. On the estate that surfaced this, 36 of 59 applications were
+    // multi-source, so reading only the singular field left the majority still churning.
+    //
+    // `commitSha` stays undefined because a tuple of revisions is not a commit SHA; the dedupe
+    // identity rides `stateRef` instead.
+    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+    nock(SERVER_URL)
+      .get("/api/v1/applications")
+      .reply(200, {
+        items: [
+          {
+            metadata: { name: "app-multisource" },
+            status: {
+              reconciledAt: "2026-08-02T11:32:05.000Z",
+              sync: { status: "Synced", revisions: ["7d34ef12", "ff3fd8a3"] }
+            }
+          }
+        ]
+      });
+
+    const events = await createArgoCdExecutorPlugin().observe(ctx);
+
+    expect(events[0]?.correlation.commitSha).toBeUndefined();
+    expect(events[0]?.correlation.stateRef).toBe("7d34ef12+ff3fd8a3");
+  });
+
+  it("multi-source revision ORDER is significant — two orderings are different states", async () => {
+    // `revisions` is positional (one entry per declared source), so sorting or set-ifying it would
+    // make two genuinely different deployments share an identity and silently swallow one.
+    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+    nock(SERVER_URL)
+      .get("/api/v1/applications")
+      .reply(200, {
+        items: [
+          {
+            metadata: { name: "app-reordered" },
+            status: {
+              reconciledAt: "2026-08-02T11:32:05.000Z",
+              sync: { status: "Synced", revisions: ["ff3fd8a3", "7d34ef12"] }
+            }
+          }
+        ]
+      });
+
+    const events = await createArgoCdExecutorPlugin().observe(ctx);
+
+    expect(events[0]?.correlation.stateRef).toBe("ff3fd8a3+7d34ef12");
   });
 
   it("omits the revision when Argo CD reports none, rather than inventing one", async () => {

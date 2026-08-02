@@ -43,6 +43,41 @@ describe("observedEventIdentity: the grouping key alone is not an identity", () 
     expect(first).not.toBe(second);
   });
 
+  it("a MULTI-SOURCE argocd app dedupes on stateRef, which has no commitSha to fall back to", () => {
+    // A multi-source Application is synced to a TUPLE of revisions, so it carries no commitSha at
+    // all. Without `stateRef` in the chain these two collapse to `<app>|<occurredAt>` — different
+    // every reconcile — which is the firehose, and is what the singular-revision-only fix left
+    // running for 36 of 59 applications.
+    const correlation = { correlationKey: "agentkitauto", stateRef: "7d34ef12+ff3fd8a3" };
+    expect(
+      observedEventIdentity(ev(correlation, { kind: "sync", occurredAt: "2026-08-02T11:32:05Z" }))
+    ).toBe(
+      observedEventIdentity(ev(correlation, { kind: "sync", occurredAt: "2026-08-02T11:35:11Z" }))
+    );
+  });
+
+  it("a multi-source app redeployed to a NEW revision tuple is a distinct event", () => {
+    const before = observedEventIdentity(
+      ev({ correlationKey: "agentkitauto", stateRef: "7d34ef12+ff3fd8a3" }, { kind: "sync" })
+    );
+    const after = observedEventIdentity(
+      ev({ correlationKey: "agentkitauto", stateRef: "7d34ef12+aabbccdd" }, { kind: "sync" })
+    );
+
+    expect(before).not.toBe(after);
+  });
+
+  it("commitSha still WINS over stateRef when both are present", () => {
+    // A single-source app sets both. The order matters only in that it must be stable — pinned so a
+    // later reshuffle of the chain cannot silently change every existing dedupe key and re-ingest
+    // history.
+    const identity = observedEventIdentity(
+      ev({ correlationKey: "app", commitSha: "aaaa", stateRef: "bbbb" }, { kind: "sync" })
+    );
+
+    expect(identity).toBe("app|aaaa");
+  });
+
   it("two argocd reconciles at the SAME revision collapse onto one identity", () => {
     // The firehose control. Argo CD advances `reconciledAt` every ~3 minutes per app whether or not
     // anything changed, so keying on the timestamp made every idle reconcile a new row — ~26k rows

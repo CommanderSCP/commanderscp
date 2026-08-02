@@ -118,6 +118,23 @@ export interface ExecutorEventCorrelation {
   paths?: string[];
   commitSha?: string;
   artifactDigest?: string;
+  /**
+   * An OPAQUE provider-side identity for the state this event reports — used only to deduplicate
+   * repeated observations of an unchanged thing. Never parsed, never matched against
+   * `source_mappings`; the host treats it as a bag of bytes.
+   *
+   * It exists because not every provider's "what state is this in" is a single commit or digest.
+   * A multi-source Argo CD Application is synced to a TUPLE of revisions (`status.sync.revisions`),
+   * one per source, and none of them alone identifies the deployment — so neither `commitSha` nor
+   * `artifactDigest` can honestly carry it, and stuffing a joined list into a field named "commit
+   * SHA" would lie to every consumer that reads one.
+   *
+   * Set this whenever an event would otherwise fall back to `occurredAt` for its identity and the
+   * provider's timestamp advances on its own schedule — Argo CD rewrites `reconciledAt` every few
+   * minutes whether or not anything changed, so without a state ref every idle reconcile is a new
+   * row forever.
+   */
+  stateRef?: string;
   labels?: Record<string, string>;
   correlationKey?: string;
 }

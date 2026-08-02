@@ -157,7 +157,9 @@ export function serializeCursorToken(marks: ObserveWatermarks): string {
 export function observedEventIdentity(ev: ExecutorEvent): string {
   const c = ev.correlation ?? {};
   const group = c.correlationKey ?? ev.kind;
-  const discriminator = c.commitSha ?? c.artifactDigest ?? ev.occurredAt;
+  // `stateRef` sits AFTER the two natural identities and BEFORE the timestamp fallback: a provider
+  // that can name the state it observed should never be deduped by a clock it does not control.
+  const discriminator = c.commitSha ?? c.artifactDigest ?? c.stateRef ?? ev.occurredAt;
   return `${group}|${discriminator}`;
 }
 
@@ -191,6 +193,9 @@ export async function ingestObservedEvents(
       correlationKey: c.correlationKey,
       commitSha: c.commitSha,
       artifactDigest: c.artifactDigest,
+      // Persisted for forensics only — never read back for correlation. Without it, "why did this
+      // event dedupe away?" is unanswerable from the row.
+      stateRef: c.stateRef,
       kind: ev.kind,
       observedAt: ev.occurredAt,
       _observed: true,
