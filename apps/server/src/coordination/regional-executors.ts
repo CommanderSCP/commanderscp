@@ -243,9 +243,47 @@ export async function evaluateRegionalDeployGate(
   targetObjectId: string,
   type: ExecutorType = DEFAULT_BINDING_TYPE
 ): Promise<RegionalDeployGate | null> {
-  const membership = await readDeclaredRegionMembership(tx, orgId, targetObjectId);
+  // A wave target may now be a PLACEMENT (ADR-0026 stage-shaped compilation), and a placement carries
+  // no `environment`/`region` of its own — those live on the deployment-target it names. Without this
+  // hop `readDeclaredRegionMembership` returns null for every stage-shaped wave target and the M15.6
+  // silent-region-deploy gate SILENTLY STOPS FIRING: case (c) would quietly become case (a), which is
+  // the masking failure this gate was built to prevent, reintroduced by a change of target type
+  // rather than by a change to the gate.
+  //
+  // Not yet reachable on the estate (no placement names a region target today), which is exactly why
+  // it would have gone unnoticed until the first regional stage rollout.
+  const placeId = await deploymentTargetOfPlacement(tx, orgId, targetObjectId);
+  const regionTargetId = placeId ?? targetObjectId;
+
+  const membership = await readDeclaredRegionMembership(tx, orgId, regionTargetId);
   if (!membership) return null;
+  // The BINDING is still resolved against the wave target itself, not the region target: a placement
+  // carries its own binding, and that is the whole point of the pair. Only the MEMBERSHIP question
+  // ("is this a declared region?") hops to the place.
   const binding = await getExecutorBinding(tx, orgId, targetObjectId, type);
   const signal = regionBindingSignal(binding);
   return { ...membership, ...signal, deployAllowed: signal.bound };
+}
+
+/** The deployment-target a placement names, or null when `id` is not a live placement. */
+async function deploymentTargetOfPlacement(
+  tx: TenantTx,
+  orgId: string,
+  id: string
+): Promise<string | null> {
+  const rows = await tx
+    .select({
+      deploymentTargetId: sql<string | null>`${objects.properties} ->> 'deploymentTargetId'`
+    })
+    .from(objects)
+    .where(
+      and(
+        eq(objects.orgId, orgId),
+        eq(objects.id, id),
+        eq(objects.typeId, "placement"),
+        isNull(objects.deletedAt)
+      )
+    )
+    .limit(1);
+  return rows[0]?.deploymentTargetId ?? null;
 }

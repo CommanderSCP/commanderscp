@@ -46,12 +46,8 @@ import { insertDecision, insertDecisionIfChanged } from "./decisions-repo.js";
 import { describeError } from "../errors.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import { DEFAULT_EXECUTOR_INSTANCE_ID, DEFAULT_EXECUTOR_MODULE } from "./executor-config.js";
-import {
-  getExecutorBinding,
-  listExecutorBindingsForTarget,
-  resolveExecutorPluginInstance,
-  DEFAULT_BINDING_TYPE
-} from "./executor-bindings-repo.js";
+import { resolveExecutorPluginInstance, DEFAULT_BINDING_TYPE } from "./executor-bindings-repo.js";
+import { listVisibleBindingsForTarget, resolveBindingForTarget } from "./binding-resolution.js";
 import { evaluateRegionalDeployGate } from "./regional-executors.js";
 import { REGIONAL_EXECUTOR_EXPECTED_MODULE } from "@scp/schemas";
 import { processChangeSourceEvents } from "./webhook-processor.js";
@@ -1063,8 +1059,47 @@ async function triggerWaveTarget(
     // All emitted ONCE: `markWaveTargetNoExecutor`'s status guard makes a later tick that finds it
     // already `no_executor` a no-op.
     const blocked = await withTenantTx(db, orgId, async (tx) => {
-      const forType = await getExecutorBinding(tx, orgId, targetObjectId, type);
-      if (forType) return false; // a real binding for this type — normal coordinate path.
+      // ADR-0026 amendment: resolution now falls back through the target's PLACEMENTS when the
+      // target itself carries no binding of this type. Direct is still checked first, so nothing
+      // that resolves today changes answer. See `binding-resolution.ts` for why the fallback exists
+      // (it is what makes each estate-migration step independently safe) and why it must refuse
+      // rather than choose when a component has two placed bindings.
+      const resolution = await resolveBindingForTarget(tx, orgId, targetObjectId, type);
+      if (resolution.outcome === "direct" || resolution.outcome === "via_placement") return false;
+
+      if (resolution.outcome === "ambiguous") {
+        // (d) AMBIGUOUS PLACEMENT — a NEW population, distinct from (b)'s meaning. (b) is "bound,
+        // but not for this pipeline"; this is "bound for this pipeline in more than one PLACE, and
+        // the wave target does not say which". Picking one would be the cross-product bug ADR-0026
+        // exists to kill, silently. The remediation is not "add a binding" — it is to make the wave
+        // target a placement, i.e. attach a stage-shaped topology.
+        const named = resolution.candidates.map((c) => c.placementObjectId).join(", ");
+        return blockWaveTargetNoExecutor(tx, {
+          orgId,
+          change,
+          waveId,
+          waveTargetId,
+          targetObjectId,
+          action: "change.wave_target.ambiguous_placement_binding",
+          summary:
+            `wave target ${targetObjectId} is a component whose '${type}' binding lives on ` +
+            `${resolution.candidates.length} placements (${named}) — refusing to guess which place ` +
+            `this release is for`,
+          remediation:
+            `attach a stage-shaped release topology so waves name deployment-targets and each wave ` +
+            `target is a placement, or remove the surplus placement binding`,
+          reason:
+            `ambiguous '${type}' binding for component ${targetObjectId}: ${resolution.candidates.length} ` +
+            `placements carry one (${named})`,
+          inputContext: {
+            waveId,
+            targetObjectId,
+            requestedType: type,
+            gate: "ambiguous_placement_binding",
+            candidates: resolution.candidates
+          }
+        });
+      }
 
       // (c) declared region target with no resolvable binding — must not fall through to (a).
       const regionGate = await evaluateRegionalDeployGate(tx, orgId, targetObjectId, type);
@@ -1097,11 +1132,17 @@ async function triggerWaveTarget(
         });
       }
 
-      const all = await listExecutorBindingsForTarget(tx, orgId, targetObjectId);
+      // (a)/(b) discrimination reads the VISIBLE set — the target's own bindings PLUS its
+      // placements'. Case (a) has always meant "intended-fake: nothing anywhere", and once a binding
+      // can live on a placement, "anywhere" has to include placements. Reading only the target's own
+      // bindings here would let a component whose `configuration` binding had moved to its placement,
+      // receiving an `image` release, look like zero-bindings and FAKE-SUCCEED — case (b) wearing
+      // case (a)'s clothes, which is the masking gap #66 closed.
+      const all = await listVisibleBindingsForTarget(tx, orgId, targetObjectId);
       if (all.length === 0) return false; // case (a): intended-fake, behaviour unchanged.
 
       // case (b): masking gap.
-      const boundTypes = all.map((b) => b.type).sort();
+      const boundTypes = all.map((b) => b.binding.type).sort();
       return blockWaveTargetNoExecutor(tx, {
         orgId,
         change,
@@ -1154,8 +1195,42 @@ async function triggerWaveTarget(
       // in on the wave target, snapshotted at plan time from the change (and thence from the source
       // mapping that matched the release), which is what makes a non-default binding TRIGGERABLE
       // rather than merely registerable and readable.
-      const binding = await getExecutorBinding(tx, orgId, targetObjectId, type);
+      // MUST use the same resolver as the gap analysis above. If this stayed a literal lookup while
+      // that one fell back, a component whose binding had moved to its placement would pass the gate
+      // and then trigger with a NULL externalRef — deploying against the wrong external resource, or
+      // none, with nothing blocked and nothing logged. Two resolution paths for one decision is how
+      // that class of bug happens; there is one path.
+      const resolution = await resolveBindingForTarget(tx, orgId, targetObjectId, type);
+      const binding = resolution.binding;
       const externalRef = binding?.externalRef ?? null;
+
+      // Principle 6: an INDIRECT resolution is recorded, because an operator debugging a deploy must
+      // not have to infer that the binding came from somewhere other than the wave target. Written
+      // ONLY for the indirect path — the direct path is the overwhelmingly common one and a Decision
+      // per trigger for it would double Decision volume for no information, which is a live
+      // production concern on this instance. Bounded either way: this runs once per wave target
+      // behind the claim lock, not once per tick.
+      if (resolution.outcome === "via_placement") {
+        await insertDecision(tx, {
+          orgId,
+          kind: "wave_target",
+          subjectId: change.objectId,
+          verdict: "allow",
+          inputContext: {
+            waveId,
+            targetObjectId,
+            requestedType: type,
+            resolvedVia: "placement",
+            placementObjectId: resolution.viaPlacementObjectId,
+            bindingId: binding?.id ?? null
+          },
+          reasonTree: {
+            summary:
+              `'${type}' binding for wave target ${targetObjectId} resolved INDIRECTLY via its ` +
+              `placement ${resolution.viaPlacementObjectId} — the component carries none of its own`
+          }
+        });
+      }
 
       if (isRollback && change.rollbackOfObjectId) {
         // Restore exactly what the ORIGINAL change's trigger of this same target would have
@@ -1264,9 +1339,29 @@ async function ensureExecutorInstanceStarted(
   // MUST resolve the SAME routing Type the trigger will use (M12 P4A / ADR-0007). Resolving without
   // it would start one Type's plugin instance and then trigger against a different Type's binding — a
   // mismatch that would silently drive the wrong pipeline.
-  const resolved = await withTenantTx(db, orgId, (tx) =>
-    resolveExecutorPluginInstance(tx, { orgId, targetObjectId, masterKey, type })
-  );
+  //
+  // Both callers pass a WAVE TARGET, which under legacy compilation is a component and under
+  // stage-shaped compilation is a placement — so the placement fallback is applied HERE, once, and
+  // the object that actually CARRIES the binding is what `resolveExecutorPluginInstance` is asked
+  // about. That keeps the fallback at the one point where a wave target is interpreted, instead of
+  // pushing it down into the repo (which `binding-resolution.ts` depends on, so the dependency would
+  // have become a cycle).
+  //
+  // `ambiguous` yields no binding-carrying object, so this falls through to the shared default
+  // instance exactly as "no binding" always has — and that is safe only because the gap analysis has
+  // ALREADY refused this target with a Decision before any trigger reaches here. The status-poll
+  // caller can reach it for a target blocked mid-flight, where falling back to the default instance
+  // and finding no matching run is the same benign no-op an unbound target has always produced.
+  const resolved = await withTenantTx(db, orgId, async (tx) => {
+    const resolution = await resolveBindingForTarget(tx, orgId, targetObjectId, type);
+    const bindingCarrier = resolution.binding?.targetObjectId ?? targetObjectId;
+    return resolveExecutorPluginInstance(tx, {
+      orgId,
+      targetObjectId: bindingCarrier,
+      masterKey,
+      type
+    });
+  });
 
   if (
     resolved &&
