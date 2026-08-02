@@ -196,7 +196,12 @@ describe("/outposts: a well-formed response is unaffected", () => {
     const rendered = await renderPage();
     const html = rendered.html();
 
-    expect(html).toContain("No outpost or retrans peers are paired yet");
+    // Asserted on the EMPTY-STATE ELEMENT, not on its sentence. This previously pinned the literal
+    // copy and broke when the wording changed to say "no OTHER outposts" (the self-domain panel now
+    // sits above it, so the old sentence had become untrue). The premise this case exists to
+    // establish — that the empty branch is reachable, so its absence in the cases above is the error
+    // branch winning — is about which branch rendered, and a testid says that without pinning prose.
+    expect(html).toContain('data-testid="outposts-empty"');
     expect(html).not.toContain("outposts-error");
 
     rendered.unmount();

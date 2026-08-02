@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import type { BundleTransfer, FederationPeerStatus } from "@scp/schemas";
+import type { BundleTransfer, FederationPeerStatus, FederationStatusResponse } from "@scp/schemas";
 import { client } from "../lib/client";
 import { isAbsent } from "../lib/absent";
 import { federationStatusKey } from "../lib/query-client";
@@ -498,6 +498,80 @@ export function OutpostRow({ status }: { status: FederationPeerStatus }): React.
   );
 }
 
+/**
+ * THIS DOMAIN, as an outpost — ADR-0026 §9.2, owner decision D3: "a commander acting in an outpost
+ * capacity IS an outpost and must be shown as one, exempt from polling and poking itself."
+ *
+ * Rendered as its OWN panel rather than a row in the table below, and that is the whole design.
+ * ADR-0022 splits outpost authority between a `federation_peers` row (transport, keys, sync state)
+ * and an `outpost` graph object (declared config) — and **this domain has neither**. Seven of the
+ * table's nine columns therefore have no source for self: last sync in, exported by this side,
+ * applied at outpost, health, transfers, trust tier, transport. Putting self in the table would
+ * mean blanking them, which is exactly the failure this file's module doc exists to prevent — an
+ * unobservable field must be an explicit unknown, never a blank. A panel has no columns to blank,
+ * so it can state only what `federation_self` actually knows.
+ *
+ * The exemption from polling is a DATA fact, not a rendering one: this row is synthesised here and
+ * is never written to `federation_peers`, because a self peer row would make the federation-sync
+ * loop dial its own `base_url` and sync a journal against itself.
+ *
+ * Deliberately NOT shown: the stages this domain coordinates. ADR-0026 D10 makes a stage a DERIVED
+ * name over a place-role deployment-target, and none of this instance's targets carry the
+ * `environment` property that derivation needs — so there is nothing honest to print yet.
+ */
+export function SelfDomainPanel({
+  self
+}: {
+  self: FederationStatusResponse["self"];
+}): React.JSX.Element | null {
+  if (!self) return null;
+  const roleDeclared = self.role !== "unset";
+  return (
+    <Card data-testid="self-domain-panel">
+      <CardHeader>
+        <CardTitle>This domain</CardTitle>
+        <CardDescription>
+          Where this instance&apos;s own changes execute. It is <strong>not a paired peer</strong>:
+          it never syncs with, exports to, or pokes itself, so the sync columns below do not apply
+          to it and are not shown for it.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <dl className="grid gap-3 sm:grid-cols-3">
+          <div>
+            <dt className="text-xs uppercase tracking-wide text-slate-500">Domain</dt>
+            <dd className="text-sm font-medium text-slate-900" data-testid="self-domain-name">
+              {self.name}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs uppercase tracking-wide text-slate-500">Declared role</dt>
+            <dd className="text-sm" data-testid="self-domain-role">
+              {roleDeclared ? (
+                <Badge>{self.role}</Badge>
+              ) : (
+                /* `unset` is the lazily-minted default, not a role anyone chose — say so rather
+                 * than printing the literal, which reads like a fourth role beside
+                 * commander/outpost/retrans. */
+                <span className="text-amber-700">
+                  not designated — run{" "}
+                  <code className="rounded bg-slate-100 px-1 py-0.5">scp federation init</code>
+                </span>
+              )}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs uppercase tracking-wide text-slate-500">Domain id</dt>
+            <dd className="font-mono text-xs text-slate-600" data-testid="self-domain-id">
+              {self.domainId}
+            </dd>
+          </div>
+        </dl>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function OutpostsPage(): React.JSX.Element {
   const statusQuery = useQuery({
     queryKey: federationStatusKey(),
@@ -519,6 +593,8 @@ export function OutpostsPage(): React.JSX.Element {
           column claims it.
         </p>
       </div>
+
+      {statusQuery.data && <SelfDomainPanel self={statusQuery.data.self} />}
 
       <Card>
         <CardHeader>
@@ -544,8 +620,11 @@ export function OutpostsPage(): React.JSX.Element {
             />
           )}
           {statusQuery.data && outposts.length === 0 && (
+            /* "No outposts" would now contradict the panel directly above, which says this domain
+               is one. Scoped to PAIRED peers, which is what this table is actually about. */
             <p className="text-sm text-slate-500" data-testid="outposts-empty">
-              No outpost or retrans peers are paired yet. Pair one with{" "}
+              No <strong>other</strong> outpost or retrans peers are paired yet — this domain
+              coordinates its own, shown above. Pair another with{" "}
               <code className="rounded bg-slate-100 px-1 py-0.5">scp federation pair</code>.
             </p>
           )}
