@@ -28,26 +28,7 @@ import {
   ExecutorTypeSchema,
   type ExecutorType
 } from "@scp/schemas";
-import {
-  manifest as githubExecutorManifest,
-  discoveryManifest as githubDiscoveryManifest
-} from "@scp/plugin-github";
-import {
-  manifest as giteaManifest,
-  discoveryManifest as giteaDiscoveryManifest
-} from "@scp/plugin-gitea";
-import {
-  manifest as gitlabManifest,
-  discoveryManifest as gitlabDiscoveryManifest
-} from "@scp/plugin-gitlab";
-import {
-  manifest as argocdManifest,
-  discoveryManifest as argocdDiscoveryManifest
-} from "@scp/plugin-argocd";
-import { manifest as terraformManifest } from "@scp/plugin-terraform";
-import { manifest as managedIacManifest } from "@scp/plugin-managed-iac";
-import { manifest as webhookNotifyManifest } from "@scp/plugin-webhook-notify";
-import { manifest as smtpNotifyManifest } from "@scp/plugin-smtp-notify";
+import { BUNDLED_PLUGIN_MANIFESTS, validatePluginConfig } from "../plugin-host/plugin-manifests.js";
 import type { AppDeps } from "../types.js";
 import type { PluginModule } from "../plugin-host/contract.js";
 import { requireAuth } from "../auth/require-auth.js";
@@ -55,7 +36,6 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { badRequest, forbidden, notFound } from "../errors.js";
-import { validateProperties } from "../graph/property-validation.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { isPeerBoundObjectType } from "../federation/outpost-binding.js";
 import { containmentDomainIdFromWire } from "../domain-id-edge.js";
@@ -67,7 +47,7 @@ import {
   deleteExecutorBinding,
   setExecutorBindingType,
   isKnownExecutorModule,
-  executionSystemInstanceId,
+  executionSystemBindingIdentity,
   resolveInternalEgress,
   DEFAULT_BINDING_TYPE,
   EXECUTION_SYSTEM_INSTANCE_PREFIX
@@ -99,35 +79,6 @@ const KNOWN_DISCOVERY_MODULES: PluginModule[] = [
   "gitlab-discovery",
   "argocd-discovery"
 ];
-
-/** Every bundled plugin's manifest, keyed by the module name a binding references. Used to
- *  validate a binding's tenant-supplied `config` against the plugin's declared `configSchema`
- *  BEFORE it's ever stored/provisioned (adversarial-review CRITICAL #1 item 5) — in particular,
- *  managed-iac's schema is `additionalProperties: false` with no runnerImage/networkMode/workspace,
- *  so a tenant attempt to set those server-governed fields is rejected here with a 400. */
-const MANIFEST_BY_MODULE: Record<string, { configSchema: unknown }> = {
-  github: githubExecutorManifest,
-  "github-discovery": githubDiscoveryManifest,
-  gitea: giteaManifest,
-  "gitea-discovery": giteaDiscoveryManifest,
-  gitlab: gitlabManifest,
-  "gitlab-discovery": gitlabDiscoveryManifest,
-  argocd: argocdManifest,
-  "argocd-discovery": argocdDiscoveryManifest,
-  terraform: terraformManifest,
-  "managed-iac": managedIacManifest,
-  "webhook-notify": webhookNotifyManifest,
-  "smtp-notify": smtpNotifyManifest
-};
-
-/** Throws `badRequest` if `config` doesn't satisfy `module`'s declared `configSchema`. An unknown
- *  module has no schema to validate against — that's caught separately (the module allowlist in
- *  `executor-bindings-repo.ts`/`notification-bindings-repo.ts`), so here we simply skip. */
-function validatePluginConfig(module: string, config: unknown): void {
-  const manifest = MANIFEST_BY_MODULE[module];
-  if (!manifest) return;
-  validateProperties(manifest.configSchema, config ?? {}, `plugin-config:${module}`);
-}
 
 /**
  * Bind a target object to a registered `execution-system` (Mode A). Loads the system, derives the
@@ -165,24 +116,12 @@ async function bindTargetToExecutionSystem(
     permission: "object:write",
     scopeObjectId: sys.id
   });
-  if (sys.typeId !== "execution-system") {
-    throw badRequest(`'${executionSystemId}' is a '${sys.typeId}', not an execution-system`);
-  }
-  const props = sys.properties as { kind?: string; serverUrl?: string };
-  if (!props.serverUrl) {
-    throw badRequest(`execution-system '${sys.id}' is missing a 'serverUrl' property`);
-  }
-  const module = (props.kind ?? "").trim();
-  if (!isKnownExecutorModule(module)) {
-    throw badRequest(`execution-system kind '${module}' is not a known executor module`);
-  }
+  const identity = executionSystemBindingIdentity(sys, executionSystemId);
   return upsertExecutorBinding(tx, {
     orgId,
     targetObjectId,
     type,
-    pluginModule: module,
-    pluginInstanceId: executionSystemInstanceId(sys.id),
-    executionSystemId: sys.id,
+    ...identity,
     externalRef
   });
 }
@@ -214,22 +153,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     },
     handler: async (request, reply) => {
       await requireAuth(deps, request);
-      reply.status(200).send({
-        items: [
-          githubExecutorManifest,
-          githubDiscoveryManifest,
-          giteaManifest,
-          giteaDiscoveryManifest,
-          gitlabManifest,
-          gitlabDiscoveryManifest,
-          argocdManifest,
-          argocdDiscoveryManifest,
-          terraformManifest,
-          managedIacManifest,
-          webhookNotifyManifest,
-          smtpNotifyManifest
-        ]
-      });
+      reply.status(200).send({ items: BUNDLED_PLUGIN_MANIFESTS });
     }
   });
 

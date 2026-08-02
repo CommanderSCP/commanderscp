@@ -332,3 +332,125 @@ describe("@scp/iac: campaign/initiative/release-topology synth", () => {
     expect(stack.synth().objects[0]?.properties).toEqual({});
   });
 });
+
+/**
+ * C1 (docs/proposals/post-import-configuration.md §8) — `source_mappings` and `executor_bindings`
+ * are the two configurations that had no manifest representation, breaking principle 3's
+ * API → SDK → CLI → IaC → UI parity for exactly what an operator must reproduce offline.
+ */
+describe("@scp/iac constructs: sourceMappings / executorBindings (C1)", () => {
+  function stackWithComponent(name: string) {
+    const app = new App();
+    const stack = new Stack(app, name);
+    const service = new Service(stack, "billing", { name: "Billing" });
+    const component = new Component(stack, "api", { name: "API", service });
+    return { stack, service, component };
+  }
+
+  it("a stack declaring neither collection synthesizes the pre-C1 manifest byte-for-byte", () => {
+    // The interchange format must stay stable for every program written before C1 — an absent key
+    // already means "declares none" server-side, so emitting `[]` would churn every manifest on
+    // disk for no gain.
+    const { stack } = stackWithComponent("no-projections");
+    const manifest = stack.synth();
+    expect(manifest.sourceMappings).toBeUndefined();
+    expect(manifest.executorBindings).toBeUndefined();
+    expect(Object.keys(manifest).sort()).toEqual(["objects", "relationships", "stackName"]);
+  });
+
+  it("component.mapsSource + target.bindsExecutor land in the manifest and survive schema validation", () => {
+    const { stack, component } = stackWithComponent("billing-platform-c1");
+    component.mapsSource({ sourceKind: "github", repoPattern: "acme/billing-api", type: "image" });
+    component.bindsExecutor({
+      pluginModule: "argocd",
+      pluginInstanceId: "argocd-prod",
+      config: { serverUrl: "https://argocd.internal" },
+      secretRefs: { token: "argocd-token" },
+      externalRef: "billing-api"
+    });
+
+    const manifest = stack.synth();
+    expect(DesiredStateManifestSchema.safeParse(manifest).success).toBe(true);
+    expect(manifest.sourceMappings).toEqual([
+      {
+        componentUrn: component.urn,
+        sourceKind: "github",
+        repoPattern: "acme/billing-api",
+        type: "image"
+      }
+    ]);
+    expect(manifest.executorBindings).toEqual([
+      {
+        targetUrn: component.urn,
+        pluginModule: "argocd",
+        pluginInstanceId: "argocd-prod",
+        config: { serverUrl: "https://argocd.internal" },
+        secretRefs: { token: "argocd-token" },
+        externalRef: "billing-api"
+      }
+    ]);
+  });
+
+  it("an execution-system-backed binding carries only the system reference (Mode A)", () => {
+    const { stack, component } = stackWithComponent("mode-a");
+    component.bindsExecutor({
+      executionSystem: "urn:scp:mode-a:execution-system:homelab-argocd",
+      externalRef: "billing-api"
+    });
+    const manifest = stack.synth();
+    expect(DesiredStateManifestSchema.safeParse(manifest).success).toBe(true);
+    expect(manifest.executorBindings?.[0]).toEqual({
+      targetUrn: component.urn,
+      executionSystemId: "urn:scp:mode-a:execution-system:homelab-argocd",
+      externalRef: "billing-api"
+    });
+  });
+
+  it("REJECTS a system-backed binding that also declares config the server would silently ignore", () => {
+    const { stack, component } = stackWithComponent("mode-a-conflict");
+    component.bindsExecutor({
+      executionSystem: "urn:scp:x:execution-system:argocd",
+      config: { serverUrl: "https://attacker.example" }
+    });
+    // Caught at synth (the schema parse inside `Stack.synth()`), not silently dropped — a declared
+    // value the server ignores is the "silently-preferred key" failure mode proposal §11 names.
+    expect(() => stack.synth()).toThrow();
+  });
+
+  it("REJECTS a binding that is neither inline nor system-backed", () => {
+    const { stack, component } = stackWithComponent("neither");
+    component.bindsExecutor({ externalRef: "orphan" });
+    expect(() => stack.synth()).toThrow();
+  });
+
+  it("declaration ORDER never changes the synthesized manifest — only content does", () => {
+    function build(order: "forward" | "reverse") {
+      const { stack, component } = stackWithComponent("determinism-c1");
+      const decls: Array<() => void> = [
+        () => component.mapsSource({ sourceKind: "github", repoPattern: "acme/z", type: "image" }),
+        () => component.mapsSource({ sourceKind: "github", repoPattern: "acme/a" }),
+        () =>
+          component.bindsExecutor({
+            type: "image",
+            pluginModule: "github",
+            pluginInstanceId: "gh-1"
+          }),
+        () => component.bindsExecutor({ pluginModule: "argocd", pluginInstanceId: "argocd-1" })
+      ];
+      for (const declare of order === "forward" ? decls : [...decls].reverse()) declare();
+      return canonicalJson(stack.synth());
+    }
+    expect(build("forward")).toBe(build("reverse"));
+  });
+
+  it("stack.addSourceMapping / addExecutorBinding accept a bare URN for a component outside this program", () => {
+    const app = new App();
+    const stack = new Stack(app, "external-refs");
+    const external = "urn:scp:other-program:component:legacy";
+    stack.addSourceMapping(external, { sourceKind: "gitea", repoPattern: "ops/legacy" });
+    stack.addExecutorBinding(external, { pluginModule: "terraform", pluginInstanceId: "tf-1" });
+    const manifest = stack.synth();
+    expect(manifest.sourceMappings?.[0]?.componentUrn).toBe(external);
+    expect(manifest.executorBindings?.[0]?.targetUrn).toBe(external);
+  });
+});

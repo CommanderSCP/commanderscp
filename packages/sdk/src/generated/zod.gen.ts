@@ -2338,7 +2338,39 @@ export const zCreatePlanResponse = z.object({
             fromUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             toUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             properties: z.record(z.string(), z.unknown()).optional()
-        }))
+        })),
+        sourceMappings: z.array(z.object({
+            componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            sourceKind: z.string().min(1),
+            repoPattern: z.string().min(1).optional(),
+            pathPattern: z.string().min(1).optional(),
+            type: z.enum([
+                'image',
+                'rpm',
+                'deb',
+                'npm',
+                'infrastructure',
+                'configuration'
+            ]).optional()
+        })).optional(),
+        executorBindings: z.array(z.object({
+            targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            type: z.enum([
+                'image',
+                'rpm',
+                'deb',
+                'npm',
+                'infrastructure',
+                'configuration'
+            ]).optional(),
+            pluginModule: z.string().min(1).optional(),
+            pluginInstanceId: z.string().min(1).optional(),
+            config: z.record(z.string(), z.unknown()).optional(),
+            secretRefs: z.record(z.string(), z.string()).optional(),
+            allowedHosts: z.array(z.string()).optional(),
+            externalRef: z.string().min(1).optional(),
+            executionSystemId: z.string().min(1).optional()
+        })).optional()
     }),
     diff: z.object({
         objects: z.array(z.object({
@@ -2373,6 +2405,55 @@ export const zCreatePlanResponse = z.object({
             toUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             reason: z.string()
         })),
+        sourceMappings: z.array(z.object({
+            kind: z.literal('source-mapping'),
+            action: z.enum([
+                'create',
+                'delete',
+                'noop'
+            ]),
+            componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            sourceKind: z.string(),
+            repoPattern: z.string().nullable(),
+            pathPattern: z.string().nullable(),
+            type: z.enum([
+                'image',
+                'rpm',
+                'deb',
+                'npm',
+                'infrastructure',
+                'configuration'
+            ]),
+            reason: z.string()
+        })).optional(),
+        executorBindings: z.array(z.object({
+            kind: z.literal('executor-binding'),
+            action: z.enum([
+                'create',
+                'update',
+                'delete',
+                'noop'
+            ]),
+            targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            type: z.enum([
+                'image',
+                'rpm',
+                'deb',
+                'npm',
+                'infrastructure',
+                'configuration'
+            ]),
+            reason: z.string(),
+            target: z.object({
+                pluginModule: z.string().nullable(),
+                pluginInstanceId: z.string().nullable(),
+                config: z.record(z.string(), z.unknown()),
+                secretRefs: z.record(z.string(), z.string()),
+                allowedHosts: z.array(z.string()),
+                externalRef: z.string().nullable(),
+                executionSystemId: z.string().nullable()
+            }).optional()
+        })).optional(),
         summary: z.object({
             creates: z.int().gte(-9007199254740991).lte(9007199254740991),
             updates: z.int().gte(-9007199254740991).lte(9007199254740991),
@@ -2412,7 +2493,39 @@ export const zGetPlanResponse = z.object({
             fromUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             toUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             properties: z.record(z.string(), z.unknown()).optional()
-        }))
+        })),
+        sourceMappings: z.array(z.object({
+            componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            sourceKind: z.string().min(1),
+            repoPattern: z.string().min(1).optional(),
+            pathPattern: z.string().min(1).optional(),
+            type: z.enum([
+                'image',
+                'rpm',
+                'deb',
+                'npm',
+                'infrastructure',
+                'configuration'
+            ]).optional()
+        })).optional(),
+        executorBindings: z.array(z.object({
+            targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            type: z.enum([
+                'image',
+                'rpm',
+                'deb',
+                'npm',
+                'infrastructure',
+                'configuration'
+            ]).optional(),
+            pluginModule: z.string().min(1).optional(),
+            pluginInstanceId: z.string().min(1).optional(),
+            config: z.record(z.string(), z.unknown()).optional(),
+            secretRefs: z.record(z.string(), z.string()).optional(),
+            allowedHosts: z.array(z.string()).optional(),
+            externalRef: z.string().min(1).optional(),
+            executionSystemId: z.string().min(1).optional()
+        })).optional()
     }),
     diff: z.object({
         objects: z.array(z.object({
@@ -2447,6 +2560,55 @@ export const zGetPlanResponse = z.object({
             toUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             reason: z.string()
         })),
+        sourceMappings: z.array(z.object({
+            kind: z.literal('source-mapping'),
+            action: z.enum([
+                'create',
+                'delete',
+                'noop'
+            ]),
+            componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            sourceKind: z.string(),
+            repoPattern: z.string().nullable(),
+            pathPattern: z.string().nullable(),
+            type: z.enum([
+                'image',
+                'rpm',
+                'deb',
+                'npm',
+                'infrastructure',
+                'configuration'
+            ]),
+            reason: z.string()
+        })).optional(),
+        executorBindings: z.array(z.object({
+            kind: z.literal('executor-binding'),
+            action: z.enum([
+                'create',
+                'update',
+                'delete',
+                'noop'
+            ]),
+            targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            type: z.enum([
+                'image',
+                'rpm',
+                'deb',
+                'npm',
+                'infrastructure',
+                'configuration'
+            ]),
+            reason: z.string(),
+            target: z.object({
+                pluginModule: z.string().nullable(),
+                pluginInstanceId: z.string().nullable(),
+                config: z.record(z.string(), z.unknown()),
+                secretRefs: z.record(z.string(), z.string()),
+                allowedHosts: z.array(z.string()),
+                externalRef: z.string().nullable(),
+                executionSystemId: z.string().nullable()
+            }).optional()
+        })).optional(),
         summary: z.object({
             creates: z.int().gte(-9007199254740991).lte(9007199254740991),
             updates: z.int().gte(-9007199254740991).lte(9007199254740991),
@@ -2487,7 +2649,39 @@ export const zApplyPlanResponse = z.object({
                 fromUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
                 toUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
                 properties: z.record(z.string(), z.unknown()).optional()
-            }))
+            })),
+            sourceMappings: z.array(z.object({
+                componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                sourceKind: z.string().min(1),
+                repoPattern: z.string().min(1).optional(),
+                pathPattern: z.string().min(1).optional(),
+                type: z.enum([
+                    'image',
+                    'rpm',
+                    'deb',
+                    'npm',
+                    'infrastructure',
+                    'configuration'
+                ]).optional()
+            })).optional(),
+            executorBindings: z.array(z.object({
+                targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                type: z.enum([
+                    'image',
+                    'rpm',
+                    'deb',
+                    'npm',
+                    'infrastructure',
+                    'configuration'
+                ]).optional(),
+                pluginModule: z.string().min(1).optional(),
+                pluginInstanceId: z.string().min(1).optional(),
+                config: z.record(z.string(), z.unknown()).optional(),
+                secretRefs: z.record(z.string(), z.string()).optional(),
+                allowedHosts: z.array(z.string()).optional(),
+                externalRef: z.string().min(1).optional(),
+                executionSystemId: z.string().min(1).optional()
+            })).optional()
         }),
         diff: z.object({
             objects: z.array(z.object({
@@ -2522,6 +2716,55 @@ export const zApplyPlanResponse = z.object({
                 toUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
                 reason: z.string()
             })),
+            sourceMappings: z.array(z.object({
+                kind: z.literal('source-mapping'),
+                action: z.enum([
+                    'create',
+                    'delete',
+                    'noop'
+                ]),
+                componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                sourceKind: z.string(),
+                repoPattern: z.string().nullable(),
+                pathPattern: z.string().nullable(),
+                type: z.enum([
+                    'image',
+                    'rpm',
+                    'deb',
+                    'npm',
+                    'infrastructure',
+                    'configuration'
+                ]),
+                reason: z.string()
+            })).optional(),
+            executorBindings: z.array(z.object({
+                kind: z.literal('executor-binding'),
+                action: z.enum([
+                    'create',
+                    'update',
+                    'delete',
+                    'noop'
+                ]),
+                targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                type: z.enum([
+                    'image',
+                    'rpm',
+                    'deb',
+                    'npm',
+                    'infrastructure',
+                    'configuration'
+                ]),
+                reason: z.string(),
+                target: z.object({
+                    pluginModule: z.string().nullable(),
+                    pluginInstanceId: z.string().nullable(),
+                    config: z.record(z.string(), z.unknown()),
+                    secretRefs: z.record(z.string(), z.string()),
+                    allowedHosts: z.array(z.string()),
+                    externalRef: z.string().nullable(),
+                    executionSystemId: z.string().nullable()
+                }).optional()
+            })).optional(),
             summary: z.object({
                 creates: z.int().gte(-9007199254740991).lte(9007199254740991),
                 updates: z.int().gte(-9007199254740991).lte(9007199254740991),

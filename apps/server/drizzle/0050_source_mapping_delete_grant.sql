@@ -1,0 +1,23 @@
+-- 0049_source_mapping_delete_grant.sql
+--
+-- C1 (docs/proposals/post-import-configuration.md §8) lets an IaC stack declare `sourceMappings`,
+-- which means an IaC apply can now PRUNE one (`source-mappings-repo.ts`'s
+-- `deleteSourceMappingsMatching`). Until now nothing ever deleted from this table — 0007 granted
+-- `SELECT, INSERT, UPDATE` only — so the least-privileged runtime role `scp_app` would get a live
+-- "permission denied for table source_mappings" from Postgres the first time a manifest dropped a
+-- mapping.
+--
+-- This is the SAME bug 0025 records for `executor_bindings` ("M12 P5c adds DELETE ... now one does,
+-- so the least-privileged runtime role needs DELETE"), and 0014's own comment records for
+-- `secrets`/`notification_bindings` before that. The PROPERTY is "a new delete path on a table whose
+-- runtime role was granted append/update-only". A filterless census of every `.delete(<table>)` call
+-- site in `apps/server/src` was run against the grants in 0002/0005/0007/0014/0025/0040: the five
+-- tables deleted from are `secrets`, `notification_bindings` (both 0014), `executor_bindings`
+-- (0025), `federation_unattached_change_status` (0040) and `source_mappings` — this one, the only
+-- remaining gap, closed here.
+--
+-- No table/column/RLS change — a pure privilege grant. RLS still confines every DELETE to the
+-- caller's org (the unchanged `org_isolation` policy on this table, 0007 §8); this grant only lifts
+-- the table-level privilege block.
+
+GRANT DELETE ON source_mappings TO scp_app;

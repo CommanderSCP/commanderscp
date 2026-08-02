@@ -8647,6 +8647,28 @@ export type CreatePlanData = {
                     [key: string]: unknown;
                 };
             }>;
+            sourceMappings?: Array<{
+                componentUrn: string;
+                sourceKind: string;
+                repoPattern?: string;
+                pathPattern?: string;
+                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+            }>;
+            executorBindings?: Array<{
+                targetUrn: string;
+                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                pluginModule?: string;
+                pluginInstanceId?: string;
+                config?: {
+                    [key: string]: unknown;
+                };
+                secretRefs?: {
+                    [key: string]: string;
+                };
+                allowedHosts?: Array<string>;
+                externalRef?: string;
+                executionSystemId?: string;
+            }>;
         };
     };
     path?: never;
@@ -8723,6 +8745,28 @@ export type CreatePlanResponses = {
                     [key: string]: unknown;
                 };
             }>;
+            sourceMappings?: Array<{
+                componentUrn: string;
+                sourceKind: string;
+                repoPattern?: string;
+                pathPattern?: string;
+                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+            }>;
+            executorBindings?: Array<{
+                targetUrn: string;
+                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                pluginModule?: string;
+                pluginInstanceId?: string;
+                config?: {
+                    [key: string]: unknown;
+                };
+                secretRefs?: {
+                    [key: string]: string;
+                };
+                allowedHosts?: Array<string>;
+                externalRef?: string;
+                executionSystemId?: string;
+            }>;
         };
         diff: {
             objects: Array<{
@@ -8751,6 +8795,36 @@ export type CreatePlanResponses = {
                 fromUrn: string;
                 toUrn: string;
                 reason: string;
+            }>;
+            sourceMappings?: Array<{
+                kind: 'source-mapping';
+                action: 'create' | 'delete' | 'noop';
+                componentUrn: string;
+                sourceKind: string;
+                repoPattern: string | null;
+                pathPattern: string | null;
+                type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                reason: string;
+            }>;
+            executorBindings?: Array<{
+                kind: 'executor-binding';
+                action: 'create' | 'update' | 'delete' | 'noop';
+                targetUrn: string;
+                type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                reason: string;
+                target?: {
+                    pluginModule: string | null;
+                    pluginInstanceId: string | null;
+                    config: {
+                        [key: string]: unknown;
+                    };
+                    secretRefs: {
+                        [key: string]: string;
+                    };
+                    allowedHosts: Array<string>;
+                    externalRef: string | null;
+                    executionSystemId: string | null;
+                };
             }>;
             summary: {
                 creates: number;
@@ -8845,6 +8919,28 @@ export type GetPlanResponses = {
                     [key: string]: unknown;
                 };
             }>;
+            sourceMappings?: Array<{
+                componentUrn: string;
+                sourceKind: string;
+                repoPattern?: string;
+                pathPattern?: string;
+                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+            }>;
+            executorBindings?: Array<{
+                targetUrn: string;
+                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                pluginModule?: string;
+                pluginInstanceId?: string;
+                config?: {
+                    [key: string]: unknown;
+                };
+                secretRefs?: {
+                    [key: string]: string;
+                };
+                allowedHosts?: Array<string>;
+                externalRef?: string;
+                executionSystemId?: string;
+            }>;
         };
         diff: {
             objects: Array<{
@@ -8873,6 +8969,36 @@ export type GetPlanResponses = {
                 fromUrn: string;
                 toUrn: string;
                 reason: string;
+            }>;
+            sourceMappings?: Array<{
+                kind: 'source-mapping';
+                action: 'create' | 'delete' | 'noop';
+                componentUrn: string;
+                sourceKind: string;
+                repoPattern: string | null;
+                pathPattern: string | null;
+                type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                reason: string;
+            }>;
+            executorBindings?: Array<{
+                kind: 'executor-binding';
+                action: 'create' | 'update' | 'delete' | 'noop';
+                targetUrn: string;
+                type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                reason: string;
+                target?: {
+                    pluginModule: string | null;
+                    pluginInstanceId: string | null;
+                    config: {
+                        [key: string]: unknown;
+                    };
+                    secretRefs: {
+                        [key: string]: string;
+                    };
+                    allowedHosts: Array<string>;
+                    externalRef: string | null;
+                    executionSystemId: string | null;
+                };
             }>;
             summary: {
                 creates: number;
@@ -8979,6 +9105,28 @@ export type ApplyPlanResponses = {
                         [key: string]: unknown;
                     };
                 }>;
+                sourceMappings?: Array<{
+                    componentUrn: string;
+                    sourceKind: string;
+                    repoPattern?: string;
+                    pathPattern?: string;
+                    type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                }>;
+                executorBindings?: Array<{
+                    targetUrn: string;
+                    type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                    pluginModule?: string;
+                    pluginInstanceId?: string;
+                    config?: {
+                        [key: string]: unknown;
+                    };
+                    secretRefs?: {
+                        [key: string]: string;
+                    };
+                    allowedHosts?: Array<string>;
+                    externalRef?: string;
+                    executionSystemId?: string;
+                }>;
             };
             diff: {
                 objects: Array<{
@@ -9007,6 +9155,36 @@ export type ApplyPlanResponses = {
                     fromUrn: string;
                     toUrn: string;
                     reason: string;
+                }>;
+                sourceMappings?: Array<{
+                    kind: 'source-mapping';
+                    action: 'create' | 'delete' | 'noop';
+                    componentUrn: string;
+                    sourceKind: string;
+                    repoPattern: string | null;
+                    pathPattern: string | null;
+                    type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                    reason: string;
+                }>;
+                executorBindings?: Array<{
+                    kind: 'executor-binding';
+                    action: 'create' | 'update' | 'delete' | 'noop';
+                    targetUrn: string;
+                    type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                    reason: string;
+                    target?: {
+                        pluginModule: string | null;
+                        pluginInstanceId: string | null;
+                        config: {
+                            [key: string]: unknown;
+                        };
+                        secretRefs: {
+                            [key: string]: string;
+                        };
+                        allowedHosts: Array<string>;
+                        externalRef: string | null;
+                        executionSystemId: string | null;
+                    };
                 }>;
                 summary: {
                     creates: number;

@@ -32821,6 +32821,111 @@
                           ],
                           "additionalProperties": false
                         }
+                      },
+                      "sourceMappings": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "componentUrn": {
+                              "type": "string",
+                              "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                            },
+                            "sourceKind": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "repoPattern": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "pathPattern": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "image",
+                                "rpm",
+                                "deb",
+                                "npm",
+                                "infrastructure",
+                                "configuration"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "componentUrn",
+                            "sourceKind"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "executorBindings": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "targetUrn": {
+                              "type": "string",
+                              "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                            },
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "image",
+                                "rpm",
+                                "deb",
+                                "npm",
+                                "infrastructure",
+                                "configuration"
+                              ]
+                            },
+                            "pluginModule": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "pluginInstanceId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "config": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {}
+                            },
+                            "secretRefs": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {
+                                "type": "string"
+                              }
+                            },
+                            "allowedHosts": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "externalRef": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "executionSystemId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "targetUrn"
+                          ],
+                          "additionalProperties": false
+                        }
                       }
                     },
                     "required": [
@@ -32955,6 +33060,111 @@
                               "typeId",
                               "fromUrn",
                               "toUrn"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "sourceMappings": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "componentUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "sourceKind": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "repoPattern": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "pathPattern": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "image",
+                                  "rpm",
+                                  "deb",
+                                  "npm",
+                                  "infrastructure",
+                                  "configuration"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "componentUrn",
+                              "sourceKind"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "executorBindings": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "targetUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "image",
+                                  "rpm",
+                                  "deb",
+                                  "npm",
+                                  "infrastructure",
+                                  "configuration"
+                                ]
+                              },
+                              "pluginModule": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "pluginInstanceId": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "config": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "secretRefs": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {
+                                  "type": "string"
+                                }
+                              },
+                              "allowedHosts": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "externalRef": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "executionSystemId": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            },
+                            "required": [
+                              "targetUrn"
                             ],
                             "additionalProperties": false
                           }
@@ -33097,6 +33307,202 @@
                               "typeId",
                               "fromUrn",
                               "toUrn",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "sourceMappings": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "source-mapping"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "componentUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "sourceKind": {
+                                "type": "string"
+                              },
+                              "repoPattern": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "pathPattern": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "image",
+                                  "rpm",
+                                  "deb",
+                                  "npm",
+                                  "infrastructure",
+                                  "configuration"
+                                ]
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "componentUrn",
+                              "sourceKind",
+                              "repoPattern",
+                              "pathPattern",
+                              "type",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "executorBindings": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "executor-binding"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "update",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "targetUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "image",
+                                  "rpm",
+                                  "deb",
+                                  "npm",
+                                  "infrastructure",
+                                  "configuration"
+                                ]
+                              },
+                              "reason": {
+                                "type": "string"
+                              },
+                              "target": {
+                                "type": "object",
+                                "properties": {
+                                  "pluginModule": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "pluginInstanceId": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "config": {
+                                    "type": "object",
+                                    "propertyNames": {
+                                      "type": "string"
+                                    },
+                                    "additionalProperties": {}
+                                  },
+                                  "secretRefs": {
+                                    "type": "object",
+                                    "propertyNames": {
+                                      "type": "string"
+                                    },
+                                    "additionalProperties": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "allowedHosts": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "externalRef": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "executionSystemId": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "pluginModule",
+                                  "pluginInstanceId",
+                                  "config",
+                                  "secretRefs",
+                                  "allowedHosts",
+                                  "externalRef",
+                                  "executionSystemId"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "targetUrn",
+                              "type",
                               "reason"
                             ],
                             "additionalProperties": false
@@ -33457,6 +33863,111 @@
                             ],
                             "additionalProperties": false
                           }
+                        },
+                        "sourceMappings": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "componentUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "sourceKind": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "repoPattern": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "pathPattern": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "image",
+                                  "rpm",
+                                  "deb",
+                                  "npm",
+                                  "infrastructure",
+                                  "configuration"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "componentUrn",
+                              "sourceKind"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "executorBindings": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "targetUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "image",
+                                  "rpm",
+                                  "deb",
+                                  "npm",
+                                  "infrastructure",
+                                  "configuration"
+                                ]
+                              },
+                              "pluginModule": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "pluginInstanceId": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "config": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              "secretRefs": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {
+                                  "type": "string"
+                                }
+                              },
+                              "allowedHosts": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "externalRef": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "executionSystemId": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            },
+                            "required": [
+                              "targetUrn"
+                            ],
+                            "additionalProperties": false
+                          }
                         }
                       },
                       "required": [
@@ -33596,6 +34107,202 @@
                               "typeId",
                               "fromUrn",
                               "toUrn",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "sourceMappings": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "source-mapping"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "componentUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "sourceKind": {
+                                "type": "string"
+                              },
+                              "repoPattern": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "pathPattern": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "image",
+                                  "rpm",
+                                  "deb",
+                                  "npm",
+                                  "infrastructure",
+                                  "configuration"
+                                ]
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "componentUrn",
+                              "sourceKind",
+                              "repoPattern",
+                              "pathPattern",
+                              "type",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "executorBindings": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "executor-binding"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "update",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "targetUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "image",
+                                  "rpm",
+                                  "deb",
+                                  "npm",
+                                  "infrastructure",
+                                  "configuration"
+                                ]
+                              },
+                              "reason": {
+                                "type": "string"
+                              },
+                              "target": {
+                                "type": "object",
+                                "properties": {
+                                  "pluginModule": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "pluginInstanceId": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "config": {
+                                    "type": "object",
+                                    "propertyNames": {
+                                      "type": "string"
+                                    },
+                                    "additionalProperties": {}
+                                  },
+                                  "secretRefs": {
+                                    "type": "object",
+                                    "propertyNames": {
+                                      "type": "string"
+                                    },
+                                    "additionalProperties": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "allowedHosts": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "externalRef": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "executionSystemId": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "pluginModule",
+                                  "pluginInstanceId",
+                                  "config",
+                                  "secretRefs",
+                                  "allowedHosts",
+                                  "externalRef",
+                                  "executionSystemId"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "targetUrn",
+                              "type",
                               "reason"
                             ],
                             "additionalProperties": false
@@ -33959,6 +34666,111 @@
                                 ],
                                 "additionalProperties": false
                               }
+                            },
+                            "sourceMappings": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "componentUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "sourceKind": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "repoPattern": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "pathPattern": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "type": {
+                                    "type": "string",
+                                    "enum": [
+                                      "image",
+                                      "rpm",
+                                      "deb",
+                                      "npm",
+                                      "infrastructure",
+                                      "configuration"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "componentUrn",
+                                  "sourceKind"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "executorBindings": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "targetUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "type": {
+                                    "type": "string",
+                                    "enum": [
+                                      "image",
+                                      "rpm",
+                                      "deb",
+                                      "npm",
+                                      "infrastructure",
+                                      "configuration"
+                                    ]
+                                  },
+                                  "pluginModule": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "pluginInstanceId": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "config": {
+                                    "type": "object",
+                                    "propertyNames": {
+                                      "type": "string"
+                                    },
+                                    "additionalProperties": {}
+                                  },
+                                  "secretRefs": {
+                                    "type": "object",
+                                    "propertyNames": {
+                                      "type": "string"
+                                    },
+                                    "additionalProperties": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "allowedHosts": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "externalRef": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "executionSystemId": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "targetUrn"
+                                ],
+                                "additionalProperties": false
+                              }
                             }
                           },
                           "required": [
@@ -34098,6 +34910,202 @@
                                   "typeId",
                                   "fromUrn",
                                   "toUrn",
+                                  "reason"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "sourceMappings": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "source-mapping"
+                                  },
+                                  "action": {
+                                    "type": "string",
+                                    "enum": [
+                                      "create",
+                                      "delete",
+                                      "noop"
+                                    ]
+                                  },
+                                  "componentUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "sourceKind": {
+                                    "type": "string"
+                                  },
+                                  "repoPattern": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "pathPattern": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "type": {
+                                    "type": "string",
+                                    "enum": [
+                                      "image",
+                                      "rpm",
+                                      "deb",
+                                      "npm",
+                                      "infrastructure",
+                                      "configuration"
+                                    ]
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "action",
+                                  "componentUrn",
+                                  "sourceKind",
+                                  "repoPattern",
+                                  "pathPattern",
+                                  "type",
+                                  "reason"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "executorBindings": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "executor-binding"
+                                  },
+                                  "action": {
+                                    "type": "string",
+                                    "enum": [
+                                      "create",
+                                      "update",
+                                      "delete",
+                                      "noop"
+                                    ]
+                                  },
+                                  "targetUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "type": {
+                                    "type": "string",
+                                    "enum": [
+                                      "image",
+                                      "rpm",
+                                      "deb",
+                                      "npm",
+                                      "infrastructure",
+                                      "configuration"
+                                    ]
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  },
+                                  "target": {
+                                    "type": "object",
+                                    "properties": {
+                                      "pluginModule": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "pluginInstanceId": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "config": {
+                                        "type": "object",
+                                        "propertyNames": {
+                                          "type": "string"
+                                        },
+                                        "additionalProperties": {}
+                                      },
+                                      "secretRefs": {
+                                        "type": "object",
+                                        "propertyNames": {
+                                          "type": "string"
+                                        },
+                                        "additionalProperties": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "allowedHosts": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "externalRef": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "executionSystemId": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "pluginModule",
+                                      "pluginInstanceId",
+                                      "config",
+                                      "secretRefs",
+                                      "allowedHosts",
+                                      "externalRef",
+                                      "executionSystemId"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "action",
+                                  "targetUrn",
+                                  "type",
                                   "reason"
                                 ],
                                 "additionalProperties": false

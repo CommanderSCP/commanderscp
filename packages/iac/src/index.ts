@@ -26,7 +26,9 @@ export type {
   CampaignProps,
   InitiativeProps,
   ReleaseTopologyProps,
-  ReleaseTopologyWaveSpec
+  ReleaseTopologyWaveSpec,
+  SourceMappingSpec,
+  ExecutorBindingSpec
 } from "./construct.js";
 export { deriveConstructUrn, slugify } from "./urn.js";
 export { canonicalJson } from "./canonical.js";

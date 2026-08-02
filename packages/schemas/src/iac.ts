@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { JsonRecordSchema, UrnSchema } from "./graph.js";
+import { ExecutorTypeSchema } from "./executors.js";
 
 /**
  * `@scp/iac` desired-state manifest contract (DESIGN.md §15, BUILD_AND_TEST.md §8 M2 item 4).
@@ -35,11 +36,110 @@ export const ManifestRelationshipSchema = z.object({
 });
 export type ManifestRelationship = z.infer<typeof ManifestRelationshipSchema>;
 
+// ---------------------------------------------------------------------------------------------
+// Projection collections (docs/proposals/post-import-configuration.md §8 C1)
+//
+// `source_mappings` and `executor_bindings` are the two configurations that were UNEXPRESSIBLE in a
+// manifest: unlike everything else a stack declares, they are standalone projection tables rather
+// than graph objects/relationships (`packages/schemas/src/executors.ts`: "projection tables ... no
+// graph-object equivalent exists"), so `objects`/`relationships` could not carry them. That made
+// principle 3 (API → SDK → CLI → IaC → UI parity) false for exactly the two things an operator must
+// reproduce when standing a second instance up offline (principle 5). C1 closes that.
+//
+// OWNERSHIP IS DERIVED FROM THE OWNING OBJECT (the load-bearing decision — see
+// `apps/server/src/iac/plan-diff.ts`'s `stackOwnedObjectUrns`): neither table has a `labels` column,
+// and neither gets one. A row belongs to stack S iff the graph object it hangs off
+// (`component_object_id` / `target_object_id`) is one THIS stack owns. Two consequences an author
+// must know, both deliberate:
+//   1. A manifest may only declare a mapping/binding for an object the SAME stack declares (or one
+//      it already manages). Anything else is rejected 400 at plan-compute — a stack cannot configure
+//      an object it does not own.
+//   2. Because ownership is inherited, declaring an object in a stack means the stack owns that
+//      object's mappings/bindings WHOLESALE. Adopting a discovery-imported component into a stack
+//      and declaring no bindings prunes the imported ones — visible as `delete` entries in the plan
+//      the operator reviews before applying, exactly like an object prune, never silent.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * A `source_mappings` row: repo/path glob → the component whose pipeline of `type` that source
+ * drives (DESIGN §9.2 correlation). IDENTITY is the whole tuple
+ * `(componentUrn, sourceKind, repoPattern, pathPattern, type)` — the table has no unique constraint
+ * and no update path, so a changed mapping is a delete + create, the same identity-only treatment
+ * `ManifestRelationshipSchema` gets. Declaring the same tuple twice in one manifest is rejected.
+ */
+export const ManifestSourceMappingSchema = z.object({
+  /** URN of the component this source drives. Must be an object THIS stack owns (see above). */
+  componentUrn: UrnSchema,
+  sourceKind: z.string().min(1),
+  /** Glob matched against `source_ref.repo`. */
+  repoPattern: z.string().min(1).optional(),
+  /** Glob matched against `source_ref.path`. */
+  pathPattern: z.string().min(1).optional(),
+  /** WHICH pipeline of the component this source drives (ADR-0007). Omitted ⇒ `configuration`. */
+  type: ExecutorTypeSchema.optional()
+});
+export type ManifestSourceMapping = z.infer<typeof ManifestSourceMappingSchema>;
+
+/**
+ * An `executor_bindings` row: the plugin instance that drives one pipeline of one target object.
+ * IDENTITY is `(targetUrn, type)`, mirroring the table's `UNIQUE (org_id, target_object_id, type)`
+ * — so unlike a source mapping this one supports `update`, and a plan can never propose two rows
+ * that would collide on that constraint. Field-for-field the same shape as
+ * `CreateExecutorBindingRequestSchema` (the `PUT /executors/{idOrUrn}/binding` body), including its
+ * either-inline-or-execution-system-backed refinement: one contract, two doors.
+ */
+export const ManifestExecutorBindingSchema = z
+  .object({
+    /** URN of the Component/DeploymentTarget being bound. Must be an object THIS stack owns. */
+    targetUrn: UrnSchema,
+    /** WHICH pipeline this binding drives (ADR-0007). Omitted ⇒ `configuration`. */
+    type: ExecutorTypeSchema.optional(),
+    /** Inline binding: plugin module + a stable instance id. Omitted for execution-system-backed. */
+    pluginModule: z.string().min(1).optional(),
+    pluginInstanceId: z.string().min(1).optional(),
+    config: JsonRecordSchema.optional(),
+    /** `{ configFieldName: secretKey }` — the secret must already exist (`PUT /secrets/{key}`).
+     *  Manifests are authored offline and committed to git; this names secrets, never carries them. */
+    secretRefs: z.record(z.string(), z.string()).optional(),
+    allowedHosts: z.array(z.string()).optional(),
+    /** Executor-specific target identifier (e.g. an Argo CD Application name). */
+    externalRef: z.string().min(1).optional(),
+    /** Id or URN of a registered `execution-system` object (Mode A) — module/serverUrl/token resolve
+     *  from it, so omit `pluginModule`/`config`. */
+    executionSystemId: z.string().min(1).optional()
+  })
+  .refine(
+    (b) => (b.executionSystemId ? !b.pluginModule : Boolean(b.pluginModule && b.pluginInstanceId)),
+    {
+      message:
+        "provide EITHER executionSystemId (execution-system-backed) OR pluginModule + pluginInstanceId (inline) — not both, and not neither"
+    }
+  )
+  .refine(
+    (b) =>
+      !b.executionSystemId ||
+      (b.pluginInstanceId === undefined &&
+        b.config === undefined &&
+        b.secretRefs === undefined &&
+        b.allowedHosts === undefined),
+    {
+      message:
+        "an execution-system-backed binding derives its module, instance id, config, credentials and egress allowlist FROM the system — remove pluginInstanceId/config/secretRefs/allowedHosts rather than declaring values the server will ignore"
+    }
+  );
+export type ManifestExecutorBinding = z.infer<typeof ManifestExecutorBindingSchema>;
+
 export const DesiredStateManifestSchema = z.object({
   /** Deployable-unit label — becomes the `scp:stack` managed-by marker (plan-diff.ts) that scopes pruning. */
   stackName: z.string().min(1),
   objects: z.array(ManifestObjectSchema),
-  relationships: z.array(ManifestRelationshipSchema)
+  relationships: z.array(ManifestRelationshipSchema),
+  /** C1. OPTIONAL, not defaulted: a manifest synthesized before C1 (or by a hand-rolled producer)
+   *  stays valid and means "this stack declares no mappings", which is exactly right — an absent
+   *  collection must not read as "prune everything". */
+  sourceMappings: z.array(ManifestSourceMappingSchema).optional(),
+  /** C1 — see `sourceMappings` for why this is optional rather than defaulted. */
+  executorBindings: z.array(ManifestExecutorBindingSchema).optional()
 });
 export type DesiredStateManifest = z.infer<typeof DesiredStateManifestSchema>;
 
@@ -82,6 +182,49 @@ export const PlanRelationshipDiffEntrySchema = z.object({
 });
 export type PlanRelationshipDiffEntry = z.infer<typeof PlanRelationshipDiffEntrySchema>;
 
+/**
+ * One `source_mappings` row's verdict. No `update`: identity is the whole tuple (see
+ * `ManifestSourceMappingSchema`), so a changed mapping surfaces as a delete plus a create — the
+ * same identity-only treatment `PlanRelationshipDiffEntrySchema` gets, for the same reason.
+ * `repoPattern`/`pathPattern`/`type` are normalized here (null / the `configuration` default) so the
+ * entry the operator reviews shows exactly the row that will be written, not the author's shorthand.
+ */
+export const PlanSourceMappingDiffEntrySchema = z.object({
+  kind: z.literal("source-mapping"),
+  action: z.enum(["create", "delete", "noop"]),
+  componentUrn: UrnSchema,
+  sourceKind: z.string(),
+  repoPattern: z.string().nullable(),
+  pathPattern: z.string().nullable(),
+  type: ExecutorTypeSchema,
+  reason: z.string()
+});
+export type PlanSourceMappingDiffEntry = z.infer<typeof PlanSourceMappingDiffEntrySchema>;
+
+/** The full desired-state `executor_bindings` row a `create`/`update` entry will write. */
+export const PlanExecutorBindingTargetSchema = z.object({
+  pluginModule: z.string().nullable(),
+  pluginInstanceId: z.string().nullable(),
+  config: JsonRecordSchema,
+  secretRefs: z.record(z.string(), z.string()),
+  allowedHosts: z.array(z.string()),
+  externalRef: z.string().nullable(),
+  executionSystemId: z.string().nullable()
+});
+export type PlanExecutorBindingTarget = z.infer<typeof PlanExecutorBindingTargetSchema>;
+
+/** One `executor_bindings` row's verdict, keyed on `(targetUrn, type)` — the table's own uniqueness. */
+export const PlanExecutorBindingDiffEntrySchema = z.object({
+  kind: z.literal("executor-binding"),
+  action: PlanActionSchema,
+  targetUrn: UrnSchema,
+  type: ExecutorTypeSchema,
+  reason: z.string(),
+  /** Present for `create`/`update` only. */
+  target: PlanExecutorBindingTargetSchema.optional()
+});
+export type PlanExecutorBindingDiffEntry = z.infer<typeof PlanExecutorBindingDiffEntrySchema>;
+
 export const PlanDiffSummarySchema = z.object({
   creates: z.number().int(),
   updates: z.number().int(),
@@ -93,6 +236,12 @@ export type PlanDiffSummary = z.infer<typeof PlanDiffSummarySchema>;
 export const PlanDiffSchema = z.object({
   objects: z.array(PlanObjectDiffEntrySchema),
   relationships: z.array(PlanRelationshipDiffEntrySchema),
+  /** C1. OPTIONAL because a plan row PERSISTED before C1 is read back through this schema on
+   *  `GET /plans/{id}`: requiring the key would 500 every pre-C1 plan in the table. Consumers read
+   *  it as `?? []`; `computePlanDiff` always emits it. */
+  sourceMappings: z.array(PlanSourceMappingDiffEntrySchema).optional(),
+  /** C1 — see `sourceMappings` for why this is optional. */
+  executorBindings: z.array(PlanExecutorBindingDiffEntrySchema).optional(),
   summary: PlanDiffSummarySchema
 });
 export type PlanDiff = z.infer<typeof PlanDiffSchema>;

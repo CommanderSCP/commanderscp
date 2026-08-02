@@ -26,13 +26,32 @@ import { assertPolicyScopeWithinAuthority } from "../governance/policy-scope-aut
 import { assertCampaignTargetsWithinAuthority } from "../coordination/campaign-scope-authz.js";
 import {
   computePlanDiff,
+  duplicateProjectionDeclarations,
   managedLabels,
   uncontainedComponentCreates,
+  unownedProjectionDeclarations,
   type ExistingObjectSnapshot,
   type ExistingRelationshipTriple,
   type ResolvedManifest,
-  type ResolvedManifestObject
+  type ResolvedManifestExecutorBinding,
+  type ResolvedManifestObject,
+  type ResolvedManifestSourceMapping
 } from "./plan-diff.js";
+import {
+  DEFAULT_BINDING_TYPE,
+  EXECUTION_SYSTEM_INSTANCE_PREFIX,
+  deleteExecutorBinding,
+  executionSystemBindingIdentity,
+  isKnownExecutorModule,
+  listExecutorBindingsForTargets,
+  upsertExecutorBinding
+} from "../coordination/executor-bindings-repo.js";
+import {
+  createSourceMapping,
+  deleteSourceMappingsMatching,
+  listSourceMappingsForComponents
+} from "../coordination/source-mappings-repo.js";
+import { validatePluginConfig } from "../plugin-host/plugin-manifests.js";
 
 /**
  * Rejects (400) a diff that CREATES any component with no owning service (M12 P5a, owner ruling
@@ -50,6 +69,81 @@ function assertComponentsContained(diff: PlanDiff): void {
       `${uncontained.join(", ")}. A component must belong to a service — create it with ` +
       `\`new Component(stack, id, { service })\` or add a 'contains' relationship from a service.`
   );
+}
+
+/**
+ * Rejects (400) a plan that would WRITE a `source_mappings`/`executor_bindings` row onto an object
+ * this stack does not own (C1). Run at BOTH plan-compute and apply, exactly like
+ * `assertComponentsContained` and for the same reason: `prepareApplyChecks` re-derives every
+ * invariant from the STORED diff rather than trusting plan-compute ran.
+ *
+ * This is the enforcement half of the ownership-scoping decision (see
+ * `plan-diff.ts`'s `unownedProjectionDeclarations` for the full rationale) — it is what makes
+ * "a stack never touches another stack's rows" true for writes as well as for prunes.
+ */
+function assertProjectionsOwned(diff: PlanDiff): void {
+  const unowned = unownedProjectionDeclarations(diff);
+  if (unowned.length === 0) return;
+  throw badRequest(
+    `plan declares source mapping(s)/executor binding(s) on object(s) this stack does not manage: ` +
+      `${unowned.join(", ")}. Neither table carries stack labels, so ownership is inherited from the ` +
+      `object the row hangs off — declare that object in this stack's manifest (which adopts it), or ` +
+      `configure it from the stack that already manages it.`
+  );
+}
+
+/**
+ * Rejects (400) a manifest declaring the same source mapping or the same `(target, type)` binding
+ * twice. See `duplicateProjectionDeclarations` — silently preferring one is the failure mode
+ * proposal §11 names explicitly.
+ */
+function assertProjectionsUnique(manifest: ResolvedManifest): void {
+  const duplicates = duplicateProjectionDeclarations(manifest);
+  if (duplicates.length === 0) return;
+  throw badRequest(
+    `manifest declares the same configuration twice: ${duplicates.join(", ")}. ` +
+      `A source mapping is identified by its whole tuple and an executor binding by (target, type) — ` +
+      `remove the duplicate rather than relying on which one wins.`
+  );
+}
+
+/**
+ * Runs, for every INLINE binding this plan would write, the exact three checks
+ * `PUT /executors/{idOrUrn}/binding` runs before storing one — module allowlist, reserved
+ * instance-id namespace, and plugin config-schema validation. Called at BOTH plan-compute and apply.
+ *
+ * This is the census, not a nicety. IaC apply is a SECOND door into `executor_bindings`, and each of
+ * these guards was written because the FIRST door needed it: an unknown/wrong-kind `pluginModule`
+ * otherwise surfaces as a confusing dispatch-time failure (M8 item 6); a `pluginInstanceId` in the
+ * reserved `execution-system:` namespace silently re-points a real system's coordination traffic at
+ * tenant config (`assertNotReservedInstanceId`); and `managed-iac`'s `additionalProperties: false`
+ * config schema is what stops a tenant setting the server-governed runnerImage/networkMode/
+ * workspaceRoot (adversarial-review CRITICAL #1). A guard on one door only is not a guard.
+ *
+ * Execution-system-backed bindings are deliberately NOT checked here — their module and instance id
+ * are derived from the system object at write time, and validating them needs a read of that object,
+ * which must not happen before `authorize()` (see `executionSystemBindingIdentity`'s call-order note).
+ */
+function assertInlineBindingsValid(diff: PlanDiff): void {
+  for (const entry of diff.executorBindings ?? []) {
+    if (entry.action !== "create" && entry.action !== "update") continue;
+    const target = entry.target;
+    if (!target || target.executionSystemId) continue;
+    if (!target.pluginModule || !isKnownExecutorModule(target.pluginModule)) {
+      throw badRequest(
+        `executor binding for '${entry.targetUrn}' (${entry.type}) names unknown or non-executor plugin module '${target.pluginModule}'`
+      );
+    }
+    // Same rejection the route makes, surfaced as a 400 rather than `assertNotReservedInstanceId`'s
+    // internal-error throw (which is the repo's last-ditch net, not a user-facing message).
+    if (target.pluginInstanceId?.startsWith(EXECUTION_SYSTEM_INSTANCE_PREFIX)) {
+      throw badRequest(
+        `executor binding for '${entry.targetUrn}' (${entry.type}) uses the reserved ` +
+          `'${EXECUTION_SYSTEM_INSTANCE_PREFIX}' pluginInstanceId namespace — declare executionSystemId instead`
+      );
+    }
+    validatePluginConfig(target.pluginModule, target.config);
+  }
 }
 
 /**
@@ -165,6 +259,10 @@ export async function computeDiffForManifest(
     referencedUrns.add(rel.fromUrn);
     referencedUrns.add(rel.toUrn);
   }
+  // C1: a mapping/binding's owning object must be resolvable too — it is what the row hangs off and
+  // what its ownership is inherited from.
+  for (const mapping of manifest.sourceMappings ?? []) referencedUrns.add(mapping.componentUrn);
+  for (const binding of manifest.executorBindings ?? []) referencedUrns.add(binding.targetUrn);
 
   const [referencedRows, managedObjectRows] = await Promise.all([
     fetchObjectsByUrns(tx, orgId, [...referencedUrns]),
@@ -213,6 +311,91 @@ export async function computeDiffForManifest(
     .map((row) => toTriple(row, objectsById))
     .filter((t): t is ExistingRelationshipTriple => t !== null);
 
+  // ---------------------------------------------------------------------------------------
+  // C1 — the ownership pool for `source_mappings`/`executor_bindings`.
+  //
+  // Neither table carries labels, so a row's owner is the owner of the object it hangs off. The
+  // pool is therefore "every object this stack will own once this plan applies": the objects it
+  // ALREADY owns (`managedObjectRows` — this stack's labels) UNION the live objects this manifest
+  // declares (apply stamps the stack's labels onto each, so declaring an object adopts it).
+  //
+  // One pool serves BOTH prune detection and create/noop matching, and that union is what makes it
+  // correct. Restricting it to already-labelled objects would make the FIRST apply that adopts a
+  // discovery-imported component blind to that component's existing mapping rows — it would create
+  // a byte-identical duplicate (the table has no unique constraint to stop it) and then propose
+  // deleting it on the next plan, so the same manifest applied twice would not be a no-op.
+  // ---------------------------------------------------------------------------------------
+  const manifestObjectUrns = new Set(manifest.objects.map((o) => o.urn));
+  const ownedObjectIds = new Set<string>();
+  for (const row of managedObjectRows) ownedObjectIds.add(row.id);
+  for (const urn of manifestObjectUrns) {
+    const row = objectsByUrn.get(urn);
+    if (row) ownedObjectIds.add(row.id);
+  }
+  const ownedIdList = [...ownedObjectIds];
+
+  const [ownedMappingRows, ownedBindingRows] = await Promise.all([
+    listSourceMappingsForComponents(tx, orgId, ownedIdList),
+    listExecutorBindingsForTargets(tx, orgId, ownedIdList)
+  ]);
+
+  const urnOfOwnedId = (id: string): string | undefined => objectsById.get(id)?.urn;
+
+  const managedSourceMappings: ResolvedManifestSourceMapping[] = [];
+  for (const row of ownedMappingRows) {
+    const componentUrn = urnOfOwnedId(row.componentObjectId);
+    // Defensive: every owned id came from a row already in `objectsById`. A miss would mean the
+    // object vanished mid-transaction; dropping it is safe (it becomes invisible to the diff, so
+    // the plan neither prunes nor duplicates it) — never silently mis-attributed to another URN.
+    if (!componentUrn) continue;
+    managedSourceMappings.push({
+      componentUrn,
+      sourceKind: row.sourceKind,
+      repoPattern: row.repoPattern,
+      pathPattern: row.pathPattern,
+      type: row.type
+    });
+  }
+
+  const managedExecutorBindings: ResolvedManifestExecutorBinding[] = [];
+  for (const row of ownedBindingRows) {
+    const targetUrn = urnOfOwnedId(row.targetObjectId);
+    if (!targetUrn) continue; // defensive — see above
+    managedExecutorBindings.push({
+      targetUrn,
+      type: row.type,
+      pluginModule: row.pluginModule,
+      pluginInstanceId: row.pluginInstanceId,
+      config: (row.config ?? {}) as Record<string, unknown>,
+      secretRefs: row.secretRefs,
+      allowedHosts: row.allowedHosts,
+      externalRef: row.externalRef,
+      executionSystemId: row.executionSystemId
+    });
+  }
+
+  // A manifest may name its execution-system by id OR URN (`CreateExecutorBindingRequest` semantics,
+  // and a URN is the only stable reference an offline-authored manifest has). The table stores a real
+  // object id, so resolve here — a DB read, hence not in the pure diff engine. Without it a
+  // URN-referencing manifest would diff as a perpetual `update` and DoD (b) would be false.
+  const resolvedExecutionSystemIds = new Map<string, string>();
+  for (const binding of manifest.executorBindings ?? []) {
+    const ref = binding.executionSystemId;
+    if (!ref || resolvedExecutionSystemIds.has(ref)) continue;
+    let resolved;
+    try {
+      resolved = await getObjectByIdOrUrnAnyType(tx, orgId, ref);
+    } catch {
+      // Surfaced as "your manifest is wrong" (400), not "the plan wasn't found" (404). The object's
+      // TYPE is deliberately not inspected here — that check is authorization-gated and happens at
+      // apply (`executionSystemBindingIdentity`), so plan-compute can't be a type oracle.
+      throw badRequest(
+        `executor binding for '${binding.targetUrn}' references execution-system '${ref}', which does not exist`
+      );
+    }
+    resolvedExecutionSystemIds.set(ref, resolved.id);
+  }
+
   const resolvedManifest: ResolvedManifest = {
     stackName: manifest.stackName,
     objects: resolvedObjects,
@@ -220,17 +403,46 @@ export async function computeDiffForManifest(
       typeId: r.typeId,
       fromUrn: r.fromUrn,
       toUrn: r.toUrn
+    })),
+    sourceMappings: (manifest.sourceMappings ?? []).map((m) => ({
+      componentUrn: m.componentUrn,
+      sourceKind: m.sourceKind,
+      repoPattern: m.repoPattern ?? null,
+      pathPattern: m.pathPattern ?? null,
+      type: m.type ?? DEFAULT_BINDING_TYPE
+    })),
+    executorBindings: (manifest.executorBindings ?? []).map((b) => ({
+      targetUrn: b.targetUrn,
+      type: b.type ?? DEFAULT_BINDING_TYPE,
+      pluginModule: b.pluginModule ?? null,
+      pluginInstanceId: b.pluginInstanceId ?? null,
+      config: b.config ?? {},
+      secretRefs: b.secretRefs ?? {},
+      allowedHosts: b.allowedHosts ?? [],
+      externalRef: b.externalRef ?? null,
+      executionSystemId: b.executionSystemId
+        ? (resolvedExecutionSystemIds.get(b.executionSystemId) ?? b.executionSystemId)
+        : null
     }))
   };
+
+  // Rejected BEFORE the diff is computed: `computePlanDiff` collapses a duplicate declaration to keep
+  // its output well-formed, which would otherwise hide the manifest bug behind a plausible plan.
+  assertProjectionsUnique(resolvedManifest);
 
   const diff = computePlanDiff(resolvedManifest, {
     existingObjects,
     managedRelationships,
-    existingRelationships
+    existingRelationships,
+    managedSourceMappings,
+    managedExecutorBindings
   });
   // Strict create-in-service, IaC path (M12 P5a): reject at plan-compute so the invalid manifest
-  // never becomes a stored plan and the human reviews only a valid diff.
+  // never becomes a stored plan and the human reviews only a valid diff. C1's two guards run at the
+  // same point, for the same reason.
   assertComponentsContained(diff);
+  assertProjectionsOwned(diff);
+  assertInlineBindingsValid(diff);
   return diff;
 }
 
@@ -398,6 +610,13 @@ export async function prepareApplyChecks(
   // trusting plan-compute ran (e.g. a plan created by a pre-P5a build). Fail-closed: an uncaught
   // throw aborts before `executePlanDiff`, inside the route's transaction, so nothing applies.
   assertComponentsContained(diff);
+  // C1's two invariants get the same defense-in-depth treatment, and for a sharper reason: a plan
+  // stored by a pre-C1 build cannot carry these collections at all, but a plan stored between
+  // plan-compute and apply by ANY build must still be re-proved to write only onto objects this
+  // stack owns, and to carry only inline bindings whose module/config clear the same bar the
+  // typed route requires.
+  assertProjectionsOwned(diff);
+  assertInlineBindingsValid(diff);
 
   for (const entry of diff.objects) {
     if (entry.action === "create") {
@@ -480,6 +699,35 @@ export async function prepareApplyChecks(
     checks.push({ permission: "relationship:write", scopeObjectId: to.scopeObjectId });
   }
 
+  // C1 — `object:write` at the OWNING object, the identical bar
+  // `PUT /executors/{idOrUrn}/binding` requires on its binding target. Per-object rather than one
+  // coarse org-root check, matching this module's discipline everywhere else; authz walks
+  // containment, so an org-wide writer still passes.
+  for (const entry of diff.sourceMappings ?? []) {
+    if (entry.action === "noop") continue;
+    const component = await resolveEndpoint(entry.componentUrn);
+    checks.push({ permission: "object:write", scopeObjectId: component.scopeObjectId });
+  }
+
+  for (const entry of diff.executorBindings ?? []) {
+    if (entry.action === "noop") continue;
+    const target = await resolveEndpoint(entry.targetUrn);
+    checks.push({ permission: "object:write", scopeObjectId: target.scopeObjectId });
+
+    // A system-backed binding makes SCP dispatch with THAT system's decrypted token (and, where
+    // both egress layers agree, its internal-egress reach) — a use-of-credentials capability. The
+    // typed route gates it with `object:write` at the system itself (ADR-0003); this door must too,
+    // or IaC apply is a way to borrow a system an actor may not use. The id is already resolved
+    // (plan-compute), so pushing the check needs no read — which is exactly what keeps this path
+    // from becoming the type/existence oracle `bindTargetToExecutionSystem`'s authorize-first
+    // ordering exists to prevent. The system's typeId/kind/serverUrl are validated later, in
+    // `executePlanDiff`, after every one of these checks has been authorized.
+    const executionSystemId = entry.target?.executionSystemId;
+    if (executionSystemId) {
+      checks.push({ permission: "object:write", scopeObjectId: executionSystemId });
+    }
+  }
+
   return { checks, objectResolutions };
 }
 
@@ -501,8 +749,10 @@ async function findLiveRelationshipId(
 /**
  * Executes an already-authorized diff, all inside the caller's transaction (transactional apply,
  * goal statement). Order matters: object creates/updates first (so relationship creates can resolve
- * freshly-created endpoints), then relationship DELETES, then relationship CREATES, then object
- * deletes last (so a relationship delete never races an already-gone endpoint).
+ * freshly-created endpoints), then relationship DELETES, then relationship CREATES, then C1's
+ * projection rows (mapping/binding deletes, then binding creates/updates, then mapping creates),
+ * then object deletes last (so a relationship delete never races an already-gone endpoint, and no
+ * projection row is orphaned behind a soft-deleted object).
  *
  * Relationship deletes run BEFORE creates so a declarative re-parent converges in one apply (M12
  * P5b): changing a component's `service` in a manifest yields a `contains` create (new service) plus
@@ -598,6 +848,97 @@ export async function executePlanDiff(
       fromId: endpointId(entry.fromUrn),
       toId: endpointId(entry.toUrn),
       labels: managedLabels(stackName)
+    });
+  }
+
+  // -----------------------------------------------------------------------------------------
+  // C1 — projection rows. These run AFTER object creates (a binding needs its deployment-target /
+  // a mapping needs its component to exist) and BEFORE object deletes. The delete ordering is
+  // load-bearing, not cosmetic: `deleteObject` is a SOFT delete, and both projection tables are
+  // keyed on the object id with no `deleted_at` of their own. Prune the object first and its rows
+  // become permanently unreachable garbage — invisible to every list query (they filter on a live
+  // target) and outside every future plan's ownership pool (which is built from LIVE labelled
+  // objects), so nothing would ever remove them.
+  //
+  // Deletes before creates/updates, mirroring the relationship ordering above and for the same
+  // reason: `UNIQUE (org_id, target_object_id, type)` means two bindings swapping Types in one plan
+  // would collide if the creates ran first.
+  // -----------------------------------------------------------------------------------------
+
+  for (const entry of diff.sourceMappings ?? []) {
+    if (entry.action !== "delete") continue;
+    const removed = await deleteSourceMappingsMatching(tx, {
+      orgId,
+      componentObjectId: endpointId(entry.componentUrn),
+      sourceKind: entry.sourceKind,
+      repoPattern: entry.repoPattern,
+      pathPattern: entry.pathPattern,
+      type: entry.type
+    });
+    if (removed === 0) {
+      throw notFound(
+        `no live source mapping '${entry.sourceKind}' -> '${entry.componentUrn}' (${entry.type}) to prune`
+      );
+    }
+  }
+
+  for (const entry of diff.executorBindings ?? []) {
+    if (entry.action !== "delete") continue;
+    const removed = await deleteExecutorBinding(tx, orgId, endpointId(entry.targetUrn), entry.type);
+    if (!removed) {
+      throw notFound(
+        `no live '${entry.type}' executor binding on '${entry.targetUrn}' to prune (apply-time prune)`
+      );
+    }
+  }
+
+  for (const entry of diff.executorBindings ?? []) {
+    if (entry.action !== "create" && entry.action !== "update") continue;
+    const target = entry.target;
+    if (!target) {
+      throw new Error(
+        `internal: ${entry.action} binding entry for '${entry.targetUrn}' has no target`
+      );
+    }
+    const targetObjectId = endpointId(entry.targetUrn);
+    if (target.executionSystemId) {
+      // Every `authorize()` — including `object:write` at this system (prepareApplyChecks) — has
+      // already run to completion, so validating the system here cannot be an oracle.
+      const sys = await getObjectByIdOrUrnAnyType(tx, orgId, target.executionSystemId);
+      const identity = executionSystemBindingIdentity(sys, target.executionSystemId);
+      await upsertExecutorBinding(tx, {
+        orgId,
+        targetObjectId,
+        type: entry.type,
+        ...identity,
+        externalRef: target.externalRef
+      });
+      continue;
+    }
+    await upsertExecutorBinding(tx, {
+      orgId,
+      targetObjectId,
+      type: entry.type,
+      // Non-null by `assertInlineBindingsValid`, which ran (twice) before any mutation.
+      pluginModule: target.pluginModule!,
+      pluginInstanceId: target.pluginInstanceId!,
+      config: target.config,
+      secretRefs: target.secretRefs,
+      allowedHosts: target.allowedHosts,
+      externalRef: target.externalRef,
+      executionSystemId: null
+    });
+  }
+
+  for (const entry of diff.sourceMappings ?? []) {
+    if (entry.action !== "create") continue;
+    await createSourceMapping(tx, {
+      orgId,
+      sourceKind: entry.sourceKind,
+      ...(entry.repoPattern !== null ? { repoPattern: entry.repoPattern } : {}),
+      ...(entry.pathPattern !== null ? { pathPattern: entry.pathPattern } : {}),
+      componentIdOrUrn: endpointId(entry.componentUrn),
+      type: entry.type
     });
   }
 
