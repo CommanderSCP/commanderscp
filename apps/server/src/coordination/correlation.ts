@@ -1,8 +1,8 @@
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, exists, isNull, sql } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import type { ExecutorType } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { sourceMappings } from "../db/schema.js";
+import { objects, sourceMappings } from "../db/schema.js";
 import { globMatch } from "./glob-match.js";
 import { createObject } from "../graph/objects-repo.js";
 import { createRelationship } from "../graph/relationships-repo.js";
@@ -120,6 +120,42 @@ function literalLength(column: AnyPgColumn) {
   return sql`length(replace(replace(coalesce(${column}, ''), '**', ''), '*', ''))`;
 }
 
+/**
+ * A mapping whose COMPONENT has been soft-deleted must not match.
+ *
+ * `source_mappings` has no `deleted_at` of its own and no foreign key to `objects`, so the row
+ * outlives its component unless a query excludes it — the SAME shape, and the same sentence, as
+ * `executor-bindings-repo.ts`'s `targetObjectIsLive` (M12 P5c). That one was fixed; this one was
+ * not, which is the incomplete-call-site pattern BUILD_AND_TEST.md §4.4 exists for.
+ *
+ * WHAT IT COSTS TO OMIT — and it is not a stale row, it is a SILENT FAKE SUCCESS:
+ *   push -> `matchComponentForSource` returns the DEAD component
+ *        -> a change is proposed against it
+ *        -> its wave target is a deleted object
+ *        -> `listVisibleBindingsForTarget` correctly reports zero (the bindings repo already
+ *           excludes a dead target)
+ *        -> `reconcile.ts` reads zero bindings as ADR-0006 case (a), "intended-fake"
+ *        -> the wave target FAKE-SUCCEEDS. Green release, nothing deployed.
+ *
+ * Measured on the live homelab 2026-08-02: FIVE mappings pointed at components soft-deleted that
+ * same day by the ADR-0026 §6 pair merges, on repo patterns as broad as `AgentKitProject/agentkit`
+ * with no path pattern. Every remaining pair merge creates more, so this compounds.
+ */
+function componentIsLive(tx: TenantTx, orgId: string) {
+  return exists(
+    tx
+      .select({ one: sql`1` })
+      .from(objects)
+      .where(
+        and(
+          eq(objects.id, sourceMappings.componentObjectId),
+          eq(objects.orgId, orgId),
+          isNull(objects.deletedAt)
+        )
+      )
+  );
+}
+
 export async function matchComponentForSource(
   tx: TenantTx,
   orgId: string,
@@ -128,7 +164,13 @@ export async function matchComponentForSource(
   const rows = await tx
     .select()
     .from(sourceMappings)
-    .where(and(eq(sourceMappings.orgId, orgId), eq(sourceMappings.sourceKind, hint.sourceKind)))
+    .where(
+      and(
+        eq(sourceMappings.orgId, orgId),
+        eq(sourceMappings.sourceKind, hint.sourceKind),
+        componentIsLive(tx, orgId)
+      )
+    )
     .orderBy(
       // Rule 1 — how many globs are set at all.
       sql`(case when ${sourceMappings.repoPattern} is not null then 1 else 0 end
