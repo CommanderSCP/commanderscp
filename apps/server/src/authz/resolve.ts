@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { forbidden } from "../errors.js";
-import { placementComponentParentSql } from "../graph/containment.js";
+import { placementParentsSql } from "../graph/containment.js";
 
 /**
  * RBAC permission resolution (DESIGN.md §7). One recursive CTE does both expansions the design
@@ -65,14 +65,18 @@ export interface PermissionCheck {
  *     `component -> service -> domain -> organization`; until 0021 there was no service edge to walk,
  *     so the documented behaviour did not exist. This is what makes a service-scoped role binding
  *     reach that service's components.
- *  3. a `placement`'s COMPONENT (ADR-0026), composed from the very same fragment
- *     `graph/containment.ts` walks — `placementComponentParentSql`. Sharing the SQL is deliberate:
+ *  3+4. a `placement`'s COMPONENT and its DEPLOYMENT-TARGET (ADR-0026), composed from the very same
+ *     fragment `graph/containment.ts` walks — `placementParentsSql`. Sharing the SQL is deliberate:
  *     routes 1 and 2 are hand-synced between these two files and DID drift once, with a
  *     service-scoped freeze failing open and a service-scoped approval failing closed. A route that
- *     exists in one copy cannot drift. Consequence: a role bound at a COMPONENT now also grants that
- *     permission over that component's placements — which is the model (a placement is that
- *     component at one place, and declaring one already requires `relationship:write` over the
- *     component), and it keeps authority aligned with the governance chain rather than lagging it.
+ *     exists in one copy cannot drift — route 4 was added to the fragment alone and appeared here
+ *     for free. Consequence: a role bound at a COMPONENT also grants that permission over that
+ *     component's placements — which is the model (a placement is that component at one place, and
+ *     declaring one already requires `relationship:write` over the component) — and a role bound at
+ *     a DEPLOYMENT-TARGET grants it over everything placed there, which is what makes "operator of
+ *     prod" expressible. Authority tracks the governance chain rather than lagging it. Measured
+ *     before landing: 0 of the estate's role bindings are scoped to a deployment-target, so route 4
+ *     widens nothing that exists today.
  *
  * The `contains` edge is registered service -> component, so it is walked BACKWARDS here
  * (`r.to_id` = the object being checked, `r.from_id` = its service). That asymmetry is the security
@@ -81,7 +85,7 @@ export interface PermissionCheck {
  * it: a binding at a placement reaches nothing above it except by continuing up through the
  * component, and a placement has no children.
  *
- * All three routes live in ONE recursive term via LATERAL: PostgreSQL permits the CTE self-reference
+ * All four routes live in ONE recursive term via LATERAL: PostgreSQL permits the CTE self-reference
  * exactly once, so several recursive branches would error ("recursive reference ... more than once").
  * `UNION` (not `UNION ALL`) dedupes — with several routes the chain is a DAG, not a line (a
  * component's domain is reachable directly AND via its service), and dedupe keeps that from
@@ -106,7 +110,7 @@ function scopeExpandCte(orgId: string, scopeObjectId: string) {
           AND r.type_id = 'contains'
           AND r.deleted_at IS NULL
         UNION ALL
-        ${placementComponentParentSql(orgId, sql`se.scope_id`)}
+        ${placementParentsSql(orgId, sql`se.scope_id`)}
       ) p
       WHERE p.parent_id IS NOT NULL AND se.depth < 10
     )
