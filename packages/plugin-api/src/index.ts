@@ -101,6 +101,21 @@ export type ExecutorEventKind =
 export interface ExecutorEventCorrelation {
   repo?: string;
   path?: string;
+  /**
+   * EVERY path the event touched — the changed-file set of a push, not a single location.
+   *
+   * `path` (singular) is a *location* hint some providers carry natively (a release's target
+   * commitish, a package path). It cannot express a commit, because one commit touches many files,
+   * and a `source_mappings` row with a `pathPattern` is SKIPPED outright when the event carries no
+   * path it can test (`coordination/correlation.ts`). That is why a repo-only mapping set on a
+   * monorepo collapses to exactly ONE live route — the most-constrained-then-oldest winner — and
+   * every other mapping on that repo silently never fires.
+   *
+   * A pattern matches when it matches `path` OR **any** entry here, so populating this is what lets
+   * one repo fan out to per-directory components. Additive and optional: a provider that cannot
+   * determine the changed set leaves it undefined and behaves exactly as before.
+   */
+  paths?: string[];
   commitSha?: string;
   artifactDigest?: string;
   labels?: Record<string, string>;

@@ -1019,3 +1019,99 @@ describe("postCommitStatus()", () => {
     await expect(postCommitStatus(ctx, { sha, state: "failure" })).rejects.toThrow(/HTTP 422/);
   });
 });
+
+/**
+ * `correlation.paths` — the changed-file set, which is what lets ONE repository route to
+ * per-directory components. Without it every mapping on a monorepo is necessarily repo-only, they
+ * all rank equally, and the oldest wins every event forever (see `correlation.ts`).
+ *
+ * The webhook and poll paths obtain it very differently — the push payload carries it inline, while
+ * the commits LIST response does not, so polling must fetch each commit individually — which is
+ * exactly why both are pinned here.
+ */
+describe("correlation.paths: the changed-file set", () => {
+  it("push webhook: unions added/modified/removed across EVERY commit, not just head_commit", () => {
+    // A push delivers all its commits at once. A file touched by an earlier commit in the same push
+    // is still a file this push changed, so reading only `head_commit` would drop it and silently
+    // route the release by the repo-only fallback.
+    const hint = mapGithubWebhookEventToHint("push", {
+      repository: { full_name: "acme/widgets" },
+      ref: "refs/heads/main",
+      head_commit: { id: "d4".repeat(20), modified: ["loki/values.yaml"] },
+      commits: [
+        { id: "aa".repeat(20), added: ["pihole/values.yaml"], modified: ["README.md"] },
+        { id: "bb".repeat(20), removed: ["tailscale/old.yaml"] }
+      ]
+    });
+
+    expect(hint?.paths).toEqual([
+      "README.md",
+      "loki/values.yaml",
+      "pihole/values.yaml",
+      "tailscale/old.yaml"
+    ]);
+  });
+
+  it("push webhook: a payload carrying no file arrays yields NO paths rather than an empty list", () => {
+    // `undefined` means "not determined" and declines a path-scoped mapping; `[]` would be
+    // indistinguishable from "changed nothing", which cannot happen for a real push.
+    const hint = mapGithubWebhookEventToHint("push", {
+      repository: { full_name: "acme/widgets" },
+      ref: "refs/heads/main",
+      head_commit: { id: "d4".repeat(20) }
+    });
+
+    expect(hint?.paths).toBeUndefined();
+  });
+
+  it("polling: fetches each commit individually to obtain files the commits LIST omits", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    const commitSha = "e5".repeat(20);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .reply(200, [{ sha: commitSha, commit: { author: { date: "2026-08-01T00:00:00Z" } } }]);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits/${commitSha}`)
+      .reply(200, { files: [{ filename: "loki/values.yaml" }, { filename: "README.md" }] });
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .reply(200, { workflow_runs: [] });
+
+    const events = await plugin.observe(ctx);
+
+    const pushEvent = events.find((e) => e.kind === "push");
+    expect(pushEvent?.correlation.paths).toEqual(["README.md", "loki/values.yaml"]);
+  });
+
+  it("polling: a FAILED file fetch still yields the push event, just without paths", async () => {
+    // Regression. `api()` THROWS on a transport failure rather than returning a status, so an
+    // unguarded fetch aborted `pollCommits` mid-loop and lost the push events entirely — turning a
+    // best-effort enrichment into data loss, where the release would never be coordinated at all
+    // instead of merely routing by repository. Caught by this suite's `disableNetConnect` when the
+    // single-commit interceptor below was first left unregistered.
+    const { config, ctx, authHeader, base } = setup();
+    const commitSha = "f6".repeat(20);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .reply(200, [{ sha: commitSha, commit: { author: { date: "2026-08-01T00:00:00Z" } } }]);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits/${commitSha}`)
+      .replyWithError("connection reset");
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .reply(200, { workflow_runs: [] });
+
+    const events = await plugin.observe(ctx);
+
+    const pushEvent = events.find((e) => e.kind === "push");
+    expect(pushEvent).toBeDefined();
+    expect(pushEvent?.correlation.commitSha).toBe(commitSha);
+    expect(pushEvent?.correlation.paths).toBeUndefined();
+  });
+});

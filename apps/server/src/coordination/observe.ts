@@ -80,6 +80,10 @@ export async function ingestObservedEvents(
     const payload: Record<string, unknown> = {
       repo: c.repo,
       path: c.path,
+      // The changed-file set. Persisted at top level beside `path` for the same reason `path` is:
+      // `webhook-processor.ts`'s generic `extractHint` reads an observed payload flat, so a field
+      // that stays nested in `raw` is invisible to correlation.
+      paths: c.paths,
       correlationKey: c.correlationKey,
       commitSha: c.commitSha,
       artifactDigest: c.artifactDigest,
