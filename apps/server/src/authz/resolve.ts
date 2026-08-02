@@ -112,6 +112,14 @@ function scopeExpandCte(orgId: string, scopeObjectId: string) {
         UNION ALL
         ${placementParentsSql(orgId, sql`se.scope_id`)}
       ) p
+      -- A DELETED ancestor grants nothing. Kept in step with graph/containment.ts's identical
+      -- filter: a role bound at a service that was later deleted must stop reaching that service's
+      -- live components. deleteObject's edge cascade cannot cover replica edges or rows already in
+      -- the database, so this is the backstop for both.
+      JOIN objects parent_o
+        ON parent_o.id = p.parent_id
+       AND parent_o.org_id = ${orgId}
+       AND parent_o.deleted_at IS NULL
       WHERE p.parent_id IS NOT NULL AND se.depth < 10
     )
   `;

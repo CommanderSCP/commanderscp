@@ -178,6 +178,16 @@ export interface ChainEntry {
  * even though DESIGN §7 and §10 have always described the chain as `org -> domain -> service ->
  * component`.
  *
+ * A DELETED ancestor is skipped by every route (`parent.deleted_at IS NULL`), while the TARGET
+ * itself is not filtered — governance may legitimately be evaluated over a deleted object, but a
+ * deleted object must not go on GOVERNING live ones.
+ *
+ * That filter is load-bearing rather than defensive. `deleteObject` now tombstones the edges of the
+ * object it deletes, but that cascade cannot be complete: it refuses REPLICA edges (single-writer
+ * authority belongs to another domain) and it cannot retroactively fix rows already in a database.
+ * For those, this filter is the only thing standing between a deleted service and a policy or role
+ * binding scoped at it still reaching live components.
+ *
  * All four routes live in ONE recursive term via LATERAL: PostgreSQL permits the CTE self-reference
  * exactly ONCE, so several recursive branches would error ("recursive reference ... more than once").
  * `UNION` (not `UNION ALL`) dedupes — with several routes the chain is a DAG, not a line.
@@ -234,11 +244,13 @@ export async function containmentChain(
         FROM objects child_o
         JOIN objects parent_o ON parent_o.id = child_o.domain_id
         WHERE child_o.id = c.id AND child_o.org_id = ${orgId} AND parent_o.org_id = ${orgId}
+          AND parent_o.deleted_at IS NULL
         UNION ALL
         -- 2. containing service, via the contains edge walked BACKWARDS (to_id = c.id, from_id = svc)
         SELECT svc.id, svc.type_id, svc.labels
         FROM relationships r
         JOIN objects svc ON svc.id = r.from_id AND svc.org_id = ${orgId}
+          AND svc.deleted_at IS NULL
         WHERE r.to_id = c.id
           AND r.org_id = ${orgId}
           AND r.type_id = 'contains'
@@ -250,6 +262,7 @@ export async function containmentChain(
         SELECT parent_o.id, parent_o.type_id, parent_o.labels
         FROM (${placementParentsSql(orgId, sql`c.id`)}) pp
         JOIN objects parent_o ON parent_o.id = pp.parent_id AND parent_o.org_id = ${orgId}
+          AND parent_o.deleted_at IS NULL
       ) parent
       WHERE c.depth < 10
     )
