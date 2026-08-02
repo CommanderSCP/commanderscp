@@ -49,6 +49,19 @@ import {
  * | `gate-orchestrator.ts`: `governanceSubjectOf` returns `targetObjectId` unconditionally | the CEL-subject test FAILS (`subject.typeId` is `placement`, the condition goes false, the required policy stops firing, verdict flips to `allow`) |
  * | `authz/resolve.ts`: drop the shared fragment from `scopeExpandCte` | the component-role-reaches-its-placement test FAILS |
  * | `containment.ts`: drop the CASE guard, cast `componentId` bare | the malformed-`componentId` test FAILS with a Postgres cast error instead of an answer |
+ *
+ * ROUTE 4 (the deployment-target as a containing scope, owner-approved 2026-08-02):
+ *
+ * | Mutation | Result |
+ * |---|---|
+ * | `containment.ts`: drop route 4 from `placementParentsSql` | the target-scoped policy, target-scoped freeze and target-bound role tests all FAIL. The malformed-`deploymentTargetId` test correctly still PASSES — it asserts the COMPONENT route survives a bad place, so it is not a test of route 4's presence |
+ * | `containment.ts`: point route 4 at `componentId` instead | the same three FAIL — reaching *an* endpoint is not the same as reaching the right one |
+ * | `containment.ts`: drop the CASE guard (shared by both endpoints) | BOTH malformed tests FAIL with `invalid input syntax for type uuid`, which is how the guard is shown to cover the endpoint route 4 added and not just the original |
+ *
+ * One mutation REFUTED a claim rather than confirming it, and the claim was corrected: swapping
+ * `service-board.ts` to the pair fragment leaves its tests green, because arm 1's `IN (componentIds)`
+ * filter discards the deployment-target row. See `placementComponentParentSql`'s comment — the
+ * fragments stay separate on narrower, true grounds.
  */
 describe("governance over a placement wave target (ADR-0026)", () => {
   let server: ListeningTestServer;
@@ -67,8 +80,13 @@ describe("governance over a placement wave target (ADR-0026)", () => {
     await server?.close();
   });
 
-  /** A component with one placement at `place`, plus (optionally) an owning service. */
-  async function placedComponent(label: string, opts: { service?: boolean } = {}) {
+  /** A component with one placement at `place` (or at `opts.at`), plus (optionally) an owning
+   *  service. Route-4 tests pass their OWN deployment-target: every other test in this file places
+   *  at the shared `place`, so a gating policy scoped there would silently change their meaning. */
+  async function placedComponent(
+    label: string,
+    opts: { service?: boolean; at?: GraphObject } = {}
+  ) {
     const component = await createOrphanComponent(admin, `${label}-comp`);
     let service: GraphObject | null = null;
     if (opts.service) {
@@ -81,7 +99,7 @@ describe("governance over a placement wave target (ADR-0026)", () => {
     }
     const placement = await admin.placements.create({
       component: component.id,
-      deploymentTarget: place.id
+      deploymentTarget: (opts.at ?? place).id
     });
     return { component, service, placement };
   }
@@ -102,14 +120,19 @@ describe("governance over a placement wave target (ADR-0026)", () => {
       }
     });
 
-  /** Privileged fixture surgery — writes a `properties` document the API's own validation refuses. */
-  async function writeMalformedComponentId(placementId: string) {
+  /** Privileged fixture surgery — writes a `properties` document the API's own validation refuses.
+   *  Parameterised over the endpoint, because BOTH endpoints of the pair are cast to uuid and both
+   *  therefore need the same guard (see `placementParentsSql`). */
+  async function writeMalformedEndpoint(
+    placementId: string,
+    property: "componentId" | "deploymentTargetId"
+  ) {
     const surgeon = new pg.Client({ connectionString: testDatabaseUrl() });
     await surgeon.connect();
     try {
       await surgeon.query(
-        `UPDATE objects SET properties = jsonb_set(properties, '{componentId}', '"not-a-uuid"') WHERE id = $1`,
-        [placementId]
+        `UPDATE objects SET properties = jsonb_set(properties, $2::text[], '"not-a-uuid"') WHERE id = $1`,
+        [placementId, `{${property}}`]
       );
     } finally {
       await surgeon.end();
@@ -261,12 +284,122 @@ describe("governance over a placement wave target (ADR-0026)", () => {
     });
 
     // Fixture surgery: write a componentId the typed route would never produce.
-    await writeMalformedComponentId(placement.id);
+    await writeMalformedEndpoint(placement.id, "componentId");
 
     const outcome = await waveGate([placement.id], change.id);
     expect(
       outcome.verdict,
       "a malformed pair must lose its component ancestor, not crash the walk — the failure mode of a crash is every gate erroring at once"
     ).toBe("allow");
+  });
+
+  // ==============================================================================================
+  // ROUTE 4 — the deployment-target as a containing scope. Unlike route 3 these do not restore lost
+  // gating; they make gating START, which is why the route was an owner decision (2026-08-02) rather
+  // than part of the fix. The live estate's twelfth `required` prod-gate policy is scoped exactly
+  // this way and had never once matched.
+  // ==============================================================================================
+
+  it("a policy scoped at a DEPLOYMENT-TARGET gates every placement there — and nothing anywhere else", async () => {
+    const gated = await admin.deploymentTargets.create({ name: "route4-gated-target" });
+    const here = await placedComponent("route4-here", { at: gated });
+    const elsewhere = await placedComponent("route4-elsewhere"); // at the shared `place`
+    await gatingPolicy("route4-target-gate", gated.id);
+    const change = await admin.changes.propose({
+      name: "route4-change",
+      targets: [here.component.id]
+    });
+
+    const atGatedTarget = await waveGate([here.placement.id], change.id);
+    expect(
+      atGatedTarget.verdict,
+      "this is the whole point of route 4: a gate written against a PLACE must fire for what is deployed there. Without it the policy matches nothing and the wave sails through"
+    ).toBe("block");
+
+    // The other half of the measurement. A route that reaches everything is not a scope.
+    const atAnotherTarget = await waveGate([elsewhere.placement.id], change.id);
+    expect(
+      atAnotherTarget.verdict,
+      "a placement at a DIFFERENT deployment-target must stay ungated — otherwise 'scoped to prod' would silently mean 'scoped to everything'"
+    ).toBe("allow");
+  });
+
+  it("a freeze scoped at a DEPLOYMENT-TARGET blocks what is placed there ('freeze prod', newly expressible)", async () => {
+    const frozenPlace = await admin.deploymentTargets.create({ name: "route4-frozen-target" });
+    const { placement } = await placedComponent("route4-freeze", { at: frozenPlace });
+    const change = await admin.changes.propose({
+      name: "route4-freeze-change",
+      targets: [placement.id]
+    });
+
+    const now = Date.now();
+    await admin.freezes.create({
+      scopeObjectId: frozenPlace.id,
+      name: "prod-freeze",
+      startsAt: new Date(now - 60_000).toISOString(),
+      endsAt: new Date(now + 3_600_000).toISOString(),
+      reason: "change freeze over the whole stage"
+    });
+
+    const outcome = await waveGate([placement.id], change.id);
+    expect(
+      outcome.verdict,
+      "before route 4 a stage-scoped freeze had no expression at all — `containmentScopeIds` never put the deployment-target on a placement's chain, so the freeze matched nothing"
+    ).toBe("block");
+    // And it is THIS freeze that stopped it, not some other rule.
+    expect(outcome.inputContext.freeze).toMatchObject({ scopeObjectId: frozenPlace.id });
+  });
+
+  it("a role bound at a DEPLOYMENT-TARGET reaches placements there, and no others", async () => {
+    const owned = await admin.deploymentTargets.create({ name: "route4-authz-target" });
+    const here = await placedComponent("route4-authz-here", { at: owned });
+    const elsewhere = await placedComponent("route4-authz-elsewhere");
+
+    const operator = await createTestUser(server, org, [{ role: "Operator", scope: owned.id }]);
+
+    const [overHere, overElsewhere] = await withTenantTx(server.deps.db, org.orgId, async (tx) => [
+      await hasPermission(tx, {
+        orgId: org.orgId,
+        subjectObjectId: operator.objectId,
+        permission: "object:write",
+        scopeObjectId: here.placement.id
+      }),
+      await hasPermission(tx, {
+        orgId: org.orgId,
+        subjectObjectId: operator.objectId,
+        permission: "object:write",
+        scopeObjectId: elsewhere.placement.id
+      })
+    ]);
+
+    expect(
+      overHere,
+      "authority must track the governance chain: if a deployment-target now GOVERNS its placements, a role bound there must reach them too"
+    ).toBe(true);
+    expect(
+      overElsewhere,
+      "and must not leak to placements at other targets — the same containment asymmetry route 2 relies on"
+    ).toBe(false);
+  });
+
+  it("a placement carrying a malformed deploymentTargetId answers instead of erroring the whole walk", async () => {
+    // The SAME hazard as the componentId case, on the endpoint route 4 added. Both are cast to uuid,
+    // so a guard on only one of them leaves the class half-fixed — which is the property this
+    // codebase has been bitten by four times.
+    const target = await admin.deploymentTargets.create({ name: "route4-malformed-target" });
+    const { component, placement } = await placedComponent("route4-malformed", { at: target });
+    await gatingPolicy("route4-malformed-gate", component.id);
+    const change = await admin.changes.propose({
+      name: "route4-malformed-change",
+      targets: [component.id]
+    });
+
+    await writeMalformedEndpoint(placement.id, "deploymentTargetId");
+
+    const outcome = await waveGate([placement.id], change.id);
+    expect(
+      outcome.verdict,
+      "a malformed place must cost the placement its deployment-target ancestor and NOTHING else — the component route must still reach the gating policy"
+    ).toBe("block");
   });
 });

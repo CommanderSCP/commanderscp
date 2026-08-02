@@ -1,6 +1,6 @@
 # ADR-0026: No `stage` entity — a stage name is derived, and the (component × place) pair is a `placement`
 
-**Status:** Accepted (2026-08-01), **amended 2026-08-02** during implementation — see the amendment under D3 (how a placement's endpoints are stored) and D15/D16/D17 in the [context doc](../proposals/post-import-configuration.md) §0. Nothing in the decisions below is reversed; the amendments settle things the ADR left unsaid or, in one case, stated wrongly. This ADR settles **vocabulary and the object model**; the implementation plan and migration sequence live in the context doc.
+**Status:** Accepted (2026-08-01), **amended 2026-08-02** during implementation — see the amendments under D3 (how a placement's endpoints are stored) and D4 (both endpoints are containing scopes; the place half was an owner decision because it newly blocks) and D15/D16/D17 in the [context doc](../proposals/post-import-configuration.md) §0. Nothing in the decisions below is reversed; the amendments settle things the ADR left unsaid or, in one case, stated wrongly. This ADR settles **vocabulary and the object model**; the implementation plan and migration sequence live in the context doc.
 **Context doc:** [docs/proposals/post-import-configuration.md](../proposals/post-import-configuration.md)
 **Relates to:** [ADR-0021](0021-terminology.md) (**D6 reserved the word and deferred the entity — this ADR answers the question it deferred**); [ADR-0017](0017-ownership-refinement.md) §3 (place-role deployment-targets, shipped as M15.6); [ADR-0016](0016-scoped-scan-requirement-policies.md) (a security domain is ambient, not a row); [ADR-0006](0006-fail-closed-on-missing-executor-binding-for-purpose.md) (fail-closed on a missing binding); [ADR-0007](0007-executor-binding-type-taxonomy.md) (the binding Type facet); [ADR-0022](0022-outpost-config-authority-split.md) (the authority-split pattern); [GLOSSARY.md](../GLOSSARY.md) (**authoritative for vocabulary**); [service-component-model.md](../proposals/service-component-model.md)
 
@@ -73,6 +73,23 @@ Reserved vocabulary, defined in [GLOSSARY.md](../GLOSSARY.md). Named `<component
 > The `@` in the name cannot be carried naively into a derived URN: `slugify` maps `[^a-z0-9]+` to `-` and collapses runs, so `keycloak@commercial-prod` derives `keycloak-commercial-prod` and collides with a literal component of that name.
 
 `instance` — the owner's first phrasing, and the most natural English for it — is **reserved** for one running deployment of the SCP binary, the term the whole federation model rests on. `placement` is unclaimed as a defined term; the eleven bare uses in-tree are generic English about code location and evidence storage, plus one adjacent sense in `import-repo.ts:163` where "LOCAL PLACEMENT" means an object's containment parent. The glossary entry disambiguates all of them.
+
+### D4 (amendment, 2026-08-02). **Both** endpoints of a placement are containing scopes.
+
+D2 made the pair an object and D3 settled how its endpoints are stored, but neither said whether those endpoints **contain** it. The implementation forced the question, in two halves that had to be decided separately because only one of them is a bug.
+
+**The component half is a defect, fixed without asking.** A placement's containment chain was `[org root, placement]` and nothing else — its `domain_id` is the org root and it has no incoming `contains` edge (measured: 61 placements, 0 incoming). Since every wave-boundary decision walks the chain of `change_wave_targets.target_object_id`, stage-shaped compilation would have silently stopped **11 `required` component-scoped prod-gate policies** on the live estate and made every service-scoped freeze fail open. Restoring gating that D2 never intended to remove is a fix, not a decision.
+
+**The place half newly BLOCKS, so it was an owner decision.** The estate's twelfth `required` `prod-gate` policy is scoped to the `prod (DOKS hosted)` deployment-target and had **never matched anything** — that target is nobody's `domain_id`, and its only incoming edges are `placed_at`/`hosted_on`, neither a containment route. Making it fire is what its author plainly meant, but it means every stage-shaped prod release now waits on that approval. **Approved 2026-08-02.**
+
+Consequences worth recording:
+
+- **A stage-scoped freeze becomes expressible for the first time.** "Freeze prod" had no expression at all before this; `containmentScopeIds` now puts the deployment-target on every placement's chain.
+- **Authority follows the same chain**, since `authz/resolve.ts` composes the identical SQL fragment — a role bound at a deployment-target reaches what is placed there, which is what makes "operator of prod" sayable. Measured before landing: 0 of the estate's role bindings are scoped to a deployment-target, and no deployment-target has an incoming `contains` edge, so nothing that exists today widens.
+- **Deliberately NOT extended to `hosted_on`** from a legacy component-shaped wave target. That would change behaviour on the estate exactly as it runs today, rather than only under a topology nobody has attached yet.
+- **Both parents sit at the same walk depth**, which is the cross-KIND depth tie the walk already documents as inert. It stays inert — `nearestAncestorOfKind` only ever compares ancestors of one kind.
+
+This makes the pair symmetrical in the graph, which is the honest reading of D2: a placement is *a component at a place*, and being scoped by only one of the two would have made it a component in disguise after all.
 
 ## Alternatives considered
 
