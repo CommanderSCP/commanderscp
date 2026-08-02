@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { forbidden } from "../errors.js";
+import { placementComponentParentSql } from "../graph/containment.js";
 
 /**
  * RBAC permission resolution (DESIGN.md §7). One recursive CTE does both expansions the design
@@ -55,7 +56,7 @@ export interface PermissionCheck {
  * on what "at-or-above this scope" means, or an Approver bound at a service would be eligible for one
  * check and not the other.
  *
- * Walks the target object plus every containing ancestor, by TWO routes:
+ * Walks the target object plus every containing ancestor, by THREE routes:
  *
  *  1. `objects.domain_id` — up to the org root (objects-repo.ts defaults `domainId` to the org root at
  *     creation, so every chain terminates there).
@@ -64,16 +65,27 @@ export interface PermissionCheck {
  *     `component -> service -> domain -> organization`; until 0021 there was no service edge to walk,
  *     so the documented behaviour did not exist. This is what makes a service-scoped role binding
  *     reach that service's components.
+ *  3. a `placement`'s COMPONENT (ADR-0026), composed from the very same fragment
+ *     `graph/containment.ts` walks — `placementComponentParentSql`. Sharing the SQL is deliberate:
+ *     routes 1 and 2 are hand-synced between these two files and DID drift once, with a
+ *     service-scoped freeze failing open and a service-scoped approval failing closed. A route that
+ *     exists in one copy cannot drift. Consequence: a role bound at a COMPONENT now also grants that
+ *     permission over that component's placements — which is the model (a placement is that
+ *     component at one place, and declaring one already requires `relationship:write` over the
+ *     component), and it keeps authority aligned with the governance chain rather than lagging it.
  *
  * The `contains` edge is registered service -> component, so it is walked BACKWARDS here
  * (`r.to_id` = the object being checked, `r.from_id` = its service). That asymmetry is the security
  * property: a binding at a SERVICE reaches its components, but a binding at a COMPONENT never reaches
- * the service (a service has no incoming `contains` edge), nor its sibling components.
+ * the service (a service has no incoming `contains` edge), nor its sibling components. Route 3 keeps
+ * it: a binding at a placement reaches nothing above it except by continuing up through the
+ * component, and a placement has no children.
  *
- * Both routes live in ONE recursive term via LATERAL: PostgreSQL permits the CTE self-reference
- * exactly once, so two recursive branches would error ("recursive reference ... more than once").
- * `UNION` (not `UNION ALL`) dedupes — with two routes the chain is a DAG, not a line (a component's
- * domain is reachable directly AND via its service), and dedupe is what keeps that from re-walking.
+ * All three routes live in ONE recursive term via LATERAL: PostgreSQL permits the CTE self-reference
+ * exactly once, so several recursive branches would error ("recursive reference ... more than once").
+ * `UNION` (not `UNION ALL`) dedupes — with several routes the chain is a DAG, not a line (a
+ * component's domain is reachable directly AND via its service), and dedupe keeps that from
+ * re-walking.
  */
 function scopeExpandCte(orgId: string, scopeObjectId: string) {
   return sql`
@@ -93,6 +105,8 @@ function scopeExpandCte(orgId: string, scopeObjectId: string) {
           AND r.org_id = ${orgId}
           AND r.type_id = 'contains'
           AND r.deleted_at IS NULL
+        UNION ALL
+        ${placementComponentParentSql(orgId, sql`se.scope_id`)}
       ) p
       WHERE p.parent_id IS NOT NULL AND se.depth < 10
     )

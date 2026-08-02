@@ -139,6 +139,66 @@ async function checkFreeze(
   return { blocked: null, overrides };
 }
 
+/**
+ * The object a CEL condition should see as `subject`, and whose graph facts it should read, for a
+ * given gate target (ADR-0026).
+ *
+ * A wave target is a COMPONENT under legacy compilation and a PLACEMENT under stage-shaped
+ * compilation. `containmentChain` now walks from a placement up through its component, so every
+ * SCOPE question (policy match, freeze, approval scope, scan tiers) is answered identically for
+ * both shapes — but two things in this file read the target OBJECT rather than its chain, and they
+ * do not follow:
+ *
+ *   - `subject` in the CEL context — a placement's `typeId` is `"placement"` and it carries the
+ *     pair's labels, not the component's. `subject.typeId == "component"` or a
+ *     `subject.labels.tier` condition would silently evaluate FALSE, so the policy stops firing and
+ *     the gate allows. A condition that stops matching is indistinguishable, from the verdict, from
+ *     a condition that was never meant to match.
+ *   - `graph.ownerIds` / `graph.dependentIds` — `owns` and `depends_on` edges attach to the
+ *     component. A placement has neither, so an ownership- or blast-radius-conditioned policy sees
+ *     an empty set and stops firing too.
+ *
+ * The subject of a placement is the component it places: the software being released is the same
+ * software wherever it runs, and every one of those facts is deliberately stored once on the
+ * component (ADR-0026 §3's split table). WHERE it is being released stays visible — the gate's
+ * `targetObjectIds`, its Decision and its control context still name the placement itself, so
+ * explainability keeps the place and only the subject-shaped questions hop.
+ *
+ * A non-placement id is returned unchanged, so this is a pure extension: legacy compilation, the
+ * lifecycle-edge gate and campaign waves (which never compile stage-shaped) all resolve to exactly
+ * what they resolved before.
+ */
+async function governanceSubjectOf(
+  tx: TenantTx,
+  orgId: string,
+  targetObjectId: string
+): Promise<string> {
+  const row = await tx.query.objects.findFirst({
+    where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
+      andOp(eqOp(t.orgId, orgId), eqOp(t.id, targetObjectId), isNullOp(t.deletedAt))
+  });
+  if (row?.typeId !== "placement") return targetObjectId;
+  // Read from the PROPERTIES — the source of truth for the pair (ADR-0026 D17), the same half
+  // `binding-resolution.ts`, `plan-service.ts` and `graph/containment.ts`'s route 3 read.
+  //
+  // The UUID SHAPE CHECK is the same guard, for the same reason, as route 3's `CASE`: journal replay
+  // calls `createObject` directly and never passes the typed `/placements` route, so a corrupt or
+  // hostile peer can ship a placement whose `componentId` is not a UUID. Returning it would hand a
+  // non-UUID straight to `graphFactsFor`'s parameterised `to_id` comparison, and Postgres throws
+  // `invalid input syntax for type uuid` — turning one bad row into an ERRORING gate for every change
+  // that touches it. This was NOT reasoned out; the malformed-pair test found it after the route-3
+  // guard was already in place, which is the whole argument for writing that test.
+  const componentId = (row.properties as { componentId?: unknown } | null)?.componentId;
+  return typeof componentId === "string" && UUID_PATTERN.test(componentId)
+    ? componentId
+    : targetObjectId;
+}
+
+/** Mirrors `graph/containment.ts`'s `UUID_TEXT_PATTERN` — the same shape check on the same field,
+ *  one in SQL and one in TypeScript because the two guards sit on either side of the DB boundary. */
+const UUID_PATTERN =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
 /** Every graph fact `governance/evaluate.ts`'s context carries beyond the target itself — MVP
  *  keeps this cheap (direct `owns`/`depends_on` edges only, not transitive closures) since the
  *  named `impact-of`/`owners-of` queries already cover the deep-traversal case for humans; policy
@@ -349,11 +409,19 @@ export async function prewarmGovernanceForChange(
   // eventual host-less lifecycle gate agree on which conditions fired — otherwise a control the
   // real gate needs but prewarm never ran would starve the accept gate (which only READS).
   const primaryTarget = input.targetObjectIds[0];
-  const subjectObject = primaryTarget
-    ? await getObjectByIdOrUrnAnyType(tx, input.orgId, primaryTarget).catch(() => null)
+  // ADR-0026: a placement's SUBJECT is the component it places — see `governanceSubjectOf`. Applied
+  // in prewarm as well as in the gate, not because a prewarm target is ever a placement today (it
+  // reads the change's own targets, which are always components) but because prewarm exists to make
+  // the two agree on which conditions fired; a subject resolved one way here and another way there
+  // is exactly how a control the gate needs but prewarm never ran starves the accept gate.
+  const primarySubject = primaryTarget
+    ? await governanceSubjectOf(tx, input.orgId, primaryTarget)
+    : undefined;
+  const subjectObject = primarySubject
+    ? await getObjectByIdOrUrnAnyType(tx, input.orgId, primarySubject).catch(() => null)
     : null;
-  const graphFacts = primaryTarget
-    ? await graphFactsFor(tx, input.orgId, primaryTarget)
+  const graphFacts = primarySubject
+    ? await graphFactsFor(tx, input.orgId, primarySubject)
     : { ownerIds: [], dependentIds: [], domainIds: [] };
   const celContext = buildCelContext({
     change: {
@@ -495,11 +563,19 @@ export async function evaluateGovernanceGate(
   }
 
   const primaryTarget = ctx.targetObjectIds[0];
-  const subjectObject = primaryTarget
-    ? await getObjectByIdOrUrnAnyType(tx, ctx.orgId, primaryTarget).catch(() => null)
+  // ADR-0026 — a wave target may be a PLACEMENT, whose subject is the component it places. The
+  // containment chain already reaches the component (graph/containment.ts route 3); these two reads
+  // go at the object itself and would otherwise see `typeId: "placement"` with no owners and no
+  // dependents, silently falsifying every subject- or ownership-conditioned policy. See
+  // `governanceSubjectOf`.
+  const primarySubject = primaryTarget
+    ? await governanceSubjectOf(tx, ctx.orgId, primaryTarget)
+    : undefined;
+  const subjectObject = primarySubject
+    ? await getObjectByIdOrUrnAnyType(tx, ctx.orgId, primarySubject).catch(() => null)
     : null;
-  const graphFacts = primaryTarget
-    ? await graphFactsFor(tx, ctx.orgId, primaryTarget)
+  const graphFacts = primarySubject
+    ? await graphFactsFor(tx, ctx.orgId, primarySubject)
     : { ownerIds: [], dependentIds: [], domainIds: [] };
   const celContext = buildCelContext({
     change: {
