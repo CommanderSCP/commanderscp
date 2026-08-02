@@ -43,9 +43,42 @@ describe("observedEventIdentity: the grouping key alone is not an identity", () 
     expect(first).not.toBe(second);
   });
 
-  it("two argocd syncs of the SAME app get different identities", () => {
-    // argocd sets `correlationKey: app.metadata.name` and no commitSha or digest at all, so the
-    // provider timestamp is the only thing that can separate two reconciles of one app.
+  it("two argocd reconciles at the SAME revision collapse onto one identity", () => {
+    // The firehose control. Argo CD advances `reconciledAt` every ~3 minutes per app whether or not
+    // anything changed, so keying on the timestamp made every idle reconcile a new row — ~26k rows
+    // and ~150 MB a day on a 61-app instance. With the app's synced revision as the discriminator,
+    // an unchanged app produces ONE row no matter how often it reconciles.
+    const first = observedEventIdentity(
+      ev(
+        { correlationKey: "agentkit-keycloak", commitSha: "ff3fd8a3" },
+        { kind: "sync", occurredAt: "2026-08-02T11:32:05Z" }
+      )
+    );
+    const second = observedEventIdentity(
+      ev(
+        { correlationKey: "agentkit-keycloak", commitSha: "ff3fd8a3" },
+        { kind: "sync", occurredAt: "2026-08-02T11:35:11Z" }
+      )
+    );
+
+    expect(first).toBe(second);
+  });
+
+  it("an argocd redeploy to a NEW revision is still a distinct event", () => {
+    // The other half — collapsing must not swallow a real deployment.
+    const before = observedEventIdentity(
+      ev({ correlationKey: "agentkit-keycloak", commitSha: "ff3fd8a3" }, { kind: "sync" })
+    );
+    const after = observedEventIdentity(
+      ev({ correlationKey: "agentkit-keycloak", commitSha: "a1b2c3d4" }, { kind: "sync" })
+    );
+
+    expect(before).not.toBe(after);
+  });
+
+  it("two argocd syncs of an app with NO revision still separate by timestamp", () => {
+    // An app that has never synced reports no revision, so the identity falls back to the provider
+    // timestamp — the pre-existing behaviour, kept as the honest degradation.
     const first = observedEventIdentity(
       ev(
         { correlationKey: "agentkit-keycloak" },

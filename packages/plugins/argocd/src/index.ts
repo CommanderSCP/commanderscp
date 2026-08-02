@@ -372,6 +372,26 @@ async function observe(ctx: PluginContext, since?: Cursor): Promise<ExecutorEven
       occurredAt: new Date(occurredAtMs).toISOString(),
       correlation: {
         correlationKey: app.metadata.name,
+        // The SYNCED REVISION, and it is what makes this event deduplicable.
+        //
+        // `reconciledAt` advances on EVERY Argo CD reconcile — roughly every three minutes per
+        // application, whether or not anything changed — so an event keyed only on the app name and
+        // that timestamp is a new row per reconcile forever. Measured on a 61-application instance:
+        // ~20 events per app per 30 minutes, with ONE distinct revision between them. About 26k
+        // rows and ~150 MB a day describing nothing happening.
+        //
+        // With the revision here, `observedEventIdentity` (`coordination/observe.ts`) keys the event
+        // as `<app>|<revision>` instead of `<app>|<reconciledAt>`, so repeated reconciles of an
+        // unchanged application collapse onto one row and a genuine redeploy still creates a new
+        // one. The plugin still EMITS per reconcile — it is stateless between polls and cannot know
+        // the previous revision — but the server now rejects the repeats as duplicates, which is
+        // exactly what dedupe is for and costs one no-op insert per application per poll.
+        //
+        // Deliberate consequence: a health flap at the SAME revision (Healthy → Degraded → Healthy)
+        // no longer produces an event. That is correct for this path — `observe` exists to detect
+        // NEW WORK, and a status change on an already-deployed revision is not new work; live status
+        // reaches the engine through `status()` on the changes it is already tracking.
+        commitSha: app.status?.sync?.revision,
         labels: { application: app.metadata.name }
       },
       raw: app
