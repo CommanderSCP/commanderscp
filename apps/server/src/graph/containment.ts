@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 
 /**
@@ -15,8 +15,68 @@ import type { TenantTx } from "../db/tenant-tx.js";
  * hand: it is a SQL FRAGMENT composed into a single larger query that joins `role_bindings`/`roles`,
  * so the deny-override decision happens in one round-trip. It cannot consume row output from here
  * without splitting that query in two. It walks the same two routes with the same depth bound — if
- * you change the routes here, change them there too.
+ * you change the routes here, change them there too. Route 3 below is the FIRST one that does not
+ * have to be hand-synced: it is exported as a SQL fragment and composed into both walks, because a
+ * route added twice by hand is exactly how routes 1 and 2 drifted in the first place.
  */
+
+/**
+ * ROUTE 3, shared verbatim by BOTH containment walks: **a `placement` is contained by the component
+ * it places** (ADR-0026).
+ *
+ * ============================================================================================
+ * WHY THIS ROUTE EXISTS — WHAT SILENTLY STOPPED WORKING WITHOUT IT
+ * ============================================================================================
+ * Under stage-shaped plan compilation a `change_wave_targets.target_object_id` is a PLACEMENT, not a
+ * component (`plan-service.ts`'s `resolveStagePlacements`). Every wave-boundary governance decision
+ * is derived from that id's containment chain — `matchPoliciesForTargets`, `containmentScopeIds` for
+ * freezes, `resolveApprovalScope`, and `resolveEffectiveScanThreshold`'s tier labels all walk it.
+ *
+ * A placement's chain without this route is `[org root, placement]` and nothing else: its `domain_id`
+ * is the org root, and it has NO incoming `contains` edge (measured on the live estate — 61
+ * placements, 0 incoming `contains`). So the moment a wave target became a placement, every
+ * component-scoped and service-scoped policy stopped matching at the wave boundary and every
+ * service-scoped freeze failed OPEN. On the live estate that is 11 `required` component-scoped
+ * prod-gate policies that would have quietly stopped gating prod — the same failure mode, in the
+ * same file, that this module's header records being paid for once already.
+ *
+ * ============================================================================================
+ * DIRECTION, AND WHY IT IS SAFE
+ * ============================================================================================
+ * Route 2 walks `contains` BACKWARDS because that edge is registered service -> component. The
+ * placement edges point the other way (`placement -places-> component`), so this route reads
+ * FORWARDS — and the asymmetry route 2 relies on is preserved: a scope at a component reaches its
+ * placements, a scope at a placement never reaches its component's siblings or its service directly
+ * (it reaches them only by continuing up through the component, which is the whole point).
+ *
+ * It reads the PROPERTY, not the `places` edge, because ADR-0026 D17 makes the properties the source
+ * of truth for the pair and the edges derived — the same half `binding-resolution.ts`,
+ * `plan-service.ts` and `regional-executors.ts` read. It also survives a federation bundle whose
+ * `object_upsert` lands before its `relationship_upsert` siblings, where the edge does not exist yet.
+ *
+ * The CASE guard is not decoration. `createObject` is called directly by journal replay, which does
+ * not go through the typed `/placements` route, so a corrupt or hostile peer could ship a placement
+ * whose `componentId` is not a UUID. A bare `::uuid` cast would then throw inside EVERY containment
+ * walk in that org — one bad row taking out all governance evaluation, fail-open by way of a crash.
+ * `CASE` guarantees the ordering a WHERE-clause guard does not, so a malformed value yields no
+ * ancestor instead of an error.
+ */
+const UUID_TEXT_PATTERN =
+  "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
+
+export function placementComponentParentSql(orgId: string, childIdSql: SQL): SQL {
+  return sql`
+    SELECT CASE
+             WHEN pl.properties ->> 'componentId' ~ ${UUID_TEXT_PATTERN}
+             THEN (pl.properties ->> 'componentId')::uuid
+           END AS parent_id
+    FROM objects pl
+    WHERE pl.id = ${childIdSql}
+      AND pl.org_id = ${orgId}
+      AND pl.type_id = 'placement'
+      AND pl.deleted_at IS NULL
+  `;
+}
 
 export interface ChainEntry {
   id: string;
@@ -31,7 +91,7 @@ export interface ChainEntry {
 /**
  * Target -> ... -> org root, with depth 0 = org root, increasing toward the target.
  *
- * Walks TWO routes up:
+ * Walks THREE routes up:
  *
  *  1. `objects.domain_id` — up to the org root (graph/objects-repo.ts defaults `domainId` to the org
  *     root object at creation time, so every chain terminates there and this walk never needs NULL
@@ -40,14 +100,17 @@ export interface ChainEntry {
  *     service -> component, so it is walked BACKWARDS (`r.to_id` = the child, `r.from_id` = its
  *     service). That asymmetry is a security property: a scope at a SERVICE reaches its components,
  *     but a scope at a COMPONENT never reaches its service or its sibling components.
+ *  3. the COMPONENT a `placement` places, read from its properties (ADR-0026) — see
+ *     `placementComponentParentSql` above for why this route exists and what stopped working
+ *     without it. It extends the chain to `org -> domain -> service -> component -> placement`.
  *
  * Until 0021 this walked domain_id only, so a service-scoped policy/freeze/role governed nothing —
  * even though DESIGN §7 and §10 have always described the chain as `org -> domain -> service ->
  * component`.
  *
- * Both routes live in ONE recursive term via LATERAL: PostgreSQL permits the CTE self-reference
- * exactly ONCE, so two recursive branches would error ("recursive reference ... more than once").
- * `UNION` (not `UNION ALL`) dedupes — with two routes the chain is a DAG, not a line.
+ * All three routes live in ONE recursive term via LATERAL: PostgreSQL permits the CTE self-reference
+ * exactly ONCE, so several recursive branches would error ("recursive reference ... more than once").
+ * `UNION` (not `UNION ALL`) dedupes — with several routes the chain is a DAG, not a line.
  *
  * DEPTH, and what it does and does NOT guarantee — read this before relying on it.
  *
@@ -110,6 +173,12 @@ export async function containmentChain(
           AND r.org_id = ${orgId}
           AND r.type_id = 'contains'
           AND r.deleted_at IS NULL
+        UNION ALL
+        -- 3. the COMPONENT a placement places (ADR-0026) — see placementComponentParentSql. The
+        -- walk continues from there, so a placement inherits its component's service and domain too.
+        SELECT comp.id, comp.type_id, comp.labels
+        FROM (${placementComponentParentSql(orgId, sql`c.id`)}) pc
+        JOIN objects comp ON comp.id = pc.parent_id AND comp.org_id = ${orgId}
       ) parent
       WHERE c.depth < 10
     )
