@@ -588,6 +588,12 @@ export async function resolveExecutorPluginInstance(
     type?: BindingType;
   }
 ): Promise<ResolvedExecutorInstance | undefined> {
+  // DELIBERATELY LITERAL, and this is load-bearing rather than an oversight (ADR-0026 amendment).
+  // Both callers already pass the object that CARRIES the binding: `observe.ts` passes
+  // `binding.targetObjectId` from a binding it is iterating, and `reconcile.ts` passes the object
+  // `resolveBindingForTarget` resolved the binding ONTO — the placement, not the component. So the
+  // placement fallback belongs at the point where a WAVE TARGET is interpreted, not here, and adding
+  // it here would make this module depend on `binding-resolution.ts` which depends on it.
   const binding = await getExecutorBinding(
     tx,
     input.orgId,

@@ -35,14 +35,13 @@ import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
-import { badRequest, forbidden, notFound } from "../errors.js";
+import { badRequest, conflict, forbidden, notFound } from "../errors.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { isPeerBoundObjectType } from "../federation/outpost-binding.js";
 import { containmentDomainIdFromWire } from "../domain-id-edge.js";
 import { createRelationship } from "../graph/relationships-repo.js";
 import {
   upsertExecutorBinding,
-  getExecutorBinding,
   listExecutorBindingsForTarget,
   deleteExecutorBinding,
   setExecutorBindingType,
@@ -53,6 +52,7 @@ import {
   EXECUTION_SYSTEM_INSTANCE_PREFIX
 } from "../coordination/executor-bindings-repo.js";
 import { buildRegionalExecutorView } from "../coordination/regional-executors.js";
+import { resolveBindingForTarget } from "../coordination/binding-resolution.js";
 import {
   upsertNotificationBinding,
   listNotificationBindings,
@@ -369,13 +369,25 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           scopeObjectId: target.id
         });
         const type = request.query.type ?? DEFAULT_BINDING_TYPE;
-        const row = await getExecutorBinding(tx, auth.orgId, target.id, type);
-        if (!row) {
+        // Placement-aware (ADR-0026 amendment): this route answers "what will actually drive this
+        // target?", so it must agree with reconcile. A component whose binding has moved to its
+        // placement would otherwise 404 here while deploying perfectly well — the operator reads
+        // "no binding configured" about a target that is bound, which is worse than no answer.
+        const resolution = await resolveBindingForTarget(tx, auth.orgId, target.id, type);
+        if (resolution.outcome === "ambiguous") {
+          const named = resolution.candidates.map((c) => c.placementObjectId).join(", ");
+          throw conflict(
+            `'${request.params.idOrUrn}' has a '${type}' binding on ${resolution.candidates.length} ` +
+              `placements (${named}) — which one applies depends on the place, so ask for the ` +
+              `placement rather than the component`
+          );
+        }
+        if (!resolution.binding) {
           throw notFound(
             `no '${type}' executor binding configured for '${request.params.idOrUrn}'`
           );
         }
-        return row;
+        return resolution.binding;
       });
       reply.status(200).send(binding);
     }

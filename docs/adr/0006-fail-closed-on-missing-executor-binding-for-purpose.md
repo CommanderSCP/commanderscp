@@ -50,3 +50,88 @@ Only `listExecutorBindingsForTarget` applies the live-target (soft-delete) filte
 
 - Service-level / deployment-target-level binding walk-up (future M12).
 - An explicit operator opt-in to remediate a `no_executor` gap with the managed-iac executor (ADR-0002 Mode 2), if ever wanted — never a default.
+
+---
+
+## Amendment (2026-08-02) — placement-aware resolution, and a fourth case
+
+**Status of the original decision: unchanged.** Cases (a) and (b) mean exactly what they meant, and
+the boundary-pin test that guards (a) from collapsing into (b) still guards it. What changes is
+*where resolution looks* before it concludes "no binding", and the addition of one new refusal.
+
+**Why.** [ADR-0026](0026-placements-and-derived-stage-names.md) made the `(component × place)` pair a
+first-class `placement`, and an executor binding attaches to the pair. Migrating the estate therefore
+means moving bindings from components onto placements — but a wave target is a **component** under
+legacy compilation and a **placement** only under stage-shaped compilation. Moving a binding while
+compilation is still legacy leaves the component with **zero** bindings, and case (a) reads zero as
+intended-fake: every wave target would fake-succeed. Green reports, nothing deployed — precisely the
+masking failure this ADR exists to prevent, reintroduced through the migration rather than through a
+code change.
+
+The ordering is circular as the migration was originally written: bindings cannot move until
+compilation is stage-shaped, compilation cannot go stage-shaped until a topology is attached, and
+attaching one fails loudly for anything unplaced. Placement-aware resolution breaks the cycle by
+making each step independently safe.
+
+### What resolution now does
+
+`coordination/binding-resolution.ts`'s `resolveBindingForTarget` replaces the bare
+`getExecutorBinding` at the **read/resolve** sites. **Direct is always checked first**, so nothing
+that resolves today changes answer:
+
+1. the target itself carries a binding of this type → **direct**, unchanged;
+2. otherwise, if the target is a component with **exactly one** placement carrying one → **via
+   placement**, resolve it;
+3. **two or more placements carry one → (d) AMBIGUOUS PLACEMENT → fail closed.**
+
+### (d) is a new population, not a variant of (b)
+
+(b) is *"bound, but not for this pipeline"*. (d) is *"bound for this pipeline in more than one
+**place**, and the wave target does not say which"* — and the honest answer is that a component alone
+**cannot** answer it. That is the entire reason the placement type exists: "which Argo CD" is a
+function of *where*. Choosing arbitrarily would reintroduce the cross-product bug ADR-0026 was written
+to kill, silently and in a new place.
+
+It gets its own audit action (`change.wave_target.ambiguous_placement_binding`), its own gate label
+(`ambiguous_placement_binding`), and a Decision that **names every competing placement** — because
+the remediation is not "add a binding", it is "make the wave target a placement", i.e. attach a
+stage-shaped topology. The state is reachable the moment an env-suffixed pair is merged: the survivor
+gets two placements, which is exactly when stage-shaped compilation must take over.
+
+### (a) had to look further to keep meaning the same
+
+Case (a) is *"nothing anywhere"*. Once a binding can live on a placement, "anywhere" must include
+placements, so the (a)/(b) discrimination now reads `listVisibleBindingsForTarget` — the target's own
+bindings **plus its placements'**. Reading only the target's own would let a component whose
+`configuration` binding had moved to its placement, receiving an `image` release, look like
+zero-bindings and fake-succeed: case (b) wearing case (a)'s clothes. This is a change of *reach*, not
+of *rule*.
+
+### Where the fallback is, and where it deliberately is not
+
+A filterless census found 9 non-test `getExecutorBinding` call sites across 5 files. The fallback was
+applied to the 6 that ask *"what will drive this target?"* and withheld from the 3 that ask *"what row
+is on this object?"*:
+
+| Applied | Withheld |
+|---|---|
+| `reconcile.ts` gap analysis | `executor-bindings-repo.ts` `putExecutorBinding` existence check |
+| `reconcile.ts` trigger (externalRef) | `setExecutorBindingType` from-lookup |
+| `reconcile.ts` `ensureExecutorInstanceStarted` | `setExecutorBindingType` to-clash lookup |
+| `regional-executors.ts` deploy gate (membership hop) | |
+| `routes/executors.ts` `GET .../binding` | |
+| (`resolveExecutorPluginInstance` reached via the resolved carrier) | |
+
+The three withheld are **write** paths where a fallback would be actively wrong: an upsert that
+"found" a placement's binding would update the wrong row, and a relabel would report a clash against a
+binding on a different object. Applying it uniformly is the failure mode this table exists to prevent.
+
+### One thing this amendment fixes that was not asked for
+
+`evaluateRegionalDeployGate` resolved region membership by requiring the wave target to be a
+`deployment-target`. Under stage-shaped compilation a wave target is a **placement**, which carries no
+`environment`/`region` of its own — so the M15.6 silent-region-deploy gate (case (c)) would have
+**silently stopped firing**, quietly becoming case (a). The gate now hops a placement to the
+deployment-target it names for the *membership* question, while still resolving the *binding* against
+the wave target itself. Not reachable on the estate today (no placement names a region target), which
+is exactly why it would have gone unnoticed until the first regional stage rollout.
