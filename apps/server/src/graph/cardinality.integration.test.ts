@@ -63,11 +63,16 @@ describe("cardinality: many_to_one and `releases_via`", () => {
     return admin.object("release-topology").create({ name, properties: { waves: [] } });
   }
 
-  it("registers `releases_via` as component -> release-topology, many_to_one", async () => {
+  it("registers `releases_via` with the three inheritance rungs -> release-topology, many_to_one", async () => {
     const types = await admin.typeRegistry.relationshipTypes.list({ limit: 100 });
     const rv = types.items.find((t) => t.id === "releases_via");
     expect(rv, "migration 0049 must register the `releases_via` relationship type").toBeDefined();
-    expect(rv!.fromTypes).toEqual(["component"]);
+    // 0049 registered `component` ALONE on purpose — the higher rungs exist to be READ by the
+    // resolution walk, and registering an endpoint nothing could resolve would have let an operator
+    // attach a pipeline that silently did nothing. Migration 0052 widened it when that walk landed,
+    // and this assertion moved with it rather than being loosened: `domain` is still absent, which
+    // is the part that would re-create the attach-but-never-resolve trap (D15 dropped that axis).
+    expect(rv!.fromTypes).toEqual(["component", "service", "organization"]);
     expect(rv!.toTypes).toEqual(["release-topology"]);
     // many_to_one — the FROM side is singular. one_to_many here would constrain the pipeline
     // instead of the component, i.e. exactly backwards.
