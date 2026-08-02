@@ -4,7 +4,8 @@ import type { CampaignPlan, CampaignWaveTarget } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { campaignPlans, campaignWaveTargets, campaignWaves, relationships } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
-import { compilePlan, type DependsOnEdge, type TopologyWaveSpec } from "./plan-compiler.js";
+import { compilePlan, type DependsOnEdge } from "./plan-compiler.js";
+import { parseTopologyWaves } from "./topology-waves.js";
 
 /**
  * Compiles and PERSISTS a campaign's plan — the campaign-scoped sibling of
@@ -38,13 +39,6 @@ async function loadDependsOnEdges(
   return rows.map((r) => ({ from: r.fromId, to: r.toId }));
 }
 
-function parseTopologyWaves(document: unknown): TopologyWaveSpec[] | undefined {
-  if (!document || typeof document !== "object") return undefined;
-  const waves = (document as { waves?: unknown }).waves;
-  if (!Array.isArray(waves)) return undefined;
-  return waves as TopologyWaveSpec[];
-}
-
 export async function compileAndPersistCampaignPlan(
   tx: TenantTx,
   input: {
@@ -67,10 +61,15 @@ export async function compileAndPersistCampaignPlan(
     topologyDocument = topology.properties as Record<string, unknown>;
   }
 
+  // The SAME parser `plan-service.ts` uses, so a malformed topology is refused on the campaign path
+  // exactly as loudly as on the change path — see `topology-waves.ts` for why it is a shared module
+  // and not a second copy.
+  const topologyWaves = parseTopologyWaves(topologyDocument);
+
   const result = compilePlan({
     targets: input.targetObjectIds,
     dependsOn,
-    topologyWaves: parseTopologyWaves(topologyDocument)
+    ...(topologyWaves ? { topologyWaves } : {})
   });
 
   if (!result.ok) {
