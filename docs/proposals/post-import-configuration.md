@@ -15,6 +15,7 @@
 | **D4** | Topology inheritance walks **past** the owning service. |
 | **D5** | The readiness marker flags items **awaiting manual resolution by a user**. It is not an "acknowledged, stop counting" flag. |
 | **D6** | No backfill. Applies only to changes created afterward. |
+| **D7** | Merge the env pairs **one at a time with a verification pass between**, not in one batch (§6 step 3). |
 
 ---
 
@@ -164,6 +165,19 @@ Step 2 preserves today's semantics exactly for every component that never gains 
 
 Both shapes must be supported during migration (§6), distinguished by whether a wave carries `stages` or `targets`. A wave carrying **both** should be rejected outright rather than resolved by precedence — a silently-preferred key is how `parseTopologyWaves` already loses malformed documents (§1.5).
 
+### 5.1 The cartesian product needs a filter, and the filter is a hazard
+
+A naive product breaks on the six single-stage components (§6). `agentkit-umami-prod` exists only at prod; under a `gamma → prod` pipeline the product would emit a (umami × `commercial-gamma`) wave target for which no binding exists, and ADR-0006 would correctly fail it closed. The change parks forever on a stage the component was never meant to reach.
+
+So the product must be filtered by which stages a component actually participates in. Two things make that harder than it looks:
+
+- **The compiler is pure** (`plan-compiler.ts`, zero I/O by design, per BUILD_AND_TEST.md §4.1) and cannot look up bindings. The participation set must be resolved by `plan-service.ts` — which already does the DB I/O — and passed in, preserving the purity property the toposort property tests depend on.
+- **Filtering on binding-existence alone re-introduces exactly what ADR-0006 forbids.** "No binding at this stage" would silently shrink the plan, and a component that *lost* its gamma binding would look identical to one that never had it. That is the silent no-op ADR-0006 exists to eliminate, reappearing one level up.
+
+This is the §7 readiness problem in another guise: an unresolved gap and a deliberate absence are indistinguishable in the data unless somebody declares which it is. The resolution should be the same mechanism — a component (or its service) **declares the stages it participates in**, the compiler filters on the declaration rather than on binding-existence, and a declared stage with no binding still fails closed per ADR-0006. Absent any declaration, fail closed rather than infer.
+
+That keeps one rule: *the graph never guesses whether an absence was intended.* See Q8.
+
 **Attachment and inheritance (D4).** With pipelines now reusable, the attachment edge from rev 1 becomes worth having — but pointing at a *pipeline*, not at a bundle of components. A `releases_via` edge, resolved in this order when a change carries no explicit `--topology`:
 
 1. the change's own explicit topology (unchanged — explicit always wins)
@@ -180,12 +194,38 @@ Because many components now share one topology, the cardinality question from re
 
 ## 6. Migrating the live estate
 
-The homelab's 18 env-suffixed components collapse to 9, each gaining two stage-scoped bindings. This is the disruptive part and should be staged.
+The homelab's 18 env-scoped components collapse to **13**, not 9 — only five are true pairs. Matched by the `external_ref` on each binding (the real Argo CD application name), the estate is:
+
+| Logical app | gamma component | prod component | Argo CD refs |
+|---|---|---|---|
+| keycloak | `agentkit-keycloak` | `agentkit-keycloak-prod` | **identical** |
+| market | `agentkitmarket` | `agentkitmarket-prod` | **identical** |
+| profile | `agentkitprofile` | `agentkitprofile-prod` | **identical** |
+| auto | `agentkit-auto` | `agentkitauto-prod` | differ — `agentkit-auto` / `agentkitauto` |
+| forge-web | `agentkit-forge-web` | `agentkitforge-web-prod` | differ — `agentkit-forge-web` / `agentkitforge-web` |
+
+**Not pairs, and must not be merged:** `agentkit-bootstrap` (`agentkit-bootstrap`) and `agentkit-db-bootstrap-prod` (`agentkit-db-bootstrap`) are different Argo CD applications, as are `agentkit-selfhost` (`agentkit-selfhost`) and `agentkit-hosted-prod` (`agentkit-hosted`). The name symmetry is misleading; the refs are not. Four more are prod-only with no gamma counterpart: `agentkitgateway-prod`, `agentkitproject-site-prod`, `agentkit-sealed-secrets-prod`, `agentkit-umami-prod`.
+
+The six non-pairs need no merge — they are single-stage components that simply gain a stage-scoped binding. Their `-prod` suffix becomes misleading once stage is explicit (the suffix was carrying the stage), so a rename is worth considering separately; it is cosmetic and reversible, unlike a merge. See Q7.
+
+This is the disruptive part and should be staged.
 
 1. **Create the two stages** (`commercial-gamma`, `commercial-prod`) and their edges to the existing deployment-targets. Additive; nothing observes them yet.
 2. **Backfill `stage_object_id`** on the 61 existing bindings, from each component's `properties.environment` (already present on the 11 prod components) and its Argo CD execution-system. Still additive — resolution rung 2 keeps every component working.
-3. **Merge each env pair** with the shipped `scp component merge` (P5d), which already moves bindings and soft-deletes the loser. The binding-type collision that would previously 409 is exactly what step 2 resolves: the two `configuration` bindings now differ by stage.
-4. **Author one `commercial-gamma-then-prod` topology** over stages and attach it to the `agentkit` service. All 9 components inherit it (rung 3).
+3. **Merge the five pairs, one app at a time, with a verification pass between each** (owner, D7). Uses the shipped `scp component merge` (P5d), which already moves bindings and soft-deletes the loser. The binding-type collision that would previously 409 is exactly what step 2 resolves: the two `configuration` bindings now differ by stage.
+
+   Note the owner's chosen granularity was "one service at a time", which **does not decompose here** — only `agentkit` contains env pairs, so per-service is a single batch of five. Per-app-pair is the finest increment the estate actually offers, and is what this step uses.
+
+   Order, lowest risk first — the three whose Argo CD refs are identical across stages, then the two whose refs differ:
+
+   1. `agentkit-keycloak` ← `agentkit-keycloak-prod`
+   2. `agentkitmarket` ← `agentkitmarket-prod`
+   3. `agentkitprofile` ← `agentkitprofile-prod`
+   4. `agentkit-auto` ← `agentkitauto-prod` *(refs differ)*
+   5. `agentkit-forge-web` ← `agentkitforge-web-prod` *(refs differ)*
+
+   **Verification between each** — the merge is irreversible, so a pass that only checks the merge "succeeded" is worthless. Each must confirm: the survivor holds exactly two `configuration` bindings whose `stage_object_id` values are the two distinct stages; each binding's `external_ref` is unchanged from before the merge; the loser is soft-deleted with no live `contains` edge; and a `scp discovery run` against **both** Argo CD systems still resolves each binding to its real application. The last is the one that catches a swapped or dropped `external_ref`, which is the failure mode that would silently point a stage at the wrong cluster's app.
+4. **Author one `commercial-gamma-then-prod` topology** over stages and attach it to the `agentkit` service. Every component in it inherits the pipeline via rung 3 — including the six single-stage ones, whose plans simply compile to the one wave whose stage they have a binding for.
 5. **Retire `agentkit-gamma-then-prod`** and `forge-gamma-then-prod` once no in-flight plan references them. Compiled plans snapshot `topology_document` (`plan-service.ts:96-109`), so retiring the object cannot disturb history.
 
 Per D6 there is **no backfill of existing changes** — the 276 single-wave plans stay as they are, and only changes created after step 4 compile stage-shaped.
@@ -291,6 +331,8 @@ What the self row carries: domain name and id from `federation_self`, the declar
 - **Q1 — `releases_via` cardinality.** Add a `many_to_one` arm to `assertCardinality` (recommended, edge reads naturally), or declare the edge `topology → component` and read it backwards for no engine change?
 - **Q2 — inheritance beyond the service.** D4 says walk past it. Confirm the rungs: domain, then an org-level default? And is an org default a singleton object or a settings value?
 - **Q3 — stage → deployment-target edge.** Reuse `hosted_on` (whose `from_types` is `{service, component}` today, so this widens an existing type), or add a dedicated relationship type?
-- **Q4 — merge timing.** §6 step 3 is irreversible. Merge all 9 env pairs at once, or one service at a time with a verification pass between?
+- ~~**Q4 — merge timing.**~~ **Answered (D7):** one at a time with a verification pass between. Recorded in §6 step 3, at per-app-pair granularity since per-service does not decompose.
+- **Q8 — stage participation (§5.1).** How does a component declare which stages it participates in? Options: an explicit `deploys_to`-style edge component → stage (graph-native, and `deploys_to` already exists with `{service,component,change,campaign} → deployment-target`); a property listing stage names; or inherited from the service with a per-component override, mirroring §7.2's granularity. This is the one open question that blocks §5 rather than merely refining it.
+- **Q7 — renaming the six non-pairs.** Once stage is explicit, the `-prod` suffix on `agentkitgateway-prod`, `agentkitproject-site-prod`, `agentkit-sealed-secrets-prod`, `agentkit-umami-prod`, `agentkit-db-bootstrap-prod` and `agentkit-hosted-prod` is carrying information the stage now carries. Rename them, or leave the suffix as harmless history? A rename changes the derived URN, so it is cheap but not free.
 - **Q5 — stage naming for the homelab.** `commercial-gamma` / `commercial-prod` (proposed, no location segment), or `commercial-amer-*` to leave room for a region split? The glossary says omit unless disambiguating, but renaming a stage later renames a *place*.
 - **Q6 — the 8 unbound components.** Out of scope here, but they fail `hasExecutorBinding` and surface in the readiness count on day one. Wire them, or resolve them as not-for-coordination?
