@@ -56,6 +56,46 @@ function advanceWatermark(events: ExecutorEvent[], current: string | null): stri
 }
 
 /**
+ * The dedupe identity of ONE observed event — what makes two polls of the same event the same row,
+ * and two genuinely different events two rows.
+ *
+ * **This used to be `correlationKey ?? commitSha ?? artifactDigest ?? kind:occurredAt`, and that was
+ * wrong in a way that silently disabled observe-based ingestion.** `correlationKey` is a GROUPING
+ * key by design — it is what `linkToCoordinatedChange` collects related changes under — so for many
+ * providers it is deliberately STABLE across events:
+ *
+ *   - `pollCommits` (github, gitea, gitlab) sets the literal `"refs/heads/*"` — constant per repo
+ *   - argocd sets `app.metadata.name` — constant per app
+ *   - github's `deployment` webhook sets `deployment.environment` — constant per environment
+ *
+ * Because it was checked FIRST and was always present, `commitSha` was never reached, and every
+ * event sharing a group collapsed onto one dedupe key. Exactly one row per (instance, group) was
+ * ever ingested and everything after it was rejected as a duplicate — forever, not per poll window.
+ * Measured on the homelab: **4 push events ingested in total** (one per repo, all on the day the
+ * bindings were created) against 402 workflow runs, which escaped only because `run-${id}` happens
+ * to be unique; and **62 argocd events for 61 bound applications**, newest a week stale.
+ *
+ * The fix keeps the grouping key in the identity — two different groups must never collide — and
+ * adds whatever actually DISCRIMINATES events within that group:
+ *
+ *   - a `commitSha`/`artifactDigest` when present: a true per-event identity (one commit, one
+ *     artifact), so `refs/heads/*` + sha is unique per commit and `run-N` + sha stays unique per run
+ *   - otherwise `occurredAt` — the PROVIDER's timestamp, not `now()`. That distinction is what makes
+ *     this safe: re-polling an unchanged event yields the same provider timestamp and therefore the
+ *     same key, while a genuinely new one (argocd's next reconcile) yields a new key.
+ *
+ * Changing the key format does not re-ingest history: every poller filters by its observe cursor
+ * (`?since=` for github commits, `created_at > sinceIso` for runs, `reconciledAt > sinceTime` for
+ * argocd), so events already past the cursor are never re-fetched to be re-keyed.
+ */
+export function observedEventIdentity(ev: ExecutorEvent): string {
+  const c = ev.correlation ?? {};
+  const group = c.correlationKey ?? ev.kind;
+  const discriminator = c.commitSha ?? c.artifactDigest ?? ev.occurredAt;
+  return `${group}|${discriminator}`;
+}
+
+/**
  * Normalize observed events into `change_source_events`. The payload carries the event's structured
  * `correlation` at top level so `webhook-processor.ts`'s generic `extractHint` (which reads
  * `payload.repo`/`.path`/`.correlationKey`) correlates it exactly as a `scp change report` caller
@@ -74,9 +114,7 @@ export async function ingestObservedEvents(
   let ingested = 0;
   for (const ev of events) {
     const c = ev.correlation ?? {};
-    const identity =
-      c.correlationKey ?? c.commitSha ?? c.artifactDigest ?? `${ev.kind}:${ev.occurredAt}`;
-    const dedupeKey = `observe:${pluginInstanceId}:${identity}`;
+    const dedupeKey = `observe:${pluginInstanceId}:${observedEventIdentity(ev)}`;
     const payload: Record<string, unknown> = {
       repo: c.repo,
       path: c.path,
