@@ -15,6 +15,19 @@ export interface CorrelationHint {
   sourceKind: string;
   repo?: string;
   path?: string;
+  /**
+   * EVERY path the event touched. A `pathPattern` matches when it matches `path` **or any entry
+   * here**, so this is what lets one repository route to per-directory components.
+   *
+   * Why it exists as a separate field rather than replacing `path`: `path` is a singular *location*
+   * some providers carry natively (a release's target commitish, a package path), and it predates
+   * this. A commit is not a location — it touches many files — so it could never be expressed in
+   * the singular field. Until a provider populated this, every `pathPattern` mapping was skipped
+   * by the guard below, which meant a repo-only mapping set on a monorepo collapsed to exactly ONE
+   * live route (most-constrained, then oldest) while every other mapping on that repo silently
+   * never fired.
+   */
+  paths?: string[];
 }
 
 /** What a source event resolves to: the component, and WHICH of its pipelines the source drives. */
@@ -60,6 +73,25 @@ export interface SourceMatch {
  * carries the routing `type` (ADR-0007), so it picks WHICH PIPELINE — an unordered match could route
  * a release into the wrong pipeline depending on the query plan.
  */
+/**
+ * Does `pattern` match the event's location at all — the singular `path`, or ANY member of `paths`?
+ *
+ * The `||` order is deliberate and not an optimisation: `path` is checked first so a provider that
+ * sets only the singular field behaves exactly as it did before `paths` existed.
+ *
+ * **An event with no path information at all still fails this**, which is the pre-existing
+ * fail-closed behaviour and is load-bearing: a path-scoped mapping must never match an event whose
+ * changed set is unknown, or it would claim releases it cannot prove are its own. The practical
+ * consequence is worth stating, because it is a silent degradation rather than an error — when a
+ * provider cannot determine paths (a truncated commit-file list, a poll past its fetch budget, a
+ * provider that carries none), path-scoped mappings are skipped and the event falls through to
+ * whatever repo-only mapping wins. It routes, but by repository rather than by directory.
+ */
+function matchesAnyPath(pattern: string, hint: CorrelationHint): boolean {
+  if (hint.path && globMatch(pattern, hint.path)) return true;
+  return (hint.paths ?? []).some((candidate) => globMatch(pattern, candidate));
+}
+
 export async function matchComponentForSource(
   tx: TenantTx,
   orgId: string,
@@ -78,7 +110,7 @@ export async function matchComponentForSource(
 
   for (const row of rows) {
     if (row.repoPattern && (!hint.repo || !globMatch(row.repoPattern, hint.repo))) continue;
-    if (row.pathPattern && (!hint.path || !globMatch(row.pathPattern, hint.path))) continue;
+    if (row.pathPattern && !matchesAnyPath(row.pathPattern, hint)) continue;
     return {
       componentObjectId: row.componentObjectId,
       type: (row.type as ExecutorType | null) ?? "configuration"

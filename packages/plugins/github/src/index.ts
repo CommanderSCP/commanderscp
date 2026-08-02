@@ -250,6 +250,29 @@ export function verifyGithubWebhookSignature(
  *  named export for back-compat with existing importers). */
 export type GithubEventHint = GitProviderEventHint;
 
+/** One commit as a `push` webhook payload carries it — GitHub splits the changed set across three
+ *  sibling arrays rather than one, and all three are changes for correlation purposes. */
+interface PushCommit {
+  id?: string;
+  added?: unknown;
+  modified?: unknown;
+  removed?: unknown;
+}
+
+/** Union of every `added`/`modified`/`removed` entry across `commits`, de-duplicated and stable.
+ *  Deliberately tolerant of a malformed member: a push whose payload shape surprises us must still
+ *  correlate on whatever paths ARE readable, rather than throwing and wedging the ingress tick. */
+function unionCommitPaths(commits: readonly PushCommit[]): string[] {
+  const out = new Set<string>();
+  for (const commit of commits) {
+    for (const bucket of [commit?.added, commit?.modified, commit?.removed]) {
+      if (!Array.isArray(bucket)) continue;
+      for (const entry of bucket) if (typeof entry === "string" && entry.length > 0) out.add(entry);
+    }
+  }
+  return [...out].sort();
+}
+
 /** Shared by the webhook route AND `observe()`'s polling fallback (see module doc). Only the four
  *  event kinds DESIGN §12 names for GitHub (`push`, `pull_request`, `workflow_run`, `deployment`,
  *  `release`) are recognized; anything else yields `null` (ignored, not an error — GitHub sends
@@ -264,11 +287,18 @@ export function mapGithubWebhookEventToHint(
 
   switch (eventName) {
     case "push": {
-      const headCommit = p.head_commit as { id?: string } | undefined;
+      const headCommit = p.head_commit as PushCommit | undefined;
+      // The changed-file set, unioned across EVERY commit in the push — not just `head_commit`.
+      // A push delivers all its commits at once, and a file touched by an earlier commit in the
+      // same push is still a file this push changed; reading only the head would silently drop it
+      // and route the release by the repo-only fallback instead.
+      const commits = Array.isArray(p.commits) ? (p.commits as PushCommit[]) : [];
+      const paths = unionCommitPaths(headCommit ? [...commits, headCommit] : commits);
       return {
         repo,
         commitSha: headCommit?.id ?? (p.after as string | undefined),
-        correlationKey: p.ref as string | undefined
+        correlationKey: p.ref as string | undefined,
+        ...(paths.length > 0 ? { paths } : {})
       };
     }
     case "pull_request": {
@@ -325,21 +355,78 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
   const { status: commitsStatus, body: commitsBody } = await api(ctx, config, "GET", commitsPath);
   if (commitsStatus >= 200 && commitsStatus < 300) {
     const commits = commitsBody as Array<{ sha: string; commit?: { author?: { date?: string } } }>;
+    let fileFetchBudget = MAX_COMMIT_FILE_FETCHES_PER_POLL;
     for (const commit of commits) {
       const occurredAt = commit.commit?.author?.date ?? new Date().toISOString();
+      // The commits LIST response carries no `files` (GitHub only returns them on the single-commit
+      // resource), so poll-vs-push equivalence for `paths` costs one extra GET per commit. Budgeted
+      // rather than unbounded: a repo that lands a large backlog between polls must not turn one
+      // observe tick into hundreds of API calls. Commits past the budget still produce an event —
+      // just without `paths`, so they route by the repo-only mappings exactly as before.
+      const paths =
+        fileFetchBudget > 0 ? await fetchCommitPaths(ctx, config, commit.sha) : undefined;
+      if (fileFetchBudget > 0) fileFetchBudget -= 1;
       events.push({
         kind: "push",
         occurredAt,
         correlation: normalizeCorrelation({
           repo: `${config.owner}/${config.repo}`,
           commitSha: commit.sha,
-          correlationKey: "refs/heads/*"
+          correlationKey: "refs/heads/*",
+          ...(paths && paths.length > 0 ? { paths } : {})
         }),
         raw: commit
       });
     }
   }
   return events;
+}
+
+/** Per-poll ceiling on single-commit fetches (see `pollCommits`). */
+const MAX_COMMIT_FILE_FETCHES_PER_POLL = 20;
+
+/**
+ * The changed-file set of ONE commit, via the single-commit resource (the only GitHub endpoint that
+ * returns `files`). Best-effort by design: a non-2xx or unexpected shape yields `undefined` rather
+ * than throwing, matching `pollCommits`' documented lenient observe posture.
+ *
+ * **Known limit, and it is a silent one.** GitHub caps this response at 300 files and does not
+ * paginate them here, so a commit touching more than 300 files yields a TRUNCATED set. A path-scoped
+ * mapping whose directory fell outside the truncation will not match, and the event then routes by
+ * whatever repo-only mapping wins — i.e. it degrades to the pre-existing behaviour rather than
+ * failing loudly. Acceptable because such commits are rare in a GitOps repo (the case this exists
+ * for), but it is a real hole and should not be discovered later as a surprise.
+ */
+async function fetchCommitPaths(
+  ctx: PluginContext,
+  config: GithubConfig,
+  sha: string
+): Promise<string[] | undefined> {
+  if (!sha) return undefined;
+  try {
+    const { status, body } = await api(
+      ctx,
+      config,
+      "GET",
+      `/repos/${config.owner}/${config.repo}/commits/${encodeURIComponent(sha)}`
+    );
+    if (status < 200 || status >= 300) return undefined;
+    const files = (body as { files?: unknown }).files;
+    if (!Array.isArray(files)) return undefined;
+    const out = new Set<string>();
+    for (const file of files) {
+      const filename = (file as { filename?: unknown }).filename;
+      if (typeof filename === "string" && filename.length > 0) out.add(filename);
+    }
+    return out.size > 0 ? [...out].sort() : undefined;
+  } catch {
+    // MUST swallow. `api()` THROWS on a transport failure (blocked host, DNS, connection reset) —
+    // only a non-2xx comes back as a status. Letting that escape would abort `pollCommits` mid-loop
+    // and lose the push events themselves, turning a best-effort enrichment into data loss: the
+    // release would never be coordinated at all, rather than merely routing by repo instead of by
+    // directory. Degrading to `undefined` is the whole point of this being an enrichment.
+    return undefined;
+  }
 }
 
 /** Adapter `pollRuns` hook: recent workflow runs (approximates `workflow_run` webhook activity). */

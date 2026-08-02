@@ -49,6 +49,9 @@ const BATCH_LIMIT = 20;
 export interface ExtractedHint {
   repo?: string;
   path?: string;
+  /** Every path the event touched. See `CorrelationHint.paths` (`correlation.ts`) for why a
+   *  single `path` cannot represent a commit, and what that costs on a monorepo. */
+  paths?: string[];
   correlationKey?: string;
   /** OCI/image artifact digest (`sha256:…`) for a registry/package push (harbor's `PUSH_ARTIFACT`,
    *  gitea's `package`) — threaded into the proposed Change's `sourceRef.artifact_digest`, the
@@ -109,6 +112,12 @@ function genericHint(payload: unknown): ExtractedHint {
   return {
     repo: typeof p.repo === "string" ? p.repo : undefined,
     path: typeof p.path === "string" ? p.path : undefined,
+    // Read the SAME way an observed payload writes it (`observe.ts`) and a first-party reporter may
+    // send it. Non-string members are dropped rather than rejecting the whole event: a partly
+    // malformed path list should narrow correlation, never wedge ingress.
+    paths: Array.isArray(p.paths)
+      ? p.paths.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+      : undefined,
     correlationKey: typeof p.correlationKey === "string" ? p.correlationKey : undefined,
     artifactDigest:
       typeof p.artifactDigest === "string" && p.artifactDigest.length > 0
@@ -162,6 +171,10 @@ export function extractHint(sourceKind: string, headers: unknown, payload: unkno
   return {
     repo: providerHint.repo ?? generic.repo,
     path: providerHint.path ?? generic.path,
+    // Same precedence as every other field: the adapter's reading wins, the flat generic shape is
+    // the fallback. An empty array from an adapter is treated as "no paths determined" rather than
+    // "changed nothing" — the two are indistinguishable here, and the latter cannot happen.
+    paths: providerHint.paths && providerHint.paths.length > 0 ? providerHint.paths : generic.paths,
     correlationKey: providerHint.correlationKey ?? generic.correlationKey,
     // Additive forwarding (M15.3c): git-provider hints that don't set a digest leave this undefined,
     // so nothing about their behavior changes; harbor/gitea package pushes carry it through to
@@ -248,7 +261,8 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
     const match = await matchComponentForSource(tx, orgId, {
       sourceKind: row.sourceKind,
       repo: hint.repo,
-      path: hint.path
+      path: hint.path,
+      paths: hint.paths
     });
 
     if (!match) {

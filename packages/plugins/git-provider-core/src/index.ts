@@ -45,6 +45,9 @@ import type {
 export interface GitProviderEventHint {
   repo?: string;
   path?: string;
+  /** Every path the event touched — see `ExecutorEventCorrelation.paths` (`@scp/plugin-api`) for
+   *  why the singular `path` cannot carry a commit's changed-file set, and what depends on this. */
+  paths?: string[];
   commitSha?: string;
   /** OCI/package artifact digest (e.g. `sha256:…`) for a package/image-push event — the correlation
    *  key the registry story matches a promoted artifact on (ADR-0013). Optional and additive: the
@@ -87,6 +90,7 @@ export function normalizeCorrelation(hint: GitProviderEventHint): ExecutorEventC
   return {
     repo: hint.repo,
     path: hint.path,
+    paths: hint.paths,
     commitSha: hint.commitSha,
     artifactDigest: hint.artifactDigest,
     correlationKey: hint.correlationKey
