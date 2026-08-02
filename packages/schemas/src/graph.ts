@@ -16,7 +16,25 @@ export const JsonRecordSchema = z.record(z.string(), z.unknown());
 /** JSON Schema document (Ajv validates instance `properties` against this at write time). */
 export const JsonSchemaDocSchema = z.record(z.string(), z.unknown());
 
-export const CardinalitySchema = z.enum(["one_to_one", "one_to_many", "many_to_many"]);
+/**
+ * Which SIDE of an edge is singular. `one_to_many` makes the **to** side singular (one live
+ * incoming edge of this type per `to_id`); `many_to_one` makes the **from** side singular (one live
+ * outgoing edge per `from_id`); `one_to_one` makes both; `many_to_many` neither.
+ *
+ * `many_to_one` was added by ADR-0026 / post-import-configuration.md D11 for `releases_via`
+ * (`component -> release-topology`: each component releases via at most one pipeline, each pipeline
+ * serves many components). Before that it was ABSENT here and had no branch in
+ * `assertCardinality` — so a hand-inserted `many_to_one` fell through every check and was silently
+ * unenforced, which is why migration 0021 registered `contains` as the mirror instead. Every value
+ * in this enum now has an enforcing branch, and `assertCardinality` FAILS CLOSED on any value that
+ * does not (the column is plain `text` with no CHECK constraint).
+ */
+export const CardinalitySchema = z.enum([
+  "one_to_one",
+  "one_to_many",
+  "many_to_one",
+  "many_to_many"
+]);
 export type Cardinality = z.infer<typeof CardinalitySchema>;
 
 // ---------------------------------------------------------------------------------------------

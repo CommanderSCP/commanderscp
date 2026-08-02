@@ -161,7 +161,7 @@ CREATE TABLE relationship_types (
   property_schema jsonb,
   from_types     text[],                     -- endpoint constraints (grafted: structural validation
   to_types       text[],                     --  of custom relationship types at write time)
-  cardinality    text NOT NULL DEFAULT 'many_to_many',  -- 'one_to_one'|'one_to_many'|'many_to_many'
+  cardinality    text NOT NULL DEFAULT 'many_to_many',  -- 'one_to_one'|'one_to_many'|'many_to_one'|'many_to_many'
   is_builtin     boolean NOT NULL DEFAULT false,
   created_at     timestamptz NOT NULL DEFAULT now()
 );
