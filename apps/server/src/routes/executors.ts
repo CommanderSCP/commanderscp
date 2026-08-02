@@ -737,7 +737,9 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           `pluginInstanceId may not start with the reserved '${EXECUTION_SYSTEM_INSTANCE_PREFIX}' namespace`
         );
       }
-      validatePluginConfig(request.body.pluginModule, request.body.config);
+      // NOT validated here — see the `validatePluginConfig(effectiveConfig, ...)` call below. The
+      // config a discovery run actually uses is only known AFTER a named execution-system has been
+      // merged in, and validating the raw body made the execution-system-backed path unreachable.
       const proposal = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         await authorize(tx, {
           orgId: auth.orgId,
@@ -808,6 +810,29 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           // anywhere else — this, not the permission gate, is what makes the grant narrow.
           effectiveAllowedHosts = [systemHost];
         }
+        // ==========================================================================================
+        // VALIDATE THE EFFECTIVE CONFIG, NOT THE REQUEST BODY.
+        //
+        // This used to run on `request.body.config` before the block above, which made the
+        // execution-system-backed path IMPOSSIBLE TO USE. `argocd-discovery`'s manifest requires
+        // `serverUrl`, and the whole point of naming a system is that the caller does NOT supply one
+        // — the comment above says so in as many words ("a caller may NAME a system, never supply
+        // its serverUrl/token/egress allowance"), and the merge below stamps the persisted value as
+        // server-governed. So the documented call was rejected for missing exactly the field the
+        // server was about to provide, and the only way through was to send a dummy `serverUrl` that
+        // is then overwritten — a required field whose value is ignored.
+        //
+        // Measured on the live homelab 2026-08-02, immediately after the plugin-host fix (#200) made
+        // this route reachable at all: `{executionSystemId}` alone answered 400 "must have required
+        // property 'serverUrl'".
+        //
+        // Validating the EFFECTIVE config is strictly stronger, not weaker. The inline path is
+        // unchanged (no system named -> effectiveConfig IS the body). The system-backed path is now
+        // checked against what the plugin will actually receive, which is the document that matters —
+        // and it still runs BEFORE `host.start`, so nothing is dispatched unvalidated.
+        // ==========================================================================================
+        validatePluginConfig(request.body.pluginModule, effectiveConfig);
+
         const resolvedSecrets = await resolveSecretRefs(
           tx,
           auth.orgId,
