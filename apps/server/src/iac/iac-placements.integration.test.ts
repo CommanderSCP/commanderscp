@@ -33,6 +33,7 @@ import { objects, relationships } from "../db/schema.js";
  * | Mutation | Result |
  * |---|---|
  * | apply via `createObject` instead of `createPlacement` | the derived-edges test FAILS — the row exists, the edges do not |
+ * | make an ABSENT collection skip pruning | the absent-collection test FAILS here AND three `plans.integration` C1 prune tests fail — absent is the only way `synth()` can say "none", so it must prune |
  * | drop the Q2 binding check from the prune path | the refuse-with-binding test FAILS (the placement is deleted and the binding orphaned) |
  * | move the placement prune BEFORE the binding prune | the remove-both test FAILS — a manifest legitimately dropping both is refused, which is the ordering bug this file caught during development |
  * | scope the owned pool on the deployment-target instead of the component | the foreign-component test FAILS |
@@ -184,21 +185,29 @@ describe("IaC placements (C1)", () => {
     );
   });
 
-  it("an ABSENT placements collection prunes nothing (decision Q3's other half)", async () => {
+  it("an ABSENT placements collection prunes the same as an empty one — they are the same thing", async () => {
+    // NOT a quirk, and I got this backwards first. `Stack.synth()` OMITS a collection when empty
+    // (construct.ts), so an absent key is the ONLY way an author can say "this stack has no
+    // placements". If absent meant "assert nothing", the LAST placement could never be removed
+    // through IaC — you could add the final one and never take it away.
+    //
+    // `@scp/schemas`'s "an absent collection must not read as 'prune everything'" is about a pre-C1
+    // or hand-rolled manifest staying VALID, not about suppressing prune. Reading it the other way,
+    // I "fixed" a non-bug and broke three plans.integration tests that assert exactly this.
     const stackName = `pl-absent-${uuidv7().slice(0, 8)}`;
     const { manifest, comp } = baseManifest(stackName, {
       placements: [{ componentUrn: comp0(stackName), deploymentTargetUrn: tgt0(stackName) }]
     });
     await apply(manifest);
+    expect(await livePlacements(comp)).toHaveLength(1);
 
-    // No `placements` key at all — "declares none", NOT "delete them all".
-    const { manifest: silent } = baseManifest(stackName);
+    const { manifest: silent } = baseManifest(stackName); // no `placements` key at all
     await apply(silent);
 
     expect(
       await livePlacements(comp),
-      "an absent collection must not read as 'prune everything' — every optional collection follows this rule"
-    ).toHaveLength(1);
+      "absent == empty == 'I declare none', so the row is pruned — consistent with sourceMappings and executorBindings"
+    ).toHaveLength(0);
   });
 });
 

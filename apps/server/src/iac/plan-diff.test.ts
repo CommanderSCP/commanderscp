@@ -623,8 +623,8 @@ describe("iac/plan-diff: isStackManaged / managedLabels", () => {
 // C1 — sourceMappings / executorBindings (docs/proposals/post-import-configuration.md §8)
 // -------------------------------------------------------------------------------------------
 
-type ManifestMapping = NonNullable<ResolvedManifest["sourceMappings"]>[number];
-type ManifestBinding = NonNullable<ResolvedManifest["executorBindings"]>[number];
+type ManifestMapping = ResolvedManifest["sourceMappings"][number];
+type ManifestBinding = ResolvedManifest["executorBindings"][number];
 
 function ownedObject(urn: string, typeId: string): ResolvedManifest["objects"][number] {
   return { urn, typeId, name: urn, domainId: null, properties: {}, labels: {} };

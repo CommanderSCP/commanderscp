@@ -427,20 +427,18 @@ export async function computeDiffForManifest(
       fromUrn: r.fromUrn,
       toUrn: r.toUrn
     })),
-    // `?? []` here would erase the absent-vs-empty distinction the diff depends on — an absent
-    // collection would then prune every managed row. Preserve `undefined`.
-    sourceMappings: manifest.sourceMappings?.map((m) => ({
+    sourceMappings: (manifest.sourceMappings ?? []).map((m) => ({
       componentUrn: m.componentUrn,
       sourceKind: m.sourceKind,
       repoPattern: m.repoPattern ?? null,
       pathPattern: m.pathPattern ?? null,
       type: m.type ?? DEFAULT_BINDING_TYPE
     })),
-    placements: manifest.placements?.map((pl) => ({
+    placements: (manifest.placements ?? []).map((pl) => ({
       componentUrn: pl.componentUrn,
       deploymentTargetUrn: pl.deploymentTargetUrn
     })),
-    executorBindings: manifest.executorBindings?.map((b) => ({
+    executorBindings: (manifest.executorBindings ?? []).map((b) => ({
       targetUrn: b.targetUrn,
       type: b.type ?? DEFAULT_BINDING_TYPE,
       pluginModule: b.pluginModule ?? null,

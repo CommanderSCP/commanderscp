@@ -107,18 +107,21 @@ export interface ResolvedManifest {
   stackName: string;
   objects: ResolvedManifestObject[];
   relationships: ResolvedManifestRelationship[];
-  /** UNDEFINED and EMPTY mean different things, and the difference is DESTRUCTIVE.
+  /** ABSENT AND EMPTY ARE THE SAME THING HERE, deliberately — do not "fix" this.
    *
-   *  `undefined` = the manifest declared no such collection, so this stack asserts nothing about it
-   *  and NOTHING is pruned. `[]` = the manifest declared the collection and it is empty, so every
-   *  managed row IS pruned. `@scp/schemas`'s C1 note has always documented this ("an absent
-   *  collection must not read as 'prune everything'") — but the resolver collapsed absent to `[]`
-   *  with `?? []`, so it read as exactly that, and nothing tested the case until the placement work
-   *  added it. A stack that simply had not adopted a collection yet would have had every managed row
-   *  in it deleted on the next apply. */
-  sourceMappings: ResolvedManifestSourceMapping[] | undefined;
-  executorBindings: ResolvedManifestExecutorBinding[] | undefined;
-  placements: ResolvedManifestPlacement[] | undefined;
+   *  `Stack.synth()` OMITS a collection when it is empty (construct.ts), so an absent key is the
+   *  ONLY way an author can express "this stack has no mappings/bindings/placements". If absent
+   *  meant "assert nothing, prune nothing", the LAST row in a collection could never be removed
+   *  through IaC — you could add the final mapping and never take it away.
+   *
+   *  `@scp/schemas`'s "an absent collection must not read as 'prune everything'" is about a
+   *  pre-C1 or hand-rolled manifest staying VALID, not about suppressing prune. I misread it as the
+   *  latter, made absent skip pruning, and broke three `plans.integration` tests that assert exactly
+   *  this: `build(false)` synthesizes a manifest with no `sourceMappings` key and expects
+   *  `deletes === 2`. The tests were right. */
+  sourceMappings: ResolvedManifestSourceMapping[];
+  executorBindings: ResolvedManifestExecutorBinding[];
+  placements: ResolvedManifestPlacement[];
 }
 
 export interface ExistingObjectSnapshot {
@@ -403,7 +406,7 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
   const manifestMappingKeys = new Set<string>();
   const sourceMappingEntries: PlanSourceMappingDiffEntry[] = [];
 
-  for (const mapping of manifest.sourceMappings ?? []) {
+  for (const mapping of manifest.sourceMappings) {
     const key = sourceMappingKey(mapping);
     // A manifest declaring the same tuple twice would produce two identical create entries and
     // two identical rows on apply — the table has no unique constraint to stop it. Collapse to
@@ -433,7 +436,7 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
   const manifestPlacementKeys = new Set<string>();
   const placementEntries: PlanPlacementDiffEntry[] = [];
 
-  for (const placement of manifest.placements ?? []) {
+  for (const placement of manifest.placements) {
     const key = placementKey(placement);
     // The unique index would reject a duplicate at apply time; collapsing here means a manifest
     // that says the same thing twice still plans cleanly rather than failing mid-apply.
@@ -451,7 +454,7 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
     else creates++;
   }
 
-  const placementPrunes = (manifest.placements === undefined ? [] : [...snapshot.managedPlacements])
+  const placementPrunes = [...snapshot.managedPlacements]
     .filter((pl) => !manifestPlacementKeys.has(placementKey(pl)))
     .sort((a, b) => placementKey(a).localeCompare(placementKey(b)));
   const seenPlacementPrunes = new Set<string>();
@@ -470,9 +473,7 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
   }
 
   // Prune, sorted by identity so the reviewed diff is stable regardless of row order from the DB.
-  const mappingPrunes = (
-    manifest.sourceMappings === undefined ? [] : [...snapshot.managedSourceMappings]
-  )
+  const mappingPrunes = [...snapshot.managedSourceMappings]
     .filter((m) => !manifestMappingKeys.has(sourceMappingKey(m)))
     .sort((a, b) => sourceMappingKey(a).localeCompare(sourceMappingKey(b)));
   const seenMappingPrunes = new Set<string>();
@@ -500,7 +501,7 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
   const manifestBindingKeys = new Set<string>();
   const executorBindingEntries: PlanExecutorBindingDiffEntry[] = [];
 
-  for (const binding of manifest.executorBindings ?? []) {
+  for (const binding of manifest.executorBindings) {
     const key = bindingKey(binding);
     // Two declarations for the same (target, type) would race each other through the SAME upsert
     // row: whichever ran last would silently win. `UNIQUE (org_id, target_object_id, type)` says
@@ -546,9 +547,7 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
     }
   }
 
-  const bindingPrunes = (
-    manifest.executorBindings === undefined ? [] : [...snapshot.managedExecutorBindings]
-  )
+  const bindingPrunes = [...snapshot.managedExecutorBindings]
     .filter((b) => !manifestBindingKeys.has(bindingKey(b)))
     .sort((a, b) => bindingKey(a).localeCompare(bindingKey(b)));
   for (const managed of bindingPrunes) {
@@ -602,7 +601,7 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
 export function duplicateProjectionDeclarations(manifest: ResolvedManifest): string[] {
   const offenders: string[] = [];
   const seenMappings = new Set<string>();
-  for (const mapping of manifest.sourceMappings ?? []) {
+  for (const mapping of manifest.sourceMappings) {
     const key = sourceMappingKey(mapping);
     if (seenMappings.has(key)) {
       offenders.push(
@@ -614,7 +613,7 @@ export function duplicateProjectionDeclarations(manifest: ResolvedManifest): str
     seenMappings.add(key);
   }
   const seenBindings = new Set<string>();
-  for (const binding of manifest.executorBindings ?? []) {
+  for (const binding of manifest.executorBindings) {
     const key = bindingKey(binding);
     if (seenBindings.has(key)) {
       offenders.push(`executorBinding ${binding.targetUrn} (${binding.type})`);
