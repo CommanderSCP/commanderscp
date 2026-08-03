@@ -36,6 +36,7 @@ import {
   type ResolvedManifest,
   type ResolvedManifestExecutorBinding,
   type ResolvedManifestObject,
+  type ResolvedManifestPlacement,
   type ResolvedManifestSourceMapping
 } from "./plan-diff.js";
 import {
@@ -44,9 +45,16 @@ import {
   deleteExecutorBinding,
   executionSystemBindingIdentity,
   isKnownExecutorModule,
+  listExecutorBindingsForTarget,
   listExecutorBindingsForTargets,
   upsertExecutorBinding
 } from "../coordination/executor-bindings-repo.js";
+import {
+  createPlacement,
+  findLivePlacement,
+  listPlacementsForComponents,
+  withdrawPlacement
+} from "../graph/placements-repo.js";
 import {
   createSourceMapping,
   deleteSourceMappingsMatching,
@@ -335,12 +343,26 @@ export async function computeDiffForManifest(
   }
   const ownedIdList = [...ownedObjectIds];
 
-  const [ownedMappingRows, ownedBindingRows] = await Promise.all([
+  const [ownedMappingRows, ownedBindingRows, ownedPlacementRows] = await Promise.all([
     listSourceMappingsForComponents(tx, orgId, ownedIdList),
-    listExecutorBindingsForTargets(tx, orgId, ownedIdList)
+    listExecutorBindingsForTargets(tx, orgId, ownedIdList),
+    // Decision Q4: ownership follows the COMPONENT, so the pool is keyed on owned components — a
+    // placement at a deployment-target another stack owns is still this stack's to converge.
+    listPlacementsForComponents(tx, orgId, ownedIdList)
   ]);
 
   const urnOfOwnedId = (id: string): string | undefined => objectsById.get(id)?.urn;
+
+  const managedPlacements: ResolvedManifestPlacement[] = [];
+  for (const row of ownedPlacementRows) {
+    const componentUrn = urnOfOwnedId(row.componentObjectId);
+    // The deployment-target may belong to ANOTHER stack, so resolve it from the wider by-id map. A
+    // miss (it vanished, or was never loaded) drops the row: invisible to BOTH create-matching and
+    // prune, which is the conservative half — never mis-attributed to another pair.
+    const targetUrn = objectsById.get(row.deploymentTargetObjectId)?.urn;
+    if (!componentUrn || !targetUrn) continue;
+    managedPlacements.push({ componentUrn, deploymentTargetUrn: targetUrn });
+  }
 
   const managedSourceMappings: ResolvedManifestSourceMapping[] = [];
   for (const row of ownedMappingRows) {
@@ -405,14 +427,20 @@ export async function computeDiffForManifest(
       fromUrn: r.fromUrn,
       toUrn: r.toUrn
     })),
-    sourceMappings: (manifest.sourceMappings ?? []).map((m) => ({
+    // `?? []` here would erase the absent-vs-empty distinction the diff depends on — an absent
+    // collection would then prune every managed row. Preserve `undefined`.
+    sourceMappings: manifest.sourceMappings?.map((m) => ({
       componentUrn: m.componentUrn,
       sourceKind: m.sourceKind,
       repoPattern: m.repoPattern ?? null,
       pathPattern: m.pathPattern ?? null,
       type: m.type ?? DEFAULT_BINDING_TYPE
     })),
-    executorBindings: (manifest.executorBindings ?? []).map((b) => ({
+    placements: manifest.placements?.map((pl) => ({
+      componentUrn: pl.componentUrn,
+      deploymentTargetUrn: pl.deploymentTargetUrn
+    })),
+    executorBindings: manifest.executorBindings?.map((b) => ({
       targetUrn: b.targetUrn,
       type: b.type ?? DEFAULT_BINDING_TYPE,
       pluginModule: b.pluginModule ?? null,
@@ -436,7 +464,8 @@ export async function computeDiffForManifest(
     managedRelationships,
     existingRelationships,
     managedSourceMappings,
-    managedExecutorBindings
+    managedExecutorBindings,
+    managedPlacements
   });
   // Strict create-in-service, IaC path (M12 P5a): reject at plan-compute so the invalid manifest
   // never becomes a stored plan and the human reviews only a valid diff. C1's two guards run at the
@@ -734,6 +763,16 @@ export async function prepareApplyChecks(
     checks.push({ permission: "object:write", scopeObjectId: component.scopeObjectId });
   }
 
+  // C1/ADR-0026 — `object:write` at the COMPONENT, which is also where OWNERSHIP lives (decision
+  // Q4). Checking the component and not the deployment-target is deliberate: a platform team owning
+  // the targets must not thereby own every app team's placements, and it matches how a source
+  // mapping's ownership is already inherited from its component.
+  for (const entry of diff.placements ?? []) {
+    if (entry.action === "noop") continue;
+    const component = await resolveEndpoint(entry.componentUrn);
+    checks.push({ permission: "object:write", scopeObjectId: component.scopeObjectId });
+  }
+
   for (const entry of diff.executorBindings ?? []) {
     if (entry.action === "noop") continue;
     const target = await resolveEndpoint(entry.targetUrn);
@@ -917,6 +956,64 @@ export async function executePlanDiff(
     }
   }
 
+  // PLACEMENT PRUNE runs AFTER the binding prune above and BEFORE the creates below. That order is
+  // decision Q3's guard doing its job: by the time a placement is considered, any binding the
+  // manifest asked to remove is already gone — so a binding still present here means the manifest
+  // genuinely did not ask, which is exactly the case decision Q2 refuses.
+  for (const entry of diff.placements ?? []) {
+    if (entry.action !== "delete") continue;
+    const placement = await findLivePlacement(
+      tx,
+      orgId,
+      endpointId(entry.componentUrn),
+      endpointId(entry.deploymentTargetUrn)
+    );
+    if (!placement) {
+      throw notFound(
+        `no live placement '${entry.componentUrn}' @ '${entry.deploymentTargetUrn}' to prune`
+      );
+    }
+    // DECISION Q2 — REFUSE, naming the binding. A cascade would delete execution configuration the
+    // manifest never mentioned, and an orphaned binding fails SILENTLY (no FK, no deleted_at, and
+    // `targetObjectIsLive` hides it at read time). Removing a placement is therefore a deliberate
+    // two-step for the operator, and this error has to name what to remove first.
+    const survivingBindings = await listExecutorBindingsForTarget(tx, orgId, placement.id);
+    if (survivingBindings.length > 0) {
+      const named = survivingBindings.map((b) => `'${b.type}'`).join(", ");
+      throw conflict(
+        `cannot prune placement '${entry.componentUrn}' @ '${entry.deploymentTargetUrn}': it still ` +
+          `carries ${survivingBindings.length} executor binding(s) (${named}) that this manifest ` +
+          `does not remove. Delete the binding first — pruning it implicitly would destroy ` +
+          `execution configuration the manifest never mentioned.`
+      );
+    }
+    await withdrawPlacement(tx, {
+      orgId,
+      actorObjectId,
+      requestId,
+      idOrUrn: placement.id
+    });
+  }
+
+  // PLACEMENT CREATE runs BEFORE the binding creates below, because a binding may TARGET a
+  // placement — after the ADR-0026 migration most do — and its target must exist first.
+  //
+  // Goes through `createPlacement`, the same function `POST /v1/placements` uses, and NOT
+  // `createObject`. That is the whole reason this is a typed collection: `createPlacement` resolves
+  // and type-checks both endpoints, derives the URN from the pair, and writes the two derived
+  // `places`/`placed_at` edges in the SAME transaction. `createObject` does none of those, which is
+  // why the generic door refuses pair-bound types outright (#207) — and this apply path is one of
+  // the doors that refusal had to be added to.
+  for (const entry of diff.placements ?? []) {
+    if (entry.action !== "create") continue;
+    await createPlacement(tx, {
+      orgId,
+      actorObjectId,
+      requestId,
+      componentIdOrUrn: endpointId(entry.componentUrn),
+      deploymentTargetIdOrUrn: endpointId(entry.deploymentTargetUrn)
+    });
+  }
   for (const entry of diff.executorBindings ?? []) {
     if (entry.action !== "create" && entry.action !== "update") continue;
     const target = entry.target;
