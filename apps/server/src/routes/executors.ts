@@ -36,6 +36,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { badRequest, conflict, forbidden, notFound } from "../errors.js";
+import { isPairBoundObjectType } from "../graph/pair-bound-types.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { isPeerBoundObjectType } from "../federation/outpost-binding.js";
 import { containmentDomainIdFromWire } from "../domain-id-edge.js";
@@ -905,6 +906,26 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
         const nameToId = new Map<string, string>();
         const createdObjectIds: string[] = [];
         for (const proposedObject of request.body.proposal.objects) {
+          // A PAIR-BOUND type cannot be accepted as a raw proposed object.
+          //
+          // `graph/pair-bound-types.ts` leaves import paths permissive, listing "discovery/accept
+          // and federation-journal replay" together. That reasoning holds for REPLAY — it is
+          // internal, and a replica arrives with its edges as their own `relationship_upsert`
+          // entries, so both halves are reproduced. It does NOT hold here: this route takes the
+          // proposal FROM THE REQUEST BODY, so a client can hand-write one that never came from a
+          // plugin run. Measured before this guard existed: a hand-written proposal returned 201 and
+          // created a placement with no derived edges — the same island the generic route refuses.
+          //
+          // No discovery plugin proposes a pair-bound object today (they emit components, bindings
+          // and source mappings), so this refuses nothing that currently works. If one ever should,
+          // it needs a path that can WRITE THE EDGES, which `createObject` alone cannot.
+          if (isPairBoundObjectType(proposedObject.typeId)) {
+            throw forbidden(
+              `discovery proposals cannot create '${proposedObject.typeId}' objects — its identity ` +
+                `is a pair of other objects, and accepting it here would store unresolved endpoints ` +
+                `with no derived edges. Use /api/v1/${proposedObject.typeId}s.`
+            );
+          }
           const created = await createObject(tx, {
             orgId: auth.orgId,
             actorObjectId: auth.subjectObjectId,
