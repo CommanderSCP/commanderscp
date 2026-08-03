@@ -28,6 +28,7 @@ import {
   graphQuery as graphQueryRequest,
   graphTraverse as graphTraverseRequest,
   graphSubgraph as graphSubgraphRequest,
+  graphIntegrity as graphIntegrityRequest,
   pushObjectHealth as pushObjectHealthRequest,
   getObjectHealth as getObjectHealthRequest,
   graphHealth as graphHealthRequest,
@@ -256,6 +257,7 @@ import type {
   DeviceApproveResponse,
   DeviceStartResponse,
   GraphObject,
+  GraphIntegrityReport,
   GraphQueryResult,
   NamedGraphQuery,
   ObjectListResponse,
@@ -1159,6 +1161,14 @@ export class ScpClient {
      */
     subgraph: async (params: SubgraphParams): Promise<SubgraphResult> => {
       const result = await graphSubgraphRequest({ client: this.client, body: params });
+      return unwrap(result);
+    },
+    /**
+     * Rows that outlived the object they hang off. READ-ONLY — repair is issued through the ordinary
+     * DELETE doors, so every removal keeps its audit event and journal entry.
+     */
+    integrity: async (): Promise<GraphIntegrityReport> => {
+      const result = await graphIntegrityRequest({ client: this.client });
       return unwrap(result);
     }
   };

@@ -1949,6 +1949,94 @@ export function buildProgram(): Command {
     );
 
   graphCmd
+    .command("integrity")
+    .description("Report (and optionally repair) rows that outlived the object they hang off")
+    .option("--repair", "delete the repairable rows through the ordinary audited DELETE doors")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: { repair?: boolean; baseUrl?: string; output: OutputFormat }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const report = await client.graph.integrity();
+
+      type IntegrityRow = { kind: string; id: string; detail: string; repairable: boolean };
+      const rows: IntegrityRow[] = [
+        ...report.danglingRelationships.map((r) => ({
+          kind: "dangling-relationship",
+          id: r.id,
+          detail: `${r.typeId}: ${r.fromUrn} -> ${r.toUrn} (${r.deadEnd} dead)`,
+          repairable: r.repairable
+        })),
+        ...report.orphanSourceMappings.map((r) => ({
+          kind: "orphan-source-mapping",
+          id: r.id,
+          detail: `${r.ownerName}: ${r.detail}`,
+          repairable: true
+        })),
+        ...report.orphanExecutorBindings.map((r) => ({
+          kind: "orphan-executor-binding",
+          id: r.id,
+          detail: `${r.ownerName}: ${r.detail}`,
+          repairable: true
+        })),
+        ...report.orphanPlacements.map((r) => ({
+          kind: "orphan-placement",
+          id: r.id,
+          detail: `${r.ownerName}: ${r.detail}`,
+          repairable: true
+        }))
+      ];
+
+      if (!opts.repair) {
+        printResult(rows, opts.output, (item) => {
+          const row = item as IntegrityRow;
+          return {
+            kind: row.kind,
+            id: row.id,
+            repairable: String(row.repairable),
+            detail: row.detail
+          };
+        });
+        return;
+      }
+
+      // REPAIR ONLY WHAT THIS COMMAND CAN ACTUALLY DELETE THROUGH AN AUDITED DOOR.
+      //
+      // Relationships have one (`DELETE /relationships/{id}`), and it works even when an endpoint is
+      // dead. The projection rows do NOT have an id-addressed door — `deleteMapping` matches on the
+      // identity TUPLE and the binding door addresses its target object — so repairing them from
+      // this report's `id` alone is not possible today. Rather than reach past the API into SQL,
+      // this command repairs the edges and NAMES the rest, with the count, so the output can never
+      // read as "all clean" when it is not.
+      const repairable = report.danglingRelationships.filter((r) => r.repairable);
+      const skippedReplicas = report.danglingRelationships.length - repairable.length;
+      let deleted = 0;
+      for (const edge of repairable) {
+        await client.relationships.delete(edge.id);
+        deleted += 1;
+      }
+
+      const remaining =
+        report.orphanSourceMappings.length +
+        report.orphanExecutorBindings.length +
+        report.orphanPlacements.length;
+      printResult(
+        [
+          { outcome: "relationships-deleted", count: deleted },
+          { outcome: "replica-edges-skipped (single-writer authority)", count: skippedReplicas },
+          {
+            outcome: "projection-rows-left (no id-addressed door; see --output json)",
+            count: remaining
+          }
+        ],
+        opts.output,
+        (item) => {
+          const row = item as { outcome: string; count: number };
+          return { outcome: row.outcome, count: String(row.count) };
+        }
+      );
+    });
+
+  graphCmd
     .command("traverse")
     .description("Bounded generic graph traversal")
     .requiredOption("--object-id <id>", "the object to traverse from")

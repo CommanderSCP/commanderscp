@@ -24,6 +24,10 @@ export { resilientEventStream } from "./event-stream.js";
 export type { EventStreamOptions, OpenEventStream } from "./event-stream.js";
 export type { RelayedEvent } from "@scp/schemas";
 
+// Graph-integrity report types — a SEPARATE step from the client method; schema types are not
+// re-exported automatically, and omitting this is what made #211's failure look like a missing method.
+export type { GraphIntegrityReport, DanglingRelationship, OrphanProjectionRow } from "@scp/schemas";
+
 export type {
   CreateServiceObjectData,
   CreateServiceObjectResponse,

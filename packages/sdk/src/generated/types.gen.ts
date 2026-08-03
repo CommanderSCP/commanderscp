@@ -8960,6 +8960,76 @@ export type GraphSubgraphResponses = {
 
 export type GraphSubgraphResponse = GraphSubgraphResponses[keyof GraphSubgraphResponses];
 
+export type GraphIntegrityData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/graph/integrity';
+};
+
+export type GraphIntegrityErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GraphIntegrityError = GraphIntegrityErrors[keyof GraphIntegrityErrors];
+
+export type GraphIntegrityResponses = {
+    /**
+     * Success
+     */
+    200: {
+        danglingRelationships: Array<{
+            id: string;
+            typeId: string;
+            deadEnd: 'from' | 'to' | 'both';
+            fromUrn: string;
+            toUrn: string;
+            repairable: boolean;
+        }>;
+        orphanSourceMappings: Array<{
+            id: string;
+            ownerUrn: string;
+            ownerName: string;
+            detail: string;
+        }>;
+        orphanExecutorBindings: Array<{
+            id: string;
+            ownerUrn: string;
+            ownerName: string;
+            detail: string;
+        }>;
+        orphanPlacements: Array<{
+            id: string;
+            ownerUrn: string;
+            ownerName: string;
+            detail: string;
+        }>;
+    };
+};
+
+export type GraphIntegrityResponse = GraphIntegrityResponses[keyof GraphIntegrityResponses];
+
 export type ListAuditEventsData = {
     body?: never;
     path?: never;

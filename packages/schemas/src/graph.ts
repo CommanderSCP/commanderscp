@@ -393,3 +393,47 @@ export const SubgraphResultSchema = z.object({
   edges: z.array(TraverseEdgeSchema)
 });
 export type SubgraphResult = z.infer<typeof SubgraphResultSchema>;
+
+// ---------------------------------------------------------------------------------------------
+// Graph integrity (`GET /api/v1/graph/integrity`)
+// ---------------------------------------------------------------------------------------------
+
+/** One live edge whose `from` and/or `to` object is soft-deleted. */
+export const DanglingRelationshipSchema = z.object({
+  id: z.string().uuid(),
+  typeId: z.string(),
+  deadEnd: z.enum(["from", "to", "both"]),
+  fromUrn: UrnSchema,
+  toUrn: UrnSchema,
+  /** FALSE for a replica edge (`origin_domain_id != self`). `deleteRelationship` refuses those —
+   *  single-writer authority — so a repair run must report and SKIP them, never attempt them. */
+  repairable: z.boolean()
+});
+export type DanglingRelationship = z.infer<typeof DanglingRelationshipSchema>;
+
+/** One projection row (`source_mappings` / `executor_bindings`) or placement whose owning object
+ *  is soft-deleted. Neither table carries a foreign key to `objects`, which is why these persist. */
+export const OrphanProjectionRowSchema = z.object({
+  id: z.string().uuid(),
+  ownerUrn: UrnSchema,
+  ownerName: z.string(),
+  detail: z.string()
+});
+export type OrphanProjectionRow = z.infer<typeof OrphanProjectionRowSchema>;
+
+/**
+ * Rows that outlived the object they hang off.
+ *
+ * READ-ONLY, and deliberately so: repair is performed by the ordinary `DELETE` doors
+ * (`/relationships/{id}`, `/change-sources/{kind}/mappings`, `/executors/{idOrUrn}/binding`), each
+ * of which already writes its audit event and journal entry in the same transaction. A dedicated
+ * bulk-repair endpoint would be a second, unaudited way to destroy rows — exactly what principle 6
+ * exists to prevent.
+ */
+export const GraphIntegrityReportSchema = z.object({
+  danglingRelationships: z.array(DanglingRelationshipSchema),
+  orphanSourceMappings: z.array(OrphanProjectionRowSchema),
+  orphanExecutorBindings: z.array(OrphanProjectionRowSchema),
+  orphanPlacements: z.array(OrphanProjectionRowSchema)
+});
+export type GraphIntegrityReport = z.infer<typeof GraphIntegrityReportSchema>;
