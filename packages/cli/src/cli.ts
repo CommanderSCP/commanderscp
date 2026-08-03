@@ -3900,6 +3900,40 @@ export function buildProgram(): Command {
         console.log(
           `Registered execution-system '${opts.name}' (${created.id}). Token stored as secret '${tokenKey}'.`
         );
+        // CREDENTIAL LOCALITY. `connect` is the moment the operator chooses where this system's
+        // credential lives, and nothing used to say so — you found out by reading the secrets table.
+        //
+        // A single commander coordinating several places is a legitimate topology, and the RIGHT
+        // default (charter principle 7 orders Simplicity above Federation; a second instance means a
+        // second database and a small PKI). But it has one consequence worth stating out loud: this
+        // token now lives HERE, so anyone with access to this instance can reach that system. That is
+        // fine when this instance is at least as protected as the system it controls, and is exactly
+        // the case where an outpost earns its cost when it is not.
+        //
+        // Printed as a NOTE, not a warning: it is unconditionally true rather than a problem, and
+        // dressing a fact as an alarm is how operators learn to skim output. `federation.self()` is
+        // best-effort — a connect must not fail because we could not decorate its success.
+        try {
+          const self = await client.federation.self();
+          console.log(
+            `NOTE: that token is held by THIS instance (domain '${self.name}', role ${self.role}). ` +
+              `Anyone with access here can reach ${serverUrl}.`
+          );
+          if (self.role === "commander") {
+            console.log(
+              `      If ${opts.name} is more sensitive than this instance, run an outpost in its ` +
+                `domain instead so the credential lives beside what it controls — see ` +
+                `docs/federation-topologies.md.`
+            );
+          }
+        } catch {
+          // Unregistered/older instance, or the endpoint is unreachable. The registration above
+          // already succeeded; say the durable half without inventing an identity for it.
+          console.log(
+            `NOTE: that token is held by THIS instance — anyone with access here can reach ${serverUrl}. ` +
+              `See docs/federation-topologies.md.`
+          );
+        }
         console.log(
           `Next: scp discovery run --module argocd-discovery --instance-id ${opts.name} \\`
         );
