@@ -1,6 +1,6 @@
 # Declaring placements in IaC — finishing §8 item C1
 
-**Status:** Proposed, 2026-08-03. Needs owner review before implementation.
+**Status:** Proposed, 2026-08-03. Needs owner review before implementation. **Q2 (prune vs cascade) DECIDED 2026-08-03 — refuse, naming the binding;** Q1/Q3/Q4 still open.
 **Relates to:** [ADR-0026](../adr/0026-placements-and-derived-stage-names.md) (D2/D3/D17 — the pair type and how its endpoints are stored); [post-import-configuration.md §8](post-import-configuration.md) (item C1); PR #207 (pair-bound types refused at every generic write door).
 
 ## 1. What is actually missing
@@ -86,7 +86,15 @@ A2 reads better, makes an orphan placement unexpressible, and matches how `depen
 ## 6. Open questions for the owner
 
 1. **A2 (`component.placeAt(target)`) or A1 (standalone `Placement`)?** Recommendation A2.
-2. **Should pruning a placement that still has a binding refuse, or cascade?** Recommendation: **refuse**, with the binding named in the error. A cascade quietly deletes execution configuration the manifest never mentioned, and this estate's bindings carry `external_ref` values that took a careful migration to get right.
+2. **Should pruning a placement that still has a binding refuse, or cascade? — DECIDED 2026-08-03: REFUSE, naming the binding.**
+
+   An apply that would prune a placement whose executor binding is not *also* being pruned fails, and the error names the binding. It does not delete it.
+
+   The reasoning that decided it: a cascade quietly deletes execution configuration **the manifest never mentioned**. On this estate those bindings carry `external_ref` values that took a careful, irreversible migration to get right — and the failure mode of losing one is not an error but a *silent* one. An orphaned binding is inert-but-invisible (`executor_bindings` has no FK and no `deleted_at`, and `targetObjectIsLive` hides it at read time), which is precisely the shape of bug this codebase keeps paying for.
+
+   The cost is accepted knowingly: removing a placement becomes a **two-step** operation for the operator — drop the binding, then drop the placement. That is more friction than a cascade, and it is the correct trade when the alternative is a destructive action nobody wrote down. The refusal must NAME the binding, or the operator is left guessing what to remove.
+
+   **Implementation note.** The check belongs on the same prune path as the ordering rule in §4: prune runs bindings-before-placements, so by the time a placement is considered its binding has already gone *if the manifest asked for that*. A surviving binding at that point therefore means the manifest genuinely did not ask — which is exactly the case to refuse on, and it means the check is a cheap lookup rather than a cross-collection diff.
 3. **Should `placements` be pruned at all in the first release?** A stack that declares none currently means "declares no placements", not "delete them all" — the same rule the other optional collections use. But once a stack *does* declare some, removing one from the manifest must delete it, or the collection is write-only. Recommendation: prune, with the refusal in (2) as the guard.
 4. **Does a placement belong to the stack that owns its COMPONENT, or its DEPLOYMENT-TARGET?** Not hypothetical — measured 2026-08-03: the two deployment-targets are labelled `scp:stack=agentkit-org`, and the **pending** `agentkit-monorepo` plan declares those same two URNs (`urn:scp:agentkit-org:deployment-target:gamma|prod`). So a placement's two endpoints can already belong to different stacks on this estate.
 
