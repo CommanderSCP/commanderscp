@@ -21,6 +21,7 @@ import {
 } from "../graph/relationships-repo.js";
 import { isGovernanceManagedObjectType } from "../governance/governance-managed-types.js";
 import { isPeerBoundObjectType } from "../federation/outpost-binding.js";
+import { isPairBoundObjectType } from "../graph/pair-bound-types.js";
 import { isSystemManagedRelationshipType } from "../graph/system-managed-relationships.js";
 import { assertPolicyScopeWithinAuthority } from "../governance/policy-scope-authz.js";
 import { assertCampaignTargetsWithinAuthority } from "../coordination/campaign-scope-authz.js";
@@ -619,6 +620,30 @@ export async function prepareApplyChecks(
   assertInlineBindingsValid(diff);
 
   for (const entry of diff.objects) {
+    // A PAIR-BOUND type (`placement`) cannot be declared as a raw manifest object. This is the
+    // IaC-apply twin of `routes/objects-generic.ts`'s `assertNotPairBoundObjectType`, and it was
+    // missing: apply calls `createObject` DIRECTLY, so the route's refusal never ran here. A
+    // manifest declaring `typeId: "placement"` therefore wrote a row carrying two unresolved,
+    // un-type-checked UUIDs and — decisively — NO derived `places`/`placed_at` edges, leaving an
+    // island invisible to every traversal and impact query. Proven reachable on this exact code
+    // path before the guard existed, not reasoned about.
+    //
+    // `pair-bound-types.ts` names its consumers as "the generic route and the federation overlay
+    // route — both user-facing create surfaces". IaC apply is a third, and was not on the list;
+    // the same omission shape as the system-managed RELATIONSHIP refusal below, which this file
+    // already carries for exactly the same "second injection vector" reason.
+    //
+    // Refused for every non-noop action, not just `create`: an update would rewrite the pair
+    // without re-deriving the edges, and a delete would tombstone the object while leaving them.
+    // Placements are authored through `/api/v1/placements`; a stack that needs them declares them
+    // there until a typed manifest collection exists (post-import-configuration.md §8).
+    if (entry.action !== "noop" && isPairBoundObjectType(entry.typeId)) {
+      throw forbidden(
+        `object type '${entry.typeId}' is identified by a pair of objects and cannot be declared ` +
+          `as a manifest object — an IaC apply cannot resolve or type-check its endpoints, nor ` +
+          `write the derived edges that make the pair traversable. Use /api/v1/${entry.typeId}s.`
+      );
+    }
     if (entry.action === "create") {
       const scopeObjectId = entry.target?.domainId ?? orgId;
       objectResolutions.set(entry.urn, { scopeObjectId });
