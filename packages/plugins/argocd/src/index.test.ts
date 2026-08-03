@@ -995,6 +995,66 @@ describe("discover() (M12 P3 — import an existing Argo CD)", () => {
     expect(web?.externalRef).toBe("web-prod");
   });
 
+  /**
+   * PER-PATH ROUTING. `matchComponentForSource` returns exactly ONE component, so every app of a
+   * repo carrying an identical bare-repo mapping meant ONE of them won every push and the rest were
+   * unreachable. Measured on the live homelab 2026-08-03: 19 components across 4 repo patterns, one
+   * routable per repo. The 43 components that had path patterns routed correctly — the control.
+   *
+   * | Mutation | Result |
+   * |---|---|
+   * | emit no `pathPattern` (the old behaviour) | the per-source and dedupe assertions FAIL |
+   * | iterate only `primarySource` instead of every source | the multi-source test FAILS — the second repo gets no mapping at all |
+   * | drop the `seen` dedupe | the same-repo-twice case emits 2 identical mappings |
+   */
+  it("emits a path-scoped mapping per git source, deduped, for a multi-source app", async () => {
+    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+    nock(SERVER_URL)
+      .get("/api/v1/applications")
+      .reply(200, {
+        items: [
+          {
+            metadata: { name: "multi" },
+            spec: {
+              sources: [
+                { repoURL: "https://github.com/acme/charts", path: "deploy/charts/multi" },
+                // Same repo, DIFFERENT path — a real shape (chart + values), so both are emitted.
+                { repoURL: "https://github.com/acme/charts", path: "envs/prod/multi" },
+                // Exact duplicate of the first — deduped, or `accept` would create two identical rows.
+                { repoURL: "https://github.com/acme/charts", path: "deploy/charts/multi" },
+                // A repo with no path: nothing narrower to say, so a repo-only mapping.
+                { repoURL: "https://github.com/acme/infra" }
+              ]
+            }
+          },
+          // Trailing slash must not produce `path//**`, which would match nothing.
+          {
+            metadata: { name: "slashy" },
+            spec: { source: { repoURL: "https://github.com/acme/web", path: "deploy/" } }
+          }
+        ]
+      });
+
+    const proposal = await createArgoCdDiscoveryPlugin().discover(ctx);
+    const multi = (proposal.sourceMappings ?? []).filter((m) => m.objectName === "multi");
+
+    expect(multi, "one per DISTINCT (repo, path) — the duplicate source collapses").toHaveLength(3);
+    expect(multi.map((m) => m.pathPattern).sort()).toEqual([
+      "deploy/charts/multi/**",
+      "envs/prod/multi/**",
+      undefined
+    ]);
+    expect(
+      multi.find((m) => m.pathPattern === undefined)?.repoPattern,
+      "the path-less source still routes by repo"
+    ).toBe("acme/infra");
+
+    expect(
+      proposal.sourceMappings?.find((m) => m.objectName === "slashy")?.pathPattern,
+      "a trailing slash would otherwise yield `deploy//**`, which matches nothing"
+    ).toBe("deploy/**");
+  });
+
   it("captures each app's git source and proposes a github source_mapping from it (M12 P5, Q3)", async () => {
     const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
     nock(SERVER_URL)
@@ -1019,8 +1079,7 @@ describe("discover() (M12 P3 — import an existing Argo CD)", () => {
     const proposal = await createArgoCdDiscoveryPlugin().discover(ctx);
 
     // The git repo is recorded on the component (raw URL, metadata) AND drives a github mapping —
-    // but the mapping's repoPattern is the `owner/repo` SLUG, the form github events carry, and it
-    // carries NO pathPattern (a github push has no per-app path, so a path-set mapping never matches).
+    // the mapping's repoPattern is the `owner/repo` SLUG, the form github events carry.
     const web = proposal.objects.find((o) => o.name === "web-prod");
     expect(web?.properties?.sourceRepo).toBe("https://github.com/acme/web");
     expect(web?.properties?.sourcePath).toBe("deploy");
@@ -1032,11 +1091,20 @@ describe("discover() (M12 P3 — import an existing Argo CD)", () => {
       repoPattern: "acme/web", // slug, not the full URL
       type: "configuration"
     });
-    expect(webMap?.pathPattern).toBeUndefined();
-    // Multi-source: the source that actually has a repoURL is used, normalized to a slug.
+    // A source WITH a path is now scoped to it. This assertion previously read `toBeUndefined()`,
+    // pinning the M12 P5 note that a github push carried no per-app path — that stopped being true
+    // when the github plugin began emitting changed paths, and the unscoped mapping is what made
+    // every app of a repo compete for one match.
+    expect(webMap?.pathPattern).toBe("deploy/**");
+    // Multi-source: the source that actually has a repoURL is used, normalized to a slug. Its
+    // sibling declares a `path` but NO repoURL, so it contributes nothing — a path without a repo
+    // cannot be correlated against.
     expect(proposal.sourceMappings?.find((m) => m.objectName === "api-prod")?.repoPattern).toBe(
       "acme/api"
     );
+    expect(
+      proposal.sourceMappings?.find((m) => m.objectName === "api-prod")?.pathPattern
+    ).toBeUndefined();
     // The source-less app proposes no mapping.
     expect(proposal.sourceMappings?.some((m) => m.objectName === "cache")).toBe(false);
     expect(
