@@ -32,28 +32,36 @@ import { objects, executorBindings } from "../db/schema.js";
  * ============================================================================================
  * A placement's URN is DERIVED (ADR-0026 D3) from the org id plus both endpoints' *display names*
  * — `urn:scp:<orgId>:placement:<component>/<deployment-target>`. An author cannot write that, and
- * it changes under a rename. The pair is the identity, which is why `targetPlacement` exists rather
- * than reusing `targetUrn`.
+ * it changes under a rename.
+ *
+ * So a placement is addressed as `targetUrn` (the COMPONENT) narrowed by `deploymentTargetUrn`.
+ * The first shape tried was a separate `targetPlacement` pair replacing `targetUrn`, and it failed
+ * the oasdiff /v1 additive-only gate: making `targetUrn` optional is a breaking change for every
+ * response that echoes a plan's manifest and diff. Expressing the placement as a QUALIFIER keeps
+ * `targetUrn` required, and collapses ownership back to one unconditional rule — the stack must own
+ * `targetUrn`, which for a placement IS its component (decision Q4).
  *
  * ============================================================================================
  * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
  * ============================================================================================
  * | Mutation | Result |
  * |---|---|
- * | revert the pool to `ownedIdList` (objects only) | adopt AND prune FAIL — second apply reports creates=1 forever, and the row is unremovable |
- * | drop the "pair must be declared" check | the undeclared-pair test FAILS (asserted on the offender TEXT, so it cannot be satisfied by the other branch) |
- * | scope binding ownership on the deployment-target instead of the component | the foreign-TARGET test fails. NOT the foreign-component one — my first log claimed that and was wrong: when neither endpoint is owned both scopings refuse, so only the permissive direction discriminates |
+ * | revert the pool to `ownedIdList` (objects only) | FOUR fail: adopt, prune, the cross-stack update, and "removes BOTH" in the placements suite |
+ * | drop the "pair must be declared" check | the undeclared-pair test FAILS (asserted on the offender TEXT, so the other branch cannot satisfy it) |
  * | drop `resolveEndpoint` from the BINDING loop | only the noop-placement test fails |
  * | drop `resolveEndpoint` from the PLACEMENTS loop | only the no-binding test fails |
- * | drop BOTH | both of the above fail |
+ * | drop the Q2 surviving-binding check | only the TOCTOU test in the placements suite fails |
  *
- * The last three are why this file has nine tests rather than seven. With the original seven, each
- * `resolveEndpoint` was individually redundant — each mutation alone stayed green because the other
- * call covered it — and only removing both failed anything. Two lines that are each "covered" only
- * by the other are not covered at all, so the two cases that separate them were added: a placement
+ * The two `resolveEndpoint` rows are why this file has nine tests rather than seven. With the
+ * original seven, each call was individually redundant — every single-drop mutation stayed green
+ * because the other covered it, and only removing BOTH failed anything. Two lines each "covered"
+ * only by the other are not covered at all, so the cases that separate them were added: a placement
  * whose pair is `noop` (the placements loop skips those) and a placement with no binding at all.
  *
- * | recorded, NOT covered | the `kind` tag in `bindingKey` is defensive; no test fails without it |
+ * An earlier version of the foreign-component test asserted only a 400, which the PLACEMENT guard
+ * could satisfy on its own — green under a mutation that broke the binding guard entirely. It now
+ * asserts the offender text and uses a stack declaring no placements, so only the binding guard can
+ * answer.
  */
 describe("IaC executor bindings on placements", () => {
   let server: ListeningTestServer;
@@ -97,7 +105,8 @@ describe("IaC executor bindings on placements", () => {
   function binding(stackName: string, externalRef = "app") {
     const { comp, tgt } = urns(stackName);
     return {
-      targetPlacement: { componentUrn: comp, deploymentTargetUrn: tgt },
+      targetUrn: comp,
+      deploymentTargetUrn: tgt,
       pluginModule: "fake-executor",
       pluginInstanceId: `inst-${stackName}`,
       externalRef
@@ -260,7 +269,8 @@ describe("IaC executor bindings on placements", () => {
       placements: [{ componentUrn: appComp, deploymentTargetUrn: platformTarget }],
       executorBindings: [
         {
-          targetPlacement: { componentUrn: appComp, deploymentTargetUrn: platformTarget },
+          targetUrn: appComp,
+          deploymentTargetUrn: platformTarget,
           pluginModule: "fake-executor",
           pluginInstanceId: `inst-${app}`,
           externalRef: "cross"
@@ -354,7 +364,8 @@ describe("IaC executor bindings on placements", () => {
       placements: [{ componentUrn: appComp, deploymentTargetUrn: platformTarget }],
       executorBindings: [
         {
-          targetPlacement: { componentUrn: appComp, deploymentTargetUrn: platformTarget },
+          targetUrn: appComp,
+          deploymentTargetUrn: platformTarget,
           pluginModule: "fake-executor",
           pluginInstanceId: `inst-${app}`,
           externalRef
@@ -371,24 +382,17 @@ describe("IaC executor bindings on placements", () => {
     expect(rows[0]!.externalRef).toBe("after");
   });
 
-  it("REFUSES a binding that names neither a target nor a placement, and one that names both", async () => {
-    const s = `pb-both-${uuidv7().slice(0, 8)}`;
-    const { comp, tgt } = urns(s);
-    const both = baseManifest(s, {
-      executorBindings: [{ ...binding(s), targetUrn: comp } as never]
-    });
-    await expect(admin.plans.create(both)).rejects.toMatchObject({ status: 400 });
-
+  it("REFUSES a binding that names no target at all", async () => {
+    // Note what is NOT tested here, because it can no longer happen: there is no "named both
+    // addressings" failure mode. A placement is `targetUrn` NARROWED by `deploymentTargetUrn`, not
+    // an alternative to it, so the two cannot conflict — which is also why `targetUrn` stayed
+    // REQUIRED in the response schemas and this change breaks no API consumer.
+    const s = `pb-neither-${uuidv7().slice(0, 8)}`;
     const neither = baseManifest(s, {
       executorBindings: [
-        {
-          pluginModule: "fake-executor",
-          pluginInstanceId: "inst",
-          externalRef: "x"
-        } as never
+        { pluginModule: "fake-executor", pluginInstanceId: "inst", externalRef: "x" } as never
       ]
     });
     await expect(admin.plans.create(neither)).rejects.toMatchObject({ status: 400 });
-    expect(tgt).toBeTruthy();
   });
 });

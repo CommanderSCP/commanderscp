@@ -156,10 +156,8 @@ describe("IaC placements (C1)", () => {
       placements: [{ componentUrn: comp0(stackName), deploymentTargetUrn: tgt0(stackName) }],
       executorBindings: [
         {
-          targetPlacement: {
-            componentUrn: comp0(stackName),
-            deploymentTargetUrn: tgt0(stackName)
-          },
+          targetUrn: comp0(stackName),
+          deploymentTargetUrn: tgt0(stackName),
           pluginModule: "fake-executor",
           pluginInstanceId: `inst-${stackName}`,
           externalRef: "app"

@@ -140,9 +140,9 @@ function assertProjectionsUnique(manifest: ResolvedManifest): void {
  * which must not happen before `authorize()` (see `executionSystemBindingIdentity`'s call-order note).
  */
 function bindingTargetLabel(entry: PlanExecutorBindingDiffEntry): string {
-  return entry.targetPlacement
-    ? `placement ${entry.targetPlacement.componentUrn}@${entry.targetPlacement.deploymentTargetUrn}`
-    : String(entry.targetUrn);
+  return entry.deploymentTargetUrn
+    ? `placement ${entry.targetUrn}@${entry.deploymentTargetUrn}`
+    : entry.targetUrn;
 }
 
 function assertInlineBindingsValid(diff: PlanDiff): void {
@@ -288,15 +288,10 @@ export async function computeDiffForManifest(
     referencedUrns.add(placement.deploymentTargetUrn);
   }
   for (const binding of manifest.executorBindings ?? []) {
-    // A placement-targeted binding references BOTH endpoints, not the placement: the pair is what
-    // `endpointId` resolves at apply, and the placement's own URN is derived (ADR-0026 D3) rather
-    // than something a manifest ever names.
-    if (binding.targetPlacement) {
-      referencedUrns.add(binding.targetPlacement.componentUrn);
-      referencedUrns.add(binding.targetPlacement.deploymentTargetUrn);
-    } else if (binding.targetUrn) {
-      referencedUrns.add(binding.targetUrn);
-    }
+    referencedUrns.add(binding.targetUrn);
+    // A placement-targeted binding resolves BOTH halves at apply, never the placement itself —
+    // its URN is derived (ADR-0026 D3) rather than something a manifest names.
+    if (binding.deploymentTargetUrn) referencedUrns.add(binding.deploymentTargetUrn);
   }
 
   const [referencedRows, managedObjectRows] = await Promise.all([
@@ -427,12 +422,14 @@ export async function computeDiffForManifest(
 
   const managedExecutorBindings: ResolvedManifestExecutorBinding[] = [];
   for (const row of ownedBindingRows) {
-    const targetPlacement = placementPairById.get(row.targetObjectId) ?? null;
-    const targetUrn = targetPlacement ? null : (urnOfOwnedId(row.targetObjectId) ?? null);
-    if (!targetPlacement && !targetUrn) continue; // defensive — see above
+    const pair = placementPairById.get(row.targetObjectId);
+    // A placement-targeted row reports as its COMPONENT narrowed by the deployment-target, which is
+    // exactly how a manifest declares it — so the diff keys on one identity, not two shapes.
+    const targetUrn = pair ? pair.componentUrn : urnOfOwnedId(row.targetObjectId);
+    if (!targetUrn) continue; // defensive — see above
     managedExecutorBindings.push({
       targetUrn,
-      targetPlacement,
+      deploymentTargetUrn: pair ? pair.deploymentTargetUrn : null,
       type: row.type,
       pluginModule: row.pluginModule,
       pluginInstanceId: row.pluginInstanceId,
@@ -460,7 +457,7 @@ export async function computeDiffForManifest(
       // TYPE is deliberately not inspected here — that check is authorization-gated and happens at
       // apply (`executionSystemBindingIdentity`), so plan-compute can't be a type oracle.
       throw badRequest(
-        `executor binding for '${binding.targetUrn ?? `placement ${binding.targetPlacement?.componentUrn}@${binding.targetPlacement?.deploymentTargetUrn}`}' references execution-system '${ref}', which does not exist`
+        `executor binding for '${binding.targetUrn}' references execution-system '${ref}', which does not exist`
       );
     }
     resolvedExecutionSystemIds.set(ref, resolved.id);
@@ -486,8 +483,8 @@ export async function computeDiffForManifest(
       deploymentTargetUrn: pl.deploymentTargetUrn
     })),
     executorBindings: (manifest.executorBindings ?? []).map((b) => ({
-      targetUrn: b.targetUrn ?? null,
-      targetPlacement: b.targetPlacement ?? null,
+      targetUrn: b.targetUrn,
+      deploymentTargetUrn: b.deploymentTargetUrn ?? null,
       type: b.type ?? DEFAULT_BINDING_TYPE,
       pluginModule: b.pluginModule ?? null,
       pluginInstanceId: b.pluginInstanceId ?? null,
@@ -831,13 +828,13 @@ export async function prepareApplyChecks(
     // does (decision Q4) — and it must, because the placement object may not exist yet: on a first
     // apply the same plan creates it a few steps later. Resolving the placement here would 404 on
     // precisely the plan that is allowed to create it.
-    const target = await resolveEndpoint(
-      entry.targetPlacement ? entry.targetPlacement.componentUrn : entry.targetUrn!
-    );
+    // `targetUrn` IS the component for a placement-targeted binding, so this one check covers both
+    // shapes — ownership follows the component (decision Q4).
+    const target = await resolveEndpoint(entry.targetUrn);
     checks.push({ permission: "object:write", scopeObjectId: target.scopeObjectId });
-    // Same reason as the placement loop above: `bindingTargetObjectId` hands BOTH halves of the pair
-    // to `endpointId`, so both must be resolved, and the target half carries no check of its own.
-    if (entry.targetPlacement) await resolveEndpoint(entry.targetPlacement.deploymentTargetUrn);
+    // Same reason as the placement loop above: `bindingTargetObjectId` hands BOTH halves to
+    // `endpointId`, so both must be resolved, and the target half carries no check of its own.
+    if (entry.deploymentTargetUrn) await resolveEndpoint(entry.deploymentTargetUrn);
 
     // A system-backed binding makes SCP dispatch with THAT system's decrypted token (and, where
     // both egress layers agree, its internal-egress reach) — a use-of-credentials capability. The
@@ -1016,25 +1013,24 @@ export async function executePlanDiff(
    * AFTER placement-create.
    */
   const bindingTargetObjectId = async (entry: PlanExecutorBindingDiffEntry): Promise<string> => {
-    if (!entry.targetPlacement) return endpointId(entry.targetUrn!);
-    const { componentUrn, deploymentTargetUrn } = entry.targetPlacement;
+    if (!entry.deploymentTargetUrn) return endpointId(entry.targetUrn);
     const placement = await findLivePlacement(
       tx,
       orgId,
-      endpointId(componentUrn),
-      endpointId(deploymentTargetUrn)
+      endpointId(entry.targetUrn),
+      endpointId(entry.deploymentTargetUrn)
     );
     if (!placement) {
       throw notFound(
-        `no live placement '${componentUrn}' @ '${deploymentTargetUrn}' to carry its '${entry.type}' executor binding`
+        `no live placement '${entry.targetUrn}' @ '${entry.deploymentTargetUrn}' to carry its '${entry.type}' executor binding`
       );
     }
     return placement.id;
   };
 
   const describeTarget = (entry: PlanExecutorBindingDiffEntry): string =>
-    entry.targetPlacement
-      ? `placement '${entry.targetPlacement.componentUrn}' @ '${entry.targetPlacement.deploymentTargetUrn}'`
+    entry.deploymentTargetUrn
+      ? `placement '${entry.targetUrn}' @ '${entry.deploymentTargetUrn}'`
       : `'${entry.targetUrn}'`;
 
   for (const entry of diff.executorBindings ?? []) {

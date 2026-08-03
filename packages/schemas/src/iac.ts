@@ -88,28 +88,22 @@ export type ManifestSourceMapping = z.infer<typeof ManifestSourceMappingSchema>;
  * `CreateExecutorBindingRequestSchema` (the `PUT /executors/{idOrUrn}/binding` body), including its
  * either-inline-or-execution-system-backed refinement: one contract, two doors.
  */
-/**
- * A reference to a `placement` BY ITS PAIR. Deliberately not a URN: a placement's URN is derived
- * (ADR-0026 D3) from the org id plus both endpoints' display names — `urn:scp:<orgId>:placement:
- * <component>/<deployment-target>` — so it is neither hand-writable by an author nor stable under a
- * rename. The pair is the identity, and it is the only addressing two independent synths converge on.
- */
-export const PlacementRefSchema = z.object({
-  componentUrn: UrnSchema,
-  deploymentTargetUrn: UrnSchema
-});
-export type PlacementRef = z.infer<typeof PlacementRefSchema>;
-
 export const ManifestExecutorBindingSchema = z
   .object({
-    /** URN of the Component/DeploymentTarget being bound. Must be an object THIS stack owns.
-     *  Mutually exclusive with `targetPlacement`. */
-    targetUrn: UrnSchema.optional(),
-    /** A PLACEMENT target, addressed by its pair. Ownership follows the COMPONENT (decision Q4) —
-     *  the same rule `placements` and `sourceMappings` already use — so a binding on a placement of
-     *  a component this stack owns is this stack's to converge, even when the deployment-target
-     *  belongs to another stack. */
-    targetPlacement: PlacementRefSchema.optional(),
+    /** URN of the Component/DeploymentTarget being bound. Must be an object THIS stack owns. */
+    targetUrn: UrnSchema,
+    /**
+     * NARROWS `targetUrn` to a PLACEMENT: this component AT this deployment-target, rather than the
+     * component itself. Omitted ⇒ the binding hangs off `targetUrn`'s object, as it always has.
+     *
+     * A placement is addressed this way rather than by its own URN because that URN is DERIVED
+     * (ADR-0026 D3) from the org id plus both endpoints' display names — neither hand-writable nor
+     * stable under a rename. Expressing it as a qualifier on `targetUrn` rather than as an
+     * alternative to it also keeps `targetUrn` REQUIRED, so adding this field breaks no response
+     * consumer, and leaves ownership a single unconditional rule: the stack must own `targetUrn`,
+     * which for a placement is its component (decision Q4).
+     */
+    deploymentTargetUrn: UrnSchema.optional(),
     /** WHICH pipeline this binding drives (ADR-0007). Omitted ⇒ `configuration`. */
     type: ExecutorTypeSchema.optional(),
     /** Inline binding: plugin module + a stable instance id. Omitted for execution-system-backed. */
@@ -144,11 +138,7 @@ export const ManifestExecutorBindingSchema = z
       message:
         "an execution-system-backed binding derives its module, instance id, config, credentials and egress allowlist FROM the system — remove pluginInstanceId/config/secretRefs/allowedHosts rather than declaring values the server will ignore"
     }
-  )
-  .refine((b) => Boolean(b.targetUrn) !== Boolean(b.targetPlacement), {
-    message:
-      "provide EITHER targetUrn (a Component/DeploymentTarget) OR targetPlacement (a component-at-deployment-target pair) — not both, and not neither"
-  });
+  );
 export type ManifestExecutorBinding = z.infer<typeof ManifestExecutorBindingSchema>;
 
 /**
@@ -278,14 +268,14 @@ export type PlanExecutorBindingTarget = z.infer<typeof PlanExecutorBindingTarget
 
 /**
  * One `executor_bindings` row's verdict, keyed on `(target, type)` — the table's own uniqueness,
- * where `target` is EITHER an object URN or a placement pair. Exactly one of `targetUrn` /
- * `targetPlacement` is present on every entry, matching how the manifest addressed it.
+ * where `target` is `targetUrn` optionally narrowed by `deploymentTargetUrn` to a placement.
  */
 export const PlanExecutorBindingDiffEntrySchema = z.object({
   kind: z.literal("executor-binding"),
   action: PlanActionSchema,
-  targetUrn: UrnSchema.optional(),
-  targetPlacement: PlacementRefSchema.optional(),
+  targetUrn: UrnSchema,
+  /** Present iff the bound row hangs off a PLACEMENT — see `ManifestExecutorBindingSchema`. */
+  deploymentTargetUrn: UrnSchema.optional(),
   type: ExecutorTypeSchema,
   reason: z.string(),
   /** Present for `create`/`update` only. */

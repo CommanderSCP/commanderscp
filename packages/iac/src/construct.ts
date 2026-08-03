@@ -198,8 +198,9 @@ export class Stack extends Construct {
   /**
    * Declares an `executor_bindings` row on a PLACEMENT, addressed by its pair.
    *
-   * There is no URN form and cannot be: a placement's URN is derived (ADR-0026 D3) from the org id
-   * and both endpoints' display names, so it is neither hand-writable nor stable under a rename.
+   * The placement is expressed as `targetUrn` (the component) NARROWED by `deploymentTargetUrn`,
+   * not by a URN of its own: a placement's URN is derived (ADR-0026 D3) from the org id and both
+   * endpoints' display names, so it is neither hand-writable nor stable under a rename.
    * Prefer `component.placeAt(target).bindsExecutor(...)`.
    *
    * The pair must ALSO be declared as a placement by this same stack — `POST /plans` refuses a
@@ -212,10 +213,8 @@ export class Stack extends Construct {
     spec: ExecutorBindingSpec
   ): this {
     this.executorBindingDecls.push({
-      targetPlacement: {
-        componentUrn: resolveUrn(component),
-        deploymentTargetUrn: resolveUrn(deploymentTarget)
-      },
+      targetUrn: resolveUrn(component),
+      deploymentTargetUrn: resolveUrn(deploymentTarget),
       ...executorBindingFields(spec)
     });
     return this;

@@ -353,19 +353,18 @@ describe("@scp/iac constructs: executor bindings on a placement", () => {
     return { stack, component, gamma, prod };
   }
 
-  it("addresses the placement by its PAIR, never by a URN", () => {
+  it("addresses the placement as its component NARROWED by the deployment-target", () => {
     const { stack, component, prod } = fixture("pl-bind");
     component.placeAt(prod).bindsExecutor({ pluginModule: "argocd", pluginInstanceId: "a1" });
     const manifest = stack.synth();
 
     expect(manifest.placements).toHaveLength(1);
     expect(manifest.executorBindings?.[0]).toEqual({
-      targetPlacement: { componentUrn: component.urn, deploymentTargetUrn: prod.urn },
+      targetUrn: component.urn,
+      deploymentTargetUrn: prod.urn,
       pluginModule: "argocd",
       pluginInstanceId: "a1"
     });
-    // A placement's URN is derived (ADR-0026 D3), so the binding must never carry one.
-    expect(manifest.executorBindings?.[0]).not.toHaveProperty("targetUrn");
   });
 
   it("synthesizes identically through the sugar and the stack-level door", () => {
@@ -386,9 +385,9 @@ describe("@scp/iac constructs: executor bindings on a placement", () => {
     component.placeAt(gamma).bindsExecutor({ pluginModule: "argocd", pluginInstanceId: "g" });
     const manifest = stack.synth();
     expect(manifest.executorBindings).toHaveLength(2);
-    expect(
-      manifest.executorBindings?.map((b) => b.targetPlacement?.deploymentTargetUrn).sort()
-    ).toEqual([gamma.urn, prod.urn].sort());
+    expect(manifest.executorBindings?.map((b) => b.deploymentTargetUrn).sort()).toEqual(
+      [gamma.urn, prod.urn].sort()
+    );
   });
 });
 
