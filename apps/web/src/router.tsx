@@ -13,6 +13,7 @@ import { ComponentGraphPage } from "./routes/component-graph";
 import { ChangeListPage } from "./routes/change-list";
 import { ChangeDetailPage } from "./routes/change-detail";
 import { ChangePipelinePage } from "./routes/change-pipeline";
+import { ComponentPipelinePage } from "./routes/component-pipeline";
 import { ServiceBoardPage } from "./routes/service-board";
 import { CampaignListPage } from "./routes/campaign-list";
 import { CampaignDetailPage } from "./routes/campaign-detail";
@@ -110,6 +111,18 @@ const changePipelineRoute = createRoute({
   component: ChangePipelinePage
 });
 
+// THE COMPONENT PIPELINE — the DEFAULT view of a component (coordination-ui-views.md §2, corrected
+// 2026-08-03). A static `/components/$idOrUrn` segment, which out-ranks the dynamic
+// `/$basePath/$idOrUrn` registry-detail route below — the same precedence trick `/services/$id/board`
+// uses. Going to a component now lands on its pipeline rather than a properties table, because the
+// pipeline IS what a component is operationally; the generic detail stays reachable for every other
+// registry type.
+const componentPipelineRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/components/$idOrUrn",
+  component: ComponentPipelinePage
+});
+
 // The service release board (coordination-ui-views.md Phase 2). A static `/services/$id/board` leaf —
 // services otherwise render only through the generic `/$basePath/$idOrUrn` registry-detail route, so
 // this dedicated static `/services/...` segment out-ranks the dynamic one (same precedence note below).
@@ -200,6 +213,7 @@ const routeTree = rootRoute.addChildren([
     changeListRoute,
     changeDetailRoute,
     changePipelineRoute,
+    componentPipelineRoute,
     serviceBoardRoute,
     campaignListRoute,
     campaignDetailRoute,

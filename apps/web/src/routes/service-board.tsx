@@ -180,15 +180,28 @@ export function BoardRow({ row }: { row: ServiceBoardRow }): React.JSX.Element {
         )}
       </TableCell>
       <TableCell>
+        {/* The pipeline link points at the COMPONENT, always — a pipeline is durable and exists with
+            nothing in flight. It used to be conditional on `latestChangeId`, which is how a stable
+            component ended up with no pipeline to open at all (coordination-ui-views.md §2). */}
+        <div className="flex flex-col gap-0.5">
+          <Link
+            to="/components/$idOrUrn"
+            params={{ idOrUrn: row.component.id }}
+            className="font-medium text-slate-700 underline hover:text-slate-900"
+            data-testid="board-pipeline-link"
+          >
+            Open pipeline →
+          </Link>
+        </div>
         {row.latestChangeId ? (
           <div className="flex flex-col gap-0.5">
             <Link
               to="/changes/$id/pipeline"
               params={{ id: row.latestChangeId }}
-              className="font-medium text-slate-700 underline hover:text-slate-900"
-              data-testid="board-pipeline-link"
+              className="text-xs text-slate-600 underline hover:text-slate-900"
+              data-testid="board-run-link"
             >
-              {row.changeName ?? "Open pipeline"} →
+              {row.changeName ?? "Latest run"} →
             </Link>
             {isUnknown(row, "changeState") ? (
               // The driving domain has not reported a lifecycle state for this
