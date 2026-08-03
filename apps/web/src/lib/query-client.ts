@@ -115,3 +115,10 @@ export function initiativeDetailKey(id: string): unknown[] {
 
 export const authMeKey = ["auth", "me"];
 export const authConfigKey = ["auth", "config"];
+
+/** Query key for a component's PIPELINE (coordination-ui-views.md §2, as corrected 2026-08-03) —
+ *  its stages, projected by `GET /components/{id}/pipeline`. Keyed on the COMPONENT, not a change:
+ *  the pipeline is durable and exists with nothing in flight. */
+export function componentPipelineKey(idOrUrn: string): unknown[] {
+  return ["component", "pipeline", idOrUrn];
+}
