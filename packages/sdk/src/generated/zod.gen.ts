@@ -1497,6 +1497,58 @@ export const zUpsertServiceAccountByUrnResponse = z.union([
 /**
  * Success
  */
+export const zGetComponentPipelineResponse = z.object({
+    component: z.object({
+        id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        urn: z.string(),
+        name: z.string()
+    }),
+    pipeline: z.object({
+        topologyObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        topologyName: z.string().nullable(),
+        topologyVersion: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
+        rung: z.enum([
+            'component',
+            'service',
+            'organization'
+        ]),
+        attachedToObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        attachedToName: z.string().nullable()
+    }).nullable(),
+    stages: z.array(z.object({
+        placement: z.object({
+            id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            urn: z.string()
+        }),
+        deploymentTarget: z.object({
+            id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            name: z.string(),
+            environment: z.string().nullable(),
+            region: z.string().nullable()
+        }),
+        stageName: z.string().nullable(),
+        binding: z.object({
+            externalRef: z.string().nullable(),
+            type: z.string(),
+            executionSystemId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            executionSystemName: z.string().nullable()
+        }).nullable(),
+        current: z.object({
+            changeId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            changeName: z.string().nullable(),
+            changeState: z.string().nullable(),
+            waveName: z.string().nullable(),
+            targetStatus: z.string().nullable()
+        }).nullable(),
+        version: z.string().nullable(),
+        unknownFields: z.array(z.string())
+    })),
+    unknownFields: z.array(z.string())
+});
+
+/**
+ * Success
+ */
 export const zListComponentsResponse = z.object({
     items: z.array(z.object({
         id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),

@@ -15,6 +15,7 @@ export * from "./governance.js";
 export * from "./supply-chain.js";
 export * from "./scan-db.js";
 export * from "./services.js";
+export * from "./components.js";
 export * from "./campaigns.js";
 export * from "./federation.js";
 export * from "./executors.js";

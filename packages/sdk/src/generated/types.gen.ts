@@ -5407,6 +5407,105 @@ export type UpsertServiceAccountByUrnResponses = {
 
 export type UpsertServiceAccountByUrnResponse = UpsertServiceAccountByUrnResponses[keyof UpsertServiceAccountByUrnResponses];
 
+export type GetComponentPipelineData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/components/{idOrUrn}/pipeline';
+};
+
+export type GetComponentPipelineErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetComponentPipelineError = GetComponentPipelineErrors[keyof GetComponentPipelineErrors];
+
+export type GetComponentPipelineResponses = {
+    /**
+     * Success
+     */
+    200: {
+        component: {
+            id: string;
+            urn: string;
+            name: string;
+        };
+        pipeline: {
+            topologyObjectId: string;
+            topologyName: string | null;
+            topologyVersion: number | null;
+            rung: 'component' | 'service' | 'organization';
+            attachedToObjectId: string;
+            attachedToName: string | null;
+        } | null;
+        stages: Array<{
+            placement: {
+                id: string;
+                urn: string;
+            };
+            deploymentTarget: {
+                id: string;
+                name: string;
+                environment: string | null;
+                region: string | null;
+            };
+            stageName: string | null;
+            binding: {
+                externalRef: string | null;
+                type: string;
+                executionSystemId: string | null;
+                executionSystemName: string | null;
+            } | null;
+            current: {
+                changeId: string;
+                changeName: string | null;
+                changeState: string | null;
+                waveName: string | null;
+                targetStatus: string | null;
+            } | null;
+            version: string | null;
+            unknownFields: Array<string>;
+        }>;
+        unknownFields: Array<string>;
+    };
+};
+
+export type GetComponentPipelineResponse = GetComponentPipelineResponses[keyof GetComponentPipelineResponses];
+
 export type ListComponentsData = {
     body?: never;
     path?: never;
