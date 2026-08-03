@@ -716,6 +716,7 @@ describe("iac/plan-diff: executor bindings (C1)", () => {
   function binding(over: Partial<ManifestBinding> = {}): ManifestBinding {
     return {
       targetUrn: TARGET,
+      deploymentTargetUrn: null,
       type: "configuration",
       pluginModule: "argocd",
       pluginInstanceId: "argocd-1",
@@ -852,6 +853,7 @@ describe("iac/plan-diff: unownedProjectionDeclarations (C1 ownership guard)", ()
 
   const bindingOn = (targetUrn: string): ManifestBinding => ({
     targetUrn,
+    deploymentTargetUrn: null,
     type: "configuration",
     pluginModule: "argocd",
     pluginInstanceId: "argocd-1",
@@ -952,6 +954,7 @@ describe("iac/plan-diff: duplicateProjectionDeclarations (C1)", () => {
 
   const bindingOn: ManifestBinding = {
     targetUrn: COMP,
+    deploymentTargetUrn: null,
     type: "configuration",
     pluginModule: "argocd",
     pluginInstanceId: "a",

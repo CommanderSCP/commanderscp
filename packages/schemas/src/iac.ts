@@ -92,6 +92,18 @@ export const ManifestExecutorBindingSchema = z
   .object({
     /** URN of the Component/DeploymentTarget being bound. Must be an object THIS stack owns. */
     targetUrn: UrnSchema,
+    /**
+     * NARROWS `targetUrn` to a PLACEMENT: this component AT this deployment-target, rather than the
+     * component itself. Omitted ⇒ the binding hangs off `targetUrn`'s object, as it always has.
+     *
+     * A placement is addressed this way rather than by its own URN because that URN is DERIVED
+     * (ADR-0026 D3) from the org id plus both endpoints' display names — neither hand-writable nor
+     * stable under a rename. Expressing it as a qualifier on `targetUrn` rather than as an
+     * alternative to it also keeps `targetUrn` REQUIRED, so adding this field breaks no response
+     * consumer, and leaves ownership a single unconditional rule: the stack must own `targetUrn`,
+     * which for a placement is its component (decision Q4).
+     */
+    deploymentTargetUrn: UrnSchema.optional(),
     /** WHICH pipeline this binding drives (ADR-0007). Omitted ⇒ `configuration`. */
     type: ExecutorTypeSchema.optional(),
     /** Inline binding: plugin module + a stable instance id. Omitted for execution-system-backed. */
@@ -160,8 +172,12 @@ export const DesiredStateManifestSchema = z.object({
   sourceMappings: z.array(ManifestSourceMappingSchema).optional(),
   /** C1 — see `sourceMappings` for why this is optional rather than defaulted. */
   executorBindings: z.array(ManifestExecutorBindingSchema).optional(),
-  /** C1 (ADR-0026). OPTIONAL for the same reason as the two above: an absent collection means "this
-   *  stack declares no placements" and prunes NOTHING. A PRESENT one is authoritative for the
+  /** C1 (ADR-0026). OPTIONAL for the same reason as the two above — but note what "optional" does
+   *  and does NOT mean. It keeps a pre-C1 manifest VALID; it does not suppress pruning. `Stack.synth()`
+   *  omits a collection when it is empty, so absent is the only way to say "this stack declares no
+   *  placements", and it therefore prunes exactly as an empty array does. (`plan-diff.ts`'s
+   *  `ResolvedManifest` carries the long form of this; I once read it the other way and broke three
+   *  prune tests.) A PRESENT one is authoritative for the
    *  components this stack owns — removing an entry deletes that placement (decision Q3), which is
    *  safe only because a placement still carrying an executor binding is REFUSED rather than
    *  cascaded (decision Q2). Those two rulings are load-bearing together. */
@@ -250,11 +266,16 @@ export const PlanExecutorBindingTargetSchema = z.object({
 });
 export type PlanExecutorBindingTarget = z.infer<typeof PlanExecutorBindingTargetSchema>;
 
-/** One `executor_bindings` row's verdict, keyed on `(targetUrn, type)` — the table's own uniqueness. */
+/**
+ * One `executor_bindings` row's verdict, keyed on `(target, type)` — the table's own uniqueness,
+ * where `target` is `targetUrn` optionally narrowed by `deploymentTargetUrn` to a placement.
+ */
 export const PlanExecutorBindingDiffEntrySchema = z.object({
   kind: z.literal("executor-binding"),
   action: PlanActionSchema,
   targetUrn: UrnSchema,
+  /** Present iff the bound row hangs off a PLACEMENT — see `ManifestExecutorBindingSchema`. */
+  deploymentTargetUrn: UrnSchema.optional(),
   type: ExecutorTypeSchema,
   reason: z.string(),
   /** Present for `create`/`update` only. */

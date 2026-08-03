@@ -9108,6 +9108,7 @@ export type CreatePlanData = {
             }>;
             executorBindings?: Array<{
                 targetUrn: string;
+                deploymentTargetUrn?: string;
                 type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                 pluginModule?: string;
                 pluginInstanceId?: string;
@@ -9210,6 +9211,7 @@ export type CreatePlanResponses = {
             }>;
             executorBindings?: Array<{
                 targetUrn: string;
+                deploymentTargetUrn?: string;
                 type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                 pluginModule?: string;
                 pluginInstanceId?: string;
@@ -9277,6 +9279,7 @@ export type CreatePlanResponses = {
                 kind: 'executor-binding';
                 action: 'create' | 'update' | 'delete' | 'noop';
                 targetUrn: string;
+                deploymentTargetUrn?: string;
                 type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                 reason: string;
                 target?: {
@@ -9395,6 +9398,7 @@ export type GetPlanResponses = {
             }>;
             executorBindings?: Array<{
                 targetUrn: string;
+                deploymentTargetUrn?: string;
                 type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                 pluginModule?: string;
                 pluginInstanceId?: string;
@@ -9462,6 +9466,7 @@ export type GetPlanResponses = {
                 kind: 'executor-binding';
                 action: 'create' | 'update' | 'delete' | 'noop';
                 targetUrn: string;
+                deploymentTargetUrn?: string;
                 type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                 reason: string;
                 target?: {
@@ -9592,6 +9597,7 @@ export type ApplyPlanResponses = {
                 }>;
                 executorBindings?: Array<{
                     targetUrn: string;
+                    deploymentTargetUrn?: string;
                     type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                     pluginModule?: string;
                     pluginInstanceId?: string;
@@ -9659,6 +9665,7 @@ export type ApplyPlanResponses = {
                     kind: 'executor-binding';
                     action: 'create' | 'update' | 'delete' | 'noop';
                     targetUrn: string;
+                    deploymentTargetUrn?: string;
                     type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                     reason: string;
                     target?: {
