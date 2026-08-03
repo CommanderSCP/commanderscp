@@ -445,6 +445,33 @@ export const CreateSourceMappingRequestSchema = z.object({
 });
 export type CreateSourceMappingRequest = z.infer<typeof CreateSourceMappingRequestSchema>;
 
+/**
+ * `DELETE /change-sources/{sourceKind}/mappings` body — the full IDENTITY TUPLE, not an id.
+ *
+ * `source_mappings` has no unique constraint and `POST /discovery/accept` inserts
+ * unconditionally, so an estate can hold several byte-identical rows (the homelab does). A by-id
+ * delete would remove one and leave the survivor still correlating — the operator would see the
+ * mapping "deleted" and a push would still route to it. Matching the tuple removes every row that
+ * says the same thing, which is the same reasoning `deleteSourceMappingsMatching` was written with
+ * for IaC prune.
+ *
+ * `repoPattern`/`pathPattern` are NULLABLE rather than optional: a NULL pattern is meaningful (it
+ * means "match any"), so absent and null must be distinguishable — omitting one would otherwise
+ * silently target a different row than the caller sees in the list.
+ */
+export const DeleteSourceMappingRequestSchema = z.object({
+  component: z.string().min(1), // idOrUrn
+  repoPattern: z.string().nullable(),
+  pathPattern: z.string().nullable(),
+  type: ExecutorTypeSchema.optional()
+});
+export type DeleteSourceMappingRequest = z.infer<typeof DeleteSourceMappingRequestSchema>;
+
+/** How many rows the delete actually removed — 0 means nothing matched, which is NOT an error but
+ *  is the answer an operator needs to see (a silent 204 would look like success). */
+export const DeleteSourceMappingResponseSchema = z.object({ deleted: z.number().int().min(0) });
+export type DeleteSourceMappingResponse = z.infer<typeof DeleteSourceMappingResponseSchema>;
+
 export const SourceMappingListResponseSchema = cursorPageResponseSchema(SourceMappingSchema);
 export type SourceMappingListResponse = z.infer<typeof SourceMappingListResponseSchema>;
 
