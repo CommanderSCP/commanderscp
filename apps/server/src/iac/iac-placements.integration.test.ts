@@ -34,7 +34,7 @@ import { objects, relationships } from "../db/schema.js";
  * |---|---|
  * | apply via `createObject` instead of `createPlacement` | the derived-edges test FAILS — the row exists, the edges do not |
  * | make an ABSENT collection skip pruning | the absent-collection test FAILS here AND three `plans.integration` C1 prune tests fail — absent is the only way `synth()` can say "none", so it must prune |
- * | drop the Q2 binding check from the prune path | the refuse-with-binding test FAILS (the placement is deleted and the binding orphaned) |
+ * | drop the Q2 binding check from the prune path | the TOCTOU test FAILS (the placement is deleted and the binding orphaned) |
  * | move the placement prune BEFORE the binding prune | the remove-both test FAILS — a manifest legitimately dropping both is refused, which is the ordering bug this file caught during development |
  * | scope the owned pool on the deployment-target instead of the component | the foreign-component test FAILS |
  */
@@ -142,25 +142,66 @@ describe("IaC placements (C1)", () => {
     expect(second.summary.creates, "the second apply must create nothing").toBe(0);
   });
 
-  it("REFUSES to prune a placement that still carries an executor binding (decision Q2)", async () => {
-    const stackName = `pl-q2-${uuidv7().slice(0, 8)}`;
+  it("removes BOTH when the manifest declares neither the placement nor its binding", async () => {
+    // THIS REPLACES THE ORIGINAL Q2 TEST, and the change is deliberate rather than a regression.
+    //
+    // Q2 ruled that pruning a placement carrying a binding REFUSES, on the stated grounds that "the
+    // manifest cannot even name it (its target is the placement)". A manifest CAN now name it, by
+    // the pair — so silence means "I declare none", the binding is pruned first, and the placement
+    // then prunes cleanly. That is exactly how `sourceMappings` on an owned component have always
+    // behaved; making bindings-on-placements the one collection that cannot be removed through IaC
+    // would be the inconsistency, not this.
+    const stackName = `pl-q2-both-${uuidv7().slice(0, 8)}`;
+    const { manifest, comp } = baseManifest(stackName, {
+      placements: [{ componentUrn: comp0(stackName), deploymentTargetUrn: tgt0(stackName) }],
+      executorBindings: [
+        {
+          targetPlacement: {
+            componentUrn: comp0(stackName),
+            deploymentTargetUrn: tgt0(stackName)
+          },
+          pluginModule: "fake-executor",
+          pluginInstanceId: `inst-${stackName}`,
+          externalRef: "app"
+        }
+      ]
+    });
+    await apply(manifest);
+    expect(await livePlacements(comp)).toHaveLength(1);
+
+    const { manifest: without } = baseManifest(stackName, { placements: [] });
+    await apply(without);
+
+    expect(
+      await livePlacements(comp),
+      "binding-prune runs before placement-prune, so declaring neither removes both"
+    ).toHaveLength(0);
+  });
+
+  it("REFUSES at apply when a binding appeared AFTER the plan was computed (Q2's surviving reach)", async () => {
+    // What Q2 still protects, now that the ordinary case is expressible. The plan is computed while
+    // the placement carries nothing, so its diff contains no binding-delete; the binding is written
+    // in the gap before apply. Nothing in the stored diff knows about it, and a cascade here would
+    // destroy execution configuration no human ever reviewed.
+    const stackName = `pl-q2-toctou-${uuidv7().slice(0, 8)}`;
     const { manifest, comp } = baseManifest(stackName, {
       placements: [{ componentUrn: comp0(stackName), deploymentTargetUrn: tgt0(stackName) }]
     });
     await apply(manifest);
     const [placement] = await livePlacements(comp);
+
+    const { manifest: without } = baseManifest(stackName, { placements: [] });
+    const plan = await admin.plans.create(without); // computed BEFORE the binding exists
+
     await admin.executors.putBinding(placement!.id, {
       pluginModule: "fake-executor",
       pluginInstanceId: `inst-${uuidv7().slice(0, 8)}`,
       externalRef: "app"
     });
 
-    // Same stack, placement removed — and the binding NOT removed, because the manifest cannot
-    // even name it (its target is the placement).
-    const { manifest: without } = baseManifest(stackName, { placements: [] });
     await expect(
-      apply(without),
-      "a cascade would delete execution config the manifest never mentioned, and an orphaned binding fails SILENTLY"
+      admin.plans.apply(plan.id),
+      "an orphaned binding fails SILENTLY, so refusing beats cascading"
     ).rejects.toMatchObject({ status: 409 });
 
     expect(await livePlacements(comp), "and nothing may be destroyed by the refusal").toHaveLength(

@@ -2493,7 +2493,11 @@ export const zCreatePlanResponse = z.object({
             ]).optional()
         })).optional(),
         executorBindings: z.array(z.object({
-            targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/).optional(),
+            targetPlacement: z.object({
+                componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                deploymentTargetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/)
+            }).optional(),
             type: z.enum([
                 'image',
                 'rpm',
@@ -2588,7 +2592,11 @@ export const zCreatePlanResponse = z.object({
                 'delete',
                 'noop'
             ]),
-            targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/).optional(),
+            targetPlacement: z.object({
+                componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                deploymentTargetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/)
+            }).optional(),
             type: z.enum([
                 'image',
                 'rpm',
@@ -2663,7 +2671,11 @@ export const zGetPlanResponse = z.object({
             ]).optional()
         })).optional(),
         executorBindings: z.array(z.object({
-            targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/).optional(),
+            targetPlacement: z.object({
+                componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                deploymentTargetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/)
+            }).optional(),
             type: z.enum([
                 'image',
                 'rpm',
@@ -2758,7 +2770,11 @@ export const zGetPlanResponse = z.object({
                 'delete',
                 'noop'
             ]),
-            targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/).optional(),
+            targetPlacement: z.object({
+                componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                deploymentTargetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/)
+            }).optional(),
             type: z.enum([
                 'image',
                 'rpm',
@@ -2834,7 +2850,11 @@ export const zApplyPlanResponse = z.object({
                 ]).optional()
             })).optional(),
             executorBindings: z.array(z.object({
-                targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/).optional(),
+                targetPlacement: z.object({
+                    componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                    deploymentTargetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/)
+                }).optional(),
                 type: z.enum([
                     'image',
                     'rpm',
@@ -2929,7 +2949,11 @@ export const zApplyPlanResponse = z.object({
                     'delete',
                     'noop'
                 ]),
-                targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/).optional(),
+                targetPlacement: z.object({
+                    componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                    deploymentTargetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/)
+                }).optional(),
                 type: z.enum([
                     'image',
                     'rpm',

@@ -195,19 +195,36 @@ export class Stack extends Construct {
     return this;
   }
 
+  /**
+   * Declares an `executor_bindings` row on a PLACEMENT, addressed by its pair.
+   *
+   * There is no URN form and cannot be: a placement's URN is derived (ADR-0026 D3) from the org id
+   * and both endpoints' display names, so it is neither hand-writable nor stable under a rename.
+   * Prefer `component.placeAt(target).bindsExecutor(...)`.
+   *
+   * The pair must ALSO be declared as a placement by this same stack — `POST /plans` refuses a
+   * binding on a pair the manifest does not declare, because apply would otherwise write it onto a
+   * placement the same apply just pruned.
+   */
+  addPlacementExecutorBinding(
+    component: ResourceConstruct | string,
+    deploymentTarget: ResourceConstruct | string,
+    spec: ExecutorBindingSpec
+  ): this {
+    this.executorBindingDecls.push({
+      targetPlacement: {
+        componentUrn: resolveUrn(component),
+        deploymentTargetUrn: resolveUrn(deploymentTarget)
+      },
+      ...executorBindingFields(spec)
+    });
+    return this;
+  }
+
   addExecutorBinding(target: ResourceConstruct | string, spec: ExecutorBindingSpec): this {
     this.executorBindingDecls.push({
       targetUrn: resolveUrn(target),
-      ...(spec.type !== undefined ? { type: spec.type } : {}),
-      ...(spec.pluginModule !== undefined ? { pluginModule: spec.pluginModule } : {}),
-      ...(spec.pluginInstanceId !== undefined ? { pluginInstanceId: spec.pluginInstanceId } : {}),
-      ...(spec.config !== undefined ? { config: spec.config } : {}),
-      ...(spec.secretRefs !== undefined ? { secretRefs: spec.secretRefs } : {}),
-      ...(spec.allowedHosts !== undefined ? { allowedHosts: spec.allowedHosts } : {}),
-      ...(spec.externalRef !== undefined ? { externalRef: spec.externalRef } : {}),
-      ...(spec.executionSystem !== undefined
-        ? { executionSystemId: resolveUrn(spec.executionSystem) }
-        : {})
+      ...executorBindingFields(spec)
     });
     return this;
   }
@@ -454,9 +471,8 @@ export class Component extends ResourceConstruct {
    * standalone form too, so a half-declared placement is unexpressible either way — the pair IS the
    * identity (D3).
    */
-  placeAt(deploymentTarget: ResourceConstruct | string): this {
-    new Placement(this.stack, this, deploymentTarget);
-    return this;
+  placeAt(deploymentTarget: ResourceConstruct | string): Placement {
+    return new Placement(this.stack, this, deploymentTarget);
   }
 }
 
@@ -469,13 +485,50 @@ export class Component extends ResourceConstruct {
  * free-form `properties` — that door is refused outright, since it could not resolve or type-check
  * the endpoints nor write the derived edges (PR #207).
  */
+/** The non-target half of a binding declaration, shared by the object and placement doors so the
+ *  two can never drift. Undefined fields are OMITTED rather than emitted as `undefined`, which is
+ *  what keeps `synth()` byte-stable. */
+function executorBindingFields(spec: ExecutorBindingSpec): Record<string, unknown> {
+  return {
+    ...(spec.type !== undefined ? { type: spec.type } : {}),
+    ...(spec.pluginModule !== undefined ? { pluginModule: spec.pluginModule } : {}),
+    ...(spec.pluginInstanceId !== undefined ? { pluginInstanceId: spec.pluginInstanceId } : {}),
+    ...(spec.config !== undefined ? { config: spec.config } : {}),
+    ...(spec.secretRefs !== undefined ? { secretRefs: spec.secretRefs } : {}),
+    ...(spec.allowedHosts !== undefined ? { allowedHosts: spec.allowedHosts } : {}),
+    ...(spec.externalRef !== undefined ? { externalRef: spec.externalRef } : {}),
+    ...(spec.executionSystem !== undefined
+      ? { executionSystemId: resolveUrn(spec.executionSystem) }
+      : {})
+  };
+}
+
 export class Placement {
+  private readonly stack: Stack;
+  private readonly component: ResourceConstruct | string;
+  private readonly deploymentTarget: ResourceConstruct | string;
+
   constructor(
     stack: Stack,
     component: ResourceConstruct | string,
     deploymentTarget: ResourceConstruct | string
   ) {
     stack.addPlacement(component, deploymentTarget);
+    this.stack = stack;
+    this.component = component;
+    this.deploymentTarget = deploymentTarget;
+  }
+
+  /**
+   * Declares an `executor_bindings` row on THIS placement — `component.placeAt(prod).bindsExecutor({…})`.
+   *
+   * This is the pipeline that actually releases the component AT that target, which is why it hangs
+   * off the placement rather than off either endpoint: the same component at two targets is two
+   * bindings, and the same target for two components likewise.
+   */
+  bindsExecutor(spec: ExecutorBindingSpec): this {
+    this.stack.addPlacementExecutorBinding(this.component, this.deploymentTarget, spec);
+    return this;
   }
 }
 

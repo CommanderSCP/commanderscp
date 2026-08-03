@@ -85,7 +85,11 @@ export interface ResolvedManifestSourceMapping {
  * `update` against the uuid the table stores — DoD (b)'s "apply twice is a no-op" would be false.
  */
 export interface ResolvedManifestExecutorBinding {
-  targetUrn: string;
+  /** Exactly ONE of these is non-null — an object URN, or a placement addressed by its pair. The
+   *  pair is not reducible to a URN here: a placement's URN is derived (ADR-0026 D3), so the diff
+   *  must key on the same identity the manifest declared or a re-plan would never match. */
+  targetUrn: string | null;
+  targetPlacement: { componentUrn: string; deploymentTargetUrn: string } | null;
   type: ExecutorType;
   pluginModule: string | null;
   pluginInstanceId: string | null;
@@ -206,9 +210,42 @@ function sourceMappingKey(m: ResolvedManifestSourceMapping): string {
   });
 }
 
-/** A binding's identity — `(targetUrn, type)`, mirroring `UNIQUE (org_id, target_object_id, type)`. */
-function bindingKey(b: { targetUrn: string; type: ExecutorType }): string {
-  return canonicalJson({ targetUrn: b.targetUrn, type: b.type });
+/**
+ * A binding's identity — `(target, type)`, mirroring `UNIQUE (org_id, target_object_id, type)`.
+ *
+ * The two addressings are TAGGED rather than merged into one string. An untagged key would let an
+ * object URN and a placement pair collide in principle, and — more practically — makes the key
+ * unreadable in a failing diff. `target_object_id` is a single column, so the two forms are two
+ * ways of naming one row, never two rows.
+ */
+function bindingKey(b: {
+  targetUrn: string | null;
+  targetPlacement: { componentUrn: string; deploymentTargetUrn: string } | null;
+  type: ExecutorType;
+}): string {
+  return b.targetPlacement
+    ? canonicalJson({ kind: "placement", ...b.targetPlacement, type: b.type })
+    : canonicalJson({ kind: "object", targetUrn: b.targetUrn, type: b.type });
+}
+
+/** How a binding's target reads in an error message, whichever way it was addressed. */
+function describeBindingTarget(b: {
+  targetUrn: string | null;
+  targetPlacement: { componentUrn: string; deploymentTargetUrn: string } | null;
+}): string {
+  return b.targetPlacement
+    ? `placement ${b.targetPlacement.componentUrn}@${b.targetPlacement.deploymentTargetUrn}`
+    : String(b.targetUrn);
+}
+
+/** The addressing fields to copy onto a diff entry, so it reports the target the way it was declared. */
+function bindingAddress(b: {
+  targetUrn: string | null;
+  targetPlacement: { componentUrn: string; deploymentTargetUrn: string } | null;
+}):
+  | { targetUrn: string }
+  | { targetPlacement: { componentUrn: string; deploymentTargetUrn: string } } {
+  return b.targetPlacement ? { targetPlacement: b.targetPlacement } : { targetUrn: b.targetUrn! };
 }
 
 /**
@@ -517,7 +554,7 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
       executorBindingEntries.push({
         kind: "executor-binding",
         action: "create",
-        targetUrn: binding.targetUrn,
+        ...bindingAddress(binding),
         type: binding.type,
         reason: "no existing executor binding for this target and type",
         target: bindingTarget(binding)
@@ -529,7 +566,7 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
       executorBindingEntries.push({
         kind: "executor-binding",
         action: "noop",
-        targetUrn: binding.targetUrn,
+        ...bindingAddress(binding),
         type: binding.type,
         reason: "matches current state"
       });
@@ -538,7 +575,7 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
       executorBindingEntries.push({
         kind: "executor-binding",
         action: "update",
-        targetUrn: binding.targetUrn,
+        ...bindingAddress(binding),
         type: binding.type,
         reason: "binding configuration changed",
         target: bindingTarget(binding)
@@ -554,7 +591,7 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
     executorBindingEntries.push({
       kind: "executor-binding",
       action: "delete",
-      targetUrn: managed.targetUrn,
+      ...bindingAddress(managed),
       type: managed.type,
       reason:
         "on an object this stack owns, no longer present in the desired manifest's executorBindings"
@@ -616,7 +653,7 @@ export function duplicateProjectionDeclarations(manifest: ResolvedManifest): str
   for (const binding of manifest.executorBindings) {
     const key = bindingKey(binding);
     if (seenBindings.has(key)) {
-      offenders.push(`executorBinding ${binding.targetUrn} (${binding.type})`);
+      offenders.push(`executorBinding ${describeBindingTarget(binding)} (${binding.type})`);
       continue;
     }
     seenBindings.add(key);
@@ -658,9 +695,42 @@ export function unownedProjectionDeclarations(diff: PlanDiff): string[] {
       offenders.push(`sourceMapping -> ${mapping.componentUrn}`);
     }
   }
+  // A placement this plan will own once applied. `noop` counts: the pair is already live AND
+  // declared, so it survives the prune. `delete` does not — see the second check below.
+  const declaredPlacements = new Set<string>();
+  for (const placement of diff.placements ?? []) {
+    if (placement.action !== "delete") {
+      declaredPlacements.add(
+        canonicalJson([placement.componentUrn, placement.deploymentTargetUrn])
+      );
+    }
+  }
+
   for (const binding of diff.executorBindings ?? []) {
     if (binding.action === "delete") continue;
-    if (!ownedUrns.has(binding.targetUrn)) {
+    if (binding.targetPlacement) {
+      // Ownership follows the COMPONENT (decision Q4), never the deployment-target — a platform team
+      // owning the targets must not thereby own every app team's bindings.
+      const { componentUrn, deploymentTargetUrn } = binding.targetPlacement;
+      if (!ownedUrns.has(componentUrn)) {
+        offenders.push(
+          `executorBinding -> placement ${componentUrn}@${deploymentTargetUrn} (${binding.type})`
+        );
+        continue;
+      }
+      // The pair must ALSO survive this plan. Apply runs binding-prune, placement-prune,
+      // placement-create, binding-create in that order, so a binding declared on a pair the
+      // manifest does not declare would be written onto a placement the SAME apply just pruned —
+      // it would fail at the resolve step, mid-apply, after other writes had landed. Refusing here
+      // turns that into a plan-time error naming both halves.
+      if (!declaredPlacements.has(canonicalJson([componentUrn, deploymentTargetUrn]))) {
+        offenders.push(
+          `executorBinding -> placement ${componentUrn}@${deploymentTargetUrn} (${binding.type}), whose pair this manifest does not declare in placements`
+        );
+      }
+      continue;
+    }
+    if (!ownedUrns.has(binding.targetUrn!)) {
       offenders.push(`executorBinding -> ${binding.targetUrn} (${binding.type})`);
     }
   }

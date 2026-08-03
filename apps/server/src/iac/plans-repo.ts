@@ -1,6 +1,12 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
-import type { DesiredStateManifest, Plan, PlanDiff, PlanStatus } from "@scp/schemas";
+import type {
+  DesiredStateManifest,
+  Plan,
+  PlanDiff,
+  PlanExecutorBindingDiffEntry,
+  PlanStatus
+} from "@scp/schemas";
 import { containmentDomainIdFromWire } from "../domain-id-edge.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects, plans, relationships } from "../db/schema.js";
@@ -133,6 +139,12 @@ function assertProjectionsUnique(manifest: ResolvedManifest): void {
  * are derived from the system object at write time, and validating them needs a read of that object,
  * which must not happen before `authorize()` (see `executionSystemBindingIdentity`'s call-order note).
  */
+function bindingTargetLabel(entry: PlanExecutorBindingDiffEntry): string {
+  return entry.targetPlacement
+    ? `placement ${entry.targetPlacement.componentUrn}@${entry.targetPlacement.deploymentTargetUrn}`
+    : String(entry.targetUrn);
+}
+
 function assertInlineBindingsValid(diff: PlanDiff): void {
   for (const entry of diff.executorBindings ?? []) {
     if (entry.action !== "create" && entry.action !== "update") continue;
@@ -140,14 +152,14 @@ function assertInlineBindingsValid(diff: PlanDiff): void {
     if (!target || target.executionSystemId) continue;
     if (!target.pluginModule || !isKnownExecutorModule(target.pluginModule)) {
       throw badRequest(
-        `executor binding for '${entry.targetUrn}' (${entry.type}) names unknown or non-executor plugin module '${target.pluginModule}'`
+        `executor binding for '${bindingTargetLabel(entry)}' (${entry.type}) names unknown or non-executor plugin module '${target.pluginModule}'`
       );
     }
     // Same rejection the route makes, surfaced as a 400 rather than `assertNotReservedInstanceId`'s
     // internal-error throw (which is the repo's last-ditch net, not a user-facing message).
     if (target.pluginInstanceId?.startsWith(EXECUTION_SYSTEM_INSTANCE_PREFIX)) {
       throw badRequest(
-        `executor binding for '${entry.targetUrn}' (${entry.type}) uses the reserved ` +
+        `executor binding for '${bindingTargetLabel(entry)}' (${entry.type}) uses the reserved ` +
           `'${EXECUTION_SYSTEM_INSTANCE_PREFIX}' pluginInstanceId namespace — declare executionSystemId instead`
       );
     }
@@ -271,7 +283,21 @@ export async function computeDiffForManifest(
   // C1: a mapping/binding's owning object must be resolvable too — it is what the row hangs off and
   // what its ownership is inherited from.
   for (const mapping of manifest.sourceMappings ?? []) referencedUrns.add(mapping.componentUrn);
-  for (const binding of manifest.executorBindings ?? []) referencedUrns.add(binding.targetUrn);
+  for (const placement of manifest.placements ?? []) {
+    referencedUrns.add(placement.componentUrn);
+    referencedUrns.add(placement.deploymentTargetUrn);
+  }
+  for (const binding of manifest.executorBindings ?? []) {
+    // A placement-targeted binding references BOTH endpoints, not the placement: the pair is what
+    // `endpointId` resolves at apply, and the placement's own URN is derived (ADR-0026 D3) rather
+    // than something a manifest ever names.
+    if (binding.targetPlacement) {
+      referencedUrns.add(binding.targetPlacement.componentUrn);
+      referencedUrns.add(binding.targetPlacement.deploymentTargetUrn);
+    } else if (binding.targetUrn) {
+      referencedUrns.add(binding.targetUrn);
+    }
+  }
 
   const [referencedRows, managedObjectRows] = await Promise.all([
     fetchObjectsByUrns(tx, orgId, [...referencedUrns]),
@@ -343,17 +369,35 @@ export async function computeDiffForManifest(
   }
   const ownedIdList = [...ownedObjectIds];
 
-  const [ownedMappingRows, ownedBindingRows, ownedPlacementRows] = await Promise.all([
+  const [ownedMappingRows, ownedPlacementRows] = await Promise.all([
     listSourceMappingsForComponents(tx, orgId, ownedIdList),
-    listExecutorBindingsForTargets(tx, orgId, ownedIdList),
     // Decision Q4: ownership follows the COMPONENT, so the pool is keyed on owned components — a
     // placement at a deployment-target another stack owns is still this stack's to converge.
     listPlacementsForComponents(tx, orgId, ownedIdList)
   ]);
 
+  // THE BINDING POOL SPANS OBJECTS *AND* PLACEMENTS. `executor_bindings.target_object_id` points at
+  // either, and a placement is not in `manifest.objects` (that door refuses pair-bound types, #207),
+  // so keying the pool on owned OBJECTS alone made every binding on a placement invisible to the
+  // diff: unadoptable (a re-plan proposes it forever) and unprunable. Sequenced after the placement
+  // read rather than folded into the Promise.all above, because the placement ids ARE the extra
+  // targets — the dependency is real, not incidental ordering.
+  const ownedBindingRows = await listExecutorBindingsForTargets(tx, orgId, [
+    ...ownedIdList,
+    ...ownedPlacementRows.map((row) => row.placementId)
+  ]);
+
   const urnOfOwnedId = (id: string): string | undefined => objectsById.get(id)?.urn;
 
   const managedPlacements: ResolvedManifestPlacement[] = [];
+  /** placement id -> its pair, so a binding row hanging off a placement resolves to the SAME
+   *  addressing a manifest uses. A placement whose pair does not resolve is absent from this map,
+   *  which drops its bindings from the pool too — invisible to both create-matching and prune,
+   *  never mis-attributed. */
+  const placementPairById = new Map<
+    string,
+    { componentUrn: string; deploymentTargetUrn: string }
+  >();
   for (const row of ownedPlacementRows) {
     const componentUrn = urnOfOwnedId(row.componentObjectId);
     // The deployment-target may belong to ANOTHER stack, so resolve it from the wider by-id map. A
@@ -362,6 +406,7 @@ export async function computeDiffForManifest(
     const targetUrn = objectsById.get(row.deploymentTargetObjectId)?.urn;
     if (!componentUrn || !targetUrn) continue;
     managedPlacements.push({ componentUrn, deploymentTargetUrn: targetUrn });
+    placementPairById.set(row.placementId, { componentUrn, deploymentTargetUrn: targetUrn });
   }
 
   const managedSourceMappings: ResolvedManifestSourceMapping[] = [];
@@ -382,10 +427,12 @@ export async function computeDiffForManifest(
 
   const managedExecutorBindings: ResolvedManifestExecutorBinding[] = [];
   for (const row of ownedBindingRows) {
-    const targetUrn = urnOfOwnedId(row.targetObjectId);
-    if (!targetUrn) continue; // defensive — see above
+    const targetPlacement = placementPairById.get(row.targetObjectId) ?? null;
+    const targetUrn = targetPlacement ? null : (urnOfOwnedId(row.targetObjectId) ?? null);
+    if (!targetPlacement && !targetUrn) continue; // defensive — see above
     managedExecutorBindings.push({
       targetUrn,
+      targetPlacement,
       type: row.type,
       pluginModule: row.pluginModule,
       pluginInstanceId: row.pluginInstanceId,
@@ -413,7 +460,7 @@ export async function computeDiffForManifest(
       // TYPE is deliberately not inspected here — that check is authorization-gated and happens at
       // apply (`executionSystemBindingIdentity`), so plan-compute can't be a type oracle.
       throw badRequest(
-        `executor binding for '${binding.targetUrn}' references execution-system '${ref}', which does not exist`
+        `executor binding for '${binding.targetUrn ?? `placement ${binding.targetPlacement?.componentUrn}@${binding.targetPlacement?.deploymentTargetUrn}`}' references execution-system '${ref}', which does not exist`
       );
     }
     resolvedExecutionSystemIds.set(ref, resolved.id);
@@ -439,7 +486,8 @@ export async function computeDiffForManifest(
       deploymentTargetUrn: pl.deploymentTargetUrn
     })),
     executorBindings: (manifest.executorBindings ?? []).map((b) => ({
-      targetUrn: b.targetUrn,
+      targetUrn: b.targetUrn ?? null,
+      targetPlacement: b.targetPlacement ?? null,
       type: b.type ?? DEFAULT_BINDING_TYPE,
       pluginModule: b.pluginModule ?? null,
       pluginInstanceId: b.pluginInstanceId ?? null,
@@ -769,12 +817,27 @@ export async function prepareApplyChecks(
     if (entry.action === "noop") continue;
     const component = await resolveEndpoint(entry.componentUrn);
     checks.push({ permission: "object:write", scopeObjectId: component.scopeObjectId });
+    // RESOLVED BUT NOT CHECKED. `endpointId` throws an INTERNAL error for a URN this pass did not
+    // resolve, and the deployment-target may legitimately belong to another stack — so a placement
+    // at a foreign target used to fail apply with "internal: could not resolve object id". No
+    // `object:write` is pushed for it deliberately: ownership follows the COMPONENT (decision Q4),
+    // and demanding write on the target would hand every deployment-target owner a veto.
+    await resolveEndpoint(entry.deploymentTargetUrn);
   }
 
   for (const entry of diff.executorBindings ?? []) {
     if (entry.action === "noop") continue;
-    const target = await resolveEndpoint(entry.targetUrn);
+    // A PLACEMENT-targeted binding authorizes at the COMPONENT, exactly as the placement loop above
+    // does (decision Q4) — and it must, because the placement object may not exist yet: on a first
+    // apply the same plan creates it a few steps later. Resolving the placement here would 404 on
+    // precisely the plan that is allowed to create it.
+    const target = await resolveEndpoint(
+      entry.targetPlacement ? entry.targetPlacement.componentUrn : entry.targetUrn!
+    );
     checks.push({ permission: "object:write", scopeObjectId: target.scopeObjectId });
+    // Same reason as the placement loop above: `bindingTargetObjectId` hands BOTH halves of the pair
+    // to `endpointId`, so both must be resolved, and the target half carries no check of its own.
+    if (entry.targetPlacement) await resolveEndpoint(entry.targetPlacement.deploymentTargetUrn);
 
     // A system-backed binding makes SCP dispatch with THAT system's decrypted token (and, where
     // both egress layers agree, its internal-egress reach) — a use-of-credentials capability. The
@@ -944,12 +1007,47 @@ export async function executePlanDiff(
     }
   }
 
+  /**
+   * The `executor_bindings.target_object_id` a diff entry names, whichever way it was addressed.
+   *
+   * A placement is resolved BY ITS PAIR — its URN is derived (ADR-0026 D3), so there is no stable
+   * URN to look up. It must already be live at the moment of the call, which the apply ORDER makes
+   * true in both directions: binding-prune runs BEFORE placement-prune, and binding-create runs
+   * AFTER placement-create.
+   */
+  const bindingTargetObjectId = async (entry: PlanExecutorBindingDiffEntry): Promise<string> => {
+    if (!entry.targetPlacement) return endpointId(entry.targetUrn!);
+    const { componentUrn, deploymentTargetUrn } = entry.targetPlacement;
+    const placement = await findLivePlacement(
+      tx,
+      orgId,
+      endpointId(componentUrn),
+      endpointId(deploymentTargetUrn)
+    );
+    if (!placement) {
+      throw notFound(
+        `no live placement '${componentUrn}' @ '${deploymentTargetUrn}' to carry its '${entry.type}' executor binding`
+      );
+    }
+    return placement.id;
+  };
+
+  const describeTarget = (entry: PlanExecutorBindingDiffEntry): string =>
+    entry.targetPlacement
+      ? `placement '${entry.targetPlacement.componentUrn}' @ '${entry.targetPlacement.deploymentTargetUrn}'`
+      : `'${entry.targetUrn}'`;
+
   for (const entry of diff.executorBindings ?? []) {
     if (entry.action !== "delete") continue;
-    const removed = await deleteExecutorBinding(tx, orgId, endpointId(entry.targetUrn), entry.type);
+    const removed = await deleteExecutorBinding(
+      tx,
+      orgId,
+      await bindingTargetObjectId(entry),
+      entry.type
+    );
     if (!removed) {
       throw notFound(
-        `no live '${entry.type}' executor binding on '${entry.targetUrn}' to prune (apply-time prune)`
+        `no live '${entry.type}' executor binding on ${describeTarget(entry)} to prune (apply-time prune)`
       );
     }
   }
@@ -973,8 +1071,18 @@ export async function executePlanDiff(
     }
     // DECISION Q2 — REFUSE, naming the binding. A cascade would delete execution configuration the
     // manifest never mentioned, and an orphaned binding fails SILENTLY (no FK, no deleted_at, and
-    // `targetObjectIsLive` hides it at read time). Removing a placement is therefore a deliberate
-    // two-step for the operator, and this error has to name what to remove first.
+    // `targetObjectIsLive` hides it at read time).
+    //
+    // Q2 WAS DECIDED ON A PREMISE THAT NO LONGER HOLDS, and this is now a different guard than it
+    // was. The ruling's reasoning was "the manifest cannot even name it (its target is the
+    // placement)" — true when bindings could only be addressed by object URN. A manifest CAN now
+    // declare a binding on a placement by its pair, so a stack that wants both gone declares
+    // neither and the binding-prune above removes it first; the common case no longer reaches here.
+    //
+    // What survives is narrower and still worth having: this is the APPLY-TIME net for a binding
+    // that was NOT in the plan's prune set — most realistically one written between plan and apply,
+    // which no diff computed earlier could have known about. Refusing beats destroying it, and the
+    // message still has to name what to remove first.
     const survivingBindings = await listExecutorBindingsForTarget(tx, orgId, placement.id);
     if (survivingBindings.length > 0) {
       const named = survivingBindings.map((b) => `'${b.type}'`).join(", ");
@@ -1017,10 +1125,10 @@ export async function executePlanDiff(
     const target = entry.target;
     if (!target) {
       throw new Error(
-        `internal: ${entry.action} binding entry for '${entry.targetUrn}' has no target`
+        `internal: ${entry.action} binding entry for ${describeTarget(entry)} has no target`
       );
     }
-    const targetObjectId = endpointId(entry.targetUrn);
+    const targetObjectId = await bindingTargetObjectId(entry);
     if (target.executionSystemId) {
       // Every `authorize()` — including `object:write` at this system (prepareApplyChecks) — has
       // already run to completion, so validating the system here cannot be an oracle.

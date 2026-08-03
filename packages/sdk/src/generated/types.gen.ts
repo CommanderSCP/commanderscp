@@ -9107,7 +9107,11 @@ export type CreatePlanData = {
                 type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
             }>;
             executorBindings?: Array<{
-                targetUrn: string;
+                targetUrn?: string;
+                targetPlacement?: {
+                    componentUrn: string;
+                    deploymentTargetUrn: string;
+                };
                 type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                 pluginModule?: string;
                 pluginInstanceId?: string;
@@ -9209,7 +9213,11 @@ export type CreatePlanResponses = {
                 type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
             }>;
             executorBindings?: Array<{
-                targetUrn: string;
+                targetUrn?: string;
+                targetPlacement?: {
+                    componentUrn: string;
+                    deploymentTargetUrn: string;
+                };
                 type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                 pluginModule?: string;
                 pluginInstanceId?: string;
@@ -9276,7 +9284,11 @@ export type CreatePlanResponses = {
             executorBindings?: Array<{
                 kind: 'executor-binding';
                 action: 'create' | 'update' | 'delete' | 'noop';
-                targetUrn: string;
+                targetUrn?: string;
+                targetPlacement?: {
+                    componentUrn: string;
+                    deploymentTargetUrn: string;
+                };
                 type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                 reason: string;
                 target?: {
@@ -9394,7 +9406,11 @@ export type GetPlanResponses = {
                 type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
             }>;
             executorBindings?: Array<{
-                targetUrn: string;
+                targetUrn?: string;
+                targetPlacement?: {
+                    componentUrn: string;
+                    deploymentTargetUrn: string;
+                };
                 type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                 pluginModule?: string;
                 pluginInstanceId?: string;
@@ -9461,7 +9477,11 @@ export type GetPlanResponses = {
             executorBindings?: Array<{
                 kind: 'executor-binding';
                 action: 'create' | 'update' | 'delete' | 'noop';
-                targetUrn: string;
+                targetUrn?: string;
+                targetPlacement?: {
+                    componentUrn: string;
+                    deploymentTargetUrn: string;
+                };
                 type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                 reason: string;
                 target?: {
@@ -9591,7 +9611,11 @@ export type ApplyPlanResponses = {
                     type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                 }>;
                 executorBindings?: Array<{
-                    targetUrn: string;
+                    targetUrn?: string;
+                    targetPlacement?: {
+                        componentUrn: string;
+                        deploymentTargetUrn: string;
+                    };
                     type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                     pluginModule?: string;
                     pluginInstanceId?: string;
@@ -9658,7 +9682,11 @@ export type ApplyPlanResponses = {
                 executorBindings?: Array<{
                     kind: 'executor-binding';
                     action: 'create' | 'update' | 'delete' | 'noop';
-                    targetUrn: string;
+                    targetUrn?: string;
+                    targetPlacement?: {
+                        componentUrn: string;
+                        deploymentTargetUrn: string;
+                    };
                     type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                     reason: string;
                     target?: {

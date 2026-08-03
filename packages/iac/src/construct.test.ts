@@ -340,6 +340,58 @@ describe("@scp/iac: campaign/initiative/release-topology synth", () => {
  * are the two configurations that had no manifest representation, breaking principle 3's
  * API → SDK → CLI → IaC → UI parity for exactly what an operator must reproduce offline.
  */
+describe("@scp/iac constructs: executor bindings on a placement", () => {
+  /** Local to this block: the placements suite below defines its own, and reaching across describe
+   *  scopes for a helper is how a shared fixture quietly acquires a second set of requirements. */
+  function fixture(stackName: string) {
+    const app = new App();
+    const stack = new Stack(app, stackName);
+    const service = new Service(stack, "billing", { name: "Billing" });
+    const component = new Component(stack, "api", { name: "API", service });
+    const gamma = new DeploymentTarget(stack, "gamma", { name: "gamma" });
+    const prod = new DeploymentTarget(stack, "prod", { name: "prod" });
+    return { stack, component, gamma, prod };
+  }
+
+  it("addresses the placement by its PAIR, never by a URN", () => {
+    const { stack, component, prod } = fixture("pl-bind");
+    component.placeAt(prod).bindsExecutor({ pluginModule: "argocd", pluginInstanceId: "a1" });
+    const manifest = stack.synth();
+
+    expect(manifest.placements).toHaveLength(1);
+    expect(manifest.executorBindings?.[0]).toEqual({
+      targetPlacement: { componentUrn: component.urn, deploymentTargetUrn: prod.urn },
+      pluginModule: "argocd",
+      pluginInstanceId: "a1"
+    });
+    // A placement's URN is derived (ADR-0026 D3), so the binding must never carry one.
+    expect(manifest.executorBindings?.[0]).not.toHaveProperty("targetUrn");
+  });
+
+  it("synthesizes identically through the sugar and the stack-level door", () => {
+    const a = fixture("pl-bind-sugar");
+    a.component.placeAt(a.prod).bindsExecutor({ pluginModule: "argocd", pluginInstanceId: "a1" });
+    const b = fixture("pl-bind-sugar");
+    b.stack.addPlacement(b.component, b.prod);
+    b.stack.addPlacementExecutorBinding(b.component, b.prod, {
+      pluginModule: "argocd",
+      pluginInstanceId: "a1"
+    });
+    expect(JSON.stringify(a.stack.synth())).toBe(JSON.stringify(b.stack.synth()));
+  });
+
+  it("binds the same component at two targets as two distinct rows", () => {
+    const { stack, component, prod, gamma } = fixture("pl-bind-two");
+    component.placeAt(prod).bindsExecutor({ pluginModule: "argocd", pluginInstanceId: "p" });
+    component.placeAt(gamma).bindsExecutor({ pluginModule: "argocd", pluginInstanceId: "g" });
+    const manifest = stack.synth();
+    expect(manifest.executorBindings).toHaveLength(2);
+    expect(
+      manifest.executorBindings?.map((b) => b.targetPlacement?.deploymentTargetUrn).sort()
+    ).toEqual([gamma.urn, prod.urn].sort());
+  });
+});
+
 describe("@scp/iac constructs: sourceMappings / executorBindings (C1)", () => {
   function stackWithComponent(name: string) {
     const app = new App();

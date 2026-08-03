@@ -88,10 +88,28 @@ export type ManifestSourceMapping = z.infer<typeof ManifestSourceMappingSchema>;
  * `CreateExecutorBindingRequestSchema` (the `PUT /executors/{idOrUrn}/binding` body), including its
  * either-inline-or-execution-system-backed refinement: one contract, two doors.
  */
+/**
+ * A reference to a `placement` BY ITS PAIR. Deliberately not a URN: a placement's URN is derived
+ * (ADR-0026 D3) from the org id plus both endpoints' display names — `urn:scp:<orgId>:placement:
+ * <component>/<deployment-target>` — so it is neither hand-writable by an author nor stable under a
+ * rename. The pair is the identity, and it is the only addressing two independent synths converge on.
+ */
+export const PlacementRefSchema = z.object({
+  componentUrn: UrnSchema,
+  deploymentTargetUrn: UrnSchema
+});
+export type PlacementRef = z.infer<typeof PlacementRefSchema>;
+
 export const ManifestExecutorBindingSchema = z
   .object({
-    /** URN of the Component/DeploymentTarget being bound. Must be an object THIS stack owns. */
-    targetUrn: UrnSchema,
+    /** URN of the Component/DeploymentTarget being bound. Must be an object THIS stack owns.
+     *  Mutually exclusive with `targetPlacement`. */
+    targetUrn: UrnSchema.optional(),
+    /** A PLACEMENT target, addressed by its pair. Ownership follows the COMPONENT (decision Q4) —
+     *  the same rule `placements` and `sourceMappings` already use — so a binding on a placement of
+     *  a component this stack owns is this stack's to converge, even when the deployment-target
+     *  belongs to another stack. */
+    targetPlacement: PlacementRefSchema.optional(),
     /** WHICH pipeline this binding drives (ADR-0007). Omitted ⇒ `configuration`. */
     type: ExecutorTypeSchema.optional(),
     /** Inline binding: plugin module + a stable instance id. Omitted for execution-system-backed. */
@@ -126,7 +144,11 @@ export const ManifestExecutorBindingSchema = z
       message:
         "an execution-system-backed binding derives its module, instance id, config, credentials and egress allowlist FROM the system — remove pluginInstanceId/config/secretRefs/allowedHosts rather than declaring values the server will ignore"
     }
-  );
+  )
+  .refine((b) => Boolean(b.targetUrn) !== Boolean(b.targetPlacement), {
+    message:
+      "provide EITHER targetUrn (a Component/DeploymentTarget) OR targetPlacement (a component-at-deployment-target pair) — not both, and not neither"
+  });
 export type ManifestExecutorBinding = z.infer<typeof ManifestExecutorBindingSchema>;
 
 /**
@@ -160,8 +182,12 @@ export const DesiredStateManifestSchema = z.object({
   sourceMappings: z.array(ManifestSourceMappingSchema).optional(),
   /** C1 — see `sourceMappings` for why this is optional rather than defaulted. */
   executorBindings: z.array(ManifestExecutorBindingSchema).optional(),
-  /** C1 (ADR-0026). OPTIONAL for the same reason as the two above: an absent collection means "this
-   *  stack declares no placements" and prunes NOTHING. A PRESENT one is authoritative for the
+  /** C1 (ADR-0026). OPTIONAL for the same reason as the two above — but note what "optional" does
+   *  and does NOT mean. It keeps a pre-C1 manifest VALID; it does not suppress pruning. `Stack.synth()`
+   *  omits a collection when it is empty, so absent is the only way to say "this stack declares no
+   *  placements", and it therefore prunes exactly as an empty array does. (`plan-diff.ts`'s
+   *  `ResolvedManifest` carries the long form of this; I once read it the other way and broke three
+   *  prune tests.) A PRESENT one is authoritative for the
    *  components this stack owns — removing an entry deletes that placement (decision Q3), which is
    *  safe only because a placement still carrying an executor binding is REFUSED rather than
    *  cascaded (decision Q2). Those two rulings are load-bearing together. */
@@ -250,11 +276,16 @@ export const PlanExecutorBindingTargetSchema = z.object({
 });
 export type PlanExecutorBindingTarget = z.infer<typeof PlanExecutorBindingTargetSchema>;
 
-/** One `executor_bindings` row's verdict, keyed on `(targetUrn, type)` — the table's own uniqueness. */
+/**
+ * One `executor_bindings` row's verdict, keyed on `(target, type)` — the table's own uniqueness,
+ * where `target` is EITHER an object URN or a placement pair. Exactly one of `targetUrn` /
+ * `targetPlacement` is present on every entry, matching how the manifest addressed it.
+ */
 export const PlanExecutorBindingDiffEntrySchema = z.object({
   kind: z.literal("executor-binding"),
   action: PlanActionSchema,
-  targetUrn: UrnSchema,
+  targetUrn: UrnSchema.optional(),
+  targetPlacement: PlacementRefSchema.optional(),
   type: ExecutorTypeSchema,
   reason: z.string(),
   /** Present for `create`/`update` only. */
