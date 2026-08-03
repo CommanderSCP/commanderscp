@@ -5,6 +5,7 @@ import {
   type ManifestExecutorBinding,
   type ManifestObject,
   type ManifestRelationship,
+  type ManifestPlacement,
   type ManifestSourceMapping
 } from "@scp/schemas";
 import { deriveConstructUrn } from "./urn.js";
@@ -123,6 +124,7 @@ export class Stack extends Construct {
   private readonly resources: ResourceConstruct[] = [];
   private readonly relationshipDecls: RelationshipDecl[] = [];
   private readonly sourceMappingDecls: ManifestSourceMapping[] = [];
+  private readonly placementDecls: ManifestPlacement[] = [];
   private readonly executorBindingDecls: ManifestExecutorBinding[] = [];
 
   constructor(app: App, stackName: string) {
@@ -169,6 +171,30 @@ export class Stack extends Construct {
    * form exists for a target referenced by URN from outside this program. Same ownership rule as
    * `addSourceMapping`.
    */
+  /**
+   * Declares a `placement` (ADR-0026) — this component at this deployment-target.
+   *
+   * Prefer `component.placeAt(target)`; this stack-level form exists for a component referenced by
+   * URN from outside this program, the same escape hatch mappings and relationships already have.
+   *
+   * OWNERSHIP is the COMPONENT's stack (decision Q4), matching `addSourceMapping` — a declaration
+   * whose component this stack does not own is rejected at `POST /plans`, which is what stops two
+   * stacks pruning each other's placements.
+   *
+   * There is no `urn` argument and cannot be: a placement's URN is DERIVED from both endpoints
+   * (ADR-0026 D3), so supplying one could disagree with what the server mints.
+   */
+  addPlacement(
+    component: ResourceConstruct | string,
+    deploymentTarget: ResourceConstruct | string
+  ): this {
+    this.placementDecls.push({
+      componentUrn: resolveUrn(component),
+      deploymentTargetUrn: resolveUrn(deploymentTarget)
+    });
+    return this;
+  }
+
   addExecutorBinding(target: ResourceConstruct | string, spec: ExecutorBindingSpec): this {
     this.executorBindingDecls.push({
       targetUrn: resolveUrn(target),
@@ -217,13 +243,21 @@ export class Stack extends Construct {
     const executorBindings: ManifestExecutorBinding[] = [...this.executorBindingDecls].sort(
       (a, b) => executorBindingSortKey(a).localeCompare(executorBindingSortKey(b))
     );
+    // Sorted on the PAIR, which is the whole identity (ADR-0026 D3) — so declaration order in code
+    // never changes the synthesized bytes, only content does.
+    const placements: ManifestPlacement[] = [...this.placementDecls].sort((a, b) =>
+      `${a.componentUrn}\u0000${a.deploymentTargetUrn}`.localeCompare(
+        `${b.componentUrn}\u0000${b.deploymentTargetUrn}`
+      )
+    );
 
     return DesiredStateManifestSchema.parse({
       stackName: this.stackName,
       objects,
       relationships,
       ...(sourceMappings.length > 0 ? { sourceMappings } : {}),
-      ...(executorBindings.length > 0 ? { executorBindings } : {})
+      ...(executorBindings.length > 0 ? { executorBindings } : {}),
+      ...(placements.length > 0 ? { placements } : {})
     });
   }
 }
@@ -407,6 +441,41 @@ export class Component extends ResourceConstruct {
   mapsSource(spec: SourceMappingSpec): this {
     this.stack.addSourceMapping(this, spec);
     return this;
+  }
+
+  /**
+   * Places this component at `deploymentTarget` (ADR-0026) — the form to reach for.
+   *
+   * Sugar over the standalone `Placement` construct, which it CONSTRUCTS rather than duplicating:
+   * one implementation, two spellings (decision Q1). Reads like `dependsOn`/`consumes`/`owns`, and
+   * names the component implicitly, which is what makes it the ergonomic default.
+   *
+   * Note it is NOT the safety argument for preferring it: both endpoints are required on the
+   * standalone form too, so a half-declared placement is unexpressible either way — the pair IS the
+   * identity (D3).
+   */
+  placeAt(deploymentTarget: ResourceConstruct | string): this {
+    new Placement(this.stack, this, deploymentTarget);
+    return this;
+  }
+}
+
+/**
+ * A placement as a standalone construct (decision Q1's second form) — for the case the sugar cannot
+ * serve, e.g. a component referenced by URN from outside this program.
+ *
+ * NOT a `ResourceConstruct`: a placement is not emitted into the manifest's `objects` at all. It is
+ * a side-table declaration like a source mapping, because it cannot be created through a door taking
+ * free-form `properties` — that door is refused outright, since it could not resolve or type-check
+ * the endpoints nor write the derived edges (PR #207).
+ */
+export class Placement {
+  constructor(
+    stack: Stack,
+    component: ResourceConstruct | string,
+    deploymentTarget: ResourceConstruct | string
+  ) {
+    stack.addPlacement(component, deploymentTarget);
   }
 }
 

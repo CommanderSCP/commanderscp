@@ -129,6 +129,26 @@ export const ManifestExecutorBindingSchema = z
   );
 export type ManifestExecutorBinding = z.infer<typeof ManifestExecutorBindingSchema>;
 
+/**
+ * A `placement` (ADR-0026): one component at one deployment-target.
+ *
+ * IDENTITY IS THE PAIR, and there is deliberately NO `urn` field. ADR-0026 D3 makes a placement's
+ * URN *derived* from both endpoints, so a manifest that supplied one could disagree with what the
+ * typed route would mint and the two would diverge silently. Addressing by the pair is the only
+ * self-consistent choice, and it is what lets two independent synths converge.
+ *
+ * OWNERSHIP is the COMPONENT's stack (decision Q4) — the same rule `sourceMappings` already use, so
+ * placements need no new ownership concept. A declaration whose component this stack does not own is
+ * refused, which is what stops two stacks pruning each other's placements.
+ */
+export const ManifestPlacementSchema = z.object({
+  /** URN of the component being placed. Must be an object THIS stack owns. */
+  componentUrn: UrnSchema,
+  /** URN of the deployment-target it is placed at. May belong to another stack. */
+  deploymentTargetUrn: UrnSchema
+});
+export type ManifestPlacement = z.infer<typeof ManifestPlacementSchema>;
+
 export const DesiredStateManifestSchema = z.object({
   /** Deployable-unit label — becomes the `scp:stack` managed-by marker (plan-diff.ts) that scopes pruning. */
   stackName: z.string().min(1),
@@ -139,7 +159,13 @@ export const DesiredStateManifestSchema = z.object({
    *  collection must not read as "prune everything". */
   sourceMappings: z.array(ManifestSourceMappingSchema).optional(),
   /** C1 — see `sourceMappings` for why this is optional rather than defaulted. */
-  executorBindings: z.array(ManifestExecutorBindingSchema).optional()
+  executorBindings: z.array(ManifestExecutorBindingSchema).optional(),
+  /** C1 (ADR-0026). OPTIONAL for the same reason as the two above: an absent collection means "this
+   *  stack declares no placements" and prunes NOTHING. A PRESENT one is authoritative for the
+   *  components this stack owns — removing an entry deletes that placement (decision Q3), which is
+   *  safe only because a placement still carrying an executor binding is REFUSED rather than
+   *  cascaded (decision Q2). Those two rulings are load-bearing together. */
+  placements: z.array(ManifestPlacementSchema).optional()
 });
 export type DesiredStateManifest = z.infer<typeof DesiredStateManifestSchema>;
 
@@ -189,6 +215,17 @@ export type PlanRelationshipDiffEntry = z.infer<typeof PlanRelationshipDiffEntry
  * `repoPattern`/`pathPattern`/`type` are normalized here (null / the `configuration` default) so the
  * entry the operator reviews shows exactly the row that will be written, not the author's shorthand.
  */
+/** A placement diff entry. No `update`: the pair IS the identity, so a changed pair is a different
+ *  placement — a delete plus a create, never an in-place edit. */
+export const PlanPlacementDiffEntrySchema = z.object({
+  kind: z.literal("placement"),
+  action: z.enum(["create", "delete", "noop"]),
+  componentUrn: UrnSchema,
+  deploymentTargetUrn: UrnSchema,
+  reason: z.string()
+});
+export type PlanPlacementDiffEntry = z.infer<typeof PlanPlacementDiffEntrySchema>;
+
 export const PlanSourceMappingDiffEntrySchema = z.object({
   kind: z.literal("source-mapping"),
   action: z.enum(["create", "delete", "noop"]),
@@ -240,6 +277,8 @@ export const PlanDiffSchema = z.object({
    *  `GET /plans/{id}`: requiring the key would 500 every pre-C1 plan in the table. Consumers read
    *  it as `?? []`; `computePlanDiff` always emits it. */
   sourceMappings: z.array(PlanSourceMappingDiffEntrySchema).optional(),
+  /** C1 (ADR-0026) — see `sourceMappings` for why this is optional. */
+  placements: z.array(PlanPlacementDiffEntrySchema).optional(),
   /** C1 — see `sourceMappings` for why this is optional. */
   executorBindings: z.array(PlanExecutorBindingDiffEntrySchema).optional(),
   summary: PlanDiffSummarySchema

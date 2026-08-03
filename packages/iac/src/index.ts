@@ -19,7 +19,8 @@ export {
   ServiceAccount,
   Campaign,
   Initiative,
-  ReleaseTopology
+  ReleaseTopology,
+  Placement
 } from "./construct.js";
 export type {
   ComponentProps,

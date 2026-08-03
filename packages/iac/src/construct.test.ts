@@ -7,7 +7,9 @@ import {
   App,
   Campaign,
   Component,
+  DeploymentTarget,
   Initiative,
+  Placement,
   ReleaseTopology,
   Service,
   Stack,
@@ -355,6 +357,7 @@ describe("@scp/iac constructs: sourceMappings / executorBindings (C1)", () => {
     const manifest = stack.synth();
     expect(manifest.sourceMappings).toBeUndefined();
     expect(manifest.executorBindings).toBeUndefined();
+    expect(manifest.placements).toBeUndefined();
     expect(Object.keys(manifest).sort()).toEqual(["objects", "relationships", "stackName"]);
   });
 
@@ -452,5 +455,77 @@ describe("@scp/iac constructs: sourceMappings / executorBindings (C1)", () => {
     const manifest = stack.synth();
     expect(manifest.sourceMappings?.[0]?.componentUrn).toBe(external);
     expect(manifest.executorBindings?.[0]?.targetUrn).toBe(external);
+  });
+});
+
+describe("@scp/iac constructs: placements (C1, ADR-0026)", () => {
+  /**
+   * A placement is one component at one deployment-target. It is NOT emitted into `objects` — a
+   * pair-bound type cannot be created through a door taking free-form properties (PR #207), so it
+   * rides its own collection like a source mapping does.
+   *
+   * | Mutation | Result |
+   * |---|---|
+   * | emit `placements: []` instead of omitting it when empty | the pre-C1 shape test FAILS |
+   * | sort placements by declaration order instead of the pair | the determinism test FAILS |
+   * | have `placeAt` push a decl directly instead of constructing `Placement` | no test fails — the two forms are required to converge, so this is asserted by BOTH producing the identical manifest |
+   */
+  function fixture(stackName: string) {
+    const app = new App();
+    const stack = new Stack(app, stackName);
+    const service = new Service(stack, "billing", { name: "Billing" });
+    const component = new Component(stack, "api", { name: "API", service });
+    const gamma = new DeploymentTarget(stack, "gamma", { name: "gamma" });
+    const prod = new DeploymentTarget(stack, "prod", { name: "prod" });
+    return { stack, component, gamma, prod };
+  }
+
+  it("declares a placement from the component sugar", () => {
+    const { stack, component, prod } = fixture("sugar");
+    component.placeAt(prod);
+    expect(stack.synth().placements).toEqual([
+      { componentUrn: component.urn, deploymentTargetUrn: prod.urn }
+    ]);
+  });
+
+  it("the sugar and the standalone construct produce the IDENTICAL manifest", () => {
+    // Decision Q1 shipped BOTH forms, on the condition that the sugar CONSTRUCTS the standalone one
+    // rather than duplicating logic. This is the assertion that holds that condition — if `placeAt`
+    // ever grows its own behaviour, these two diverge.
+    const a = fixture("via-sugar");
+    a.component.placeAt(a.prod);
+    const b = fixture("via-sugar"); // same stack name, so the URNs match
+    new Placement(b.stack, b.component, b.prod);
+    expect(a.stack.synth()).toEqual(b.stack.synth());
+  });
+
+  it("accepts a component referenced by URN, for one outside this program", () => {
+    const { stack, prod } = fixture("external");
+    const external = "urn:scp:other-stack:component:legacy";
+    stack.addPlacement(external, prod);
+    expect(stack.synth().placements?.[0]?.componentUrn).toBe(external);
+  });
+
+  it("sorts on the PAIR, so declaration order never changes the bytes", () => {
+    const one = fixture("order");
+    one.component.placeAt(one.prod);
+    one.component.placeAt(one.gamma);
+    const two = fixture("order");
+    two.component.placeAt(two.gamma);
+    two.component.placeAt(two.prod);
+    expect(
+      JSON.stringify(one.stack.synth()),
+      "two synths of the same content must be identical"
+    ).toBe(JSON.stringify(two.stack.synth()));
+  });
+
+  it("keeps a placement OUT of `objects` — it is a side-table declaration, not a graph object", () => {
+    const { stack, component, prod } = fixture("not-an-object");
+    component.placeAt(prod);
+    const manifest = stack.synth();
+    expect(
+      manifest.objects.some((o) => o.typeId === "placement"),
+      "declaring it as an object would hit the pair-bound refusal (#207) and write no derived edges"
+    ).toBe(false);
   });
 });
