@@ -8,6 +8,7 @@ import {
   MergeComponentsRequestSchema,
   MergeComponentsResponseSchema,
   ProblemSchema,
+  ComponentPipelineResponseSchema,
   RegistryIdOrUrnParamSchema,
   RegistryUrnParamSchema,
   SetComponentServiceRequestSchema,
@@ -18,6 +19,7 @@ import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
+import { getComponentPipeline } from "../coordination/component-pipeline.js";
 import { badRequest } from "../errors.js";
 import { withIdempotency } from "../idempotency.js";
 import {
@@ -45,6 +47,55 @@ import { mergeComponents } from "../coordination/component-merge-repo.js";
  */
 export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
+
+  // GET /components/:idOrUrn/pipeline — THE COMPONENT'S PIPELINE (coordination-ui-views.md §2, as
+  // corrected 2026-08-03). One projection of the component's STAGES — its placements — with what
+  // executes at each and what last released there.
+  //
+  // The point of the correction: this is well-defined for a component with nothing in flight. The
+  // surface it replaces was keyed on a change, so a stable component had no pipeline at all. An
+  // extra `/pipeline` segment, so it never collides with the registry's `/:idOrUrn` detail route —
+  // same shape as `/services/:idOrUrn/board`.
+  typed.route({
+    method: "GET",
+    url: "/api/v1/components/:idOrUrn/pipeline",
+    schema: {
+      params: RegistryIdOrUrnParamSchema,
+      response: {
+        200: ComponentPipelineResponseSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "getComponentPipeline",
+        summary:
+          "The component's pipeline — its stages (placements), what executes at each, and what last released there",
+        tags: ["components"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const pipeline = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        const component = await getObjectByIdOrUrn(
+          tx,
+          auth.orgId,
+          "component",
+          request.params.idOrUrn
+        );
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:read",
+          scopeObjectId: component.id
+        });
+        return getComponentPipeline(tx, auth.orgId, component);
+      });
+      reply.status(200).send(pipeline);
+    }
+  });
   const base = "/api/v1/components";
   const idempotencyKey = (request: FastifyRequest): string | undefined => {
     const header = request.headers["idempotency-key"];
