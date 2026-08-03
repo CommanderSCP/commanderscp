@@ -81,6 +81,9 @@ export type {
 // Phase 2 coordination UI: the service release board projection (coordination-ui-views.md
 // § "Service release board") — one HTTP call backing `client.services.board(idOrUrn)`.
 export type {
+  ComponentPipelineResponse,
+  ComponentPipelineSource,
+  ComponentPipelineStage,
   ServiceBoardResponse,
   ServiceBoardRow,
   ServiceBoardWave,

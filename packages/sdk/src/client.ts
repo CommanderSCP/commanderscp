@@ -955,16 +955,6 @@ export class ScpClient {
         list: listServiceOwnersRequest,
         remove: removeServiceOwnerRequest
       }),
-      /** THE COMPONENT'S PIPELINE — its stages (placements), what executes at each, and what last
-       *  released there. Well-defined for a component that has never released, which is the whole
-       *  point: the change-anchored surface it replaces could not represent one at all. */
-      pipeline: async (idOrUrn: string): Promise<ComponentPipelineResponse> => {
-        const result = await getComponentPipelineRequest({
-          client: this.client,
-          path: { idOrUrn }
-        });
-        return unwrap(result);
-      },
       addConsumes: consumes.add,
       listConsumes: consumes.list,
       removeConsumes: consumes.remove,
@@ -1007,6 +997,16 @@ export class ScpClient {
         del: deleteComponentRequest,
         upsert: upsertComponentByUrnRequest
       }),
+      /** THE COMPONENT'S PIPELINE — its stages (placements), what executes at each, and what last
+       *  released there. Well-defined for a component that has never released, which is the whole
+       *  point: the change-anchored surface it replaces could not represent one at all. */
+      pipeline: async (idOrUrn: string): Promise<ComponentPipelineResponse> => {
+        const result = await getComponentPipelineRequest({
+          client: this.client,
+          path: { idOrUrn }
+        });
+        return unwrap(result);
+      },
       ...this.ownerMethods({
         add: addComponentOwnerRequest,
         list: listComponentOwnersRequest,
