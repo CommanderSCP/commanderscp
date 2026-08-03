@@ -697,18 +697,51 @@ async function discover(ctx: PluginContext): Promise<DiscoveryProposal> {
         externalRef: name
       });
     }
-    // M12 P5 (owner Q3, github-webhook path): a source_mapping from the app's git repo, so pushes to
-    // it correlate to this component. `source_kind:'github'`, `repoPattern` = the `owner/repo` SLUG
-    // (github events carry that, not the full URL). No `pathPattern`: a github push event carries no
-    // per-app path, so a path-set mapping would never match — a repo-only mapping correlates. (Trade:
-    // a monorepo push matches every component sharing that repo; per-path precision is a follow-up
-    // that needs the github plugin to emit changed paths.) Skipped for a non-GitHub repoURL.
-    const repoSlug = source?.repoURL ? githubRepoSlug(source.repoURL) : undefined;
-    if (repoSlug) {
+    // M12 P5 (owner Q3, github-webhook path): a source_mapping per git source, so pushes to it
+    // correlate to this component. `source_kind:'github'`, `repoPattern` = the `owner/repo` SLUG
+    // (github events carry that, not the full URL). Skipped for a non-GitHub repoURL.
+    //
+    // ==========================================================================================
+    // `pathPattern` — WHY IT IS EMITTED NOW, WHEN THE ORIGINAL M12 P5 COMMENT SAID IT COULD NOT BE
+    // ==========================================================================================
+    // That comment read: "No `pathPattern`: a github push event carries no per-app path, so a
+    // path-set mapping would never match ... per-path precision is a follow-up that needs the github
+    // plugin to emit changed paths." True when written. THE FOLLOW-UP SHIPPED — the github plugin
+    // emits changed paths and `correlation.ts`'s `matchesAnyPath` consumes them (`hint.paths`) — and
+    // nobody came back here. A comment naming a pending follow-up is a signal to sweep, not evidence
+    // it was handled (CLAUDE.md).
+    //
+    // The cost of leaving it, measured on the live homelab 2026-08-03: `matchComponentForSource`
+    // returns exactly ONE component, so with every app of a repo carrying an identical bare-repo
+    // mapping, ONE of them won every push and the rest were unreachable — 19 components sharing 4
+    // repo patterns, of which one per repo could ever be routed to. The 43 components that DID have
+    // path patterns (added by hand for homelab-gitops) routed correctly, which is the control.
+    //
+    // ALL sources, not just `primarySource`: 32 of the homelab's 51 apps are multi-source, and every
+    // source is an input that should correlate. The object metadata above still describes the PRIMARY
+    // source only — deliberately unchanged, since that is descriptive and rewriting it would churn
+    // every imported component's properties for no routing benefit.
+    //
+    // `path` becomes `path/**` — the form the working mappings already use, and the one that matches
+    // the files UNDER a chart directory rather than the directory entry itself. A source with a
+    // repoURL but no `path` (a Helm-repo-only source, or a kustomize root) still emits a repo-only
+    // mapping, which is exactly right: there is nothing narrower to say about it.
+    const gitSources = (app.spec?.sources ?? []).concat(app.spec?.source ? [app.spec.source] : []);
+    const seen = new Set<string>();
+    for (const src of gitSources) {
+      if (!src.repoURL) continue;
+      const slug = githubRepoSlug(src.repoURL);
+      if (!slug) continue;
+      const pathPattern = src.path ? `${src.path.replace(/\/+$/, "")}/**` : undefined;
+      // A multi-source app can name the same repo twice (e.g. values + chart); one mapping each.
+      const key = `${slug}::${pathPattern ?? ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       sourceMappings.push({
         objectName: name,
         sourceKind: "github",
-        repoPattern: repoSlug,
+        repoPattern: slug,
+        ...(pathPattern ? { pathPattern } : {}),
         // ArgoCD Applications SYNC declarative desired state — routing Type `configuration` (ADR-0007).
         type: "configuration"
       });
