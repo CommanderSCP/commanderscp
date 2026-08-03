@@ -2509,6 +2509,10 @@ export const zCreatePlanResponse = z.object({
             allowedHosts: z.array(z.string()).optional(),
             externalRef: z.string().min(1).optional(),
             executionSystemId: z.string().min(1).optional()
+        })).optional(),
+        placements: z.array(z.object({
+            componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            deploymentTargetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/)
         })).optional()
     }),
     diff: z.object({
@@ -2563,6 +2567,17 @@ export const zCreatePlanResponse = z.object({
                 'infrastructure',
                 'configuration'
             ]),
+            reason: z.string()
+        })).optional(),
+        placements: z.array(z.object({
+            kind: z.literal('placement'),
+            action: z.enum([
+                'create',
+                'delete',
+                'noop'
+            ]),
+            componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            deploymentTargetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             reason: z.string()
         })).optional(),
         executorBindings: z.array(z.object({
@@ -2664,6 +2679,10 @@ export const zGetPlanResponse = z.object({
             allowedHosts: z.array(z.string()).optional(),
             externalRef: z.string().min(1).optional(),
             executionSystemId: z.string().min(1).optional()
+        })).optional(),
+        placements: z.array(z.object({
+            componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            deploymentTargetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/)
         })).optional()
     }),
     diff: z.object({
@@ -2718,6 +2737,17 @@ export const zGetPlanResponse = z.object({
                 'infrastructure',
                 'configuration'
             ]),
+            reason: z.string()
+        })).optional(),
+        placements: z.array(z.object({
+            kind: z.literal('placement'),
+            action: z.enum([
+                'create',
+                'delete',
+                'noop'
+            ]),
+            componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            deploymentTargetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             reason: z.string()
         })).optional(),
         executorBindings: z.array(z.object({
@@ -2820,6 +2850,10 @@ export const zApplyPlanResponse = z.object({
                 allowedHosts: z.array(z.string()).optional(),
                 externalRef: z.string().min(1).optional(),
                 executionSystemId: z.string().min(1).optional()
+            })).optional(),
+            placements: z.array(z.object({
+                componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                deploymentTargetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/)
             })).optional()
         }),
         diff: z.object({
@@ -2874,6 +2908,17 @@ export const zApplyPlanResponse = z.object({
                     'infrastructure',
                     'configuration'
                 ]),
+                reason: z.string()
+            })).optional(),
+            placements: z.array(z.object({
+                kind: z.literal('placement'),
+                action: z.enum([
+                    'create',
+                    'delete',
+                    'noop'
+                ]),
+                componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                deploymentTargetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
                 reason: z.string()
             })).optional(),
             executorBindings: z.array(z.object({

@@ -25,7 +25,8 @@ function emptySnapshot(): PlanDiffSnapshot {
     managedRelationships: [],
     existingRelationships: [],
     managedSourceMappings: [],
-    managedExecutorBindings: []
+    managedExecutorBindings: [],
+    managedPlacements: []
   };
 }
 
@@ -45,7 +46,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       ],
       relationships: [],
       sourceMappings: [],
-      executorBindings: []
+      executorBindings: [],
+      placements: []
     };
 
     const diff = computePlanDiff(manifest, emptySnapshot());
@@ -86,7 +88,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       ],
       relationships: [],
       sourceMappings: [],
-      executorBindings: []
+      executorBindings: [],
+      placements: []
     };
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [
@@ -102,7 +105,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       managedRelationships: [],
       existingRelationships: [],
       managedSourceMappings: [],
-      managedExecutorBindings: []
+      managedExecutorBindings: [],
+      managedPlacements: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -129,7 +133,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       ],
       relationships: [],
       sourceMappings: [],
-      executorBindings: []
+      executorBindings: [],
+      placements: []
     };
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [
@@ -145,7 +150,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       managedRelationships: [],
       existingRelationships: [],
       managedSourceMappings: [],
-      managedExecutorBindings: []
+      managedExecutorBindings: [],
+      managedPlacements: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -170,7 +176,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       ],
       relationships: [],
       sourceMappings: [],
-      executorBindings: []
+      executorBindings: [],
+      placements: []
     };
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [
@@ -186,7 +193,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       managedRelationships: [],
       existingRelationships: [],
       managedSourceMappings: [],
-      managedExecutorBindings: []
+      managedExecutorBindings: [],
+      managedPlacements: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -200,7 +208,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       objects: [],
       relationships: [],
       sourceMappings: [],
-      executorBindings: []
+      executorBindings: [],
+      placements: []
     };
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [
@@ -216,7 +225,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       managedRelationships: [],
       existingRelationships: [],
       managedSourceMappings: [],
-      managedExecutorBindings: []
+      managedExecutorBindings: [],
+      managedPlacements: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -240,7 +250,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       objects: [],
       relationships: [],
       sourceMappings: [],
-      executorBindings: []
+      executorBindings: [],
+      placements: []
     };
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [
@@ -264,7 +275,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       managedRelationships: [],
       existingRelationships: [],
       managedSourceMappings: [],
-      managedExecutorBindings: []
+      managedExecutorBindings: [],
+      managedPlacements: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -280,7 +292,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       objects: [],
       relationships: [{ typeId: "depends_on", fromUrn, toUrn }],
       sourceMappings: [],
-      executorBindings: []
+      executorBindings: [],
+      placements: []
     };
 
     const diff = computePlanDiff(manifest, emptySnapshot());
@@ -305,7 +318,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       objects: [],
       relationships: [{ typeId: "depends_on", fromUrn, toUrn }],
       sourceMappings: [],
-      executorBindings: []
+      executorBindings: [],
+      placements: []
     };
     const existingObj = (urn: string) => ({
       urn,
@@ -320,7 +334,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       managedRelationships: [],
       existingRelationships: [],
       managedSourceMappings: [],
-      managedExecutorBindings: []
+      managedExecutorBindings: [],
+      managedPlacements: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -338,14 +353,16 @@ describe("iac/plan-diff: computePlanDiff", () => {
       objects: [],
       relationships: [{ typeId: "depends_on", fromUrn, toUrn }],
       sourceMappings: [],
-      executorBindings: []
+      executorBindings: [],
+      placements: []
     };
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [],
       managedRelationships: [],
       existingRelationships: [{ typeId: "depends_on", fromUrn, toUrn }],
       managedSourceMappings: [],
-      managedExecutorBindings: []
+      managedExecutorBindings: [],
+      managedPlacements: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -370,14 +387,16 @@ describe("iac/plan-diff: computePlanDiff", () => {
       objects: [],
       relationships: [],
       sourceMappings: [],
-      executorBindings: []
+      executorBindings: [],
+      placements: []
     };
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [],
       managedRelationships: [{ typeId: "depends_on", fromUrn, toUrn }],
       existingRelationships: [{ typeId: "depends_on", fromUrn, toUrn }],
       managedSourceMappings: [],
-      managedExecutorBindings: []
+      managedExecutorBindings: [],
+      managedPlacements: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -430,7 +449,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       ],
       relationships: [{ typeId: "depends_on", fromUrn: createUrn, toUrn: keepUrn }],
       sourceMappings: [],
-      executorBindings: []
+      executorBindings: [],
+      placements: []
     };
 
     const snapshot: PlanDiffSnapshot = {
@@ -463,7 +483,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       managedRelationships: [{ typeId: "depends_on", fromUrn: pruneUrn, toUrn: keepUrn }],
       existingRelationships: [{ typeId: "depends_on", fromUrn: pruneUrn, toUrn: keepUrn }],
       managedSourceMappings: [],
-      managedExecutorBindings: []
+      managedExecutorBindings: [],
+      managedPlacements: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -492,7 +513,14 @@ describe("iac/plan-diff: uncontainedComponentCreates (strict create-in-service, 
     snapshot: PlanDiffSnapshot = emptySnapshot()
   ) {
     return computePlanDiff(
-      { stackName: STACK, objects, relationships, sourceMappings: [], executorBindings: [] },
+      {
+        stackName: STACK,
+        objects,
+        relationships,
+        sourceMappings: [],
+        executorBindings: [],
+        placements: []
+      },
       snapshot
     );
   }
@@ -532,7 +560,8 @@ describe("iac/plan-diff: uncontainedComponentCreates (strict create-in-service, 
       managedRelationships: [{ typeId: "contains", fromUrn: SVC, toUrn: COMP }],
       existingRelationships: [{ typeId: "contains", fromUrn: SVC, toUrn: COMP }],
       managedSourceMappings: [],
-      managedExecutorBindings: []
+      managedExecutorBindings: [],
+      managedPlacements: []
     };
     const diff = diffOf([obj(COMP, "component"), obj(SVC, "service")], [], snapshot);
     expect(diff.relationships.some((r) => r.typeId === "contains" && r.action === "delete")).toBe(
@@ -551,7 +580,8 @@ describe("iac/plan-diff: uncontainedComponentCreates (strict create-in-service, 
       managedRelationships: [],
       existingRelationships: [],
       managedSourceMappings: [],
-      managedExecutorBindings: []
+      managedExecutorBindings: [],
+      managedPlacements: []
     };
     const diff = diffOf([{ ...obj(COMP, "component"), name: "renamed" }], [], snapshot);
     expect(diff.objects[0]?.action).toBe("update");
@@ -620,7 +650,8 @@ describe("iac/plan-diff: source mappings (C1)", () => {
       objects: [ownedObject(COMP, "component")],
       relationships: [],
       sourceMappings,
-      executorBindings: []
+      executorBindings: [],
+      placements: []
     };
   }
 
@@ -702,6 +733,7 @@ describe("iac/plan-diff: executor bindings (C1)", () => {
       stackName: STACK,
       objects: [ownedObject(TARGET, "deployment-target")],
       relationships: [],
+      placements: [],
       sourceMappings: [],
       executorBindings
     };
@@ -837,7 +869,14 @@ describe("iac/plan-diff: unownedProjectionDeclarations (C1 ownership guard)", ()
     snapshot: PlanDiffSnapshot = emptySnapshot()
   ) {
     return computePlanDiff(
-      { stackName: STACK, objects, relationships: [], sourceMappings, executorBindings },
+      {
+        stackName: STACK,
+        objects,
+        relationships: [],
+        sourceMappings,
+        executorBindings,
+        placements: []
+      },
       snapshot
     );
   }
@@ -899,6 +938,7 @@ describe("iac/plan-diff: duplicateProjectionDeclarations (C1)", () => {
     relationships: [],
     sourceMappings: [],
     executorBindings: [],
+    placements: [],
     ...over
   });
 

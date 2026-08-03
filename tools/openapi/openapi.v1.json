@@ -34784,6 +34784,27 @@
                           ],
                           "additionalProperties": false
                         }
+                      },
+                      "placements": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "componentUrn": {
+                              "type": "string",
+                              "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                            },
+                            "deploymentTargetUrn": {
+                              "type": "string",
+                              "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                            }
+                          },
+                          "required": [
+                            "componentUrn",
+                            "deploymentTargetUrn"
+                          ],
+                          "additionalProperties": false
+                        }
                       }
                     },
                     "required": [
@@ -35026,6 +35047,27 @@
                             ],
                             "additionalProperties": false
                           }
+                        },
+                        "placements": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "componentUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "deploymentTargetUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              }
+                            },
+                            "required": [
+                              "componentUrn",
+                              "deploymentTargetUrn"
+                            ],
+                            "additionalProperties": false
+                          }
                         }
                       },
                       "required": [
@@ -35237,6 +35279,45 @@
                               "repoPattern",
                               "pathPattern",
                               "type",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "placements": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "placement"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "componentUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "deploymentTargetUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "componentUrn",
+                              "deploymentTargetUrn",
                               "reason"
                             ],
                             "additionalProperties": false
@@ -35826,6 +35907,27 @@
                             ],
                             "additionalProperties": false
                           }
+                        },
+                        "placements": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "componentUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "deploymentTargetUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              }
+                            },
+                            "required": [
+                              "componentUrn",
+                              "deploymentTargetUrn"
+                            ],
+                            "additionalProperties": false
+                          }
                         }
                       },
                       "required": [
@@ -36037,6 +36139,45 @@
                               "repoPattern",
                               "pathPattern",
                               "type",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "placements": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "placement"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "componentUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "deploymentTargetUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "componentUrn",
+                              "deploymentTargetUrn",
                               "reason"
                             ],
                             "additionalProperties": false
@@ -36629,6 +36770,27 @@
                                 ],
                                 "additionalProperties": false
                               }
+                            },
+                            "placements": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "componentUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "deploymentTargetUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  }
+                                },
+                                "required": [
+                                  "componentUrn",
+                                  "deploymentTargetUrn"
+                                ],
+                                "additionalProperties": false
+                              }
                             }
                           },
                           "required": [
@@ -36840,6 +37002,45 @@
                                   "repoPattern",
                                   "pathPattern",
                                   "type",
+                                  "reason"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "placements": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "placement"
+                                  },
+                                  "action": {
+                                    "type": "string",
+                                    "enum": [
+                                      "create",
+                                      "delete",
+                                      "noop"
+                                    ]
+                                  },
+                                  "componentUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "deploymentTargetUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "action",
+                                  "componentUrn",
+                                  "deploymentTargetUrn",
                                   "reason"
                                 ],
                                 "additionalProperties": false

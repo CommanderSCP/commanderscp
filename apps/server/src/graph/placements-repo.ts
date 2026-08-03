@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { ContainmentDomainId, GraphObject } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -351,4 +351,76 @@ export async function listPlacements(
     items: page.map(toGraphObject),
     nextCursor: hasMore && last ? encodeCursor(last) : null
   };
+}
+
+/**
+ * Live placements whose COMPONENT is one of `componentObjectIds` — the IaC ownership-scoped pool
+ * (C1 decision Q4: a placement belongs to the stack that owns its component, the same rule
+ * `listSourceMappingsForComponents` already applies to mappings).
+ *
+ * Reads the pair from `properties`, which ADR-0026 D17 makes the source of truth — the same half
+ * `binding-resolution.ts`, `plan-service.ts` and `component-pipeline.ts` read. Returns nothing for
+ * an empty id list rather than scanning the org.
+ */
+export async function listPlacementsForComponents(
+  tx: TenantTx,
+  orgId: string,
+  componentObjectIds: string[]
+): Promise<{ componentObjectId: string; deploymentTargetObjectId: string; placementId: string }[]> {
+  if (componentObjectIds.length === 0) return [];
+  const rows = await tx
+    .select({ id: objects.id, properties: objects.properties })
+    .from(objects)
+    .where(
+      and(
+        eq(objects.orgId, orgId),
+        eq(objects.typeId, "placement"),
+        isNull(objects.deletedAt),
+        inArray(sql`${objects.properties} ->> 'componentId'`, componentObjectIds)
+      )
+    );
+  const out: {
+    componentObjectId: string;
+    deploymentTargetObjectId: string;
+    placementId: string;
+  }[] = [];
+  for (const row of rows) {
+    const props = row.properties as { componentId?: unknown; deploymentTargetId?: unknown };
+    if (typeof props.componentId !== "string" || typeof props.deploymentTargetId !== "string") {
+      // A malformed pair cannot be diffed against a manifest entry (which always carries both), and
+      // silently treating it as absent would make the plan propose a duplicate. Skipping leaves it
+      // invisible to BOTH create-matching and prune, which is the conservative half.
+      continue;
+    }
+    out.push({
+      componentObjectId: props.componentId,
+      deploymentTargetObjectId: props.deploymentTargetId,
+      placementId: row.id
+    });
+  }
+  return out;
+}
+
+/** The live placement for one exact pair, or null. The apply path needs the ID to withdraw, and the
+ *  pair is the only address a manifest can give (ADR-0026 D3 — the URN is derived, not declared). */
+export async function findLivePlacement(
+  tx: TenantTx,
+  orgId: string,
+  componentObjectId: string,
+  deploymentTargetObjectId: string
+): Promise<{ id: string } | null> {
+  const rows = await tx
+    .select({ id: objects.id })
+    .from(objects)
+    .where(
+      and(
+        eq(objects.orgId, orgId),
+        eq(objects.typeId, "placement"),
+        isNull(objects.deletedAt),
+        sql`${objects.properties} ->> 'componentId' = ${componentObjectId}`,
+        sql`${objects.properties} ->> 'deploymentTargetId' = ${deploymentTargetObjectId}`
+      )
+    )
+    .limit(1);
+  return rows[0] ?? null;
 }
