@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import {
+  GraphIntegrityReportSchema,
   GraphQueryParamSchema,
   GraphQueryRequestSchema,
   GraphQueryResultSchema,
@@ -16,6 +17,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { runNamedQuery } from "../graph/named-queries.js";
 import { subgraph, traverse } from "../graph/traverse.js";
+import { findGraphIntegrityIssues } from "../graph/integrity-repo.js";
 import { GraphQueryTimeoutError, withStatementTimeout } from "../graph/query-timeout.js";
 import { badRequest, requestTimeout } from "../errors.js";
 
@@ -157,6 +159,50 @@ export function registerGraphRoutes(app: FastifyInstance, deps: AppDeps): void {
         throw err;
       }
       reply.status(200).send(result);
+    }
+  });
+
+  // Rows that outlived the object they hang off (`graph/integrity-repo.ts` has the full rationale).
+  //
+  // READ-ONLY, and there is deliberately NO companion repair endpoint. Repair is performed by the
+  // ordinary DELETE doors, each of which already writes its audit event and journal entry in the
+  // same transaction as the delete. A bulk-repair endpoint would be a SECOND way to destroy rows,
+  // and the cheap version of it would skip both — which is precisely the failure principle 6 exists
+  // to prevent, and which raw SQL cleanup of this same backlog would also have caused.
+  //
+  // Authorized as `graph:query` scoped to the ORG, not to an object: the report spans the whole
+  // tenant, so there is no single root to scope it to. `graph:query` rather than `audit:read`
+  // because this is graph structure — the same class of data the named queries already return —
+  // and a caller who may traverse the graph may see which of its rows are stranded.
+  typed.route({
+    method: "GET",
+    url: "/api/v1/graph/integrity",
+    schema: {
+      response: {
+        200: GraphIntegrityReportSchema,
+        401: ProblemSchema,
+        403: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "graphIntegrity",
+        summary: "Report rows that outlived the object they hang off",
+        tags: ["graph"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const report = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "graph:query",
+          scopeObjectId: auth.orgId
+        });
+        return findGraphIntegrityIssues(tx, auth.orgId);
+      });
+      reply.status(200).send(report);
     }
   });
 }
