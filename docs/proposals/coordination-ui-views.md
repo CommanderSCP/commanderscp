@@ -21,6 +21,33 @@ CommanderSCP coordinates a release across build → registry → config → gamm
 A service's components in one scannable table: per-stage **version + status**, a summary strip (releasing / blocked / stable), and the one **blocked** component surfacing in red. A row opens the component pipeline. Header carries **Freeze service**; rows carry freeze / emergency-deploy actions. It's the "what's moving" board.
 
 ### 2. Component pipeline view
+
+> **CORRECTION, 2026-08-03 (owner-reported).** Phase 1 shipped as `/changes/$id/pipeline` — anchored
+> on a CHANGE, not a component. The router's own comment records the contradiction verbatim: "the
+> component-pipeline view **of a change**". The service board link is the visible symptom:
+> `{row.latestChangeId ? <Link to="/changes/$id/pipeline"> : …}` — a component with nothing in flight
+> has **no pipeline to open at all**, because the page is a RUN view wearing a pipeline's name.
+>
+> That is backwards. A pipeline is a durable property of a component; artifacts move THROUGH it. The
+> model already agrees and always did — `release-topology` (the stage definition) and `releases_via`
+> (its attachment) are durable graph objects, and after ADR-0026 a component's STAGES are its
+> placements. Only `change`/`change_plan` are per-release, and those are correctly run records.
+>
+> The giveaway is in this very section: a "**version staircase** (each stage's current version)" is
+> only meaningful for a continuous pipeline holding several artifacts at different stages. It cannot
+> be drawn from one change.
+>
+> **Required shape:** the component pipeline is the DEFAULT view of a component — `/components/$id`,
+> not a `/pipeline` leaf — and exists whether or not anything is releasing. The change-scoped view is
+> retained as the run detail it actually is, reachable from a stage. The board's row link points at
+> the COMPONENT, so a stable component still has a pipeline to open.
+>
+> This is newly cheap to build and was not when Phase 1 landed: a component had no first-class notion
+> of where it runs. Measured 2026-08-03 — 61 placements, 0 unbound, every agentkit component
+> inheriting one stage-shaped topology — so "each stage and what is in it" is now a direct read.
+> Per-stage VERSION remains the one genuinely missing signal (Phase 4a); the view must render
+> honestly without it rather than wait for it, per the `unknownFields` convention the service board
+> already follows.
 Component-scoped, two lanes **top-to-bottom**:
 - **App release** — `Build & test` → `Image registry` → `Config bump` → `Gamma` → `Prod`. Each stage **links to its source or executor** (git source repo, image registry, git config repo, Argo CD app). `Build & test` carries a `Build → Test` sub-track (test optional). `Image registry` shows the **scan result**; the promotion after it is the **scan gate**.
 - **Infra · correlated** — an infra change directly correlated to the component runs as a **parallel lane** beside the app release.
@@ -74,7 +101,8 @@ Layer B is where the real modeling work is, and it is squarely **observe-model**
 
 Each phase is independently shippable and mostly Layer A first, enriching after.
 
-1. **Component pipeline view — Layer A skeleton.** Render the cross-change chain (`provides`/`requires`/`correlationKey`) + waves + Category badges + gate/approval state, from existing data. Wide-arrow promotions with the states we already know (open / blocked-on-gate / awaiting-approval). Stage source/executor links.
+1. **Component pipeline view — Layer A skeleton.** ⚠️ **Shipped change-anchored; see the correction
+   in §2. Re-do component-anchored as the default component view.** Render the cross-change chain (`provides`/`requires`/`correlationKey`) + waves + Category badges + gate/approval state, from existing data. Wide-arrow promotions with the states we already know (open / blocked-on-gate / awaiting-approval). Stage source/executor links.
 2. **Service release board.** Aggregate a service's components' current stage + version (as available) + status into the scannable table; Freeze-service + row actions. Links to the component view.
 3. **Two-layer graph restyle.** Build on #69's `GraphCanvas` + `subgraph`: service layer, component layer, cross-service links, typed node coloring, deliberate layout.
 4. **Observe-enrichment (Layer B), incrementally:** (a) per-stage version/digest capture; (b) gate verdicts with reasons (scan/window/approvals) surfaced on arrows; (c) Argo Rollouts state mirrored via `observe()` into the sub-track; (d) the optional health metric ingestion + graph overlay.
