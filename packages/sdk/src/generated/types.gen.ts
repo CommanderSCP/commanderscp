@@ -9121,6 +9121,10 @@ export type CreatePlanData = {
                 externalRef?: string;
                 executionSystemId?: string;
             }>;
+            placements?: Array<{
+                componentUrn: string;
+                deploymentTargetUrn: string;
+            }>;
         };
     };
     path?: never;
@@ -9219,6 +9223,10 @@ export type CreatePlanResponses = {
                 externalRef?: string;
                 executionSystemId?: string;
             }>;
+            placements?: Array<{
+                componentUrn: string;
+                deploymentTargetUrn: string;
+            }>;
         };
         diff: {
             objects: Array<{
@@ -9256,6 +9264,13 @@ export type CreatePlanResponses = {
                 repoPattern: string | null;
                 pathPattern: string | null;
                 type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                reason: string;
+            }>;
+            placements?: Array<{
+                kind: 'placement';
+                action: 'create' | 'delete' | 'noop';
+                componentUrn: string;
+                deploymentTargetUrn: string;
                 reason: string;
             }>;
             executorBindings?: Array<{
@@ -9393,6 +9408,10 @@ export type GetPlanResponses = {
                 externalRef?: string;
                 executionSystemId?: string;
             }>;
+            placements?: Array<{
+                componentUrn: string;
+                deploymentTargetUrn: string;
+            }>;
         };
         diff: {
             objects: Array<{
@@ -9430,6 +9449,13 @@ export type GetPlanResponses = {
                 repoPattern: string | null;
                 pathPattern: string | null;
                 type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                reason: string;
+            }>;
+            placements?: Array<{
+                kind: 'placement';
+                action: 'create' | 'delete' | 'noop';
+                componentUrn: string;
+                deploymentTargetUrn: string;
                 reason: string;
             }>;
             executorBindings?: Array<{
@@ -9579,6 +9605,10 @@ export type ApplyPlanResponses = {
                     externalRef?: string;
                     executionSystemId?: string;
                 }>;
+                placements?: Array<{
+                    componentUrn: string;
+                    deploymentTargetUrn: string;
+                }>;
             };
             diff: {
                 objects: Array<{
@@ -9616,6 +9646,13 @@ export type ApplyPlanResponses = {
                     repoPattern: string | null;
                     pathPattern: string | null;
                     type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                    reason: string;
+                }>;
+                placements?: Array<{
+                    kind: 'placement';
+                    action: 'create' | 'delete' | 'noop';
+                    componentUrn: string;
+                    deploymentTargetUrn: string;
                     reason: string;
                 }>;
                 executorBindings?: Array<{
