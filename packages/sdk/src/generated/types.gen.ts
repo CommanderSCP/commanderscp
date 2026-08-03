@@ -10622,6 +10622,80 @@ export type PutChangeSourceWebhookSecretResponses = {
 
 export type PutChangeSourceWebhookSecretResponse = PutChangeSourceWebhookSecretResponses[keyof PutChangeSourceWebhookSecretResponses];
 
+export type DeleteSourceMappingData = {
+    body: {
+        component: string;
+        repoPattern: string | null;
+        pathPattern: string | null;
+        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+    };
+    path: {
+        sourceKind: string;
+    };
+    query?: never;
+    url: '/change-sources/{sourceKind}/mappings';
+};
+
+export type DeleteSourceMappingErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteSourceMappingError = DeleteSourceMappingErrors[keyof DeleteSourceMappingErrors];
+
+export type DeleteSourceMappingResponses = {
+    /**
+     * Success
+     */
+    200: {
+        deleted: number;
+    };
+};
+
+export type DeleteSourceMappingResponse = DeleteSourceMappingResponses[keyof DeleteSourceMappingResponses];
+
 export type ListSourceMappingsData = {
     body?: never;
     path: {

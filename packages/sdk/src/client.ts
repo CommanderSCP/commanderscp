@@ -141,6 +141,7 @@ import {
   ingestChangeSourceWebhook as ingestChangeSourceWebhookRequest,
   reportChangeSource as reportChangeSourceRequest,
   createSourceMapping as createSourceMappingRequest,
+  deleteSourceMapping as deleteSourceMappingRequest,
   listSourceMappings as listSourceMappingsRequest,
   // M4 Governance Engine (BUILD_AND_TEST.md §8 M4, routes/typed-registries.ts +
   // routes/governance.ts): Policy/Control typed-registry resources, control bindings/runs,
@@ -285,6 +286,8 @@ import type {
   DecisionListResponse,
   DecisionListQuery,
   CreateSourceMappingRequest,
+  DeleteSourceMappingRequest,
+  DeleteSourceMappingResponse,
   ChangeReportRequest,
   SourceMapping,
   SourceMappingListResponse,
@@ -1377,6 +1380,21 @@ export class ScpClient {
     },
     listMappings: async (sourceKind: string): Promise<SourceMappingListResponse> => {
       const result = await listSourceMappingsRequest({ client: this.client, path: { sourceKind } });
+      return unwrap(result);
+    },
+    /** Deletes EVERY mapping matching the identity tuple, returning how many rows went. Not by id:
+     *  the table has no unique constraint and `discovery accept` inserts unconditionally, so
+     *  byte-identical rows exist and removing one would leave the survivor still correlating.
+     *  `repoPattern`/`pathPattern` are nullable rather than optional because NULL is meaningful. */
+    deleteMapping: async (
+      sourceKind: string,
+      req: DeleteSourceMappingRequest
+    ): Promise<DeleteSourceMappingResponse> => {
+      const result = await deleteSourceMappingRequest({
+        client: this.client,
+        path: { sourceKind },
+        body: req
+      });
       return unwrap(result);
     },
     /** M7: configures (or rotates) this org+sourceKind's webhook HMAC signing secret — once set,

@@ -7,6 +7,8 @@ import {
   ChangeSourceEventParamSchema,
   ChangeSourceWebhookBodySchema,
   CreateSourceMappingRequestSchema,
+  DeleteSourceMappingRequestSchema,
+  DeleteSourceMappingResponseSchema,
   CreateWebhookSecretRequestSchema,
   ProblemSchema,
   SourceMappingListResponseSchema,
@@ -22,8 +24,10 @@ import { unauthorized } from "../errors.js";
 import { changeSourceEvents, changeSourceWebhookSecrets } from "../db/schema.js";
 import {
   createSourceMapping,
+  deleteSourceMappingsMatching,
   listSourceMappingsForSource
 } from "../coordination/source-mappings-repo.js";
+import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { resolveWebhookSecret, verifierForSourceKind } from "../coordination/webhook-signature.js";
 import { putSecret } from "../secrets/secrets-repo.js";
 import { and, eq } from "drizzle-orm";
@@ -370,6 +374,69 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
         });
       });
       reply.status(201).send(mapping);
+    }
+  });
+
+  /**
+   * DELETE a source_mapping. The first operator-facing delete this table has had — before it, the
+   * only way to remove a mapping was an IaC apply's prune, so a mapping created by
+   * `discovery accept` or by hand could never be taken back through the API.
+   *
+   * That gap has a cost beyond inconvenience. An ADR-0026 pair merge soft-deletes the absorbed
+   * component and STRANDS its mappings; they are neutralised at read time (they no longer match a
+   * dead component) but they stay in the table, keep appearing in `GET /mappings`, and cannot be
+   * cleaned. On the live homelab that is 5 rows from three merges.
+   *
+   * Matches the full IDENTITY TUPLE rather than an id — see `DeleteSourceMappingRequestSchema` for
+   * why (duplicates exist; deleting one leaves the survivor correlating). Reports the row COUNT so
+   * a no-op is visible instead of looking like success.
+   */
+  typed.route({
+    method: "DELETE",
+    url: "/api/v1/change-sources/:sourceKind/mappings",
+    schema: {
+      params: ChangeSourceEventParamSchema,
+      body: DeleteSourceMappingRequestSchema,
+      response: {
+        200: DeleteSourceMappingResponseSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "deleteSourceMapping",
+        summary: "Delete every source_mapping matching this identity tuple",
+        tags: ["change-sources"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const deleted = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:write",
+          scopeObjectId: auth.orgId
+        });
+        // Resolved with `includeDeleted`: the mappings most in need of deleting belong to a
+        // SOFT-DELETED component (a merged-away pair half), and refusing to resolve it would make
+        // exactly those rows undeletable — the gap this route exists to close.
+        const component = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.body.component, {
+          includeDeleted: true
+        });
+        return deleteSourceMappingsMatching(tx, {
+          orgId: auth.orgId,
+          componentObjectId: component.id,
+          sourceKind: request.params.sourceKind,
+          repoPattern: request.body.repoPattern,
+          pathPattern: request.body.pathPattern,
+          type: request.body.type ?? "configuration"
+        });
+      });
+      reply.status(200).send({ deleted });
     }
   });
 
