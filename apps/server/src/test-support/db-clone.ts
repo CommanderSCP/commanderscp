@@ -48,6 +48,12 @@ function workerId(): string {
 export async function provisionWorkerDatabase(): Promise<void> {
   const workerDatabase = `scp_w${workerId()}`;
 
+  // NOTE: under the current config this early return NEVER fires. `isolate: true` gives every test
+  // file a fresh child process, so `process.env` does not carry between files and the clone is
+  // redone per file (measured 2026-08-03). Kept because it is correct and would take effect under
+  // `isolate: false` — but do not read it as "the expensive re-clone is skipped". Today every file
+  // pays a full DROP + CREATE DATABASE, which is both a real per-file cost and the reason cross-file
+  // data sharing cannot happen at all (see vitest.integration.config.ts).
   if (process.env.SCP_TEST_WORKER_DATABASE === workerDatabase) return;
 
   const baseAdminUrl = process.env.TEST_DATABASE_URL;
