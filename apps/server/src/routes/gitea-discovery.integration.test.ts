@@ -101,7 +101,20 @@ describe("M15.3a: gitea-discovery import loop (BYO Gitea → proposal → accept
     ({ srv: gitea, baseUrl: giteaBaseUrl } = await startGiteaMock());
     // withReconcileLoop wires a real SubprocessPluginHost onto deps.pluginHost — /discovery/run
     // fail-closes without one (the API-only-role guard). This is the SCP_ROLE=all equivalent.
-    server = await listenTestServer({ withEventRelay: true, withReconcileLoop: true });
+    server = await listenTestServer({
+      // `withPluginHost`, NOT `withReconcileLoop` — and that is load-bearing. This suite calls
+      // `processChangeSourceEvents` INLINE and then reads `resulting_change_object_id` back
+      // synchronously. A live reconcile loop is a competing consumer of exactly those rows: the
+      // processor claims with `FOR UPDATE SKIP LOCKED`, so a tick that claims the row first makes
+      // the inline call a silent no-op and the follow-up read returns the tick's uncommitted
+      // pre-image — NULL. Measured at ~0.7% per event under CPU load, 0/300 with the loop off, and
+      // it never reproduces on an idle machine. It failed once in CI on PR #217 and passed on re-run.
+      //
+      // The loop would also race the `state === "proposed"` assertion below, since
+      // `advanceProposedChanges` moves it to `evaluated`. Only the plugin host is actually needed
+      // here: `POST /discovery/run` fail-closes on `deps.pluginHost` alone.
+      withPluginHost: true
+    });
     org = await createTestOrg(server, "m15-gitea-discovery");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
   });
