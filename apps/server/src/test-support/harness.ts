@@ -116,7 +116,7 @@ export async function buildTestServer(
 
 export interface ListeningTestServer extends TestServer {
   baseUrl: string;
-  /** Only set when `opts.withReconcileLoop` — the plugin host driving whatever fake-executor
+  /** Set by `opts.withReconcileLoop` OR `opts.withPluginHost` — the plugin host driving whatever fake-executor
    *  instance the reconciliation loop triggers wave targets against. Integration tests use this
    *  directly (e.g. `pluginHost` internals via `killExecutorSubprocess` below) to exercise the
    *  plugin-host isolation DoD scenario. */
@@ -158,6 +158,21 @@ export async function listenTestServer(
     withEventRelay?: boolean;
     natsUrl?: string;
     withReconcileLoop?: boolean;
+    /**
+     * Starts the `SubprocessPluginHost` (and assigns `deps.pluginHost`) WITHOUT the reconcile and
+     * watchdog loops.
+     *
+     * Use this whenever a test needs the plugin host — `POST /discovery/run` fail-closes on
+     * `deps.pluginHost` alone — but is going to drive the coordination engine ITSELF, e.g. by
+     * calling `processChangeSourceEvents` inline and then reading the result synchronously.
+     *
+     * `withReconcileLoop: true` starts a LIVE COMPETITOR for exactly that work. The processor claims
+     * rows `FOR UPDATE SKIP LOCKED`, so when a 1s tick claims the row first, the test's own inline
+     * call silently processes NOTHING and its follow-up read sees the tick's uncommitted pre-image —
+     * `resulting_change_object_id` still NULL. That is a real, measured flake (~0.7% per event under
+     * CPU load; 0/300 with the loop off), and it is invisible on an idle machine.
+     */
+    withPluginHost?: boolean;
     pluginHostOptions?: PluginHostOptions;
     watchdogIntervalSeconds?: number;
     /** Merged into the shared fake-executor instance's config (default is just `{statePath,
@@ -188,6 +203,27 @@ export async function listenTestServer(
   let pluginHost: SubprocessPluginHost | undefined;
   let reconcileLoop: ReconcileLoopHandle | undefined;
   let watchdogLoop: WatchdogLoopHandle | undefined;
+  // The plugin host does NOT need pg-boss, so it is started outside the relay block — which is what
+  // lets `withPluginHost` exist without dragging in the loops that make inline processing racy.
+  if (opts.withReconcileLoop || opts.withPluginHost) {
+    const stateDir = await mkdtemp(join(tmpdir(), "scp-test-fake-executor-"));
+    pluginHost = new SubprocessPluginHost(opts.pluginHostOptions);
+    server.deps.pluginHost = pluginHost; // M7: routes/executors.ts's POST /discovery/run needs this
+    await pluginHost.start([
+      {
+        id: DEFAULT_EXECUTOR_INSTANCE_ID,
+        module: DEFAULT_EXECUTOR_MODULE,
+        orgId: SHARED_PLUGIN_INSTANCE_ORG_ID,
+        scopeKey: SHARED_PLUGIN_INSTANCE_SCOPE_KEY,
+        config: {
+          statePath: join(stateDir, "fake-executor-state.json"),
+          autoSucceedAfterMs: 50,
+          ...opts.fakeExecutorConfig
+        }
+      }
+    ]);
+  }
+
   if (opts.withEventRelay) {
     boss = await startPgBoss(server.deps.config.pgBossDatabaseUrl);
     if (opts.natsUrl) {
@@ -202,22 +238,14 @@ export async function listenTestServer(
     });
 
     if (opts.withReconcileLoop) {
-      const stateDir = await mkdtemp(join(tmpdir(), "scp-test-fake-executor-"));
-      pluginHost = new SubprocessPluginHost(opts.pluginHostOptions);
-      server.deps.pluginHost = pluginHost; // M7: routes/executors.ts's POST /discovery/run needs this
-      await pluginHost.start([
-        {
-          id: DEFAULT_EXECUTOR_INSTANCE_ID,
-          module: DEFAULT_EXECUTOR_MODULE,
-          orgId: SHARED_PLUGIN_INSTANCE_ORG_ID,
-          scopeKey: SHARED_PLUGIN_INSTANCE_SCOPE_KEY,
-          config: {
-            statePath: join(stateDir, "fake-executor-state.json"),
-            autoSucceedAfterMs: 50,
-            ...opts.fakeExecutorConfig
-          }
-        }
-      ]);
+      // The host is started in the block above, which `withReconcileLoop` also triggers. Asserted
+      // rather than `!`-ed so that if the two are ever decoupled further, this fails loudly instead
+      // of starting a reconcile loop with no executor behind it.
+      if (!pluginHost) {
+        throw new Error(
+          "internal: withReconcileLoop requires the plugin host to have been started"
+        );
+      }
       reconcileLoop = await startReconcileLoop(
         boss,
         server.deps.db,
