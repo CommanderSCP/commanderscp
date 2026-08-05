@@ -373,6 +373,46 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     expect(await holdDecisions(change.id)).toHaveLength(0);
   });
 
+  it("a dependent pair in ONE wave compiles and then SERIALISES — the check ADR-0028 decision 6 replaced", async () => {
+    // `plan-compiler.ts` used to reject this outright (`topology_violates_dependency` -> 400 ->
+    // "auto-cancelled: plan compilation failed"). Increment 2 removed that refusal on the promise
+    // that the per-target hold would take the ordering over; this is the test that collects on it.
+    // Both components are targets of the SAME change, so both placements sit in the SAME wave — the
+    // exact shape the wave gate cannot express, because it issues one verdict for the whole wave.
+    const dependency = await componentAt("pair-dep", [gamma]);
+    const dependant = await componentAt("pair-app", [gamma]);
+
+    const change = await release(
+      "pair",
+      [dependant.id, dependency.id],
+      [{ dependsOn: dependency.id }]
+    );
+    await tick(2);
+
+    // One wave, two targets, one running and one held — not both, and not neither.
+    const plan = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      getLatestPlanForChange(tx, org.orgId, change.id)
+    );
+    expect(plan!.waves).toHaveLength(1);
+    expect(plan!.waves[0]!.targets).toHaveLength(2);
+    expect(firedFor(dependency.at(gamma))).toBe(1);
+    expect(firedFor(dependant.at(gamma))).toBe(0);
+    expect(await waveTargetStatus(change.id, dependant.at(gamma))).toBe("pending");
+
+    executorConfig.forcePhase[dependency.at(gamma)] = "succeeded";
+    await tick(3);
+    expect(firedFor(dependant.at(gamma))).toBe(1);
+
+    // The hold Decision names the held target only — the dependency running beside it in the same
+    // wave was never held, so it must not appear as one.
+    const rows = await holdDecisions(change.id);
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      const context = row.inputContext as HeldContext;
+      expect(context.held.map((h) => h.targetObjectId)).toEqual([dependant.at(gamma)]);
+    }
+  });
+
   it("the Decision is written ONCE across many ticks — the ADR-0024 regression guard", async () => {
     const dependency = await componentAt("flood-dep", [gamma]);
     const dependant = await componentAt("flood-app", [gamma]);

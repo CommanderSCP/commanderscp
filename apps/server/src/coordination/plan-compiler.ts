@@ -276,11 +276,19 @@ function compileStages(
   // issues one verdict for the whole wave, so blocking it to hold A would also hold B and the
   // dependency could never clear).
   //
-  // UNTIL THAT HOLD LANDS (ADR-0028 increment 3), a dependent pair sharing a stage wave compiles
-  // and its targets run in parallel. That window is deliberate and bounded: `loadDependsOnEdges`
-  // (`plan-service.ts`) only returns edges with BOTH endpoints inside the change's own target set,
-  // and 277 of 281 measured changes target exactly one component (ADR-0026) — a single-target
-  // change has no such pair to order.
+  // THAT HOLD HAS LANDED (`coordination/stage-dependency-hold.ts`, ADR-0028 increment 3): a
+  // dependent pair sharing a stage wave now COMPILES into one wave and then SERIALISES inside it —
+  // the dependant's target is withheld until the dependency's target at that same place is
+  // satisfied. The handover is pinned end to end by `stage-dependency-hold.integration.test.ts`'s
+  // same-wave case, which is the test that makes deleting this check safe rather than merely
+  // convenient.
+  //
+  // ONE DIFFERENCE FROM WHAT WAS REMOVED, stated so it is not mistaken for a regression: the old
+  // check keyed on the graph EDGE, the hold keys on the change's own `properties.stageDependencies`.
+  // A `depends_on` edge that no declaration backs (hand-written, imported, or seeded) therefore no
+  // longer orders anything in stage mode. That is ADR-0028 decision 6's intent — the declaration is
+  // the authority, and the edge is its projection for impact analysis — and it is what stops a bulk
+  // edge import from silently re-serialising releases that ran in parallel yesterday.
   //
   // LEGACY MODE KEEPS BOTH OF ITS CHECKS (`compilePlan` below), on purpose. Its waves name the
   // change's own targets rather than places, so its wave targets carry no deployment-target for a
