@@ -14,6 +14,7 @@ import { changes, objects } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { createRelationship } from "../graph/relationships-repo.js";
 import { insertDecision } from "./decisions-repo.js";
 import {
   resolvePipelineForTargets,
@@ -395,7 +396,107 @@ export async function proposeChange(
     }
   });
 
+  // ADR-0028 decision 6/7, increment 2. Materialised from the RESOLVED TYPED FIELD only — never
+  // from the properties fallback. That fallback exists for federation replay
+  // (`federation/promotion-repo.ts` re-proposes a peer's change properties verbatim), and a peer's
+  // entries name the PEER's object ids: writing edges from them would either fabricate an edge this
+  // domain never asserted or, more likely, 400 on an endpoint that was never synced here and take
+  // the whole promotion import down with it. Edges have their own federation channel
+  // (`relationship_upsert`); the origin domain's materialisation is what travels.
+  if (resolvedStageDependencies !== undefined) {
+    await materialiseStageDependencyEdges(tx, input, targetObjectIds, resolvedStageDependencies);
+  }
+
   return { change: toChangeShape(row, object), targetObjectIds };
+}
+
+/**
+ * ADR-0028 decision 6 — a change's declared stage dependencies become `depends_on` edges,
+ * component→component, so the declaration that will gate the trigger ALSO answers "what depends on
+ * what". This is the "derive the dependency charts instead of guessing" half of the owner's ask, and
+ * it is the only half there can be: nothing SCP observes carries inter-component dependency data
+ * (ADR-0028 decision 7 — the ArgoCD resource tree models `{group,version,kind,namespace,name,
+ * status,health}`, discovery proposes no dependency edges, and no scan/SBOM code writes edges), so a
+ * dependency edge can only ever be DECLARED.
+ *
+ * IDEMPOTENT BY PRE-CHECK, NOT BY CATCHING THE 409. The same CI declaration arrives on every single
+ * push, so a duplicate must be a silent no-op — but `createRelationship`'s unique-violation branch
+ * throws only AFTER postgres has already aborted the surrounding transaction, and `proposeChange` is
+ * mid-transaction with more edges (and its caller's own writes) still to come. Catching the conflict
+ * here would fail on the very next statement. The pre-check is therefore the mechanism, and the
+ * unique index stays the backstop for the one race it cannot cover — two first-ever pushes of the
+ * same declaration committing at the same instant — which surfaces as a 409 on propose and is
+ * retried by the ingress path. That is the identical pre-check-plus-index shape `assertCardinality`
+ * already uses in `graph/relationships-repo.ts`.
+ *
+ * THE PRE-CHECK DELIBERATELY DOES NOT FILTER ON `deleted_at`. `relationships_org_type_from_to_key`
+ * is a plain UNIQUE, not a partial index, and `deleteRelationship` is a SOFT delete — so a
+ * tombstoned edge still occupies the key and NO create can ever replace it. Treating a tombstone as
+ * "already materialised" is what stops an operator's one-off deletion from turning every subsequent
+ * push of that microservice into a 409. The coupling itself is unaffected either way: the hold reads
+ * `properties.stageDependencies` on the change, never the edge.
+ *
+ * NOTHING IS EVER DELETED HERE, and there is no pruning story on purpose. A declaration is ONE
+ * repo's assertion about its own component; pruning "edges this push did not mention" would let A's
+ * repo silently delete the dependency B's repo asserted.
+ *
+ * `minWeight`/`atTargets` DO NOT RIDE ON THE EDGE. Relationship `properties` are silently discarded
+ * on four separate legs of the way in (rollout-step-coupling.md §0.5) and relationships have no
+ * update path at all, so per-dependency semantics hung on an edge would validate, apply, and store
+ * nothing. The change's own `properties.stageDependencies` stays the single authority for what the
+ * hold reads; the edge carries only the FACT of the dependency, which is all impact analysis
+ * (`graph/named-queries.ts`'s `DEFAULT_IMPACT_TYPES`) consumes. Existing `consumes` edges are left
+ * strictly alone for the same reason — impact analysis reads both, so nothing is lost by not
+ * converging them, and converging them would rewrite data this feature never authored.
+ */
+async function materialiseStageDependencyEdges(
+  tx: TenantTx,
+  input: Pick<ProposeChangeInput, "orgId" | "actorObjectId" | "requestId">,
+  fromObjectIds: readonly string[],
+  dependencies: readonly { dependsOn: string }[]
+): Promise<void> {
+  const written = new Set<string>();
+  for (const fromId of fromObjectIds) {
+    for (const dep of dependencies) {
+      const toId = dep.dependsOn;
+      // A self-edge is dropped rather than refused: both compiler paths already ignore
+      // `from === to` (`buildDependencyMap`, and the stage-mode edge walk), so the graph layer's
+      // 400 would be the only consequence of a declaration that means nothing either way.
+      if (fromId === toId) continue;
+      // Two entries naming the same dependency (differing only in `minWeight`/`atTargets`, which the
+      // edge does not carry) collapse to one edge — and must not be attempted twice, since the
+      // second attempt would hit the unique index inside this transaction.
+      const pair = `${fromId} ${toId}`;
+      if (written.has(pair)) continue;
+      written.add(pair);
+
+      const existing = await tx.query.relationships.findFirst({
+        where: (t, { eq: eqOp, and: andOp }) =>
+          andOp(
+            eqOp(t.orgId, input.orgId),
+            eqOp(t.typeId, "depends_on"),
+            eqOp(t.fromId, fromId),
+            eqOp(t.toId, toId)
+          )
+      });
+      if (existing) continue;
+
+      // An endpoint that is not a service/component is refused by `createRelationship` with its own
+      // specific message ("relationship type 'depends_on' does not allow '<type>' as the 'to'
+      // endpoint"). That 400 is allowed to propagate, on the same principle that refuses an
+      // unresolvable `dependsOn` above: a declaration naming something that cannot participate in a
+      // dependency is wrong where it was authored, and discovering it later — as a coupling that
+      // silently applies to nothing — is the fail-open this whole channel is built to avoid.
+      await createRelationship(tx, {
+        orgId: input.orgId,
+        actorObjectId: input.actorObjectId,
+        requestId: input.requestId,
+        typeId: "depends_on",
+        fromId,
+        toId
+      });
+    }
+  }
 }
 
 async function fetchChangeWithObject(
