@@ -771,8 +771,24 @@ async function applyPromotionImport(
   // already enforced it) or DEADLOCK (an outpost whose infra is commander-driven has no local infra
   // change to satisfy the key). `provides` is preserved — a promoted infra change should still be
   // able to satisfy a LOCALLY-authored outpost waiter.
-  const { requires: _requiresStrippedOnPromotion, ...promotedProperties } = bundle.change
-    .properties as Record<string, unknown>;
+  //
+  // ADR-0028: STRIP `stageDependencies` too, on the SAME precedent and for a sharper reason — what
+  // it replaces is not redundancy but a SILENT FAIL-OPEN. A promoted change is re-proposed LOCALLY
+  // with this domain's own origin, so reconcile's foreign-origin skip does not exclude it and the
+  // outpost really does evaluate the coupling. But `change_wave_targets` and `observed_state` are
+  // journaled by nothing, and `relationship_upsert` ships only under sync scope `full`; under
+  // `policies_only`/`changes_only`/`status_only` the depended-on component is not present here at
+  // all, so every verdict resolves to `not_placed` -> SATISFIED and the release fires with no hold
+  // and no record. ADR-0028's own Consequences call that the worst available answer.
+  //
+  // Stripping defers D5 (federation ruling, still open) cleanly instead of shipping that fail-open:
+  // the commander held the trigger until the coupling was satisfied THERE, and its promotion of this
+  // bundle is the go-ahead. When D5 lands, this is the seam that changes.
+  const {
+    requires: _requiresStrippedOnPromotion,
+    stageDependencies: _stageDependenciesStrippedOnPromotion,
+    ...promotedProperties
+  } = bundle.change.properties as Record<string, unknown>;
 
   const { change } = await proposeChange(tx, {
     orgId,
@@ -828,6 +844,29 @@ async function applyPromotionImport(
       reasonTree: {
         summary:
           "requires satisfied upstream at commander — stripped on promotion import (coupled-pipelines.md §8 Q2): the commander held this change in `waiting` until its prerequisites were satisfied there, and its promotion of this bundle IS the go-ahead; re-evaluating locally would be redundant or deadlock"
+      }
+    });
+  }
+
+  // ADR-0028, the AUDIT half of the `stageDependencies` strip. Same rule, same reason: a coupling
+  // that vanishes with no record is the exact failure this feature exists to prevent, so the strip
+  // is a persisted verdict rather than a deletion. Recorded under the hold's OWN kind, so
+  // `scp decision list --kind stage_dependency` on the outpost answers "what happened to my
+  // coupling here?" with a row instead of an absence. Nothing stripped, nothing written.
+  if (_stageDependenciesStrippedOnPromotion !== undefined) {
+    await insertDecision(tx, {
+      orgId,
+      kind: "stage_dependency",
+      subjectId: change.id,
+      verdict: "allow",
+      inputContext: {
+        strippedStageDependencies: _stageDependenciesStrippedOnPromotion,
+        exporterDomainId: bundle.header.exporterDomainId,
+        sourceChangeObjectId: bundle.header.sourceChangeObjectId
+      },
+      reasonTree: {
+        summary:
+          "stage dependencies enforced upstream at the commander — stripped on promotion import (ADR-0028, federation ruling D5 open): the commander withheld this change's trigger until every declared dependency was satisfied there, and its promotion of this bundle IS the go-ahead. Evaluating them here would instead FAIL OPEN under any sync scope narrower than `full`, where the depended-on component is not replicated locally and every verdict resolves to `not_placed`"
       }
     });
   }

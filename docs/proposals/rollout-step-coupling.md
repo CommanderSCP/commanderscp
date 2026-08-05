@@ -196,6 +196,14 @@ The gate is only computable where **both** components' wave targets were polled 
 
 That silence is the worst available answer. Recommendation: evaluate the gate **where the deploy is coordinated**, and have an outpost whose sync scope withholds the inputs **refuse explicitly** — a named, visible verdict — rather than pass. This needs a ruling before the federation increment; it does not block increments 0–3, which are single-instance.
 
+### 4.1 What actually shipped, pending D5: the declaration is STRIPPED on promotion import
+
+D5 is still open, but the reader shipped in increment 3 — and that combination is not neutral. A promoted change is re-proposed **locally**, with this domain's own origin, so the foreign-origin skip does **not** exclude it and the outpost really does evaluate the coupling. Under a sync scope narrower than `full` the depended-on component is not present locally at all, so every verdict resolves to `not_placed` → **satisfied**: exactly the silent, unrecorded fail-open this section calls the worst available answer, shipped by default.
+
+So `applyPromotionImport` now strips `properties.stageDependencies` exactly as it strips `requires`, on the established precedent ([coupled-pipelines.md](coupled-pipelines.md) §8 Q2), and writes a `stage_dependency` Decision on the imported change recording what was stripped and that the coupling was **enforced upstream at the commander** — whose promotion of the bundle *is* the go-ahead. A promotion that declared nothing writes nothing and stays byte-identical.
+
+This is a **deferral, not the ruling**. It replaces a silent fail-open with a recorded one, which is the difference §4 is actually about; it does not deliver the cross-instance gate. When D5 lands, `applyPromotionImport` is the seam that changes.
+
 ---
 
 ## 5. Increments
