@@ -22,10 +22,11 @@
  *    misconfigured topology fails loudly instead of producing an unsafe rollout order.
  *
  * STAGE MODE (a topology whose waves name deployment-targets, ADR-0026 §5) is a third shape of the
- * second mode, and it does NOT validate `depends_on` at all: per ADR-0028 decision 6 its ordering
- * duty passed to the per-target trigger hold in `reconcile.ts`'s executing loop. The reasoning is at
- * the (deliberately empty) site inside `compileStages`; do not restore a check there without
- * reading it.
+ * second mode, and it keeps exactly ONE of the two `depends_on` checks: a CYCLE among co-placed
+ * targets is still refused, because nothing downstream can resolve it. The same-wave refusal is
+ * gone — per ADR-0028 decision 6 that ordering duty passed to the per-target trigger hold in
+ * `reconcile.ts`'s executing loop. The reasoning is at the site inside `compileStages`; do not
+ * restore the same-wave check, and do not remove the cycle check, without reading it.
  */
 
 export interface DependsOnEdge {
@@ -57,7 +58,15 @@ export interface CompiledWave {
 
 export type CompilePlanResult =
   | { ok: true; waves: CompiledWave[] }
-  | { ok: false; error: "cycle"; cycle: string[] }
+  | {
+      ok: false;
+      error: "cycle";
+      cycle: string[];
+      /** STAGE MODE only: which place the cycle's members share, since that is what makes it a
+       *  deadlock rather than a curiosity. Absent on the toposort path, where a cycle is fatal
+       *  regardless of placement. */
+      detail?: string;
+    }
   | { ok: false; error: "unknown_target"; target: string }
   | { ok: false; error: "target_not_placed_in_any_wave"; target: string; detail: string }
   | { ok: false; error: "no_participating_waves"; detail: string }
@@ -253,7 +262,7 @@ function compileStages(
   }
 
   // ============================================================================================
-  // DEPENDS_ON IS NO LONGER VALIDATED IN STAGE MODE (ADR-0028 decision 6)
+  // THE SAME-WAVE REFUSAL IS GONE; THE CYCLE REFUSAL IS NOT (ADR-0028 decision 6)
   // ============================================================================================
   // What stood here rejected a plan whose topology put two components joined by a direct
   // `depends_on` edge in the SAME wave, as `topology_violates_dependency`.
@@ -283,21 +292,41 @@ function compileStages(
   // same-wave case, which is the test that makes deleting this check safe rather than merely
   // convenient.
   //
-  // ONE DIFFERENCE FROM WHAT WAS REMOVED, stated so it is not mistaken for a regression: the old
-  // check keyed on the graph EDGE, the hold keys on the change's own `properties.stageDependencies`.
-  // A `depends_on` edge that no declaration backs (hand-written, imported, or seeded) therefore no
-  // longer orders anything in stage mode. That is ADR-0028 decision 6's intent — the declaration is
-  // the authority, and the edge is its projection for impact analysis — and it is what stops a bulk
-  // edge import from silently re-serialising releases that ran in parallel yesterday.
+  // THE HOLD COVERS THE SAME SET THIS CHECK DID, and that equality is the whole point of calling it
+  // a replacement. `input.dependsOn` is exactly the edges with BOTH endpoints among this change's
+  // own targets (`loadDependsOnEdges`, `plan-service.ts`); reconcile loads that same set and unions
+  // it into each target's dependency set, so an edge no declaration backs — seeded, imported,
+  // operator-written, or materialised by an EARLIER change's declaration — still orders the pair.
+  // What did NOT move, deliberately, is every OTHER edge in the org: an edge with an endpoint
+  // outside the change's target set ordered nothing before and orders nothing now. `graph`.
+  // `dependentIds` is a live CEL policy input, so making the whole graph a release gate would be a
+  // large unrequested behaviour change; this check never reached that far and neither does the hold.
+  //
+  // WHAT CANNOT BE HANDED OVER IS A CYCLE, so it is refused right here instead. Stage mode never
+  // toposorts, and the hold is a per-tick predicate with no global view: a mutual pair co-placed at
+  // one deployment-target would hold each other forever, silently, where this check used to 400.
+  // `coPlacedCycle` below therefore refuses it at compile time, naming the members and the place —
+  // the same shape and the same loudness as what was removed. It is scoped to components that share
+  // a PLACE because that is precisely where the hold looks: a cycle whose members are never
+  // co-placed resolves to `not_placed` on both sides and deadlocks nothing.
   //
   // LEGACY MODE KEEPS BOTH OF ITS CHECKS (`compilePlan` below), on purpose. Its waves name the
   // change's own targets rather than places, so its wave targets carry no deployment-target for a
   // STAGE-scoped hold to be scoped by; dropping the check there would remove the guarantee with
   // nothing taking it over.
   //
-  // `componentOf` was this check's only reader and went with it. If a future rule needs
+  // `componentOf` was the same-wave check's only reader and went with it. If a future rule needs
   // placement -> component again, rebuild it from `input.placements` rather than re-introducing a
   // map that is populated on every push and read by nothing.
+  const cycle = coPlacedCycle(relevant, input.dependsOn);
+  if (cycle) {
+    return {
+      ok: false,
+      error: "cycle",
+      cycle: cycle.components,
+      detail: `${cycle.components.map((c) => `'${c}'`).join(", ")} form a \`depends_on\` cycle and are all placed at '${cycle.deploymentTargetObjectId}', so none of them could ever be triggered there — break the cycle before releasing them together`
+    };
+  }
 
   return {
     ok: true,
@@ -309,6 +338,53 @@ function compileStages(
       ...(step.targets.length === 0 ? { skipped: true } : {})
     }))
   };
+}
+
+/**
+ * The one `depends_on` shape stage mode still refuses (ADR-0028 decision 6): a cycle among this
+ * change's own targets that are ALL PLACED AT THE SAME deployment-target.
+ *
+ * WHY IT CANNOT BE LEFT TO THE HOLD. `reconcile.ts`'s per-target hold withholds A's trigger at a
+ * place until every dependency of A placed THERE has succeeded there. For a mutual pair co-placed
+ * at one deployment-target that is a permanent, silent deadlock: each waits for the other's wave
+ * target to leave `pending`, neither is ever triggered, the wave never terminalizes, and the change
+ * sits in `executing` behind a `stage_dependency` Decision forever. A compile-time refusal turns
+ * that into an epitaph an operator reads immediately (`auto-cancelled: plan compilation failed`),
+ * which is exactly what the same-wave check used to do for this input.
+ *
+ * SCOPED PER PLACE, NOT PER TARGET SET, so the refusal is neither wider nor narrower than the
+ * deadlock. Two components that depend on each other but are never co-placed (A gamma-only, B
+ * prod-only) resolve to `not_placed` on both sides — satisfied, nothing held — and a plan for them
+ * is releasable. Refusing that would reject a working configuration; not refusing the co-placed case
+ * would ship the deadlock. Per-place is also strictly finer than "same wave": a place named by two
+ * topology waves puts the pair in both.
+ *
+ * Places are visited in sorted order so a plan with several bad places always names the same one.
+ */
+function coPlacedCycle(
+  relevant: readonly StagePlacement[],
+  dependsOn: readonly DependsOnEdge[]
+): { components: string[]; deploymentTargetObjectId: string } | null {
+  if (dependsOn.length === 0) return null;
+  const componentsByPlace = new Map<string, Set<string>>();
+  for (const p of relevant) {
+    let at = componentsByPlace.get(p.deploymentTargetObjectId);
+    if (!at) {
+      at = new Set();
+      componentsByPlace.set(p.deploymentTargetObjectId, at);
+    }
+    at.add(p.componentObjectId);
+  }
+  for (const place of [...componentsByPlace.keys()].sort()) {
+    const components = [...componentsByPlace.get(place)!].sort();
+    if (components.length < 2) continue;
+    // Reuses the toposort ONLY to find the cycle — its layers are discarded. Stage waves come from
+    // the topology's places, never from this ordering (ADR-0026 §5), so this must not become a
+    // second source of wave order.
+    const result = topoLayers(components, buildDependencyMap(components, dependsOn));
+    if ("cycle" in result) return { components: result.cycle, deploymentTargetObjectId: place };
+  }
+  return null;
 }
 
 export function compilePlan(input: CompilePlanInput): CompilePlanResult {

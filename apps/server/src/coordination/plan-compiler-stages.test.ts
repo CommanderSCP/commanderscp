@@ -18,6 +18,8 @@ import { compilePlan, type StagePlacement } from "./plan-compiler.js";
  * | omit empty waves entirely | the same test fails on wave count and index alignment |
  * | drop the `target_not_placed_in_any_wave` check | "a target placed nowhere the topology names" fails |
  * | restore the same-wave `depends_on` check | "COMPILES a dependent pair sharing a stage wave" fails |
+ * | drop the co-placed cycle refusal | "a MUTUAL pair CO-PLACED is refused LOUDLY" fails |
+ * | scope the cycle refusal to the target set instead of per place | "NEVER CO-PLACED still compiles" fails |
  * | filter placements by target set AFTER grouping (i.e. not at all) | "another change's placements" fails |
  * | sequential mode → one step for the whole wave | "sequential splits per place" fails |
  */
@@ -204,11 +206,13 @@ describe("coordination/plan-compiler — stage mode (waves name places)", () => 
     expect(result.waves.map((w) => w.targets)).toEqual([["db@target-gamma"], ["api@target-prod"]]);
   });
 
-  it("a MUTUAL declaration compiles in stage mode — a 2-cycle is not a cycle over places", () => {
+  it("a MUTUAL pair CO-PLACED is refused LOUDLY — the hold could only deadlock on it", () => {
     // Two microservices whose CI each names the other is a plausible declaration, and increment 2
-    // materialises BOTH edges. Stage mode never toposorts, so there is nothing here for a cycle to
-    // be found in; the no-topology path is the one that still rejects it (see plan-compiler.test.ts,
-    // "rejects a 2-cycle"), and that difference is deliberate, not an oversight.
+    // materialises BOTH edges. Stage mode never toposorts, so nothing downstream can order them:
+    // the per-target hold would withhold `api` until `db` succeeds at gamma and `db` until `api`
+    // succeeds at gamma, neither would ever be triggered, and the change would sit in `executing`
+    // behind a Decision forever. The removed same-wave check turned this input into a 400; a
+    // compile-time refusal keeps that loudness, which is the whole reason it is not left to run.
     const result = compilePlan({
       targets: ["api", "db"],
       dependsOn: [
@@ -219,7 +223,58 @@ describe("coordination/plan-compiler — stage mode (waves name places)", () => 
       placements: [place("api", GAMMA), place("api", PROD), place("db", GAMMA), place("db", PROD)]
     });
 
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("cycle");
+    if (result.error !== "cycle") return;
+    // BOTH components named, and the place that makes it a deadlock — this string is the change's
+    // permanent epitaph (`auto-cancelled: plan compilation failed — …`), the only explanation an
+    // operator ever gets.
+    expect([...result.cycle].sort()).toEqual(["api", "db"]);
+    expect(result.detail).toContain("api");
+    expect(result.detail).toContain("db");
+    expect(result.detail).toContain(GAMMA);
+  });
+
+  it("a MUTUAL pair that is NEVER CO-PLACED still compiles — no place, no deadlock", () => {
+    // The precision half of the refusal above, and the reason it is scoped per PLACE rather than
+    // over the whole target set. `api` is prod-only and `db` is gamma-only, so at every place one of
+    // them resolves to `not_placed` — which the hold treats as SATISFIED (ADR-0028 decision 4, a
+    // declared fact per ADR-0026 D8). Nothing is ever held, so refusing this would reject a working
+    // configuration on a technicality about edges.
+    const result = compilePlan({
+      targets: ["api", "db"],
+      dependsOn: [
+        { from: "api", to: "db" },
+        { from: "db", to: "api" }
+      ],
+      topologyWaves: gammaThenProd,
+      placements: [place("db", GAMMA), place("api", PROD)]
+    });
+
     expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.waves.map((w) => w.targets)).toEqual([["db@target-gamma"], ["api@target-prod"]]);
+  });
+
+  it("a LONGER cycle among co-placed targets is refused too — not just mutual pairs", () => {
+    // The deadlock is a property of the cycle, not of its length: A waits on B waits on C waits on
+    // A, all at gamma, holds all three forever. Keyed on the toposort's own cycle detection rather
+    // than a hand-rolled pair check, so this needs no separate rule.
+    const result = compilePlan({
+      targets: ["a", "b", "c"],
+      dependsOn: [
+        { from: "a", to: "b" },
+        { from: "b", to: "c" },
+        { from: "c", to: "a" }
+      ],
+      topologyWaves: [{ name: "gamma", mode: "parallel" as const, targets: [GAMMA] }],
+      placements: [place("a", GAMMA), place("b", GAMMA), place("c", GAMMA)]
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok || result.error !== "cycle") return;
+    expect([...result.cycle].sort()).toEqual(["a", "b", "c"]);
   });
 
   it("stays in LEGACY mode when no placements are supplied — the old contract is untouched", () => {
