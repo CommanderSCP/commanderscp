@@ -24,7 +24,12 @@ import {
 } from "./stage-dependency-hold.js";
 import { transitionChange } from "./transition.js";
 import { triggerRollback } from "./rollback.js";
-import { compileAndPersistPlan, getLatestPlanForChange } from "./plan-service.js";
+import {
+  compileAndPersistPlan,
+  getLatestPlanForChange,
+  loadDependsOnEdges
+} from "./plan-service.js";
+import type { DependsOnEdge } from "./plan-compiler.js";
 import {
   requirementStatuses,
   unsatisfiedRequirements,
@@ -827,6 +832,32 @@ async function reconcileExecutingChange(
   // guard. Named because the guarantee matters: holding a rollback behind a dependency would keep a
   // broken release in place while waiting for the very component it is trying to get away from.
   const declared = stageDependenciesOf(changeProperties);
+
+  /**
+   * THE OTHER HALF OF THE HOLD'S DEPENDENCY SET (ADR-0028 decision 6) — plain `depends_on` edges
+   * with BOTH endpoints among this change's own targets. That is the exact set `compileStages` used
+   * to refuse a same-wave pair over, and it is `loadDependsOnEdges`, the SAME function the compiler
+   * is fed from, so the two can never drift into meaning different things.
+   *
+   * LAZY AND MEMOISED, once per change per tick, and both properties are load-bearing:
+   *
+   *   * A SINGLE-TARGET CHANGE NEVER QUERIES. Both endpoints must be in the target set, so one
+   *     target can only ever produce a self-edge, which orders nothing. 277 of 281 measured changes
+   *     target exactly one component (ADR-0026), so the ordinary release pays nothing for this.
+   *   * A CHANGE WITH NOTHING PENDING NEVER QUERIES either — the call sits inside the trigger
+   *     branch, so a wave that is purely polling in-flight targets does not touch the graph.
+   *
+   * Unlike the declarations, this cannot be read off the change's properties: an edge is graph
+   * state, and the whole point is that it may have been written by something other than this change.
+   */
+  const changeTargets = targetObjectIdsOf(changeProperties);
+  let inTargetSetEdges: DependsOnEdge[] | undefined;
+  const loadInTargetSetEdges = async (): Promise<DependsOnEdge[]> =>
+    (inTargetSetEdges ??=
+      changeTargets.length < 2
+        ? []
+        : await withTenantTx(db, orgId, (tx) => loadDependsOnEdges(tx, orgId, changeTargets)));
+
   /** Every target held this tick, with the verdict that held it — collected across the whole loop so
    *  ONE Decision covers the change rather than one per target. That is not tidiness: `decisions`
    *  are deduped per `(subject_id, kind)` on the LATEST row, so per-target rows for a multi-target
@@ -871,7 +902,9 @@ async function reconcileExecutingChange(
       if (backoffMs > 0 && Date.now() - Date.parse(target.updatedAt) < backoffMs) continue;
 
       // STAGE-DEPENDENCY HOLD (ADR-0028 decision 2) — withhold this target's trigger while a
-      // dependency its own CI declared is not yet satisfied AT THIS PLACE. The two invariants of the
+      // dependency of its component is not yet satisfied AT THIS PLACE: one its own CI declared, or
+      // a plain `depends_on` edge to another target of this same change (decision 6 — the set the
+      // removed compile-time refusal covered). The two invariants of the
       // backoff gate above are copied verbatim and are load-bearing for the same reasons:
       //
       //   1. `allTerminal` was already set false at the top of this branch, BEFORE this `continue`.
@@ -893,13 +926,19 @@ async function reconcileExecutingChange(
       // bell, and evaluating it would spend a graph read per tick on a target that is not going to
       // fire this tick anyway. For a `pending` target — every first trigger, which is the case the
       // coupling is about — `backoffMs` is 0 and the two orders are identical.
-      if (declared.stageDependencies.length > 0 || declared.malformed.length > 0) {
+      const edgeDependencies = await loadInTargetSetEdges();
+      if (
+        declared.stageDependencies.length > 0 ||
+        declared.malformed.length > 0 ||
+        edgeDependencies.length > 0
+      ) {
         const evaluation = await withTenantTx(db, orgId, (tx) =>
           evaluateStageDependencies(tx, {
             orgId,
             waveTargetObjectId: target.targetObjectId,
             stageDependencies: declared.stageDependencies,
-            malformed: declared.malformed
+            malformed: declared.malformed,
+            edgeDependencies
           })
         );
         if (evaluation.held) {
@@ -1086,7 +1125,7 @@ async function recordStageDependencyHold(
       verdict: "block",
       inputContext: { waveId: activeWave.id, waveIndex: activeWave.waveIndex, held },
       reasonTree: {
-        summary: `${held.length} wave target(s) held: a declared stage dependency is not yet satisfied at that deployment-target`,
+        summary: `${held.length} wave target(s) held: a stage dependency is not yet satisfied at that deployment-target`,
         blocked: held.flatMap((entry) =>
           entry.dependencies
             .filter((verdict) => !verdict.satisfied)
@@ -1110,7 +1149,7 @@ async function recordStageDependencyHold(
   // one line, not 604,800.
   if (firstHold.created) {
     console.info(
-      `[reconcile] org ${orgId} change ${change.objectId} wave ${activeWave.waveIndex}: ${held.length} target(s) held by a declared stage dependency — decision ${firstHold.decision.id} (scp decision get ${firstHold.decision.id}); re-evaluated every tick until it clears`
+      `[reconcile] org ${orgId} change ${change.objectId} wave ${activeWave.waveIndex}: ${held.length} target(s) held by a stage dependency — decision ${firstHold.decision.id} (scp decision get ${firstHold.decision.id}); re-evaluated every tick until it clears`
     );
   }
 }

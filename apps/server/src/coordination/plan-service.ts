@@ -26,8 +26,13 @@ import { parseTopologyWaves } from "./topology-waves.js";
 
 /** Reads `depends_on` edges among `targetIds` directly from the graph (DESIGN §9.3: "wave order
  * is computed from graph `depends_on` edges"). Both endpoints must be in `targetIds` — edges
- * pointing outside the change's target set don't constrain this plan's wave order. */
-async function loadDependsOnEdges(
+ * pointing outside the change's target set don't constrain this plan's wave order.
+ *
+ * EXPORTED FOR `reconcile.ts`, which feeds the identical set to the stage-dependency hold (ADR-0028
+ * decision 6): the compile-time same-wave refusal this set used to drive was replaced by a runtime
+ * hold, and "the same set" is the whole content of calling it a replacement. Call this rather than
+ * writing the query again — a second copy is where the two definitions would drift apart. */
+export async function loadDependsOnEdges(
   tx: TenantTx,
   orgId: string,
   targetIds: string[]

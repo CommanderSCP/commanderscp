@@ -172,6 +172,27 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     return row!;
   };
 
+  /** The epitaph of an auto-cancelled change — the `reason` reconcile attached to the cancelling
+   *  transition, which is the only account an operator gets of why the plan never compiled. */
+  const cancelReason = async (changeId: string) => {
+    const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(decisions)
+        .where(
+          and(
+            eq(decisions.orgId, org.orgId),
+            eq(decisions.subjectId, changeId),
+            eq(decisions.kind, "transition")
+          )
+        )
+    );
+    const cancelled = rows.find(
+      (row) => (row.inputContext as { toState?: string }).toState === "cancelled"
+    );
+    return (cancelled?.inputContext as { reason?: string } | undefined)?.reason ?? "";
+  };
+
   const holdDecisions = (changeId: string) =>
     withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
@@ -354,12 +375,16 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     expect(firedFor(dependant.at(gamma))).toBe(1);
   });
 
-  it("INERTNESS: a change that declares nothing is unaffected, even by a live `depends_on` edge", async () => {
+  it("INERTNESS: an edge pointing OUTSIDE the change's own target set orders nothing", async () => {
+    // THE BOUNDARY of what ADR-0028 decision 6 moved, and the reason it is a boundary rather than a
+    // simplification. The removed compile-time check keyed on edges with BOTH endpoints in the
+    // change's target set (`loadDependsOnEdges`), so an edge reaching outside it never ordered
+    // anything and must not start now: `graph.dependentIds` is a live CEL policy input, and making
+    // every edge in the org a release gate would re-serialise releases that ran in parallel
+    // yesterday. Here the change targets ONLY the dependant, so this edge is out of scope — even
+    // though it points at a component that has never deployed at gamma and would otherwise hold.
     const dependency = await componentAt("inert-dep", [gamma]);
     const dependant = await componentAt("inert-app", [gamma]);
-    // The exact edge a declaration would have materialised, pointing at a component that has never
-    // deployed at gamma — so if the hold read the GRAPH rather than the change's own declarations,
-    // this would be held. `properties.stageDependencies` is the single authority (ADR-0028).
     await admin.relationships.create({
       typeId: "depends_on",
       fromId: dependant.id,
@@ -371,6 +396,97 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
 
     expect(firedFor(dependant.at(gamma))).toBe(1);
     expect(await holdDecisions(change.id)).toHaveLength(0);
+  });
+
+  it("a plain `depends_on` EDGE between two targets of ONE change serialises them — no declaration", async () => {
+    // THE SET THE COMPILE-TIME CHECK COVERED AND THE DECLARATION CHANNEL DOES NOT. `compileStages`
+    // used to 400 any plan putting two edge-joined targets in one wave, whatever wrote the edge — a
+    // seed, an IaC manifest, an operator, or an EARLIER change's declaration. Keying the hold only
+    // on THIS change's `stageDependencies` would have left every one of those ordering nothing at
+    // all: the pair would compile into one wave and both targets would fire in parallel, with no
+    // hold and no record. Nothing here declares anything; the edge is the whole input.
+    const dependency = await componentAt("edge-dep", [gamma]);
+    const dependant = await componentAt("edge-app", [gamma]);
+    await admin.relationships.create({
+      typeId: "depends_on",
+      fromId: dependant.id,
+      toId: dependency.id
+    });
+
+    const change = await release("edge", [dependant.id, dependency.id]);
+    await tick(3);
+
+    // Serialised, not parallel — asserted against the EXECUTOR, which is the only thing that makes
+    // "did not deploy ahead of it" a fact rather than a column.
+    expect(firedFor(dependency.at(gamma))).toBe(1);
+    expect(firedFor(dependant.at(gamma))).toBe(0);
+    expect(await waveTargetStatus(change.id, dependant.at(gamma))).toBe("pending");
+
+    // And it is EXPLAINED as edge-derived: an operator seeing a hold their CI never declared has to
+    // be told the remedy is a graph edge, not a pipeline change.
+    const [decision] = await holdDecisions(change.id);
+    const verdict = (decision!.inputContext as HeldContext).held[0]!.dependencies[0]!;
+    expect(verdict.dependsOn).toBe(dependency.id);
+    expect(verdict.source).toBe("edge");
+    expect(verdict.satisfied).toBe(false);
+    expect(JSON.stringify(decision!.reasonTree)).toContain("depends_on");
+
+    executorConfig.forcePhase[dependency.at(gamma)] = "succeeded";
+    await tick(3);
+    expect(firedFor(dependant.at(gamma))).toBe(1);
+  });
+
+  it("`atTargets` narrows the DECLARATION, it does not subtract the pair's edge", async () => {
+    // The one interaction between the two halves of the dependency set, pinned because the tempting
+    // "de-dupe against everything declared" is wrong. A declaration scoped to prod is filtered out
+    // at gamma — but the `depends_on` edge it minted is a standing graph fact with both endpoints in
+    // this change's target set, which is exactly the input `compileStages` used to refuse outright.
+    // Suppressing it here would let a declarer WEAKEN an ordering the graph already asserts, and
+    // would ship the parallel deploy that used to be a 400.
+    const dependency = await componentAt("narrow-dep", [gamma, prod]);
+    const dependant = await componentAt("narrow-app", [gamma, prod]);
+
+    const change = await release(
+      "narrow",
+      [dependant.id, dependency.id],
+      [{ dependsOn: dependency.id, atTargets: [prod.id] }]
+    );
+    await tick(3);
+
+    expect(firedFor(dependency.at(gamma))).toBe(1);
+    expect(firedFor(dependant.at(gamma))).toBe(0);
+    const [decision] = await holdDecisions(change.id);
+    const verdicts = (decision!.inputContext as HeldContext).held[0]!.dependencies;
+    // ONE verdict, not two: the declaration does not apply here, so the edge speaks for the pair.
+    expect(verdicts).toHaveLength(1);
+    expect(verdicts[0]!.source).toBe("edge");
+    expect(verdicts[0]!.minWeight).toBeUndefined();
+  });
+
+  it("a MUTUAL pair in one change is refused LOUDLY at compile time, naming both components", async () => {
+    // The deadlock the removed check used to catch, and the one thing the hold cannot: each target
+    // would wait on the other's wave target leaving `pending`, forever, silently. `compileStages`
+    // refuses it, `plan-service.ts` turns that into a 400, and reconcile makes it the change's
+    // epitaph — the only explanation an operator ever gets for an auto-cancelled change.
+    const a = await componentAt("cycle-a", [gamma]);
+    const b = await componentAt("cycle-b", [gamma]);
+    await admin.relationships.create({ typeId: "depends_on", fromId: a.id, toId: b.id });
+    await admin.relationships.create({ typeId: "depends_on", fromId: b.id, toId: a.id });
+
+    const change = await release("cycle", [a.id, b.id]);
+    await tick(3);
+
+    const row = await changeRow(change.id);
+    expect(row.state).toBe("cancelled");
+    // Neither ever ran — a deadlock that fired half a release would be worse than one that fired
+    // none.
+    expect(firedFor(a.at(gamma))).toBe(0);
+    expect(firedFor(b.at(gamma))).toBe(0);
+
+    const reason = await cancelReason(change.id);
+    expect(reason).toContain(a.id);
+    expect(reason).toContain(b.id);
+    expect(reason).toContain(gamma.id);
   });
 
   it("a dependent pair in ONE wave compiles and then SERIALISES — the check ADR-0028 decision 6 replaced", async () => {
@@ -496,6 +612,7 @@ interface HeldContext {
       dependsOn: string;
       branch: string;
       satisfied: boolean;
+      source?: string;
       minWeight?: number;
       weightUnreadable?: string;
     }[];

@@ -7,12 +7,30 @@ import {
   type WaveTargetObservedState
 } from "./wave-targets-repo.js";
 import type { ResolvedStageDependency } from "./changes-repo.js";
+import type { DependsOnEdge } from "./plan-compiler.js";
 
 /**
  * ADR-0028 increment 3 — THE HOLD.
  *
  * The guarantee, stated so it can be kept: *A's deploy at stage S is not TRIGGERED until, for every
  * declared dependency B of A that applies at S, B's deploy at S is satisfied.*
+ *
+ * TWO SOURCES FEED ONE DEPENDENCY SET, and the second is not an extension — it is the domain of the
+ * check ADR-0028 decision 6 removed from `plan-compiler.ts`, landing where the duty went:
+ *
+ *   1. the change's own DECLARED `stageDependencies`, carrying the `minWeight`/`atTargets`
+ *      qualifiers; and
+ *   2. plain `depends_on` EDGES with BOTH endpoints among this change's own targets — no
+ *      qualifiers, the universal `succeeded` test only.
+ *
+ * (2) exists because the removed compiler check keyed on the EDGE, not on a declaration: it refused
+ * (400) any plan putting two edge-joined targets in one wave, whatever wrote the edge — a seed, an
+ * IaC manifest, an operator, or an EARLIER change's declaration. Keying the hold only on this
+ * change's own declarations would have left that set ordering nothing at all, which is a silent
+ * regression rather than a design choice. The scope is deliberately not one inch wider: an edge with
+ * an endpoint OUTSIDE this change's target set ordered nothing before and orders nothing now, so a
+ * bulk edge import cannot turn the org's whole graph into a release gate (`graph.dependentIds` is a
+ * live CEL policy input — ADR-0028 decision 6 cautions about exactly that blast radius).
  *
  * This module is the PREDICATE only; `reconcile.ts`'s per-target loop is the seam that acts on it.
  * The split is deliberate — the predicate is a pure-ish read that a test can drive directly, and the
@@ -127,6 +145,14 @@ export interface StageDependencyVerdict {
   dependsOn: string;
   branch: StageDependencyBranch;
   satisfied: boolean;
+  /** `"edge"` when this dependency came from a plain `depends_on` edge between two of this change's
+   *  own targets rather than from the change's own declaration — the domain of the compile-time
+   *  check ADR-0028 decision 6 replaced. ABSENT for a declared dependency, deliberately: the
+   *  overwhelmingly common case keeps writing the Decision it already wrote, so no existing hold's
+   *  `inputContext` changes shape and none of them re-write once for the upgrade. An operator seeing
+   *  a hold naming a dependency their CI never declared needs this field to know where it came
+   *  from. */
+  source?: "edge";
   /** The status of the dependency's most recent wave target at this place, when it had one. */
   dependencyStatus?: string;
   /** Echoed only when the declaration carried the qualifier. */
@@ -144,8 +170,9 @@ export interface StageDependencyEvaluation {
   /** The (component, place) pair this wave target resolves to, or `null` when it resolved to no
    *  placement at all (legacy-shaped target — see the `unscopeable` branch). */
   stage: { componentObjectId: string; deploymentTargetObjectId: string } | null;
-  /** One verdict per declared dependency that APPLIES here, in declaration order, followed by one
-   *  per malformed stored entry. Dependencies excluded by `atTargets` produce no verdict at all —
+  /** One verdict per declared dependency that APPLIES here, in declaration order, then one per
+   *  edge-derived dependency (sorted, since edge rows arrive in no meaningful order), then one per
+   *  malformed stored entry. Dependencies excluded by `atTargets` produce no verdict at all —
    *  they were never in scope, and listing them would make the Decision's inputs churn with
    *  irrelevance. Empty when nothing was declared. */
   verdicts: StageDependencyVerdict[];
@@ -173,12 +200,20 @@ export async function evaluateStageDependencies(
     stageDependencies: readonly ResolvedStageDependency[];
     /** Stored entries that did not parse. Each becomes one `undeclarable` (holding) verdict. */
     malformed: readonly unknown[];
+    /** `depends_on` edges with BOTH endpoints among this change's own targets — the exact set
+     *  `loadDependsOnEdges` hands the compiler, so the hold orders exactly what the removed
+     *  same-wave check refused. Component ids, not placements: the edges are component→component
+     *  and this resolves the wave target to its component before matching. */
+    edgeDependencies?: readonly DependsOnEdge[];
     /** Injected so a test can pin the freshness boundary without sleeping. Defaults to now. */
     now?: number;
   }
 ): Promise<StageDependencyEvaluation> {
   const { orgId, waveTargetObjectId, stageDependencies, malformed } = input;
-  if (stageDependencies.length === 0 && malformed.length === 0) return NOT_DECLARED;
+  const edges = input.edgeDependencies ?? [];
+  if (stageDependencies.length === 0 && malformed.length === 0 && edges.length === 0) {
+    return NOT_DECLARED;
+  }
 
   // FAIL-CLOSED ON MALFORMED, BEFORE ANYTHING ELSE AND REGARDLESS OF SHAPE. A stored entry that does
   // not parse names a coupling somebody asked for and this version cannot honour; the only reading
@@ -200,6 +235,10 @@ export async function evaluateStageDependencies(
     // (only the STAGE path's copy of that check was replaced by this hold, ADR-0028 decision 6).
     // Recorded as a verdict rather than skipped so that a change which declared a coupling and got
     // none is visible in the Decision when anything else about the same target holds.
+    //
+    // EDGE-DERIVED dependencies produce no verdict at all here, unlike declared ones. There is
+    // nothing to report: legacy mode's compile-time check is still enforcing that exact edge set, so
+    // an edge-joined pair never reaches this loop in one wave to begin with.
     for (const dep of stageDependencies) {
       verdicts.push({ dependsOn: dep.dependsOn, branch: "unscopeable", satisfied: true });
     }
@@ -213,7 +252,7 @@ export async function evaluateStageDependencies(
     (dep) => dep.atTargets === undefined || dep.atTargets.includes(stage.deploymentTargetObjectId)
   );
 
-  const scoped: ResolvedStageDependency[] = [];
+  const scoped: { dep: ResolvedStageDependency; edgeDerived: boolean }[] = [];
   for (const dep of applicable) {
     if (dep.dependsOn === stage.componentObjectId) {
       // A self-declaration would resolve to THIS very placement, find THIS very wave target sitting
@@ -223,7 +262,35 @@ export async function evaluateStageDependencies(
       verdicts.push({ dependsOn: dep.dependsOn, branch: "self", satisfied: true });
       continue;
     }
-    scoped.push(dep);
+    scoped.push({ dep, edgeDerived: false });
+  }
+
+  // THE EDGE-DERIVED HALF — the domain of the compile-time check ADR-0028 decision 6 replaced. The
+  // caller already restricted these to edges with BOTH endpoints among this change's own targets;
+  // all that remains is to keep the ones pointing OUT of the component this wave target is for.
+  // Sorted, because rows come back in no meaningful order and the resulting verdict list lands in a
+  // Decision's `inputContext` — an unsorted list would make an unchanged situation look new on the
+  // tick a row order changed, and `insertDecisionIfChanged` would write again.
+  //
+  // A DECLARATION APPLICABLE HERE WINS, so the pair is one verdict rather than two: the declaration
+  // is the same fact with qualifiers attached, and the edge is its own projection (the declaration
+  // channel MINTS these edges). Note what suppression is keyed on — `applicable`, the `atTargets`-
+  // filtered set, not everything declared. A declaration scoped to prod therefore does NOT silence
+  // the pair's edge at gamma: the edge is a standing graph fact, and before ADR-0028 that exact
+  // input was a 400 for the whole plan rather than a release running in parallel. `atTargets` is
+  // free to narrow the hold ITS OWN declaration adds; it cannot subtract an ordering the graph
+  // already asserted.
+  const declaredHere = new Set(applicable.map((dep) => dep.dependsOn));
+  const edgeDerived = [
+    ...new Set(
+      edges
+        .filter((e) => e.from === stage.componentObjectId && e.to !== stage.componentObjectId)
+        .map((e) => e.to)
+    )
+  ].sort();
+  for (const dependsOn of edgeDerived) {
+    if (declaredHere.has(dependsOn)) continue;
+    scoped.push({ dep: { dependsOn }, edgeDerived: true });
   }
 
   if (scoped.length === 0) return finish(stage, verdicts, malformedVerdicts);
@@ -234,7 +301,7 @@ export async function evaluateStageDependencies(
   const placements = await listPlacementsForComponents(
     tx,
     orgId,
-    scoped.map((dep) => dep.dependsOn)
+    scoped.map((entry) => entry.dep.dependsOn)
   );
   const placementHere = new Map<string, string>();
   for (const p of placements) {
@@ -244,14 +311,20 @@ export async function evaluateStageDependencies(
   }
 
   const now = input.now ?? Date.now();
-  for (const dep of scoped) {
+  for (const entry of scoped) {
+    const { dep } = entry;
+    // `source` is stamped on the way OUT rather than threaded through `stageDependencyVerdict`,
+    // which stays a pure function of (declaration, stored row, clock) and knows nothing about where
+    // the declaration came from. Always last in the object; key order is irrelevant to
+    // `restatesDecision` (it canonicalises), but a stable shape keeps the stored JSON diffable.
+    const source = entry.edgeDerived ? { source: "edge" as const } : {};
     const placementId = placementHere.get(dep.dependsOn);
     if (placementId === undefined) {
-      verdicts.push({ dependsOn: dep.dependsOn, branch: "not_placed", satisfied: true });
+      verdicts.push({ dependsOn: dep.dependsOn, branch: "not_placed", satisfied: true, ...source });
       continue;
     }
     const latest = await findLatestWaveTargetForObject(tx, orgId, placementId);
-    verdicts.push(stageDependencyVerdict(dep, latest, now));
+    verdicts.push({ ...stageDependencyVerdict(dep, latest, now), ...source });
   }
 
   return finish(stage, verdicts, malformedVerdicts);
@@ -414,6 +487,17 @@ function safeJson(value: unknown): string {
  * as the situation is, which is what lets `insertDecisionIfChanged` suppress the restatement.
  */
 export function describeStageDependencyHold(verdict: StageDependencyVerdict): string {
+  // WHERE THE DEPENDENCY CAME FROM, on every edge-derived line. An operator reading "held behind X"
+  // for a coupling their CI never declared has no way to act on it without this: the remedy is to
+  // delete a `depends_on` edge, not to edit a pipeline.
+  const via =
+    verdict.source === "edge"
+      ? " (a `depends_on` edge between two targets of this change, not a declaration)"
+      : "";
+  return describeBranch(verdict) + via;
+}
+
+function describeBranch(verdict: StageDependencyVerdict): string {
   switch (verdict.branch) {
     case "never_deployed":
       return `'${verdict.dependsOn}' is placed here but has never deployed here`;
