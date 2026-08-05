@@ -749,6 +749,57 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     expect((await holdDecisions(change.id)).length).toBeGreaterThan(0);
   });
 
+  it("PINS THE KNOWN LIMITATION: a declaration is change-scoped, so it holds EVERY target of the change", async () => {
+    // ADR-0028 Non-goals, stated as a test rather than only as prose. `properties.stageDependencies`
+    // hangs off the CHANGE and carries no record of WHICH target an entry was declared for, so
+    // `reconcile.ts` parses the set once and evaluates it against every wave target. A change
+    // targeting [app, sibling] where only `app`'s CI declared `dependsOn: dependency` therefore
+    // holds SIBLING behind that dependency too.
+    //
+    // Unobservable for the 277-of-281 single-target case the declaration channel is written for, and
+    // wrong exactly for the multi-target case. It is pinned rather than fixed because there is no
+    // data to fix it from — the association was never carried — and the fix is an additive
+    // `forComponents?: string[]` on `StageDependencySchema`. When that lands, THIS test goes red,
+    // which is the whole point of writing it: a narrowing must flip an assertion, not slide through.
+    const dependency = await componentAt("changescope-dep", [gamma]);
+    const app = await componentAt("changescope-app", [gamma]);
+    const sibling = await componentAt("changescope-sibling", [gamma]);
+
+    // No `depends_on` edge between app and sibling, and none from sibling to the dependency — the
+    // ONLY input naming the dependency is the change's own declaration.
+    const change = await release(
+      "changescope",
+      [app.id, sibling.id],
+      [{ dependsOn: dependency.id }]
+    );
+    await tick(3);
+
+    expect(firedFor(app.at(gamma))).toBe(0);
+    // THE OVER-APPLICATION. Nothing sibling declared, or that the graph asserts about sibling, says
+    // it must wait for the dependency — and it waits anyway.
+    expect(firedFor(sibling.at(gamma))).toBe(0);
+
+    const [decision] = await holdDecisions(change.id);
+    const held = (decision!.inputContext as HeldContext).held;
+    expect(held.map((h) => h.targetObjectId).sort()).toEqual(
+      [app.at(gamma), sibling.at(gamma)].sort()
+    );
+    // And the sibling's hold is attributed to a DECLARATION (no `source: "edge"`), which is what
+    // makes it over-application rather than the edge-derived half doing its job.
+    const siblingHold = held.find((h) => h.targetObjectId === sibling.at(gamma))!;
+    expect(siblingHold.dependencies).toEqual([
+      { dependsOn: dependency.id, branch: "never_deployed", satisfied: false }
+    ]);
+
+    // Both release together once the dependency succeeds — the coupling is over-broad, not broken.
+    executorConfig.forcePhase[dependency.at(gamma)] = "succeeded";
+    const depChange = await release("changescope-dep-change", [dependency.id]);
+    await tick(4);
+    expect(await waveTargetStatus(depChange.id, dependency.at(gamma))).toBe("succeeded");
+    expect(firedFor(app.at(gamma))).toBe(1);
+    expect(firedFor(sibling.at(gamma))).toBe(1);
+  });
+
   it("the Decision is written ONCE across many ticks — the ADR-0024 regression guard", async () => {
     const dependency = await componentAt("flood-dep", [gamma]);
     const dependant = await componentAt("flood-app", [gamma]);

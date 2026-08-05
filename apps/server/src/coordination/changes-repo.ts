@@ -741,6 +741,33 @@ export interface ResolvedStageDependency {
  * nonsensical one means somebody DID ask and asked for something we cannot honour — the same
  * distinction `typeOf` draws below. Propose-time Zod validation makes these unreachable through the
  * API; they can only arrive past it (a federation peer replaying properties, a legacy row).
+ *
+ * ============================================================================================
+ * KNOWN LIMITATION: A DECLARATION IS CHANGE-SCOPED, AND IS APPLIED TO EVERY TARGET
+ * ============================================================================================
+ * `properties.stageDependencies` hangs off the CHANGE. Nothing in it records WHICH of the change's
+ * targets a given entry was declared for, so `reconcile.ts` parses this once per change and
+ * evaluates the whole set against every one of that change's wave targets. For a change targeting
+ * [A, B] where only A's CI declared `dependsOn: C`, **B is held behind C as well.**
+ *
+ * WHY IT IS NOT FIXED HERE. There is no data to fix it FROM. ADR-0028 decision 5 has the
+ * microservice's own CI declare its own dependencies, and a webhook-born change targets exactly one
+ * component (`webhook-processor.ts`) — 277 of 281 measured changes, so the declaration and the
+ * target coincide and the over-application is unobservable. A multi-target change arrives through
+ * the API or campaign fan-out with ONE array and several targets, and the association between an
+ * entry and a target simply was never carried. `materialiseStageDependencyEdges` above takes the
+ * same reading — it mints an edge from EVERY target to `dependsOn` — so the breadth is already a
+ * standing graph fact for such a change, not something this parse could narrow after the event.
+ *
+ * WHAT THE SHAPE WOULD NEED TO BE. One optional field on `StageDependencySchema`, e.g.
+ * `forComponents?: string[]` — component ids/URNs, resolved at propose time exactly as `dependsOn`
+ * and `atTargets` already are, absent meaning "every target of this change" so existing declarations
+ * keep their current meaning. `atTargets` cannot stand in for it: that axis is deployment-targets
+ * (WHERE the coupling applies), and this one is components (WHOSE coupling it is). The hold would
+ * filter on it beside the existing `atTargets` filter, and `materialiseStageDependencyEdges` would
+ * mint edges only from the named components. Additive request field, so the oasdiff gate stays
+ * green. Recorded in ADR-0028's Non-goals; `stage-dependency-hold.integration.test.ts` pins the
+ * current breadth so a future narrowing has a red test to flip rather than a silent behaviour swap.
  */
 export function stageDependenciesOf(
   properties: Record<string, unknown> | null | undefined
