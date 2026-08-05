@@ -13,7 +13,8 @@ import { ComponentGraphPage } from "./routes/component-graph";
 import { ChangeListPage } from "./routes/change-list";
 import { ChangeDetailPage } from "./routes/change-detail";
 import { ChangePipelinePage } from "./routes/change-pipeline";
-import { ComponentPipelinePage } from "./routes/component-pipeline";
+import { ComponentInfrastructurePage, ComponentPipelinePage } from "./routes/component-pipeline";
+import { ComponentDetailLayout } from "./routes/component-detail";
 import { ServiceBoardPage } from "./routes/service-board";
 import { CampaignListPage } from "./routes/campaign-list";
 import { CampaignDetailPage } from "./routes/campaign-detail";
@@ -111,16 +112,38 @@ const changePipelineRoute = createRoute({
   component: ChangePipelinePage
 });
 
-// THE COMPONENT PIPELINE — the DEFAULT view of a component (coordination-ui-views.md §2, corrected
-// 2026-08-03). A static `/components/$idOrUrn` segment, which out-ranks the dynamic
-// `/$basePath/$idOrUrn` registry-detail route below — the same precedence trick `/services/$id/board`
-// uses. Going to a component now lands on its pipeline rather than a properties table, because the
-// pipeline IS what a component is operationally; the generic detail stays reachable for every other
-// registry type.
-const componentPipelineRoute = createRoute({
+// ONE COMPONENT — a LAYOUT route carrying the Pipeline/Settings tabs, with the pipeline as its index
+// child (coordination-ui-views.md §2, corrected 2026-08-03). The static `/components/$idOrUrn`
+// segment out-ranks the dynamic `/$basePath/$idOrUrn` registry-detail route below — the same
+// precedence trick `/services/$id/board` uses — so going to a component lands on its pipeline rather
+// than a properties table, because the pipeline IS what a component is operationally.
+//
+// That precedence had a cost this layout repays: it made the generic registry detail UNREACHABLE for
+// components, orphaning its labels/owners/move/merge cards. `settings` mounts that same page (not a
+// copy) at `/components/$idOrUrn/settings`; `useBasePathParam` resolves `components` from the
+// pathname there, since this route has no `$basePath` param. See `routes/component-detail.tsx`.
+const componentDetailRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/components/$idOrUrn",
+  component: ComponentDetailLayout
+});
+
+const componentPipelineRoute = createRoute({
+  getParentRoute: () => componentDetailRoute,
+  path: "/",
   component: ComponentPipelinePage
+});
+
+const componentInfrastructureRoute = createRoute({
+  getParentRoute: () => componentDetailRoute,
+  path: "/infrastructure",
+  component: ComponentInfrastructurePage
+});
+
+const componentSettingsRoute = createRoute({
+  getParentRoute: () => componentDetailRoute,
+  path: "/settings",
+  component: RegistryDetailPage
 });
 
 // The service release board (coordination-ui-views.md Phase 2). A static `/services/$id/board` leaf —
@@ -213,7 +236,11 @@ const routeTree = rootRoute.addChildren([
     changeListRoute,
     changeDetailRoute,
     changePipelineRoute,
-    componentPipelineRoute,
+    componentDetailRoute.addChildren([
+      componentPipelineRoute,
+      componentInfrastructureRoute,
+      componentSettingsRoute
+    ]),
     serviceBoardRoute,
     campaignListRoute,
     campaignDetailRoute,

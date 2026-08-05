@@ -35,6 +35,15 @@ import {
  * | placement lookup ignores `deleted_at` | "a withdrawn placement stops resolving" fails |
  * | fallback applied in `putExecutorBinding` too | "a write path stays literal" fails |
  */
+/**
+ * ============================================================================================
+ * MUTATION LOG — ADR-0027 service rung (each applied ALONE against a passing suite, then reverted)
+ * ============================================================================================
+ * | Mutation | Result |
+ * |---|---|
+ * | return `none` at the no-placements exit instead of the service rung | the PLACEMENT-target test FAILS. This is not hypothetical — it is the bug that shipped in the first draft: the rung was added at the `candidates.length === 0` exit only, so it never fired for a placement, which is exactly what stage-shaped compilation makes every wave target |
+ * | let `ambiguous` fall through to the service | 3 tests FAIL — two placements bound for one Type is a refusal, not an absence, and the service must not rescue it (ADR-0027 D2) |
+ */
 describe("placement-aware binding resolution", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -179,6 +188,97 @@ describe("placement-aware binding resolution", () => {
 
     // ...and the `image` pipeline resolves nothing, which is what makes it case (b) rather than (a).
     expect((await resolve(component.id, "image")).outcome).toBe("none");
+  });
+
+  // ============================================================================================
+  // ADR-0027 — the SERVICE rung. Infrastructure that serves a whole service (a cluster, a shared
+  // database) is declared ONCE on the service instead of duplicated onto every component under it.
+  // ============================================================================================
+
+  async function servicedComponent(label: string, places: GraphObject[]) {
+    const service = await admin.services.create({ name: `${label}-svc-${Date.now()}` });
+    const component = await admin.components.create({
+      name: `${label}-comp-${Date.now()}`,
+      service: service.id
+    });
+    const placements: GraphObject[] = [];
+    for (const p of places) {
+      placements.push(
+        await admin.placements.create({ component: component.id, deploymentTarget: p.id })
+      );
+    }
+    return { service, component, placements };
+  }
+
+  it("falls back to the owning SERVICE when neither the target nor its placements are bound", async () => {
+    const { service, component } = await servicedComponent("svc-rung", [gamma]);
+    await bind(service.id, "svc-infra", "infrastructure");
+
+    const r = await resolve(component.id, "infrastructure");
+    expect(r.outcome).toBe("via_service");
+    expect(r.binding?.targetObjectId).toBe(service.id);
+  });
+
+  it("resolves from a PLACEMENT target too — the shape stage-shaped compilation actually produces", async () => {
+    // THE CASE A NAIVE RUNG MISSES. `resolveBindingForTarget` has TWO exits that mean "no placement
+    // binding": a component whose placements carry none, and a target that HAS no placements —
+    // which is every placement, since a placement has none of its own. Wave targets are placements
+    // under stage-shaped compilation, so a rung written at only the first exit would never fire on
+    // the estate's real traffic.
+    const { service, placements } = await servicedComponent("svc-rung-placement", [gamma]);
+    await bind(service.id, "svc-infra-p", "infrastructure");
+
+    const r = await resolve(placements[0]!.id, "infrastructure");
+    expect(r.outcome).toBe("via_service");
+    expect(r.binding?.targetObjectId).toBe(service.id);
+  });
+
+  it("MOST-SPECIFIC WINS — a placement's binding beats the service's", async () => {
+    // ADR-0027 D1. Adding the rung must not change any resolution that already succeeds, so the
+    // service is consulted only after the placement has nothing to say.
+    const { service, component, placements } = await servicedComponent("svc-precedence", [gamma]);
+    await bind(placements[0]!.id, "placement-wins", "infrastructure");
+    await bind(service.id, "service-loses", "infrastructure");
+
+    const r = await resolve(component.id, "infrastructure");
+    expect(r.outcome).toBe("via_placement");
+    expect(r.binding?.targetObjectId).toBe(placements[0]!.id);
+  });
+
+  it("a DIRECT binding still wins over the service's", async () => {
+    const { service, component } = await servicedComponent("svc-direct", [gamma]);
+    await bind(component.id, "direct-wins", "infrastructure");
+    await bind(service.id, "service-loses-2", "infrastructure");
+
+    const r = await resolve(component.id, "infrastructure");
+    expect(r.outcome).toBe("direct");
+    expect(r.binding?.targetObjectId).toBe(component.id);
+  });
+
+  it("AMBIGUOUS does not fall through to the service — a refusal is not an absence", async () => {
+    // ADR-0027 D2. Two placements bound for one Type is unanswerable, and answering it from the
+    // service would suppress exactly the refusal ADR-0026 exists to make.
+    const { service, component, placements } = await servicedComponent("svc-ambiguous", [
+      gamma,
+      prod
+    ]);
+    await bind(placements[0]!.id, "amb-a", "infrastructure");
+    await bind(placements[1]!.id, "amb-b", "infrastructure");
+    await bind(service.id, "amb-service", "infrastructure");
+
+    const r = await resolve(component.id, "infrastructure");
+    expect(r.outcome, "the service must not rescue an ambiguous placement set").toBe("ambiguous");
+    expect(r.binding).toBeNull();
+  });
+
+  it("still resolves NOTHING when the service carries no binding of this type either", async () => {
+    const { service } = await servicedComponent("svc-none", [gamma]);
+    await bind(service.id, "svc-wrong-type", "configuration");
+
+    const { component } = await servicedComponent("svc-none-target", [gamma]);
+    const r = await resolve(component.id, "infrastructure");
+    expect(r.outcome).toBe("none");
+    expect(service.id).toBeTruthy();
   });
 
   it("a WRITE path stays literal — binding a component does not touch its placement's row", async () => {

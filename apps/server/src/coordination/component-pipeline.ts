@@ -1,10 +1,22 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
-import type { ComponentPipelineResponse, ComponentPipelineStage } from "@scp/schemas";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { categoryOfType } from "@scp/schemas";
+import type {
+  ComponentPipelineResponse,
+  ComponentPipelineStage,
+  ComponentPipelineUnplacedStage
+} from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changes, changeWaveTargets, changeWaves, changePlans, objects } from "../db/schema.js";
 import { listExecutorBindingsForTarget } from "./executor-bindings-repo.js";
+import { listSourceMappingsForComponents } from "./source-mappings-repo.js";
+import { executionSystemConsoleBase, executorConsoleUrl, repoConsoleUrl } from "./console-urls.js";
+import { matchPoliciesForTargets } from "../governance/policy-resolve.js";
+import { resolvePolicies } from "../governance/policy-model.js";
+import { readExistingControlOutcomes } from "../governance/control-runner.js";
 import { resolvePipelineForTarget } from "./pipeline-resolution.js";
+import { parseTopologyWaves } from "./topology-waves.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
+import { federationPeers } from "../db/schema.js";
 
 /**
  * A COMPONENT'S PIPELINE — its stages, derived from durable graph state.
@@ -18,10 +30,49 @@ import { ensureFederationSelf } from "../federation/self-repo.js";
  * pipeline is a durable property of a component, and artifacts move THROUGH it.
  *
  * Everything here is read from state that exists whether or not anything is releasing:
- *   - the STAGES are the component's `placement`s (ADR-0026) — this component at each place;
- *   - what EXECUTES at a stage is that placement's executor binding;
+ *   - the STAGES are the resolved release topology's ordered waves (see below);
+ *   - what EXECUTES at a stage is that stage's placement's executor binding;
  *   - the pipeline DEFINITION and the rung it was inherited from come from `pipeline-resolution.ts`.
  * Only `current` reads change rows, and it is legitimately null for a stage nothing has released to.
+ *
+ * ============================================================================================
+ * WHY STAGES COME FROM THE TOPOLOGY AND NOT FROM THE PLACEMENTS (owner, 2026-08-03)
+ * ============================================================================================
+ * The first version of this module built the stage list from the component's PLACEMENTS. That is
+ * backwards for a pipeline. A pipeline's job is to show the JOURNEY — where a release goes next and
+ * where it stops — and placements can only ever show where the component already IS. A wave the
+ * component is not placed at did not render at all, so the single most operationally important fact,
+ * "this component never reaches prod", rendered as NOTHING.
+ *
+ * Measured on the live estate the day it was reported: topology `commercial-gamma-then-prod` declares
+ * waves `gamma` then `prod`; `agentkit-bootstrap` holds ONE placement (gamma); the view showed one
+ * card and prod appeared nowhere.
+ *
+ * So the journey is the topology's waves, in order. A wave place this component IS placed at becomes
+ * a `stages[]` entry, exactly as before; one it is NOT placed at becomes an `unplacedStages[]` entry,
+ * which a client renders greyed and explicitly "not placed" — deliberately distinguishable from
+ * "placed but nothing has released yet" (a `stages[]` entry with `current: null`), a different and
+ * much less alarming fact. `order` is contiguous across the union, so the two arrays recombine into
+ * one ordered pipeline. Why two arrays and not one nullable `placement`: see
+ * `ComponentPipelineResponseSchema.unplacedStages` — it is an oasdiff ERR, measured.
+ *
+ * TWO CASES STILL COME FROM PLACEMENTS, and both are load-bearing:
+ *
+ *   1. NO STAGE-SHAPED TOPOLOGY (`stageSource: "placements"`). No rung supplies a topology, or the
+ *      one it supplies is LEGACY-shaped — its waves name the change's own targets rather than
+ *      deployment-targets (`plan-service.ts` classifies the same two shapes the same way, from what
+ *      the ids ARE, because both exist in real data). There is no declared journey to show, so the
+ *      stages are the placements, exactly as before. This is why a component with placements and no
+ *      topology still has a pipeline, which is the acceptance criterion this view was built for.
+ *   2. A PLACEMENT AT A TARGET NO WAVE NAMES. It is appended after the topology's stages, with a
+ *      null `wave`. Dropping it would re-create this very bug mirror-imaged: real state — a place
+ *      this component genuinely deploys to — hidden because a document does not mention it.
+ *
+ * A MALFORMED topology (`parseTopologyWaves` throws) falls back to case 1 rather than failing the
+ * request: this is a read view, and a component page that fails outright because someone saved a bad
+ * document tells an operator less than one that shows the placements and says where its stages came
+ * from. The loud refusal stays where it changes behaviour — plan compilation, which is what
+ * `topology-waves.ts`'s header is about.
  *
  * ============================================================================================
  * WHAT IS DELIBERATELY NOT OBSERVED
@@ -32,18 +83,29 @@ import { ensureFederationSelf } from "../federation/self-repo.js";
  * that reads as "no version". Same rule the service board and the graph health surfaces follow.
  */
 
-/** The most recent wave target for each placement — "what last happened at this stage". */
-async function currentByPlacement(
+/**
+ * The most recent wave target for each placement, PER PIPELINE — "what last happened at this stage,
+ * in each of the pipelines that run here", newest first.
+ *
+ * DISTINCT ON the (placement, TYPE) pair, not the placement alone. A stage's pipelines release
+ * independently, so the single newest row across all of them describes exactly one pipeline and says
+ * nothing about the others — rendered per-lane it would show the software pipeline's release as the
+ * infra pipeline's, and a lane that has never run would inherit a release it never had.
+ * `change_wave_targets.type` is the routing Type the plan snapshotted for this target, which is what
+ * makes this a direct read.
+ *
+ * Ordered by the change's `created_at` then id (UUIDv7, time-ordered) so two changes created in the
+ * same transaction still order deterministically — the same tiebreak `getLatestCampaignPlan`
+ * documents. Several Types can share a Category (`image`/`rpm`/`npm` are all `build`), so the caller
+ * reduces to one entry per Category; this returns them already newest-first for that reason.
+ */
+async function currentsByPlacement(
   tx: TenantTx,
   orgId: string,
   placementIds: string[]
-): Promise<Map<string, ComponentPipelineStage["current"]>> {
-  const out = new Map<string, ComponentPipelineStage["current"]>();
+): Promise<Map<string, ComponentPipelineStage["currents"]>> {
+  const out = new Map<string, ComponentPipelineStage["currents"]>();
   if (placementIds.length === 0) return out;
-  // DISTINCT ON the placement, newest change first — one row per stage, the latest to touch it.
-  // Ordered by the change's `created_at` then id (UUIDv7, time-ordered) so two changes created in
-  // the same transaction still order deterministically, the same tiebreak `getLatestCampaignPlan`
-  // documents.
   const rows = await tx.execute<{
     target_object_id: string;
     change_id: string;
@@ -51,14 +113,18 @@ async function currentByPlacement(
     change_state: string | null;
     wave_name: string | null;
     target_status: string | null;
+    type: string;
+    created_at: string;
   }>(sql`
-    SELECT DISTINCT ON (t.target_object_id)
+    SELECT DISTINCT ON (t.target_object_id, t.type)
       t.target_object_id,
       o.id     AS change_id,
       o.name   AS change_name,
       c.state  AS change_state,
       w.name   AS wave_name,
-      t.status AS target_status
+      t.status AS target_status,
+      t.type   AS type,
+      c.created_at AS created_at
     FROM ${changeWaveTargets} t
     JOIN ${changeWaves} w  ON w.id = t.wave_id AND w.org_id = t.org_id
     JOIN ${changePlans} p  ON p.id = w.plan_id AND p.org_id = w.org_id
@@ -70,27 +136,171 @@ async function currentByPlacement(
         placementIds.map((id) => sql`${id}::uuid`),
         sql`, `
       )})
-    ORDER BY t.target_object_id, c.created_at DESC, c.object_id DESC
+    ORDER BY t.target_object_id, t.type, c.created_at DESC, c.object_id DESC
   `);
+  // The SQL orders WITHIN a (placement, type) group; it says nothing about the order BETWEEN groups,
+  // so the newest-first guarantee this function documents is established here, in one place, rather
+  // than assumed by each consumer.
+  const byPlacement = new Map<string, typeof rows.rows>();
   for (const r of rows.rows) {
-    out.set(r.target_object_id, {
-      changeId: r.change_id,
-      changeName: r.change_name,
-      changeState: r.change_state,
-      waveName: r.wave_name,
-      targetStatus: r.target_status
-    });
+    const list = byPlacement.get(r.target_object_id) ?? [];
+    list.push(r);
+    byPlacement.set(r.target_object_id, list);
+  }
+  for (const [placementId, list] of byPlacement) {
+    // One entry per CATEGORY: `image`, `rpm` and `npm` are all `build`, and a lane showing two
+    // "last release" lines for one pipeline would be as confusing as showing none.
+    const seen = new Set<string>();
+    const currents: ComponentPipelineStage["currents"] = [];
+    const newestFirst = [...list].sort(
+      (a, b) => b.created_at.localeCompare(a.created_at) || b.change_id.localeCompare(a.change_id)
+    );
+    for (const r of newestFirst) {
+      const category = categoryOfType(r.type);
+      if (seen.has(category)) continue;
+      seen.add(category);
+      currents.push({
+        changeId: r.change_id,
+        changeName: r.change_name,
+        changeState: r.change_state,
+        waveName: r.wave_name,
+        targetStatus: r.target_status,
+        type: r.type,
+        category
+      });
+    }
+    out.set(placementId, currents);
   }
   return out;
+}
+
+/** One stage BEFORE it is hydrated — the ordering decision, separated from the I/O it drives. */
+interface StageSeed {
+  deploymentTargetId: string;
+  /** Which topology wave declared it, or null for a placement no wave names (case 2 above). */
+  wave: { index: number; name: string | null } | null;
+  /** The component's placement at this target, or null when it is not placed there. */
+  placement: { id: string; urn: string } | null;
+}
+
+/**
+ * The topology's waves as ordered lists of DEPLOYMENT-TARGET ids, or `undefined` when this topology
+ * declares no journey over places.
+ *
+ * `undefined` covers three genuinely different documents, all of which mean the same thing HERE —
+ * "there is no declared sequence of places to show":
+ *   - no `waves` key at all (`parseTopologyWaves` returns undefined);
+ *   - a malformed document (`parseTopologyWaves` throws — see the module header on why a read view
+ *     absorbs that instead of failing);
+ *   - a LEGACY-shaped document whose waves name the change's own targets rather than places. This is
+ *     classified from what the ids ARE, exactly as `plan-service.ts#resolveStagePlacements` does,
+ *     because both shapes exist in real data and no flag on the document distinguishes them.
+ */
+async function topologyWavePlaces(
+  tx: TenantTx,
+  orgId: string,
+  topologyDocument: unknown
+): Promise<{ index: number; name: string | null; targetIds: string[] }[] | undefined> {
+  let waves;
+  try {
+    waves = parseTopologyWaves(topologyDocument);
+  } catch {
+    return undefined;
+  }
+  if (!waves || waves.length === 0) return undefined;
+
+  const ids = [...new Set(waves.flatMap((w) => w.targets))];
+  if (ids.length === 0) return undefined;
+  const rows = await tx
+    .select({ id: objects.id, typeId: objects.typeId })
+    .from(objects)
+    .where(and(eq(objects.orgId, orgId), inArray(objects.id, ids), isNull(objects.deletedAt)));
+  const places = new Set(rows.filter((r) => r.typeId === "deployment-target").map((r) => r.id));
+  // A MIXED topology is refused at compile time (`resolveStagePlacements`), so the journey it
+  // describes never actually runs. Showing the place-shaped half of it is still strictly more than
+  // showing nothing, and the ids that name no live place are dropped rather than rendered as
+  // stages that do not exist.
+  if (places.size === 0) return undefined;
+
+  const out: { index: number; name: string | null; targetIds: string[] }[] = [];
+  const seen = new Set<string>();
+  waves.forEach((w, index) => {
+    // A target named by two waves belongs to the FIRST — that is where the release reaches it.
+    const targetIds = w.targets.filter((id) => places.has(id) && !seen.has(id));
+    targetIds.forEach((id) => seen.add(id));
+    out.push({ index, name: w.name ?? null, targetIds });
+  });
+  return out;
+}
+
+/**
+ * WHAT GATES ENTRY TO ONE STAGE — the same policy resolution the wave-boundary gate runs, so this
+ * view cannot disagree with the engine about what is required.
+ *
+ * `actorObjectId` is the REQUESTING user, because `scope.group` policies match on the acting
+ * subject (DESIGN §10.1): the honest reading of this field is therefore "what would gate a release
+ * YOU made", not "what gates everyone". Passing a system placeholder instead would silently drop
+ * every group-scoped policy and under-report the gate, which is the worse error of the two.
+ */
+async function gateForStage(
+  tx: TenantTx,
+  orgId: string,
+  actorObjectId: string,
+  placementObjectId: string,
+  /** The release the check statuses are AS OF — the newest change at this stage, or null when
+   *  nothing has ever reached it. A `control_run` belongs to a CHANGE (`control_runs.change_object_id`),
+   *  so there is no such thing as a control outcome for a stage in the abstract; saying which change
+   *  the answer is about is what keeps "passed" from reading as a standing property of the place. */
+  asOfChangeId: string | null
+): Promise<ComponentPipelineStage["gate"]> {
+  const matched = await matchPoliciesForTargets(tx, {
+    orgId,
+    targetObjectIds: [placementObjectId],
+    actorObjectId
+  });
+  const policies = resolvePolicies(matched).map((p) => ({
+    name: p.name,
+    enforcement: p.enforcement,
+    requireControls: p.requireControls,
+    requireApprovals: p.requireApprovals.map((a) => ({
+      count: a.count,
+      fromRole: a.fromRole,
+      scope: a.scope
+    }))
+  }));
+
+  const controlIds = [...new Set(policies.flatMap((p) => p.requireControls))];
+  const outcomes = asOfChangeId
+    ? await readExistingControlOutcomes(tx, orgId, asOfChangeId, controlIds)
+    : {};
+  const checks: ComponentPipelineStage["gate"]["checks"] = [];
+  for (const controlId of controlIds) {
+    const control = await tx.query.objects.findFirst({
+      where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.id, controlId), eqOp(t.orgId, orgId))
+    });
+    const recorded = outcomes[controlId];
+    checks.push({
+      controlId,
+      // A DANGLING reference is kept with a null name rather than dropped: a policy requiring a
+      // control that no longer exists blocks every release, and that must be visible.
+      name: control?.name ?? null,
+      status: recorded ?? (asOfChangeId ? "pending" : "not_started"),
+      changeId: asOfChangeId
+    });
+  }
+
+  return { policies, checks };
 }
 
 export async function getComponentPipeline(
   tx: TenantTx,
   orgId: string,
-  component: { id: string; urn: string; name: string }
+  component: { id: string; urn: string; name: string },
+  actorObjectId: string
 ): Promise<ComponentPipelineResponse> {
-  // STAGES = placements, read from `properties` — the source of truth for the pair (ADR-0026 D17),
-  // and the same half `binding-resolution.ts` and `plan-service.ts` read.
+  // The component's placements, read from `properties` — the source of truth for the pair
+  // (ADR-0026 D17), and the same half `binding-resolution.ts` and `plan-service.ts` read. These are
+  // no longer the stage LIST; they are what tells each stage whether it is placed.
   const placementRows = await tx
     .select({ id: objects.id, urn: objects.urn, properties: objects.properties })
     .from(objects)
@@ -103,22 +313,132 @@ export async function getComponentPipeline(
       )
     );
 
-  const current = await currentByPlacement(
+  const placementByTargetId = new Map<string, { id: string; urn: string }>();
+  for (const p of placementRows) {
+    const props = p.properties as { deploymentTargetId?: unknown };
+    if (typeof props.deploymentTargetId !== "string") continue;
+    // `placement`'s unique index is on the (component, target) PAIR, so there is at most one.
+    placementByTargetId.set(props.deploymentTargetId, { id: p.id, urn: p.urn });
+  }
+
+  // THE HEAD OF THE JOURNEY — which repos feed this component. Durable rules, so this answers "does
+  // a push there affect this?" for a component that has never released, exactly as the stages do.
+  // Sorted for a stable render: by category, then repo, then path (nulls — whole-repo rules — first,
+  // since they are the broadest and the most worth noticing).
+  const sourceRows = await listSourceMappingsForComponents(tx, orgId, [component.id]);
+  const sources: ComponentPipelineResponse["sources"] = sourceRows
+    .map((m) => ({
+      id: m.id,
+      sourceKind: m.sourceKind,
+      repoPattern: m.repoPattern ?? null,
+      pathPattern: m.pathPattern ?? null,
+      type: m.type,
+      category: categoryOfType(m.type),
+      url: repoConsoleUrl(m.sourceKind, m.repoPattern ?? null)
+    }))
+    .sort(
+      (a, b) =>
+        a.category.localeCompare(b.category) ||
+        (a.repoPattern ?? "").localeCompare(b.repoPattern ?? "") ||
+        (a.pathPattern ?? "").localeCompare(b.pathPattern ?? "")
+    );
+
+  const currents = await currentsByPlacement(
     tx,
     orgId,
     placementRows.map((p) => p.id)
   );
   const self = await ensureFederationSelf(tx, orgId);
+  // WHO MAINTAINS EACH PLACE. The commander gives the go-ahead; the outpost still runs its own
+  // targets (ADR-0017 §2, ADR-0011). Resolved from the target's OWN `origin_domain_id` — never from
+  // this instance's identity — so a replicated target reads the same at the commander and at the
+  // outpost, the same rule ADR-0026 D1 applies to stage names.
+  const peerRows = await tx
+    .select({ id: federationPeers.id, name: federationPeers.name, role: federationPeers.role })
+    .from(federationPeers)
+    .where(eq(federationPeers.orgId, orgId));
+  // Keyed on the PLAIN string: `federation_peers.id` is a branded `TrustDomainId` (ADR-0021), while
+  // `objects.origin_domain_id` is an unbranded column, and the lookup is the one place the two meet.
+  const peerById = new Map(peerRows.map((p) => [p.id as string, p]));
+  const maintainerOf = (originDomainId: string | null): ComponentPipelineStage["maintainedBy"] => {
+    if (originDomainId && originDomainId === self.domainId) {
+      return { domainId: originDomainId, name: self.name, isSelf: true, role: self.role };
+    }
+    const peer = originDomainId ? peerById.get(originDomainId) : undefined;
+    if (peer) {
+      return { domainId: originDomainId, name: peer.name, isSelf: false, role: peer.role };
+    }
+    // Neither self nor a known peer. Real on a replica whose peer row has not arrived yet, and it
+    // must NOT default to "ours" — claiming a place is maintained here when it is not is the exact
+    // misreading this field exists to prevent.
+    return { domainId: originDomainId, name: null, isSelf: false, role: null };
+  };
+  const resolved = await resolvePipelineForTarget(tx, orgId, component.id);
 
+  const topologyRow = resolved
+    ? await tx.query.objects.findFirst({
+        where: (t, { eq: eqOp, and: andOp }) =>
+          andOp(eqOp(t.id, resolved.topologyObjectId), eqOp(t.orgId, orgId))
+      })
+    : undefined;
+  const waves = await topologyWavePlaces(tx, orgId, topologyRow?.properties ?? null);
+  const stageSource: ComponentPipelineResponse["stageSource"] = waves ? "topology" : "placements";
+
+  // THE STAGE LIST, in release order: every wave the topology declares, then any place this
+  // component is genuinely placed at that no wave named (module header, case 2).
+  const seeds: StageSeed[] = [];
+  const fromTopology = new Set<string>();
+  for (const wave of waves ?? []) {
+    for (const deploymentTargetId of wave.targetIds) {
+      fromTopology.add(deploymentTargetId);
+      seeds.push({
+        deploymentTargetId,
+        wave: { index: wave.index, name: wave.name },
+        placement: placementByTargetId.get(deploymentTargetId) ?? null
+      });
+    }
+  }
+  const unnamed = [...placementByTargetId.entries()].filter(([id]) => !fromTopology.has(id));
+  for (const [deploymentTargetId, placement] of unnamed) {
+    seeds.push({ deploymentTargetId, wave: null, placement });
+  }
+
+  // One query for every place involved — wave-named and placement-named alike.
+  const targetIds = [...new Set(seeds.map((s) => s.deploymentTargetId))];
+  const targetRows =
+    targetIds.length === 0
+      ? []
+      : await tx
+          .select({
+            id: objects.id,
+            name: objects.name,
+            properties: objects.properties,
+            originDomainId: objects.originDomainId
+          })
+          .from(objects)
+          .where(and(eq(objects.orgId, orgId), inArray(objects.id, targetIds)));
+  const targetById = new Map(targetRows.map((t) => [t.id, t]));
+
+  // Off-topology placements have no declared order; target name is at least stable.
+  seeds.sort((a, b) => {
+    if (a.wave !== null && b.wave === null) return -1;
+    if (a.wave === null && b.wave !== null) return 1;
+    if (a.wave !== null && b.wave !== null && a.wave.index !== b.wave.index) {
+      return a.wave.index - b.wave.index;
+    }
+    if (a.wave !== null && b.wave !== null) return 0; // within a wave, keep the document's order
+    return (targetById.get(a.deploymentTargetId)?.name ?? "").localeCompare(
+      targetById.get(b.deploymentTargetId)?.name ?? ""
+    );
+  });
+
+  // The journey is ONE ordered list here and splits into two arrays only at the wire (see
+  // `ComponentPipelineResponseSchema.unplacedStages` for why). `order` is that list's index, so the
+  // two arrays recombine into exactly this order and a client never infers an interleaving.
   const stages: ComponentPipelineStage[] = [];
-  for (const p of placementRows) {
-    const props = p.properties as { deploymentTargetId?: unknown };
-    const targetId = typeof props.deploymentTargetId === "string" ? props.deploymentTargetId : null;
-    const target = targetId
-      ? await tx.query.objects.findFirst({
-          where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.id, targetId), eqOp(t.orgId, orgId))
-        })
-      : undefined;
+  const unplacedStages: ComponentPipelineUnplacedStage[] = [];
+  for (const [order, seed] of seeds.entries()) {
+    const target = targetById.get(seed.deploymentTargetId);
     const tProps = (target?.properties ?? {}) as { environment?: unknown; region?: unknown };
     const environment = typeof tProps.environment === "string" ? tProps.environment : null;
     const region = typeof tProps.region === "string" ? tProps.region : null;
@@ -133,35 +453,92 @@ export async function getComponentPipeline(
         ? [domainLabel, region, environment].filter(Boolean).join("-")
         : null;
 
-    const bindings = await listExecutorBindingsForTarget(tx, orgId, p.id);
-    const binding = bindings[0];
-    let executionSystemName: string | null = null;
-    if (binding?.executionSystemId) {
-      const sys = await tx.query.objects.findFirst({
-        where: (t, { eq: eqOp, and: andOp }) =>
-          andOp(eqOp(t.id, binding.executionSystemId!), eqOp(t.orgId, orgId))
-      });
-      executionSystemName = sys?.name ?? null;
+    const deploymentTarget = {
+      id: target?.id ?? seed.deploymentTargetId,
+      name: target?.name ?? "(unresolved)",
+      environment,
+      region
+    };
+
+    // AN UNPLACED STAGE CARRIES NO BINDING, NO `current` AND NO `version` — all three are keyed on a
+    // placement that does not exist, and a null `binding` beside a real stage is the ADR-0006 case
+    // (a) ALARM ("no executor — this would fake-succeed"). Rendering that over what is only an
+    // absence of a placement would cry wolf on every component that simply does not go to prod. The
+    // separate array is what keeps the two unconfusable.
+    if (!seed.placement) {
+      // `seed.wave` is non-null here by construction: an unplaced seed can only come from a wave,
+      // since the only other source of a seed IS a placement.
+      if (seed.wave)
+        unplacedStages.push({
+          order,
+          wave: seed.wave,
+          deploymentTarget,
+          maintainedBy: maintainerOf(target?.originDomainId ?? null),
+          stageName
+        });
+      continue;
     }
 
+    // EVERY pipeline bound here, not just the first. A stage can carry an `image` build, an
+    // `infrastructure` plan/apply AND a `configuration` sync at once — `UNIQUE(org, target, type)`
+    // is what makes that legal, and the first version of this projection took `bindings[0]` and
+    // dropped the rest silently. Sorted by Type so `binding` (the compat field, `bindings[0]`) is a
+    // defined choice rather than whatever the planner returned first.
+    const rows = [...(await listExecutorBindingsForTarget(tx, orgId, seed.placement.id))].sort(
+      (a, b) => a.type.localeCompare(b.type)
+    );
+    const bindings: ComponentPipelineStage["bindings"] = [];
+    for (const row of rows) {
+      let executionSystemName: string | null = null;
+      let systemKind: string | null = null;
+      let consoleBase: string | null = null;
+      if (row.executionSystemId) {
+        const sys = await tx.query.objects.findFirst({
+          where: (t, { eq: eqOp, and: andOp }) =>
+            andOp(eqOp(t.id, row.executionSystemId!), eqOp(t.orgId, orgId))
+        });
+        executionSystemName = sys?.name ?? null;
+        const props = (sys?.properties ?? null) as Record<string, unknown> | null;
+        // The system's OWN kind decides the URL shape — two bindings of the same routing Type can
+        // live in different systems, and it is the system that knows what a link to one looks like.
+        systemKind = typeof props?.["kind"] === "string" ? (props["kind"] as string) : null;
+        consoleBase = executionSystemConsoleBase(props);
+      }
+      bindings.push({
+        externalRef: row.externalRef ?? null,
+        type: row.type,
+        url: executorConsoleUrl({
+          kind: systemKind,
+          base: consoleBase,
+          externalRef: row.externalRef ?? null
+        }),
+        category: categoryOfType(row.type),
+        executionSystemId: row.executionSystemId ?? null,
+        executionSystemName
+      });
+    }
+
+    const placementCurrents = currents.get(seed.placement.id) ?? [];
+    const gate = await gateForStage(
+      tx,
+      orgId,
+      actorObjectId,
+      seed.placement.id,
+      placementCurrents[0]?.changeId ?? null
+    );
+
     stages.push({
-      placement: { id: p.id, urn: p.urn },
-      deploymentTarget: {
-        id: target?.id ?? targetId ?? "",
-        name: target?.name ?? "(unresolved)",
-        environment,
-        region
-      },
+      placement: seed.placement,
+      order,
+      wave: seed.wave,
+      deploymentTarget,
+      maintainedBy: maintainerOf(target?.originDomainId ?? null),
       stageName,
-      binding: binding
-        ? {
-            externalRef: binding.externalRef ?? null,
-            type: binding.type,
-            executionSystemId: binding.executionSystemId ?? null,
-            executionSystemName
-          }
-        : null,
-      current: current.get(p.id) ?? null,
+      binding: bindings[0] ?? null,
+      bindings,
+      current: placementCurrents[0] ?? null,
+      currents: placementCurrents,
+      gate,
       version: null,
       // See the module header: always unknown until Phase 4a, and said so explicitly rather than
       // shipped as a confident blank.
@@ -169,43 +546,15 @@ export async function getComponentPipeline(
     });
   }
 
-  // Order stages by the topology's wave order where one names these targets, so they read
-  // left-to-right in RELEASE order. Falls back to target name, which is at least stable.
-  const resolved = await resolvePipelineForTarget(tx, orgId, component.id);
-  let waveOrder: string[] = [];
-  if (resolved) {
-    const topo = await tx.query.objects.findFirst({
-      where: (t, { eq: eqOp, and: andOp }) =>
-        andOp(eqOp(t.id, resolved.topologyObjectId), eqOp(t.orgId, orgId))
-    });
-    const doc = (topo?.properties ?? {}) as { waves?: { targets?: unknown }[] };
-    waveOrder = (doc.waves ?? []).flatMap((w) =>
-      Array.isArray(w.targets) ? w.targets.filter((t): t is string => typeof t === "string") : []
-    );
-  }
-  stages.sort((a, b) => {
-    const ai = waveOrder.indexOf(a.deploymentTarget.id);
-    const bi = waveOrder.indexOf(b.deploymentTarget.id);
-    if (ai !== bi)
-      return (
-        (ai === -1 ? Number.MAX_SAFE_INTEGER : ai) - (bi === -1 ? Number.MAX_SAFE_INTEGER : bi)
-      );
-    return a.deploymentTarget.name.localeCompare(b.deploymentTarget.name);
-  });
-
   let pipeline: ComponentPipelineResponse["pipeline"] = null;
   if (resolved) {
     const attachedTo = await tx.query.objects.findFirst({
       where: (t, { eq: eqOp, and: andOp }) =>
         andOp(eqOp(t.id, resolved.attachedToObjectId), eqOp(t.orgId, orgId))
     });
-    const topo = await tx.query.objects.findFirst({
-      where: (t, { eq: eqOp, and: andOp }) =>
-        andOp(eqOp(t.id, resolved.topologyObjectId), eqOp(t.orgId, orgId))
-    });
     pipeline = {
       topologyObjectId: resolved.topologyObjectId,
-      topologyName: topo?.name ?? null,
+      topologyName: topologyRow?.name ?? null,
       topologyVersion: resolved.topologyVersion ?? null,
       rung: resolved.rung,
       attachedToObjectId: resolved.attachedToObjectId,
@@ -216,7 +565,10 @@ export async function getComponentPipeline(
   return {
     component: { id: component.id, urn: component.urn, name: component.name },
     pipeline,
+    stageSource,
+    sources,
     stages,
+    unplacedStages,
     unknownFields: []
   };
 }

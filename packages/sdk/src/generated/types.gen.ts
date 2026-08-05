@@ -5472,10 +5472,99 @@ export type GetComponentPipelineResponses = {
             attachedToObjectId: string;
             attachedToName: string | null;
         } | null;
+        stageSource: 'topology' | 'placements';
+        sources: Array<{
+            id: string;
+            sourceKind: string;
+            repoPattern: string | null;
+            pathPattern: string | null;
+            type: string;
+            category: 'build' | 'infrastructure' | 'configuration';
+            url: string | null;
+        }>;
         stages: Array<{
             placement: {
                 id: string;
                 urn: string;
+            };
+            order: number;
+            wave: {
+                index: number;
+                name: string | null;
+            } | null;
+            deploymentTarget: {
+                id: string;
+                name: string;
+                environment: string | null;
+                region: string | null;
+            };
+            maintainedBy: {
+                domainId: string | null;
+                name: string | null;
+                isSelf: boolean;
+                role: string | null;
+            };
+            stageName: string | null;
+            binding: {
+                externalRef: string | null;
+                type: string;
+                url: string | null;
+                category: 'build' | 'infrastructure' | 'configuration';
+                executionSystemId: string | null;
+                executionSystemName: string | null;
+            } | null;
+            bindings: Array<{
+                externalRef: string | null;
+                type: string;
+                url: string | null;
+                category: 'build' | 'infrastructure' | 'configuration';
+                executionSystemId: string | null;
+                executionSystemName: string | null;
+            }>;
+            current: {
+                changeId: string;
+                changeName: string | null;
+                changeState: string | null;
+                waveName: string | null;
+                targetStatus: string | null;
+                type: string;
+                category: 'build' | 'infrastructure' | 'configuration';
+            } | null;
+            currents: Array<{
+                changeId: string;
+                changeName: string | null;
+                changeState: string | null;
+                waveName: string | null;
+                targetStatus: string | null;
+                type: string;
+                category: 'build' | 'infrastructure' | 'configuration';
+            }>;
+            gate: {
+                policies: Array<{
+                    name: string;
+                    enforcement: 'advisory' | 'recommended' | 'required';
+                    requireControls: Array<string>;
+                    requireApprovals: Array<{
+                        count: number;
+                        fromRole: string;
+                        scope: string;
+                    }>;
+                }>;
+                checks: Array<{
+                    controlId: string;
+                    name: string | null;
+                    status: 'not_started' | 'pending' | 'pass' | 'fail' | 'warning' | 'skipped' | 'timed_out' | 'expired';
+                    changeId: string | null;
+                }>;
+            };
+            version: string | null;
+            unknownFields: Array<string>;
+        }>;
+        unplacedStages: Array<{
+            order: number;
+            wave: {
+                index: number;
+                name: string | null;
             };
             deploymentTarget: {
                 id: string;
@@ -5483,22 +5572,13 @@ export type GetComponentPipelineResponses = {
                 environment: string | null;
                 region: string | null;
             };
+            maintainedBy: {
+                domainId: string | null;
+                name: string | null;
+                isSelf: boolean;
+                role: string | null;
+            };
             stageName: string | null;
-            binding: {
-                externalRef: string | null;
-                type: string;
-                executionSystemId: string | null;
-                executionSystemName: string | null;
-            } | null;
-            current: {
-                changeId: string;
-                changeName: string | null;
-                changeState: string | null;
-                waveName: string | null;
-                targetStatus: string | null;
-            } | null;
-            version: string | null;
-            unknownFields: Array<string>;
         }>;
         unknownFields: Array<string>;
     };

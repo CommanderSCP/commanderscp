@@ -20718,6 +20718,80 @@
                         }
                       ]
                     },
+                    "stageSource": {
+                      "type": "string",
+                      "enum": [
+                        "topology",
+                        "placements"
+                      ]
+                    },
+                    "sources": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "sourceKind": {
+                            "type": "string"
+                          },
+                          "repoPattern": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "pathPattern": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "type": {
+                            "type": "string"
+                          },
+                          "category": {
+                            "type": "string",
+                            "enum": [
+                              "build",
+                              "infrastructure",
+                              "configuration"
+                            ]
+                          },
+                          "url": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "sourceKind",
+                          "repoPattern",
+                          "pathPattern",
+                          "type",
+                          "category",
+                          "url"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
                     "stages": {
                       "type": "array",
                       "items": {
@@ -20740,6 +20814,43 @@
                               "urn"
                             ],
                             "additionalProperties": false
+                          },
+                          "order": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "wave": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "index": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "name": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "index",
+                                  "name"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           },
                           "deploymentTarget": {
                             "type": "object",
@@ -20781,6 +20892,53 @@
                             ],
                             "additionalProperties": false
                           },
+                          "maintainedBy": {
+                            "type": "object",
+                            "properties": {
+                              "domainId": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "format": "uuid",
+                                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "name": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "isSelf": {
+                                "type": "boolean"
+                              },
+                              "role": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "domainId",
+                              "name",
+                              "isSelf",
+                              "role"
+                            ],
+                            "additionalProperties": false
+                          },
                           "stageName": {
                             "anyOf": [
                               {
@@ -20809,6 +20967,24 @@
                                   "type": {
                                     "type": "string"
                                   },
+                                  "url": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "category": {
+                                    "type": "string",
+                                    "enum": [
+                                      "build",
+                                      "infrastructure",
+                                      "configuration"
+                                    ]
+                                  },
                                   "executionSystemId": {
                                     "anyOf": [
                                       {
@@ -20835,6 +21011,8 @@
                                 "required": [
                                   "externalRef",
                                   "type",
+                                  "url",
+                                  "category",
                                   "executionSystemId",
                                   "executionSystemName"
                                 ],
@@ -20844,6 +21022,76 @@
                                 "type": "null"
                               }
                             ]
+                          },
+                          "bindings": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "externalRef": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "type": {
+                                  "type": "string"
+                                },
+                                "url": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "category": {
+                                  "type": "string",
+                                  "enum": [
+                                    "build",
+                                    "infrastructure",
+                                    "configuration"
+                                  ]
+                                },
+                                "executionSystemId": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "format": "uuid",
+                                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "executionSystemName": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "externalRef",
+                                "type",
+                                "url",
+                                "category",
+                                "executionSystemId",
+                                "executionSystemName"
+                              ],
+                              "additionalProperties": false
+                            }
                           },
                           "current": {
                             "anyOf": [
@@ -20894,6 +21142,17 @@
                                         "type": "null"
                                       }
                                     ]
+                                  },
+                                  "type": {
+                                    "type": "string"
+                                  },
+                                  "category": {
+                                    "type": "string",
+                                    "enum": [
+                                      "build",
+                                      "infrastructure",
+                                      "configuration"
+                                    ]
                                   }
                                 },
                                 "required": [
@@ -20901,7 +21160,9 @@
                                   "changeName",
                                   "changeState",
                                   "waveName",
-                                  "targetStatus"
+                                  "targetStatus",
+                                  "type",
+                                  "category"
                                 ],
                                 "additionalProperties": false
                               },
@@ -20909,6 +21170,200 @@
                                 "type": "null"
                               }
                             ]
+                          },
+                          "currents": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "changeId": {
+                                  "type": "string",
+                                  "format": "uuid",
+                                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                },
+                                "changeName": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "changeState": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "waveName": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "targetStatus": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "type": {
+                                  "type": "string"
+                                },
+                                "category": {
+                                  "type": "string",
+                                  "enum": [
+                                    "build",
+                                    "infrastructure",
+                                    "configuration"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "changeId",
+                                "changeName",
+                                "changeState",
+                                "waveName",
+                                "targetStatus",
+                                "type",
+                                "category"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "gate": {
+                            "type": "object",
+                            "properties": {
+                              "policies": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "name": {
+                                      "type": "string"
+                                    },
+                                    "enforcement": {
+                                      "type": "string",
+                                      "enum": [
+                                        "advisory",
+                                        "recommended",
+                                        "required"
+                                      ]
+                                    },
+                                    "requireControls": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "requireApprovals": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "count": {
+                                            "type": "integer",
+                                            "minimum": -9007199254740991,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "fromRole": {
+                                            "type": "string"
+                                          },
+                                          "scope": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "count",
+                                          "fromRole",
+                                          "scope"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "name",
+                                    "enforcement",
+                                    "requireControls",
+                                    "requireApprovals"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              },
+                              "checks": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "controlId": {
+                                      "type": "string"
+                                    },
+                                    "name": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "status": {
+                                      "type": "string",
+                                      "enum": [
+                                        "not_started",
+                                        "pending",
+                                        "pass",
+                                        "fail",
+                                        "warning",
+                                        "skipped",
+                                        "timed_out",
+                                        "expired"
+                                      ]
+                                    },
+                                    "changeId": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "format": "uuid",
+                                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "controlId",
+                                    "name",
+                                    "status",
+                                    "changeId"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              }
+                            },
+                            "required": [
+                              "policies",
+                              "checks"
+                            ],
+                            "additionalProperties": false
                           },
                           "version": {
                             "anyOf": [
@@ -20929,12 +21384,161 @@
                         },
                         "required": [
                           "placement",
+                          "order",
+                          "wave",
                           "deploymentTarget",
+                          "maintainedBy",
                           "stageName",
                           "binding",
+                          "bindings",
                           "current",
+                          "currents",
+                          "gate",
                           "version",
                           "unknownFields"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "unplacedStages": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "order": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "wave": {
+                            "type": "object",
+                            "properties": {
+                              "index": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "name": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "index",
+                              "name"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "deploymentTarget": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "format": "uuid",
+                                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "environment": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "region": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "name",
+                              "environment",
+                              "region"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "maintainedBy": {
+                            "type": "object",
+                            "properties": {
+                              "domainId": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "format": "uuid",
+                                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "name": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "isSelf": {
+                                "type": "boolean"
+                              },
+                              "role": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "domainId",
+                              "name",
+                              "isSelf",
+                              "role"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "stageName": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "order",
+                          "wave",
+                          "deploymentTarget",
+                          "maintainedBy",
+                          "stageName"
                         ],
                         "additionalProperties": false
                       }
@@ -20949,7 +21553,10 @@
                   "required": [
                     "component",
                     "pipeline",
+                    "stageSource",
+                    "sources",
                     "stages",
+                    "unplacedStages",
                     "unknownFields"
                   ],
                   "additionalProperties": false

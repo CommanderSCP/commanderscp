@@ -66,6 +66,15 @@ export type BindingResolution =
       /** Every competing placement, so the refusal can NAME them. */
       candidates: { placementObjectId: string; bindingId: string }[];
     }
+  /** ADR-0027 — the owning SERVICE carries the binding. Infrastructure that serves a whole service
+   *  (a cluster, a shared database) is declared once on the service rather than duplicated onto
+   *  every component or placement under it. */
+  | {
+      outcome: "via_service";
+      binding: ExecutorBindingRow;
+      viaPlacementObjectId: null;
+      viaServiceObjectId: string;
+    }
   | { outcome: "none"; binding: null; viaPlacementObjectId: null };
 
 /**
@@ -92,12 +101,87 @@ async function placementsOfComponent(
 }
 
 /**
- * Resolves the binding driving one pipeline of one wave target, falling back through the target's
- * placements when the target itself has none of that type.
+ * The owning SERVICE of a wave target (ADR-0027 D3/D4), or null.
  *
- * Order is deliberate: DIRECT FIRST, always. A target that carries its own binding never consults
- * placements, so this is a pure extension — no existing resolution can change answer, and the
- * common path costs one extra query only when it was already about to resolve nothing.
+ * Accepts either shape a wave target takes: a COMPONENT under legacy compilation, or a PLACEMENT
+ * under stage-shaped compilation — the case the estate actually runs, which a component-only rung
+ * would have missed entirely.
+ *
+ * The service is the inbound `contains` edge, at most one by `contains`'s `one_to_many` plus
+ * migration 0022's partial unique index — the same invariant `pipeline-resolution.ts` relies on, so
+ * a binding and a pipeline can never disagree about which service owns a component.
+ */
+async function owningServiceOf(
+  tx: TenantTx,
+  orgId: string,
+  targetObjectId: string
+): Promise<string | null> {
+  const target = await tx.query.objects.findFirst({
+    where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.id, targetObjectId), eqOp(t.orgId, orgId))
+  });
+  if (!target) return null;
+
+  let componentObjectId = targetObjectId;
+  if (target.typeId === "placement") {
+    const props = (target.properties ?? {}) as { componentId?: unknown };
+    if (typeof props.componentId !== "string") return null;
+    componentObjectId = props.componentId;
+  }
+
+  const edge = await tx.query.relationships.findFirst({
+    where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
+      andOp(
+        eqOp(t.orgId, orgId),
+        eqOp(t.typeId, "contains"),
+        eqOp(t.toId, componentObjectId),
+        isNullOp(t.deletedAt)
+      )
+  });
+  return edge?.fromId ?? null;
+}
+
+/**
+ * RUNG 3 (ADR-0027) — the owning service's binding, else `none`.
+ *
+ * In its own function because it is reached from TWO places: a target with no placements at all (a
+ * placement, under stage-shaped compilation) and a component whose placements carry nothing of this
+ * type. Those are separate exits from the walk, and a rung written inline at one of them would
+ * silently not apply at the other — the failure mode being that the case the estate actually runs
+ * is the one left out.
+ */
+async function serviceRung(
+  tx: TenantTx,
+  orgId: string,
+  targetObjectId: string,
+  type: BindingType
+): Promise<BindingResolution> {
+  const serviceObjectId = await owningServiceOf(tx, orgId, targetObjectId);
+  if (serviceObjectId) {
+    const viaService = await getExecutorBinding(tx, orgId, serviceObjectId, type);
+    if (viaService) {
+      return {
+        outcome: "via_service",
+        binding: viaService,
+        viaPlacementObjectId: null,
+        viaServiceObjectId: serviceObjectId
+      };
+    }
+  }
+  return { outcome: "none", binding: null, viaPlacementObjectId: null };
+}
+
+/**
+ * Resolves the binding driving one pipeline of one wave target, falling back through the target's
+ * placements and then its owning SERVICE when the target itself has none of that type.
+ *
+ * Order is deliberate and MOST-SPECIFIC-WINS (ADR-0027 D1): direct, then placement, then service. A
+ * target that carries its own binding never consults the others, so each rung is a pure extension —
+ * no resolution that succeeds today can change answer, and the only behaviour that moves is
+ * `none` → `via_service`, i.e. a target that was BLOCKED may now resolve.
+ *
+ * `ambiguous` is terminal and does NOT fall through to the service (ADR-0027 D2): two placements
+ * bound for one Type is a refusal, not an absence, and answering it from the service would suppress
+ * exactly the refusal ADR-0026 exists to make.
  */
 export async function resolveBindingForTarget(
   tx: TenantTx,
@@ -109,8 +193,11 @@ export async function resolveBindingForTarget(
   if (direct) return { outcome: "direct", binding: direct, viaPlacementObjectId: null };
 
   const placementIds = await placementsOfComponent(tx, orgId, targetObjectId);
-  if (placementIds.length === 0)
-    return { outcome: "none", binding: null, viaPlacementObjectId: null };
+  // BOTH ways of having no placement binding fall through to rung 3, and they are DIFFERENT paths:
+  // a PLACEMENT target has no placements of its own (`placementsOfComponent` returns nothing for
+  // it), and that is the shape stage-shaped compilation actually produces. Adding the service rung
+  // at only the other exit would have missed the estate's common case entirely.
+  if (placementIds.length === 0) return serviceRung(tx, orgId, targetObjectId, type);
 
   const candidates: { placementObjectId: string; binding: ExecutorBindingRow }[] = [];
   for (const placementObjectId of placementIds) {
@@ -118,8 +205,7 @@ export async function resolveBindingForTarget(
     if (binding) candidates.push({ placementObjectId, binding });
   }
 
-  if (candidates.length === 0)
-    return { outcome: "none", binding: null, viaPlacementObjectId: null };
+  if (candidates.length === 0) return serviceRung(tx, orgId, targetObjectId, type);
   if (candidates.length > 1) {
     return {
       outcome: "ambiguous",

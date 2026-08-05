@@ -1522,7 +1522,15 @@ async function triggerWaveTarget(
       // (it is what makes each estate-migration step independently safe) and why it must refuse
       // rather than choose when a component has two placed bindings.
       const resolution = await resolveBindingForTarget(tx, orgId, targetObjectId, type);
-      if (resolution.outcome === "direct" || resolution.outcome === "via_placement") return false;
+      if (
+        resolution.outcome === "direct" ||
+        resolution.outcome === "via_placement" ||
+        // ADR-0027 rung 3 — infrastructure declared once on the owning service. Without this the
+        // gap analysis would block a target the resolver just resolved, which is the same class of
+        // masking bug ADR-0006 exists to prevent, inverted.
+        resolution.outcome === "via_service"
+      )
+        return false;
 
       if (resolution.outcome === "ambiguous") {
         // (d) AMBIGUOUS PLACEMENT — a NEW population, distinct from (b)'s meaning. (b) is "bound,
@@ -1667,7 +1675,12 @@ async function triggerWaveTarget(
       // per trigger for it would double Decision volume for no information, which is a live
       // production concern on this instance. Bounded either way: this runs once per wave target
       // behind the claim lock, not once per tick.
-      if (resolution.outcome === "via_placement") {
+      if (resolution.outcome === "via_placement" || resolution.outcome === "via_service") {
+        const via = resolution.outcome === "via_placement" ? "placement" : "service";
+        const viaObjectId =
+          resolution.outcome === "via_placement"
+            ? resolution.viaPlacementObjectId
+            : resolution.viaServiceObjectId;
         await insertDecision(tx, {
           orgId,
           kind: "wave_target",
@@ -1677,14 +1690,18 @@ async function triggerWaveTarget(
             waveId,
             targetObjectId,
             requestedType: type,
-            resolvedVia: "placement",
-            placementObjectId: resolution.viaPlacementObjectId,
+            resolvedVia: via,
+            // Kept under the historical key for the placement case so existing Decisions and any
+            // query over them keep reading the same field; the service case names its own.
+            ...(via === "placement"
+              ? { placementObjectId: viaObjectId }
+              : { serviceObjectId: viaObjectId }),
             bindingId: binding?.id ?? null
           },
           reasonTree: {
             summary:
               `'${type}' binding for wave target ${targetObjectId} resolved INDIRECTLY via its ` +
-              `placement ${resolution.viaPlacementObjectId} — the component carries none of its own`
+              `${via} ${viaObjectId} — the target carries none of its own`
           }
         });
       }
