@@ -455,7 +455,6 @@ async function materialiseStageDependencyEdges(
   fromObjectIds: readonly string[],
   dependencies: readonly { dependsOn: string }[]
 ): Promise<void> {
-  const written = new Set<string>();
   for (const fromId of fromObjectIds) {
     for (const dep of dependencies) {
       const toId = dep.dependsOn;
@@ -463,12 +462,12 @@ async function materialiseStageDependencyEdges(
       // `from === to` (`buildDependencyMap`, and the stage-mode edge walk), so the graph layer's
       // 400 would be the only consequence of a declaration that means nothing either way.
       if (fromId === toId) continue;
-      // Two entries naming the same dependency (differing only in `minWeight`/`atTargets`, which the
-      // edge does not carry) collapse to one edge — and must not be attempted twice, since the
-      // second attempt would hit the unique index inside this transaction.
-      const pair = `${fromId} ${toId}`;
-      if (written.has(pair)) continue;
-      written.add(pair);
+      // The pre-check runs INSIDE this transaction and so sees this loop's own uncommitted inserts.
+      // That is what makes two entries naming the same dependency (differing only in
+      // `minWeight`/`atTargets`, which the edge does not carry) collapse onto one edge, with no
+      // separate in-memory de-dupe: the earlier iteration's row is simply already there. A
+      // belt-and-braces `Set` was written here first and then removed — a mutation proved it dead,
+      // because the pre-check already covered every case it claimed to.
 
       const existing = await tx.query.relationships.findFirst({
         where: (t, { eq: eqOp, and: andOp }) =>

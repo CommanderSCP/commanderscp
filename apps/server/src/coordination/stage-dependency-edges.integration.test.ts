@@ -111,9 +111,10 @@ describe("stage dependencies: the depends_on edges (ADR-0028 increment 2)", () =
   });
 
   it("two entries naming the same dependency in ONE declaration produce one edge", async () => {
-    // Within a single propose there is no committed row for a pre-check to find, so the de-dupe has
-    // to happen in-memory too — otherwise the second insert hits the unique index inside the
-    // transaction and takes the whole propose down.
+    // Within a single propose nothing is COMMITTED yet, so this pins that the pre-check reads its
+    // own transaction's uncommitted inserts. If it ever stopped doing so — a stray autocommit
+    // connection, a read moved outside the tx — the second insert would hit the unique index and
+    // take the whole propose down with it.
     const b = await createTestComponent(admin, { name: `dup-b-${randomUUID().slice(0, 8)}` });
     const a = await createTestComponent(admin, { name: `dup-a-${randomUUID().slice(0, 8)}` });
     const gamma = await admin.object("deployment-target").create({
