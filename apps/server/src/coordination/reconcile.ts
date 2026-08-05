@@ -869,6 +869,20 @@ async function reconcileExecutingChange(
     verdicts: StageDependencyVerdict[];
   }[] = [];
 
+  /** Every target this tick that declared a coupling and got NONE — the `unscopeable` branch, where
+   *  the wave target names a component rather than a placement so there is no place for a
+   *  stage-scoped hold to be scoped by (a legacy-shaped topology, or no resolvable topology at all,
+   *  which puts the plan on the toposort path).
+   *
+   *  COLLECTED SEPARATELY FROM `heldTargets` BECAUSE IT IS NOT A HOLD. This target triggers on this
+   *  very tick; ADR-0028 decision 4's fail-open-with-warning branch is what it exercises. But
+   *  "proceeded" is not the same as "nothing to say": a change whose author declared a dependency
+   *  and received no enforcement at all was, before this, invisible everywhere — `held` was false,
+   *  no Decision was written, and the one `console.warn` in the seam fires only for
+   *  `weightUnreadable`. Made visible so the fail-open is something an operator can find rather than
+   *  something they have to deduce. */
+  const unscopeableTargets: { targetObjectId: string; verdicts: StageDependencyVerdict[] }[] = [];
+
   for (const target of activeWave.targets) {
     if (target.status === "succeeded") continue;
     if (target.status === "failed" || target.status === "aborted") {
@@ -941,6 +955,17 @@ async function reconcileExecutingChange(
             edgeDependencies
           })
         );
+        // DECLARED A COUPLING AND GOT NONE (ADR-0028 decision 4's fail-open-with-warning branch).
+        // Collected BEFORE the hold check, not after: a malformed entry holds even on a legacy-
+        // shaped target, so `held` and `unscopeable` are not mutually exclusive and an `else` here
+        // would lose exactly the case where both are true.
+        const unscopeable = evaluation.verdicts.filter((v) => v.branch === "unscopeable");
+        if (unscopeable.length > 0) {
+          unscopeableTargets.push({
+            targetObjectId: target.targetObjectId,
+            verdicts: unscopeable
+          });
+        }
         if (evaluation.held) {
           heldTargets.push({
             targetObjectId: target.targetObjectId,
@@ -1054,6 +1079,10 @@ async function reconcileExecutingChange(
     }
   }
 
+  if (unscopeableTargets.length > 0) {
+    await recordStageDependencyUnscoped(db, orgId, change, activeWave, unscopeableTargets);
+  }
+
   if (heldTargets.length > 0) {
     await recordStageDependencyHold(db, orgId, change, activeWave, heldTargets);
   }
@@ -1150,6 +1179,79 @@ async function recordStageDependencyHold(
   if (firstHold.created) {
     console.info(
       `[reconcile] org ${orgId} change ${change.objectId} wave ${activeWave.waveIndex}: ${held.length} target(s) held by a stage dependency — decision ${firstHold.decision.id} (scp decision get ${firstHold.decision.id}); re-evaluated every tick until it clears`
+    );
+  }
+}
+
+/**
+ * THE FAIL-OPEN, MADE VISIBLE (ADR-0028 decision 4, unreadable/unscopeable branch). A wave target
+ * that is not a live `placement` — a legacy-shaped topology whose waves name the change's own
+ * targets, or NO resolvable topology at all, which puts the plan on `compilePlan`'s toposort path —
+ * has no place for a stage-scoped hold to be scoped by. The declaration is not enforced, and the
+ * release proceeds, which is the right call: failing closed on a shape the coupling cannot express
+ * would strand every legacy plan behind a dependency it can never evaluate.
+ *
+ * WHAT WAS WRONG WAS THE SILENCE, NOT THE VERDICT. The branch returned `satisfied: true`, so `held`
+ * was false, `recordStageDependencyHold` never ran, and the seam's only `console.warn` fires
+ * exclusively on `weightUnreadable` — a change whose CI declared a coupling and got NONE was
+ * invisible in every surface an operator has. This records it, at `warn` (not `block`: nothing is
+ * being withheld), so `scp decision list` answers "was my coupling enforced here?" with a row.
+ *
+ * The guarantee is not lost so much as never this mechanism's to keep — `plan-compiler.ts`'s LEGACY
+ * path still refuses to schedule two components joined by a `depends_on` edge into one wave, and
+ * only the STAGE path's copy of that check was replaced by the hold (ADR-0028 decision 6). What it
+ * does not cover is the QUALIFIED declaration: a `minWeight` or a cross-change dependency on a
+ * component this change does not target orders nothing here.
+ *
+ * SAME THREE PROPERTIES AS THE HOLD, for the same ADR-0024 reason. One Decision per CHANGE, not per
+ * target (`insertDecisionIfChanged` compares against the latest row of the same `(subject_id,
+ * kind)`, so per-target rows would alternate and suppression would never fire). Content-stable
+ * inputs — ids and branch names only, no clock. Persist on change. It also converges on its own:
+ * this branch only evaluates a `pending`/`triggering` target, and a target this records is
+ * triggering on this very tick, so the ordinary single-target case writes exactly one row ever.
+ *
+ * NO `updated_at` BUMP, unlike the hold, and the asymmetry is deliberate: nothing is being withheld
+ * here, so the change keeps moving through the loop on its own and has no way to freeze in the
+ * round-robin.
+ */
+async function recordStageDependencyUnscoped(
+  db: Db,
+  orgId: string,
+  change: ChangeRow,
+  activeWave: { id: string; waveIndex: number },
+  unscopeableTargets: { targetObjectId: string; verdicts: StageDependencyVerdict[] }[]
+): Promise<void> {
+  const unenforced = [...unscopeableTargets]
+    .sort((a, b) => a.targetObjectId.localeCompare(b.targetObjectId))
+    .map((entry) => ({
+      targetObjectId: entry.targetObjectId,
+      dependencies: entry.verdicts
+    }));
+
+  const recorded = await withTenantTx(db, orgId, (tx) =>
+    insertDecisionIfChanged(tx, {
+      orgId,
+      kind: "stage_dependency_unscoped",
+      subjectId: change.objectId,
+      verdict: "warn",
+      inputContext: { waveId: activeWave.id, waveIndex: activeWave.waveIndex, unenforced },
+      reasonTree: {
+        summary: `${unenforced.length} wave target(s) declared a stage dependency that was NOT enforced: the target is not a placement, so there is no deployment-target to scope the coupling by — the release proceeded`,
+        unenforced: unenforced.flatMap((entry) =>
+          entry.dependencies.map(
+            (verdict) =>
+              `target ${entry.targetObjectId}: '${verdict.dependsOn}' was declared but not enforced here — this plan's wave targets name components, not placements (a legacy-shaped release topology, or none resolved at all), so a stage-scoped hold has no place to be scoped by`
+          )
+        )
+      }
+    })
+  );
+
+  // One line per distinct fail-open, on the tick that persisted it — the same `created` signal the
+  // hold's log line uses, so a change sitting in this state does not reprint every second.
+  if (recorded.created) {
+    console.warn(
+      `[reconcile] org ${orgId} change ${change.objectId} wave ${activeWave.waveIndex}: ${unenforced.length} target(s) declared a stage dependency that was NOT enforced (the wave target is not a placement) — decision ${recorded.decision.id} (scp decision get ${recorded.decision.id})`
     );
   }
 }

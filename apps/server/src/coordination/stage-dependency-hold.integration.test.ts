@@ -193,6 +193,21 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     return (cancelled?.inputContext as { reason?: string } | undefined)?.reason ?? "";
   };
 
+  const unscopedDecisions = (changeId: string) =>
+    withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(decisions)
+        .where(
+          and(
+            eq(decisions.orgId, org.orgId),
+            eq(decisions.subjectId, changeId),
+            eq(decisions.kind, "stage_dependency_unscoped")
+          )
+        )
+        .orderBy(decisions.createdAt, decisions.id)
+    );
+
   const holdDecisions = (changeId: string) =>
     withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
@@ -625,6 +640,115 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     }
   });
 
+  it("a declared coupling with NO stage-shaped topology is NOT enforced — and SAYS SO (ADR-0028 decision 4)", async () => {
+    // THE FAIL-OPEN, AND THE EMPIRICAL ANSWER TO "does the common CI case land here?".
+    //
+    // `compileAndPersistPlan` only emits PLACEMENT-shaped wave targets when a stage-shaped release
+    // topology resolves for the change (`plan-service.ts`'s `resolveStagePlacements`). When pipeline
+    // resolution finds nothing at any rung — component, service, org default — `topologyObjectId` is
+    // null and `compilePlan` falls to its toposort path, whose waves name the change's OWN TARGETS,
+    // i.e. the components. A stage-scoped hold has no place to be scoped by, so the declaration
+    // orders nothing.
+    //
+    // This is exactly the single-target, webhook-born shape the feature exists for, and it hits the
+    // branch WHENEVER NO PIPELINE IS BOUND — having placements is not sufficient, the topology is
+    // what decides. That is why silence here was the finding: before this, `held` was false, no
+    // Decision was written, and the seam's only warn fires on `weightUnreadable`, so the author of
+    // the declaration had no surface at all telling them it did nothing.
+    const dependency = await componentAt("nostage-dep", [gamma]);
+    const dependant = await componentAt("nostage-app", [gamma]);
+
+    // No `topology:` — and no `releases_via` edge on the component, its service, or the org root.
+    const change = await admin.changes.propose({
+      name: `nostage-${randomUUID().slice(0, 8)}`,
+      targets: [dependant.id],
+      stageDependencies: [{ dependsOn: dependency.id }]
+    });
+    await tick(3);
+
+    // (a) THE MEASURED ANSWER: the wave target names the COMPONENT, not its placement at gamma.
+    const plan = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      getLatestPlanForChange(tx, org.orgId, change.id)
+    );
+    const targets = plan!.waves.flatMap((w) => w.targets).map((t) => t.targetObjectId);
+    expect(targets).toEqual([dependant.id]);
+    expect(targets).not.toContain(dependant.at(gamma));
+
+    // (b) The release PROCEEDED — this branch is fail-open by design, and failing closed on a shape
+    //     the coupling cannot express would strand every legacy plan behind a dependency it can
+    //     never evaluate. The dependency has never deployed anywhere; under a stage-shaped plan
+    //     this would have held.
+    expect(firedFor(dependant.id)).toBe(1);
+    expect(await holdDecisions(change.id)).toHaveLength(0);
+
+    // (c) AND IT IS VISIBLE. `warn`, not `block`: nothing was withheld, but "you declared a coupling
+    //     and it was not enforced here" is now a row an operator can find rather than an absence.
+    const rows = await unscopedDecisions(change.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.verdict).toBe("warn");
+    const context = rows[0]!.inputContext as UnscopedContext;
+    expect(context.unenforced).toEqual([
+      {
+        targetObjectId: dependant.id,
+        dependencies: [{ dependsOn: dependency.id, branch: "unscopeable", satisfied: true }]
+      }
+    ]);
+    expect(JSON.stringify(rows[0]!.reasonTree)).toContain(dependency.id);
+  });
+
+  it("THE CONTROL: the same declaration under a STAGE-shaped topology IS enforced", async () => {
+    // Without this arm the case above could mean "the hold never works", not "this shape cannot be
+    // scoped". Same components, same declaration, same dependency-never-deployed — the ONLY
+    // difference is that this change resolves the stage-shaped topology, so its wave targets are
+    // placements and the hold has a place to work at.
+    const dependency = await componentAt("control-dep", [gamma]);
+    const dependant = await componentAt("control-app", [gamma]);
+
+    const change = await release("control", [dependant.id], [{ dependsOn: dependency.id }]);
+    await tick(3);
+
+    const plan = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      getLatestPlanForChange(tx, org.orgId, change.id)
+    );
+    expect(plan!.waves.flatMap((w) => w.targets).map((t) => t.targetObjectId)).toEqual([
+      dependant.at(gamma)
+    ]);
+    expect(firedFor(dependant.at(gamma))).toBe(0);
+    expect(await holdDecisions(change.id)).toHaveLength(1);
+    // And no fail-open record, because nothing failed open.
+    expect(await unscopedDecisions(change.id)).toHaveLength(0);
+  });
+
+  it("the unenforced-coupling record is written ONCE too — the ADR-0024 property applies to it as well", async () => {
+    // A `warn` row is as capable of flooding the table as a `block` one, and this seam is the one
+    // that produced 1.44 GB/day. The evaluation still runs every tick a target is pending; only the
+    // redundant WRITE is suppressed.
+    const dependency = await componentAt("nostage-flood-dep", [gamma]);
+    const dependant = await componentAt("nostage-flood-app", [gamma]);
+
+    // A MALFORMED entry alongside the declaration, so the target is HELD and therefore stays
+    // `pending` across every tick — which is what makes "once" a real assertion instead of an
+    // artefact of the target triggering immediately and never being evaluated again.
+    // Declared through `properties` rather than the typed field, because the typed field WINS over
+    // the properties fallback and would drop the malformed sibling entirely — `proposeChange` only
+    // preserves a stored value VERBATIM when the typed field is absent.
+    const change = await admin.changes.propose({
+      name: `nostage-flood-${randomUUID().slice(0, 8)}`,
+      targets: [dependant.id],
+      properties: {
+        stageDependencies: [{ dependsOn: dependency.id }, "not-a-stage-dependency-at-all"]
+      }
+    });
+    await tick(8);
+
+    expect(firedFor(dependant.id)).toBe(0);
+    const rows = await unscopedDecisions(change.id);
+    expect(rows).toHaveLength(1);
+    // Held AND unenforced at the same time — the two are not mutually exclusive, which is why the
+    // collection happens before the hold check rather than in an `else`.
+    expect((await holdDecisions(change.id)).length).toBeGreaterThan(0);
+  });
+
   it("the Decision is written ONCE across many ticks — the ADR-0024 regression guard", async () => {
     const dependency = await componentAt("flood-dep", [gamma]);
     const dependant = await componentAt("flood-app", [gamma]);
@@ -696,6 +820,14 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     expect(second.stateEnteredAt.getTime()).toBe(first.stateEnteredAt.getTime());
   });
 });
+
+/** The `inputContext` shape `recordStageDependencyUnscoped` writes — the fail-open record. */
+interface UnscopedContext {
+  unenforced: {
+    targetObjectId: string;
+    dependencies: { dependsOn: string; branch: string; satisfied: boolean }[];
+  }[];
+}
 
 /** The `inputContext` shape `recordStageDependencyHold` writes — asserted structurally rather than
  *  by string-matching, so a rename cannot pass by coincidence. */

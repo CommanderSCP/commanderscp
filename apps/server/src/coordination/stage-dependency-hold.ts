@@ -102,11 +102,18 @@ export type StageDependencyBranch =
   /** A stored entry that does not parse as `{dependsOn, minWeight?, atTargets?}`. HOLD — dropping it
    *  fails OPEN, deploying with no hold at all, ahead of the very component its author named. */
   | "undeclarable"
-  /** This wave target names a COMPONENT rather than a placement (legacy-shaped topology, or no
-   *  topology at all), so there is no place for a stage-scoped hold to be scoped by. Treated as
-   *  satisfied because legacy mode keeps its OWN guarantee: `plan-compiler.ts` still refuses to put
-   *  two components joined by a `depends_on` edge in one legacy wave. Recorded as its own branch
-   *  rather than silently skipped so the fail-open is visible in a Decision and in a test. */
+  /** This wave target names a COMPONENT rather than a placement (legacy-shaped topology, or NO
+   *  topology at all — pipeline resolution finding nothing at any rung puts the plan on
+   *  `compilePlan`'s toposort path, whose waves name the change's own targets). There is no place
+   *  for a stage-scoped hold to be scoped by. Treated as satisfied because legacy mode keeps its
+   *  OWN guarantee: `plan-compiler.ts` still refuses to put two components joined by a `depends_on`
+   *  edge in one legacy wave — but that covers only the plain pairing, never a `minWeight` or a
+   *  dependency on a component this change does not target.
+   *
+   *  ITS OWN BRANCH BECAUSE THE FAIL-OPEN HAS TO BE FINDABLE. `reconcile.ts`'s
+   *  `recordStageDependencyUnscoped` persists a `warn` Decision naming every dependency that landed
+   *  here, so "you declared a coupling and it was not enforced" is a row an operator can query
+   *  rather than something they have to deduce from an absence. */
   | "unscopeable"
   /** The declaring component named ITSELF. Satisfied, and dropped rather than refused, matching
    *  `materialiseStageDependencyEdges`'s handling of the same declaration — a self-hold would wait
@@ -234,7 +241,8 @@ export async function evaluateStageDependencies(
     // path STILL refuses to schedule two components joined by a `depends_on` edge into one wave
     // (only the STAGE path's copy of that check was replaced by this hold, ADR-0028 decision 6).
     // Recorded as a verdict rather than skipped so that a change which declared a coupling and got
-    // none is visible in the Decision when anything else about the same target holds.
+    // none is VISIBLE: `reconcile.ts` collects these separately from the holds and writes them as a
+    // `warn` Decision of their own, whether or not anything else about the same target holds.
     //
     // EDGE-DERIVED dependencies produce no verdict at all here, unlike declared ones. There is
     // nothing to report: legacy mode's compile-time check is still enforcing that exact edge set, so
