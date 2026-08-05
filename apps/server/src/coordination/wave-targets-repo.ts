@@ -372,12 +372,21 @@ const TERMINAL_WAVE_TARGET_STATUSES: string[] = ["succeeded", "failed", "aborted
  *  * `proposed`, `evaluated` — NO PLAN EXISTS YET (`compileAndPersistPlan` runs on the
  *    `evaluated -> coordinated` edge), so there are no rows to stand behind; and there is no edge
  *    back into either state, so a change cannot return here carrying old ones.
- *  * `coordinated` — a plan exists and every target is `pending`, but NOTHING HAS BEEN TRIGGERED and
- *    the change is not guaranteed to move: a freeze or any other gate on `coordinated -> executing`
- *    throws inside `advanceCoordinatedChanges`, which logs and retries, so a change can sit here for
- *    as long as the freeze lasts. Counting those `pending` rows would hold every dependant of that
- *    component behind a release that has not started. What this gives up is one tick of "B is about
- *    to deploy" — a guarantee the coupling never made anyway, since B could equally not be proposed.
+ *  * `coordinated` — YES, and an earlier revision of this list said no on a rationale that is FALSE
+ *    for this codebase. It claimed "a freeze or any other gate on `coordinated -> executing` throws
+ *    inside `advanceCoordinatedChanges`, so a change can sit here for as long as the freeze lasts".
+ *    Nothing gates that edge: `GOVERNED_LIFECYCLE_EDGES` is `new Set(["validating->accepted"])`
+ *    (`gates.ts`), so `evaluateLifecycleGate` returns an unconditional `allow` for it. The one real
+ *    blocker on the edge, `runPreDeployArtifactGate`, PARKS the change
+ *    (`markChangeReconcileBlocked`, `pre-deploy-gate.ts`) — and a parked change is already excluded
+ *    by the `isNull(changes.reconcileBlockedAt)` clause sitting beside this test, so ruling on the
+ *    state bought nothing there while giving up something real: `advanceCoordinatedChanges` is
+ *    `BATCH_LIMIT`-capped at 25, so on a tick where more than 25 changes coordinate, the surplus sit
+ *    here unparked, owning `pending` rows at every place they are about to deploy. Excluding them
+ *    releases every dependant against the dependency's STALE earlier success — precisely the race
+ *    this feature exists to prevent. A change that genuinely stops here stops by parking, and the
+ *    `reconcileBlockedAt` clause catches that; a change that is merely waiting its turn in the batch
+ *    is exactly the "B is about to deploy" case the coupling must honour.
  *  * `waiting` — parked on its own unsatisfied `requires`, and the owner's rule for that state is
  *    "wait forever, warn at 24h". Its `pending` rows may never become anything.
  *  * `executing` — YES. This is the in-flight case the coupling exists for: B is rolling out v2 at
@@ -393,7 +402,7 @@ const TERMINAL_WAVE_TARGET_STATUSES: string[] = ["succeeded", "failed", "aborted
 const CHANGE_STANDS_BEHIND_ITS_TARGETS: Record<ChangeState, boolean> = {
   proposed: false,
   evaluated: false,
-  coordinated: false,
+  coordinated: true,
   waiting: false,
   executing: true,
   validating: false,
