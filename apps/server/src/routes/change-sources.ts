@@ -87,6 +87,9 @@ async function persistSourceEvent(
     dedupeKey: string;
     headers: Record<string, unknown>;
     payload: unknown;
+    /** ADR-0028: the authenticated reporter, kept for the processor — which runs as the system
+     *  actor and would otherwise attribute the `depends_on` edges a declaration mints to it. */
+    reportedByObjectId: string;
   }
 ): Promise<string> {
   const id = uuidv7();
@@ -99,7 +102,8 @@ async function persistSourceEvent(
       signatureVerified: args.signatureVerified,
       dedupeKey: args.dedupeKey,
       headers: args.headers,
-      payload: args.payload
+      payload: args.payload,
+      reportedByObjectId: args.reportedByObjectId
     })
     .onConflictDoNothing({
       target: [
@@ -214,7 +218,8 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
           signatureVerified,
           dedupeKey,
           headers: request.headers as Record<string, unknown>,
-          payload: request.body
+          payload: request.body,
+          reportedByObjectId: auth.subjectObjectId
         });
       });
       reply.status(202).send({ accepted: true, eventId });
@@ -286,7 +291,8 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
           signatureVerified: true,
           dedupeKey,
           headers: {},
-          payload: request.body
+          payload: request.body,
+          reportedByObjectId: auth.subjectObjectId
         });
       });
       reply.status(202).send({ accepted: true, eventId });

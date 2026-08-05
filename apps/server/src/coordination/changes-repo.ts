@@ -117,6 +117,17 @@ export interface ProposeChangeInput {
    *  `properties.stageDependencies`. Unlike `requires`, this does NOT park the change: it is read
    *  per (target × stage) in the executing loop to decide whether to fire that target's trigger. */
   stageDependencies?: StageDependency[];
+  /**
+   * WHO DECLARED the `stageDependencies` above, when that is not who the change is attributed to
+   * (ADR-0028). Used ONLY to attribute the `depends_on` edges the declaration mints; everything
+   * else about the change — its object, its Decision, its audit event — stays `actorObjectId`'s.
+   *
+   * It exists for exactly one caller: the persist-then-process ingress, whose processor runs as
+   * SYSTEM_ACTOR_ID (nobody asked for the change; a push happened) while the declaration riding the
+   * same body is a deliberate, authorized graph write by the reporting principal the ROUTE
+   * authenticated and authorized. Absent everywhere else, where the actor already IS the declarer.
+   */
+  declarationActorObjectId?: string;
   /** Set only when this Change IS a rollback of another change (coordination/rollback.ts). */
   rollbackOfObjectId?: string;
   /** M6 (DESIGN §13): set when this Change was instantiated from a Promotion Bundle —
@@ -506,7 +517,10 @@ export async function proposeChange(
  */
 async function materialiseStageDependencyEdges(
   tx: TenantTx,
-  input: Pick<ProposeChangeInput, "orgId" | "actorObjectId" | "requestId">,
+  input: Pick<
+    ProposeChangeInput,
+    "orgId" | "actorObjectId" | "requestId" | "declarationActorObjectId"
+  >,
   fromObjectIds: readonly string[],
   dependencies: readonly { dependsOn: string }[]
 ): Promise<void> {
@@ -535,15 +549,20 @@ async function materialiseStageDependencyEdges(
       });
       if (existing) continue;
 
-      // An endpoint that is not a service/component is refused by `createRelationship` with its own
-      // specific message ("relationship type 'depends_on' does not allow '<type>' as the 'to'
-      // endpoint"). That 400 is allowed to propagate, on the same principle that refuses an
-      // unresolvable `dependsOn` above: a declaration naming something that cannot participate in a
-      // dependency is wrong where it was authored, and discovering it later — as a coupling that
-      // silently applies to nothing — is the fail-open this whole channel is built to avoid.
+      // An endpoint that cannot participate in a `depends_on` is already refused by
+      // `proposeChange`'s type-checked resolution above, before anything is written; this call is
+      // reached only for a resolved component.
+      //
+      // ATTRIBUTED TO THE DECLARER, which is not always the change's own actor. The persist-then-
+      // process ingress proposes as SYSTEM_ACTOR_ID — right for a change nobody asked for — but
+      // this edge IS an authorized graph write by the principal the ingress route authenticated,
+      // and `graph.dependentIds` is a live CEL policy input for the depended-on component, so an
+      // audit event naming the system actor would leave a policy-relevant write unattributable
+      // (charter principle 6). Falls back to the change's actor, which is who declared it on every
+      // other path.
       await createRelationship(tx, {
         orgId: input.orgId,
-        actorObjectId: input.actorObjectId,
+        actorObjectId: input.declarationActorObjectId ?? input.actorObjectId,
         requestId: input.requestId,
         typeId: "depends_on",
         fromId,

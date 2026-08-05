@@ -4,9 +4,11 @@ import { and, eq } from "drizzle-orm";
 import { ScpClient } from "@scp/sdk";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { auditEvents, changeSourceEvents, decisions, relationships } from "../db/schema.js";
+import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import {
   createTestComponent,
   createTestOrg,
+  createTestUser,
   listenTestServer,
   waitUntil,
   type ListeningTestServer,
@@ -272,6 +274,80 @@ describe("stage dependencies: the declaration channel (ADR-0028 increment 1)", (
 
     // Still inert: the report-born change releases like any other.
     await reaches(changeId!, "validating");
+  }, 60_000);
+
+  it("the minted edge is attributed to the REPORTING PRINCIPAL, not to the system actor", async () => {
+    // The processor runs as SYSTEM_ACTOR_ID, which is right for the CHANGE — nobody asked for it, a
+    // push happened. It is wrong for the one thing on this path that IS a deliberate, authorized
+    // graph write: the `depends_on` edge a declaration mints. A minted edge changes
+    // `graph.dependentIds`, a live CEL policy input for the depended-on component, so an
+    // unattributable edge write is an auditability gap (charter principle 6) — "who declared that A
+    // depends on B?" has to have an answer, and the reporting principal only exists at the route
+    // that authorized it. Carried on the event row (migration 0054) so it survives to the processor.
+    const b = await createTestComponent(admin, {
+      name: `attrib-dep-b-${randomUUID().slice(0, 8)}`
+    });
+    const a = await createTestComponent(admin, {
+      name: `attrib-dep-a-${randomUUID().slice(0, 8)}`
+    });
+    const repo = `acme/attrib-stagedep-${randomUUID().slice(0, 8)}`;
+    await admin.changeSources.createMapping("terraform", { repoPattern: repo, component: a.id });
+
+    // A DISTINCT principal from the one that set the estate up, so "the actor is this reporter" is
+    // a real assertion rather than "the actor is whoever happened to be around".
+    const reporter = await createTestUser(server, org, [
+      { role: "Administrator", scope: org.orgId }
+    ]);
+    const reporterClient = new ScpClient({ baseUrl: server.baseUrl, token: reporter.token });
+
+    const report = await reporterClient.changeSources.report("terraform", {
+      status: "applied",
+      repo,
+      stageDependencies: [{ dependsOn: b.id }]
+    });
+    const event = await processedEvent(report.eventId);
+    expect(event.resultingChangeObjectId).not.toBeNull();
+
+    const [edge] = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(relationships)
+        .where(
+          and(
+            eq(relationships.orgId, org.orgId),
+            eq(relationships.typeId, "depends_on"),
+            eq(relationships.fromId, a.id),
+            eq(relationships.toId, b.id)
+          )
+        )
+    );
+    expect(edge).toBeDefined();
+
+    const [audit] = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(auditEvents)
+        .where(and(eq(auditEvents.orgId, org.orgId), eq(auditEvents.subjectId, edge!.id)))
+    );
+    expect(audit?.action).toBe("relationship.depends_on.create");
+    expect(audit?.actorId).toBe(reporter.objectId);
+    expect(audit?.actorId).not.toBe(SYSTEM_ACTOR_ID);
+
+    // The CHANGE itself stays the system actor's — this threads the DECLARER through to the edge
+    // write, it does not re-attribute a release nobody requested.
+    const changeAudit = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.orgId, org.orgId),
+            eq(auditEvents.subjectId, event.resultingChangeObjectId!)
+          )
+        )
+    );
+    expect(changeAudit.length).toBeGreaterThan(0);
+    expect(changeAudit.every((row) => row.actorId === SYSTEM_ACTOR_ID)).toBe(true);
   }, 60_000);
 
   it("a report with an unresolvable `dependsOn` is REFUSED: event processed, NO change, Decision + audit recorded", async () => {

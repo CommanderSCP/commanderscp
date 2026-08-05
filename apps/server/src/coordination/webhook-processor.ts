@@ -368,7 +368,18 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
           // ADR-0028: the stage-scoped coupling from the typed report body (`scp change-source
           // report --stage-depends-on`), threaded the same way — same propose-time resolution of
           // `dependsOn`/`atTargets`, same storage under `properties.stageDependencies`.
-          stageDependencies: hint.stageDependencies
+          stageDependencies: hint.stageDependencies,
+          // WHO DECLARED IT. The CHANGE stays the system actor's — nobody asked for it, a push
+          // happened — but the `depends_on` edges the declaration mints are a deliberate,
+          // authorized graph write by the REPORTING PRINCIPAL, and the route that authorized it
+          // (`routes/change-sources.ts`, `relationship:write` at both endpoints) is the only place
+          // that principal exists. Carried on the event row since 0054 so it survives to here.
+          // Without it the edge's audit event, journal entry and emitted event all name the system
+          // actor, leaving "who declared that A depends on B?" unanswerable — for a write that
+          // changes `graph.dependentIds`, a live CEL policy input for the depended-on component.
+          // NULL (an observe()-driven row, or one written before 0054) falls back to the change's
+          // own actor, which is the system actor and is the honest answer there.
+          declarationActorObjectId: row.reportedByObjectId ?? undefined
         });
 
         if (hint.correlationKey) {
