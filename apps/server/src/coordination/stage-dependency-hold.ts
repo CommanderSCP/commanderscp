@@ -299,9 +299,6 @@ export async function evaluateStageDependencies(
   // THE EDGE-DERIVED HALF — the domain of the compile-time check ADR-0028 decision 6 replaced. The
   // caller already restricted these to edges with BOTH endpoints among this change's own targets;
   // all that remains is to keep the ones pointing OUT of the component this wave target is for.
-  // Sorted, because rows come back in no meaningful order and the resulting verdict list lands in a
-  // Decision's `inputContext` — an unsorted list would make an unchanged situation look new on the
-  // tick a row order changed, and `insertDecisionIfChanged` would write again.
   const edgeAsserted = new Set(
     edges
       .filter((e) => e.from === stage.componentObjectId && e.to !== stage.componentObjectId)
@@ -340,6 +337,10 @@ export async function evaluateStageDependencies(
   // `minWeight` exists for, "hold A at gamma until B is 10% there" across two separate pushes —
   // never reaches this rule at all. Only a pair travelling in ONE change does, and that pair used
   // to be refused outright.
+  //
+  // SORTED, because rows come back in no meaningful order and the resulting verdict list lands in a
+  // Decision's `inputContext` — an unsorted list would make an unchanged situation look new on the
+  // tick a row order changed, and `insertDecisionIfChanged` would write again.
   const declaredHere = new Set(applicable.map((dep) => dep.dependsOn));
   for (const dependsOn of [...edgeAsserted].sort()) {
     if (declaredHere.has(dependsOn)) continue;
