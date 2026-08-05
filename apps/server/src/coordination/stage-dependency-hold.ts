@@ -166,6 +166,12 @@ export interface StageDependencyVerdict {
   dependencyStatus?: string;
   /** Echoed only when the declaration carried the qualifier. */
   minWeight?: number;
+  /** Set when the declaration's `minWeight` was NOT applied because the pair also carries a plain
+   *  `depends_on` edge between two targets of this change, which asserts the stricter universal
+   *  `succeeded` test. `minWeight` is still echoed beside it: the record has to say what was asked
+   *  for as well as what was enforced, or "why did my minWeight not let this through?" has no
+   *  answer. Discrete and slow-moving like every other field here. */
+  minWeightSupersededByEdge?: true;
   /** Set whenever `minWeight` was declared and the weight could not be read — INCLUDING on a verdict
    *  that went on to be satisfied by the universal `succeeded` test. That is the "record a warning"
    *  half of ADR-0028 decision 4: the release proceeded, but not for the reason its author asked
@@ -281,24 +287,46 @@ export async function evaluateStageDependencies(
   // Sorted, because rows come back in no meaningful order and the resulting verdict list lands in a
   // Decision's `inputContext` — an unsorted list would make an unchanged situation look new on the
   // tick a row order changed, and `insertDecisionIfChanged` would write again.
+  const edgeAsserted = new Set(
+    edges
+      .filter((e) => e.from === stage.componentObjectId && e.to !== stage.componentObjectId)
+      .map((e) => e.to)
+  );
+
+  // ==========================================================================================
+  // COMPOSING THE TWO HALVES FOR A PAIR THAT HAS BOTH. THE RULE: A DECLARATION MAY ADD TO ITS OWN
+  // COUPLING, OR NARROW WHERE IT APPLIES — IT MAY NEVER MAKE THE PAIR'S EDGE-ASSERTED ORDERING
+  // WEAKER (ADR-0028 decision 6's corollary, both halves of it).
   //
-  // A DECLARATION APPLICABLE HERE WINS, so the pair is one verdict rather than two: the declaration
-  // is the same fact with qualifiers attached, and the edge is its own projection (the declaration
-  // channel MINTS these edges). Note what suppression is keyed on — `applicable`, the `atTargets`-
-  // filtered set, not everything declared. A declaration scoped to prod therefore does NOT silence
-  // the pair's edge at gamma: the edge is a standing graph fact, and before ADR-0028 that exact
-  // input was a 400 for the whole plan rather than a release running in parallel. `atTargets` is
-  // free to narrow the hold ITS OWN declaration adds; it cannot subtract an ordering the graph
-  // already asserted.
+  // The two sources are not symmetric, and the asymmetry is the whole point. The EDGE asserts the
+  // universal test: `succeeded` at this place. A DECLARATION's `minWeight` is a RELAXATION of that
+  // test — "you may go once it reaches N%" — and `atTargets` is a narrowing of where its own
+  // declaration applies. So for a pair carrying both, the STRICTEST applicable constraint wins,
+  // which is always the edge's plain `succeeded`:
+  //
+  //   * `atTargets` elsewhere -> the declaration does not apply here at all, and the edge speaks
+  //     for the pair (one verdict, `source: "edge"`). Keyed on `applicable`, the atTargets-filtered
+  //     set, not on everything declared — that is what stops a prod-scoped declaration silencing
+  //     the pair's edge at gamma.
+  //   * declaration applies here with NO `minWeight` -> the same constraint from both sources, so
+  //     it is ONE verdict attributed to the declaration; the edge adds nothing.
+  //   * declaration applies here WITH `minWeight` -> the qualifier is dropped for this pair and the
+  //     edge's plain `succeeded` test is what runs, recorded as `minWeightSupersededByEdge`.
+  //
+  // Without that last case the feature SUBTRACTS an ordering somebody else wrote: an operator, a
+  // seed or an earlier change mints app -> dep, and the party being ordered then neutralises it for
+  // free by adding `minWeight: 1` to its own declaration — deploying in parallel with a dependency
+  // sitting at 5%, on an input that was a loud 400 before decision 6. The whole authority story
+  // around minting these edges (`relationship:write` at BOTH endpoints) would be pointless if a
+  // declaration could weaken one without any authority at all.
+  //
+  // WHAT THIS DOES NOT COST: the edge set is only ever non-empty when BOTH endpoints are targets of
+  // this same change (`loadDependsOnEdges`), so the 277-of-281 single-target release — the shape
+  // `minWeight` exists for, "hold A at gamma until B is 10% there" across two separate pushes —
+  // never reaches this rule at all. Only a pair travelling in ONE change does, and that pair used
+  // to be refused outright.
   const declaredHere = new Set(applicable.map((dep) => dep.dependsOn));
-  const edgeDerived = [
-    ...new Set(
-      edges
-        .filter((e) => e.from === stage.componentObjectId && e.to !== stage.componentObjectId)
-        .map((e) => e.to)
-    )
-  ].sort();
-  for (const dependsOn of edgeDerived) {
+  for (const dependsOn of [...edgeAsserted].sort()) {
     if (declaredHere.has(dependsOn)) continue;
     scoped.push({ dep: { dependsOn }, edgeDerived: true });
   }
@@ -334,7 +362,10 @@ export async function evaluateStageDependencies(
       continue;
     }
     const latest = await findLatestWaveTargetForObject(tx, orgId, placementId);
-    verdicts.push({ ...stageDependencyVerdict(dep, latest, now), ...source });
+    verdicts.push({
+      ...stageDependencyVerdict(dep, latest, now, edgeAsserted.has(dep.dependsOn)),
+      ...source
+    });
   }
 
   return finish(stage, verdicts, malformedVerdicts);
@@ -359,9 +390,21 @@ export function stageDependencyVerdict(
         lastObservedAt: Date | null;
       }
     | undefined,
-  now: number
+  now: number,
+  /** True when a plain `depends_on` edge between two of this change's own targets ALSO asserts this
+   *  pair. That edge asserts the universal `succeeded` test, and a `minWeight` is a RELAXATION of
+   *  it, so the qualifier does not apply — see the composition rule in `evaluateStageDependencies`.
+   *  Defaults to false: a dependency with no edge behind it is the ordinary cross-change case. */
+  edgeAsserted = false
 ): StageDependencyVerdict {
-  const qualifier = dep.minWeight === undefined ? {} : { minWeight: dep.minWeight };
+  // The STRICTEST applicable constraint. `minWeight` is echoed either way — an operator has to be
+  // able to see the qualifier they wrote, and to see that it was superseded rather than ignored.
+  const superseded = edgeAsserted && dep.minWeight !== undefined;
+  const minWeight = superseded ? undefined : dep.minWeight;
+  const qualifier = {
+    ...(dep.minWeight === undefined ? {} : { minWeight: dep.minWeight }),
+    ...(superseded ? { minWeightSupersededByEdge: true as const } : {})
+  };
 
   if (latest === undefined) {
     // Placed here, never deployed here. Distinct from `behind` because the remedies differ: this one
@@ -373,7 +416,7 @@ export function stageDependencyVerdict(
   // readable — which is exactly why the `minWeight` qualifier is allowed to be best-effort.
   if (latest.status === "succeeded") {
     const unreadable =
-      dep.minWeight === undefined ? undefined : weightUnreadableCause(latest, now).cause;
+      minWeight === undefined ? undefined : weightUnreadableCause(latest, now).cause;
     return {
       dependsOn: dep.dependsOn,
       branch: "succeeded",
@@ -387,7 +430,7 @@ export function stageDependencyVerdict(
     };
   }
 
-  if (dep.minWeight !== undefined) {
+  if (minWeight !== undefined) {
     const { cause, weight } = weightUnreadableCause(latest, now);
     if (cause !== undefined) {
       // Degraded to the universal test, which just failed above. NEVER to "satisfied".
@@ -400,7 +443,7 @@ export function stageDependencyVerdict(
         weightUnreadable: cause
       };
     }
-    if (weight >= dep.minWeight) {
+    if (weight >= minWeight) {
       // THE OWNER'S HEADLINE CASE: the dependency is still rolling out here and the release proceeds
       // anyway, because it has reached the partial weight its dependant declared as enough.
       return {
@@ -512,6 +555,13 @@ function describeBranch(verdict: StageDependencyVerdict): string {
     case "never_deployed":
       return `'${verdict.dependsOn}' is placed here but has never deployed here`;
     case "behind":
+      // A SUPERSEDED qualifier reads as the plain test PLUS why the number it names did not apply.
+      // Saying "below the declared minWeight" would be a lie — the weight was never consulted —
+      // and saying nothing would leave the author of a `minWeight: 1` with no account of why their
+      // release is held behind a dependency sitting well above it.
+      if (verdict.minWeightSupersededByEdge) {
+        return `'${verdict.dependsOn}' has not succeeded here (its latest deploy is '${verdict.dependencyStatus}') — the declared minWeight of ${verdict.minWeight} does not apply, because a \`depends_on\` edge between two targets of this change asserts plain success and a declaration cannot weaken it`;
+      }
       return verdict.minWeight === undefined
         ? `'${verdict.dependsOn}' has not succeeded here (its latest deploy is '${verdict.dependencyStatus}')`
         : `'${verdict.dependsOn}' is below the declared minWeight of ${verdict.minWeight} here (its latest deploy is '${verdict.dependencyStatus}')`;

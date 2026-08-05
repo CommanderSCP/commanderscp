@@ -723,6 +723,55 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     expect(verdicts[0]!.minWeight).toBeUndefined();
   });
 
+  it("`minWeight` does not SUBTRACT the pair's edge either — the strictest constraint wins", async () => {
+    // THE OTHER HALF OF THE SAME COROLLARY, and the one that was missing: `atTargets` narrows WHERE
+    // a declaration applies, `minWeight` weakens WHAT it demands, and neither may reach the ordering
+    // an EDGE asserts. The edge here is written by an operator — nothing the declarer authored —
+    // and it says "app does not deploy before dep at a shared place", full stop.
+    //
+    // Without the composition rule the declarer neutralises that for free: `minWeight: 1` is
+    // satisfied by any observable weight, so app fires alongside a dependency sitting at 5%, on an
+    // input that was a loud 400 before ADR-0028 decision 6 handed the duty to this hold. The
+    // authority story around minting `depends_on` edges (`relationship:write` at BOTH endpoints)
+    // would mean nothing if a declaration could weaken one with no authority whatsoever.
+    const dependency = await componentAt("weaken-dep", [gamma]);
+    const dependant = await componentAt("weaken-app", [gamma]);
+    await admin.relationships.create({
+      typeId: "depends_on",
+      fromId: dependant.id,
+      toId: dependency.id
+    });
+
+    // The dependency's canary is pinned at 5% and never finishes — comfortably past a minWeight of
+    // 1, and nowhere near `succeeded`.
+    executorConfig.rolloutByTarget[dependency.at(gamma)] = { phase: "Progressing", weight: 5 };
+
+    const change = await release(
+      "weaken",
+      [dependant.id, dependency.id],
+      [{ dependsOn: dependency.id, minWeight: 1 }]
+    );
+    await tick(6);
+
+    expect(firedFor(dependency.at(gamma))).toBe(1);
+    expect(firedFor(dependant.at(gamma))).toBe(0);
+    expect(await waveTargetStatus(change.id, dependant.at(gamma))).toBe("pending");
+
+    // ONE verdict for the pair, and it says what was asked for AND what was enforced.
+    const [decision] = await holdDecisions(change.id);
+    const verdicts = (decision!.inputContext as HeldContext).held[0]!.dependencies;
+    expect(verdicts).toHaveLength(1);
+    expect(verdicts[0]!.branch).toBe("behind");
+    expect(verdicts[0]!.minWeight).toBe(1);
+    expect(verdicts[0]!.minWeightSupersededByEdge).toBe(true);
+    expect(JSON.stringify(decision!.reasonTree)).toContain("cannot weaken it");
+
+    // Stricter, not unsatisfiable: the edge's own test still releases the hold.
+    executorConfig.forcePhase[dependency.at(gamma)] = "succeeded";
+    await tick(3);
+    expect(firedFor(dependant.at(gamma))).toBe(1);
+  });
+
   it("a MUTUAL pair in one change is refused LOUDLY at compile time, naming both components", async () => {
     // The deadlock the removed check used to catch, and the one thing the hold cannot: each target
     // would wait on the other's wave target leaving `pending`, forever, silently. `compileStages`
@@ -1121,6 +1170,7 @@ interface HeldContext {
       source?: string;
       dependencyStatus?: string;
       minWeight?: number;
+      minWeightSupersededByEdge?: true;
       weightUnreadable?: string;
     }[];
   }[];

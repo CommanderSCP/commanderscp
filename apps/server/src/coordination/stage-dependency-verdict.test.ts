@@ -196,3 +196,66 @@ describe("stageDependencyVerdict — an unreadable weight degrades, it never sat
     expect(verdict.minWeight).toBeUndefined();
   });
 });
+
+describe("stageDependencyVerdict — a declaration may not WEAKEN the pair's edge (ADR-0028 decision 6)", () => {
+  // The two sources compose asymmetrically: the EDGE asserts the universal `succeeded` test, and a
+  // declaration's `minWeight` is a RELAXATION of it. For a pair carrying both, the strictest
+  // applicable constraint is the edge's — otherwise the party being ordered could neutralise an
+  // ordering somebody else wrote (an operator, a seed, an earlier change) for free, by adding
+  // `minWeight: 1` to its own declaration.
+
+  it("drops the qualifier when the pair is also edge-asserted — a weight above the minimum does NOT satisfy", () => {
+    const dep = { dependsOn: "B", minWeight: 1 };
+    const latest = row({ status: "observing", weight: 5 });
+    // Without the edge this is the owner's headline case, and it passes.
+    expect(stageDependencyVerdict(dep, latest, NOW).branch).toBe("min_weight");
+    // With it, the pair falls back to the test the edge asserts, which this dependency fails.
+    const verdict = stageDependencyVerdict(dep, latest, NOW, true);
+    expect(verdict.satisfied).toBe(false);
+    expect(verdict.branch).toBe("behind");
+  });
+
+  it("still ECHOES the declared minWeight, and says it was superseded rather than ignored", () => {
+    // "Why is my release held behind a dependency that is well past the weight I declared?" has to
+    // have an answer in the record; a silently dropped qualifier looks identical to a broken one.
+    const verdict = stageDependencyVerdict(
+      { dependsOn: "B", minWeight: 1 },
+      row({ status: "observing", weight: 90 }),
+      NOW,
+      true
+    );
+    expect(verdict.minWeight).toBe(1);
+    expect(verdict.minWeightSupersededByEdge).toBe(true);
+  });
+
+  it("the edge's own test still passes on its own terms: a succeeded dependency satisfies", () => {
+    // Stricter, not unsatisfiable. The pair serialises; it does not deadlock.
+    const verdict = stageDependencyVerdict(
+      { dependsOn: "B", minWeight: 50 },
+      row({ status: "succeeded" }),
+      NOW,
+      true
+    );
+    expect(verdict.satisfied).toBe(true);
+    expect(verdict.branch).toBe("succeeded");
+    // And no weight was read at all, so no unreadable-weight warning is invented for a qualifier
+    // that was never going to be consulted.
+    expect(verdict.weightUnreadable).toBeUndefined();
+    expect(verdict.minWeightSupersededByEdge).toBe(true);
+  });
+
+  it("leaves an UNQUALIFIED declaration exactly as it was — there is nothing to supersede", () => {
+    const verdict = stageDependencyVerdict(
+      { dependsOn: "B" },
+      row({ status: "observing" }),
+      NOW,
+      true
+    );
+    expect(verdict).toEqual({
+      dependsOn: "B",
+      branch: "behind",
+      satisfied: false,
+      dependencyStatus: "observing"
+    });
+  });
+});
