@@ -218,23 +218,33 @@ export async function proposeChange(
         );
   const providesValue = input.provides ?? providesOf(input.properties);
   const requiresValue = resolvedRequires;
-  // `stageDependencies` follows `provides`' precedence idiom, NOT `requires`' typed-field-only one:
-  // the typed field wins, and failing that whatever the caller's own properties already carry is
-  // preserved VERBATIM. That fallback is load-bearing for federation — `promotion-repo.ts` replays a
-  // peer's change properties as-is, and a peer's stored entries are already RESOLVED ids, so
-  // re-running resolution over them is both unnecessary and wrong (the ids are the peer's). Verbatim
-  // also means a malformed stored entry survives to the reader rather than being quietly discarded
-  // here: `stageDependenciesOf` narrows-and-collects it so a hold can treat it as unsatisfiable,
-  // which is the fail-closed half. Dropping it here would be an un-loggable fail-open.
-  let stageDependenciesValue: unknown;
-  if (resolvedStageDependencies !== undefined) {
-    if (resolvedStageDependencies.length > 0) stageDependenciesValue = resolvedStageDependencies;
-  } else if (input.properties?.stageDependencies !== undefined) {
-    stageDependenciesValue = input.properties.stageDependencies;
-  }
+  // `stageDependencies` follows `requires`' TYPED-FIELD-ONLY idiom, not `provides`' fallback one:
+  // the typed field is the only way to store one, and a caller-supplied `properties.stageDependencies`
+  // is DROPPED (the destructure below is what drops it).
+  //
+  // THERE IS NO PROPERTIES FALLBACK BECAUSE IT WAS A THIRD, UNGUARDED DECLARATION DOOR. `POST
+  // /changes` authorizes the TYPED field — `relationship:write` at both endpoints of every edge the
+  // declaration would mint (`campaign-scope-authz.ts`) — and passes `properties` straight through.
+  // A fallback preserving the same declaration verbatim therefore accepted, and the hold honoured,
+  // exactly what the typed field 403s: an authority bypass, plus disclosure of another component's
+  // deployment state through the Decision's `branch`/`dependencyStatus`. (No edge is minted that
+  // way — `materialiseStageDependencyEdges` reads the resolved typed field only — so it is not a
+  // privilege escalation, but a coupling that binds a component the declarer has no authority over
+  // is not the declarer's to write either.)
+  //
+  // AND NO LEGITIMATE CALLER NEEDS IT, which is the same census `requires` passed: the typed field
+  // covers the API, the CLI and the CI report ingress, campaign fan-out and rollback pass no
+  // properties at all, and federation promotion STRIPS `stageDependencies` before it re-proposes
+  // (`federation/promotion-repo.ts`, ADR-0028 — the coupling was enforced upstream at the commander
+  // and evaluating it in the receiving domain would fail open under any sync scope narrower than
+  // `full`). The only propose path that carries caller properties at all is `POST /changes`.
+  const stageDependenciesValue =
+    resolvedStageDependencies !== undefined && resolvedStageDependencies.length > 0
+      ? resolvedStageDependencies
+      : undefined;
   // Strip any caller-supplied `provides`/`requires`/`stageDependencies` from the raw properties so
   // the ONLY values stored are the computed ones above (the resolved typed field, or the explicit
-  // properties fallback `provides`/`stageDependencies` keep).
+  // properties fallback `provides` keeps).
   const {
     provides: _rawProvides,
     requires: _rawRequires,
@@ -396,12 +406,13 @@ export async function proposeChange(
     }
   });
 
-  // ADR-0028 decision 6/7, increment 2. Materialised from the RESOLVED TYPED FIELD only — never
-  // from the properties fallback. That fallback exists for federation replay
-  // (`federation/promotion-repo.ts` re-proposes a peer's change properties verbatim), and a peer's
-  // entries name the PEER's object ids: writing edges from them would either fabricate an edge this
-  // domain never asserted or, more likely, 400 on an endpoint that was never synced here and take
-  // the whole promotion import down with it. Edges have their own federation channel
+  // ADR-0028 decision 6/7, increment 2. Materialised from the RESOLVED TYPED FIELD only — which is
+  // now also the only thing this function stores, since a caller-supplied
+  // `properties.stageDependencies` is dropped above. Edges are never minted from stored entries
+  // that did not go through propose-time resolution and the both-endpoint authority check: a
+  // replayed peer's entries name the PEER's object ids, so writing edges from them would either
+  // fabricate an edge this domain never asserted or 400 on an endpoint that was never synced here
+  // and take the whole import down with it. Edges have their own federation channel
   // (`relationship_upsert`); the origin domain's materialisation is what travels.
   if (resolvedStageDependencies !== undefined) {
     await materialiseStageDependencyEdges(tx, input, targetObjectIds, resolvedStageDependencies);
@@ -740,7 +751,10 @@ export interface ResolvedStageDependency {
  * `minWeight` means "no weight qualifier was asked for", which has a right answer; a present but
  * nonsensical one means somebody DID ask and asked for something we cannot honour — the same
  * distinction `typeOf` draws below. Propose-time Zod validation makes these unreachable through the
- * API; they can only arrive past it (a federation peer replaying properties, a legacy row).
+ * API, and `proposeChange` no longer stores a caller's raw `properties.stageDependencies` at all —
+ * so a malformed entry can only be a row written before that (or one repaired by hand). The narrower
+ * stays because "unsatisfiable, hold, surface" is the only reading of such a row that is not
+ * fail-open.
  *
  * ============================================================================================
  * KNOWN LIMITATION: A DECLARATION IS CHANGE-SCOPED, AND IS APPLIED TO EVERY TARGET

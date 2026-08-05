@@ -1005,16 +1005,29 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     // A MALFORMED entry alongside the declaration, so the target is HELD and therefore stays
     // `pending` across every tick — which is what makes "once" a real assertion instead of an
     // artefact of the target triggering immediately and never being evaluated again.
-    // Declared through `properties` rather than the typed field, because the typed field WINS over
-    // the properties fallback and would drop the malformed sibling entirely — `proposeChange` only
-    // preserves a stored value VERBATIM when the typed field is absent.
+    //
+    // WRITTEN STRAIGHT ONTO THE STORED ROW, because no ingress accepts one any more: the typed
+    // field is Zod-validated, both halves of the report ingress refuse a malformed
+    // `stageDependencies` with a Decision, and `proposeChange` no longer stores a caller's raw
+    // `properties.stageDependencies` at all. That leaves exactly the population the narrower still
+    // exists for — a row written before those doors closed — so the fixture builds one.
     const change = await admin.changes.propose({
       name: `nostage-flood-${randomUUID().slice(0, 8)}`,
       targets: [dependant.id],
-      properties: {
-        stageDependencies: [{ dependsOn: dependency.id }, "not-a-stage-dependency-at-all"]
-      }
+      stageDependencies: [{ dependsOn: dependency.id }]
     });
+    const stored = (await admin.changes.get(change.id)).properties as Record<string, unknown>;
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(objects)
+        .set({
+          properties: {
+            ...stored,
+            stageDependencies: [{ dependsOn: dependency.id }, "not-a-stage-dependency-at-all"]
+          }
+        })
+        .where(and(eq(objects.orgId, org.orgId), eq(objects.id, change.id)))
+    );
     await tick(8);
 
     expect(firedFor(dependant.id)).toBe(0);

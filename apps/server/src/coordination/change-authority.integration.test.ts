@@ -304,4 +304,55 @@ describe("change target-authority (M12 P4B Phase 2)", () => {
       })
     ).rejects.toMatchObject({ status: 403 });
   });
+
+  it("SECURITY: `properties.stageDependencies` is not a third door — the typed field is the only one", async () => {
+    // THE DOOR A CENSUS BY FIELD NAME MISSES. `POST /changes` authorizes the TYPED
+    // `stageDependencies` and passes `properties` through untouched, so as long as `proposeChange`
+    // honoured a `properties.stageDependencies` fallback, the identical declaration the typed field
+    // 403s could be smuggled in beside it and the hold would honour it: an authority bypass, plus
+    // disclosure of the named component's deployment state through the hold Decision's
+    // `branch`/`dependencyStatus`.
+    //
+    // Closed the way `requires` was — no fallback at all — because no legitimate caller needs one:
+    // campaign fan-out and rollback pass no properties, and federation promotion STRIPS
+    // `stageDependencies` before it re-proposes.
+    const outsideDependency = await createTestComponent(admin, {
+      name: `sd-props-outside-${randomUUID().slice(0, 8)}`
+    });
+    const ownDomain = await admin.domains.create({
+      name: `sd-props-domain-${randomUUID().slice(0, 8)}`
+    });
+    const ownTarget = await createTestComponent(admin, {
+      name: `sd-props-target-${randomUUID().slice(0, 8)}`,
+      domainId: ownDomain.id
+    });
+    const narrow = await createTestUser(server, org, [
+      { role: "Administrator", scope: ownDomain.id }
+    ]);
+    const narrowClient = new ScpClient({ baseUrl: server.baseUrl, token: narrow.token });
+
+    // The control: through the typed field this is a 403 (the test above pins why).
+    await expect(
+      narrowClient.changes.propose({
+        name: "sd-props-typed",
+        domainId: ownDomain.id,
+        targets: [ownTarget.id],
+        stageDependencies: [{ dependsOn: outsideDependency.id }]
+      })
+    ).rejects.toMatchObject({ status: 403 });
+
+    // The same declaration through `properties`. It is ACCEPTED as a propose — nothing about the
+    // change is illegitimate — but the declaration itself must not survive into storage, because
+    // only a resolved, authorized one may ever be stored.
+    const smuggled = await narrowClient.changes.propose({
+      name: "sd-props-smuggled",
+      domainId: ownDomain.id,
+      targets: [ownTarget.id],
+      properties: { stageDependencies: [{ dependsOn: outsideDependency.id }] }
+    });
+    const stored = await admin.changes.get(smuggled.id);
+    expect(stored.properties).not.toHaveProperty("stageDependencies");
+    // And no edge either way — the writer only ever reads the resolved typed field.
+    expect(await dependsOnEdges(ownTarget.id, outsideDependency.id)).toHaveLength(0);
+  });
 });
