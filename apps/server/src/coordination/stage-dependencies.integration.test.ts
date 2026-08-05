@@ -112,13 +112,22 @@ describe("stage dependencies: the declaration channel (ADR-0028 increment 1)", (
     // shipping the channel separately is that it cannot change a live release.
     const b = await createTestComponent(admin, { name: "inert-dep-b" });
     const a = await createTestComponent(admin, { name: "inert-dep-a" });
+    // The twin releases DIFFERENT components on purpose. Two concurrent changes targeting the SAME
+    // component stall the first one in `executing` indefinitely — measured on this tree with two
+    // plain changes and no ADR-0028 field anywhere, so it is a pre-existing same-target contention
+    // and not this increment's business. Sharing a component here would make this test fail for a
+    // reason it does not test.
+    const twinTarget = await createTestComponent(admin, { name: "inert-dep-twin" });
 
     const declared = await admin.changes.propose({
       name: "declares a dependency, changes nothing",
       targets: [a.id],
       stageDependencies: [{ dependsOn: b.id }]
     });
-    const plain = await admin.changes.propose({ name: "declares nothing", targets: [a.id] });
+    const plain = await admin.changes.propose({
+      name: "declares nothing",
+      targets: [twinTarget.id]
+    });
 
     await reaches(declared.id, "validating");
     await reaches(plain.id, "validating");
