@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { ScpClient } from "@scp/sdk";
 import type { GraphObject } from "@scp/schemas";
@@ -39,9 +39,31 @@ import { createInMemoryFakeHost, withRefusingTrigger } from "./test-support/fake
  * `ctx.config` is re-read on every plugin call, so mutating the shared config object between ticks
  * is how a dependency "progresses".
  *
- * `reconcileOrgTick` sweeps the WHOLE org, so leftover changes from earlier cases keep advancing in
- * later ones. Every assertion is therefore scoped to a specific placement id or change id — never to
- * a bare call count (fake-plugin-host.ts's own warning).
+ * A FRESH ORG PER CASE, and that is what makes the "exactly N" above TRUE rather than aspirational.
+ * `reconcileOrgTick` sweeps the WHOLE org, and `advanceExecutingChanges` serves
+ * `ORDER BY updated_at ASC LIMIT 25` — reconcile.ts's `BATCH_LIMIT`. On a shared org, every change an
+ * earlier case leaves behind therefore competes for those same 25 slots with the change the current
+ * case is about, and two properties of THIS fixture make that bite rather than merely being untidy:
+ *
+ *   * `autoSucceedAfterMs` is ten minutes below, deliberately, so every target this file triggers is
+ *     still `observing` when the file ends. Its change stays `executing` for the whole run.
+ *   * A change that is merely POLLING in-flight targets is the one `executing` shape reconcile does
+ *     not round-robin-bump — the `updated_at` bumps live on the gate-blocked and stage-dependency-
+ *     hold paths only. So its `updated_at` freezes at the instant it started executing and it holds
+ *     its slot at the FRONT of the queue permanently.
+ *
+ * MEASURED on the shared-org version of this file: the servable `executing` count climbed
+ * 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 13, 15, 16, 17, 18, 19, 20, 20, 21, 21, 23, 24, 25, 26, 27, 28, 29
+ * — crossing `BATCH_LIMIT` at the 23rd case. From there `tick(3)` stopped meaning "three evaluations
+ * of my change" and started meaning "three sweeps in which my change may or may not have got a turn",
+ * and the last five cases failed at random under the full parallel suite while passing alone. That is
+ * the production starvation `executing-batch-starvation.integration.test.ts` exists for, rebuilt by
+ * accident inside a fixture — and the dose-response is exact: injecting four extra never-finishing
+ * changes ahead of the suite moved the crossing four cases earlier and failed three of the last five;
+ * ten failed thirteen consecutively from the crossing point, each a change the batch never served.
+ *
+ * Assertions are still scoped to a specific placement id or change id rather than to a bare call
+ * count: `triggered` is ONE log for the whole file (fake-plugin-host.ts's own warning).
  */
 
 interface RolloutSnapshot {
@@ -77,6 +99,17 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
 
   beforeAll(async () => {
     server = await listenTestServer();
+    // `() => false` refuses nothing — the wrapper is used purely for its call log, which is the only
+    // way to assert that a held target's executor was never asked to do anything.
+    const wrapped = withRefusingTrigger(createInMemoryFakeHost(executorConfig), () => false);
+    host = wrapped.host;
+    triggered = wrapped.calls;
+  });
+
+  /** The org, its two places and its stage-shaped topology, REBUILT PER CASE — see the module doc's
+   *  `BATCH_LIMIT` note. Everything expensive (the server, the plugin host, its call log) is still
+   *  built once; what is rebuilt is only what decides how much work a whole-org sweep has to do. */
+  beforeEach(async () => {
     org = await createTestOrg(server, "stagedephold");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
     gamma = await admin.deploymentTargets.create({ name: `gamma-${randomUUID().slice(0, 8)}` });
@@ -86,11 +119,6 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
       properties: { waves: [{ name: "gamma", mode: "parallel", targets: [gamma.id] }] }
     });
     topologyId = topology.id;
-    // `() => false` refuses nothing — the wrapper is used purely for its call log, which is the only
-    // way to assert that a held target's executor was never asked to do anything.
-    const wrapped = withRefusingTrigger(createInMemoryFakeHost(executorConfig), () => false);
-    host = wrapped.host;
-    triggered = wrapped.calls;
   });
 
   afterAll(async () => {
