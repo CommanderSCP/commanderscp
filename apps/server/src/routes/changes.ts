@@ -185,7 +185,8 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
           targets: body.targets,
           type: body.type,
           provides: body.provides,
-          requires: body.requires
+          requires: body.requires,
+          stageDependencies: body.stageDependencies
         });
       });
       reply.status(201).send(change);

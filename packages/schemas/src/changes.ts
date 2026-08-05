@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   ChangeRequirementSchema,
   CursorPageQuerySchema,
+  StageDependencySchema,
   cursorPageResponseSchema
 } from "./common.js";
 import { ControlRunSchema } from "./governance.js";
@@ -131,6 +132,14 @@ export const CreateChangeRequestSchema = z.object({
    *  or URN resolved at propose time (a bad ref is a 404, never a silent forever-wait). Omitted/empty
    *  ⇒ no wait; the change goes coordinated→executing as before. */
   requires: z.array(ChangeRequirementSchema).optional(),
+  /** Stage-scoped component couplings (ADR-0028): components this release's component must not
+   *  deploy AHEAD OF at a shared place. Each entry's `dependsOn` and `atTargets` are ids or URNs
+   *  resolved at propose time (a bad ref is a 404, never a silent forever-wait) and stored resolved
+   *  in `properties.stageDependencies`. Omitted/empty ⇒ nothing holds this release's triggers.
+   *
+   *  `.optional()` and NOT `.default([])`: a Zod default renders the property REQUIRED in the
+   *  generated SDK type, which oasdiff scores as a /v1 break. */
+  stageDependencies: z.array(StageDependencySchema).optional(),
   /** Object ids or URNs this change targets — plan compiler input. */
   targets: z.array(z.string().min(1)).min(1)
 });

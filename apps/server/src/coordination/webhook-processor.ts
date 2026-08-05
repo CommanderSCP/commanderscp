@@ -3,8 +3,10 @@ import { z } from "zod";
 import {
   ChangeRequirementSchema,
   SbomRefSchema,
+  StageDependencySchema,
   normalizeSbomDigest,
-  type SbomRef
+  type SbomRef,
+  type StageDependency
 } from "@scp/schemas";
 import { webhookAdapterForSourceKind } from "./webhook-adapters.js";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -82,6 +84,18 @@ export interface ExtractedHint {
    *  makes this unreachable for SDK/CLI reporters — it exists for hand-crafted raw-`/webhook`
    *  payloads. */
   requiresInvalid?: unknown;
+  /** ADR-0028 — `ChangeReportRequestSchema.stageDependencies`. `dependsOn` and each `atTargets`
+   *  entry are ids-or-URNs here, resolved by `proposeChange` (an unresolvable one is refused — see
+   *  `processChangeSourceEvents`). Provider webhook payloads carry none: like a coupling key, a raw
+   *  push webhook cannot declare a dependency, so the CI report step is THE channel. */
+  stageDependencies?: StageDependency[];
+  /** ADR-0028 fail-closed, the SAME reasoning as `requiresInvalid` above: set (verbatim) when the
+   *  body carried a `stageDependencies` that does NOT parse. Dropping it would fail OPEN — the
+   *  release would execute as if it were free to deploy ahead of everything its author named, which
+   *  is precisely the harm the coupling exists to prevent — so the processor REFUSES the event with
+   *  a recorded Decision instead. The typed `/report` route's Zod validation makes this unreachable
+   *  for SDK/CLI reporters; it exists for hand-crafted raw-`/webhook` payloads. */
+  stageDependenciesInvalid?: unknown;
 }
 
 /**
@@ -109,6 +123,10 @@ function genericHint(payload: unknown): ExtractedHint {
   // the event with a recorded Decision.
   const provides = z.array(z.string().min(1)).safeParse(p.provides);
   const requires = z.array(ChangeRequirementSchema).safeParse(p.requires);
+  // ADR-0028: `stageDependencies` sits with `requires`, not with `provides`. Dropping a malformed
+  // one fails OPEN — the release would deploy with no hold at all, ahead of every component its
+  // author named — so it is carried under `stageDependenciesInvalid` and the processor refuses.
+  const stageDependencies = z.array(StageDependencySchema).safeParse(p.stageDependencies);
   return {
     repo: typeof p.repo === "string" ? p.repo : undefined,
     path: typeof p.path === "string" ? p.path : undefined,
@@ -134,7 +152,14 @@ function genericHint(payload: unknown): ExtractedHint {
         ? requires.data.length > 0
           ? { requires: requires.data }
           : {}
-        : { requiresInvalid: p.requires })
+        : { requiresInvalid: p.requires }),
+    ...(p.stageDependencies === undefined || p.stageDependencies === null
+      ? {}
+      : stageDependencies.success
+        ? stageDependencies.data.length > 0
+          ? { stageDependencies: stageDependencies.data }
+          : {}
+        : { stageDependenciesInvalid: p.stageDependencies })
   };
 }
 
@@ -190,7 +215,13 @@ export function extractHint(sourceKind: string, headers: unknown, payload: unkno
     // the one line that would silently drop a coupling from a body that also resolves an adapter.
     provides: generic.provides,
     requires: generic.requires,
-    requiresInvalid: generic.requiresInvalid
+    requiresInvalid: generic.requiresInvalid,
+    // ADR-0028: same story, same one line. A CI report body that ALSO resolves an adapter (a
+    // first-party `scp change-source report` for sourceKind `github`, say) would lose its declared
+    // stage dependencies entirely if these were not re-forwarded here, and the loss would be
+    // silent — the release would run uncoupled with no error anywhere.
+    stageDependencies: generic.stageDependencies,
+    stageDependenciesInvalid: generic.stageDependenciesInvalid
   };
 }
 
@@ -310,6 +341,11 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
             `report carried a malformed \`requires\` — each entry must be {key, at} (got ${JSON.stringify(hint.requiresInvalid)})`
           );
         }
+        if (hint.stageDependenciesInvalid !== undefined) {
+          throw badRequest(
+            `report carried a malformed \`stageDependencies\` — each entry must be {dependsOn, minWeight?, atTargets?} (got ${JSON.stringify(hint.stageDependenciesInvalid)})`
+          );
+        }
         const { change } = await proposeChange(inner, {
           orgId,
           actorObjectId: SYSTEM_ACTOR_ID,
@@ -328,7 +364,11 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
           // report --provides/--requires`), threaded IDENTICALLY to `POST /changes`' typed fields —
           // same `at` resolution inside `proposeChange`, same storage, same routing-guard behaviour.
           provides: hint.provides,
-          requires: hint.requires
+          requires: hint.requires,
+          // ADR-0028: the stage-scoped coupling from the typed report body (`scp change-source
+          // report --stage-depends-on`), threaded the same way — same propose-time resolution of
+          // `dependsOn`/`atTargets`, same storage under `properties.stageDependencies`.
+          stageDependencies: hint.stageDependencies
         });
 
         if (hint.correlationKey) {

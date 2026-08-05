@@ -6,6 +6,7 @@ import {
   type ChangeState,
   type ContainmentDomainId,
   type ExecutorType,
+  type StageDependency,
   type TrustDomainId
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -110,6 +111,11 @@ export interface ProposeChangeInput {
    *  object id here (a bad ref 404s), then stored in `properties.requires`. When set, the change
    *  parks in `waiting` until every requirement is satisfied. */
   requires?: { key: string; at: string }[];
+  /** Stage-scoped component couplings (ADR-0028): each entry's `dependsOn`, and every member of its
+   *  `atTargets`, is an idOrUrn RESOLVED to an object id here (a bad ref 404s), then stored in
+   *  `properties.stageDependencies`. Unlike `requires`, this does NOT park the change: it is read
+   *  per (target × stage) in the executing loop to decide whether to fire that target's trigger. */
+  stageDependencies?: StageDependency[];
   /** Set only when this Change IS a rollback of another change (coordination/rollback.ts). */
   rollbackOfObjectId?: string;
   /** M6 (DESIGN §13): set when this Change was instantiated from a Promotion Bundle —
@@ -185,13 +191,53 @@ export async function proposeChange(
             at: (await getObjectByIdOrUrnAnyType(tx, input.orgId, req.at)).id
           }))
         );
+  // ADR-0028: resolve every stage dependency's `dependsOn` — and every member of its `atTargets` —
+  // to an object id NOW, for exactly the reason `requires[].at` is resolved above: an unresolvable
+  // reference must be refused where it was AUTHORED, not become a hold that never clears because
+  // the thing it names never existed. Both halves are resolved: an `atTargets` typo would otherwise
+  // scope the coupling to a place that does not exist, which reads as "applies nowhere" — a silent
+  // fail-OPEN, the mirror image of the forever-wait.
+  const resolvedStageDependencies =
+    input.stageDependencies === undefined
+      ? undefined
+      : await Promise.all(
+          input.stageDependencies.map(async (dep) => ({
+            dependsOn: (await getObjectByIdOrUrnAnyType(tx, input.orgId, dep.dependsOn)).id,
+            ...(dep.minWeight === undefined ? {} : { minWeight: dep.minWeight }),
+            ...(dep.atTargets === undefined
+              ? {}
+              : {
+                  atTargets: await Promise.all(
+                    dep.atTargets.map(
+                      async (t) => (await getObjectByIdOrUrnAnyType(tx, input.orgId, t)).id
+                    )
+                  )
+                })
+          }))
+        );
   const providesValue = input.provides ?? providesOf(input.properties);
   const requiresValue = resolvedRequires;
-  // Strip any caller-supplied `provides`/`requires` from the raw properties so the ONLY values
-  // stored are the computed ones above (the resolved typed field, or `provides`'s explicit fallback).
+  // `stageDependencies` follows `provides`' precedence idiom, NOT `requires`' typed-field-only one:
+  // the typed field wins, and failing that whatever the caller's own properties already carry is
+  // preserved VERBATIM. That fallback is load-bearing for federation — `promotion-repo.ts` replays a
+  // peer's change properties as-is, and a peer's stored entries are already RESOLVED ids, so
+  // re-running resolution over them is both unnecessary and wrong (the ids are the peer's). Verbatim
+  // also means a malformed stored entry survives to the reader rather than being quietly discarded
+  // here: `stageDependenciesOf` narrows-and-collects it so a hold can treat it as unsatisfiable,
+  // which is the fail-closed half. Dropping it here would be an un-loggable fail-open.
+  let stageDependenciesValue: unknown;
+  if (resolvedStageDependencies !== undefined) {
+    if (resolvedStageDependencies.length > 0) stageDependenciesValue = resolvedStageDependencies;
+  } else if (input.properties?.stageDependencies !== undefined) {
+    stageDependenciesValue = input.properties.stageDependencies;
+  }
+  // Strip any caller-supplied `provides`/`requires`/`stageDependencies` from the raw properties so
+  // the ONLY values stored are the computed ones above (the resolved typed field, or the explicit
+  // properties fallback `provides`/`stageDependencies` keep).
   const {
     provides: _rawProvides,
     requires: _rawRequires,
+    stageDependencies: _rawStageDependencies,
     ...restProperties
   } = input.properties ?? {};
 
@@ -259,7 +305,8 @@ export async function proposeChange(
       // Only written when non-empty, so a change that couples nothing stays byte-identical to a
       // pre-P4B change (and the no-wait fast path in reconcile is a pure absence check).
       ...(providesValue.length > 0 ? { provides: providesValue } : {}),
-      ...(requiresValue.length > 0 ? { requires: requiresValue } : {})
+      ...(requiresValue.length > 0 ? { requires: requiresValue } : {}),
+      ...(stageDependenciesValue === undefined ? {} : { stageDependencies: stageDependenciesValue })
     },
     labels: input.labels
   });
@@ -549,6 +596,84 @@ export function requiresOf(properties: Record<string, unknown> | null | undefine
     malformed.push(r);
   }
   return { requirements, malformed };
+}
+
+/** `stageDependenciesOf`'s parse result — the same two-field contract as `ParsedRequires`, and for
+ *  the same reason: callers must treat any `malformed` entry as an UNSATISFIABLE dependency. */
+export interface ParsedStageDependencies {
+  stageDependencies: ResolvedStageDependency[];
+  /** Stored `stageDependencies` entries that do not parse — verbatim, for diagnostics. When
+   *  `properties.stageDependencies` is present but not an array at all, the whole raw value is one
+   *  entry. */
+  malformed: unknown[];
+}
+
+/** A stage dependency as STORED: `dependsOn` and every `atTargets` member are already object ids,
+ *  resolved at propose time. The wire shape (`StageDependency`) is identical in structure but its
+ *  string fields are ids-OR-URNs; the two are kept as separate types so a reader can never mistake
+ *  an unresolved caller reference for a resolved one. */
+export interface ResolvedStageDependency {
+  dependsOn: string;
+  minWeight?: number;
+  atTargets?: string[];
+}
+
+/**
+ * Stage-scoped component couplings a change declared (ADR-0028), off `properties.stageDependencies`
+ * — each a `{ dependsOn, minWeight?, atTargets? }` whose object references are already ids
+ * (resolved at propose time by `proposeChange`).
+ *
+ * NARROWS AND COLLECTS, exactly as `requiresOf` does above, and for the identical reason: a
+ * malformed entry is NOT silently dropped, because dropping one fails OPEN — the release would
+ * deploy with no hold at all, ahead of the very component its author named. It is returned under
+ * `malformed` for the hold to treat as unsatisfiable and surface. Deliberately RETURNS rather than
+ * throws: a throw in the per-target executing loop would let one corrupt row wedge every other
+ * target in the same tick, where "unsatisfiable, hold, surface" contains the blast radius to the one
+ * change carrying the junk.
+ *
+ * A `minWeight` outside 1..100, or a non-integer, makes the WHOLE entry malformed rather than
+ * degrading it to the universal succeeded-test. The two inputs are not the same: an ABSENT
+ * `minWeight` means "no weight qualifier was asked for", which has a right answer; a present but
+ * nonsensical one means somebody DID ask and asked for something we cannot honour — the same
+ * distinction `typeOf` draws below. Propose-time Zod validation makes these unreachable through the
+ * API; they can only arrive past it (a federation peer replaying properties, a legacy row).
+ */
+export function stageDependenciesOf(
+  properties: Record<string, unknown> | null | undefined
+): ParsedStageDependencies {
+  const raw = properties?.stageDependencies;
+  if (raw === undefined || raw === null) return { stageDependencies: [], malformed: [] };
+  if (!Array.isArray(raw)) return { stageDependencies: [], malformed: [raw] };
+  const stageDependencies: ResolvedStageDependency[] = [];
+  const malformed: unknown[] = [];
+  for (const entry of raw) {
+    if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+      const { dependsOn, minWeight, atTargets } = entry as {
+        dependsOn?: unknown;
+        minWeight?: unknown;
+        atTargets?: unknown;
+      };
+      const weightOk =
+        minWeight === undefined ||
+        (typeof minWeight === "number" &&
+          Number.isInteger(minWeight) &&
+          minWeight >= 1 &&
+          minWeight <= 100);
+      const targetsOk =
+        atTargets === undefined ||
+        (Array.isArray(atTargets) && atTargets.every((t) => typeof t === "string" && t.length > 0));
+      if (typeof dependsOn === "string" && dependsOn.length > 0 && weightOk && targetsOk) {
+        stageDependencies.push({
+          dependsOn,
+          ...(minWeight === undefined ? {} : { minWeight: minWeight as number }),
+          ...(atTargets === undefined ? {} : { atTargets: atTargets as string[] })
+        });
+        continue;
+      }
+    }
+    malformed.push(entry);
+  }
+  return { stageDependencies, malformed };
 }
 
 /**

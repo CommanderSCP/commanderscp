@@ -37861,6 +37861,34 @@
                       "additionalProperties": false
                     }
                   },
+                  "stageDependencies": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "dependsOn": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "minWeight": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 100
+                        },
+                        "atTargets": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      },
+                      "required": [
+                        "dependsOn"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
                   "targets": {
                     "minItems": 1,
                     "type": "array",
@@ -42080,6 +42108,34 @@
                       "required": [
                         "key",
                         "at"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "stageDependencies": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "dependsOn": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "minWeight": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 100
+                        },
+                        "atTargets": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      },
+                      "required": [
+                        "dependsOn"
                       ],
                       "additionalProperties": false
                     }

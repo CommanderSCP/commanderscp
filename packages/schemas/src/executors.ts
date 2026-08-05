@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { ChangeRequirementSchema, cursorPageResponseSchema } from "./common.js";
+import {
+  ChangeRequirementSchema,
+  StageDependencySchema,
+  cursorPageResponseSchema
+} from "./common.js";
 import { SbomRefSchema, ScanMethodSchema } from "./supply-chain.js";
 
 /**
@@ -454,6 +458,15 @@ export const ChangeReportRequestSchema = z.strictObject({
    *  recorded by the processor as a refused event (Decision + audit, event marked processed with no
    *  resulting change), never a silent drop and never a silent forever-wait. */
   requires: z.array(ChangeRequirementSchema).optional(),
+  /** ADR-0028 stage-scoped component coupling — the SAME shape as
+   *  `CreateChangeRequestSchema.stageDependencies`: components this release's component must not
+   *  deploy AHEAD OF at a shared place. This route is THE declaration channel (owner ruling D2): a
+   *  microservice's own CI knows what it calls, and nothing SCP observes carries inter-component
+   *  dependency data — it cannot be inferred, only declared. Threaded by `webhook-processor.ts` into
+   *  `proposeChange` identically to `POST /changes`, with the same propose-time resolution of
+   *  `dependsOn`/`atTargets`; as with `requires`, an unresolvable ref cannot 404 this
+   *  persist-then-process route, so the processor records it as a refused event. */
+  stageDependencies: z.array(StageDependencySchema).optional(),
   /** M17.2 — a REFERENCE to the build-time SBOM the executor's coordinated Trivy pass emitted and
    *  cosign-signed at origin (ADR-0015 §5). OPTIONAL and purely ADDITIVE: every existing reporter
    *  keeps working unchanged. SCP stores the reference on the change's `sourceRef.sbom` and NEVER

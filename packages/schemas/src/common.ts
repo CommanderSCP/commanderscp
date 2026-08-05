@@ -59,3 +59,45 @@ export const ChangeRequirementSchema = z.object({
   at: z.string().min(1)
 });
 export type ChangeRequirement = z.infer<typeof ChangeRequirementSchema>;
+
+/**
+ * One STAGE-SCOPED component coupling (ADR-0028, docs/proposals/rollout-step-coupling.md §2.3):
+ * a component this release's component must not deploy AHEAD OF, at any place the two share.
+ *
+ * Distinct from `ChangeRequirementSchema` above, and deliberately not an extension of it. `requires`
+ * is CROSS-CHANGE and WHOLE-CHANGE: it parks the entire change in `waiting` until some other change
+ * reaches `validating`/`accepted` — i.e. the prerequisite is finished EVERYWHERE. A stage dependency
+ * is per (component × stage): it holds A's TRIGGER at one deployment target while letting A proceed
+ * at every other one, which is the whole point of the ask (proposal §3.1 records why the shipped
+ * `waiting` engine is the wrong grain and is left untouched).
+ *
+ * Lives here beside `ChangeRequirementSchema` and for the same reason: both
+ * `CreateChangeRequestSchema` (changes.ts) and `ChangeReportRequestSchema` (executors.ts) reuse the
+ * EXACT same shape, and changes.ts already imports executors.ts, so a shape declared in either would
+ * be an import cycle.
+ */
+export const StageDependencySchema = z.strictObject({
+  /** The component depended ON — id or URN. Resolved to an object id at PROPOSE time, so a typo is
+   *  refused where it was authored rather than becoming a silent forever-wait later (the same
+   *  discipline `ChangeRequirementSchema.at` already gets). */
+  dependsOn: z.string().min(1),
+  /** Optional qualifier: satisfied once the dependency's OBSERVED canary weight at the stage reaches
+   *  this percentage, instead of requiring its stage deploy to finish. This is what lets a release
+   *  proceed while its dependency sits at a partial rollout. BEST-EFFORT by construction — weight is
+   *  observable only for an ArgoCD canary (a blue/green Rollout populates no `status.canary` at all),
+   *  so an unreadable weight degrades the dependency to the universal "the dependency's wave target
+   *  at this stage succeeded" test, never to "satisfied" (ADR-0028 decision 4).
+   *
+   *  `weight` and not `step`: `currentStepIndex` indexes that Rollout's OWN step list, so it is
+   *  meaningless across two components; percentages compare. */
+  minWeight: z.number().int().min(1).max(100).optional(),
+  /** Optional: restrict the coupling to certain places, by DEPLOYMENT-TARGET id or URN. Absent means
+   *  every stage the two components share.
+   *
+   *  Deliberately not a stage-NAME glob: a stage name is derived on a UI read path and is `null`
+   *  outright for a replicated deployment target, so a name glob would silently match nothing at
+   *  exactly the federation boundary where the coupling matters. A URN resolves; a derived display
+   *  name does not. */
+  atTargets: z.array(z.string().min(1)).optional()
+});
+export type StageDependency = z.infer<typeof StageDependencySchema>;
