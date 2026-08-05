@@ -141,7 +141,7 @@ function parseRequiresFlag(value: string | undefined): { key: string; at: string
  *  `atTargets` PER dependency, which is strictly more expressive; a release needing two dependencies
  *  scoped to different places must use the API/SDK. Said plainly here rather than pretending the
  *  flags are complete. */
-function parseStageDependenciesFlags(
+export function parseStageDependenciesFlags(
   dependsOn: string | undefined,
   atTargets: string | undefined
 ): StageDependency[] | undefined {
