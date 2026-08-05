@@ -211,6 +211,19 @@ async function apiRequest(
  * the app Degraded/Missing is a TERMINAL failure. Progressing is still legitimately rolling out
  * (keep polling); Unknown is genuinely ambiguous (keep polling — the stuck-change watchdog is the
  * backstop, not perpetual silence here); Suspended is a valid stable state (succeeded).
+ *
+ * SECOND CONSUMER — the stage-coupling gate (docs/adr/0028-stage-scoped-component-coupling.md
+ * decision 3, docs/proposals/rollout-step-coupling.md §2.5). "succeeded" here is TERMINAL
+ * downstream: `reconcile.ts` skips a wave target whose status is `succeeded` (`if (target.status
+ * === "succeeded") continue;`), so that target is never polled again and the canary weight in its
+ * last `observed_state` snapshot is frozen for good. The `Suspended` arm is where that bites — IF a
+ * paused Argo Rollout aggregates to Application health `Suspended` (unverified against a live Argo
+ * from this tree; the vendored install.yaml carries no Rollout health Lua), a dependency paused at
+ * 10% reads as DONE to the gate and its stored weight stays 10 even after somebody promotes it to
+ * 100%. Any gate reading that weight — the `minWeight` qualifier — must therefore treat a TERMINAL
+ * target's snapshot as potentially STALE, never as live truth. Every arm below is pinned in
+ * `index.test.ts` ("a FINISHED sync with health ..."); changing one is a behaviour change for that
+ * gate, not a refactor.
  */
 function phaseAfterFinishedSync(health: string | undefined): ExecutionPhase {
   switch (health) {
