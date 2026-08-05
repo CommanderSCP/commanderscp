@@ -17,17 +17,29 @@ import { OBSERVED_WEIGHT_FRESHNESS_MS, stageDependencyVerdict } from "./stage-de
 const NOW = Date.UTC(2026, 7, 5, 12, 0, 0);
 const at = (msAgo: number) => new Date(NOW - msAgo);
 
-/** A dependency's most recent wave target at the place under test. */
+/**
+ * A dependency's most recent wave target at the place under test.
+ *
+ * `lastObservedAt` is ALWAYS FRESH here, and that is the point rather than a convenience: it dates
+ * the POLL, and a poll that reports nothing storable still refreshes it while leaving the reading
+ * untouched. Anything about age therefore has to be said with `observedAt`, which dates the READING.
+ * A helper that let the two move together would make the freshness tests pass for the wrong reason.
+ */
 function row(overrides: {
   status: string;
   weight?: number | string | null;
-  lastObservedAt?: Date | null;
+  /** `null` = a stored payload carrying no date at all (a row written before the field existed). */
+  observedAt?: Date | null;
 }) {
   const { status, weight } = overrides;
+  const observedAt = overrides.observedAt === undefined ? at(1_000) : overrides.observedAt;
   return {
     status,
-    observedState: weight === undefined ? {} : { rollout: { weight } },
-    lastObservedAt: overrides.lastObservedAt === undefined ? at(1_000) : overrides.lastObservedAt
+    observedState:
+      weight === undefined
+        ? {}
+        : { rollout: { weight }, ...(observedAt ? { observedAt: observedAt.toISOString() } : {}) },
+    lastObservedAt: at(1_000)
   };
 }
 
@@ -128,16 +140,16 @@ describe("stageDependencyVerdict — an unreadable weight degrades, it never sat
       "no_weight"
     ],
     [
-      "never observed, so nothing dates the reading",
-      row({ status: "observing", weight: 90, lastObservedAt: null }),
+      "a stored reading with nothing dating it (a row written before `observedAt`)",
+      row({ status: "observing", weight: 90, observedAt: null }),
       "not_observed"
     ],
     [
-      "a reading older than the freshness bound",
+      "a READING older than the freshness bound, however recently it was polled",
       row({
         status: "observing",
         weight: 90,
-        lastObservedAt: at(OBSERVED_WEIGHT_FRESHNESS_MS + 1)
+        observedAt: at(OBSERVED_WEIGHT_FRESHNESS_MS + 1)
       }),
       "stale"
     ]
@@ -148,13 +160,40 @@ describe("stageDependencyVerdict — an unreadable weight degrades, it never sat
     expect(verdict.weightUnreadable).toBe(cause);
   });
 
+  it("THE FRESHNESS BOUND DATES THE READING, NOT THE POLL — a vanished Application still goes stale", () => {
+    // THE SHAPE THAT MADE THIS A FINDING. `updateWaveTargetObserved` refreshes `last_observed_at`
+    // on EVERY poll but rewrites `observed_state` only when the poll carried something storable,
+    // and `observedStateFrom` returns `undefined` for a status with no stateRef, no images and no
+    // rollout — precisely the argocd plugin's 404 shape (`{phase:'pending', detail:"application
+    // '<name>' not found (yet)"}`). So an Application deleted or renamed mid-canary leaves its last
+    // weight frozen while every subsequent tick moves the poll timestamp: dated by the poll, this
+    // row looks a second old forever, `stale` never fires, and the hold keeps RELEASING dependants
+    // against a world that no longer exists.
+    const polledOneSecondAgo = new Date(NOW - 1_000);
+    const readTakenAnHourAgo = {
+      status: "observing",
+      observedState: {
+        rollout: { weight: 90 },
+        observedAt: new Date(NOW - 60 * 60_000).toISOString()
+      },
+      lastObservedAt: polledOneSecondAgo
+    };
+    const verdict = stageDependencyVerdict(
+      { dependsOn: "B", minWeight: 10 },
+      readTakenAnHourAgo,
+      NOW
+    );
+    expect(verdict.satisfied).toBe(false);
+    expect(verdict.weightUnreadable).toBe("stale");
+  });
+
   it("an unreadable weight is NOT a weight of zero — a stale 90 does not satisfy minWeight 1", () => {
     // The two are different claims and only one of them is true. Reading absence as 0 would be the
     // milder-looking mistake and would still be wrong in the other direction.
     expect(
       stageDependencyVerdict(
         { dependsOn: "B", minWeight: 1 },
-        row({ status: "observing", lastObservedAt: null, weight: 90 }),
+        row({ status: "observing", observedAt: null, weight: 90 }),
         NOW
       ).branch
     ).toBe("weight_unreadable");
@@ -179,7 +218,7 @@ describe("stageDependencyVerdict — an unreadable weight degrades, it never sat
       row({
         status: "observing",
         weight: 10,
-        lastObservedAt: at(OBSERVED_WEIGHT_FRESHNESS_MS)
+        observedAt: at(OBSERVED_WEIGHT_FRESHNESS_MS)
       }),
       NOW
     );
@@ -189,7 +228,7 @@ describe("stageDependencyVerdict — an unreadable weight degrades, it never sat
   it("no minWeight declared ⇒ no weight is read and no warning is invented", () => {
     const verdict = stageDependencyVerdict(
       { dependsOn: "B" },
-      row({ status: "succeeded", lastObservedAt: null }),
+      row({ status: "succeeded", observedAt: null }),
       NOW
     );
     expect(verdict.weightUnreadable).toBeUndefined();

@@ -219,6 +219,27 @@ export interface WaveTargetObservedState {
   revision?: string;
   images?: string[];
   rollout?: { phase?: string; step?: number; weight?: number; message?: string };
+  /**
+   * When THIS payload was written (ISO-8601), stamped by `updateWaveTargetObserved` below — the age
+   * of the READING, which is not the same fact as `last_observed_at` and must not be confused with
+   * it. `last_observed_at` dates the POLL: it is refreshed on every status() call, including the
+   * ones that report nothing worth storing (`observedStateFrom` returns `undefined` when the status
+   * carries no stateRef, no images and no rollout — exactly the argocd plugin's 404 shape for an
+   * Application that has been deleted or renamed). The stored snapshot then goes arbitrarily old
+   * while its poll timestamp keeps moving.
+   *
+   * ADR-0028's `minWeight` freshness bound reads THIS field, because "B is currently observed at
+   * >= N" is a claim about the reading, not about whether anyone has been polling. Dating it off
+   * `last_observed_at` would keep releasing dependants against a frozen weight from a world that no
+   * longer exists — the fail-open in the branch the ADR calls the owner's headline requirement.
+   *
+   * ADDITIVE AND NOT BACKFILLED: rows written before this field carry a weight with nothing dating
+   * it, which `stage-dependency-hold.ts` reads as `not_observed` — unreadable, degrading that
+   * dependency to the universal `succeeded` test. Unreadable is the safe direction, and the next
+   * poll of a live target stamps it. Never surfaced on the API: `ChangeWaveTargetSchema.observed`
+   * does not declare it, and the response serializer key-strips what the schema does not name.
+   */
+  observedAt?: string;
 }
 
 export async function updateWaveTargetObserved(
@@ -231,13 +252,21 @@ export async function updateWaveTargetObserved(
   // a previously-captured revision. `null` is a caller-explicit clear; `undefined` leaves it as-is.
   observedState?: WaveTargetObservedState | null
 ): Promise<void> {
+  const now = new Date();
   await tx
     .update(changeWaveTargets)
     .set({
       status,
-      lastObservedAt: new Date(),
-      updatedAt: new Date(),
-      ...(observedState !== undefined ? { observedState } : {})
+      lastObservedAt: now,
+      updatedAt: now,
+      // THE READING IS DATED HERE, where it is written, and NOT off `last_observed_at` beside it.
+      // The two look interchangeable and are not: this branch is skipped entirely when a poll
+      // reports nothing storable, while `last_observed_at` is refreshed unconditionally — so a
+      // reader that dated the snapshot by the poll would believe a frozen weight forever as long as
+      // something kept polling. See `WaveTargetObservedState.observedAt`.
+      ...(observedState !== undefined
+        ? { observedState: observedState && { ...observedState, observedAt: now.toISOString() } }
+        : {})
     })
     .where(and(eq(changeWaveTargets.orgId, orgId), eq(changeWaveTargets.id, targetId)));
 }

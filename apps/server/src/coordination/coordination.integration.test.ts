@@ -198,6 +198,19 @@ describe("coordination engine: full fake-executor loop", () => {
       tx.select().from(changeWaveTargets).where(eq(changeWaveTargets.id, target.id))
     );
     expect((rows[0]!.observedState as { revision?: string } | null)?.revision).toBe("v0");
+
+    // AND THE PAYLOAD DATES ITSELF (ADR-0028). `observedAt` is stamped by
+    // `updateWaveTargetObserved` in the same statement that writes the payload, which is what lets
+    // the stage-dependency hold age the READING rather than the poll: `last_observed_at` beside it
+    // is refreshed on every status() call, including the ones that store nothing, so a snapshot
+    // dated by it never goes stale while anything keeps polling. Asserted here, at the writer,
+    // because the reader's unit tests would otherwise pass against a field production never sets.
+    const persistedAt = (rows[0]!.observedState as { observedAt?: string }).observedAt;
+    expect(persistedAt).toBeDefined();
+    expect(Date.parse(persistedAt!)).toBeGreaterThan(Date.now() - 60_000);
+    // Not surfaced on the wire: `ChangeWaveTargetSchema.observed` does not declare it, and the
+    // response serializer key-strips what the schema does not name.
+    expect(target.observed as Record<string, unknown>).not.toHaveProperty("observedAt");
   });
 
   it("reconcile passes the binding's externalRef (e.g. an Argo CD Application name) as trigger().targetRef — NOT the graph object id (M12 P1)", async () => {

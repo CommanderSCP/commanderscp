@@ -52,13 +52,25 @@ import type { DependsOnEdge } from "./plan-compiler.js";
  * rollout snapshot may be before it stops counting as "currently observed at >= N".
  *
  * A bound is REQUIRED, not defensive: `updateWaveTargetObserved` overwrites `observed_state` in
- * place (there is no time series — ADR-0008 decision 1 deferred one), and reconcile stops polling a
- * target the moment it terminalizes (`if (target.status === "succeeded") continue;`). A snapshot's
- * age is therefore UNBOUNDED. The specific way that bites: a paused Argo Rollout can aggregate to
- * Application health `Suspended`, which the argocd plugin maps to `succeeded` — so a dependency
- * parked at 10% reads as done and its stored weight stays 10% forever, even after a human promotes
- * it to 100%. Trusting that number a week later would be asserting a fact about the world from a
- * reading nobody has taken since.
+ * place (there is no time series — ADR-0008 decision 1 deferred one), so a snapshot's age is
+ * UNBOUNDED. TWO DIFFERENT WAYS a reading goes stale, and the second is why the bound is measured
+ * off the reading's own `observedAt` rather than off `last_observed_at`:
+ *
+ *  * THE TARGET STOPS BEING POLLED. Reconcile skips a target the moment it terminalizes
+ *    (`if (target.status === "succeeded") continue;`). The specific way that bites: a paused Argo
+ *    Rollout can aggregate to Application health `Suspended`, which the argocd plugin maps to
+ *    `succeeded` — so a dependency parked at 10% reads as done and its stored weight stays 10%
+ *    forever, even after a human promotes it to 100%.
+ *  * THE TARGET IS STILL POLLED AND THE POLLS SAY NOTHING. `updateWaveTargetObserved` refreshes
+ *    `last_observed_at` on every poll but writes `observed_state` only when `observedStateFrom`
+ *    returned something, and that returns `undefined` for a status with no stateRef, no images and
+ *    no rollout — the argocd plugin's shape for an Application that has been deleted or renamed.
+ *    The weight then freezes while its poll timestamp keeps moving, so a bound read off
+ *    `last_observed_at` NEVER fires and the hold keeps releasing dependants against a world that no
+ *    longer exists.
+ *
+ * Either way, trusting that number later would be asserting a fact about the world from a reading
+ * nobody has taken since.
  *
  * TEN MINUTES, chosen from the two pressures that actually bound it:
  *
@@ -66,10 +78,12 @@ import type { DependsOnEdge } from "./plan-compiler.js";
  *    an `observing` target is polled on every tick its change is served, but `listChangeRowsInStates`
  *    serves oldest-first capped at `BATCH_LIMIT` (25) per state per tick, so a busy instance can
  *    legitimately go many ticks between two polls of the same change. Ten minutes is ~600 ticks of
- *    slack — far past any scheduling delay that is not itself an outage.
+ *    slack — far past any scheduling delay that is not itself an outage. (A live target restamps
+ *    its reading on every poll: a real Argo Application reports a stateRef, so `observedStateFrom`
+ *    returns a payload and `updateWaveTargetObserved` writes it.)
  *  * UPPER BOUND — it must reject a frozen snapshot in human time. A weight left over from a
- *    terminalized (or `Suspended`) target goes unreadable within one coffee break rather than being
- *    believed for days.
+ *    terminalized (or `Suspended`) target, or from an Application that has since been deleted, goes
+ *    unreadable within one coffee break rather than being believed for days.
  *
  * Stale does NOT mean "satisfied" and does not mean "hold" either: it makes the WEIGHT unreadable,
  * which degrades that dependency to the universal `status = 'succeeded'` test (ADR-0028 decision 4).
@@ -129,14 +143,15 @@ export type WeightUnreadableCause =
    *  call that failed and returned `undefined` with no marker. This is the DEFAULT case, not the
    *  exception. */
   | "no_weight"
-  /** A weight is stored but the target has never been observed, so nothing dates the reading.
+  /** A weight is stored but nothing DATES it — the payload carries no `observedAt`.
    *
-   *  NOT REACHABLE THROUGH TODAY'S WRITERS, and named rather than dropped: `observed_state` is only
-   *  ever written by `updateWaveTargetObserved`, which sets `last_observed_at` in the same UPDATE,
-   *  so the two are written together or not at all. This is the backstop for a row that arrived
-   *  another way — a federation replay, a hand-repaired row, or a future writer that separates them
-   *  — and it exists so that "a weight with no date on it" degrades rather than being believed. The
-   *  ordinary "no poll has landed yet" case reports `no_weight`, because the whole jsonb is null. */
+   *  Reachable for one population and one only: rows whose `observed_state` was written before that
+   *  field existed (it is deliberately not backfilled — inferring a reading's age after the fact
+   *  would fabricate the very thing the bound exists to check). Also the backstop for a row that
+   *  arrived another way, a federation replay or a hand repair. Either way "a weight with no date on
+   *  it" degrades rather than being believed, and the next poll of a live target dates it. The
+   *  ordinary "no poll has landed yet" case reports `no_weight` instead, because the whole jsonb is
+   *  null. */
   | "not_observed"
   /** The reading is older than {@link OBSERVED_WEIGHT_FRESHNESS_MS}. */
   | "stale";
@@ -387,7 +402,9 @@ export function stageDependencyVerdict(
     | {
         status: string;
         observedState: unknown;
-        lastObservedAt: Date | null;
+        /** Accepted (the caller hands over a whole wave-target row) and deliberately NOT READ. It
+         *  dates the POLL, not the reading — see `weightUnreadableCause`. */
+        lastObservedAt?: Date | null;
       }
     | undefined,
   now: number,
@@ -465,11 +482,23 @@ export function stageDependencyVerdict(
   };
 }
 
-/** Reads `observed_state.rollout.weight` and dates it. Returns the cause when it cannot be believed,
- *  or the number when it can. Callers must treat `cause !== undefined` as UNREADABLE, never as a
- *  weight of zero — the two are different claims and only one of them is true. */
+/**
+ * Reads `observed_state.rollout.weight` and dates it. Returns the cause when it cannot be believed,
+ * or the number when it can. Callers must treat `cause !== undefined` as UNREADABLE, never as a
+ * weight of zero — the two are different claims and only one of them is true.
+ *
+ * THE AGE IS THE READING'S OWN (`observed_state.observedAt`), NEVER `last_observed_at`. The column
+ * beside it is the obvious-looking choice and is wrong: `updateWaveTargetObserved` refreshes
+ * `last_observed_at` on EVERY poll while writing `observed_state` only when the poll returned
+ * something storable, and `observedStateFrom` returns `undefined` for a status carrying no stateRef,
+ * no images and no rollout — which is exactly the argocd plugin's 404 shape for an Application that
+ * has been deleted or renamed mid-canary. Dating the snapshot by the poll would then leave the last
+ * weight frozen in place while every subsequent tick refreshed its timestamp: the reading is
+ * arbitrarily old, `stale` never fires, and the hold keeps RELEASING dependants against a world that
+ * no longer exists. Fail-open in the branch ADR-0028 calls the owner's headline requirement.
+ */
 function weightUnreadableCause(
-  latest: { observedState: unknown; lastObservedAt: Date | null },
+  latest: { observedState: unknown },
   now: number
 ): { cause: WeightUnreadableCause; weight: number } | { cause: undefined; weight: number } {
   const observed = latest.observedState as WaveTargetObservedState | null | undefined;
@@ -480,10 +509,10 @@ function weightUnreadableCause(
   if (typeof weight !== "number" || !Number.isFinite(weight)) {
     return { cause: "no_weight", weight: 0 };
   }
-  if (latest.lastObservedAt === null) return { cause: "not_observed", weight };
-  if (now - latest.lastObservedAt.getTime() > OBSERVED_WEIGHT_FRESHNESS_MS) {
-    return { cause: "stale", weight };
-  }
+  const observedAt = observed?.observedAt === undefined ? NaN : Date.parse(observed.observedAt);
+  // Undated (a row written before the field existed, a replay, a hand repair) or undateable.
+  if (Number.isNaN(observedAt)) return { cause: "not_observed", weight };
+  if (now - observedAt > OBSERVED_WEIGHT_FRESHNESS_MS) return { cause: "stale", weight };
   return { cause: undefined, weight };
 }
 
