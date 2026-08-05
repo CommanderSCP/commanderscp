@@ -28,6 +28,12 @@ import {
  * `coupling.integration.test.ts`, whose report-ingress section this mirrors deliberately: a
  * declaration made through the CI channel must behave identically to one made through `POST
  * /changes`, and the only way to know is to run both.
+ *
+ * INCREMENT 2 gave the declaration its first reader — `proposeChange` now materialises each entry as
+ * a `depends_on` edge (`stage-dependency-edges.integration.test.ts`). The inertness asserted here is
+ * unaffected and still worth asserting: an edge changes the GRAPH, not the release, and every change
+ * below still drives to `validating` exactly as its undeclared twin does. If that stops being true,
+ * it will be because something started reading the edges at run time, and this is where it shows.
  */
 describe("stage dependencies: the declaration channel (ADR-0028 increment 1)", () => {
   let server: ListeningTestServer;
