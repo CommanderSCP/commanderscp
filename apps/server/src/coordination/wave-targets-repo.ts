@@ -313,6 +313,37 @@ export async function markWaveTargetNoExecutor(
 }
 
 /**
+ * The MOST RECENT wave target for one object, whatever its status — the read the stage-dependency
+ * hold (ADR-0028) asks about a dependency's placement: *"what is B's latest deploy at this place,
+ * and how far has it got?"*
+ *
+ * Deliberately NOT filtered by status, executor, or change: the hold's universal test is
+ * "the latest one reached `succeeded`", and a filter would answer a different question. Filtering to
+ * `succeeded` in particular would say yes for a dependency that succeeded last week and is RIGHT NOW
+ * mid-redeploy at the same place — which is exactly the situation the coupling exists to order.
+ *
+ * "Most recent" is by `created_at` then `id`, matching how ids are minted (UUIDv7, time-ordered) and
+ * NOT by `updated_at`, which moves on every poll: ordering by `updated_at` would let an older row
+ * that is still being observed outrank the newer plan's row. Served by
+ * `change_wave_targets_org_target`.
+ */
+export async function findLatestWaveTargetForObject(
+  tx: TenantTx,
+  orgId: string,
+  targetObjectId: string
+): Promise<WaveTargetRow | undefined> {
+  const rows = await tx
+    .select()
+    .from(changeWaveTargets)
+    .where(
+      and(eq(changeWaveTargets.orgId, orgId), eq(changeWaveTargets.targetObjectId, targetObjectId))
+    )
+    .orderBy(desc(changeWaveTargets.createdAt), desc(changeWaveTargets.id))
+    .limit(1);
+  return rows[0];
+}
+
+/**
  * The "prior known-good state" lookup (DESIGN §9.4): the most recently SUCCEEDED wave-target
  * execution of `targetObjectId` **that ran on the CURRENT executor plugin instance**
  * (`executorPluginId`), across ANY change (not just the one currently being planned) — its
