@@ -1,7 +1,7 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { ExecutionStatus } from "@scp/plugin-api";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { changePlans, changeWaveTargets, changeWaves } from "../db/schema.js";
+import { changePlans, changes, changeWaveTargets, changeWaves, objects } from "../db/schema.js";
 
 /**
  * DB access `coordination/reconcile.ts` needs around `change_wave_targets`/`change_waves` beyond
@@ -313,18 +313,52 @@ export async function markWaveTargetNoExecutor(
 }
 
 /**
- * The MOST RECENT wave target for one object, whatever its status — the read the stage-dependency
- * hold (ADR-0028) asks about a dependency's placement: *"what is B's latest deploy at this place,
- * and how far has it got?"*
+ * Change states an ABANDONED wave target hangs off — the two terminal states nothing ever moves a
+ * target out of again.
  *
- * Deliberately NOT filtered by status, executor, or change: the hold's universal test is
+ * `change_wave_targets` is written by NOTHING on the cancel or rollback paths: cancelling a change
+ * mid-flight leaves every one of its targets frozen exactly where it stood (`pending`, `triggering`,
+ * `observing`), forever. That row is not "the dependency's latest deploy" in any sense a hold can
+ * act on — nobody is going to finish it — so counting it as one wedged every dependant of that
+ * component at that place PERMANENTLY, with no override, no expiry, and no operator escape.
+ */
+const ABANDONED_CHANGE_STATES: string[] = ["cancelled", "rolled_back"];
+
+/**
+ * The MOST RECENT wave target for one object that some change still stands behind — the read the
+ * stage-dependency hold (ADR-0028) asks about a dependency's placement: *"what is B's latest deploy
+ * at this place, and how far has it got?"*
+ *
+ * Deliberately NOT filtered by status, executor, or which change: the hold's universal test is
  * "the latest one reached `succeeded`", and a filter would answer a different question. Filtering to
  * `succeeded` in particular would say yes for a dependency that succeeded last week and is RIGHT NOW
  * mid-redeploy at the same place — which is exactly the situation the coupling exists to order.
  *
- * "Most recent" is by `created_at` then `id`, matching how ids are minted (UUIDv7, time-ordered) and
- * NOT by `updated_at`, which moves on every poll: ordering by `updated_at` would let an older row
- * that is still being observed outrank the newer plan's row. Served by
+ * WHAT *IS* FILTERED, AND WHY IT HAS TO BE. A wave target only describes a deploy while the change
+ * that owns it is still a live account of one. Two shapes are not, and both are excluded by joining
+ * back through `change_waves -> change_plans -> changes -> objects`:
+ *
+ *   * a SOFT-DELETED change object. This is the same join `component-pipeline.ts`'s
+ *     `currentByPlacement` already makes for the same "what last happened at this stage" question
+ *     (`o.deleted_at IS NULL`). The two reads used to disagree, and a hold that believes a row the
+ *     pipeline view has stopped showing is unexplainable from the UI an operator would reach for.
+ *   * a change in one of {@link ABANDONED_CHANGE_STATES}. Nothing on the cancel path touches
+ *     `change_wave_targets`, so an abandoned change's targets stay `pending`/`triggering`/
+ *     `observing` for the lifetime of the database. Reading one as "B is behind" holds every
+ *     dependant of B here FOREVER — even when B's last *actual* deploy at this place succeeded.
+ *
+ * THE RULE FOR A `failed`/`aborted`/`no_executor` LATEST TARGET, stated because it is deliberately
+ * NOT the same call: those rows are KEPT, and they hold. A change whose target failed has not been
+ * abandoned — it is a live change parked on a real failure, its epitaph is accurate, and "do not
+ * deploy ahead of a dependency whose own deploy here just failed" is the guarantee working. (An
+ * ADR-0006 `no_executor` masking gap therefore holds dependants until it is fixed, rolled back, or
+ * cancelled — all three of which are actions somebody takes, which is the difference that matters.)
+ * Holding on a genuinely failed dependency is defensible; holding forever on an ABANDONED one, where
+ * no action exists that would ever clear it, is not.
+ *
+ * "Most recent" is by the TARGET's `created_at` then `id`, matching how ids are minted (UUIDv7,
+ * time-ordered) and NOT by `updated_at`, which moves on every poll: ordering by `updated_at` would
+ * let an older row that is still being observed outrank the newer plan's row. Served by
  * `change_wave_targets_org_target`.
  */
 export async function findLatestWaveTargetForObject(
@@ -333,10 +367,31 @@ export async function findLatestWaveTargetForObject(
   targetObjectId: string
 ): Promise<WaveTargetRow | undefined> {
   const rows = await tx
-    .select()
+    .select(getTableColumns(changeWaveTargets))
     .from(changeWaveTargets)
+    .innerJoin(
+      changeWaves,
+      and(
+        eq(changeWaves.id, changeWaveTargets.waveId),
+        eq(changeWaves.orgId, changeWaveTargets.orgId)
+      )
+    )
+    .innerJoin(
+      changePlans,
+      and(eq(changePlans.id, changeWaves.planId), eq(changePlans.orgId, changeWaves.orgId))
+    )
+    .innerJoin(
+      changes,
+      and(eq(changes.objectId, changePlans.changeObjectId), eq(changes.orgId, changePlans.orgId))
+    )
+    .innerJoin(objects, and(eq(objects.id, changes.objectId), eq(objects.orgId, changes.orgId)))
     .where(
-      and(eq(changeWaveTargets.orgId, orgId), eq(changeWaveTargets.targetObjectId, targetObjectId))
+      and(
+        eq(changeWaveTargets.orgId, orgId),
+        eq(changeWaveTargets.targetObjectId, targetObjectId),
+        isNull(objects.deletedAt),
+        notInArray(changes.state, ABANDONED_CHANGE_STATES)
+      )
     )
     .orderBy(desc(changeWaveTargets.createdAt), desc(changeWaveTargets.id))
     .limit(1);

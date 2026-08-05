@@ -4,7 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { ScpClient } from "@scp/sdk";
 import type { GraphObject } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { changes, decisions } from "../db/schema.js";
+import { changes, decisions, objects } from "../db/schema.js";
 import {
   createTestComponent,
   createTestOrg,
@@ -255,6 +255,102 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     expect(await waveTargetStatus(depChange.id, dependency.at(gamma))).toBe("succeeded");
     expect(firedFor(dependant.at(gamma))).toBe(1);
     expect(await waveTargetStatus(appChange.id, dependant.at(gamma))).not.toBe("pending");
+  });
+
+  it("an ABANDONED release of the dependency does not wedge the hold forever", async () => {
+    // THE PERMANENT DEADLOCK. Nothing on the cancel path touches `change_wave_targets`, so a
+    // cancelled change leaves every one of its targets frozen exactly where it stood — `observing`,
+    // here, for the lifetime of the database. Reading that as "the dependency's latest deploy at
+    // this place" makes the verdict `behind` on every tick from now until somebody notices, with no
+    // override, no expiry and no operator escape, EVEN THOUGH the dependency's last actual deploy
+    // here succeeded. Holding on a genuinely failed dependency is defensible; holding on an
+    // abandoned one, where no action exists that would ever clear it, is not.
+    const dependency = await componentAt("abandoned-dep", [gamma]);
+    const dependant = await componentAt("abandoned-app", [gamma]);
+
+    // (1) The dependency's real deploy at gamma SUCCEEDS.
+    const first = await release("abandoned-dep-first", [dependency.id]);
+    executorConfig.forcePhase[dependency.at(gamma)] = "succeeded";
+    await tick(3);
+    expect(await waveTargetStatus(first.id, dependency.at(gamma))).toBe("succeeded");
+
+    // (2) A second release of the dependency starts at the same place, then is abandoned mid-flight.
+    delete executorConfig.forcePhase[dependency.at(gamma)];
+    const second = await release("abandoned-dep-second", [dependency.id]);
+    await tick(2);
+    expect(await waveTargetStatus(second.id, dependency.at(gamma))).toBe("observing");
+    await admin.changes.cancel(second.id, "abandoned by its author");
+    expect((await changeRow(second.id)).state).toBe("cancelled");
+    // The frozen row is still there — this is the input, not an artefact of the fixture.
+    expect(await waveTargetStatus(second.id, dependency.at(gamma))).toBe("observing");
+
+    // (3) A dependant proposed now must see the SUCCEEDED deploy, not the abandoned one.
+    const change = await release("abandoned-app", [dependant.id], [{ dependsOn: dependency.id }]);
+    await tick(4);
+
+    expect(firedFor(dependant.at(gamma))).toBe(1);
+    expect(await holdDecisions(change.id)).toHaveLength(0);
+  });
+
+  it("a SOFT-DELETED change's wave target does not wedge the hold either", async () => {
+    // The other half of the same property, and the one that makes this read AGREE with
+    // `component-pipeline.ts`'s `currentByPlacement` — which has always excluded deleted change
+    // objects from the same "what last happened at this stage" question. A hold that believes a row
+    // the pipeline view has stopped showing is unexplainable from the UI an operator would reach for.
+    const dependency = await componentAt("deleted-dep", [gamma]);
+    const dependant = await componentAt("deleted-app", [gamma]);
+
+    const first = await release("deleted-dep-first", [dependency.id]);
+    executorConfig.forcePhase[dependency.at(gamma)] = "succeeded";
+    await tick(3);
+    expect(await waveTargetStatus(first.id, dependency.at(gamma))).toBe("succeeded");
+
+    delete executorConfig.forcePhase[dependency.at(gamma)];
+    const second = await release("deleted-dep-second", [dependency.id]);
+    await tick(2);
+    expect(await waveTargetStatus(second.id, dependency.at(gamma))).toBe("observing");
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(objects)
+        .set({ deletedAt: new Date() })
+        .where(and(eq(objects.orgId, org.orgId), eq(objects.id, second.id)))
+    );
+
+    const change = await release("deleted-app", [dependant.id], [{ dependsOn: dependency.id }]);
+    await tick(4);
+
+    expect(firedFor(dependant.at(gamma))).toBe(1);
+    expect(await holdDecisions(change.id)).toHaveLength(0);
+  });
+
+  it("a FAILED release of the dependency still HOLDS — abandoned and failed are not the same call", async () => {
+    // The boundary of the fix above, pinned so the exclusion cannot quietly widen into "any latest
+    // target that isn't succeeded is ignorable". A change whose target failed has not been
+    // abandoned: it is a live change parked on a real failure, and "do not deploy ahead of a
+    // dependency whose own deploy here just failed" is the guarantee working, not a bug.
+    const dependency = await componentAt("failed-dep", [gamma]);
+    const dependant = await componentAt("failed-app", [gamma]);
+
+    const first = await release("failed-dep-first", [dependency.id]);
+    executorConfig.forcePhase[dependency.at(gamma)] = "succeeded";
+    await tick(3);
+    expect(await waveTargetStatus(first.id, dependency.at(gamma))).toBe("succeeded");
+
+    executorConfig.forcePhase[dependency.at(gamma)] = "failed";
+    const second = await release("failed-dep-second", [dependency.id]);
+    await tick(3);
+    expect(await waveTargetStatus(second.id, dependency.at(gamma))).toBe("failed");
+    expect((await changeRow(second.id)).state).not.toBe("cancelled");
+
+    const change = await release("failed-app", [dependant.id], [{ dependsOn: dependency.id }]);
+    await tick(3);
+
+    expect(firedFor(dependant.at(gamma))).toBe(0);
+    const [decision] = await holdDecisions(change.id);
+    const verdict = (decision!.inputContext as HeldContext).held[0]!.dependencies[0]!;
+    expect(verdict.branch).toBe("behind");
+    expect(verdict.dependencyStatus).toBe("failed");
+    delete executorConfig.forcePhase[dependency.at(gamma)];
   });
 
   it("a dependency NOT PLACED at this stage holds nothing — absence is a declared fact", async () => {
@@ -613,6 +709,7 @@ interface HeldContext {
       branch: string;
       satisfied: boolean;
       source?: string;
+      dependencyStatus?: string;
       minWeight?: number;
       weightUnreadable?: string;
     }[];
