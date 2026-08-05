@@ -20,6 +20,8 @@ import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
+import { assertStageDependenciesWithinAuthority } from "../coordination/campaign-scope-authz.js";
+import { extractHint } from "../coordination/webhook-processor.js";
 import { unauthorized } from "../errors.js";
 import { changeSourceEvents, changeSourceWebhookSecrets } from "../db/schema.js";
 import {
@@ -180,6 +182,25 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
           signatureVerified = true;
         }
 
+        // ADR-0028 — the SECOND door to a materialised `depends_on` edge, and the one a census by
+        // route name misses: `webhook-processor.ts`'s `genericHint` lifts a top-level
+        // `stageDependencies` straight off this raw body and threads it into `proposeChange`. The
+        // processor itself runs as SYSTEM_ACTOR_ID, so the check cannot live there and be anything
+        // other than vacuous — the reporting PRINCIPAL only exists HERE. Checked against exactly
+        // what the processor will lift (same `extractHint`, same headers, same payload), so the two
+        // cannot drift. The edge's `from` endpoint is deliberately NOT passed: it is chosen at
+        // correlation time from an operator-configured `source_mappings` row, not by this caller.
+        //
+        // This is not vacuous just because `object:write` at the org root is already required above:
+        // that is a DIFFERENT permission, and a custom role granting `object:write` without
+        // `relationship:write` would otherwise mint edges here that `POST /relationships` refuses.
+        await assertStageDependenciesWithinAuthority(tx, {
+          orgId: auth.orgId,
+          actorObjectId: auth.subjectObjectId,
+          stageDependencies: extractHint(request.params.sourceKind, request.headers, request.body)
+            .stageDependencies
+        });
+
         // MAJOR #5 — dedupe redeliveries/replays. Prefer the provider's own delivery identifier
         // (GitHub `X-GitHub-Delivery`, or a generic `X-SCP-Delivery` an adapter can set), which is
         // stable across a redelivery of the SAME event; fall back to a hash of the raw body when no
@@ -244,6 +265,16 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
           subjectObjectId: auth.subjectObjectId,
           permission: "object:write",
           scopeObjectId: auth.orgId
+        });
+        // ADR-0028 — same check, same reason, on the TYPED half of the same ingress (see the
+        // `/webhook` route above). `persistSourceEvent` stores this event with `headers: {}`, so the
+        // hint is computed from `{}` here too: what is authorized is byte-for-byte what the
+        // processor will read back off the row.
+        await assertStageDependenciesWithinAuthority(tx, {
+          orgId: auth.orgId,
+          actorObjectId: auth.subjectObjectId,
+          stageDependencies: extractHint(request.params.sourceKind, {}, request.body)
+            .stageDependencies
         });
         // Dedupe by the report body hash (no delivery header exists for a first-party report):
         // re-reporting the identical result is an idempotent no-op; a distinct result (a different
