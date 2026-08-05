@@ -4,7 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { ScpClient } from "@scp/sdk";
 import type { GraphObject } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { changes, decisions, objects } from "../db/schema.js";
+import { changeWaveTargets, changes, decisions, objects } from "../db/schema.js";
 import {
   createTestComponent,
   createTestOrg,
@@ -14,6 +14,7 @@ import {
 } from "../test-support/harness.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import { getLatestPlanForChange } from "./plan-service.js";
+import { findLatestWaveTargetForObject } from "./wave-targets-repo.js";
 import { reconcileOrgTick } from "./reconcile.js";
 import { distinctDecisionStatements } from "./test-support/counting-cel-sandbox.js";
 import { createInMemoryFakeHost, withRefusingTrigger } from "./test-support/fake-plugin-host.js";
@@ -441,6 +442,73 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
 
     expect(firedFor(dependant.at(gamma))).toBe(1);
     expect(await holdDecisions(change.id)).toHaveLength(0);
+  });
+
+  it("a `coordinated` release DOES count — the census must not exclude the batch's own backlog", async () => {
+    // THE BOUNDARY ON THE OTHER SIDE of the three parked cases above, and the one an earlier
+    // revision of the census got wrong in the opposite direction: it ruled `coordinated` out,
+    // reasoning that "a freeze or any other gate on `coordinated -> executing` throws inside
+    // `advanceCoordinatedChanges`, so a change can sit here". Nothing gates that edge —
+    // `GOVERNED_LIFECYCLE_EDGES` is `{"validating->accepted"}` — and the one real blocker,
+    // `runPreDeployArtifactGate`, PARKS, which `reconcileBlockedAt` already excludes. So the
+    // exclusion caught nothing and gave up something real: `advanceCoordinatedChanges` is
+    // BATCH_LIMIT-capped, so on a busy tick the surplus sit in `coordinated` unparked, owning
+    // `pending` rows at every place they are about to deploy. Excluding them releases every
+    // dependant against the dependency's STALE earlier success — the exact race this feature exists
+    // to prevent.
+    //
+    // Asserted through `findLatestWaveTargetForObject` rather than through the tick loop on purpose:
+    // a change left in `coordinated` is advanced to `executing` by the very next tick (which also
+    // counts), so a loop-driven test would pass for the wrong reason and could not tell the two
+    // states apart. This reads the census directly, at the one instant that distinguishes them.
+    const dependency = await componentAt("coordinated-dep", [gamma]);
+
+    // (1) The dependency's real deploy at gamma SUCCEEDS.
+    const first = await release("coordinated-dep-first", [dependency.id]);
+    executorConfig.forcePhase[dependency.at(gamma)] = "succeeded";
+    await tick(3);
+    expect(await waveTargetStatus(first.id, dependency.at(gamma))).toBe("succeeded");
+
+    // (2) A second release compiles its plan and is then put back into the state it occupies while
+    //     it waits its turn: `coordinated`, unparked, targets still `pending` because
+    //     `advanceCoordinatedChanges` has not reached it. Both fields are written directly, and
+    //     that is the honest way to build this: one `reconcileOrgTick` cascades
+    //     proposed -> evaluated -> coordinated -> executing in a single call (each pass re-reads its
+    //     own state), so there is no number of ticks that LEAVES a change here. The state is real —
+    //     it is what every change past BATCH_LIMIT looks like on a busy tick — it just cannot be
+    //     reached by ticking, only by being outnumbered.
+    delete executorConfig.forcePhase[dependency.at(gamma)];
+    const second = await release("coordinated-dep-second", [dependency.id]);
+    await tick(2);
+    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      await tx
+        .update(changes)
+        .set({ state: "coordinated", reconcileBlockedAt: null })
+        .where(and(eq(changes.orgId, org.orgId), eq(changes.objectId, second.id)));
+      const plan = await getLatestPlanForChange(tx, org.orgId, second.id);
+      for (const wave of plan!.waves) {
+        await tx
+          .update(changeWaveTargets)
+          .set({ status: "pending" })
+          .where(
+            and(eq(changeWaveTargets.orgId, org.orgId), eq(changeWaveTargets.waveId, wave.id))
+          );
+      }
+    });
+
+    // The inputs, asserted rather than assumed: it really is `coordinated`, unparked, and its gamma
+    // row is `pending` and NEWER than the succeeded one.
+    const row = await changeRow(second.id);
+    expect(row.state).toBe("coordinated");
+    expect(row.reconcileBlockedAt).toBeNull();
+    expect(await waveTargetStatus(second.id, dependency.at(gamma))).toBe("pending");
+
+    // (3) The census must return the COORDINATED release's pending row — "B is about to deploy v2
+    //     here" — not the older success, which would let a dependant through against stale state.
+    const latest = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      findLatestWaveTargetForObject(tx, org.orgId, dependency.at(gamma))
+    );
+    expect(latest?.status).toBe("pending");
   });
 
   it("a release PARKED by a wave that failed ELSEWHERE does not mask the earlier success either", async () => {
