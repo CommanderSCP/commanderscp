@@ -310,6 +310,14 @@ function compileStages(
   // a PLACE because that is precisely where the hold looks: a cycle whose members are never
   // co-placed resolves to `not_placed` on both sides and deadlocks nothing.
   //
+  // AND IT IS SCOPED TO THE PLACEMENTS THIS PLAN ACTUALLY SCHEDULES, not to `relevant`. The two
+  // differ whenever a component is placed somewhere the topology never names: `relevant` is filtered
+  // by COMPONENT only, while `placementsAt` is what narrows a wave to topology-named places. Handing
+  // `relevant` here refuses a plan for a cycle at a deployment-target that never becomes a wave
+  // target — so the hold could never look there, nothing could ever deadlock, and the change dies as
+  // `auto-cancelled: plan compilation failed` for a pipeline that never co-schedules the pair. The
+  // refusal must be exactly as wide as the deadlock it prevents, and no wider.
+  //
   // LEGACY MODE KEEPS BOTH OF ITS CHECKS (`compilePlan` below), on purpose. Its waves name the
   // change's own targets rather than places, so its wave targets carry no deployment-target for a
   // STAGE-scoped hold to be scoped by; dropping the check there would remove the guarantee with
@@ -318,7 +326,11 @@ function compileStages(
   // `componentOf` was the same-wave check's only reader and went with it. If a future rule needs
   // placement -> component again, rebuild it from `input.placements` rather than re-introducing a
   // map that is populated on every push and read by nothing.
-  const cycle = coPlacedCycle(relevant, input.dependsOn);
+  const scheduledPlacementIds = new Set(steps.flatMap((step) => step.targets));
+  const cycle = coPlacedCycle(
+    relevant.filter((p) => scheduledPlacementIds.has(p.placementObjectId)),
+    input.dependsOn
+  );
   if (cycle) {
     return {
       ok: false,

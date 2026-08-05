@@ -26,6 +26,8 @@ import { compilePlan, type StagePlacement } from "./plan-compiler.js";
 describe("coordination/plan-compiler — stage mode (waves name places)", () => {
   const GAMMA = "target-gamma";
   const PROD = "target-prod";
+  /** A place the components are placed at but NO topology below names — see the "never goes" test. */
+  const STAGING = "target-staging";
 
   /** `<component>@<place>` placement ids, so a failure message reads as the pair it stands for. */
   const place = (component: string, deploymentTarget: string): StagePlacement => ({
@@ -255,6 +257,36 @@ describe("coordination/plan-compiler — stage mode (waves name places)", () => 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.waves.map((w) => w.targets)).toEqual([["db@target-gamma"], ["api@target-prod"]]);
+  });
+
+  it("a cycle co-placed ONLY where the topology never goes still compiles — the refusal is no wider than the deadlock", () => {
+    // The second precision half. The pair IS co-placed — at `staging` — so a check keyed on "do
+    // these two share any place at all" refuses. But the topology names only gamma and prod, so
+    // `staging` never becomes a wave target, the hold (scoped by a wave target's deployment-target)
+    // can never look there, and nothing could ever deadlock. Refusing here would auto-cancel a
+    // pipeline that never co-schedules the pair: `compilePlan` -> 400 (`plan-service.ts`) ->
+    // `auto-cancelled: plan compilation failed` (`reconcile.ts`).
+    //
+    // This is why the refusal is handed the placements the plan actually SCHEDULES rather than
+    // every placement of the change's components.
+    const result = compilePlan({
+      targets: ["api", "db"],
+      dependsOn: [
+        { from: "api", to: "db" },
+        { from: "db", to: "api" }
+      ],
+      topologyWaves: gammaThenProd,
+      placements: [
+        place("api", GAMMA),
+        place("db", PROD),
+        place("api", STAGING),
+        place("db", STAGING)
+      ]
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.waves.map((w) => w.targets)).toEqual([["api@target-gamma"], ["db@target-prod"]]);
   });
 
   it("a LONGER cycle among co-placed targets is refused too — not just mutual pairs", () => {
