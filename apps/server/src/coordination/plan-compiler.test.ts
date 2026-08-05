@@ -48,6 +48,12 @@ describe("coordination/plan-compiler — pure toposort mode (no topology)", () =
   });
 
   it("rejects a 2-cycle", () => {
+    // UNCHANGED BY ADR-0028, and load-bearing because of it: increment 2 materialises every declared
+    // dependency as an edge, so two microservices whose CI each names the other now really do
+    // produce both edges. On the no-topology path that is a cycle and the plan is refused — a
+    // multi-target change touching both would 400 where it used to compile. Stage mode does not
+    // toposort and accepts the same input (plan-compiler-stages.test.ts, "a MUTUAL declaration");
+    // the asymmetry is real and is why this pins the toposort side explicitly.
     const result = compilePlan({
       targets: ["a", "b"],
       dependsOn: [
@@ -183,6 +189,11 @@ describe("coordination/plan-compiler — explicit topology mode", () => {
   });
 
   it("rejects a topology that places a dependent pair in the same parallel wave", () => {
+    // LEGACY MODE KEEPS THIS CHECK. ADR-0028 decision 6 removed the same-wave refusal from STAGE
+    // mode only, because the per-target trigger hold that replaces it is scoped by the wave target's
+    // deployment-target — and a legacy wave target IS the component, with no place attached, so
+    // there is nothing there for the hold to be scoped by. Dropping it here too would delete the
+    // guarantee with nothing taking it over. Do not "finish the job" by deleting this test.
     const result = compilePlan({
       targets: ["app", "infra"],
       dependsOn: [{ from: "app", to: "infra" }],

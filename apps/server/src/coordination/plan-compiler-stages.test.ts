@@ -17,7 +17,7 @@ import { compilePlan, type StagePlacement } from "./plan-compiler.js";
  * | emit an empty wave as normal (drop `skipped`) | "an empty wave is emitted AND marked skipped" fails |
  * | omit empty waves entirely | the same test fails on wave count and index alignment |
  * | drop the `target_not_placed_in_any_wave` check | "a target placed nowhere the topology names" fails |
- * | drop the same-wave `depends_on` check | "two components with a dependency edge" fails |
+ * | restore the same-wave `depends_on` check | "COMPILES a dependent pair sharing a stage wave" fails |
  * | filter placements by target set AFTER grouping (i.e. not at all) | "another change's placements" fails |
  * | sequential mode → one step for the whole wave | "sequential splits per place" fails |
  */
@@ -158,7 +158,16 @@ describe("coordination/plan-compiler — stage mode (waves name places)", () => 
     ]);
   });
 
-  it("REFUSES two components with a dependency edge in the SAME wave (they would run in parallel)", () => {
+  it("COMPILES a dependent pair sharing a stage wave (ADR-0028 decision 6 — was a refusal)", () => {
+    // THE LIVE BEHAVIOUR CHANGE of ADR-0028 increment 2, and the reason it needs its own release
+    // note. This exact input used to return `topology_violates_dependency`, which `plan-service.ts`
+    // turns into a 400 and `reconcile.ts` turns into `auto-cancelled: plan compilation failed`.
+    //
+    // Once every CI-declared dependency is materialised as a `depends_on` edge, that refusal would
+    // auto-cancel every multi-target change that touches both components — i.e. it would punish a
+    // CORRECTLY declared dependency. The ordering duty moved to the per-target trigger hold in
+    // `reconcile.ts`'s executing loop (increment 3), which can hold `api` at gamma while `db` runs
+    // there; a whole-wave verdict never could.
     const result = compilePlan({
       targets: ["api", "db"],
       dependsOn: [{ from: "api", to: "db" }],
@@ -166,14 +175,20 @@ describe("coordination/plan-compiler — stage mode (waves name places)", () => 
       placements: [place("api", GAMMA), place("api", PROD), place("db", GAMMA), place("db", PROD)]
     });
 
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toBe("topology_violates_dependency");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Both placements land in the SAME wave per place — the plan is the topology's shape, and the
+    // pair is serialised at trigger time rather than at compile time.
+    expect(result.waves.map((w) => [...w.targets].sort())).toEqual([
+      ["api@target-gamma", "db@target-gamma"],
+      ["api@target-prod", "db@target-prod"]
+    ]);
   });
 
-  it("ALLOWS the same components when the topology separates them per place", () => {
-    // The mirror of the case above, and what stops the dependency check from being a blanket ban:
-    // `api` and `db` may both roll through gamma and prod as long as no single wave holds both.
+  it("still compiles the same components when the topology separates them per place", () => {
+    // Unchanged by decision 6, and kept so the removal above cannot be mistaken for "stage mode
+    // stopped compiling dependency-bearing inputs at all": `api` and `db` roll through different
+    // places and still produce one wave each.
     const result = compilePlan({
       targets: ["api", "db"],
       dependsOn: [{ from: "api", to: "db" }],
@@ -182,6 +197,26 @@ describe("coordination/plan-compiler — stage mode (waves name places)", () => 
         { name: "api-after", mode: "parallel", targets: [PROD] }
       ],
       placements: [place("db", GAMMA), place("api", PROD)]
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.waves.map((w) => w.targets)).toEqual([["db@target-gamma"], ["api@target-prod"]]);
+  });
+
+  it("a MUTUAL declaration compiles in stage mode — a 2-cycle is not a cycle over places", () => {
+    // Two microservices whose CI each names the other is a plausible declaration, and increment 2
+    // materialises BOTH edges. Stage mode never toposorts, so there is nothing here for a cycle to
+    // be found in; the no-topology path is the one that still rejects it (see plan-compiler.test.ts,
+    // "rejects a 2-cycle"), and that difference is deliberate, not an oversight.
+    const result = compilePlan({
+      targets: ["api", "db"],
+      dependsOn: [
+        { from: "api", to: "db" },
+        { from: "db", to: "api" }
+      ],
+      topologyWaves: gammaThenProd,
+      placements: [place("api", GAMMA), place("api", PROD), place("db", GAMMA), place("db", PROD)]
     });
 
     expect(result.ok).toBe(true);

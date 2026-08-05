@@ -20,6 +20,12 @@
  *    than its dependent, and two targets with a direct dependency edge can never share a
  *    (necessarily parallel) wave — violations are rejected rather than silently reordered, so a
  *    misconfigured topology fails loudly instead of producing an unsafe rollout order.
+ *
+ * STAGE MODE (a topology whose waves name deployment-targets, ADR-0026 §5) is a third shape of the
+ * second mode, and it does NOT validate `depends_on` at all: per ADR-0028 decision 6 its ordering
+ * duty passed to the per-target trigger hold in `reconcile.ts`'s executing loop. The reasoning is at
+ * the (deliberately empty) site inside `compileStages`; do not restore a check there without
+ * reading it.
  */
 
 export interface DependsOnEdge {
@@ -158,7 +164,9 @@ function withFanIn(layers: string[][], names: (string | null)[] = []): CompiledW
  *     participates in no wave is an ERROR instead (see below), so there is no tail at all.
  *   * the DEPENDS_ON VALIDATION keys `waveIndexOf` by emitted target; with placements emitted and
  *     component-to-component edges supplied, every lookup would miss and `continue`, turning a
- *     safety check into a silent no-op. Here it is re-expressed over components (below).
+ *     safety check into a silent no-op. It was re-expressed over components here; ADR-0028
+ *     decision 6 has since removed it entirely from this mode — see the site below, which explains
+ *     what took the guarantee over and why legacy mode keeps its own copy.
  *
  * ============================================================================================
  * AN EMPTY WAVE IS EMITTED AND MARKED `skipped`, NOT OMITTED
@@ -191,8 +199,6 @@ function compileStages(
 
   const steps: { name: string | null; targets: string[]; requiresFanIn?: boolean }[] = [];
   const participated = new Set<string>();
-  /** placement id -> component id, so dependency validation can speak in components. */
-  const componentOf = new Map<string, string>();
 
   const placementsAt = (deploymentTargetIds: string[]): StagePlacement[] => {
     const places = new Set(deploymentTargetIds);
@@ -202,7 +208,6 @@ function compileStages(
   const pushStep = (name: string | null, group: StagePlacement[], requiresFanIn?: boolean) => {
     for (const p of group) {
       participated.add(p.componentObjectId);
-      componentOf.set(p.placementObjectId, p.componentObjectId);
     }
     steps.push({
       name,
@@ -247,38 +252,44 @@ function compileStages(
     };
   }
 
-  // DEPENDS_ON, re-expressed over components. Cross-wave ORDER is the topology's business here —
-  // it orders PLACES, and a component legitimately appears in several waves (gamma, then prod), so
-  // "the dependency must be in an earlier wave" has no single meaning. What remains meaningful, and
-  // is what the legacy check's second clause protects, is that two components with a direct
-  // dependency edge must not deploy AT THE SAME TIME: same wave means parallel.
-  const wavesOfComponent = new Map<string, Set<number>>();
-  steps.forEach((step, i) => {
-    for (const placementId of step.targets) {
-      const component = componentOf.get(placementId)!;
-      if (!wavesOfComponent.has(component)) wavesOfComponent.set(component, new Set());
-      wavesOfComponent.get(component)!.add(i);
-    }
-  });
-  for (const edge of input.dependsOn) {
-    if (!targetSet.has(edge.from) || !targetSet.has(edge.to) || edge.from === edge.to) continue;
-    const fromWaves = wavesOfComponent.get(edge.from);
-    const toWaves = wavesOfComponent.get(edge.to);
-    if (!fromWaves || !toWaves) continue;
-    for (const w of fromWaves) {
-      if (toWaves.has(w)) {
-        return {
-          ok: false,
-          error: "topology_violates_dependency",
-          from: edge.from,
-          to: edge.to,
-          waveOfFrom: w,
-          waveOfTo: w,
-          detail: `'${edge.from}' depends on '${edge.to}', but the topology places them in the SAME wave (${w}) — they cannot execute in parallel`
-        };
-      }
-    }
-  }
+  // ============================================================================================
+  // DEPENDS_ON IS NO LONGER VALIDATED IN STAGE MODE (ADR-0028 decision 6)
+  // ============================================================================================
+  // What stood here rejected a plan whose topology put two components joined by a direct
+  // `depends_on` edge in the SAME wave, as `topology_violates_dependency`.
+  //
+  // Cross-wave ORDER was never this check's business in stage mode: the topology orders PLACES, and
+  // a component legitimately appears in several waves (gamma, then prod), so "the dependency must
+  // be in an earlier wave" has no single meaning here. The one clause that did mean something was
+  // the legacy check's second: two components with a direct dependency edge must not deploy AT THE
+  // SAME TIME, because same wave means parallel.
+  //
+  // THAT GUARANTEE MOVES; IT DOES NOT VANISH. Under ADR-0028 a microservice's own CI declares what
+  // it must not deploy ahead of, and every declaration is materialised as a `depends_on` edge
+  // (`coordination/changes-repo.ts`) — so these edges stop being a rarity and become the ordinary
+  // state of the graph. A compile-time refusal at that density converts a CORRECTLY declared
+  // dependency into `plan compilation failed` -> 400 (`plan-service.ts`) -> `auto-cancelled: plan
+  // compilation failed` (`reconcile.ts`) for every multi-target change that happens to touch both
+  // components. The ordering is enforced instead at the per-target seam in `reconcile.ts`'s
+  // executing loop, which holds A's TRIGGER at a stage until each declared dependency is satisfied
+  // THERE — a grain nothing here can express, and one the wave gate cannot express either (it
+  // issues one verdict for the whole wave, so blocking it to hold A would also hold B and the
+  // dependency could never clear).
+  //
+  // UNTIL THAT HOLD LANDS (ADR-0028 increment 3), a dependent pair sharing a stage wave compiles
+  // and its targets run in parallel. That window is deliberate and bounded: `loadDependsOnEdges`
+  // (`plan-service.ts`) only returns edges with BOTH endpoints inside the change's own target set,
+  // and 277 of 281 measured changes target exactly one component (ADR-0026) — a single-target
+  // change has no such pair to order.
+  //
+  // LEGACY MODE KEEPS BOTH OF ITS CHECKS (`compilePlan` below), on purpose. Its waves name the
+  // change's own targets rather than places, so its wave targets carry no deployment-target for a
+  // STAGE-scoped hold to be scoped by; dropping the check there would remove the guarantee with
+  // nothing taking it over.
+  //
+  // `componentOf` was this check's only reader and went with it. If a future rule needs
+  // placement -> component again, rebuild it from `input.placements` rather than re-introducing a
+  // map that is populated on every push and read by nothing.
 
   return {
     ok: true,
