@@ -149,6 +149,15 @@ Every declared dependency is also materialised as a **`depends_on` edge** betwee
 
 **The same-wave check is replaced, not deleted.** `plan-compiler.ts:263-280`'s `topology_violates_dependency` is today the only thing preventing two dependent components deploying in parallel. Once the per-target hold (§3.3) enforces ordering *within* a wave, that check becomes redundant **and** harmful (§0.3). It is replaced by the hold, in the same change, with a test pinning that a dependent same-wave pair now compiles and then serialises.
 
+**Replaced means the SAME SET, and that has to be said in set terms or it is a silent regression.** The removed check keys on the **edge**, not on a declaration: `loadDependsOnEdges` (`plan-service.ts:36-47`) returns every `depends_on` edge with **both endpoints in the change's own target set**, and refuses any such pair sharing a wave — whatever wrote the edge (a seed at `seed.ts:117`, an IaC manifest at `iac.ts:31-37`, an operator, or an *earlier* change's declaration). A hold reading only `properties.stageDependencies` would therefore order **none** of those: the pair would compile into one wave and both targets would fire in parallel, with no hold and no record. So the hold's dependency set per target is the **union** of
+
+- the change's declared `stageDependencies`, with their `minWeight`/`atTargets` qualifiers; and
+- the in-target-set `depends_on` edges, with **no** qualifiers — the plain `succeeded` test — reusing `loadDependsOnEdges` itself so the compiler and the hold cannot drift apart.
+
+**And no wider.** An edge with an endpoint *outside* the change's target set ordered nothing before and orders nothing now — the property that keeps a bulk edge import from making every edge in the org a release gate. Two corollaries worth pinning: an edge-derived verdict is marked `source: "edge"` (absent for a declared one, so no existing hold Decision changes shape) because an operator held behind a coupling their CI never wrote needs to know the remedy is a graph edge; and `atTargets` narrows the declaration it is written on but cannot subtract the pair's edge — an in-target-set pair whose declaration is scoped elsewhere still serialises, which is strictly weaker than the 400 that input used to get.
+
+**One clause cannot be handed over: a CYCLE, so it stays a compile-time refusal.** Stage mode has no toposort, and after the same-wave check goes there is nothing between a mutual pair and the hold — where each waits for the other's wave target to leave `pending`, forever, silently. `compileStages` refuses a `depends_on` cycle among the change's own targets **placed at the same deployment-target**, naming the members and the place; `plan-service.ts` turns it into a 400 and `reconcile.ts` into the change's epitaph. Scoped per place because that is where the hold looks: a cycle whose members are never co-placed resolves to `not_placed` on both sides and deadlocks nothing, so refusing it would reject a working configuration.
+
 Two consequences to design around, both measured:
 
 - **`graph.dependentIds` is a live CEL policy input** (`governance/evaluate.ts:125-133`). Bulk edge writes can flip existing policy verdicts. The rollout must be observable before it is broad.
@@ -175,6 +184,8 @@ A and B release from **separate pushes to separate repos** — different changes
 1. **`allTerminal = false` is set BEFORE the `continue`** (`:815-817`). A held target is still in flight; skipping without this makes the wave report complete while it never ran.
 2. **Skip before taking the advisory trigger-claim lock**, as the backoff gate does, so a held target costs no lock and no binding re-read.
 
+The dependency set the seam evaluates is the union described in §2.6 — the change's own declarations **plus** the `depends_on` edges between two of its own targets. The edge half is loaded **lazily and once per change per tick**, and a single-target change never loads it at all (both endpoints must be in the target set, so one target can only produce a self-edge). That matters because 277 of 281 measured changes have exactly one target: the ordinary release still pays nothing for a feature it does not use, which is the same inertness property the declaration parse has.
+
 Unlike the backoff gate, the hold **writes a Decision** (charter principle 6). The Decision's `inputContext` must be **content-stable**: the dependency set, the resolved target, and the per-dependency verdict — **no live weight, no timestamp**. Otherwise it re-opens the 1.44 GB/day write-amplification bug ([ADR-0024](../adr/0024-decision-and-audit-retention.md); `decisions-repo.ts:272-277`), where a byte-identical Decision is rewritten every tick forever. **Persist on change only.**
 
 ---
@@ -193,8 +204,8 @@ Each is independently shippable and behaviour-preserving.
 
 - **0 — Pin `Suspended`.** A test asserting `phaseAfterFinishedSync("Suspended") === "succeeded"` before anything reads it (§2.5), plus a live-Argo check of how a paused Rollout aggregates. *Largest correctness risk in the design; costs almost nothing.*
 - **1 — The declaration channel.** `StageDependencySchema`, the two schema fields, `webhook-processor` threading (including the adapter-branch re-forward), propose-time resolution of `dependsOn`/`atTargets` to object ids, CLI flags, `pnpm gen`. **Inert** — nothing reads it yet.
-- **2 — The graph edges.** Materialise declared dependencies as `depends_on` edges; replace `plan-compiler.ts:263-280`'s same-wave rejection, with a test asserting the pair now compiles. Delivers the dependency-chart half on its own.
-- **3 — The hold.** The per-target check at `reconcile.ts:814-830`, the three-branch verdict, the persist-on-change Decision, the freshness bound.
+- **2 — The graph edges.** Materialise declared dependencies as `depends_on` edges; replace `plan-compiler.ts:263-280`'s same-wave rejection, with a test asserting the pair now compiles. Delivers the dependency-chart half on its own. Keep the **cycle** refusal (§2.6) — it is the one clause the hold cannot take over.
+- **3 — The hold.** The per-target check at `reconcile.ts:814-830`, the three-branch verdict, the persist-on-change Decision, the freshness bound. Its dependency set is the union in §2.6, declarations **and** in-target-set edges; a hold that reads only declarations does not close increment 2's window.
 - **4 — Surfaces.** `explain` and a CLI sub-command naming the held dependency, the stage badge in the component-pipeline view, the watchdog arm.
 - **5 — Federation.** Per §4, once ruled.
 

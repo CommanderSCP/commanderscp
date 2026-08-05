@@ -433,8 +433,10 @@ export async function proposeChange(
  * is a plain UNIQUE, not a partial index, and `deleteRelationship` is a SOFT delete — so a
  * tombstoned edge still occupies the key and NO create can ever replace it. Treating a tombstone as
  * "already materialised" is what stops an operator's one-off deletion from turning every subsequent
- * push of that microservice into a 409. The coupling itself is unaffected either way: the hold reads
- * `properties.stageDependencies` on the change, never the edge.
+ * push of that microservice into a 409. THE DECLARED coupling is unaffected either way: the hold
+ * reads it off `properties.stageDependencies`, which no edge deletion touches. (The edge is not
+ * inert — it ALSO orders a pair that are both targets of one change, ADR-0028 decision 6 — but that
+ * is the same fact arriving twice, and the declaration is the half a tombstone cannot take away.)
  *
  * NOTHING IS EVER DELETED HERE, and there is no pruning story on purpose. A declaration is ONE
  * repo's assertion about its own component; pruning "edges this push did not mention" would let A's
@@ -443,9 +445,11 @@ export async function proposeChange(
  * `minWeight`/`atTargets` DO NOT RIDE ON THE EDGE. Relationship `properties` are silently discarded
  * on four separate legs of the way in (rollout-step-coupling.md §0.5) and relationships have no
  * update path at all, so per-dependency semantics hung on an edge would validate, apply, and store
- * nothing. The change's own `properties.stageDependencies` stays the single authority for what the
- * hold reads; the edge carries only the FACT of the dependency, which is all impact analysis
- * (`graph/named-queries.ts`'s `DEFAULT_IMPACT_TYPES`) consumes. Existing `consumes` edges are left
+ * nothing. The change's own `properties.stageDependencies` stays the only source of a QUALIFIED
+ * dependency; the edge carries only the FACT of one, which is all impact analysis
+ * (`graph/named-queries.ts`'s `DEFAULT_IMPACT_TYPES`) consumes — and all the hold reads it for, in
+ * the one case where it does (both endpoints targets of the same change, ADR-0028 decision 6, where
+ * it applies the plain `succeeded` test with no qualifiers). Existing `consumes` edges are left
  * strictly alone for the same reason — impact analysis reads both, so nothing is lost by not
  * converging them, and converging them would rewrite data this feature never authored.
  */

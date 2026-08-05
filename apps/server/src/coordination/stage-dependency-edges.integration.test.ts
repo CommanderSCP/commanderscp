@@ -77,8 +77,9 @@ describe("stage dependencies: the depends_on edges (ADR-0028 increment 2)", () =
     expect(await edgesBetween(b.id, a.id)).toHaveLength(0);
     // No per-dependency semantics ride on the edge — relationship `properties` are discarded on four
     // legs of the way in and relationships have no update path, so anything stored here would be a
-    // value nobody could ever change. `properties.stageDependencies` on the change stays the
-    // authority for what the hold reads.
+    // value nobody could ever change. `properties.stageDependencies` on the change stays the only
+    // source of a QUALIFIED dependency; where the hold reads the edge itself (both endpoints targets
+    // of one change, ADR-0028 decision 6) it applies the plain `succeeded` test.
     expect(edges[0]!.properties).toEqual({});
   });
 
@@ -198,7 +199,8 @@ describe("stage dependencies: the depends_on edges (ADR-0028 increment 2)", () =
     // edge permanently occupies the key — no create can ever replace it. The behaviour that matters
     // is therefore not "the edge comes back" (it cannot) but "the release is not collateral damage":
     // an operator's one-off deletion must not turn every subsequent push of that microservice into a
-    // 409. The coupling itself is unaffected either way — the hold reads the change's properties.
+    // 409. THE DECLARED coupling is unaffected either way — the hold reads it off the change's own
+    // properties, which no edge deletion touches.
     const b = await createTestComponent(admin, { name: `tomb-b-${randomUUID().slice(0, 8)}` });
     const a = await createTestComponent(admin, { name: `tomb-a-${randomUUID().slice(0, 8)}` });
 
