@@ -817,7 +817,14 @@ async function reconcileExecutingChange(
   // target A and polling target B in the same tick can't half-commit anything: each target's
   // durable state is exactly as fresh as its own last transaction, no more and no less.
   const isRollback = change.rollbackOfObjectId !== null;
-  let allTerminal = true;
+  /**
+   * Targets still in flight when this loop ends — HELD ONES INCLUDED. A count rather than the
+   * `allTerminal` boolean it replaces, because the terminalization at the bottom has to tell
+   * "something is genuinely still running" apart from "nothing is left except targets the
+   * stage-dependency hold withheld", and a boolean cannot say which. Exactly one increment per
+   * target: every branch that reaches one `continue`s or ends the iteration.
+   */
+  let nonTerminalTargets = 0;
   let anyFailed = false;
 
   // THE STAGE-DEPENDENCY HOLD (ADR-0028) — parsed ONCE per change per tick, in memory, before the
@@ -898,12 +905,12 @@ async function reconcileExecutingChange(
     }
 
     if (target.status === "pending" || target.status === "triggering") {
-      allTerminal = false;
+      nonTerminalTargets++;
       // BACKOFF GATE — skip a target whose executor refused it recently (see `triggerBackoffMs`).
-      // `allTerminal` is set false FIRST, deliberately: a backed-off target is still in flight, so
-      // the wave must not be treated as complete while one waits. Skipping here (rather than inside
-      // `triggerWaveTarget`) also avoids taking the advisory trigger-claim lock and re-reading the
-      // binding for a target we already know we are not going to fire this tick.
+      // The target is counted as in flight FIRST, deliberately: a backed-off target is still in
+      // flight, so the wave must not be treated as complete while one waits. Skipping here (rather
+      // than inside `triggerWaveTarget`) also avoids taking the advisory trigger-claim lock and
+      // re-reading the binding for a target we already know we are not going to fire this tick.
       //
       // GATED ON `triggering`, NOT ON `attempt` ALONE, and that is a correctness requirement rather
       // than an optimisation: `attempt` is NOT a pure failure counter — `markWaveTargetTriggered`
@@ -921,9 +928,11 @@ async function reconcileExecutingChange(
       // removed compile-time refusal covered). The two invariants of the
       // backoff gate above are copied verbatim and are load-bearing for the same reasons:
       //
-      //   1. `allTerminal` was already set false at the top of this branch, BEFORE this `continue`.
-      //      A held target is still in flight; without that the wave would be marked terminal and
-      //      the change would complete while one of its targets had never run.
+      //   1. The target was already counted in `nonTerminalTargets` at the top of this branch,
+      //      BEFORE this `continue`. A held target is still in flight; without that the wave would
+      //      be marked terminal and the change would complete while one of its targets had never
+      //      run. What that count must NOT do is keep an already-FAILED wave alive forever — see
+      //      the terminalization at the bottom of this loop, which is why the count is a number.
       //   2. The skip happens BEFORE `triggerWaveTarget`, so a held target takes no advisory
       //      trigger-claim lock and re-reads no executor binding for a call it is not going to make.
       //
@@ -1019,7 +1028,7 @@ async function reconcileExecutingChange(
     if (!target.executorRef) {
       // Shouldn't happen (triggered/observing always carry the ref markWaveTargetTriggered set) —
       // defensive no-op; next tick will see the same state and try again.
-      allTerminal = false;
+      nonTerminalTargets++;
       continue;
     }
     try {
@@ -1065,13 +1074,13 @@ async function reconcileExecutingChange(
           });
         });
       } else {
-        allTerminal = false;
+        nonTerminalTargets++;
         await withTenantTx(db, orgId, (tx) =>
           updateWaveTargetObserved(tx, orgId, target.id, "observing", observedState)
         );
       }
     } catch (err) {
-      allTerminal = false; // still in flight as far as we know — polled again next tick
+      nonTerminalTargets++; // still in flight as far as we know — polled again next tick
       console.error(
         `[reconcile] org ${orgId} change ${change.objectId} target ${target.targetObjectId} poll failed (will retry next tick):`,
         err
@@ -1087,7 +1096,26 @@ async function reconcileExecutingChange(
     await recordStageDependencyHold(db, orgId, change, activeWave, heldTargets);
   }
 
-  if (!allTerminal) return; // still in flight — next tick polls/resumes again
+  // TERMINALIZATION, IN TWO RULES RATHER THAN ONE — because a held target is in flight (invariant 1
+  // above) and a single `if (!allTerminal) return` therefore kept an already-FAILED wave alive
+  // forever. A wave with one failed target and one held one never reached `markWaveTerminal`, so the
+  // `failed` branch at the top of this function never ran: no `autoRollbackOnFailure`, no park, no
+  // epitaph, no failure recorded on the change, while the hold's `updated_at` bump re-served the
+  // change every tick and occupied a `BATCH_LIMIT` slot permanently. That was a REGRESSION on the
+  // loud 400 the compile-time same-wave refusal used to give this exact shape (ADR-0028 decision 6).
+  //
+  // Holding a dependant on a doomed wave buys nothing — its dependency is not going to arrive in
+  // THIS wave, and the wave's verdict is already decided — so the hold stops keeping it open. The
+  // test is `anyFailed`, NOT the `failed` literal, so `aborted` and `no_executor` (both of which
+  // mark a wave failed, and neither of which ever ran) are covered by the same line.
+  //
+  // The held target is still NEVER TRIGGERED on the way there, which is the whole point of the hold:
+  // it is left `pending` on a terminal wave — the truthful record, since no executor was ever handed
+  // it — and from the next tick on the `failed` branch returns before this loop is reached at all.
+  // Its hold Decision was written just above, so what kept it from running stays on record beside
+  // the failure that ended the wave.
+  if (nonTerminalTargets - heldTargets.length > 0) return; // something is genuinely still running
+  if (heldTargets.length > 0 && !anyFailed) return; // the PURE hold: unchanged, still in flight
   await withTenantTx(db, orgId, (tx) =>
     markWaveTerminal(tx, orgId, activeWave.id, anyFailed ? "failed" : "succeeded")
   );

@@ -234,9 +234,10 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     expect(firedFor(dependant.at(gamma))).toBe(0);
     expect(await waveTargetStatus(change.id, dependant.at(gamma))).toBe("pending");
 
-    // (b) INVARIANT 1, copied verbatim from the backoff gate: `allTerminal = false` is set BEFORE
-    // the `continue`. Drop it and the wave below marks itself `succeeded` — a change that reports a
-    // clean release for a target that never ran, which is worse than the bug this feature fixes.
+    // (b) INVARIANT 1, copied verbatim from the backoff gate: the target is counted as in flight
+    // BEFORE the `continue`. Drop it and the wave below marks itself `succeeded` — a change that
+    // reports a clean release for a target that never ran, which is worse than the bug this feature
+    // fixes.
     expect(await waveStatuses(change.id)).toEqual(["running"]);
     const row = await changeRow(change.id);
     expect(row.state).toBe("executing");
@@ -638,6 +639,84 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
       const context = row.inputContext as HeldContext;
       expect(context.held.map((h) => h.targetObjectId)).toEqual([dependant.at(gamma)]);
     }
+  });
+
+  it("a FAILED target TERMINALIZES the wave even with a held target beside it", async () => {
+    // THE INVERSE OF THE HOLD'S INVARIANT, and a regression the hold introduced on the very shape
+    // ADR-0028 decision 6 re-opened. A held target is in flight, so a wave carrying one never
+    // reached `markWaveTerminal` — and with the dependency's own target FAILED in that same wave,
+    // "in flight" was permanent: the dependency is not coming back within this wave, so the hold
+    // could never clear. The change then sat in `executing` forever with NO auto-rollback, NO park,
+    // NO epitaph and no failure recorded anywhere, while the hold's `updated_at` bump re-served it
+    // every tick and occupied a BATCH_LIMIT slot for good. Before decision 6 this exact input was a
+    // loud `topology_violates_dependency` 400 at compile time, so silence here is strictly worse
+    // than what it replaced.
+    const dependency = await componentAt("wedge-dep", [gamma]);
+    const dependant = await componentAt("wedge-app", [gamma]);
+    executorConfig.forcePhase[dependency.at(gamma)] = "failed";
+
+    const change = await release(
+      "wedge",
+      [dependant.id, dependency.id],
+      [{ dependsOn: dependency.id }]
+    );
+    await tick(6);
+
+    // (a) The hold's own guarantee is NOT traded away to get the wave unstuck: the dependant was
+    // never handed to an executor, on this tick or any other. Asserted against the executor's call
+    // log, not a status column.
+    expect(firedFor(dependant.at(gamma))).toBe(0);
+    // Left `pending` on a terminal wave — the truthful record of a target no executor ever saw.
+    expect(await waveTargetStatus(change.id, dependant.at(gamma))).toBe("pending");
+    expect(await waveTargetStatus(change.id, dependency.at(gamma))).toBe("failed");
+
+    // (b) THE FIX. The wave reaches a verdict, and the change reaches the failure path every other
+    // failed wave takes — parked for the operator (no `autoRollbackOnFailure` policy applies here),
+    // which is also what frees the BATCH_LIMIT slot it used to hold forever.
+    expect(await waveStatuses(change.id)).toEqual(["failed"]);
+    expect((await changeRow(change.id)).reconcileBlockedAt).not.toBeNull();
+
+    // (c) WHY it never ran is still on record beside the failure that ended the wave.
+    expect((await holdDecisions(change.id)).length).toBeGreaterThan(0);
+
+    // (d) And terminalizing is not a delayed release: further ticks never fire the held target.
+    await tick(3);
+    expect(firedFor(dependant.at(gamma))).toBe(0);
+    delete executorConfig.forcePhase[dependency.at(gamma)];
+  });
+
+  it("the PURE hold still keeps a wave in flight — with nothing failed, nothing terminalizes", async () => {
+    // THE CONTROL for the case above, and the invariant the backoff gate's comment calls
+    // load-bearing: a hold must keep an otherwise-healthy wave open, or a change reports a clean
+    // release for a target that never ran. Both shapes are pinned, because the fix above reads two
+    // things — how many targets are still in flight, and how many of those are merely held.
+    //
+    // SHAPE 1: a held target beside a sibling that is genuinely still running.
+    const dependency = await componentAt("inflight-dep", [gamma]);
+    const dependant = await componentAt("inflight-app", [gamma]);
+    const change = await release(
+      "inflight",
+      [dependant.id, dependency.id],
+      [{ dependsOn: dependency.id }]
+    );
+    await tick(4);
+
+    expect(await waveTargetStatus(change.id, dependency.at(gamma))).toBe("observing");
+    expect(firedFor(dependant.at(gamma))).toBe(0);
+    expect(await waveStatuses(change.id)).toEqual(["running"]);
+    expect((await changeRow(change.id)).reconcileBlockedAt).toBeNull();
+
+    // SHAPE 2: the held target is the ONLY thing left in flight — nothing else is running, and
+    // nothing has failed. This is the pure hold, and it must stay open indefinitely.
+    const soloDependency = await componentAt("solo-dep", [gamma]);
+    const solo = await componentAt("solo-app", [gamma]);
+    const soloChange = await release("solo", [solo.id], [{ dependsOn: soloDependency.id }]);
+    await tick(5);
+
+    expect(firedFor(solo.at(gamma))).toBe(0);
+    expect(await waveStatuses(soloChange.id)).toEqual(["running"]);
+    expect((await changeRow(soloChange.id)).reconcileBlockedAt).toBeNull();
+    expect((await changeRow(soloChange.id)).state).toBe("executing");
   });
 
   it("a declared coupling with NO stage-shaped topology is NOT enforced — and SAYS SO (ADR-0028 decision 4)", async () => {

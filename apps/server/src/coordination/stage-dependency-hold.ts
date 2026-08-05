@@ -34,9 +34,11 @@ import type { DependsOnEdge } from "./plan-compiler.js";
  *
  * This module is the PREDICATE only; `reconcile.ts`'s per-target loop is the seam that acts on it.
  * The split is deliberate — the predicate is a pure-ish read that a test can drive directly, and the
- * seam is three lines whose two invariants (`allTerminal = false` before the `continue`, and the
- * skip happening before the advisory trigger-claim lock) are copied verbatim from the backoff gate
- * beside it.
+ * seam is three lines whose two invariants (the target counted as in flight before the `continue`,
+ * and the skip happening before the advisory trigger-claim lock) are copied verbatim from the
+ * backoff gate beside it. With ONE thing the backoff gate never needed: a held target must not keep
+ * an already-failed wave alive, so the seam's terminalization asks whether every target still in
+ * flight is a held one rather than whether any is (reconcile.ts, end of the per-target loop).
  *
  * WHAT THIS IS NOT: it is not a rollout-step hold. `ExecutorPlugin` is exactly `observe`/`trigger`/
  * `status`/`abort`/`describeCapabilities`; there is no advance/pause/resume verb to withhold once a
