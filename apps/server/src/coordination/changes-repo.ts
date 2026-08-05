@@ -198,19 +198,59 @@ export async function proposeChange(
   // the thing it names never existed. Both halves are resolved: an `atTargets` typo would otherwise
   // scope the coupling to a place that does not exist, which reads as "applies nowhere" — a silent
   // fail-OPEN, the mirror image of the forever-wait.
+  //
+  // AND THE TYPE IS CHECKED, ON THE SAME PRINCIPLE. Resolving proves the object EXISTS; it does not
+  // prove the declaration can ever be enforced, and a reference of the wrong type is inert in
+  // exactly the silent way an unresolvable one would have been:
+  //
+  //   * `dependsOn` MUST BE A COMPONENT. The `depends_on` edge type permits a service at both
+  //     endpoints, and a service is the shape users write (`seed.ts` has service->service), so this
+  //     is accepted-looking: the edge is minted, the declaration is stored, and NOTHING EVER HOLDS.
+  //     The hold resolves a wave target to its placement and asks `listPlacementsForComponents` for
+  //     the dependency's placements — and a placement's `component` must be typeId `component`
+  //     (`graph/placements-repo.ts`), so a service returns no rows, every verdict is `not_placed`
+  //     -> satisfied, and not even the `stage_dependency_unscoped` warn fires. Silently inert
+  //     forever is the worst of the available answers.
+  //   * `atTargets` MUST BE DEPLOYMENT-TARGETS. The hold matches these against the placement's own
+  //     `deploymentTargetId`, so anything else matches nothing, the declaration applies nowhere, and
+  //     the release runs uncoupled — the same fail-open the unresolvable-ref 404 above exists to
+  //     prevent, just wearing a valid id.
+  //
+  // Refused with a 400 where it was authored, the same call `createRelationship` already makes for
+  // an endpoint its type forbids (a `dependsOn` naming a deployment-target used to reach that check
+  // and is now refused here instead, with a message that says what to do about it).
+  const resolveDeclaredRef = async (
+    idOrUrn: string,
+    expectedTypeId: "component" | "deployment-target",
+    describe: (actualTypeId: string) => string
+  ): Promise<string> => {
+    const object = await getObjectByIdOrUrnAnyType(tx, input.orgId, idOrUrn);
+    if (object.typeId !== expectedTypeId) throw badRequest(describe(object.typeId));
+    return object.id;
+  };
   const resolvedStageDependencies =
     input.stageDependencies === undefined
       ? undefined
       : await Promise.all(
           input.stageDependencies.map(async (dep) => ({
-            dependsOn: (await getObjectByIdOrUrnAnyType(tx, input.orgId, dep.dependsOn)).id,
+            dependsOn: await resolveDeclaredRef(
+              dep.dependsOn,
+              "component",
+              (typeId) =>
+                `stage dependency '${dep.dependsOn}' names a '${typeId}' — \`stageDependencies[].dependsOn\` must name a component, because a stage-scoped hold is evaluated against the dependency's PLACEMENTS and only a component can be placed; a '${typeId}' would never hold anything`
+            ),
             ...(dep.minWeight === undefined ? {} : { minWeight: dep.minWeight }),
             ...(dep.atTargets === undefined
               ? {}
               : {
                   atTargets: await Promise.all(
-                    dep.atTargets.map(
-                      async (t) => (await getObjectByIdOrUrnAnyType(tx, input.orgId, t)).id
+                    dep.atTargets.map((t) =>
+                      resolveDeclaredRef(
+                        t,
+                        "deployment-target",
+                        (typeId) =>
+                          `stage dependency '${dep.dependsOn}' is scoped to '${t}', which is a '${typeId}' — \`atTargets\` must name deployment-targets, and a scope that names anything else matches no place at all, so the coupling would silently apply nowhere`
+                      )
                     )
                   )
                 })

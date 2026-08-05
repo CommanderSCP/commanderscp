@@ -893,10 +893,12 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
        *  exercise the promotion-import strip (§8 Q2). The target doubles as the `at` scope because
        *  `requires[].at` must resolve in domain A at propose time. */
       coupling?: boolean;
-      /** ADR-0028: propose the change with a declared `stageDependencies` naming a SECOND service
-       *  in domain A, to exercise the promotion-import strip. A second object rather than the
+      /** ADR-0028: propose the change with a declared `stageDependencies` naming a second object
+       *  in domain A, to exercise the promotion-import strip. A separate object rather than the
        *  change's own target, because a self-declaration mints no `depends_on` edge and would make
-       *  the fixture answer an easier question than the real one. */
+       *  the fixture answer an easier question than the real one. A COMPONENT specifically:
+       *  `dependsOn` is refused for anything else at propose time, since only a component can be
+       *  placed and therefore only a component can ever be held against. */
       stageCoupling?: boolean;
     } = {}
   ): Promise<{
@@ -920,7 +922,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
       createObject(tx, {
         orgId: domainA.orgId,
         domainId: null,
-        typeId: "service",
+        typeId: "component",
         actorObjectId: domainA.orgId,
         requestId: "t-promo-stage-dep",
         name: `promo-stage-dep-${randomUUID()}`

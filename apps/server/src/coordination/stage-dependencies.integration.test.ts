@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { ScpClient } from "@scp/sdk";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { auditEvents, changeSourceEvents, decisions } from "../db/schema.js";
+import { auditEvents, changeSourceEvents, decisions, relationships } from "../db/schema.js";
 import {
   createTestComponent,
   createTestOrg,
@@ -184,6 +184,63 @@ describe("stage dependencies: the declaration channel (ADR-0028 increment 1)", (
         ]
       })
     ).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("a `dependsOn` naming a SERVICE is refused — it resolves, mints an edge, and could never hold", async () => {
+    // RESOLVING PROVES THE OBJECT EXISTS; IT DOES NOT PROVE THE DECLARATION CAN EVER BE ENFORCED.
+    // `depends_on` permits a service at both endpoints and service->service is the shape users
+    // write (`seed.ts` has one), so this used to be accepted all the way through: the edge was
+    // minted, the declaration stored, and nothing ever held. The hold asks
+    // `listPlacementsForComponents` for the dependency's placements, and a placement's component
+    // must be typeId `component` — so a service returns no rows, every verdict is `not_placed` ->
+    // satisfied, and not even the `stage_dependency_unscoped` warn fires. Silently inert forever.
+    const a = await createTestComponent(admin, { name: `svc-dep-a-${randomUUID().slice(0, 8)}` });
+    const service = await admin.object("service").create({
+      name: `svc-dep-svc-${randomUUID().slice(0, 8)}`
+    });
+
+    await expect(
+      admin.changes.propose({
+        name: "depends on a service",
+        targets: [a.id],
+        stageDependencies: [{ dependsOn: service.id }]
+      })
+    ).rejects.toMatchObject({ status: 400 });
+
+    // Refused where it was AUTHORED, so nothing is half-written — the same contract the
+    // unresolvable-`dependsOn` 404 above keeps.
+    const edges = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(relationships)
+        .where(
+          and(
+            eq(relationships.orgId, org.orgId),
+            eq(relationships.typeId, "depends_on"),
+            eq(relationships.fromId, a.id),
+            eq(relationships.toId, service.id)
+          )
+        )
+    );
+    expect(edges).toHaveLength(0);
+  });
+
+  it("an `atTargets` entry that is not a deployment-target is refused for the same reason", async () => {
+    // The other half of the same property: an `atTargets` naming a component resolves fine and then
+    // matches no place at all, because the hold compares it against the placement's own
+    // `deploymentTargetId`. The coupling applies nowhere and the release runs uncoupled — which is
+    // exactly the fail-open the unresolvable-`atTargets` 404 above exists to prevent, wearing a
+    // valid id.
+    const b = await createTestComponent(admin, { name: `at-type-b-${randomUUID().slice(0, 8)}` });
+    const a = await createTestComponent(admin, { name: `at-type-a-${randomUUID().slice(0, 8)}` });
+
+    await expect(
+      admin.changes.propose({
+        name: "scopes the coupling to something that is not a place",
+        targets: [a.id],
+        stageDependencies: [{ dependsOn: b.id, atTargets: [b.id] }]
+      })
+    ).rejects.toMatchObject({ status: 400 });
   });
 
   // -----------------------------------------------------------------------------------------
