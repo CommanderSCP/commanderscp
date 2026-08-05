@@ -1,5 +1,6 @@
-import { and, desc, eq, getTableColumns, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, inArray, isNull, or, sql } from "drizzle-orm";
 import type { ExecutionStatus } from "@scp/plugin-api";
+import type { ChangeState } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changePlans, changes, changeWaveTargets, changeWaves, objects } from "../db/schema.js";
 
@@ -313,16 +314,68 @@ export async function markWaveTargetNoExecutor(
 }
 
 /**
- * Change states an ABANDONED wave target hangs off — the two terminal states nothing ever moves a
- * target out of again.
+ * Wave-target statuses that RECORD AN OUTCOME — something was actually attempted at that place and
+ * this row says how it went. The set is `reconcile.ts`'s per-target loop read the other way round:
+ * every branch that `continue`s WITHOUT incrementing `nonTerminalTargets` (`succeeded`, `failed`,
+ * `aborted`, `no_executor`) is here, and every branch that increments it (`pending`, `triggering`,
+ * `triggered`, `observing`) is not.
  *
- * `change_wave_targets` is written by NOTHING on the cancel or rollback paths: cancelling a change
- * mid-flight leaves every one of its targets frozen exactly where it stood (`pending`, `triggering`,
- * `observing`), forever. That row is not "the dependency's latest deploy" in any sense a hold can
- * act on — nobody is going to finish it — so counting it as one wedged every dependant of that
- * component at that place PERMANENTLY, with no override, no expiry, and no operator escape.
+ * A terminal row is believable no matter what became of the change that produced it: cancelling a
+ * change after its deploy succeeded does not un-deploy it, and a `failed` row is an accurate account
+ * of a real attempt whether or not anyone is still tending the change.
  */
-const ABANDONED_CHANGE_STATES: string[] = ["cancelled", "rolled_back"];
+const TERMINAL_WAVE_TARGET_STATUSES: string[] = ["succeeded", "failed", "aborted", "no_executor"];
+
+/**
+ * Does a change in this state still STAND BEHIND its NON-terminal wave targets — is something
+ * actually going to drive that `pending`/`triggering`/`triggered`/`observing` row to an outcome?
+ *
+ * EXHAUSTIVE BY CONSTRUCTION, and that is the point of the shape. This started life as a
+ * hand-written two-element array (`["cancelled", "rolled_back"]`) that enumerated the states somebody
+ * had thought of, and it was wrong the day it was written: plans are compiled at
+ * `evaluated -> coordinated`, BEFORE a change executes, so a change that never starts still owns
+ * `pending` rows — and being newest they outrank the dependency's genuinely successful earlier deploy
+ * at the same place. `Record<ChangeState, boolean>` makes the compiler refuse a new state until
+ * somebody rules on it here, the same forcing function `watchdog.ts`'s `WATCHDOG_SLA_MS` uses.
+ *
+ * THE RULING, state by state:
+ *
+ *  * `proposed`, `evaluated` — NO PLAN EXISTS YET (`compileAndPersistPlan` runs on the
+ *    `evaluated -> coordinated` edge), so there are no rows to stand behind; and there is no edge
+ *    back into either state, so a change cannot return here carrying old ones.
+ *  * `coordinated` — a plan exists and every target is `pending`, but NOTHING HAS BEEN TRIGGERED and
+ *    the change is not guaranteed to move: a freeze or any other gate on `coordinated -> executing`
+ *    throws inside `advanceCoordinatedChanges`, which logs and retries, so a change can sit here for
+ *    as long as the freeze lasts. Counting those `pending` rows would hold every dependant of that
+ *    component behind a release that has not started. What this gives up is one tick of "B is about
+ *    to deploy" — a guarantee the coupling never made anyway, since B could equally not be proposed.
+ *  * `waiting` — parked on its own unsatisfied `requires`, and the owner's rule for that state is
+ *    "wait forever, warn at 24h". Its `pending` rows may never become anything.
+ *  * `executing` — YES. This is the in-flight case the coupling exists for: B is rolling out v2 at
+ *    this place right now and A must wait for v2 rather than being let through by v1's old success.
+ *  * `validating`, `accepted` — execution is over. Every target that ran carries a terminal status
+ *    and is picked up by {@link TERMINAL_WAVE_TARGET_STATUSES} on its own; a non-terminal row left
+ *    behind on a terminalized wave (ADR-0028: a held target is left `pending` on a failed wave) is
+ *    one nothing will ever come back for.
+ *  * `cancelled`, `rolled_back` — abandoned. Nothing on either path touches `change_wave_targets`,
+ *    so a cancel mid-flight freezes every target exactly where it stood, for the lifetime of the
+ *    database.
+ */
+const CHANGE_STANDS_BEHIND_ITS_TARGETS: Record<ChangeState, boolean> = {
+  proposed: false,
+  evaluated: false,
+  coordinated: false,
+  waiting: false,
+  executing: true,
+  validating: false,
+  accepted: false,
+  cancelled: false,
+  rolled_back: false
+};
+
+const DRIVING_CHANGE_STATES = (
+  Object.keys(CHANGE_STANDS_BEHIND_ITS_TARGETS) as ChangeState[]
+).filter((state) => CHANGE_STANDS_BEHIND_ITS_TARGETS[state]);
 
 /**
  * The MOST RECENT wave target for one object that some change still stands behind — the read the
@@ -334,27 +387,44 @@ const ABANDONED_CHANGE_STATES: string[] = ["cancelled", "rolled_back"];
  * `succeeded` in particular would say yes for a dependency that succeeded last week and is RIGHT NOW
  * mid-redeploy at the same place — which is exactly the situation the coupling exists to order.
  *
- * WHAT *IS* FILTERED, AND WHY IT HAS TO BE. A wave target only describes a deploy while the change
- * that owns it is still a live account of one. Two shapes are not, and both are excluded by joining
- * back through `change_waves -> change_plans -> changes -> objects`:
+ * WHAT *IS* FILTERED, AND WHY IT HAS TO BE — ONE PROPERTY, not a list of symptoms:
  *
- *   * a SOFT-DELETED change object. This is the same join `component-pipeline.ts`'s
- *     `currentByPlacement` already makes for the same "what last happened at this stage" question
- *     (`o.deleted_at IS NULL`). The two reads used to disagree, and a hold that believes a row the
- *     pipeline view has stopped showing is unexplainable from the UI an operator would reach for.
- *   * a change in one of {@link ABANDONED_CHANGE_STATES}. Nothing on the cancel path touches
- *     `change_wave_targets`, so an abandoned change's targets stay `pending`/`triggering`/
- *     `observing` for the lifetime of the database. Reading one as "B is behind" holds every
- *     dependant of B here FOREVER — even when B's last *actual* deploy at this place succeeded.
+ *   **A wave target that no change is actively standing behind must not be read as the dependency's
+ *   current state at this place.**
  *
- * THE RULE FOR A `failed`/`aborted`/`no_executor` LATEST TARGET, stated because it is deliberately
- * NOT the same call: those rows are KEPT, and they hold. A change whose target failed has not been
- * abandoned — it is a live change parked on a real failure, its epitaph is accurate, and "do not
- * deploy ahead of a dependency whose own deploy here just failed" is the guarantee working. (An
- * ADR-0006 `no_executor` masking gap therefore holds dependants until it is fixed, rolled back, or
- * cancelled — all three of which are actions somebody takes, which is the difference that matters.)
- * Holding on a genuinely failed dependency is defensible; holding forever on an ABANDONED one, where
- * no action exists that would ever clear it, is not.
+ * A row qualifies as an account of a deploy in exactly two ways, and the `WHERE` below says only
+ * that: it either RECORDS AN OUTCOME ({@link TERMINAL_WAVE_TARGET_STATUSES} — something really
+ * happened here and this is how it went), or it is still non-terminal and a change that is
+ * {@link CHANGE_STANDS_BEHIND_ITS_TARGETS} is driving it toward one. Anything else is an INTENTION
+ * nobody is acting on — a plan compiled for a change that parked, was abandoned, or has not started
+ * — and being NEWEST it would outrank, and permanently mask, the dependency's genuinely successful
+ * earlier deploy at the same place. Skipping it makes this read fall back to the next row that does
+ * describe a deploy, which is the one an operator would name if you asked them.
+ *
+ * Two shapes of "not standing behind it" are worth naming because each cost a real wedge:
+ *
+ *   * A change PARKED BY `markChangeReconcileBlocked` — a wave that failed SOMEWHERE ELSE, or an
+ *     ADR-0006 `no_executor` masking gap. It is excluded from `listChangeRowsInStates` and therefore
+ *     from every future tick, so its untouched `pending` rows at OTHER places will never be
+ *     triggered. Hence `reconcile_blocked_at IS NULL` beside the state test rather than the state
+ *     test alone: `executing` is necessary but not sufficient.
+ *   * A change in `waiting` (or `coordinated`) whose plan was compiled at `evaluated -> coordinated`
+ *     — BEFORE anything executes. Its `pending` rows are the plan, not a deploy.
+ *
+ * THE BOUNDARY, stated because it is deliberately NOT the same call: a `failed`/`aborted`/
+ * `no_executor` LATEST TARGET is KEPT, and it holds — even though the change owning it is parked.
+ * That row is terminal: a real attempt was made here and it failed, which is a fact about the place,
+ * not about who is tending the change. "Do not deploy ahead of a dependency whose own deploy here
+ * just failed" is the guarantee working. (An ADR-0006 `no_executor` gap therefore holds dependants
+ * until it is fixed, rolled back, or cancelled — all three of which are actions somebody takes.) By
+ * the same token a SUCCEEDED row stays believable after its change is cancelled: cancelling a change
+ * does not un-deploy what already shipped.
+ *
+ * Separately, and for a different reason, a SOFT-DELETED change object is excluded outright. That is
+ * the same join `component-pipeline.ts`'s `currentByPlacement` already makes for the same "what last
+ * happened at this stage" question (`o.deleted_at IS NULL`). The two reads used to disagree, and a
+ * hold that believes a row the pipeline view has stopped showing is unexplainable from the UI an
+ * operator would reach for.
  *
  * "Most recent" is by the TARGET's `created_at` then `id`, matching how ids are minted (UUIDv7,
  * time-ordered) and NOT by `updated_at`, which moves on every poll: ordering by `updated_at` would
@@ -390,7 +460,10 @@ export async function findLatestWaveTargetForObject(
         eq(changeWaveTargets.orgId, orgId),
         eq(changeWaveTargets.targetObjectId, targetObjectId),
         isNull(objects.deletedAt),
-        notInArray(changes.state, ABANDONED_CHANGE_STATES)
+        or(
+          inArray(changeWaveTargets.status, TERMINAL_WAVE_TARGET_STATUSES),
+          and(inArray(changes.state, DRIVING_CHANGE_STATES), isNull(changes.reconcileBlockedAt))
+        )
       )
     )
     .orderBy(desc(changeWaveTargets.createdAt), desc(changeWaveTargets.id))

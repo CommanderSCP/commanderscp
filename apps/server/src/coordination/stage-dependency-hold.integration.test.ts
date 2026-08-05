@@ -369,6 +369,154 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     delete executorConfig.forcePhase[dependency.at(gamma)];
   });
 
+  it("a release PARKED IN `waiting` does not mask the dependency's earlier success", async () => {
+    // THE SAME WEDGE AS THE ABANDONED CASE, REACHED WITHOUT ANYONE ABANDONING ANYTHING — and the
+    // instance that showed the two-state `["cancelled","rolled_back"]` list was an INCOMPLETE CENSUS
+    // rather than a complete rule. Plans are compiled on the `evaluated -> coordinated` edge, BEFORE
+    // a change executes, so a change that never starts still OWNS `pending` wave targets at every
+    // place it would have deployed. Being newest, they outranked the dependency's genuinely
+    // successful earlier deploy at the same place, and every dependant was held forever behind a
+    // release that had not begun and might never begin (the owner's rule for `waiting` is "wait
+    // forever, warn at 24h").
+    //
+    // The property, which is what the fix is keyed on rather than a longer list of states: a wave
+    // target that no change is actively standing behind is not the dependency's current state here.
+    const dependency = await componentAt("waiting-dep", [gamma]);
+    const dependant = await componentAt("waiting-app", [gamma]);
+
+    // (1) The dependency's real deploy at gamma SUCCEEDS.
+    const first = await release("waiting-dep-first", [dependency.id]);
+    executorConfig.forcePhase[dependency.at(gamma)] = "succeeded";
+    await tick(3);
+    expect(await waveTargetStatus(first.id, dependency.at(gamma))).toBe("succeeded");
+
+    // (2) A second release of the dependency compiles its plan and then parks in `waiting` on a
+    //     cross-change prerequisite nothing in this org will ever provide.
+    delete executorConfig.forcePhase[dependency.at(gamma)];
+    const second = await admin.changes.propose({
+      name: `waiting-dep-second-${randomUUID().slice(0, 8)}`,
+      targets: [dependency.id],
+      topology: topologyId,
+      requires: [{ key: "never-provided", at: gamma.id }]
+    });
+    await tick(3);
+
+    // The inputs, asserted rather than assumed: the change is parked, its gamma row exists, is the
+    // NEWEST one at that placement, and no executor has ever seen it.
+    expect((await changeRow(second.id)).state).toBe("waiting");
+    expect(await waveTargetStatus(second.id, dependency.at(gamma))).toBe("pending");
+    expect(firedFor(dependency.at(gamma))).toBe(1);
+
+    // (3) A dependant proposed now must see the SUCCEEDED deploy, not the parked plan.
+    const change = await release("waiting-app", [dependant.id], [{ dependsOn: dependency.id }]);
+    await tick(4);
+
+    expect(firedFor(dependant.at(gamma))).toBe(1);
+    expect(await holdDecisions(change.id)).toHaveLength(0);
+  });
+
+  it("a release PARKED by a wave that failed ELSEWHERE does not mask the earlier success either", async () => {
+    // The third way into the same wedge, and the one that shows why the fix cannot simply be "trust
+    // terminal rows and distrust the rest of a parked change". `markChangeReconcileBlocked` takes a
+    // change OUT of `listChangeRowsInStates` for good, so every target it has not reached yet stays
+    // `pending` for the lifetime of the database — at OTHER places, where nothing failed at all.
+    //
+    // THE BOUNDARY THIS MUST NOT CROSS is pinned by the `FAILED` case above: the same park, read at
+    // the place where the target itself is `failed`, still HOLDS. Terminal is a fact about the
+    // place; parked is a fact about who is tending the change.
+    const twoWave = await admin.object("release-topology").create({
+      name: `gamma-then-prod-${randomUUID().slice(0, 8)}`,
+      properties: {
+        waves: [
+          { name: "gamma", mode: "parallel", targets: [gamma.id] },
+          { name: "prod", mode: "parallel", targets: [prod.id] }
+        ]
+      }
+    });
+    const twoWaveRelease = (
+      label: string,
+      targets: string[],
+      stageDependencies?: { dependsOn: string }[]
+    ) =>
+      admin.changes.propose({
+        name: `${label}-${randomUUID().slice(0, 8)}`,
+        targets,
+        topology: twoWave.id,
+        ...(stageDependencies ? { stageDependencies } : {})
+      });
+
+    const dependency = await componentAt("parked-dep", [gamma, prod]);
+    const dependant = await componentAt("parked-app", [prod]);
+
+    // (1) The dependency rolls both waves and SUCCEEDS at prod.
+    executorConfig.forcePhase[dependency.at(gamma)] = "succeeded";
+    executorConfig.forcePhase[dependency.at(prod)] = "succeeded";
+    const first = await twoWaveRelease("parked-dep-first", [dependency.id]);
+    await tick(8);
+    expect(await waveTargetStatus(first.id, dependency.at(prod))).toBe("succeeded");
+
+    // (2) A second release of the dependency FAILS at gamma — wave 0 terminalizes `failed` and the
+    //     change is parked for an operator, leaving its untouched prod row `pending` forever.
+    executorConfig.forcePhase[dependency.at(gamma)] = "failed";
+    delete executorConfig.forcePhase[dependency.at(prod)];
+    const second = await twoWaveRelease("parked-dep-second", [dependency.id]);
+    await tick(5);
+    expect((await changeRow(second.id)).reconcileBlockedAt).not.toBeNull();
+    expect(await waveTargetStatus(second.id, dependency.at(gamma))).toBe("failed");
+    expect(await waveTargetStatus(second.id, dependency.at(prod))).toBe("pending");
+
+    // (3) A dependant at PROD — where nothing failed — must see the succeeded deploy.
+    const change = await twoWaveRelease(
+      "parked-app",
+      [dependant.id],
+      [{ dependsOn: dependency.id }]
+    );
+    await tick(6);
+
+    expect(firedFor(dependant.at(prod))).toBe(1);
+    expect(await holdDecisions(change.id)).toHaveLength(0);
+    delete executorConfig.forcePhase[dependency.at(gamma)];
+  });
+
+  it("a GENUINELY IN-FLIGHT newer release DOES still supersede an older success", async () => {
+    // THE OTHER SIDE OF THE PROPERTY, and the reason the fix is a rule about who is standing behind
+    // a row rather than "ignore anything that is not `succeeded`". This is "B is rolling out v2 and
+    // A must wait for v2": the dependency succeeded here last week and is RIGHT NOW mid-redeploy at
+    // the same place, with a live `executing` change driving it. Falling back to the old success
+    // would let the dependant deploy against a version its dependency is in the middle of leaving —
+    // exactly the situation the coupling exists to order.
+    const dependency = await componentAt("supersede-dep", [gamma]);
+    const dependant = await componentAt("supersede-app", [gamma]);
+
+    const first = await release("supersede-dep-first", [dependency.id]);
+    executorConfig.forcePhase[dependency.at(gamma)] = "succeeded";
+    await tick(3);
+    expect(await waveTargetStatus(first.id, dependency.at(gamma))).toBe("succeeded");
+
+    delete executorConfig.forcePhase[dependency.at(gamma)];
+    const second = await release("supersede-dep-second", [dependency.id]);
+    await tick(2);
+    // Live, not parked, not waiting — the one shape that legitimately outranks a past success.
+    expect(await waveTargetStatus(second.id, dependency.at(gamma))).toBe("observing");
+    const secondRow = await changeRow(second.id);
+    expect(secondRow.state).toBe("executing");
+    expect(secondRow.reconcileBlockedAt).toBeNull();
+
+    const change = await release("supersede-app", [dependant.id], [{ dependsOn: dependency.id }]);
+    await tick(3);
+
+    expect(firedFor(dependant.at(gamma))).toBe(0);
+    const [decision] = await holdDecisions(change.id);
+    const verdict = (decision!.inputContext as HeldContext).held[0]!.dependencies[0]!;
+    expect(verdict.branch).toBe("behind");
+    expect(verdict.dependencyStatus).toBe("observing");
+
+    // And v2 finishing releases it — held, not wedged.
+    executorConfig.forcePhase[dependency.at(gamma)] = "succeeded";
+    await tick(3);
+    expect(firedFor(dependant.at(gamma))).toBe(1);
+  });
+
   it("a dependency NOT PLACED at this stage holds nothing — absence is a declared fact", async () => {
     // ADR-0026 D8: a component that is genuinely prod-only is a correct configuration, and
     // `plan-service.ts` already births its gamma wave `skipped`. Failing closed here would hold
