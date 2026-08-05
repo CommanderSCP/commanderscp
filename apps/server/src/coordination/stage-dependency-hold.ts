@@ -102,7 +102,14 @@ export type WeightUnreadableCause =
    *  call that failed and returned `undefined` with no marker. This is the DEFAULT case, not the
    *  exception. */
   | "no_weight"
-  /** A weight is stored but the target has never been observed, so nothing dates the reading. */
+  /** A weight is stored but the target has never been observed, so nothing dates the reading.
+   *
+   *  NOT REACHABLE THROUGH TODAY'S WRITERS, and named rather than dropped: `observed_state` is only
+   *  ever written by `updateWaveTargetObserved`, which sets `last_observed_at` in the same UPDATE,
+   *  so the two are written together or not at all. This is the backstop for a row that arrived
+   *  another way — a federation replay, a hand-repaired row, or a future writer that separates them
+   *  — and it exists so that "a weight with no date on it" degrades rather than being believed. The
+   *  ordinary "no poll has landed yet" case reports `no_weight`, because the whole jsonb is null. */
   | "not_observed"
   /** The reading is older than {@link OBSERVED_WEIGHT_FRESHNESS_MS}. */
   | "stale";
@@ -244,15 +251,23 @@ export async function evaluateStageDependencies(
       continue;
     }
     const latest = await findLatestWaveTargetForObject(tx, orgId, placementId);
-    verdicts.push(verdictFor(dep, latest, now));
+    verdicts.push(stageDependencyVerdict(dep, latest, now));
   }
 
   return finish(stage, verdicts, malformedVerdicts);
 }
 
-/** The universal test, then the optional qualifier, then the reason it held. Split out from the loop
- *  so it is unit-testable against a synthesised row without a database. */
-function verdictFor(
+/**
+ * The universal test, then the optional qualifier, then the reason it held — the whole branch matrix
+ * of ADR-0028 decision 4 for ONE dependency against ONE stored row.
+ *
+ * EXPORTED FOR DIRECT UNIT TESTING, on the same reasoning `decisions-repo.ts` exports
+ * `restatesDecision`: this is the entire decision content of the feature, and its most plausible
+ * failure mode — an unreadable weight quietly counting as satisfied, or as a weight of zero — is
+ * invisible from the outside because both produce a plausible-looking verdict. Everything around it
+ * (which rows are read, what is persisted) is pinned by the integration suite instead.
+ */
+export function stageDependencyVerdict(
   dep: ResolvedStageDependency,
   latest:
     | {
