@@ -126,8 +126,21 @@ Additive to `GET /components/{idOrUrn}/pipeline`, for the same reason the deploy
 
 ## 6. Open questions for review
 
-1. **§2's decision** — confirm the view renders build-as-source and build-as-stage per component, rather than picking one model for the product.
+1. **DECIDED (owner, 2026-08-04) — per component, and the view says which.** A component with a
+   `build`-Type binding shows a coordinated Build stage; one without shows "built upstream" plus the
+   CI run observed in `changes.source_ref`. Both arrangements are sanctioned by
+   `promotion-and-execution-model.md` §1, so the product does not have to choose one — but the VIEW
+   must state which applies, or the two become indistinguishable. On this estate today every
+   component is the upstream case (0 build-Type changes; all 148 source mappings `configuration`).
 2. **What makes an infra change "directly correlated to the component"** (item 1's lane)? `correlationKey` is the mechanism; the rule is not written down anywhere. Without it the infra lane cannot be drawn from data.
-3. **Does the empty `external_ref` on the two `image` bindings mean anything** — a half-finished import, or a deliberate placeholder? It decides whether item 4's registry stage can ever link anywhere, and whether those bindings are live pipelines or dead rows.
+3. **DECIDED — the two `image` bindings are to be DELETED.** Provenance settled it: hand-created
+   2026-07-17 at 15:37 and 15:41 with deliberate instance names, inline config, no execution-system —
+   someone starting the build arm on the day ADR-0007 was decided, and stopping. Nothing emits
+   `image`-Type changes, so they are unused; and they are not inert, because `reconcile.ts`'s
+   `targetRef: claim.externalRef ?? targetObjectId` means the first such change would resolve (ADR-0006
+   fail-closed never fires — there IS a binding) and dispatch the deployment-target's UUID where a repo
+   belongs. Removal is via the audited route, not SQL: `DELETE /v1/executors/{target}/binding?type=image`.
+
+4. **Superseded — does the empty `external_ref` mean anything** — a half-finished import, or a deliberate placeholder? It decides whether item 4's registry stage can ever link anywhere, and whether those bindings are live pipelines or dead rows.
 4. **Item 4 is Layer B and cannot be built honestly first.** The registry stage's whole value is the digest and the scan verdict, and SCP captures neither. Recommend it waits on observe-enrichment rather than shipping a permanently-"unknown" box.
 5. **Suggested build order**, each independently shippable: **(a)** source repos — Layer A, full data, answers the literal question; **(b)** the build/deploy chain via `provides`/`requires`, which also needs something to start populating it; **(c)** the infra lane once Q2 is settled; **(d)** the registry stage with observe-enrichment.
