@@ -1,9 +1,8 @@
 import type { Db } from "../db/client.js";
 import type { TrustDomainId } from "@scp/schemas";
 import { and, eq } from "drizzle-orm";
-import { objects, orgs } from "../db/schema.js";
+import { objects } from "../db/schema.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { ensureFederationSelf } from "../federation/self-repo.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import type { CelSandbox } from "../governance/cel-sandbox.js";
 import { badRequest, describeError } from "../errors.js";
@@ -467,29 +466,5 @@ export async function reconcileCampaignsOrgTick(
         .set({ updatedAt: new Date() })
         .where(and(eq(objects.orgId, orgId), eq(objects.id, campaignObject.id)))
     ).catch((err) => logCampaignError(orgId, campaignObject.id, "round-robin-bump", err));
-  }
-}
-
-/** Every org, one `reconcileCampaignsOrgTick` each — the campaign-scoped sibling of
- *  `reconcile.ts`'s `runReconcileSweep`, kept separate only because it needs its own org-list
- *  query; wired into the same sweep, not a second pg-boss job. */
-export async function runCampaignReconcileSweep(
-  db: Db,
-  host: PluginHost,
-  sandbox: CelSandbox
-): Promise<void> {
-  const orgRows = await db.select({ id: orgs.id }).from(orgs);
-  for (const org of orgRows) {
-    try {
-      // Resolved PER ORG, exactly as `reconcile.ts`'s `reconcileOrgTick` does — `federation_self` is
-      // an org-scoped row (one org = one federation identity), so there is no instance-wide id to
-      // hoist out of this loop.
-      const selfDomainId = (
-        await withTenantTx(db, org.id, (tx) => ensureFederationSelf(tx, org.id))
-      ).domainId;
-      await reconcileCampaignsOrgTick(db, org.id, host, sandbox, selfDomainId);
-    } catch (err) {
-      console.error(`[campaign-reconcile] org ${org.id} tick failed:`, err);
-    }
   }
 }
