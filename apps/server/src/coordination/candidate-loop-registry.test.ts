@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
  * whose body may re-serve a row without writing it.* Such a loop starves everything queued behind
  * the rows it keeps re-serving, silently and forever.
  *
- * IT HAS BEEN HIT FIVE TIMES IN THIS FILE'S SUBJECT AREA:
+ * IT HAS BEEN HIT SIX TIMES IN THIS FILE'S SUBJECT AREA:
  *   1. `advanceWaitingChanges`   — found, fixed, and well commented ("STARVATION fix,
  *                                   coupled-pipelines.md §3.5 hazard"). Only that ONE instance.
  *   2. `advanceExecutingChanges` — the same property, untouched. In production it stopped
@@ -21,8 +21,13 @@ import { describe, expect, it } from "vitest";
  *                                   censusing the property rather than chasing the symptom.
  *   5. `reconcileExecutingChange`'s POLL path — instance 2 again, in the SAME function, on the
  *                                   branch the fix for 2 did not reach. See below.
+ *   6. THE S10 SINGLE-WRITER SKIP    — `if (object.originDomainId !== selfDomainId) continue;`,
+ *                                   latent (no candidate row can have a foreign origin today), and
+ *                                   the ONLY one whose remedy is NOT a bump — bumping would write a
+ *                                   read-only replica's row. Closed by filtering the candidate
+ *                                   query instead; see "THE ONE OPEN ITEM" below.
  *
- * A comment naming the hazard as a class did not stop instances 2-5 from existing. That is what
+ * A comment naming the hazard as a class did not stop instances 2-6 from existing. That is what
  * this test is for: it cannot prove a loop is correct, but it makes ADDING one a deliberate act
  * that fails CI until somebody writes down which side of the property it falls on.
  *
@@ -50,15 +55,39 @@ import { describe, expect, it } from "vitest";
  *     the reconcile files leaves `state_entered_at` alone.
  *   * `observe.ts` — `listExecutorBindings` is unbounded, and the cursor advances per instance.
  *   * `federation/journal-repo.ts` — `ORDER BY sequence ASC LIMIT n` read from a monotonic cursor.
- *   * THE ONE OPEN ITEM: the S10 single-writer skip (`if (object.originDomainId !== selfDomainId)
- *     continue;`) at the top of five `advance*` loops leaves the row un-stamped, which IS this
- *     property. It is NOT reachable today — `federation/import-repo.ts`'s `object_upsert` branch
- *     never creates a local `changes` state-machine row for a synced change, and a PROMOTED change
- *     is locally originated, so no row in the candidate set can currently have a foreign origin
- *     (measured in `change-origin-domain.integration.test.ts`'s header). It is left unfixed
- *     deliberately: the right remedy is to filter foreign-origin rows OUT of
- *     `listChangeRowsInStates` (making those loops self-evicting, like `reconcile_blocked_at`
- *     already does) rather than to bump a read-only replica's row, and that is a design call.
+ *   * `campaign-reconcile.ts`'s `reconcileCampaignsOrgTick` — RE-CHECKED 2026-08-08 against the S10
+ *     variant of the property specifically, and it does NOT share it: `listActiveCampaignObjectIds`
+ *     has no origin predicate, the loop has no `originDomainId` skip, and it bumps EVERY campaign
+ *     it examines unconditionally. So there is no un-stamped skip path and no starvation. That
+ *     also means it would DRIVE a foreign-origin campaign and bump a replica's `objects` row —
+ *     a single-writer question, not a starvation one, and out of scope for the change that wrote
+ *     this note. It is NOT purely hypothetical: `import-repo.ts`'s `object_upsert` branch is
+ *     type-agnostic (`typeId` comes straight off the payload), so a synced `campaign` object DOES
+ *     land locally with a foreign `origin_domain_id` — unlike a synced `change`, which has no local
+ *     `changes` row and so cannot be a candidate here. `reconcileOneCampaign` would then compile a
+ *     plan for it and propose member changes. That deserves a deliberate S10 decision of its own,
+ *     not a drive-by fix, so it is recorded here rather than silently changed.
+ *   * THE ONE OPEN ITEM — NOW CLOSED (2026-08-08, same day it was opened). It was: the S10
+ *     single-writer skip (`if (object.originDomainId !== selfDomainId) continue;`) at the top of
+ *     five `advance*` loops leaves the row un-stamped, which IS this property — a SIXTH instance,
+ *     latent because `federation/import-repo.ts`'s `object_upsert` branch never creates a local
+ *     `changes` state-machine row for a synced change and a PROMOTED change is locally originated,
+ *     so no row in the candidate set could have a foreign origin (measured in
+ *     `change-origin-domain.integration.test.ts`'s header).
+ *
+ *     THE REMEDY TAKEN was the one this note called for: `listChangeRowsInStates` now takes
+ *     `selfDomainId` and joins `objects.origin_domain_id = self`, filtering foreign-origin rows out
+ *     of the candidate set exactly as `reconcile_blocked_at IS NULL` filters out a parked change.
+ *     The alternative — a round-robin `updated_at` bump on the skip path, which is what closed
+ *     instances 1-5 — was rejected and must stay rejected: it WRITES a read-only replica's row,
+ *     which is the single-writer violation the skip exists to prevent. The five guards REMAIN as
+ *     defence in depth; the filter makes them unreachable, it does not replace their meaning.
+ *     Regression: `foreign-origin-batch-starvation.integration.test.ts`.
+ *
+ *     THE CENSUS FOUND A SIXTH CALL SITE the open item had not: `advanceValidatingChanges` fetches
+ *     candidates too and never had an origin guard at all, so following the five `continue`s alone
+ *     would have missed it. All six call sites are threaded; the argument is REQUIRED, so a seventh
+ *     that forgets it cannot compile.
  *
  * WHEN THIS TEST FAILS, DO NOT JUST ADD THE NAME. Answer the question first:
  *
@@ -96,6 +125,9 @@ const CANDIDATE_FETCHERS = ["listChangeRowsInStates", "listActiveCampaignObjectI
 const BUMPED: Record<string, { bumpIn: string; why: string }> = {
   advanceWaitingChanges: {
     bumpIn: "advanceWaitingChanges",
+    // The bump covers the still-waiting path ONLY. The S10 foreign-origin skip in the same loop is
+    // a different not-advanced path with a different remedy — filtered out of the candidate query,
+    // never bumped, because bumping writes a read-only replica's row.
     why: "a still-unsatisfied waiter writes nothing (coupled-pipelines.md §3.5)"
   },
   advanceExecutingChanges: {
@@ -105,10 +137,15 @@ const BUMPED: Record<string, { bumpIn: string; why: string }> = {
     // CLASSIFIES FUNCTIONS; THE PROPERTY LIVES ON PATHS".
     why:
       "a gate-blocked wave stays pending and writes nothing (the 13-day production outage); and a " +
-      "wave whose targets are merely POLLED writes only change_wave_targets, never the change row"
+      "wave whose targets are merely POLLED writes only change_wave_targets, never the change row " +
+      "(its THIRD not-advanced path, the S10 foreign-origin skip, is filtered out of the candidate " +
+      "query instead — a bump there would write a read-only replica's row)"
   },
   advanceValidatingChanges: {
     bumpIn: "advanceValidatingChanges",
+    // THE SIXTH `listChangeRowsInStates` CALL SITE, and the one with no origin guard in its body at
+    // all — so the bump below used to fire on a foreign-origin row, writing a replica. The query
+    // filter is what stops that; the bump remains for the ordinary local case.
     why: "the loop only prewarms governance and never writes the change row"
   },
   reconcileCampaignsOrgTick: {
@@ -118,13 +155,27 @@ const BUMPED: Record<string, { bumpIn: string; why: string }> = {
 };
 
 /** Loops that CANNOT re-serve without writing — each either always transitions the row on its
- *  success path, or parks it out of the candidate set. No bump needed, and adding one would be
- *  noise. Keep the reason specific enough to re-check. */
+ *  success path, or parks it out of the candidate set, or has the row filtered out of the candidate
+ *  query in the first place. No bump needed, and adding one would be noise. Keep the reason specific
+ *  enough to re-check.
+ *
+ *  EVERY ENTRY BELOW CARRIES THE S10 CLAUSE, because until 2026-08-08 every one of them had a
+ *  second, un-registered not-advanced path: the `originDomainId !== selfDomainId` skip, which
+ *  `continue`d without writing. `listChangeRowsInStates` now filters those rows out of the candidate
+ *  set (its doc comment says why a bump would have been the wrong remedy), so the skip no longer
+ *  leaves a row in the batch — which is what actually makes these loops self-evicting rather than
+ *  merely un-triggerable. Do not drop the clause when re-checking a reason: it is a separate path
+ *  from the one the first half of each line describes. */
 const SELF_EVICTING: Record<string, string> = {
-  advanceProposedChanges: "always transitions proposed->evaluated (that edge is never gated)",
-  advanceEvaluatedChanges: "always compiles a plan and transitions on its success path",
+  advanceProposedChanges:
+    "always transitions proposed->evaluated (that edge is never gated); the S10 foreign-origin skip " +
+    "cannot re-serve because listChangeRowsInStates filters those rows out on origin_domain_id",
+  advanceEvaluatedChanges:
+    "always compiles a plan and transitions on its success path; S10 foreign-origin rows are " +
+    "filtered out of the candidate query, not skipped in the body",
   advanceCoordinatedChanges:
-    "a blocked gate PARKS the change (reconcile_blocked_at non-null), which listChangeRowsInStates filters out"
+    "a blocked gate PARKS the change (reconcile_blocked_at non-null), which listChangeRowsInStates " +
+    "filters out; the same query also filters out S10 foreign-origin rows"
 };
 
 function readSource(name: string): string {

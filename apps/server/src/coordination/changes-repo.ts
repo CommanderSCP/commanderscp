@@ -599,22 +599,47 @@ export async function getChangeRow(tx: TenantTx, orgId: string, id: string): Pro
 }
 
 /**
- * Batch fetch for the reconciliation loop (coordination/reconcile.ts) and the watchdog: every
- * change currently sitting in one of `states`, oldest-updated first (so a sweep drains the
- * longest-waiting changes first rather than starving them behind a churny newer one), capped at
- * `limit` per tick so one org with a huge backlog can't starve every other org's sweep turn.
+ * Batch fetch for the reconciliation loop (coordination/reconcile.ts — its SIX `advance*` passes are
+ * the only callers; `watchdog.ts`, which an earlier version of this line also named, has never
+ * called it): every change currently sitting in one of `states`, oldest-updated first (so a sweep
+ * drains the longest-waiting changes first rather than starving them behind a churny newer one),
+ * capped at `limit` per tick so one org with a huge backlog can't starve every other org's sweep
+ * turn.
  *
  * MAJOR #6 fix (PR #7 review — "batch starvation"): excludes changes `markChangeReconcileBlocked`
  * has parked (an `executing` change whose active wave failed and is awaiting an operator's manual
  * cancel/rollback — see reconcile.ts's `failed` branch). `reconcile_blocked_at` is only ever set
  * while a change is `executing`, so this filter is a no-op for every other state and safe to apply
  * unconditionally rather than needing a state-specific variant of this query.
+ *
+ * ## `selfDomainId` — the S10 single-writer filter, and why it lives HERE rather than in the loops
+ *
+ * A read-only replica of a peer's change is never ours to drive (S10; `transition.ts`'s
+ * `enforceLocalChangeAuthority`). Five of reconcile.ts's `advance*` loops already opened with
+ * `if (object.originDomainId !== selfDomainId) continue;` — and that `continue` skips the row
+ * WITHOUT writing it, which is precisely the batch-starvation property this query's `ORDER BY
+ * updated_at ASC LIMIT n` makes lethal (see `candidate-loop-registry.test.ts`'s header, and the
+ * 13-day production outage recorded in `executing-batch-starvation.integration.test.ts`). More than
+ * `limit` foreign-origin rows in one state would freeze their `updated_at` forever, own every batch
+ * slot, and starve every locally-originated change queued behind them.
+ *
+ * The remedy is this filter, NOT a round-robin `updated_at` bump on the skip path: bumping would
+ * WRITE to a replica's row, which is the very thing single-writer authority forbids. Filtering
+ * removes those rows from the candidate set entirely — exactly what `reconcile_blocked_at IS NULL`
+ * does for a parked change — which makes all six candidate loops genuinely self-evicting instead of
+ * merely un-triggerable. It also preserves the "SKIP, NOT PARK" guarantee
+ * (`federation/foreign-origin-writes.integration.test.ts`): nothing is written to the replica, so
+ * the moment authority returns the row rejoins the candidate set and resumes on its own.
+ *
+ * REQUIRED, not optional, and deliberately so: a future call site that forgets it would silently
+ * re-open the hole, and this project's recurring bug is fixing SOME call sites of a concept.
  */
 export async function listChangeRowsInStates(
   tx: TenantTx,
   orgId: string,
   states: ChangeState[],
-  limit: number
+  limit: number,
+  selfDomainId: TrustDomainId
 ): Promise<{ change: ChangeRow; object: ObjectRow }[]> {
   if (states.length === 0) return [];
   return tx
@@ -625,7 +650,8 @@ export async function listChangeRowsInStates(
       and(
         eq(changes.orgId, orgId),
         inArray(changes.state, states),
-        isNull(changes.reconcileBlockedAt)
+        isNull(changes.reconcileBlockedAt),
+        eq(objects.originDomainId, selfDomainId)
       )
     )
     .orderBy(asc(changes.updatedAt))
