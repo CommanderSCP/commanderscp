@@ -8,7 +8,7 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { changes, decisions } from "../db/schema.js";
+import { changes, changeWaveTargets, decisions } from "../db/schema.js";
 import { CountingCelSandbox } from "./test-support/counting-cel-sandbox.js";
 import { createInMemoryFakeHost } from "./test-support/fake-plugin-host.js";
 import type { PluginHost } from "../plugin-host/contract.js";
@@ -237,6 +237,267 @@ describe("executing-batch starvation: >BATCH_LIMIT gate-blocked changes must not
     for (const row of rows) {
       expect(row.state).toBe("executing");
       expect(row.blockedAt).toBeNull();
+    }
+  }, 120_000);
+});
+
+/**
+ * THE SECOND SHAPE OF THE SAME PROPERTY — and the reason the suite above, which is a faithful
+ * regression test for the measured outage, did not stop the bug from still being live.
+ *
+ * The gate-blocked bump fires on ONE branch: `activeWave.status === "pending"` and the gate said
+ * block. The instant a gate ALLOWS, `markWaveRunning` moves the wave to `running`, and from then on
+ * every tick of that change SKIPS the gate branch entirely and falls through to the per-target
+ * loop. Every write down there lands on `change_wave_targets` or `change_waves`. NOTHING on that
+ * path writes the `changes` row — there were exactly four `UPDATE changes` in reconcile.ts (the
+ * `waiting` path, the `validating` path, the gate-blocked path and `recordStageDependencyHold`) and
+ * not one of them was reachable from it.
+ *
+ * So a change whose targets are merely being POLLED froze its `updated_at` at the instant it
+ * entered `executing` and held a `BATCH_LIMIT` slot for as long as its executor kept answering
+ * "still running". That is not an exotic state: it is an Argo CD Application sitting
+ * `Progressing`, a workflow parked on a manual approval step, a sync waiting on an image that
+ * never lands — anything whose `status()` does not terminalize. Twenty-six of those and the queue
+ * behind them is dead, exactly as it was for 13 days on the homelab.
+ *
+ * WHY THE SUITE ABOVE MISSES IT: its fixture gives every change an unsatisfiable `requireApprovals`
+ * policy, so its waves never leave `pending` and every one of its changes exercises the
+ * gate-blocked branch. It could not have caught this if the bug had been introduced deliberately.
+ * This suite is its complement: NO policy, so the gate allows, the wave runs, and the change lives
+ * out its life on the polling path.
+ */
+describe("executing-batch starvation, POLLING shape: >BATCH_LIMIT changes whose targets sit 'observing' must not starve the queue behind them", () => {
+  let server: TestServer;
+  let org: TestOrg;
+  let sandbox: CountingCelSandbox;
+  let host: PluginHost;
+
+  beforeAll(async () => {
+    server = await buildTestServer();
+    org = await createTestOrg(server, "poll-starvation");
+    sandbox = new CountingCelSandbox();
+    // ONE HOUR, not the 60s the suite above uses, and the difference is load-bearing.
+    // `autoSucceedAfterMs` is the fake executor's only clock: a target that succeeds part-way
+    // through this suite terminalizes its wave, completes its change, and FREES ITS BATCH SLOT — so
+    // the queue behind it would drain and the suite would go green on the unfixed engine, for a
+    // reason that has nothing to do with the round-robin. The fixture must model an executor that
+    // never terminalizes, because that is the production case.
+    host = createInMemoryFakeHost({ autoSucceedAfterMs: 60 * 60_000 });
+  }, 120_000);
+
+  afterAll(async () => {
+    await sandbox.stop();
+    await server?.close();
+  });
+
+  async function inject(url: string, payload: Record<string, unknown>) {
+    const res = await server.app.inject({
+      method: "POST",
+      url,
+      headers: { authorization: `Bearer ${org.adminToken}` },
+      payload
+    });
+    if (res.statusCode >= 300) throw new Error(`POST ${url} -> ${res.statusCode} ${res.body}`);
+    return res.json() as Record<string, unknown>;
+  }
+
+  /** A change walked by hand to `executing` with wave 0 still `pending` and NO policy anywhere near
+   *  it — so the first tick's gate ALLOWS, the wave goes `running`, the target is triggered, and
+   *  every tick after that is a pure status poll against an executor that never finishes. */
+  async function changeExecutingAndPolling(label: string): Promise<string> {
+    const service = await inject("/api/v1/services", { name: `svc-${label}` });
+    const component = await inject("/api/v1/components", {
+      name: `comp-${label}`,
+      service: service.id
+    });
+
+    const gateDeps: GateDeps = { sandbox, host };
+    return withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const { change, targetObjectIds } = await proposeChange(tx, {
+        orgId: org.orgId,
+        actorObjectId: org.orgId,
+        requestId: "poll-starvation-test",
+        name: `change-${label}`,
+        targets: [component.id as string]
+      });
+      for (const toState of ["evaluated", "coordinated", "executing"] as const) {
+        if (toState === "coordinated") {
+          await compileAndPersistPlan(tx, {
+            orgId: org.orgId,
+            changeObjectId: change.id,
+            targetObjectIds,
+            topologyObjectId: null,
+            topologyVersion: null
+          });
+        }
+        await transitionChange(
+          tx,
+          {
+            orgId: org.orgId,
+            changeObjectId: change.id,
+            toState,
+            actorObjectId: org.orgId,
+            requestId: "poll-starvation-test"
+          },
+          gateDeps
+        );
+      }
+      return change.id;
+    });
+  }
+
+  async function tick(times: number): Promise<void> {
+    for (let i = 0; i < times; i++) {
+      await reconcileOrgTick(
+        server.deps.db,
+        org.orgId,
+        host,
+        sandbox,
+        server.deps.config.secretsMasterKey
+      );
+    }
+  }
+
+  /** Which of these changes the engine has actually SERVED. A wave gate is evaluated exactly once
+   *  per wave here (it allows, so `markWaveRunning` closes the branch), which makes the presence of
+   *  a `gate` Decision a precise "this change was looked at at least once" flag — the same query
+   *  the gate-blocked suite uses, reading the same signal from the opposite verdict. */
+  async function servedIds(ids: string[]): Promise<Set<string>> {
+    const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .selectDistinct({ subjectId: decisions.subjectId })
+        .from(decisions)
+        .where(
+          and(
+            eq(decisions.orgId, org.orgId),
+            eq(decisions.kind, "gate"),
+            inArray(decisions.subjectId, ids)
+          )
+        )
+    );
+    return new Set(rows.map((r) => r.subjectId));
+  }
+
+  /** Every wave-target status in this org, counted. The org holds nothing but this suite's changes,
+   *  so this is the whole population without needing a join back through `change_waves`. */
+  async function waveTargetStatusCounts(): Promise<Record<string, number>> {
+    const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select({ status: changeWaveTargets.status })
+        .from(changeWaveTargets)
+        .where(eq(changeWaveTargets.orgId, org.orgId))
+    );
+    const counts: Record<string, number> = {};
+    for (const row of rows) counts[row.status] = (counts[row.status] ?? 0) + 1;
+    return counts;
+  }
+
+  const pollingIds: string[] = [];
+  /** `state_entered_at` as the fixture left it, per change — the watchdog's stall clock. Captured
+   *  before any tick so the last arm can prove the bump moved `updated_at` and NOTHING else. */
+  const enteredAt = new Map<string, number>();
+
+  it(`parks ${PARKED_COUNT} changes in 'executing' with an allowing gate and a never-finishing executor (fixture)`, async () => {
+    for (let i = 0; i < PARKED_COUNT; i++) {
+      pollingIds.push(await changeExecutingAndPolling(`p${String(i).padStart(2, "0")}`));
+    }
+    expect(pollingIds).toHaveLength(PARKED_COUNT);
+    expect(PARKED_COUNT).toBeGreaterThan(ASSUMED_BATCH_LIMIT);
+
+    // Nothing has been served: the manual walk writes `transition` Decisions and zero `gate` ones.
+    expect((await servedIds(pollingIds)).size).toBe(0);
+
+    const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select({ objectId: changes.objectId, enteredAt: changes.stateEnteredAt })
+        .from(changes)
+        .where(and(eq(changes.orgId, org.orgId), inArray(changes.objectId, pollingIds)))
+    );
+    for (const row of rows) enteredAt.set(row.objectId, row.enteredAt.getTime());
+    expect(enteredAt.size).toBe(PARKED_COUNT);
+  }, 300_000);
+
+  it("ONE tick serves exactly BATCH_LIMIT of them, and their gates ALLOWED — this is precisely the shape the gate-blocked bump does not cover", async () => {
+    await tick(1);
+
+    const served = await servedIds(pollingIds);
+    expect(served.size).toBe(ASSUMED_BATCH_LIMIT);
+
+    // Every gate here ALLOWED. If any of these blocked, this suite would be re-testing the
+    // gate-blocked branch (which is already bumped) and would prove nothing about the poll path.
+    const verdicts = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .selectDistinct({ verdict: decisions.verdict })
+        .from(decisions)
+        .where(
+          and(
+            eq(decisions.orgId, org.orgId),
+            eq(decisions.kind, "gate"),
+            inArray(decisions.subjectId, pollingIds)
+          )
+        )
+    );
+    expect(verdicts.map((v) => v.verdict)).toEqual(["allow"]);
+
+    // ...and the served changes really are on the polling path: their waves ran and their targets
+    // were handed to the executor. Nothing is terminal, so nothing has freed a batch slot.
+    const counts = await waveTargetStatusCounts();
+    expect(counts.triggered).toBe(ASSUMED_BATCH_LIMIT);
+    expect(counts.succeeded ?? 0).toBe(0);
+    expect(counts.failed ?? 0).toBe(0);
+  }, 120_000);
+
+  it("THE REGRESSION: further ticks reach EVERY change — a head of merely-POLLING changes must not own the batch forever", async () => {
+    await tick(3);
+
+    const served = await servedIds(pollingIds);
+    const starved = pollingIds.filter((id) => !served.has(id));
+
+    // WITHOUT THE FIX THIS IS THE FAILING LINE. The 25 changes served by tick 1 are still in
+    // `executing`, their targets are still `observing`, and nothing has written their `changes`
+    // row since they entered the state — so `ORDER BY updated_at ASC LIMIT 25` hands back the same
+    // 25 rows on every tick from here to the heat death of the instance, and the 5 behind them are
+    // never evaluated once.
+    expect(starved).toEqual([]);
+    expect(served.size).toBe(PARKED_COUNT);
+
+    // The mechanism, pinned: these targets are being POLLED and are going nowhere. `observing` is
+    // written only by the status-poll branch, so its presence proves the ticks above are exercising
+    // that branch and not some terminalizing shortcut.
+    const counts = await waveTargetStatusCounts();
+    expect(counts.observing ?? 0).toBeGreaterThan(0);
+    expect(counts.succeeded ?? 0).toBe(0);
+    expect(counts.failed ?? 0).toBe(0);
+  }, 120_000);
+
+  it("rotation is not progress: every change is still 'executing', still un-parked, and its stall clock is untouched", async () => {
+    const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select({
+          objectId: changes.objectId,
+          state: changes.state,
+          blockedAt: changes.reconcileBlockedAt,
+          enteredAt: changes.stateEnteredAt,
+          updatedAt: changes.updatedAt
+        })
+        .from(changes)
+        .where(and(eq(changes.orgId, org.orgId), inArray(changes.objectId, pollingIds)))
+    );
+
+    expect(rows).toHaveLength(PARKED_COUNT);
+    for (const row of rows) {
+      expect(row.state).toBe("executing");
+      // Same guarantee the gate-blocked suite's last arm protects: "fix" starvation by PARKING a
+      // polling change and it stops being re-served, so its executor is never polled again and the
+      // change never completes.
+      expect(row.blockedAt).toBeNull();
+      // THE `state_entered_at` INVARIANT, and the reason the bump touches `updated_at` ALONE.
+      // `watchdog.ts` measures the `executing` stall SLA off `state_entered_at`; if the round-robin
+      // bumped it too, a change whose executor polls forever would look permanently fresh and would
+      // never be reported as stalled — the round-robin would have bought fairness by disabling the
+      // one alarm that notices a change going nowhere.
+      expect(row.enteredAt.getTime()).toBe(enteredAt.get(row.objectId));
+      expect(row.updatedAt.getTime()).toBeGreaterThan(row.enteredAt.getTime());
     }
   }, 120_000);
 });
