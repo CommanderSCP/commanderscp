@@ -1,6 +1,6 @@
 # Proposal: stage-scoped coupling between microservices
 
-**Status:** v0.2 Draft — **proposed, pending review.** Nothing here is built. v0.1 (2026-08-04) was written before the mechanism was grounded against code; **§0 records what that grounding refuted**, and the design below is a rewrite, not an edit. Owner rulings of 2026-08-05 are in §6.
+**Status:** v0.2 — **implemented and merged** (PR #220, 2026-08-05); [ADR-0028](../adr/0028-stage-scoped-component-coupling.md) is Accepted. Increments 0–3 and 5 shipped; **increment 4 (operator surfaces) did NOT ship** — see §5. v0.1 (2026-08-04) was written before the mechanism was grounded against code; **§0 records what that grounding refuted**, and the design below is a rewrite, not an edit. Owner rulings of 2026-08-05 are in §6.
 **Role:** Lets one microservice's deploy *at a stage* wait on another's at the same stage, declared by the microservice's own CI — without requiring the dependency to be finished everywhere.
 **Relates to:** [ADR-0008](../adr/0008-observe-enrichment-signals.md) (rollout state is **observed, not driven** — this design does **not** amend it; §2.1 says why), [ADR-0026](../adr/0026-placements-and-derived-stage-names.md) (placements, derived stage names), [ADR-0027](../adr/0027-service-rung-binding-resolution.md), [coupled-pipelines.md](coupled-pipelines.md) (`provides`/`requires` — the shipped CROSS-CHANGE mechanism this is **not** an extension of, §3.1), [GLOSSARY.md](../GLOSSARY.md) (`stage`, `wave`), DESIGN.md §9.3.
 
@@ -143,6 +143,35 @@ The qualifier is therefore phrased **"B is currently observed at ≥ N"**, with 
 
 **One hazard to close first.** A paused Argo Rollout may aggregate to Application health `Suspended`, which SCP maps to `succeeded` (`argocd/src/index.ts:214-226`, comment at `:212`) — terminalizing the target and freezing its weight. If so, B paused at 10% reads as **done**, and the stored weight stays 10% forever even after someone promotes to 100%. There is **no test for `Suspended` anywhere**. A pinning test lands before anything reads this mapping (§5 increment 0), and whether Argo actually aggregates that way must be checked against a live instance — it cannot be established from this tree (the vendored `install.yaml` carries no Rollout health Lua).
 
+### 2.5a MEASURED, 2026-08-05: the live estate runs no Argo Rollouts at all
+
+§2.5 called the `Suspended` mapping the largest correctness risk and said a live instance had to settle it,
+because the tree could not. It has been settled, against the homelab k3s cluster that runs the estate:
+
+```
+kubectl get crd rollouts.argoproj.io   ->  Error from server (NotFound)
+kubectl get rollouts -A                ->  the server doesn't have a resource type "rollouts"
+```
+
+101 CRDs installed, none of them Argo Rollouts; no rollouts controller in any namespace; every AgentKit
+and CommanderSCP app is a plain Argo CD `Application` sync. Three consequences, none of which change the
+design but all of which change what to expect from it:
+
+1. **The `Suspended` hazard is latent, not live.** There are no Rollouts to pause, so nothing can
+   currently terminalize at a partial weight. The pinning test (increment 0) still guards SCP's half of
+   the mapping for whenever Rollouts are adopted; it is insurance, not a fix for a present bug.
+2. **`minWeight` has no signal source on this estate today.** `observed.rollout.weight` is populated only
+   from a Rollout manifest, via the argocd plugin's second API call. No Rollouts means no weight, so every
+   `minWeight` degrades to the universal `succeeded` test — §2.4's unreadable branch, behaving exactly as
+   designed, but the qualifier is inert here until progressive delivery is actually installed.
+3. **The owner's "10% then 10%" has no 10% to observe yet.** A deploy on this estate is binary: an
+   `Application` syncs or it does not. The ladder in §7's first non-goal is therefore further away than a
+   missing SCP feature — the weights themselves do not exist.
+
+This is recorded rather than left as a caveat because the opposite belief is the dangerous one: a reader
+who assumes `minWeight` is doing something here would mistake "the universal test passed" for "the canary
+threshold was honoured."
+
 ### 2.6 The dependency graph (ruling D4)
 
 Every declared dependency is also materialised as a **`depends_on` edge** between the two components — the edge type impact analysis already consumes (`named-queries.ts:40` `DEFAULT_IMPACT_TYPES = ["depends_on","consumes","hosted_on"]`). This is the "stop guessing at dependency charts" half of the ask, and it is worth stating plainly: **it cannot be inferred, only declared.** The ArgoCD resource tree models only `{group,version,kind,namespace,name,status,health}` (`argocd/src/index.ts:139-147`); discovery proposes no dependency edges; no scan/SBOM code creates graph edges. Nothing SCP observes today carries inter-component dependency data.
@@ -212,12 +241,12 @@ So `applyPromotionImport` now strips `properties.stageDependencies` exactly as i
 
 Each is independently shippable and behaviour-preserving.
 
-- **0 — Pin `Suspended`.** A test asserting `phaseAfterFinishedSync("Suspended") === "succeeded"` before anything reads it (§2.5), plus a live-Argo check of how a paused Rollout aggregates. *Largest correctness risk in the design; costs almost nothing.*
-- **1 — The declaration channel.** `StageDependencySchema`, the two schema fields, `webhook-processor` threading (including the adapter-branch re-forward), propose-time resolution of `dependsOn`/`atTargets` to object ids, CLI flags, `pnpm gen`. **Inert** — nothing reads it yet.
-- **2 — The graph edges.** Materialise declared dependencies as `depends_on` edges; replace `plan-compiler.ts:263-280`'s same-wave rejection, with a test asserting the pair now compiles. Delivers the dependency-chart half on its own. Keep the **cycle** refusal (§2.6) — it is the one clause the hold cannot take over.
-- **3 — The hold.** The per-target check at `reconcile.ts:814-830`, the three-branch verdict, the persist-on-change Decision, the freshness bound. Its dependency set is the union in §2.6, declarations **and** in-target-set edges; a hold that reads only declarations does not close increment 2's window.
-- **4 — Surfaces.** `explain` and a CLI sub-command naming the held dependency, the stage badge in the component-pipeline view, the watchdog arm.
-- **5 — Federation.** Per §4, once ruled.
+- **0 — Pin `Suspended`. SHIPPED**, and the live-Argo check is now DONE — see §2.5a. A test asserting `phaseAfterFinishedSync("Suspended") === "succeeded"` before anything reads it (§2.5), plus a live-Argo check of how a paused Rollout aggregates. *Largest correctness risk in the design; costs almost nothing.*
+- **1 — The declaration channel. SHIPPED.** `StageDependencySchema`, the two schema fields, `webhook-processor` threading (including the adapter-branch re-forward), propose-time resolution of `dependsOn`/`atTargets` to object ids, CLI flags, `pnpm gen`. **Inert** — nothing reads it yet.
+- **2 — The graph edges. SHIPPED.** Materialise declared dependencies as `depends_on` edges; replace `plan-compiler.ts:263-280`'s same-wave rejection, with a test asserting the pair now compiles. Delivers the dependency-chart half on its own. Keep the **cycle** refusal (§2.6) — it is the one clause the hold cannot take over.
+- **3 — The hold. SHIPPED.** The per-target check at `reconcile.ts:814-830`, the three-branch verdict, the persist-on-change Decision, the freshness bound. Its dependency set is the union in §2.6, declarations **and** in-target-set edges; a hold that reads only declarations does not close increment 2's window.
+- **4 — Surfaces. NOT SHIPPED — the one increment still outstanding.** `explain` and a CLI sub-command naming the held dependency, the stage badge in the component-pipeline view, the watchdog arm.
+- **5 — Federation. SHIPPED** (strip on promotion import), and §4 is now closed by the owner's standing ruling rather than pending one.
 
 **Groundwork found during grounding, worth doing regardless** — each small, independent, and currently silently broken: the discovery relationship channel emits `part_of`, a type registered in **no** migration, so discovery→graph edges have never worked end to end (`github:765`, `gitea:652`, `gitlab:587`; the existing tests pass `relationships: []` and prove nothing); `unownedProjectionDeclarations` (`plan-diff.ts:703-711`) checks two of three projection collections, missing placements — a live instance of this project's own census rule; `scp plan` never prints placement diffs (`cli.ts:775-780`), so an operator approves a diff they were never shown; and the demo estate is 3 components, so nothing anywhere exercises the owner's shape.
 
