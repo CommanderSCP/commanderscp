@@ -76,17 +76,22 @@ That pattern — a concept fixed at some of its call sites — is the failure mo
   `placement → component → subsystem… → service → org`. That is an amendment to ADR-0027 and should
   be recorded as one.
 
-- **Term:** undecided — see §5.
+- **D5 — the term is `assembly`.** A service may contain assemblies; an assembly contains
+  components; a component may still sit directly under a service, so the level is OPTIONAL and
+  skippable. Chosen over `subsystem` (which echoes the NIST wording inside GLOSSARY's *security
+  domain* entry) and over `macro component` (whose name contains the leaf type it contains).
+  `assembly` collides with nothing in the codebase or the glossary, and means composed-of-parts,
+  which is exactly the relationship. It needs a GLOSSARY entry of its own.
 
-## 5. The one open question: what to call the middle level
+## 5. Why `assembly` and not the alternatives (decided — D5)
 
-It must be OPTIONAL (a component may still sit directly under a service), so the term names a level
-that may be skipped rather than a mandatory rung.
+The level is OPTIONAL: a component may still sit directly under a service, so the term names a rung
+that may be skipped rather than a mandatory one.
 
 | Candidate | For | Against |
 |---|---|---|
-| **`subsystem`** (recommended) | Immediately legible; "service → subsystem → component" reads correctly; free as an identifier — it appears nowhere in the codebase as a type or term of art | Appears in GLOSSARY's *security domain* entry inside a NIST quote ("a system or subsystem under a single trusted authority"), so there is a faint echo to disambiguate |
-| `assembly` | Precise — means composed-of-parts; no collisions anywhere | Unusual in this domain; readers will need the glossary entry |
+| `subsystem` | Immediately legible; "service → subsystem → component" reads correctly; free as an identifier — it appears nowhere in the codebase as a type or term of art | Appears in GLOSSARY's *security domain* entry inside a NIST quote ("a system or subsystem under a single trusted authority"), so there is a faint echo to disambiguate |
+| **`assembly`** (CHOSEN) | Precise — means composed-of-parts; no collisions anywhere | Unusual in this domain; readers will need the glossary entry |
 | `macro component` | The owner's own coinage, so it already communicates | Two words; and containing "component" invites confusion with the leaf type it contains |
 
 **Ruled out by collision**, each already meaning something specific here: `module` (ADR-0007's
