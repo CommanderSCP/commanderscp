@@ -104,7 +104,13 @@ import { describe, expect, it } from "vitest";
  *         pure reads. Reporting a replica's status is correct and required.
  *       - `campaign-plan-service.ts`: writes only, and only ever called from the loop above — the
  *         authority decision belongs at the candidate query, not repeated at each writer.
- *       - `memberChangeIdsForCampaign`: no callers at all.
+ *       - `memberChangeIdsForCampaign`: DELETED. It had zero callers, and its doc comment claimed
+ *         "used by the reconciler to poll progress" — which was false: the reconciler polls
+ *         inline via `tx.query.changes.findFirst`, and `campaign-rollback.ts` sources membership
+ *         from `authoritativeCampaignMembers` (whose own comment explains why raw wave-target
+ *         reads are not the security boundary). A stale comment asserting a caller that does not
+ *         exist is precisely the hazard CLAUDE.md's census rule warns about — it would have let a
+ *         future census tick this off as covered.
  *     `watchdog.ts` does not read campaigns, and there is no initiative-side tick.
  *   * THE ONE OPEN ITEM — NOW CLOSED (2026-08-08, same day it was opened). It was: the S10
  *     single-writer skip (`if (object.originDomainId !== selfDomainId) continue;`) at the top of

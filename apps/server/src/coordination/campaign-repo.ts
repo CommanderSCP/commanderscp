@@ -369,19 +369,6 @@ export async function listActiveCampaignObjectIds(
     .limit(limit);
 }
 
-/** Member-change lookup for a campaign wave target, used by the reconciler to poll progress. */
-export async function memberChangeIdsForCampaign(
-  tx: TenantTx,
-  orgId: string,
-  waveId: string
-): Promise<(typeof campaignWaveTargets.$inferSelect)[]> {
-  return tx
-    .select()
-    .from(campaignWaveTargets)
-    .where(and(eq(campaignWaveTargets.orgId, orgId), eq(campaignWaveTargets.waveId, waveId)))
-    .orderBy(asc(campaignWaveTargets.createdAt));
-}
-
 /**
  * The AUTHORITATIVE campaign membership (M5 CRITICAL, adversarial review) — the member Changes a
  * campaign's own plan compiler actually proposed, read straight from `campaign_wave_targets`
