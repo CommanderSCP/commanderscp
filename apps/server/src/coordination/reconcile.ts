@@ -1996,8 +1996,14 @@ export async function reconcileOrgTick(
   // M5 (DESIGN §9.5): campaigns fan out into real M3 Changes above already progress through the
   // exact same steps this tick just ran — this only sequences WHICH wave's member changes get
   // proposed next (coordination/campaign-reconcile.ts's module doc).
+  //
+  // `selfDomainId` is threaded in for the SAME reason the six `advance*` steps take it, and the
+  // campaign side needed it more: unlike a synced change (which never gets a local `changes` row),
+  // a synced CAMPAIGN object does land locally with a foreign origin, so this loop would otherwise
+  // compile a plan for a peer's campaign and propose member changes from it. See
+  // `campaign-repo.ts`'s `listActiveCampaignObjectIds` doc comment.
   try {
-    await reconcileCampaignsOrgTick(db, orgId, host, sandbox);
+    await reconcileCampaignsOrgTick(db, orgId, host, sandbox, selfDomainId);
   } catch (err) {
     console.error(`[reconcile] org ${orgId} campaign reconciliation failed:`, err);
   }

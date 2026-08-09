@@ -22,6 +22,7 @@ import { triggerRollback } from "./rollback.js";
 import { proposeChange } from "./changes-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import { getSharedCelSandbox } from "../governance/cel-sandbox.js";
+import { ensureFederationSelf } from "../federation/self-repo.js";
 import { createInMemoryFakeHost } from "./test-support/fake-plugin-host.js";
 import {
   createTestComponent,
@@ -265,11 +266,18 @@ describe("wave target type: a release triggers the matching-Type pipeline", () =
       type: "infrastructure"
     });
 
+    // S10: the reconciler drives only campaigns this domain is authoritative for, and the campaign
+    // just proposed above is locally originated — see `campaign-repo.ts`'s
+    // `listActiveCampaignObjectIds`.
+    const selfDomainId = (
+      await withTenantTx(server.deps.db, org.orgId, (tx) => ensureFederationSelf(tx, org.orgId))
+    ).domainId;
     await reconcileCampaignsOrgTick(
       server.deps.db,
       org.orgId,
       createInMemoryFakeHost({ autoSucceedAfterMs: 60_000 }),
-      getSharedCelSandbox()
+      getSharedCelSandbox(),
+      selfDomainId
     );
 
     const fanned = await withTenantTx(server.deps.db, org.orgId, (tx) =>
