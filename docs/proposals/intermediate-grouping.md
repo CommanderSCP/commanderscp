@@ -56,7 +56,45 @@ The first three are the same bug in three places: *walk to the nearest service a
 
 That pattern — a concept fixed at some of its call sites — is the failure mode this repo has been bitten by repeatedly (`bindings[0]`, the `currents` collapse, the service rung's own first draft). The census belongs in the implementation plan as a checklist, and the cycle check belongs in the same PR as the type widening, never after it.
 
-## 4. Open questions
+## 4. Owner decisions (2026-08-04)
+
+- **D1 — walk up, nearest wins.** A component under a sub-service DOES inherit a release topology or
+  executor binding attached to an ancestor; the nearest ancestor carrying one wins. Every site listed
+  in §3 must state which it implements, and the three that currently read the immediate parent all
+  become nearest-ancestor walks.
+- **D2 — depth cap of 3.** Bounded so every walk's cost is provable, rather than unbounded nesting.
+- **D3 — the board shows DIRECT children plus a per-child-service summary**, and links down. Rolling
+  hundreds of descendant components into one table loses what the board is for.
+- **D4 — infra scope is the ATTACHMENT POINT, not a correlation rule** (settling the question this
+  proposal inherited from `component-journey-view.md` §6 Q2). A cluster serving an org binds at the
+  org; one serving a service binds at the service; an S3 bucket serving one component binds at the
+  component. There is no rule to write and nothing to infer — where the binding hangs IS the
+  declaration of what it serves, and D1's walk-up is what makes a component find it.
+
+  **This extends the walk beyond ADR-0027.** That ADR stopped at the service (its D4) and explicitly
+  excluded the org rung. D4 here requires it, so the full walk becomes
+  `placement → component → subsystem… → service → org`. That is an amendment to ADR-0027 and should
+  be recorded as one.
+
+- **Term:** undecided — see §5.
+
+## 5. The one open question: what to call the middle level
+
+It must be OPTIONAL (a component may still sit directly under a service), so the term names a level
+that may be skipped rather than a mandatory rung.
+
+| Candidate | For | Against |
+|---|---|---|
+| **`subsystem`** (recommended) | Immediately legible; "service → subsystem → component" reads correctly; free as an identifier — it appears nowhere in the codebase as a type or term of art | Appears in GLOSSARY's *security domain* entry inside a NIST quote ("a system or subsystem under a single trusted authority"), so there is a faint echo to disambiguate |
+| `assembly` | Precise — means composed-of-parts; no collisions anywhere | Unusual in this domain; readers will need the glossary entry |
+| `macro component` | The owner's own coinage, so it already communicates | Two words; and containing "component" invites confusion with the leaf type it contains |
+
+**Ruled out by collision**, each already meaning something specific here: `module` (ADR-0007's
+executor-tool axis), `group` (the RBAC Groups registry), `domain` (containment vs security domain —
+ADR-0021 had to separate those once already), `system` (`execution-system`), `bundle` (GLOSSARY says
+always qualify), `stack` (the IaC unit).
+
+## 6. Remaining open questions
 
 1. **Inherit-through or nearest-wins?** For a topology or a binding attached to the top-level service, does a component under a sub-service inherit it (walk all the way up, nearest wins) or not (stop at the nearest service)? Recommend **walk up, nearest wins** — it matches how policy already behaves and is what "the cluster serves the whole service" means — but it is a per-site decision and each site should state which it chose.
 2. **How deep?** Unbounded nesting, or a hard cap (e.g. 3)? Unbounded is simpler to implement and harder to reason about; a cap makes every walk's cost provable.
