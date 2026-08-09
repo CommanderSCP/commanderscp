@@ -16,6 +16,7 @@ import { ChangePipelinePage } from "./routes/change-pipeline";
 import { ComponentInfrastructurePage, ComponentPipelinePage } from "./routes/component-pipeline";
 import { ComponentDetailLayout } from "./routes/component-detail";
 import { ServiceBoardPage } from "./routes/service-board";
+import { ServiceDetailLayout } from "./routes/service-detail";
 import { CampaignListPage } from "./routes/campaign-list";
 import { CampaignDetailPage } from "./routes/campaign-detail";
 import { InitiativeListPage } from "./routes/initiative-list";
@@ -146,13 +147,28 @@ const componentSettingsRoute = createRoute({
   component: RegistryDetailPage
 });
 
-// The service release board (coordination-ui-views.md Phase 2). A static `/services/$id/board` leaf —
-// services otherwise render only through the generic `/$basePath/$idOrUrn` registry-detail route, so
-// this dedicated static `/services/...` segment out-ranks the dynamic one (same precedence note below).
-const serviceBoardRoute = createRoute({
+// ONE SERVICE — a LAYOUT route carrying the Board/Settings tabs, with the release board as its INDEX
+// child (coordination-ui-views.md Phase 2, corrected 2026-08-04). `/services/{id}` used to fall
+// through to the generic registry detail, so the board — what is releasing, what is blocked, which
+// pipelines are bound — sat at a URL only one button linked to. The board is what a service IS
+// operationally, so it is the default; the properties table becomes the Settings tab, mounting the
+// same `RegistryDetailPage` (not a copy), exactly as `/components/$idOrUrn` does.
+const serviceDetailRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
-  path: "/services/$id/board",
+  path: "/services/$idOrUrn",
+  component: ServiceDetailLayout
+});
+
+const serviceBoardRoute = createRoute({
+  getParentRoute: () => serviceDetailRoute,
+  path: "/",
   component: ServiceBoardPage
+});
+
+const serviceSettingsRoute = createRoute({
+  getParentRoute: () => serviceDetailRoute,
+  path: "/settings",
+  component: RegistryDetailPage
 });
 
 const campaignListRoute = createRoute({
@@ -241,7 +257,7 @@ const routeTree = rootRoute.addChildren([
       componentInfrastructureRoute,
       componentSettingsRoute
     ]),
-    serviceBoardRoute,
+    serviceDetailRoute.addChildren([serviceBoardRoute, serviceSettingsRoute]),
     campaignListRoute,
     campaignDetailRoute,
     initiativeListRoute,

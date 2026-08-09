@@ -101,7 +101,7 @@ export function RegistryDetailPage(): React.JSX.Element {
           {/* Service release board (coordination-ui-views.md Phase 2) — the scannable per-component
               status table for this service. Only meaningful for `service` objects. */}
           {object.typeId === "service" && (
-            <Link to="/services/$id/board" params={{ id: object.id }}>
+            <Link to="/services/$idOrUrn" params={{ idOrUrn: object.id }}>
               <Button data-testid="open-release-board">Release board</Button>
             </Link>
           )}

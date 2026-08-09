@@ -26173,6 +26173,54 @@
                             ],
                             "additionalProperties": false
                           },
+                          "pipelines": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "category": {
+                                  "type": "string",
+                                  "enum": [
+                                    "build",
+                                    "infrastructure",
+                                    "configuration"
+                                  ]
+                                },
+                                "bound": {
+                                  "type": "boolean"
+                                },
+                                "status": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "changeId": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "format": "uuid",
+                                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "category",
+                                "bound",
+                                "status",
+                                "changeId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
                           "activeFreeze": {
                             "anyOf": [
                               {
@@ -26249,6 +26297,7 @@
                           "currentWave",
                           "waves",
                           "attention",
+                          "pipelines",
                           "activeFreeze",
                           "driver",
                           "unknownFields"
@@ -26318,6 +26367,54 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "servicePipelines": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "category": {
+                            "type": "string",
+                            "enum": [
+                              "build",
+                              "infrastructure",
+                              "configuration"
+                            ]
+                          },
+                          "bound": {
+                            "type": "boolean"
+                          },
+                          "status": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "changeId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "uuid",
+                                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "category",
+                          "bound",
+                          "status",
+                          "changeId"
+                        ],
+                        "additionalProperties": false
+                      }
                     },
                     "asOf": {
                       "anyOf": [
@@ -26420,6 +26517,7 @@
                     "rows",
                     "summary",
                     "serviceFreeze",
+                    "servicePipelines",
                     "asOf",
                     "unknownFields"
                   ],

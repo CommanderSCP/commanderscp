@@ -9,7 +9,7 @@ import type {
 import { client } from "../lib/client";
 import { declaredUnknowns, isAbsent } from "../lib/absent";
 import { serviceBoardKey } from "../lib/query-client";
-import { useIdParam } from "../lib/use-route-params";
+import { useIdOrUrnParam } from "../lib/use-route-params";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -138,6 +138,58 @@ function AttentionCell({ row }: { row: ServiceBoardRow }): React.JSX.Element {
  * the unknown-vs-observed distinction below is the whole point of this view, and it must be pinned
  * by a check that runs on every PR — not only by the Playwright suite, which is main-only.
  */
+/**
+ * THE PER-PIPELINE STATE of one row, as one chip per ADR-0007 Category.
+ *
+ * The board used to say ONE thing per component — its latest change — about a component that runs
+ * several independent pipelines. Whichever moved most recently spoke for all of them, so a pipeline
+ * that had never run was indistinguishable from one that had just succeeded (owner, 2026-08-04).
+ *
+ * `not bound` is rendered, not omitted: a component with no infrastructure pipeline is a fact, and
+ * an absent chip would read as "this board does not show infra". Same rule as the component
+ * pipeline's lanes.
+ */
+const CATEGORY_LABEL: Record<string, string> = {
+  build: "build",
+  infrastructure: "infra",
+  configuration: "config"
+};
+
+export function PipelineChips({ row }: { row: ServiceBoardRow }): React.JSX.Element {
+  return (
+    <div className="flex flex-wrap gap-1" data-testid="board-pipelines">
+      {row.pipelines.map((p) => {
+        const tone = !p.bound
+          ? "bg-slate-50 text-slate-400"
+          : p.status === "succeeded"
+            ? "bg-green-50 text-green-700"
+            : p.status === "failed" || p.status === "blocked"
+              ? "bg-red-50 text-red-700"
+              : p.status
+                ? "bg-amber-50 text-amber-700"
+                : "bg-slate-100 text-slate-500";
+        const state = !p.bound ? "not bound" : (p.status ?? "never run");
+        return (
+          <span
+            key={p.category}
+            className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium ${tone}`}
+            data-testid="board-pipeline-chip"
+            data-category={p.category}
+            data-bound={String(p.bound)}
+            title={
+              p.bound
+                ? `${p.category} pipeline — ${state}`
+                : `no ${p.category} executor is bound for this component, so nothing can run it`
+            }
+          >
+            {CATEGORY_LABEL[p.category] ?? p.category} · {state}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 export function BoardRow({ row }: { row: ServiceBoardRow }): React.JSX.Element {
   // "No change here" is only an observation when this deployment can actually see the changes its
   // peers drive. When the server names `latestChangeId` unobservable (a peer's sync scope withholds
@@ -178,6 +230,9 @@ export function BoardRow({ row }: { row: ServiceBoardRow }): React.JSX.Element {
             Frozen
           </Badge>
         )}
+      </TableCell>
+      <TableCell>
+        <PipelineChips row={row} />
       </TableCell>
       <TableCell>
         {/* The pipeline link points at the COMPONENT, always — a pipeline is durable and exists with
@@ -400,7 +455,7 @@ export function BoardSummary({
  * "Freeze service" affordance is present but disabled.
  */
 export function ServiceBoardPage(): React.JSX.Element {
-  const id = useIdParam();
+  const id = useIdOrUrnParam();
 
   const boardQuery = useQuery({
     queryKey: serviceBoardKey(id ?? ""),
@@ -483,6 +538,41 @@ export function ServiceBoardPage(): React.JSX.Element {
           and therefore cannot assess, so it carries a warning (never `success`) treatment. */}
       <BoardSummary summary={summary} stableUnknown={changeVisibilityUnknown} />
 
+      {/* SERVICE-LEVEL PIPELINES (ADR-0027). Infrastructure often serves the WHOLE service — a
+          cluster, a shared database — and is declared once here rather than duplicated onto every
+          component. Rendered whether or not anything is bound: "no service-level infrastructure" is
+          a fact about the service, and an absent card would read as "this board does not show it". */}
+      <Card data-testid="service-pipelines">
+        <CardHeader>
+          <CardTitle className="text-base">Service-level pipelines</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {board.servicePipelines.every((p) => !p.bound) ? (
+            <p className="text-sm text-slate-500" data-testid="service-pipelines-none">
+              Nothing is bound at the service itself — every pipeline here is declared per
+              component. Infrastructure that serves the whole service (a cluster, a shared database)
+              can be bound once on the service instead.
+            </p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {board.servicePipelines
+                .filter((p) => p.bound)
+                .map((p) => (
+                  <span
+                    key={p.category}
+                    className="rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700"
+                    data-testid="service-pipeline-chip"
+                    data-category={p.category}
+                    title="Bound at the service — it drives every component under it (ADR-0027)"
+                  >
+                    {CATEGORY_LABEL[p.category] ?? p.category} · serves every component
+                  </span>
+                ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Components ({rows.length})</CardTitle>
@@ -497,6 +587,9 @@ export function ServiceBoardPage(): React.JSX.Element {
               <TableHeader>
                 <TableRow>
                   <TableHead>Component</TableHead>
+                  <TableHead title="One chip per pipeline this component runs (ADR-0007 Category)">
+                    Pipelines
+                  </TableHead>
                   <TableHead>Latest change</TableHead>
                   <TableHead>Current wave</TableHead>
                   <TableHead>Waves</TableHead>

@@ -1,12 +1,23 @@
-import { sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { categoryOfType } from "@scp/schemas";
 import type {
   GraphObject,
   ServiceBoardResponse,
   ServiceBoardRow,
   ServiceBoardWave,
-  ServiceBoardFreeze
+  ServiceBoardFreeze,
+  ServiceBoardPipeline,
+  ExecutorCategory
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
+import {
+  changes,
+  changePlans,
+  changeWaveTargets,
+  changeWaves,
+  objects as objectsTable
+} from "../db/schema.js";
+import { listExecutorBindingsForTargets } from "./executor-bindings-repo.js";
 import { traverse } from "../graph/traverse.js";
 import { getChange } from "./changes-repo.js";
 import { getLatestPlanForChange } from "./plan-service.js";
@@ -290,6 +301,152 @@ const IN_FLIGHT = new Set([
   "validating"
 ]);
 
+/** Every ADR-0007 Category, always emitted — see `ServiceBoardPipelineSchema` on why absence must
+ *  be stated rather than omitted. */
+const BOARD_CATEGORIES: readonly ExecutorCategory[] = ["build", "infrastructure", "configuration"];
+
+/**
+ * THE PER-PIPELINE SUMMARY for every component of a service, plus the service's own.
+ *
+ * Batched deliberately: three queries for the whole board rather than three per row. A service with
+ * dozens of microservices is the case this view exists for, and a per-row resolve would make the
+ * board's cost linear in components × pipelines.
+ *
+ * `bound` follows the SAME rungs `resolveBindingForTarget` walks (ADR-0026 + ADR-0027): the
+ * component itself, its placements, then the owning service. A board that computed boundness
+ * differently from the resolver would tell an operator a pipeline exists that reconcile then
+ * refuses — or the reverse — which is worse than not showing it.
+ */
+async function pipelinesForComponents(
+  tx: TenantTx,
+  orgId: string,
+  serviceObjectId: string,
+  componentIds: string[]
+): Promise<{
+  byComponent: Map<string, ServiceBoardPipeline[]>;
+  forService: ServiceBoardPipeline[];
+}> {
+  const byComponent = new Map<string, ServiceBoardPipeline[]>();
+
+  const placementRows =
+    componentIds.length === 0
+      ? []
+      : await tx
+          .select({ id: objectsTable.id, properties: objectsTable.properties })
+          .from(objectsTable)
+          .where(
+            and(
+              eq(objectsTable.orgId, orgId),
+              eq(objectsTable.typeId, "placement"),
+              isNull(objectsTable.deletedAt)
+            )
+          );
+  const componentSet = new Set(componentIds);
+  const placementsByComponent = new Map<string, string[]>();
+  const placementToComponent = new Map<string, string>();
+  for (const row of placementRows) {
+    const props = row.properties as { componentId?: unknown };
+    if (typeof props.componentId !== "string" || !componentSet.has(props.componentId)) continue;
+    placementsByComponent.set(props.componentId, [
+      ...(placementsByComponent.get(props.componentId) ?? []),
+      row.id
+    ]);
+    placementToComponent.set(row.id, props.componentId);
+  }
+  const placementIds = [...placementToComponent.keys()];
+
+  const bindings = await listExecutorBindingsForTargets(tx, orgId, [
+    ...componentIds,
+    ...placementIds,
+    serviceObjectId
+  ]);
+  const boundCategories = new Map<string, Set<string>>();
+  const noteBound = (ownerId: string, type: string) => {
+    const set = boundCategories.get(ownerId) ?? new Set<string>();
+    set.add(categoryOfType(type));
+    boundCategories.set(ownerId, set);
+  };
+  for (const b of bindings) {
+    const owner = placementToComponent.get(b.targetObjectId) ?? b.targetObjectId;
+    noteBound(owner, b.type);
+  }
+  // ADR-0027: a service-level binding makes that pipeline bound for EVERY component under it, which
+  // is the whole point of declaring cluster infrastructure once.
+  const serviceBound = boundCategories.get(serviceObjectId) ?? new Set<string>();
+
+  // Newest wave target per (placement, type) — the same DISTINCT ON shape `component-pipeline.ts`
+  // uses, over every placement of the service at once.
+  const statusRows =
+    placementIds.length === 0
+      ? {
+          rows: [] as {
+            target_object_id: string;
+            type: string;
+            status: string;
+            change_id: string;
+          }[]
+        }
+      : await tx.execute<{
+          target_object_id: string;
+          type: string;
+          status: string;
+          change_id: string;
+        }>(sql`
+          SELECT DISTINCT ON (t.target_object_id, t.type)
+            t.target_object_id, t.type, t.status, o.id AS change_id
+          FROM ${changeWaveTargets} t
+          JOIN ${changeWaves} w ON w.id = t.wave_id AND w.org_id = t.org_id
+          JOIN ${changePlans} p ON p.id = w.plan_id AND p.org_id = w.org_id
+          JOIN ${changes} c     ON c.object_id = p.change_object_id AND c.org_id = p.org_id
+          JOIN ${objectsTable} o ON o.id = c.object_id AND o.org_id = c.org_id
+          WHERE t.org_id = ${orgId}::uuid
+            AND o.deleted_at IS NULL
+            AND t.target_object_id IN (${sql.join(
+              placementIds.map((id) => sql`${id}::uuid`),
+              sql`, `
+            )})
+          ORDER BY t.target_object_id, t.type, c.created_at DESC, c.object_id DESC
+        `);
+  const statusByComponentCategory = new Map<string, { status: string; changeId: string }>();
+  for (const r of statusRows.rows) {
+    const componentId = placementToComponent.get(r.target_object_id);
+    if (!componentId) continue;
+    const key = `${componentId}:${categoryOfType(r.type)}`;
+    // First row per key wins: the SQL already ordered newest-first within each (placement, type).
+    if (!statusByComponentCategory.has(key)) {
+      statusByComponentCategory.set(key, { status: r.status, changeId: r.change_id });
+    }
+  }
+
+  for (const componentId of componentIds) {
+    const own = boundCategories.get(componentId) ?? new Set<string>();
+    byComponent.set(
+      componentId,
+      BOARD_CATEGORIES.map((category) => {
+        const seen = statusByComponentCategory.get(`${componentId}:${category}`);
+        return {
+          category,
+          bound: own.has(category) || serviceBound.has(category),
+          status: seen?.status ?? null,
+          changeId: seen?.changeId ?? null
+        };
+      })
+    );
+  }
+
+  const forService = BOARD_CATEGORIES.map((category) => ({
+    category,
+    bound: serviceBound.has(category),
+    // A service-level binding's runs are recorded against the COMPONENT placements it drove, not
+    // against the service, so there is no per-service status to report and inventing one would be
+    // a claim about a row that does not exist.
+    status: null,
+    changeId: null
+  }));
+
+  return { byComponent, forService };
+}
+
 export async function buildServiceBoard(
   tx: TenantTx,
   orgId: string,
@@ -384,6 +541,12 @@ export async function buildServiceBoard(
   let blocked = 0;
   let stable = 0;
   let notDrivenHere = 0;
+  // PER-PIPELINE STATE for every row, batched before the loop (three queries for the board, not
+  // three per row — a service with dozens of microservices is exactly the case this view is for).
+  const pipelineSummary = await pipelinesForComponents(tx, orgId, service.id, componentIds);
+  const pipelinesFor = (componentId: string): ServiceBoardPipeline[] =>
+    pipelineSummary.byComponent.get(componentId) ?? [];
+
   const rows: ServiceBoardRow[] = [];
   for (const component of components) {
     const latest = latestByComponent.get(component.id) ?? null;
@@ -401,6 +564,7 @@ export async function buildServiceBoard(
       stable += 1;
       rows.push({
         component: { id: component.id, urn: component.urn, name: component.name },
+        pipelines: pipelinesFor(component.id),
         latestChangeId: null,
         changeState: null,
         changeName: null,
@@ -427,6 +591,7 @@ export async function buildServiceBoard(
       notDrivenHere += 1;
       rows.push({
         component: { id: component.id, urn: component.urn, name: component.name },
+        pipelines: pipelinesFor(component.id),
         latestChangeId: changeId,
         changeState: latest.federationState,
         changeName: latest.changeName,
@@ -510,6 +675,7 @@ export async function buildServiceBoard(
 
     rows.push({
       component: { id: component.id, urn: component.urn, name: component.name },
+      pipelines: pipelinesFor(component.id),
       latestChangeId: changeId,
       changeState: change.state,
       changeName: change.name,
@@ -588,6 +754,7 @@ export async function buildServiceBoard(
     rows,
     summary: { releasing, blocked, stable, notDrivenHere },
     serviceFreeze: serviceFreeze ? toFreeze(serviceFreeze) : null,
+    servicePipelines: pipelineSummary.forService,
     asOf,
     unknownFields: [
       ...new Set([...freezeVisibilityUnknowns, ...changeVisibilityUnknowns, ...stalenessUnknowns])

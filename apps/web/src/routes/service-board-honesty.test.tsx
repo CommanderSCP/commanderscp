@@ -35,6 +35,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
 const {
   BoardAsOfLabel,
   BoardRow,
+  PipelineChips,
   BoardSummary,
   changeVisibilityUnknownOf,
   freezeVisibilityUnknownOf
@@ -70,6 +71,7 @@ function baseRow(name: string): ServiceBoardRow {
     currentWave: null,
     waves: [],
     attention: { blocked: false, decisionId: null, awaitingApproval: false, emergency: false },
+    pipelines: [],
     activeFreeze: null,
     driver: null,
     unknownFields: []
@@ -376,5 +378,37 @@ describe("service board as-of label: a snapshot is never painted as live status"
     expect(html).not.toContain("not counted late until");
     // and an absent verdict is still not a STALE warning either
     expect(html).not.toContain("STALE");
+  });
+});
+
+describe("a board row shows EVERY pipeline, not one status for all of them", () => {
+  // Owner, 2026-08-04: the board's default job is the high-level state of the various pipelines. It
+  // was change-anchored — one `latestChangeId` per component — so whichever pipeline moved most
+  // recently spoke for all of them, and one that had never run looked like one that just succeeded.
+  const withPipelines = (pipelines: ServiceBoardRow["pipelines"]) =>
+    renderToStaticMarkup(<PipelineChips row={{ ...baseRow("svc-a"), pipelines }} />);
+
+  it("keeps each pipeline's state separate", () => {
+    const html = withPipelines([
+      { category: "build", bound: true, status: "succeeded", changeId: null },
+      { category: "infrastructure", bound: true, status: "failed", changeId: null },
+      { category: "configuration", bound: true, status: null, changeId: null }
+    ]);
+    expect(html).toContain("succeeded");
+    expect(html).toContain("failed");
+    expect(
+      html,
+      "a bound pipeline that has never run says so — it must not borrow a sibling's status"
+    ).toContain("never run");
+  });
+
+  it("renders NOT BOUND rather than omitting the pipeline", () => {
+    // An absent chip would read as "this board does not show infra", when the truth is that no
+    // executor is bound for it — the same rule the component pipeline's lanes follow.
+    const html = withPipelines([
+      { category: "infrastructure", bound: false, status: null, changeId: null }
+    ]);
+    expect(html).toContain("not bound");
+    expect(html).toContain('data-bound="false"');
   });
 });

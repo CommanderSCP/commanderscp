@@ -1983,6 +1983,16 @@ export const zGetServiceBoardResponse = z.object({
             awaitingApproval: z.boolean(),
             emergency: z.boolean()
         }),
+        pipelines: z.array(z.object({
+            category: z.enum([
+                'build',
+                'infrastructure',
+                'configuration'
+            ]),
+            bound: z.boolean(),
+            status: z.string().nullable(),
+            changeId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+        })),
         activeFreeze: z.object({
             id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
             reason: z.string(),
@@ -2005,6 +2015,16 @@ export const zGetServiceBoardResponse = z.object({
         reason: z.string(),
         endsAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
     }).nullable(),
+    servicePipelines: z.array(z.object({
+        category: z.enum([
+            'build',
+            'infrastructure',
+            'configuration'
+        ]),
+        bound: z.boolean(),
+        status: z.string().nullable(),
+        changeId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+    })),
     asOf: z.object({
         peerDomainId: z.string(),
         peerName: z.string(),

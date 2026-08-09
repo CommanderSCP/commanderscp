@@ -6765,6 +6765,12 @@ export type GetServiceBoardResponses = {
                 awaitingApproval: boolean;
                 emergency: boolean;
             };
+            pipelines: Array<{
+                category: 'build' | 'infrastructure' | 'configuration';
+                bound: boolean;
+                status: string | null;
+                changeId: string | null;
+            }>;
             activeFreeze: {
                 id: string;
                 reason: string;
@@ -6787,6 +6793,12 @@ export type GetServiceBoardResponses = {
             reason: string;
             endsAt: string;
         } | null;
+        servicePipelines: Array<{
+            category: 'build' | 'infrastructure' | 'configuration';
+            bound: boolean;
+            status: string | null;
+            changeId: string | null;
+        }>;
         asOf: {
             peerDomainId: string;
             peerName: string;
