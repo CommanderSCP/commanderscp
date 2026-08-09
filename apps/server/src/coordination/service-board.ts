@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { categoryOfType } from "@scp/schemas";
 import type {
   GraphObject,
@@ -18,6 +18,7 @@ import {
   objects as objectsTable
 } from "../db/schema.js";
 import { listExecutorBindingsForTargets } from "./executor-bindings-repo.js";
+import { executionSystemConsoleBase, executorConsoleUrl } from "./console-urls.js";
 import { traverse } from "../graph/traverse.js";
 import { getChange } from "./changes-repo.js";
 import { getLatestPlanForChange } from "./plan-service.js";
@@ -360,15 +361,55 @@ async function pipelinesForComponents(
     ...placementIds,
     serviceObjectId
   ]);
+  // Execution systems, resolved ONCE for the whole board — the console URL needs the system's own
+  // `kind` and address, and re-reading them per binding would be a query per row.
+  const systemIds = [
+    ...new Set(bindings.flatMap((b) => (b.executionSystemId ? [b.executionSystemId] : [])))
+  ];
+  const systemRows =
+    systemIds.length === 0
+      ? []
+      : await tx
+          .select({
+            id: objectsTable.id,
+            name: objectsTable.name,
+            properties: objectsTable.properties
+          })
+          .from(objectsTable)
+          .where(and(eq(objectsTable.orgId, orgId), inArray(objectsTable.id, systemIds)));
+  const systemById = new Map(systemRows.map((r) => [r.id, r]));
+
   const boundCategories = new Map<string, Set<string>>();
-  const noteBound = (ownerId: string, type: string) => {
+  const bindingsByOwnerCategory = new Map<string, ServiceBoardPipeline["bindings"]>();
+  const noteBound = (ownerId: string, b: (typeof bindings)[number]) => {
+    const category = categoryOfType(b.type);
     const set = boundCategories.get(ownerId) ?? new Set<string>();
-    set.add(categoryOfType(type));
+    set.add(category);
     boundCategories.set(ownerId, set);
+
+    const key = `${ownerId}:${category}`;
+    const list = bindingsByOwnerCategory.get(key) ?? [];
+    const system = b.executionSystemId ? systemById.get(b.executionSystemId) : undefined;
+    const props = (system?.properties ?? null) as Record<string, unknown> | null;
+    const entry = {
+      type: b.type,
+      externalRef: b.externalRef ?? null,
+      executionSystemName: system?.name ?? null,
+      url: executorConsoleUrl({
+        kind: typeof props?.["kind"] === "string" ? (props["kind"] as string) : null,
+        base: executionSystemConsoleBase(props),
+        externalRef: b.externalRef ?? null
+      })
+    };
+    // Deduped by type+ref: one binding repeated at every placement is ONE pipeline, not N.
+    if (!list.some((e) => e.type === entry.type && e.externalRef === entry.externalRef)) {
+      list.push(entry);
+      bindingsByOwnerCategory.set(key, list);
+    }
   };
   for (const b of bindings) {
     const owner = placementToComponent.get(b.targetObjectId) ?? b.targetObjectId;
-    noteBound(owner, b.type);
+    noteBound(owner, b);
   }
   // ADR-0027: a service-level binding makes that pipeline bound for EVERY component under it, which
   // is the whole point of declaring cluster infrastructure once.
@@ -428,7 +469,11 @@ async function pipelinesForComponents(
           category,
           bound: own.has(category) || serviceBound.has(category),
           status: seen?.status ?? null,
-          changeId: seen?.changeId ?? null
+          changeId: seen?.changeId ?? null,
+          bindings: [
+            ...(bindingsByOwnerCategory.get(`${componentId}:${category}`) ?? []),
+            ...(bindingsByOwnerCategory.get(`${serviceObjectId}:${category}`) ?? [])
+          ]
         };
       })
     );
@@ -441,7 +486,8 @@ async function pipelinesForComponents(
     // against the service, so there is no per-service status to report and inventing one would be
     // a claim about a row that does not exist.
     status: null,
-    changeId: null
+    changeId: null,
+    bindings: bindingsByOwnerCategory.get(`${serviceObjectId}:${category}`) ?? []
   }));
 
   return { byComponent, forService };

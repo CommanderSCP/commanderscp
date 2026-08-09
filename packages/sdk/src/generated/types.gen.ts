@@ -6770,6 +6770,12 @@ export type GetServiceBoardResponses = {
                 bound: boolean;
                 status: string | null;
                 changeId: string | null;
+                bindings: Array<{
+                    type: string;
+                    externalRef: string | null;
+                    executionSystemName: string | null;
+                    url: string | null;
+                }>;
             }>;
             activeFreeze: {
                 id: string;
@@ -6798,6 +6804,12 @@ export type GetServiceBoardResponses = {
             bound: boolean;
             status: string | null;
             changeId: string | null;
+            bindings: Array<{
+                type: string;
+                externalRef: string | null;
+                executionSystemName: string | null;
+                url: string | null;
+            }>;
         }>;
         asOf: {
             peerDomainId: string;

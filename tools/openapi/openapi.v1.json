@@ -26210,13 +26210,62 @@
                                       "type": "null"
                                     }
                                   ]
+                                },
+                                "bindings": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "type": {
+                                        "type": "string"
+                                      },
+                                      "externalRef": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "executionSystemName": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "url": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "type",
+                                      "externalRef",
+                                      "executionSystemName",
+                                      "url"
+                                    ],
+                                    "additionalProperties": false
+                                  }
                                 }
                               },
                               "required": [
                                 "category",
                                 "bound",
                                 "status",
-                                "changeId"
+                                "changeId",
+                                "bindings"
                               ],
                               "additionalProperties": false
                             }
@@ -26405,13 +26454,62 @@
                                 "type": "null"
                               }
                             ]
+                          },
+                          "bindings": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "type": {
+                                  "type": "string"
+                                },
+                                "externalRef": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "executionSystemName": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "url": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "externalRef",
+                                "executionSystemName",
+                                "url"
+                              ],
+                              "additionalProperties": false
+                            }
                           }
                         },
                         "required": [
                           "category",
                           "bound",
                           "status",
-                          "changeId"
+                          "changeId",
+                          "bindings"
                         ],
                         "additionalProperties": false
                       }

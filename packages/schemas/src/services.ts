@@ -102,7 +102,20 @@ export const ServiceBoardPipelineSchema = z.object({
    *  Null when this pipeline has never run here — never conflated with a sibling's status. */
   status: z.string().nullable(),
   /** The change that status is as of, so "succeeded" is never a standing property of the row. */
-  changeId: z.string().uuid().nullable()
+  changeId: z.string().uuid().nullable(),
+  /** What actually executes this pipeline, deduplicated. For a COMPONENT row this is the union
+   *  across its placements (one entry per distinct type+ref, so a binding repeated at every place
+   *  appears once); for a SERVICE-level pipeline it is the binding on the service itself. Empty
+   *  exactly when `bound` is false. */
+  bindings: z.array(
+    z.object({
+      type: z.string(),
+      externalRef: z.string().nullable(),
+      executionSystemName: z.string().nullable(),
+      /** Human console URL, or null when it cannot be known — see `console-urls.ts`. */
+      url: z.string().nullable()
+    })
+  )
 });
 export type ServiceBoardPipeline = z.infer<typeof ServiceBoardPipelineSchema>;
 

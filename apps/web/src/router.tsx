@@ -17,6 +17,7 @@ import { ComponentInfrastructurePage, ComponentPipelinePage } from "./routes/com
 import { ComponentDetailLayout } from "./routes/component-detail";
 import { ServiceBoardPage } from "./routes/service-board";
 import { ServiceDetailLayout } from "./routes/service-detail";
+import { ServiceInfrastructurePage } from "./routes/service-infrastructure";
 import { CampaignListPage } from "./routes/campaign-list";
 import { CampaignDetailPage } from "./routes/campaign-detail";
 import { InitiativeListPage } from "./routes/initiative-list";
@@ -165,6 +166,12 @@ const serviceBoardRoute = createRoute({
   component: ServiceBoardPage
 });
 
+const serviceInfrastructureRoute = createRoute({
+  getParentRoute: () => serviceDetailRoute,
+  path: "/infrastructure",
+  component: ServiceInfrastructurePage
+});
+
 const serviceSettingsRoute = createRoute({
   getParentRoute: () => serviceDetailRoute,
   path: "/settings",
@@ -257,7 +264,11 @@ const routeTree = rootRoute.addChildren([
       componentInfrastructureRoute,
       componentSettingsRoute
     ]),
-    serviceDetailRoute.addChildren([serviceBoardRoute, serviceSettingsRoute]),
+    serviceDetailRoute.addChildren([
+      serviceBoardRoute,
+      serviceInfrastructureRoute,
+      serviceSettingsRoute
+    ]),
     campaignListRoute,
     campaignDetailRoute,
     initiativeListRoute,

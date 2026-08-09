@@ -1991,7 +1991,13 @@ export const zGetServiceBoardResponse = z.object({
             ]),
             bound: z.boolean(),
             status: z.string().nullable(),
-            changeId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+            changeId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            bindings: z.array(z.object({
+                type: z.string(),
+                externalRef: z.string().nullable(),
+                executionSystemName: z.string().nullable(),
+                url: z.string().nullable()
+            }))
         })),
         activeFreeze: z.object({
             id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
@@ -2023,7 +2029,13 @@ export const zGetServiceBoardResponse = z.object({
         ]),
         bound: z.boolean(),
         status: z.string().nullable(),
-        changeId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+        changeId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+        bindings: z.array(z.object({
+            type: z.string(),
+            externalRef: z.string().nullable(),
+            executionSystemName: z.string().nullable(),
+            url: z.string().nullable()
+        }))
     })),
     asOf: z.object({
         peerDomainId: z.string(),

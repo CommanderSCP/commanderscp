@@ -149,7 +149,7 @@ function AttentionCell({ row }: { row: ServiceBoardRow }): React.JSX.Element {
  * an absent chip would read as "this board does not show infra". Same rule as the component
  * pipeline's lanes.
  */
-const CATEGORY_LABEL: Record<string, string> = {
+export const CATEGORY_LABEL: Record<string, string> = {
   build: "build",
   infrastructure: "infra",
   configuration: "config"
@@ -537,41 +537,6 @@ export function ServiceBoardPage(): React.JSX.Element {
           flavour of fine — it is the count of rows whose latest change this instance does not drive
           and therefore cannot assess, so it carries a warning (never `success`) treatment. */}
       <BoardSummary summary={summary} stableUnknown={changeVisibilityUnknown} />
-
-      {/* SERVICE-LEVEL PIPELINES (ADR-0027). Infrastructure often serves the WHOLE service — a
-          cluster, a shared database — and is declared once here rather than duplicated onto every
-          component. Rendered whether or not anything is bound: "no service-level infrastructure" is
-          a fact about the service, and an absent card would read as "this board does not show it". */}
-      <Card data-testid="service-pipelines">
-        <CardHeader>
-          <CardTitle className="text-base">Service-level pipelines</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {board.servicePipelines.every((p) => !p.bound) ? (
-            <p className="text-sm text-slate-500" data-testid="service-pipelines-none">
-              Nothing is bound at the service itself — every pipeline here is declared per
-              component. Infrastructure that serves the whole service (a cluster, a shared database)
-              can be bound once on the service instead.
-            </p>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {board.servicePipelines
-                .filter((p) => p.bound)
-                .map((p) => (
-                  <span
-                    key={p.category}
-                    className="rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700"
-                    data-testid="service-pipeline-chip"
-                    data-category={p.category}
-                    title="Bound at the service — it drives every component under it (ADR-0027)"
-                  >
-                    {CATEGORY_LABEL[p.category] ?? p.category} · serves every component
-                  </span>
-                ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
 
       <Card>
         <CardHeader>

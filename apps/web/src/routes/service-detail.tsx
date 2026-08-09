@@ -2,7 +2,7 @@ import { Link, Outlet } from "@tanstack/react-router";
 import { useIdOrUrnParam } from "../lib/use-route-params";
 
 /**
- * The chrome shared by every view of ONE service — today Board and Settings.
+ * The chrome shared by every view of ONE service — Board, Infrastructure and Settings.
  *
  * WHY THE BOARD IS THE DEFAULT (owner, 2026-08-04): `/services/{id}` fell through to the generic
  * `RegistryDetailPage`, so the operational view of a service — what is releasing, what is blocked,
@@ -33,6 +33,15 @@ export function ServiceDetailLayout(): React.JSX.Element {
           data-testid="service-tab-board"
         >
           Board
+        </Link>
+        <Link
+          to="/services/$idOrUrn/infrastructure"
+          params={{ idOrUrn }}
+          className={`${TAB_BASE} border-transparent text-slate-500`}
+          activeProps={{ className: `${TAB_BASE} border-slate-900 text-slate-900` }}
+          data-testid="service-tab-infrastructure"
+        >
+          Infrastructure
         </Link>
         <Link
           to="/services/$idOrUrn/settings"

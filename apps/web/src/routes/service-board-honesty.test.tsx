@@ -390,9 +390,9 @@ describe("a board row shows EVERY pipeline, not one status for all of them", () 
 
   it("keeps each pipeline's state separate", () => {
     const html = withPipelines([
-      { category: "build", bound: true, status: "succeeded", changeId: null },
-      { category: "infrastructure", bound: true, status: "failed", changeId: null },
-      { category: "configuration", bound: true, status: null, changeId: null }
+      { category: "build", bound: true, status: "succeeded", changeId: null, bindings: [] },
+      { category: "infrastructure", bound: true, status: "failed", changeId: null, bindings: [] },
+      { category: "configuration", bound: true, status: null, changeId: null, bindings: [] }
     ]);
     expect(html).toContain("succeeded");
     expect(html).toContain("failed");
@@ -406,7 +406,7 @@ describe("a board row shows EVERY pipeline, not one status for all of them", () 
     // An absent chip would read as "this board does not show infra", when the truth is that no
     // executor is bound for it — the same rule the component pipeline's lanes follow.
     const html = withPipelines([
-      { category: "infrastructure", bound: false, status: null, changeId: null }
+      { category: "infrastructure", bound: false, status: null, changeId: null, bindings: [] }
     ]);
     expect(html).toContain("not bound");
     expect(html).toContain('data-bound="false"');
