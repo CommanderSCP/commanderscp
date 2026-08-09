@@ -1,6 +1,6 @@
 import type PgBoss from "pg-boss";
 import type { TriggerIntent } from "@scp/plugin-api";
-import type { ExecutorType } from "@scp/schemas";
+import type { ExecutorType, TrustDomainId } from "@scp/schemas";
 import type { Db } from "../db/client.js";
 import { and, eq } from "drizzle-orm";
 import { changes, orgs } from "../db/schema.js";
@@ -154,15 +154,31 @@ async function advanceProposedChanges(
   db: Db,
   orgId: string,
   gateDeps: GateDeps,
-  selfDomainId: string
+  selfDomainId: TrustDomainId
 ): Promise<void> {
   const rows = await withTenantTx(db, orgId, (tx) =>
-    listChangeRowsInStates(tx, orgId, ["proposed"], BATCH_LIMIT)
+    listChangeRowsInStates(tx, orgId, ["proposed"], BATCH_LIMIT, selfDomainId)
   );
   for (const { change, object } of rows) {
     // S10 single-writer guard: a read-only replica of a peer's change is never ours to drive —
     // SKIP silently (no lock, no Decision, no park) rather than attempt a transition the guard
     // inside `transitionChange` would refuse anyway. See tracked-security-followups.
+    //
+    // NOW UNREACHABLE, AND KEPT DELIBERATELY. `listChangeRowsInStates` filters foreign-origin rows
+    // out of the candidate set above (see its doc comment), so this `continue` can no longer fire.
+    // It stays because it states the loop body's S10 INVARIANT — "this loop only ever writes rows
+    // this domain is authoritative for" — which is a property of the BODY, not of one query. A
+    // future candidate fetch that forgot the filter would find this still standing. The filter
+    // makes the guard unreachable; it does not replace what the guard means.
+    //
+    // WHAT THIS MUST NEVER BECOME is a round-robin `updated_at` bump on the skip path. Un-filtered,
+    // this `continue` re-served a row without ever writing it — the batch-starvation property
+    // (`candidate-loop-registry.test.ts`) that cost 13 days of production coordination — but the
+    // bump used on every other instance of that property is ILLEGAL here: it would write a
+    // read-only replica's row. Filtering the candidate set is the only remedy that is both
+    // starvation-free and single-writer-clean, and it keeps "SKIP, NOT PARK" intact (the row
+    // rejoins the batch by itself the moment authority returns). Pinned by
+    // `foreign-origin-batch-starvation.integration.test.ts`.
     if (object.originDomainId !== selfDomainId) continue;
     const lock = await tryAcquireChangeCoordinationLock(db, change.objectId);
     if (!lock) continue;
@@ -219,13 +235,14 @@ async function advanceEvaluatedChanges(
   db: Db,
   orgId: string,
   gateDeps: GateDeps,
-  selfDomainId: string
+  selfDomainId: TrustDomainId
 ): Promise<void> {
   const rows = await withTenantTx(db, orgId, (tx) =>
-    listChangeRowsInStates(tx, orgId, ["evaluated"], BATCH_LIMIT)
+    listChangeRowsInStates(tx, orgId, ["evaluated"], BATCH_LIMIT, selfDomainId)
   );
   for (const { change, object } of rows) {
-    // S10 single-writer guard — see advanceProposedChanges.
+    // S10 single-writer guard — see advanceProposedChanges for why this is kept even though the
+    // candidate query above now makes it unreachable, and why a round-robin bump here is wrong.
     if (object.originDomainId !== selfDomainId) continue;
     const lock = await tryAcquireChangeCoordinationLock(db, change.objectId);
     if (!lock) continue; // another tick/replica is genuinely working on this change right now.
@@ -303,13 +320,14 @@ async function advanceCoordinatedChanges(
   db: Db,
   orgId: string,
   gateDeps: GateDeps,
-  selfDomainId: string
+  selfDomainId: TrustDomainId
 ): Promise<void> {
   const rows = await withTenantTx(db, orgId, (tx) =>
-    listChangeRowsInStates(tx, orgId, ["coordinated"], BATCH_LIMIT)
+    listChangeRowsInStates(tx, orgId, ["coordinated"], BATCH_LIMIT, selfDomainId)
   );
   for (const { change, object } of rows) {
-    // S10 single-writer guard — see advanceProposedChanges.
+    // S10 single-writer guard — see advanceProposedChanges for why this is kept even though the
+    // candidate query above now makes it unreachable, and why a round-robin bump here is wrong.
     if (object.originDomainId !== selfDomainId) continue;
     const lock = await tryAcquireChangeCoordinationLock(db, change.objectId);
     if (!lock) continue;
@@ -413,13 +431,14 @@ async function advanceWaitingChanges(
   db: Db,
   orgId: string,
   gateDeps: GateDeps,
-  selfDomainId: string
+  selfDomainId: TrustDomainId
 ): Promise<void> {
   const rows = await withTenantTx(db, orgId, (tx) =>
-    listChangeRowsInStates(tx, orgId, ["waiting"], BATCH_LIMIT)
+    listChangeRowsInStates(tx, orgId, ["waiting"], BATCH_LIMIT, selfDomainId)
   );
   for (const { change, object } of rows) {
-    // S10 single-writer guard — see advanceProposedChanges.
+    // S10 single-writer guard — see advanceProposedChanges for why this is kept even though the
+    // candidate query above now makes it unreachable, and why a round-robin bump here is wrong.
     if (object.originDomainId !== selfDomainId) continue;
     const lock = await tryAcquireChangeCoordinationLock(db, change.objectId);
     if (!lock) continue;
@@ -505,10 +524,17 @@ async function advanceValidatingChanges(
   db: Db,
   orgId: string,
   host: PluginHost,
-  sandbox: CelSandbox
+  sandbox: CelSandbox,
+  selfDomainId: TrustDomainId
 ): Promise<void> {
+  // THE SIXTH CALL SITE, and it never had the S10 skip the other five carry — so the `continue` was
+  // never the thing to fix; the QUERY was. Before the filter this loop would have run governance
+  // prewarm on a peer's read-only replica and then WRITTEN that replica's `changes` row (the bump
+  // below), which is the single-writer violation itself and not merely a scheduling one. It is
+  // listed as a candidate fetch in `candidate-loop-registry.test.ts` and would have been missed by a
+  // census that only followed the five `originDomainId !== selfDomainId` guards.
   const rows = await withTenantTx(db, orgId, (tx) =>
-    listChangeRowsInStates(tx, orgId, ["validating"], BATCH_LIMIT)
+    listChangeRowsInStates(tx, orgId, ["validating"], BATCH_LIMIT, selfDomainId)
   );
   for (const { change, object } of rows) {
     try {
@@ -557,16 +583,17 @@ async function advanceExecutingChanges(
   host: PluginHost,
   sandbox: CelSandbox,
   masterKey: Buffer,
-  selfDomainId: string
+  selfDomainId: TrustDomainId
 ): Promise<void> {
   const rows = await withTenantTx(db, orgId, (tx) =>
-    listChangeRowsInStates(tx, orgId, ["executing"], BATCH_LIMIT)
+    listChangeRowsInStates(tx, orgId, ["executing"], BATCH_LIMIT, selfDomainId)
   );
   for (const { change, object } of rows) {
-    // S10 single-writer guard — see advanceProposedChanges. Filtering here also covers every
-    // write `reconcileExecutingChange` might make below it (wave triggers, completeExecution's
-    // transitionChange calls, and the auto-rollback triggerRollback call) without needing a
-    // separate check inside each of those.
+    // S10 single-writer guard — see advanceProposedChanges for why this is kept even though the
+    // candidate query above now makes it unreachable, and why a round-robin bump here is wrong.
+    // Filtering here also covers every write `reconcileExecutingChange` might make below it (wave
+    // triggers, completeExecution's transitionChange calls, and the auto-rollback triggerRollback
+    // call) without needing a separate check inside each of those.
     if (object.originDomainId !== selfDomainId) continue;
     try {
       await reconcileExecutingChange(db, orgId, change, host, sandbox, masterKey);
@@ -1563,9 +1590,13 @@ export async function reconcileOrgTick(
 ): Promise<void> {
   const gateDeps: GateDeps = { sandbox, host };
   // S10 single-writer guard: resolved ONCE per tick (a cheap lazy-create-or-read against
-  // `federation_self`) and threaded into every advance* step below, each of which filters a
-  // read-only replica of a peer's change OUT of its candidate batch before ever attempting a
-  // transition — see tracked-security-followups's "engine SKIP rather than park".
+  // `federation_self`) and threaded into every advance* step below — and, since this commit, on
+  // through into `listChangeRowsInStates` itself, so a read-only replica of a peer's change is
+  // filtered OUT OF THE SQL rather than skipped in the loop body. That distinction is the whole
+  // point: a loop-body skip left the row in the batch with a frozen `updated_at`, holding a slot
+  // under `ORDER BY updated_at ASC LIMIT 25` forever. See tracked-security-followups's "engine SKIP
+  // rather than park", `changes-repo.ts`'s doc comment, and
+  // `foreign-origin-batch-starvation.integration.test.ts`.
   const selfDomainId = (await withTenantTx(db, orgId, (tx) => ensureFederationSelf(tx, orgId)))
     .domainId;
   try {
@@ -1578,7 +1609,7 @@ export async function reconcileOrgTick(
   await advanceCoordinatedChanges(db, orgId, gateDeps, selfDomainId);
   await advanceWaitingChanges(db, orgId, gateDeps, selfDomainId);
   await advanceExecutingChanges(db, orgId, host, sandbox, masterKey, selfDomainId);
-  await advanceValidatingChanges(db, orgId, host, sandbox);
+  await advanceValidatingChanges(db, orgId, host, sandbox, selfDomainId);
   // M5 (DESIGN §9.5): campaigns fan out into real M3 Changes above already progress through the
   // exact same steps this tick just ran — this only sequences WHICH wave's member changes get
   // proposed next (coordination/campaign-reconcile.ts's module doc).
