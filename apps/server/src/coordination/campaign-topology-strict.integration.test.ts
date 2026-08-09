@@ -16,6 +16,7 @@ import type { PluginHost } from "../plugin-host/contract.js";
 import { reconcileCampaignsOrgTick } from "./campaign-reconcile.js";
 import { getLatestCampaignPlan } from "./campaign-plan-service.js";
 import { createObject } from "../graph/objects-repo.js";
+import { ensureFederationSelf } from "../federation/self-repo.js";
 
 /**
  * A MALFORMED RELEASE TOPOLOGY MUST FAIL AS LOUDLY ON THE CAMPAIGN PATH AS ON THE CHANGE PATH.
@@ -205,7 +206,13 @@ describe("a malformed release topology is refused on the CAMPAIGN path too", () 
     );
     // AFTER the creating transaction commits — see `campaignWithTopology`'s note.
     if (opts.viaSurgery) await writeRawProperties(topologyId, withTarget(document, componentId));
-    await reconcileCampaignsOrgTick(server.deps.db, org.orgId, host, sandbox);
+    // S10: the reconciler drives only campaigns this domain is authoritative for. Every campaign
+    // here is created locally, so this org's own `federation_self.domain_id` is exactly what they
+    // carry — see `campaign-repo.ts`'s `listActiveCampaignObjectIds`.
+    const selfDomainId = (
+      await withTenantTx(server.deps.db, org.orgId, (tx) => ensureFederationSelf(tx, org.orgId))
+    ).domainId;
+    await reconcileCampaignsOrgTick(server.deps.db, org.orgId, host, sandbox, selfDomainId);
     return {
       plan: await planFor(org, campaignId),
       blocked: await blockingDecisions(org, campaignId)

@@ -21,11 +21,15 @@ import { describe, expect, it } from "vitest";
  *                                   censusing the property rather than chasing the symptom.
  *   5. `reconcileExecutingChange`'s POLL path — instance 2 again, in the SAME function, on the
  *                                   branch the fix for 2 did not reach. See below.
- *   6. THE S10 SINGLE-WRITER SKIP    — `if (object.originDomainId !== selfDomainId) continue;`,
- *                                   latent (no candidate row can have a foreign origin today), and
- *                                   the ONLY one whose remedy is NOT a bump — bumping would write a
- *                                   read-only replica's row. Closed by filtering the candidate
- *                                   query instead; see "THE ONE OPEN ITEM" below.
+ *   6. THE S10 SINGLE-WRITER SKIP    — `if (object.originDomainId !== selfDomainId) continue;`, in
+ *                                   all six `advance*` loops and (added the same day) in
+ *                                   `reconcileCampaignsOrgTick`. The ONLY instance whose remedy is
+ *                                   NOT a bump — bumping would write a read-only replica's row.
+ *                                   Closed on BOTH loops by filtering the candidate query instead.
+ *                                   Latent on the change side (no `changes` candidate can have a
+ *                                   foreign origin) and NOT latent on the campaign side, where the
+ *                                   un-filtered loop was measured driving a peer's campaign. See
+ *                                   "THE ONE OPEN ITEM" and the `campaign-reconcile.ts` entry below.
  *
  * A comment naming the hazard as a class did not stop instances 2-6 from existing. That is what
  * this test is for: it cannot prove a loop is correct, but it makes ADDING one a deliberate act
@@ -55,18 +59,53 @@ import { describe, expect, it } from "vitest";
  *     the reconcile files leaves `state_entered_at` alone.
  *   * `observe.ts` — `listExecutorBindings` is unbounded, and the cursor advances per instance.
  *   * `federation/journal-repo.ts` — `ORDER BY sequence ASC LIMIT n` read from a monotonic cursor.
- *   * `campaign-reconcile.ts`'s `reconcileCampaignsOrgTick` — RE-CHECKED 2026-08-08 against the S10
- *     variant of the property specifically, and it does NOT share it: `listActiveCampaignObjectIds`
- *     has no origin predicate, the loop has no `originDomainId` skip, and it bumps EVERY campaign
- *     it examines unconditionally. So there is no un-stamped skip path and no starvation. That
- *     also means it would DRIVE a foreign-origin campaign and bump a replica's `objects` row —
- *     a single-writer question, not a starvation one, and out of scope for the change that wrote
- *     this note. It is NOT purely hypothetical: `import-repo.ts`'s `object_upsert` branch is
- *     type-agnostic (`typeId` comes straight off the payload), so a synced `campaign` object DOES
- *     land locally with a foreign `origin_domain_id` — unlike a synced `change`, which has no local
- *     `changes` row and so cannot be a candidate here. `reconcileOneCampaign` would then compile a
- *     plan for it and propose member changes. That deserves a deliberate S10 decision of its own,
- *     not a drive-by fix, so it is recorded here rather than silently changed.
+ *   * `campaign-reconcile.ts`'s `reconcileCampaignsOrgTick` — the S10 finding recorded here on
+ *     2026-08-08 as "a deliberate decision of its own, not a drive-by" IS NOW FIXED, same PR, and
+ *     the finding was CONFIRMED EXACTLY AS WRITTEN before anything was changed. Reproduction, from
+ *     `foreign-origin-campaign.integration.test.ts` run against the unfixed loop: the replica
+ *     compiled a plan on tick 1 (`expected null, received { waves: [ { targets: [ { status:
+ *     "change_proposed", memberChangeObjectId: ... } ] } ] }`), proposed a member Change from it
+ *     (`state: "proposed"`, `sourceRef.campaignObjectId` = the peer's campaign), and had its
+ *     `objects.updated_at` written by the round-robin bump.
+ *
+ *     THE ASYMMETRY THAT MADE THIS THE WORSE HALF, re-verified in code: `import-repo.ts`'s
+ *     `object_upsert` branch is type-agnostic (`const typeId = String(payload.typeId)`) and
+ *     `graph/objects-repo.ts`'s `journalEntryKindFor` routes every non-`policy` object onto that
+ *     entry kind, so a peer's campaign object rides an ordinary `full`-scope journal and lands
+ *     locally with a foreign `origin_domain_id`. A synced CHANGE cannot: `object_upsert` never
+ *     creates the local `changes` state-machine row that `listChangeRowsInStates` INNER JOINs. So
+ *     the change-side hole was latent and this one was live — and its consequence was not a
+ *     scheduling delay but WRITES: `campaign_plans`/`campaign_waves`/`campaign_wave_targets` rows,
+ *     brand-new `changes`, and a `coordinates` edge hanging off a replica.
+ *
+ *     REMEDY: the same shape as the change side. `listActiveCampaignObjectIds` now takes
+ *     `selfDomainId` (REQUIRED) and filters on `objects.origin_domain_id = self`, so the replica
+ *     leaves the candidate set instead of being skipped in the body. The mid-loop `continue` was
+ *     rejected for the usual reason AND a sharper one: this query really is `ORDER BY
+ *     objects.updated_at ASC LIMIT 25` (checked, not assumed), so a body-level skip would have been
+ *     a genuine SEVENTH instance of the starvation property — and the bump that closes every other
+ *     instance sits at the bottom of this very loop and would itself be the S10 write. A guard
+ *     REMAINS in the loop body, above the bump, as defence in depth; it is unreachable and must
+ *     never become a bump. Regressions: `foreign-origin-campaign.integration.test.ts` (end to end)
+ *     and `campaign-active-filter.integration.test.ts`'s S10 arm (the query predicate itself).
+ *
+ *     CENSUS, filterless, of every campaign/initiative-side read that feeds a write — because the
+ *     named loop is one instance and the property is "an engine-driven read of a campaign whose
+ *     writes are not authority-checked". Everything below is FINE, and the reason is recorded so the
+ *     next sweep does not re-derive it:
+ *       - `campaign-rollback.ts`'s `authoritativeCampaignMembers` -> `triggerRollback`: operator-
+ *         driven, not a tick, and every member write goes through `triggerRollback`, which already
+ *         refuses a foreign-origin change and reports it as a `skipped` reason.
+ *       - `proposeCampaign` / `proposeInitiative` / `addCampaignToInitiative` / `iac/plans-repo.ts`'s
+ *         campaign apply: actor-driven creates and updates through `createObject`/`updateObject`,
+ *         which carry the replica guard themselves ("object is a read-only replica").
+ *       - `getCampaignStatus`, `listCampaigns`, `getCampaign`, `computeInitiativeRollupFor`,
+ *         `graph/named-queries.ts`'s `initiative-rollup`, `routes/campaigns.ts`'s `:id/explain`:
+ *         pure reads. Reporting a replica's status is correct and required.
+ *       - `campaign-plan-service.ts`: writes only, and only ever called from the loop above — the
+ *         authority decision belongs at the candidate query, not repeated at each writer.
+ *       - `memberChangeIdsForCampaign`: no callers at all.
+ *     `watchdog.ts` does not read campaigns, and there is no initiative-side tick.
  *   * THE ONE OPEN ITEM — NOW CLOSED (2026-08-08, same day it was opened). It was: the S10
  *     single-writer skip (`if (object.originDomainId !== selfDomainId) continue;`) at the top of
  *     five `advance*` loops leaves the row un-stamped, which IS this property — a SIXTH instance,
@@ -150,7 +189,15 @@ const BUMPED: Record<string, { bumpIn: string; why: string }> = {
   },
   reconcileCampaignsOrgTick: {
     bumpIn: "reconcileCampaignsOrgTick",
-    why: "nothing in reconcileOneCampaign writes the campaign's objects row"
+    // The bump sits BELOW this loop's S10 guard, deliberately. That guard's `continue` is the
+    // second not-advanced path and it must NEVER reach the bump: writing a replica's `updated_at`
+    // is the single-writer violation the guard exists to prevent. It is un-starvable anyway,
+    // because `listActiveCampaignObjectIds` filters foreign-origin campaigns out of the candidate
+    // set — the query is where the exclusion belongs.
+    why:
+      "nothing in reconcileOneCampaign writes the campaign's objects row (its second not-advanced " +
+      "path, the S10 foreign-origin skip, is filtered out of the candidate query instead — a bump " +
+      "there would write a read-only replica's row)"
   }
 };
 
