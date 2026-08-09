@@ -192,19 +192,19 @@ Unlike the backoff gate, the hold **writes a Decision** (charter principle 6). T
 
 ---
 
-## 4. Federation (ruling D5 open)
+## 4. Federation (D5 — CLOSED by the owner's standing ruling of 2026-07-15)
 
 The gate is only computable where **both** components' wave targets were polled by the **same instance**. Nothing journals `change_wave_targets` or `observed_state` — `JournalEntryKindSchema` has nine kinds and none is wave-target-shaped (`federation.ts:43-53`) — and reconcile skips foreign-origin changes outright (`reconcile.ts:570`). Separately, `relationship_upsert` ships only under sync scope `full` (`federation/scope-filter.ts:24-48`): a `policies_only` / `changes_only` / `status_only` outpost never receives the dependency edges and would evaluate to "no dependencies" **silently**.
 
 That silence is the worst available answer. Recommendation: evaluate the gate **where the deploy is coordinated**, and have an outpost whose sync scope withholds the inputs **refuse explicitly** — a named, visible verdict — rather than pass. This needs a ruling before the federation increment; it does not block increments 0–3, which are single-instance.
 
-### 4.1 What actually shipped, pending D5: the declaration is STRIPPED on promotion import
+### 4.1 What shipped: the declaration is STRIPPED on promotion import
 
 D5 is still open, but the reader shipped in increment 3 — and that combination is not neutral. A promoted change is re-proposed **locally**, with this domain's own origin, so the foreign-origin skip does **not** exclude it and the outpost really does evaluate the coupling. Under a sync scope narrower than `full` the depended-on component is not present locally at all, so every verdict resolves to `not_placed` → **satisfied**: exactly the silent, unrecorded fail-open this section calls the worst available answer, shipped by default.
 
 So `applyPromotionImport` now strips `properties.stageDependencies` exactly as it strips `requires`, on the established precedent ([coupled-pipelines.md](coupled-pipelines.md) §8 Q2), and writes a `stage_dependency` Decision on the imported change recording what was stripped and that the coupling was **enforced upstream at the commander** — whose promotion of the bundle *is* the go-ahead. A promotion that declared nothing writes nothing and stays byte-identical.
 
-This is a **deferral, not the ruling**. It replaces a silent fail-open with a recorded one, which is the difference §4 is actually about; it does not deliver the cross-instance gate. When D5 lands, `applyPromotionImport` is the seam that changes.
+**This is the ruling, not a deferral — it was already made.** Owner, 2026-07-15, on the sibling `requires` mechanism: *"While we can transfer both artifacts to the outpost for release, it should be the commander that gives the go ahead to actually release. Though the outposts should be able to handle the rollback themselves if there's issues."* ([coupled-pipelines.md](coupled-pipelines.md) §8 Q2.) The promotion of the bundle **is** the go-ahead, so the outpost must not re-evaluate: redundant at best, deadlock at worst. Stripping on import is exactly what `requires` does and for exactly the same reason. `applyPromotionImport` remains the seam a future cross-outpost coupling would change — a shape §8 Q2 already records as a non-goal.
 
 ---
 
@@ -231,7 +231,7 @@ Each is independently shippable and behaviour-preserving.
 | **D2** | Where is the dependency declared? | **CI push** via `scp change-source report`, following the `provides`/`requires` precedent (§2.3). Not the IaC manifest (wrong repo, prunes, drops edge properties — §0.4/§0.5); not a new repo-file reader (six pieces of net-new machinery, no parser in-tree). |
 | **D3** | What happens when the gate cannot evaluate? | **Split by cause** (§2.4): not-placed = satisfied; unreadable = proceed with a visible warning; only placed-and-behind holds. |
 | **D4** | Which edge type carries the dependency? | **Reuse `depends_on`**, replacing `plan-compiler.ts:263-280`'s same-wave check rather than deleting it (§2.6). |
-| **D5** | Commander or outpost, and what on missing data? | **Open** — §4 recommends explicit refusal over silent pass. Does not block increments 0–3. |
+| **D5** | Commander or outpost, and what on missing data? | **CLOSED — already ruled 2026-07-15**, for `requires`, and the reasoning transfers unchanged: the commander evaluates and its promotion is the go-ahead; the outpost does not re-evaluate. Raising it again was my error, not an open question (§4). |
 
 ## 7. Deliberate non-goals
 
