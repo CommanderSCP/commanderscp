@@ -1235,9 +1235,11 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     expect(parsed.stageDependencies).toEqual([]);
     expect(parsed.malformed).toEqual([]);
 
-    // The strip is an engine verdict, so it is EXPLAINABLE (charter principle 6) — under the HOLD's
-    // own kind, so `scp decision list --kind stage_dependency` on the outpost answers "what happened
-    // to my coupling here?" with a row instead of an absence.
+    // The strip is an engine verdict, so it is EXPLAINABLE (charter principle 6) — recorded under the
+    // HOLD's own kind, so the row says which mechanism removed the declaration rather than leaving an
+    // unexplained absence. An operator reaches it by the promoted change (`scp change explain <id>`,
+    // or `scp decision list --subject-id <change-id>`); an earlier version of this comment promised
+    // `--kind stage_dependency`, a filter that does not exist — see `promotion-repo.ts`'s note.
     const stripDecisions = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       tx
         .select()

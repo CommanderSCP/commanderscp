@@ -850,9 +850,20 @@ async function applyPromotionImport(
 
   // ADR-0028, the AUDIT half of the `stageDependencies` strip. Same rule, same reason: a coupling
   // that vanishes with no record is the exact failure this feature exists to prevent, so the strip
-  // is a persisted verdict rather than a deletion. Recorded under the hold's OWN kind, so
-  // `scp decision list --kind stage_dependency` on the outpost answers "what happened to my
-  // coupling here?" with a row instead of an absence. Nothing stripped, nothing written.
+  // is a persisted verdict rather than a deletion. Recorded under the hold's OWN kind, so the row
+  // says which mechanism removed the declaration rather than leaving an unexplained absence.
+  //
+  // HOW AN OPERATOR ACTUALLY FINDS IT, stated accurately: by the promoted change —
+  // `scp change explain <id>`, or `scp decision list --subject-id <change-id>`. An earlier version
+  // of this comment promised `scp decision list --kind stage_dependency`; that filter does not
+  // exist. `DecisionListQuerySchema` (`packages/schemas/src/changes.ts`) accepts `subjectId` and the
+  // cursor page fields only, and the CLI exposes `--subject-id` alone. The promise was worse than a
+  // missing feature, because it read as a working answer to "what happened to my coupling here?"
+  // for someone who does not already know the change id — which is precisely the person asking.
+  // Adding a `kind` filter is worth doing and belongs with the operator surfaces (proposal §5
+  // increment 4, the one increment that did not ship), not smuggled in here.
+  //
+  // Nothing stripped, nothing written.
   if (_stageDependenciesStrippedOnPromotion !== undefined) {
     await insertDecision(tx, {
       orgId,

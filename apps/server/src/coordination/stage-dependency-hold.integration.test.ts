@@ -15,6 +15,7 @@ import {
 import type { PluginHost } from "../plugin-host/contract.js";
 import { getLatestPlanForChange } from "./plan-service.js";
 import { findLatestWaveTargetForObject } from "./wave-targets-repo.js";
+import { latestBlockDecisionForSubject } from "./decisions-repo.js";
 import { reconcileOrgTick } from "./reconcile.js";
 import { distinctDecisionStatements } from "./test-support/counting-cel-sandbox.js";
 import { createInMemoryFakeHost, withRefusingTrigger } from "./test-support/fake-plugin-host.js";
@@ -251,6 +252,38 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
         )
         .orderBy(decisions.createdAt, decisions.id)
     );
+
+  it("a hold is NOT a board-level block — it must not mark the component blocked forever", async () => {
+    // `latestBlockDecisionForSubject` selects the newest `verdict = 'block'` row for a subject,
+    // filtered on the VERDICT ALONE — no kind, no recency, no change-state gate — and
+    // `service-board.ts` does `isBlocked = hasFailedWave || blockDecision !== undefined`, feeding it
+    // into the component row's `attention.blocked` and the board's `blocked` tally. Nothing ever
+    // writes a clearing row.
+    //
+    // So if the hold recorded `block`, the component would read blocked PERMANENTLY: after the hold
+    // released, after the change reached `accepted`, forever. That is tolerable for the other
+    // nineteen `block` writers, which fire when something is genuinely stuck and wants an operator.
+    // This one fires on EVERY coupled release by design, so it would make the attention signal
+    // permanently wrong for precisely the components that adopted the feature.
+    //
+    // Asserted through the board's OWN query rather than by reading the verdict string, so this
+    // fails if someone reintroduces the coupling to that read path by any route.
+    const dependency = await componentAt("blockread-dep", [gamma]);
+    const dependant = await componentAt("blockread-app", [gamma]);
+
+    const change = await release("blockread", [dependant.id], [{ dependsOn: dependency.id }]);
+    await tick(3);
+
+    // The hold is real and recorded — otherwise the assertion below would pass vacuously.
+    expect(firedFor(dependant.at(gamma))).toBe(0);
+    expect(await holdDecisions(change.id)).toHaveLength(1);
+
+    // ...and the board's block read does not see it.
+    const asBlock = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      latestBlockDecisionForSubject(tx, org.orgId, change.id)
+    );
+    expect(asBlock).toBeUndefined();
+  });
 
   it("HOLDS the trigger — the executor is never called, and the wave never reports complete", async () => {
     const dependency = await componentAt("held-dep", [gamma]);
@@ -1197,7 +1230,9 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     // forever — the shape that reached 1.44 GB/day on the live homelab across 25 parked changes.
     const rows = await holdDecisions(change.id);
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.verdict).toBe("block");
+    // `hold`, not `block` — a hold must not reach the service board's block read. Pinned on its own
+    // above ("a hold is NOT a board-level block"); asserted here too so the verdict cannot drift back.
+    expect(rows[0]!.verdict).toBe("hold");
 
     // Explainability (charter principle 6): the dependency, the PLACE, and WHICH branch applied.
     const context = rows[0]!.inputContext as HeldContext;

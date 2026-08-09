@@ -1206,6 +1206,27 @@ async function reconcileExecutingChange(
  * hypothetical: the identical property stopped all coordination on the homelab for 13 days behind
  * green health checks. `state_entered_at` is deliberately untouched, so the watchdog's stall SLA
  * keeps measuring from when the change actually entered `executing`.
+ *
+ * THE VERDICT IS `hold`, NOT `block`, and that is a deliberate correctness choice rather than a
+ * naming preference. `latestBlockDecisionForSubject` (`decisions-repo.ts`) selects the newest row
+ * with `verdict = 'block'` for a subject, filtered on the verdict ALONE — no kind, no recency, no
+ * change-state gate — and `service-board.ts`'s `isBlocked = hasFailedWave || blockDecision !==
+ * undefined` feeds it straight into a component row's `attention.blocked` and the board's `blocked`
+ * tally. Nothing ever writes a clearing row. So a `block` here would mark the component blocked
+ * PERMANENTLY: after the hold released, after the change reached `accepted`, forever.
+ *
+ * That is tolerable for the other nineteen `verdict: "block"` writers, because each fires when
+ * something is genuinely stuck and wants an operator. This one fires on EVERY coupled release, by
+ * design — a brief, expected, self-clearing wait is the feature working. Reusing `block` would make
+ * the board's attention signal permanently wrong for exactly the components that adopted the
+ * feature, which is worse than useless: it trains operators to ignore the field.
+ *
+ * A held change still reads honestly on the board without it — it is in `executing`, so it counts as
+ * `releasing`, which is what it is doing. And a hold that is genuinely stuck is not silent: the
+ * watchdog's `executing` SLA still fires, and `scp change explain` still shows this Decision with the
+ * unsatisfied dependency named. The fix belongs here rather than in the shared query because
+ * `latestBlockDecisionQuery`'s `eq(decisions.verdict, "block")` must stay a compile-time constant
+ * matching `drizzle/0046`'s partial-index predicate verbatim (its own comment says so at length).
  */
 async function recordStageDependencyHold(
   db: Db,
@@ -1232,7 +1253,7 @@ async function recordStageDependencyHold(
       orgId,
       kind: "stage_dependency",
       subjectId: change.objectId,
-      verdict: "block",
+      verdict: "hold",
       inputContext: { waveId: activeWave.id, waveIndex: activeWave.waveIndex, held },
       reasonTree: {
         summary: `${held.length} wave target(s) held: a stage dependency is not yet satisfied at that deployment-target`,
