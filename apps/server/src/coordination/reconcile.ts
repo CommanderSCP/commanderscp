@@ -922,7 +922,54 @@ async function reconcileExecutingChange(
     }
   }
 
-  if (!allTerminal) return; // still in flight — next tick polls/resumes again
+  if (!allTerminal) {
+    // ROUND-ROBIN BUMP — THE FIFTH INSTANCE OF THE STARVATION CLASS, and the one the gate-blocked
+    // bump ~150 lines up does NOT cover. That bump fires only while the wave is still `pending`.
+    // The moment the gate ALLOWS, `markWaveRunning` moves the wave to `running` and every
+    // subsequent tick of that change skips the gate branch entirely and arrives HERE instead — and
+    // every write on the way here lands on `change_wave_targets` (`markWaveTargetTriggered`,
+    // `updateWaveTargetObserved`) or on `change_waves`, never on `changes`. There are exactly three
+    // other `UPDATE changes` in this file (waiting, validating, and gate-blocked) and not one of
+    // them is on this path.
+    //
+    // So a change whose wave targets are merely being POLLED — an Argo CD Application stuck
+    // `Progressing`, a workflow awaiting a manual step, any executor whose `status()` never
+    // terminalizes — freezes its `updated_at` at the instant it entered `executing` and never moves
+    // it again. `listChangeRowsInStates` serves oldest-`updated_at`-first capped at BATCH_LIMIT, so
+    // more than BATCH_LIMIT such changes own every slot of every tick forever and EVERY CHANGE
+    // QUEUED BEHIND THEM IS NEVER EVALUATED EVEN ONCE. That is the same 13-day production outage
+    // (homelab, 2026-08-01) the gate-blocked comment above records, one branch over: the fix went
+    // to the branch that was measured, not to the property.
+    //
+    // WIDER THAN POLLING, deliberately. Every `continue` above that leaves a target non-terminal
+    // reaches this line without writing `changes`: the backoff-skipped `triggering` target, a
+    // target whose poll THREW, a freshly-triggered target, and the defensive missing-`executorRef`
+    // case. The condition here is "this change took its turn and is still in flight", which is
+    // exactly the condition the round-robin needs.
+    //
+    // NOT THE ADR-0024 FLOOD, and the difference is worth stating rather than leaving a reader to
+    // wonder. ADR-0024's measured 1.44 GB/day was a byte-identical Decision INSERT per tick per
+    // parked change: a NEW row each time, carrying the gate's whole `inputContext` + `reasonTree`,
+    // retained indefinitely. This is one in-place `UPDATE changes SET updated_at` on a row that
+    // already exists — no append, no growth, nothing to retain or prune. It is also not even a new
+    // write in the tick: reaching this line means the loop above already wrote at least one
+    // `change_wave_targets` row for this change (a poll restamps `last_observed_at`; a trigger
+    // writes the claim and the ref), so the per-tick write count goes N -> N+1, not 0 -> 1. And
+    // there is deliberately NO Decision on this path: nothing here is a verdict about the change,
+    // only a queue position, and inventing a Decision for it is precisely how ADR-0024 happened.
+    //
+    // `state_entered_at` is deliberately NOT touched — identical to the waiting, validating and
+    // gate-blocked bumps. The watchdog's stall SLA must keep measuring from when the change
+    // actually entered `executing`, or a change that polls forever would look permanently fresh
+    // and never be reported as stalled. That is the whole reason the bump is on `updated_at` alone.
+    await withTenantTx(db, orgId, (tx) =>
+      tx
+        .update(changes)
+        .set({ updatedAt: new Date() })
+        .where(and(eq(changes.orgId, orgId), eq(changes.objectId, change.objectId)))
+    );
+    return; // something is genuinely still running — next tick polls/resumes again
+  }
   await withTenantTx(db, orgId, (tx) =>
     markWaveTerminal(tx, orgId, activeWave.id, anyFailed ? "failed" : "succeeded")
   );

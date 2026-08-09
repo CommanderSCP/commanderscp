@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
  * whose body may re-serve a row without writing it.* Such a loop starves everything queued behind
  * the rows it keeps re-serving, silently and forever.
  *
- * IT HAS BEEN HIT FOUR TIMES IN THIS FILE'S SUBJECT AREA:
+ * IT HAS BEEN HIT FIVE TIMES IN THIS FILE'S SUBJECT AREA:
  *   1. `advanceWaitingChanges`   — found, fixed, and well commented ("STARVATION fix,
  *                                   coupled-pipelines.md §3.5 hazard"). Only that ONE instance.
  *   2. `advanceExecutingChanges` — the same property, untouched. In production it stopped
@@ -19,10 +19,46 @@ import { describe, expect, it } from "vitest";
  *   3. `advanceValidatingChanges`— the same property, latent (7 rows against a limit of 25).
  *   4. `reconcileCampaignsOrgTick` — the same property, latent (0 campaigns), and found ONLY by
  *                                   censusing the property rather than chasing the symptom.
+ *   5. `reconcileExecutingChange`'s POLL path — instance 2 again, in the SAME function, on the
+ *                                   branch the fix for 2 did not reach. See below.
  *
- * A comment naming the hazard as a class did not stop instances 2-4 from existing. That is what
+ * A comment naming the hazard as a class did not stop instances 2-5 from existing. That is what
  * this test is for: it cannot prove a loop is correct, but it makes ADDING one a deliberate act
  * that fails CI until somebody writes down which side of the property it falls on.
+ *
+ * THIS REGISTRY CLASSIFIES FUNCTIONS; THE PROPERTY LIVES ON PATHS. Instance 5 is the lesson, and
+ * it is worth stating because this file was already green while the bug was live. The bump for
+ * instance 2 sits on ONE branch of `reconcileExecutingChange` — the wave gate blocking while the
+ * wave is still `pending`. The moment a gate ALLOWS, the wave goes `running` and every later tick
+ * of that change takes a DIFFERENT branch: the per-target loop, whose writes all land on
+ * `change_wave_targets`. A change whose targets merely sit `observing` — an Argo CD Application
+ * stuck `Progressing`, any executor whose `status()` never terminalizes — therefore froze its
+ * `updated_at` and held a batch slot forever, exactly as in the outage, while `bumpIn` below
+ * truthfully reported a bump present in that function. The mechanical check can only ask "is there
+ * a bump in here"; a reviewer has to ask "does EVERY not-advanced path reach one".
+ *
+ * CENSUS RESULT, 2026-08-08 (filterless sweep of every `orderBy` + `limit` pair in apps/server/src,
+ * not just the reconcile files). Recorded so the next sweep starts from a baseline instead of
+ * re-deriving it:
+ *   * `webhook-processor.ts` / `events/outbox-relay.ts` — batch-limited and oldest-first, but the
+ *     ORDER BY column (`created_at`) is immutable and the candidate predicate is `processed_at IS
+ *     NULL`, which every branch either satisfies or deliberately leaves set for a transient retry.
+ *     Self-evicting. A round-robin bump would be actively WRONG there: both are ordered queues
+ *     whose ordering is a guarantee, not a scheduling convenience.
+ *   * `watchdog.ts` — no LIMIT at all, and it self-evicts on `watchdog_flagged_at`. Not subject.
+ *     It also reads `state_entered_at`, never `updated_at`, which is precisely why every bump in
+ *     the reconcile files leaves `state_entered_at` alone.
+ *   * `observe.ts` — `listExecutorBindings` is unbounded, and the cursor advances per instance.
+ *   * `federation/journal-repo.ts` — `ORDER BY sequence ASC LIMIT n` read from a monotonic cursor.
+ *   * THE ONE OPEN ITEM: the S10 single-writer skip (`if (object.originDomainId !== selfDomainId)
+ *     continue;`) at the top of five `advance*` loops leaves the row un-stamped, which IS this
+ *     property. It is NOT reachable today — `federation/import-repo.ts`'s `object_upsert` branch
+ *     never creates a local `changes` state-machine row for a synced change, and a PROMOTED change
+ *     is locally originated, so no row in the candidate set can currently have a foreign origin
+ *     (measured in `change-origin-domain.integration.test.ts`'s header). It is left unfixed
+ *     deliberately: the right remedy is to filter foreign-origin rows OUT of
+ *     `listChangeRowsInStates` (making those loops self-evicting, like `reconcile_blocked_at`
+ *     already does) rather than to bump a read-only replica's row, and that is a design call.
  *
  * WHEN THIS TEST FAILS, DO NOT JUST ADD THE NAME. Answer the question first:
  *
@@ -64,7 +100,12 @@ const BUMPED: Record<string, { bumpIn: string; why: string }> = {
   },
   advanceExecutingChanges: {
     bumpIn: "reconcileExecutingChange",
-    why: "a gate-blocked wave stays pending and writes nothing (the 13-day production outage)"
+    // TWO bumps, on two different not-advanced paths, and naming both is the point — the second
+    // was missing for the whole life of the first. See this file's header, "THIS REGISTRY
+    // CLASSIFIES FUNCTIONS; THE PROPERTY LIVES ON PATHS".
+    why:
+      "a gate-blocked wave stays pending and writes nothing (the 13-day production outage); and a " +
+      "wave whose targets are merely POLLED writes only change_wave_targets, never the change row"
   },
   advanceValidatingChanges: {
     bumpIn: "advanceValidatingChanges",
