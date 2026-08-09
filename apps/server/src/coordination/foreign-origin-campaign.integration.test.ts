@@ -54,8 +54,10 @@ import { ensureFederationSelf } from "../federation/self-repo.js";
  * from the candidate set entirely: nothing is written, nothing is starved, and the campaign rejoins
  * the batch by itself the moment authority returns (the last test below).
  *
- * WHAT THIS SUITE SHOWS WITHOUT THE FIX (mutation-checked, see the PR body): the foreign campaign
- * compiles a plan on the very first tick and proposes a member change for its target — `expected
+ * WHAT THIS SUITE SHOWS WITHOUT THE FIX (mutation-checked — note that it pins the end-to-end
+ * outcome, NOT the query predicate specifically; see the note on the first regression test): the
+ * foreign campaign compiles a plan on the very first tick and proposes a member change for its
+ * target — `expected
  * null, received { id: ..., waves: [...] }`.
  *
  * THE LOCAL CONTROL CAMPAIGN IS NOT DECORATION. Every "did not happen" assertion below would pass
@@ -222,10 +224,18 @@ describe("S10 single-writer: this instance must not drive ANOTHER domain's campa
   }, 120_000);
 
   it("THE REGRESSION: NO plan is compiled for the foreign-origin campaign", async () => {
-    // WITHOUT THE FIX THIS IS THE FAILING LINE. `listActiveCampaignObjectIds` had no origin
-    // predicate, so the replica was served in the very same batch as the control above and
-    // `reconcileOneCampaign` compiled it a plan on tick 1 — writing `campaign_plans`,
-    // `campaign_waves` and `campaign_wave_targets` for an object this domain does not own.
+    // WITHOUT EITHER HALF OF THE FIX this fails: the replica was served in the same batch as the
+    // control above and `reconcileOneCampaign` compiled it a plan on tick 1 — writing
+    // `campaign_plans`, `campaign_waves` and `campaign_wave_targets` for an object this domain does
+    // not own.
+    //
+    // BE PRECISE ABOUT WHICH HALF THIS PINS, because an earlier version of this comment was wrong
+    // and a census that trusted it would have drawn the wrong conclusion. The fix has two parts: the
+    // `origin_domain_id` predicate on `listActiveCampaignObjectIds` (the starvation-SAFE remedy) and
+    // the defence-in-depth `continue` in the loop body. Removing ONLY the query predicate leaves
+    // this whole file green, because the body guard still stops the write. What pins the query
+    // predicate is `campaign-active-filter.integration.test.ts`'s S10 arm — verified by mutating
+    // each half separately. This file pins the END-TO-END outcome, which either half delivers.
     expect(await planFor(foreignCampaignId)).toBeNull();
   }, 120_000);
 

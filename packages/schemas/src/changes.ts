@@ -62,6 +62,26 @@ export const ChangeSchema = z.object({
   watchdogFlaggedAt: z.string().datetime().nullable(),
   properties: z.record(z.string(), z.unknown()),
   createdAt: z.string().datetime(),
+  /**
+   * NOT "when this change last did something" — do not render it as activity. The reconcile engine
+   * uses `changes.updated_at` as its ROUND-ROBIN CURSOR: `listChangeRowsInStates` serves
+   * oldest-`updated_at`-first capped at a batch limit, so every pass re-stamps a change it examined
+   * but could not advance, to send it to the back of the queue. Without that, more than one batch's
+   * worth of stuck changes occupy every slot forever and everything behind them is never evaluated
+   * even once — measured in production as 13 days of fully stopped coordination behind green health
+   * checks (`reconcile.ts`'s gate-blocked bump documents the incident).
+   *
+   * Four paths re-stamp: waiting, validating, gate-blocked, and any executing change with a target
+   * still in flight. That last one means a change whose rollout
+   * has been sitting at the same canary weight for three days still reads `updatedAt` of one second
+   * ago. **The field an operator wants for "how long has this been stuck" is `stateEnteredAt`**,
+   * which the round-robin deliberately never touches and which the watchdog's stall SLA measures
+   * from.
+   *
+   * Splitting the cursor onto its own engine-owned column (beside `reconcileBlockedAt` and
+   * `stateEnteredAt`) would let this field mean what its name suggests; that is a migration and a
+   * change at every candidate-query call site, and is deliberately not bundled here.
+   */
   updatedAt: z.string().datetime(),
   /**
    * M16.3 P2 (additive) — the underlying graph object's `origin_domain_id` (`objects.
