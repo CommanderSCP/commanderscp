@@ -1,0 +1,71 @@
+-- ===========================================================================================
+-- THE RECONCILE ROUND-ROBIN CURSOR GETS ITS OWN COLUMN
+--
+-- `changes.updated_at` carried two unrelated meanings at once, and one of them was load-bearing
+-- engine state that no operator could see past.
+--
+--   1. THE SCHEDULER'S QUEUE POSITION. `changes-repo.ts`'s `listChangeRowsInStates` serves
+--      candidates `ORDER BY updated_at ASC LIMIT BATCH_LIMIT`, and FIVE reconcile paths re-stamp a
+--      change they examined but could NOT advance, sending it to the back of the queue. Without
+--      those bumps, more than BATCH_LIMIT stuck changes own every batch slot forever and every
+--      change queued behind them is never evaluated even once. That is not hypothetical: it was
+--      measured on the live homelab on 2026-08-01 as 13 DAYS of completely stopped coordination
+--      behind green health checks — 25 changes blocked on one un-approved prod policy held the
+--      batch from 2026-07-19 11:04, and of the 231 changes proposed after that instant, ZERO had
+--      ever been looked at once.
+--
+--   2. "THIS ROW'S CONTENT CHANGED", which is what the name says and what `Change.updatedAt` shows
+--      an operator through the API, `scp change list` and `scp change get`.
+--
+-- Meaning 1 destroys meaning 2. A rollout parked at the same canary weight for three days is
+-- re-stamped on every single tick, so it reads "updated 1s ago" — the field looks like activity and
+-- is in fact a scheduler artifact. (The field an operator actually wants is `state_entered_at`,
+-- which the round-robin deliberately never touches and which the watchdog's stall SLA measures
+-- from.)
+--
+-- This migration gives meaning 1 its own engine-owned column beside `reconcile_blocked_at` and
+-- `state_entered_at`, and hands `updated_at` back to meaning 2.
+--
+-- ===========================================================================================
+-- WHY `reconcile_cursor_at` AND NOT `last_examined_at`
+--
+-- It sorts and greps with `reconcile_blocked_at`, the other engine-owned scheduling column on this
+-- table, so `\d changes` groups them and a census for `reconcile_` finds both. And "cursor" states
+-- what the value IS — a queue position — where "last examined" states an event and invites exactly
+-- the misreading this migration exists to end (an operator seeing a fresh timestamp and concluding
+-- something happened). Nothing happened; the change merely took its turn.
+--
+-- ===========================================================================================
+-- THE BACKFILL IS NOT OPTIONAL, AND `now()` IS THE WRONG VALUE
+--
+-- `DEFAULT now()` alone would stamp every existing row with the deploy instant, collapsing the
+-- entire live queue into one tie broken by nothing. On the homelab that would take a queue whose
+-- head has been waiting since 2026-07-19 and make it indistinguishable from a change proposed a
+-- second ago — the ordering the engine depends on for fairness, destroyed by the migration meant to
+-- protect it. Seeding from `updated_at` reproduces the CURRENT queue exactly, so the first tick
+-- after deploy serves precisely the changes the last tick before deploy would have.
+--
+-- The two statements together are also why the column is NOT NULL: `ADD COLUMN ... DEFAULT now()`
+-- is a metadata-only operation in PG 11+, the `UPDATE` then rewrites every row once, and no
+-- window exists in which a NULL could reach the `ORDER BY` (where it would sort LAST under
+-- Postgres' ASC NULLS LAST and quietly starve the row).
+--
+-- ===========================================================================================
+-- DELIBERATELY NO INDEX, stated because its absence looks like an oversight
+--
+-- The obvious move is `(org_id, state, reconcile_cursor_at)` to serve the ORDER BY. It is refused:
+-- this column is written by the round-robin bump on EVERY tick of EVERY examined change, and a
+-- btree on it would make that the one write in the system that can never be a HOT update — index
+-- churn proportional to tick rate times backlog. `changes_org_state` already narrows the scan to
+-- one org and state, the batch is capped at 25, and `updated_at` — which this column replaces in
+-- the ORDER BY — was never indexed either, so this is a like-for-like plan, not a regression.
+-- ADR-0024 is the standing lesson about per-tick write cost on exactly this path.
+-- ===========================================================================================
+
+ALTER TABLE changes
+  ADD COLUMN reconcile_cursor_at timestamptz NOT NULL DEFAULT now();
+
+--> statement-breakpoint
+
+-- Seed the queue from the queue. See "THE BACKFILL IS NOT OPTIONAL" above.
+UPDATE changes SET reconcile_cursor_at = updated_at;

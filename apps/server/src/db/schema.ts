@@ -429,6 +429,37 @@ export const changes = pgTable(
      * through this batch listing — see reconcile.ts's doc comment on the `failed` branch).
      */
     reconcileBlockedAt: timestamp("reconcile_blocked_at", { withTimezone: true }),
+    /**
+     * THE RECONCILE ROUND-ROBIN CURSOR (migration 0056) — engine scheduling state, and the ONLY
+     * column `listChangeRowsInStates` orders by. "When did the engine last take this change's turn",
+     * which is a queue position and NOT a fact about the change.
+     *
+     * It exists because `updated_at` used to carry both meanings at once. The engine serves
+     * `ORDER BY <cursor> ASC LIMIT BATCH_LIMIT`, and five reconcile paths re-stamp a change they
+     * examined but could NOT advance so it goes to the back of the queue — without that,
+     * >BATCH_LIMIT stuck changes own every batch slot forever and everything behind them is never
+     * evaluated even once (measured: 13 days of stopped production coordination behind green health
+     * checks, homelab 2026-08-01 — see reconcile.ts's gate-blocked bump). Sharing `updated_at` for
+     * that made the API-visible `Change.updatedAt` read "1s ago" for a change that had done nothing
+     * for three days.
+     *
+     * THE SPLIT IS STARVATION-SAFE BY DIRECTION, which is the property to check when touching this.
+     * The guarantee needs the not-advanced paths to push a change BACKWARD in the queue; every other
+     * write that used to move `updated_at` incidentally (a transition, a `source_ref` stamp, a park)
+     * now leaves the cursor alone, which can only make a change be served SOONER. Nothing that could
+     * delay a change was removed.
+     *
+     * DELIBERATELY UN-INDEXED. `changes_org_state` already narrows the candidate set to one org and
+     * state; adding a btree on this column would defeat HOT updates for the per-tick bump — index
+     * churn on exactly the write that fires most often (ADR-0024's cost lesson, one write class
+     * over). `updated_at`, which this replaces in the ORDER BY, was never indexed either.
+     *
+     * NOT ON THE WIRE, like `reconcile_blocked_at` beside it. See `Change`'s `updatedAt` docblock
+     * in `@scp/schemas` for the reasoning.
+     */
+    reconcileCursorAt: timestamp("reconcile_cursor_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
