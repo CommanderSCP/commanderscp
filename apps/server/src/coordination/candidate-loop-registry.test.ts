@@ -449,7 +449,9 @@ describe("candidate-loop registry: every batch-limited reconcile loop is classif
           if (!body) continue;
           for (const col of bumpColumnsIn(body)) {
             if (col !== ordered) {
-              mismatches.push(`${fnName}/${fn} bumps \`${col}\` but ${queryIn} orders by \`${ordered}\``);
+              mismatches.push(
+                `${fnName}/${fn} bumps \`${col}\` but ${queryIn} orders by \`${ordered}\``
+              );
             }
           }
         }
