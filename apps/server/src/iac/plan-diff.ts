@@ -7,7 +7,8 @@ import type {
   PlanObjectTarget,
   PlanPlacementDiffEntry,
   PlanRelationshipDiffEntry,
-  PlanSourceMappingDiffEntry
+  PlanSourceMappingDiffEntry,
+  PipelineClassification
 } from "@scp/schemas";
 import { canonicalJson } from "../graph/objects-repo.js";
 
@@ -75,7 +76,9 @@ export interface ResolvedManifestSourceMapping {
   sourceKind: string;
   repoPattern: string | null;
   pathPattern: string | null;
+  refPattern: string | null;
   type: ExecutorType;
+  classification: PipelineClassification | null;
 }
 
 /**
@@ -199,12 +202,24 @@ function placementKey(p: ResolvedManifestPlacement): string {
   });
 }
 
+/**
+ * `refPattern` is IN the key and `classification` is deliberately OUT of it (ADR-0030 §1/§2).
+ *
+ * The ref is a ROUTING discriminator: `refs/heads/dev` → the dev pipeline and `refs/heads/main` →
+ * the production one are two legitimate rows differing in nothing else. Leaving it out would make
+ * them one key — the second declaration would diff as a `noop` (so the dev pipeline would never be
+ * created, silently), and a prune of either would match both.
+ *
+ * The classification is a descriptive label. Keying on it would turn "relabel this pipeline `dev`"
+ * into a delete-plus-create of a LIVE route, which is a real interruption for a cosmetic edit.
+ */
 function sourceMappingKey(m: ResolvedManifestSourceMapping): string {
   return canonicalJson({
     componentUrn: m.componentUrn,
     sourceKind: m.sourceKind,
     repoPattern: m.repoPattern,
     pathPattern: m.pathPattern,
+    refPattern: m.refPattern,
     type: m.type
   });
 }
@@ -462,7 +477,9 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
       sourceKind: mapping.sourceKind,
       repoPattern: mapping.repoPattern,
       pathPattern: mapping.pathPattern,
+      refPattern: mapping.refPattern,
       type: mapping.type,
+      classification: mapping.classification,
       reason: exists ? "matches current state" : "no existing source mapping with this identity"
     });
     if (exists) noops++;
@@ -529,7 +546,9 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
       sourceKind: managed.sourceKind,
       repoPattern: managed.repoPattern,
       pathPattern: managed.pathPattern,
+      refPattern: managed.refPattern,
       type: managed.type,
+      classification: managed.classification,
       reason:
         "on an object this stack owns, no longer present in the desired manifest's sourceMappings"
     });
@@ -646,8 +665,8 @@ export function duplicateProjectionDeclarations(manifest: ResolvedManifest): str
     const key = sourceMappingKey(mapping);
     if (seenMappings.has(key)) {
       offenders.push(
-        `sourceMapping ${mapping.sourceKind}:${mapping.repoPattern ?? "*"}:${mapping.pathPattern ?? "*"} ` +
-          `-> ${mapping.componentUrn} (${mapping.type})`
+        `sourceMapping ${mapping.sourceKind}:${mapping.repoPattern ?? "*"}:${mapping.pathPattern ?? "*"}` +
+          `:${mapping.refPattern ?? "*"} -> ${mapping.componentUrn} (${mapping.type})`
       );
       continue;
     }

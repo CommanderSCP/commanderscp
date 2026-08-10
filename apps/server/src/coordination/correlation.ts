@@ -1,6 +1,10 @@
 import { and, asc, eq, exists, isNull, sql } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
-import type { ExecutorType } from "@scp/schemas";
+import {
+  parsePipelineClassification,
+  type ExecutorType,
+  type PipelineClassification
+} from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects, sourceMappings } from "../db/schema.js";
 import { globMatch } from "./glob-match.js";
@@ -29,6 +33,21 @@ export interface CorrelationHint {
    * never fired.
    */
   paths?: string[];
+  /**
+   * The event's git REF, fully qualified (`refs/heads/dev`) — what a `refPattern` mapping matches
+   * against (migration 0056, ADR-0030 §1). This is what makes "the dev branch drives the dev
+   * pipeline" expressible: before it, a push to `dev` and a push to `main` in the same repository
+   * correlated to the same component AND the same routing Type.
+   *
+   * The value was already being carried and already being thrown away for routing purposes — git
+   * provider adapters set it as `correlationKey` (`refs/heads/<branch>`), which is read downstream
+   * only to GROUP changes onto a `coordinated-change` object, never to select the mapping.
+   *
+   * **Left undefined by sources that have no ref**, which is most non-git ones: a registry/package
+   * push (harbor `PUSH_ARTIFACT`, gitea `package`) carries no branch. Those events therefore never
+   * match a ref-scoped mapping — correct, and fail-closed by the same rule as `paths` below.
+   */
+  ref?: string;
 }
 
 /** What a source event resolves to: the component, and WHICH of its pipelines the source drives. */
@@ -38,6 +57,13 @@ export interface SourceMatch {
    *  pipeline it is, rather than being inferred from sourceKind (a GitHub Actions workflow can run
    *  Terraform OR deploy an app). Mappings default to 'configuration' (the server default). */
   type: ExecutorType;
+  /** From the matched mapping (ADR-0030 §2) — the operator's DECLARED classification of this
+   *  pipeline (`dev`|`beta`), or `null` for an ordinary one. READ from the winning row; never
+   *  inferred from the branch name, which goes false as soon as that branch drives a second kind.
+   *
+   *  **UI/reporting only.** Nothing downstream may gate on this: enforcement keys on the path, and
+   *  forging or removing it changes no gate outcome (ADR-0030 §3, ADR-0018 §4). */
+  classification: PipelineClassification | null;
 }
 
 /**
@@ -46,18 +72,18 @@ export interface SourceMatch {
  *
  * PRECEDENCE — most-constrained first, most-specific next, oldest last to break what remains:
  *
- *   1. MOST CONSTRAINED WINS. A mapping is ranked by how many of its two globs it actually sets:
- *      repo+path (2) beats one of them (1) beats a catch-all that sets neither (0). Both patterns
- *      are NULLABLE and the matcher SKIPS a null one, so a catch-all matches EVERY event of its
- *      sourceKind and therefore overlaps with every specific mapping beside it — "catch-all plus a
- *      specific override" is a normal operator setup, and this rank is what makes the override
+ *   1. MOST CONSTRAINED WINS. A mapping is ranked by how many of its THREE globs it actually sets:
+ *      repo+path+ref (3) beats two (2) beats one (1) beats a catch-all that sets none (0). All three
+ *      patterns are NULLABLE and the matcher SKIPS a null one, so a catch-all matches EVERY event of
+ *      its sourceKind and therefore overlaps with every specific mapping beside it — "catch-all plus
+ *      a specific override" is a normal operator setup, and this rank is what makes the override
  *      actually override rather than race the fallback.
  *   2. MOST SPECIFIC GLOB WINS (owner decision, 2026-08-02 — this rank previously did NOT exist and
  *      its absence is what made rule 3 load-bearing; see below). Two sub-keys, in order:
  *        a. NARROWEST WILDCARD. Per pattern: no wildcard (3) beats `*` (2) beats `**` (1) beats
- *           unset (0), summed across repo and path. `*` outranks `**` because `*` cannot cross a
- *           `/` and therefore matches strictly less.
- *        b. MOST LITERAL TEXT. The count of non-wildcard characters, summed across both patterns.
+ *           unset (0), summed across repo, path and ref. `*` outranks `**` because `*` cannot cross
+ *           a `/` and therefore matches strictly less.
+ *        b. MOST LITERAL TEXT. The count of non-wildcard characters, summed across all three patterns.
  *           This is what separates two patterns of the same shape: `alloy/manifests/**` beats
  *           `alloy/**` for `alloy/manifests/x.yaml`, which (a) alone cannot express since both are
  *           `**` patterns.
@@ -75,9 +101,16 @@ export interface SourceMatch {
  * invisible in the data and that the next mapping someone adds would silently violate. Making
  * specificity explicit removes the trap; it does not remove rule 3, which still settles genuine ties.
  *
- * One thing this rank still deliberately does NOT do: it does not rank repo-only above path-only,
- * or vice versa. They are equally constrained and there is no principled reason to prefer either,
- * so `(a)` and `(b)` sum the two sides symmetrically rather than ordering them.
+ * One thing this rank still deliberately does NOT do: it does not rank repo-only above path-only
+ * above ref-only, or any other ordering among them. They are equally constrained and there is no
+ * principled reason to prefer one axis, so `(a)` and `(b)` sum all three sides symmetrically rather
+ * than ordering them. Note what this costs, because it is the widened version of the trap rule 2 was
+ * added to close: repo-only and ref-only mappings on the same repository tie on rules 1 and 2 unless
+ * their wildcards or literal lengths differ, and fall through to rule 3 (oldest). An operator who
+ * wants a ref-scoped mapping to override a repo-scoped one must therefore set the ref pattern ON the
+ * more specific mapping (repo+ref, rank 2) rather than relying on ref-only to outrank repo-only —
+ * exactly the "set both patterns" discipline the pre-2026-08-02 design assumed and that rule 2 only
+ * partially relieved.
  *
  * Ordered in SQL rather than sorted in TS so that the precedence cannot be lost by a caller
  * re-querying, and by existing columns rather than a new `priority` column: ordering the data we
@@ -174,14 +207,17 @@ export async function matchComponentForSource(
     .orderBy(
       // Rule 1 — how many globs are set at all.
       sql`(case when ${sourceMappings.repoPattern} is not null then 1 else 0 end
-           + case when ${sourceMappings.pathPattern} is not null then 1 else 0 end) desc`,
+           + case when ${sourceMappings.pathPattern} is not null then 1 else 0 end
+           + case when ${sourceMappings.refPattern} is not null then 1 else 0 end) desc`,
       // Rule 2a — narrowest wildcard: exact (3) > `*` (2) > `**` (1) > unset (0). Order matters
       // inside each CASE: `**` must be tested BEFORE `*`, since a `**` pattern also contains `*`.
-      sql`(${wildcardTier(sourceMappings.repoPattern)} + ${wildcardTier(sourceMappings.pathPattern)}) desc`,
+      sql`(${wildcardTier(sourceMappings.repoPattern)} + ${wildcardTier(sourceMappings.pathPattern)}
+           + ${wildcardTier(sourceMappings.refPattern)}) desc`,
       // Rule 2b — most literal text, which separates same-shaped patterns (`alloy/manifests/**`
       // over `alloy/**`). Wildcards are stripped rather than counted so a longer pattern does not
       // win merely by having more `*` in it.
-      sql`(${literalLength(sourceMappings.repoPattern)} + ${literalLength(sourceMappings.pathPattern)}) desc`,
+      sql`(${literalLength(sourceMappings.repoPattern)} + ${literalLength(sourceMappings.pathPattern)}
+           + ${literalLength(sourceMappings.refPattern)}) desc`,
       // Rule 3 — the total, stable tiebreak.
       asc(sourceMappings.createdAt),
       asc(sourceMappings.id)
@@ -190,9 +226,16 @@ export async function matchComponentForSource(
   for (const row of rows) {
     if (row.repoPattern && (!hint.repo || !globMatch(row.repoPattern, hint.repo))) continue;
     if (row.pathPattern && !matchesAnyPath(row.pathPattern, hint)) continue;
+    // FAIL-CLOSED on an unknown ref, the same rule as `repoPattern` above and `matchesAnyPath`
+    // below it: a ref-scoped mapping must never claim a release whose ref it cannot prove. The
+    // practical consequence is a silent skip rather than an error — a source that carries no ref
+    // (a registry/package push) falls through to whatever non-ref-scoped mapping wins, routing by
+    // repository rather than by branch.
+    if (row.refPattern && (!hint.ref || !globMatch(row.refPattern, hint.ref))) continue;
     return {
       componentObjectId: row.componentObjectId,
-      type: (row.type as ExecutorType | null) ?? "configuration"
+      type: (row.type as ExecutorType | null) ?? "configuration",
+      classification: parsePipelineClassification(row.classification)
     };
   }
   return null;

@@ -38804,6 +38804,10 @@
                               "type": "string",
                               "minLength": 1
                             },
+                            "refPattern": {
+                              "type": "string",
+                              "minLength": 1
+                            },
                             "type": {
                               "type": "string",
                               "enum": [
@@ -38813,6 +38817,13 @@
                                 "npm",
                                 "infrastructure",
                                 "configuration"
+                              ]
+                            },
+                            "classification": {
+                              "type": "string",
+                              "enum": [
+                                "dev",
+                                "beta"
                               ]
                             }
                           },
@@ -39071,6 +39082,10 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "refPattern": {
+                                "type": "string",
+                                "minLength": 1
+                              },
                               "type": {
                                 "type": "string",
                                 "enum": [
@@ -39080,6 +39095,13 @@
                                   "npm",
                                   "infrastructure",
                                   "configuration"
+                                ]
+                              },
+                              "classification": {
+                                "type": "string",
+                                "enum": [
+                                  "dev",
+                                  "beta"
                                 ]
                               }
                             },
@@ -39367,6 +39389,16 @@
                                   }
                                 ]
                               },
+                              "refPattern": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
                               "type": {
                                 "type": "string",
                                 "enum": [
@@ -39376,6 +39408,20 @@
                                   "npm",
                                   "infrastructure",
                                   "configuration"
+                                ]
+                              },
+                              "classification": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "dev",
+                                      "beta"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
                                 ]
                               },
                               "reason": {
@@ -39389,7 +39435,9 @@
                               "sourceKind",
                               "repoPattern",
                               "pathPattern",
+                              "refPattern",
                               "type",
+                              "classification",
                               "reason"
                             ],
                             "additionalProperties": false
@@ -39939,6 +39987,10 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "refPattern": {
+                                "type": "string",
+                                "minLength": 1
+                              },
                               "type": {
                                 "type": "string",
                                 "enum": [
@@ -39948,6 +40000,13 @@
                                   "npm",
                                   "infrastructure",
                                   "configuration"
+                                ]
+                              },
+                              "classification": {
+                                "type": "string",
+                                "enum": [
+                                  "dev",
+                                  "beta"
                                 ]
                               }
                             },
@@ -40235,6 +40294,16 @@
                                   }
                                 ]
                               },
+                              "refPattern": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
                               "type": {
                                 "type": "string",
                                 "enum": [
@@ -40244,6 +40313,20 @@
                                   "npm",
                                   "infrastructure",
                                   "configuration"
+                                ]
+                              },
+                              "classification": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "dev",
+                                      "beta"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
                                 ]
                               },
                               "reason": {
@@ -40257,7 +40340,9 @@
                               "sourceKind",
                               "repoPattern",
                               "pathPattern",
+                              "refPattern",
                               "type",
+                              "classification",
                               "reason"
                             ],
                             "additionalProperties": false
@@ -40810,6 +40895,10 @@
                                     "type": "string",
                                     "minLength": 1
                                   },
+                                  "refPattern": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
                                   "type": {
                                     "type": "string",
                                     "enum": [
@@ -40819,6 +40908,13 @@
                                       "npm",
                                       "infrastructure",
                                       "configuration"
+                                    ]
+                                  },
+                                  "classification": {
+                                    "type": "string",
+                                    "enum": [
+                                      "dev",
+                                      "beta"
                                     ]
                                   }
                                 },
@@ -41106,6 +41202,16 @@
                                       }
                                     ]
                                   },
+                                  "refPattern": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
                                   "type": {
                                     "type": "string",
                                     "enum": [
@@ -41115,6 +41221,20 @@
                                       "npm",
                                       "infrastructure",
                                       "configuration"
+                                    ]
+                                  },
+                                  "classification": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "enum": [
+                                          "dev",
+                                          "beta"
+                                        ]
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
                                     ]
                                   },
                                   "reason": {
@@ -41128,7 +41248,9 @@
                                   "sourceKind",
                                   "repoPattern",
                                   "pathPattern",
+                                  "refPattern",
                                   "type",
+                                  "classification",
                                   "reason"
                                 ],
                                 "additionalProperties": false
@@ -46558,6 +46680,9 @@
                   "pathPattern": {
                     "type": "string"
                   },
+                  "refPattern": {
+                    "type": "string"
+                  },
                   "component": {
                     "type": "string",
                     "minLength": 1
@@ -46571,6 +46696,13 @@
                       "npm",
                       "infrastructure",
                       "configuration"
+                    ]
+                  },
+                  "classification": {
+                    "type": "string",
+                    "enum": [
+                      "dev",
+                      "beta"
                     ]
                   }
                 },
@@ -46625,6 +46757,16 @@
                         }
                       ]
                     },
+                    "refPattern": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "componentObjectId": {
                       "type": "string",
                       "format": "uuid",
@@ -46649,6 +46791,20 @@
                         "configuration"
                       ]
                     },
+                    "classification": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "dev",
+                            "beta"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "createdAt": {
                       "type": "string",
                       "format": "date-time",
@@ -46661,9 +46817,11 @@
                     "sourceKind",
                     "repoPattern",
                     "pathPattern",
+                    "refPattern",
                     "componentObjectId",
                     "type",
                     "category",
+                    "classification",
                     "createdAt"
                   ],
                   "additionalProperties": false
@@ -46887,6 +47045,16 @@
                     ]
                   },
                   "pathPattern": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "refPattern": {
                     "anyOf": [
                       {
                         "type": "string"
@@ -47181,6 +47349,16 @@
                               }
                             ]
                           },
+                          "refPattern": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "componentObjectId": {
                             "type": "string",
                             "format": "uuid",
@@ -47205,6 +47383,20 @@
                               "configuration"
                             ]
                           },
+                          "classification": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "dev",
+                                  "beta"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "createdAt": {
                             "type": "string",
                             "format": "date-time",
@@ -47217,9 +47409,11 @@
                           "sourceKind",
                           "repoPattern",
                           "pathPattern",
+                          "refPattern",
                           "componentObjectId",
                           "type",
                           "category",
+                          "classification",
                           "createdAt"
                         ],
                         "additionalProperties": false

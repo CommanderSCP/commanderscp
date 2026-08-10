@@ -55,6 +55,10 @@ export interface ExtractedHint {
    *  single `path` cannot represent a commit, and what that costs on a monorepo. */
   paths?: string[];
   correlationKey?: string;
+  /** The fully-qualified git ref (`refs/heads/dev`) this event is on — the routing input a
+   *  `refPattern` source mapping matches against (ADR-0030 §1). Undefined for any source that has
+   *  no ref (a registry/package push), which simply never matches a ref-scoped mapping. */
+  ref?: string;
   /** OCI/image artifact digest (`sha256:…`) for a registry/package push (harbor's `PUSH_ARTIFACT`,
    *  gitea's `package`) — threaded into the proposed Change's `sourceRef.artifact_digest`, the
    *  connective tissue the M17.1 scan gate binds to (ADR-0013). Additive (M15.3c): forwarded here
@@ -136,6 +140,10 @@ function genericHint(payload: unknown): ExtractedHint {
     paths: Array.isArray(p.paths)
       ? p.paths.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
       : undefined,
+    // The flat generic shape carries a ref too, so a first-party reporter (`scp change-source
+    // report`) and a hand-crafted test payload can drive a ref-scoped mapping without a provider
+    // adapter in the path — the same door every other correlation field already has.
+    ref: typeof p.ref === "string" && p.ref.length > 0 ? p.ref : undefined,
     correlationKey: typeof p.correlationKey === "string" ? p.correlationKey : undefined,
     artifactDigest:
       typeof p.artifactDigest === "string" && p.artifactDigest.length > 0
@@ -200,6 +208,10 @@ export function extractHint(sourceKind: string, headers: unknown, payload: unkno
     // the fallback. An empty array from an adapter is treated as "no paths determined" rather than
     // "changed nothing" — the two are indistinguishable here, and the latter cannot happen.
     paths: providerHint.paths && providerHint.paths.length > 0 ? providerHint.paths : generic.paths,
+    // Same adapter-wins precedence as every field above it. An adapter that maps a non-git event
+    // (a package push) sets no ref, so this correctly falls through to the generic shape and then
+    // to undefined — and an event with no ref matches no ref-scoped mapping, fail-closed.
+    ref: providerHint.ref ?? generic.ref,
     correlationKey: providerHint.correlationKey ?? generic.correlationKey,
     // Additive forwarding (M15.3c): git-provider hints that don't set a digest leave this undefined,
     // so nothing about their behavior changes; harbor/gitea package pushes carry it through to
@@ -293,7 +305,8 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
       sourceKind: row.sourceKind,
       repo: hint.repo,
       path: hint.path,
-      paths: hint.paths
+      paths: hint.paths,
+      ref: hint.ref
     });
 
     if (!match) {

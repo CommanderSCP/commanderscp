@@ -48,6 +48,32 @@ export type ExecutorType = z.infer<typeof ExecutorTypeSchema>;
 export const ExecutorCategorySchema = z.enum(["build", "infrastructure", "configuration"]);
 export type ExecutorCategory = z.infer<typeof ExecutorCategorySchema>;
 
+/**
+ * The operator's DECLARED classification of a pipeline (ADR-0030 §2). Set on the `source_mappings`
+ * row that routes a source into a pipeline; absent (`null`) for an ordinary one.
+ *
+ * **This is UI/reporting vocabulary, not an enforcement primitive** (ADR-0030 §3, ADR-0018 §4). It is
+ * not threaded into the cross-boundary export gate, and forging or removing it changes NO gate
+ * outcome: a dev-built digest promoted across a boundary is still refused unless a passing,
+ * digest-bound scan exists for that exact digest. Enforcement keys on the PATH — a change targeting
+ * no federation peer never reaches `exportPromotionBundle`, so the gate structurally never applies.
+ *
+ * DECLARED, never INFERRED. Nothing parses a branch name looking for "dev": a label named after
+ * WHICH BRANCH MATCHED goes false the moment that branch drives a second kind of pipeline, and
+ * reading the operator's declaration survives that.
+ */
+export const PipelineClassificationSchema = z.enum(["dev", "beta"]);
+export type PipelineClassification = z.infer<typeof PipelineClassificationSchema>;
+
+/** Parse a stored `classification` value, total over anything the column can hold. A value outside
+ *  the closed enum (only reachable from a pre-Zod or version-skewed row, never from a validated
+ *  input) reads back as `null` — an unrecognised label must degrade to "unclassified", never crash a
+ *  routing or list path, and never be mistaken for a recognised one. */
+export function parsePipelineClassification(value: string | null): PipelineClassification | null {
+  const parsed = PipelineClassificationSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
 /** Static Type → Category map (ADR-0007). Every Type belongs to exactly one Category, so Category
  *  needs no column — it is a projection of Type. The single source of truth for the derivation. */
 export const CATEGORY_OF_TYPE: Record<ExecutorType, ExecutorCategory> = {

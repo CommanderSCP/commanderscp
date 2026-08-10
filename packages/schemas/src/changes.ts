@@ -6,7 +6,11 @@ import {
   cursorPageResponseSchema
 } from "./common.js";
 import { ControlRunSchema } from "./governance.js";
-import { ExecutorTypeSchema, ExecutorCategorySchema } from "./executors.js";
+import {
+  ExecutorTypeSchema,
+  ExecutorCategorySchema,
+  PipelineClassificationSchema
+} from "./executors.js";
 
 /**
  * M3 Change Coordination Engine wire contract (DESIGN.md §9, §10.4, BUILD_AND_TEST.md §8 M3).
@@ -580,6 +584,10 @@ export const SourceMappingSchema = z.object({
   sourceKind: z.string(),
   repoPattern: z.string().nullable(),
   pathPattern: z.string().nullable(),
+  /** Glob matched against the event's git REF (`refs/heads/dev`) — the third routing glob
+   *  (ADR-0030 §1). NULL means "match any ref", so every mapping written before it existed keeps
+   *  routing exactly as it did. */
+  refPattern: z.string().nullable(),
   componentObjectId: z.string().uuid(),
   /** WHICH pipeline releases from this source roll (M12 P4A) — the routing Type (ADR-0007). NOT
    *  inferable from `sourceKind` — a GitHub Actions run can apply Terraform or ship an app — so the
@@ -588,6 +596,9 @@ export const SourceMappingSchema = z.object({
   type: ExecutorTypeSchema,
   /** DERIVED, read-only (ADR-0007): the Category of `type`, via `categoryOfType`. Not stored. */
   category: ExecutorCategorySchema,
+  /** The operator's declared classification of this pipeline (ADR-0030 §2) — UI/reporting only,
+   *  never an enforcement input. `null` for an ordinary pipeline. */
+  classification: PipelineClassificationSchema.nullable(),
   createdAt: z.string().datetime()
 });
 export type SourceMapping = z.infer<typeof SourceMappingSchema>;
@@ -596,11 +607,18 @@ export const CreateSourceMappingRequestSchema = z.object({
   sourceKind: z.string().min(1),
   repoPattern: z.string().optional(),
   pathPattern: z.string().optional(),
+  /** Glob matched against the event's git ref (`refs/heads/dev`), ADR-0030 §1. Omitted means "match
+   *  any ref" — the pre-0056 behaviour, so an existing caller is unaffected. */
+  refPattern: z.string().optional(),
   component: z.string().min(1), // idOrUrn
   /** The routing Type (ADR-0007). Omitted means 'configuration' (defaulted server-side in
    *  `source-mappings-repo.ts`). `.optional()` not `.default()`: a default renders the property
    *  REQUIRED in the generated SDK request type, an unnecessary extra request-shape break. */
-  type: ExecutorTypeSchema.optional()
+  type: ExecutorTypeSchema.optional(),
+  /** The operator's declared pipeline classification (ADR-0030 §2) — UI/reporting only. Omitted
+   *  means unclassified. Accepting it here is what makes dev-ness DECLARED rather than inferred
+   *  from the branch name. */
+  classification: PipelineClassificationSchema.optional()
 });
 export type CreateSourceMappingRequest = z.infer<typeof CreateSourceMappingRequestSchema>;
 
@@ -617,11 +635,25 @@ export type CreateSourceMappingRequest = z.infer<typeof CreateSourceMappingReque
  * `repoPattern`/`pathPattern` are NULLABLE rather than optional: a NULL pattern is meaningful (it
  * means "match any"), so absent and null must be distinguishable — omitting one would otherwise
  * silently target a different row than the caller sees in the list.
+ *
+ * `refPattern` (ADR-0030 §1) JOINS THE TUPLE, and it had to: it is a routing discriminator, so two
+ * mappings may now differ ONLY by it — `refs/heads/dev` → the dev pipeline and `refs/heads/main` →
+ * the production one, same component, same repo, same path, same Type. A tuple that ignored the ref
+ * would match BOTH and delete the production route along with the dev one, silently, reporting a
+ * `deleted` count the operator would read as success.
+ *
+ * It is `.nullable().optional()` rather than plain `.nullable()` — the ONE asymmetry in this tuple —
+ * because making it required would break every existing caller's request shape. **An ABSENT
+ * `refPattern` is treated as NULL, not as a wildcard**, which is the fail-closed reading: a legacy
+ * caller that omits it deletes only ref-agnostic rows and never reaches a ref-scoped one. It can
+ * therefore UNDER-delete (visible immediately — `deleted` reports 0, which this response exists to
+ * surface) but never OVER-delete a route nobody asked to remove.
  */
 export const DeleteSourceMappingRequestSchema = z.object({
   component: z.string().min(1), // idOrUrn
   repoPattern: z.string().nullable(),
   pathPattern: z.string().nullable(),
+  refPattern: z.string().nullable().optional(),
   type: ExecutorTypeSchema.optional()
 });
 export type DeleteSourceMappingRequest = z.infer<typeof DeleteSourceMappingRequestSchema>;

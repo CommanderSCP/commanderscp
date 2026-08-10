@@ -54,6 +54,18 @@ export interface GitProviderEventHint {
    *  github adapter never populates it (github's observe surfaces commits + workflow runs only); the
    *  gitea adapter's package-push observe path is the first to set it (M15.1b). */
   artifactDigest?: string;
+  /**
+   * The fully-qualified git REF this event is on (`refs/heads/dev`) — what a `refPattern` source
+   * mapping matches against (ADR-0030 §1), and the field that makes "the dev branch drives the dev
+   * pipeline" expressible.
+   *
+   * Carried EXPLICITLY rather than parsed back out of `correlationKey`, even though a push event's
+   * correlation key is usually the ref today. The key is a grouping identity whose composition is
+   * the host's business — a package push folds the artifact digest into it, so reading a ref out of
+   * it would be right for some events and quietly wrong for others. An adapter that knows the ref
+   * sets this; one that doesn't leaves it undefined and no ref-scoped mapping can match its events.
+   */
+  ref?: string;
   correlationKey?: string;
 }
 
@@ -93,6 +105,11 @@ export function normalizeCorrelation(hint: GitProviderEventHint): ExecutorEventC
     paths: hint.paths,
     commitSha: hint.commitSha,
     artifactDigest: hint.artifactDigest,
+    // This one line is what gives ref-scoped routing poll-vs-push equivalence (DESIGN §12): the
+    // adapter's `mapEvent` backs BOTH the server's webhook ingest and the plugin's own polling
+    // `observe()`, and this function is the observe half. Dropping `ref` here would leave a
+    // ref-scoped mapping working for delivered webhooks and silently inert for polled ones.
+    ref: hint.ref,
     correlationKey: hint.correlationKey
   };
 }

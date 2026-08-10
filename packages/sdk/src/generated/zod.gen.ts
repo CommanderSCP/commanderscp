@@ -2900,6 +2900,7 @@ export const zCreatePlanResponse = z.object({
             sourceKind: z.string().min(1),
             repoPattern: z.string().min(1).optional(),
             pathPattern: z.string().min(1).optional(),
+            refPattern: z.string().min(1).optional(),
             type: z.enum([
                 'image',
                 'rpm',
@@ -2907,7 +2908,8 @@ export const zCreatePlanResponse = z.object({
                 'npm',
                 'infrastructure',
                 'configuration'
-            ]).optional()
+            ]).optional(),
+            classification: z.enum(['dev', 'beta']).optional()
         })).optional(),
         executorBindings: z.array(z.object({
             targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
@@ -2977,6 +2979,7 @@ export const zCreatePlanResponse = z.object({
             sourceKind: z.string(),
             repoPattern: z.string().nullable(),
             pathPattern: z.string().nullable(),
+            refPattern: z.string().nullable(),
             type: z.enum([
                 'image',
                 'rpm',
@@ -2985,6 +2988,7 @@ export const zCreatePlanResponse = z.object({
                 'infrastructure',
                 'configuration'
             ]),
+            classification: z.enum(['dev', 'beta']).nullable(),
             reason: z.string()
         })).optional(),
         placements: z.array(z.object({
@@ -3072,6 +3076,7 @@ export const zGetPlanResponse = z.object({
             sourceKind: z.string().min(1),
             repoPattern: z.string().min(1).optional(),
             pathPattern: z.string().min(1).optional(),
+            refPattern: z.string().min(1).optional(),
             type: z.enum([
                 'image',
                 'rpm',
@@ -3079,7 +3084,8 @@ export const zGetPlanResponse = z.object({
                 'npm',
                 'infrastructure',
                 'configuration'
-            ]).optional()
+            ]).optional(),
+            classification: z.enum(['dev', 'beta']).optional()
         })).optional(),
         executorBindings: z.array(z.object({
             targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
@@ -3149,6 +3155,7 @@ export const zGetPlanResponse = z.object({
             sourceKind: z.string(),
             repoPattern: z.string().nullable(),
             pathPattern: z.string().nullable(),
+            refPattern: z.string().nullable(),
             type: z.enum([
                 'image',
                 'rpm',
@@ -3157,6 +3164,7 @@ export const zGetPlanResponse = z.object({
                 'infrastructure',
                 'configuration'
             ]),
+            classification: z.enum(['dev', 'beta']).nullable(),
             reason: z.string()
         })).optional(),
         placements: z.array(z.object({
@@ -3245,6 +3253,7 @@ export const zApplyPlanResponse = z.object({
                 sourceKind: z.string().min(1),
                 repoPattern: z.string().min(1).optional(),
                 pathPattern: z.string().min(1).optional(),
+                refPattern: z.string().min(1).optional(),
                 type: z.enum([
                     'image',
                     'rpm',
@@ -3252,7 +3261,8 @@ export const zApplyPlanResponse = z.object({
                     'npm',
                     'infrastructure',
                     'configuration'
-                ]).optional()
+                ]).optional(),
+                classification: z.enum(['dev', 'beta']).optional()
             })).optional(),
             executorBindings: z.array(z.object({
                 targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
@@ -3322,6 +3332,7 @@ export const zApplyPlanResponse = z.object({
                 sourceKind: z.string(),
                 repoPattern: z.string().nullable(),
                 pathPattern: z.string().nullable(),
+                refPattern: z.string().nullable(),
                 type: z.enum([
                     'image',
                     'rpm',
@@ -3330,6 +3341,7 @@ export const zApplyPlanResponse = z.object({
                     'infrastructure',
                     'configuration'
                 ]),
+                classification: z.enum(['dev', 'beta']).nullable(),
                 reason: z.string()
             })).optional(),
             placements: z.array(z.object({
@@ -3906,6 +3918,7 @@ export const zListSourceMappingsResponse = z.object({
         sourceKind: z.string(),
         repoPattern: z.string().nullable(),
         pathPattern: z.string().nullable(),
+        refPattern: z.string().nullable(),
         componentObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
         type: z.enum([
             'image',
@@ -3920,6 +3933,7 @@ export const zListSourceMappingsResponse = z.object({
             'infrastructure',
             'configuration'
         ]),
+        classification: z.enum(['dev', 'beta']).nullable(),
         createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
     })),
     nextCursor: z.string().nullable()
@@ -3934,6 +3948,7 @@ export const zCreateSourceMappingResponse = z.object({
     sourceKind: z.string(),
     repoPattern: z.string().nullable(),
     pathPattern: z.string().nullable(),
+    refPattern: z.string().nullable(),
     componentObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
     type: z.enum([
         'image',
@@ -3948,6 +3963,7 @@ export const zCreateSourceMappingResponse = z.object({
         'infrastructure',
         'configuration'
     ]),
+    classification: z.enum(['dev', 'beta']).nullable(),
     createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
 });
 

@@ -191,6 +191,11 @@ export async function ingestObservedEvents(
       // that stays nested in `raw` is invisible to correlation.
       paths: c.paths,
       correlationKey: c.correlationKey,
+      // Flat, beside `repo`/`path`, for exactly the reason `paths` is: `extractHint`'s generic
+      // reader takes an observed payload at TOP LEVEL, so a ref left nested in `raw` would be
+      // invisible to correlation and a polled push would silently ignore every ref-scoped mapping
+      // that a delivered webhook honours (DESIGN §12 poll-vs-push equivalence).
+      ref: c.ref,
       commitSha: c.commitSha,
       artifactDigest: c.artifactDigest,
       // Persisted for forensics only — never read back for correlation. Without it, "why did this

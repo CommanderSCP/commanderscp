@@ -10063,7 +10063,9 @@ export type CreatePlanData = {
                 sourceKind: string;
                 repoPattern?: string;
                 pathPattern?: string;
+                refPattern?: string;
                 type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                classification?: 'dev' | 'beta';
             }>;
             executorBindings?: Array<{
                 targetUrn: string;
@@ -10166,7 +10168,9 @@ export type CreatePlanResponses = {
                 sourceKind: string;
                 repoPattern?: string;
                 pathPattern?: string;
+                refPattern?: string;
                 type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                classification?: 'dev' | 'beta';
             }>;
             executorBindings?: Array<{
                 targetUrn: string;
@@ -10224,7 +10228,9 @@ export type CreatePlanResponses = {
                 sourceKind: string;
                 repoPattern: string | null;
                 pathPattern: string | null;
+                refPattern: string | null;
                 type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                classification: 'dev' | 'beta' | null;
                 reason: string;
             }>;
             placements?: Array<{
@@ -10353,7 +10359,9 @@ export type GetPlanResponses = {
                 sourceKind: string;
                 repoPattern?: string;
                 pathPattern?: string;
+                refPattern?: string;
                 type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                classification?: 'dev' | 'beta';
             }>;
             executorBindings?: Array<{
                 targetUrn: string;
@@ -10411,7 +10419,9 @@ export type GetPlanResponses = {
                 sourceKind: string;
                 repoPattern: string | null;
                 pathPattern: string | null;
+                refPattern: string | null;
                 type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                classification: 'dev' | 'beta' | null;
                 reason: string;
             }>;
             placements?: Array<{
@@ -10552,7 +10562,9 @@ export type ApplyPlanResponses = {
                     sourceKind: string;
                     repoPattern?: string;
                     pathPattern?: string;
+                    refPattern?: string;
                     type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                    classification?: 'dev' | 'beta';
                 }>;
                 executorBindings?: Array<{
                     targetUrn: string;
@@ -10610,7 +10622,9 @@ export type ApplyPlanResponses = {
                     sourceKind: string;
                     repoPattern: string | null;
                     pathPattern: string | null;
+                    refPattern: string | null;
                     type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                    classification: 'dev' | 'beta' | null;
                     reason: string;
                 }>;
                 placements?: Array<{
@@ -11766,6 +11780,7 @@ export type DeleteSourceMappingData = {
         component: string;
         repoPattern: string | null;
         pathPattern: string | null;
+        refPattern?: string | null;
         type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
     };
     path: {
@@ -11882,9 +11897,11 @@ export type ListSourceMappingsResponses = {
             sourceKind: string;
             repoPattern: string | null;
             pathPattern: string | null;
+            refPattern: string | null;
             componentObjectId: string;
             type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
             category: 'build' | 'infrastructure' | 'configuration';
+            classification: 'dev' | 'beta' | null;
             createdAt: string;
         }>;
         nextCursor: string | null;
@@ -11898,8 +11915,10 @@ export type CreateSourceMappingData = {
         sourceKind: string;
         repoPattern?: string;
         pathPattern?: string;
+        refPattern?: string;
         component: string;
         type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        classification?: 'dev' | 'beta';
     };
     path: {
         sourceKind: string;
@@ -11967,9 +11986,11 @@ export type CreateSourceMappingResponses = {
         sourceKind: string;
         repoPattern: string | null;
         pathPattern: string | null;
+        refPattern: string | null;
         componentObjectId: string;
         type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
         category: 'build' | 'infrastructure' | 'configuration';
+        classification: 'dev' | 'beta' | null;
         createdAt: string;
     };
 };
