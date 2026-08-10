@@ -1,6 +1,7 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects } from "../db/schema.js";
+import { getOrgRootObjectId } from "../graph/objects-repo.js";
 import {
   DEFAULT_BINDING_TYPE,
   getExecutorBinding,
@@ -66,14 +67,20 @@ export type BindingResolution =
       /** Every competing placement, so the refusal can NAME them. */
       candidates: { placementObjectId: string; bindingId: string }[];
     }
-  /** ADR-0027 — the owning SERVICE carries the binding. Infrastructure that serves a whole service
-   *  (a cluster, a shared database) is declared once on the service rather than duplicated onto
-   *  every component or placement under it. */
+  /** ADR-0027, generalised by ADR-0028 — a containment ANCESTOR carries the binding. Infrastructure
+   *  that serves a whole service, assembly or org (a cluster, a shared database) is declared once at
+   *  the level it serves rather than duplicated onto every component or placement under it.
+   *
+   *  The name is retained from ADR-0027 for wire/Decision continuity; `viaServiceObjectId` is now
+   *  "the ancestor it resolved through", which may be an assembly or the org root. `hops` is how far
+   *  up it was found (1 = the immediate parent, 0 = the org rung), so a Decision can say how remote
+   *  the inheritance is — the further away, the more surprising it is to whoever hits it. */
   | {
       outcome: "via_service";
       binding: ExecutorBindingRow;
       viaPlacementObjectId: null;
       viaServiceObjectId: string;
+      hops: number;
     }
   | { outcome: "none"; binding: null; viaPlacementObjectId: null };
 
@@ -111,7 +118,15 @@ async function placementsOfComponent(
  * migration 0022's partial unique index — the same invariant `pipeline-resolution.ts` relies on, so
  * a binding and a pipeline can never disagree about which service owns a component.
  */
-async function owningServiceOf(
+/** ADR-0028 D3 — `intermediate-grouping.md` D2's cap, in hops of `contains`. Bounded so the walk's
+ *  cost is provable and a mis-declared containment cycle cannot spin. */
+const MAX_ANCESTOR_HOPS = 3;
+
+/**
+ * The component a wave target is about, whichever shape the target takes: a COMPONENT under legacy
+ * compilation, or a PLACEMENT under stage-shaped compilation — the shape the estate actually runs.
+ */
+async function componentOfTarget(
   tx: TenantTx,
   orgId: string,
   targetObjectId: string
@@ -120,24 +135,71 @@ async function owningServiceOf(
     where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.id, targetObjectId), eqOp(t.orgId, orgId))
   });
   if (!target) return null;
+  if (target.typeId !== "placement") return targetObjectId;
+  const props = (target.properties ?? {}) as { componentId?: unknown };
+  return typeof props.componentId === "string" ? props.componentId : null;
+}
 
-  let componentObjectId = targetObjectId;
-  if (target.typeId === "placement") {
-    const props = (target.properties ?? {}) as { componentId?: unknown };
-    if (typeof props.componentId !== "string") return null;
-    componentObjectId = props.componentId;
-  }
-
+/** The `contains` parent of one object, or null. At most one by `contains`'s `one_to_many` plus
+ *  migration 0022's partial unique index — the invariant `pipeline-resolution.ts` also relies on. */
+async function containsParentOf(
+  tx: TenantTx,
+  orgId: string,
+  objectId: string
+): Promise<string | null> {
   const edge = await tx.query.relationships.findFirst({
     where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
       andOp(
         eqOp(t.orgId, orgId),
         eqOp(t.typeId, "contains"),
-        eqOp(t.toId, componentObjectId),
+        eqOp(t.toId, objectId),
         isNullOp(t.deletedAt)
       )
   });
   return edge?.fromId ?? null;
+}
+
+/**
+ * The `contains` ancestors of a wave target, NEAREST FIRST, capped at {@link MAX_ANCESTOR_HOPS}.
+ *
+ * ============================================================================================
+ * WHY THIS WALKS `contains` ONLY, AND NOT `containmentChain` — READ BEFORE "SIMPLIFYING" IT
+ * ============================================================================================
+ * `containmentChain` walks TWO axes per hop (the `contains` edge AND `domain_id`), and its own
+ * docblock records that when a component's `domain_id` differs from its service's, the domain and the
+ * service are each exactly ONE hop away and **TIE** — "no ordering of these two routes is obviously
+ * correct". It then says explicitly that this "WOULD become a real precedence bug the moment any code
+ * compares depth across differently-named [ancestors] to pick a single most-specific winner — if you
+ * are about to write that, fix this first."
+ *
+ * A nearest-wins binding ladder IS that code. Walking the single `contains` axis is what makes
+ * "nearest" unambiguous, and it leaves `containmentChain` untouched — the same reasoning
+ * `pipeline-resolution.ts` gives for walking named rungs rather than reusing it. The consequence is
+ * deliberate and worth stating: **a binding on a containment `domain` does not resolve** (ADR-0028 D2).
+ *
+ * The walk is TYPE-AGNOSTIC (ADR-0028 D4): it does not care whether a parent is a `service`, an
+ * `assembly`, or something that does not exist yet — only whether it carries a binding of this Type.
+ * A `seen` set makes a mis-declared cycle terminate even inside the cap.
+ */
+async function containsAncestors(
+  tx: TenantTx,
+  orgId: string,
+  targetObjectId: string
+): Promise<string[]> {
+  const componentObjectId = await componentOfTarget(tx, orgId, targetObjectId);
+  if (!componentObjectId) return [];
+
+  const ancestors: string[] = [];
+  const seen = new Set<string>([componentObjectId]);
+  let current = componentObjectId;
+  for (let hop = 0; hop < MAX_ANCESTOR_HOPS; hop += 1) {
+    const parent = await containsParentOf(tx, orgId, current);
+    if (!parent || seen.has(parent)) break;
+    ancestors.push(parent);
+    seen.add(parent);
+    current = parent;
+  }
+  return ancestors;
 }
 
 /**
@@ -155,18 +217,38 @@ async function serviceRung(
   targetObjectId: string,
   type: BindingType
 ): Promise<BindingResolution> {
-  const serviceObjectId = await owningServiceOf(tx, orgId, targetObjectId);
-  if (serviceObjectId) {
-    const viaService = await getExecutorBinding(tx, orgId, serviceObjectId, type);
-    if (viaService) {
+  // NEAREST FIRST (ADR-0028 D1). The first ancestor carrying a binding of this Type wins, so a
+  // component's assembly beats its service, which beats the org — most specific always.
+  const ancestors = await containsAncestors(tx, orgId, targetObjectId);
+  for (const [index, ancestorObjectId] of ancestors.entries()) {
+    const binding = await getExecutorBinding(tx, orgId, ancestorObjectId, type);
+    if (binding) {
       return {
         outcome: "via_service",
-        binding: viaService,
+        binding,
         viaPlacementObjectId: null,
-        viaServiceObjectId: serviceObjectId
+        viaServiceObjectId: ancestorObjectId,
+        hops: index + 1
       };
     }
   }
+
+  // THE ORG RUNG (ADR-0028, which ADR-0027 D4 excluded). Reached DIRECTLY rather than by walking,
+  // for the same reason `pipeline-resolution.ts` reaches it directly: the org root is normally found
+  // through the `domain_id` axis, which this ladder deliberately does not walk, so a hop-based walk
+  // would silently never arrive. `hops: 0` marks it as the least specific rung there is.
+  const orgRootId = await getOrgRootObjectId(tx, orgId);
+  const viaOrg = await getExecutorBinding(tx, orgId, orgRootId, type);
+  if (viaOrg) {
+    return {
+      outcome: "via_service",
+      binding: viaOrg,
+      viaPlacementObjectId: null,
+      viaServiceObjectId: orgRootId,
+      hops: 0
+    };
+  }
+
   return { outcome: "none", binding: null, viaPlacementObjectId: null };
 }
 
