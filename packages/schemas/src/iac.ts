@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { JsonRecordSchema, UrnSchema } from "./graph.js";
-import { ExecutorTypeSchema } from "./executors.js";
+import { ExecutorTypeSchema, PipelineClassificationSchema } from "./executors.js";
 
 /**
  * `@scp/iac` desired-state manifest contract (DESIGN.md §15, BUILD_AND_TEST.md §8 M2 item 4).
@@ -61,11 +61,20 @@ export type ManifestRelationship = z.infer<typeof ManifestRelationshipSchema>;
 // ---------------------------------------------------------------------------------------------
 
 /**
- * A `source_mappings` row: repo/path glob → the component whose pipeline of `type` that source
+ * A `source_mappings` row: repo/path/ref glob → the component whose pipeline of `type` that source
  * drives (DESIGN §9.2 correlation). IDENTITY is the whole tuple
- * `(componentUrn, sourceKind, repoPattern, pathPattern, type)` — the table has no unique constraint
- * and no update path, so a changed mapping is a delete + create, the same identity-only treatment
- * `ManifestRelationshipSchema` gets. Declaring the same tuple twice in one manifest is rejected.
+ * `(componentUrn, sourceKind, repoPattern, pathPattern, refPattern, type)` — the table has no unique
+ * constraint and no update path, so a changed mapping is a delete + create, the same identity-only
+ * treatment `ManifestRelationshipSchema` gets. Declaring the same tuple twice in one manifest is
+ * rejected.
+ *
+ * `refPattern` had to join that identity (ADR-0030 §1): it is a routing discriminator, so a manifest
+ * legitimately declares `refs/heads/dev` → dev pipeline and `refs/heads/main` → production as two
+ * rows differing in nothing else. Without it in the tuple those two would collide as a duplicate
+ * declaration, and a prune of either would match — and delete — both.
+ *
+ * `classification` is deliberately NOT part of the identity: it is a descriptive label, so changing
+ * it should be an in-place correction rather than a delete-and-recreate of a live route.
  */
 export const ManifestSourceMappingSchema = z.object({
   /** URN of the component this source drives. Must be an object THIS stack owns (see above). */
@@ -75,8 +84,13 @@ export const ManifestSourceMappingSchema = z.object({
   repoPattern: z.string().min(1).optional(),
   /** Glob matched against `source_ref.path`. */
   pathPattern: z.string().min(1).optional(),
+  /** Glob matched against the event's git ref (`refs/heads/dev`). Omitted ⇒ matches any ref. */
+  refPattern: z.string().min(1).optional(),
   /** WHICH pipeline of the component this source drives (ADR-0007). Omitted ⇒ `configuration`. */
-  type: ExecutorTypeSchema.optional()
+  type: ExecutorTypeSchema.optional(),
+  /** The operator's declared pipeline classification (ADR-0030 §2) — UI/reporting only, never an
+   *  enforcement input, and deliberately outside the identity tuple above. */
+  classification: PipelineClassificationSchema.optional()
 });
 export type ManifestSourceMapping = z.infer<typeof ManifestSourceMappingSchema>;
 
@@ -249,7 +263,13 @@ export const PlanSourceMappingDiffEntrySchema = z.object({
   sourceKind: z.string(),
   repoPattern: z.string().nullable(),
   pathPattern: z.string().nullable(),
+  /** Normalized like the two above. Part of the identity tuple, so it MUST appear on the entry the
+   *  operator reviews: a prune whose ref the plan did not show is a prune they cannot check. */
+  refPattern: z.string().nullable(),
   type: ExecutorTypeSchema,
+  /** Descriptive only, and outside the identity tuple — shown so a plan that introduces or clears a
+   *  `dev` label is legible, not because it participates in matching. */
+  classification: PipelineClassificationSchema.nullable(),
   reason: z.string()
 });
 export type PlanSourceMappingDiffEntry = z.infer<typeof PlanSourceMappingDiffEntrySchema>;

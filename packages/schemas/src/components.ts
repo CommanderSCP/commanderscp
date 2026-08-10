@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ChangeStageDependencyVerdictSchema } from "./changes.js";
-import { ExecutorCategorySchema } from "./executors.js";
+import { ExecutorCategorySchema, PipelineClassificationSchema } from "./executors.js";
 
 // ---------------------------------------------------------------------------------------------
 // COMPONENT PIPELINE (coordination-ui-views.md §2, as corrected 2026-08-03)
@@ -97,8 +97,15 @@ export const ComponentPipelineSourceMappingSchema = z.object({
    *  broader rule than it looks and must not render as an empty cell. Measured on the live estate:
    *  `agentkit-bootstrap` has such a mapping against all of `jag8765-personal/homelab-gitops`. */
   pathPattern: z.string().nullable(),
+  /** Git ref glob, or NULL meaning **every branch matches** — the ref-side twin of the whole-repo
+   *  case above, and just as broad: without it rendered, two mappings that route `dev` and `main`
+   *  to different pipelines look identical in the UI (ADR-0030 §1). */
+  refPattern: z.string().nullable(),
   type: z.string(),
   category: ExecutorCategorySchema,
+  /** The operator's declared pipeline classification (ADR-0030 §2) — UI/reporting ONLY, never an
+   *  enforcement input. Rendered as a label; it grants and withholds nothing. */
+  classification: PipelineClassificationSchema.nullable(),
   /** The repo's web page, or null when it cannot be known — a GLOBBED `repoPattern` names a set of
    *  repos rather than a page, and a self-hosted provider's host is not recorded on a mapping. */
   url: z.string().nullable()

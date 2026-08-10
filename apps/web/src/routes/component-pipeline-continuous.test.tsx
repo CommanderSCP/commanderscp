@@ -368,8 +368,10 @@ function source(over: Partial<ComponentPipelineResponse["sources"][number]> = {}
     sourceKind: "github",
     repoPattern: "AgentKitProject/agentkit",
     pathPattern: "services/market/**",
+    refPattern: null,
     type: "configuration",
     category: "configuration" as const,
+    classification: null,
     url: "https://github.com/AgentKitProject/agentkit",
     ...over
   };
