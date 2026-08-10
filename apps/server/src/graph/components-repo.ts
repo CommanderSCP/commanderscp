@@ -1,6 +1,7 @@
 import type { ContainmentDomainId, GraphObject } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "./objects-repo.js";
+import { isContainerType } from "./containment.js";
 import { createRelationship, deleteRelationship, listRelationships } from "./relationships-repo.js";
 import { authorize } from "../authz/resolve.js";
 import { insertDecision } from "../coordination/decisions-repo.js";
@@ -40,9 +41,12 @@ export async function createComponentInService(
 ): Promise<GraphObject> {
   // Resolve and type-check the service FIRST — a bad or wrong-type ref fails before any write.
   const service = await getObjectByIdOrUrnAnyType(tx, input.orgId, input.serviceIdOrUrn);
-  if (service.typeId !== "service") {
+  // A component's parent may be a service OR an assembly (migration 0054) — the optional level
+  // between them. Routed through `isContainerType` rather than compared here, so adding a level is a
+  // change to ONE constant instead of a search for every site that spelled out "service".
+  if (!isContainerType(service.typeId)) {
     throw badRequest(
-      `'${input.serviceIdOrUrn}' is a '${service.typeId}', not a service — a component must belong to a service`
+      `'${input.serviceIdOrUrn}' is a '${service.typeId}' — a component must belong to a service or an assembly`
     );
   }
   // Both-endpoint authority (the security check `createRelationship` alone does NOT do): the actor
@@ -138,9 +142,12 @@ export async function setComponentService(
     throw badRequest(`'${input.componentIdOrUrn}' is a '${component.typeId}', not a component`);
   }
   const service = await getObjectByIdOrUrnAnyType(tx, input.orgId, input.serviceIdOrUrn);
-  if (service.typeId !== "service") {
+  // A component's parent may be a service OR an assembly (migration 0054) — the optional level
+  // between them. Routed through `isContainerType` rather than compared here, so adding a level is a
+  // change to ONE constant instead of a search for every site that spelled out "service".
+  if (!isContainerType(service.typeId)) {
     throw badRequest(
-      `'${input.serviceIdOrUrn}' is a '${service.typeId}', not a service — a component must belong to a service`
+      `'${input.serviceIdOrUrn}' is a '${service.typeId}' — a component must belong to a service or an assembly`
     );
   }
 

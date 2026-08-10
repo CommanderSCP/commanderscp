@@ -218,6 +218,27 @@ export interface ChainEntry {
  * code compares depth across differently-named policies to pick a single "most specific" winner — if
  * you are about to write that, fix this first.
  */
+/**
+ * THE CONTAINER TYPES — object types that may hold components (and each other, subject to the
+ * pairwise refusal below).
+ *
+ * ONE constant, and every "is this a container?" question routes through it. The alternative —
+ * comparing `typeId === "service"` at each site — is how a level gets added to the model and applied
+ * at only some of the places that care, which is the failure mode this repo has been bitten by
+ * repeatedly (`bindings[0]`, the `currents` collapse, ADR-0027's rung at one of two exits). A single
+ * constant makes the census a definition rather than a search.
+ *
+ * Note what this does NOT license: membership here says a type may CONTAIN, not that any pair is
+ * legal. `assembly -> assembly` is refused at write time (`relationships-repo.ts`), because
+ * `relationship_types` holds flat from/to arrays and cannot express a pairwise rule — see migration
+ * 0054's header.
+ */
+export const CONTAINER_TYPES = ["service", "assembly"] as const;
+
+export function isContainerType(typeId: string): boolean {
+  return (CONTAINER_TYPES as readonly string[]).includes(typeId);
+}
+
 export async function containmentChain(
   tx: TenantTx,
   orgId: string,
