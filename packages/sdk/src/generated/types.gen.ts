@@ -17273,3 +17273,53 @@ export type GraphHealthResponses = {
 };
 
 export type GraphHealthResponse = GraphHealthResponses[keyof GraphHealthResponses];
+
+export type DoctorReportData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/doctor';
+};
+
+export type DoctorReportErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DoctorReportError = DoctorReportErrors[keyof DoctorReportErrors];
+
+export type DoctorReportResponses = {
+    /**
+     * Success
+     */
+    200: {
+        checks: Array<{
+            id: string;
+            status: 'ok' | 'warn';
+            summary: string;
+            detail: string;
+        }>;
+    };
+};
+
+export type DoctorReportResponse = DoctorReportResponses[keyof DoctorReportResponses];

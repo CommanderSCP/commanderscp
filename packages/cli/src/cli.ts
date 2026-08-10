@@ -16,6 +16,7 @@ import type {
   CreateObjectRequest,
   Decision,
   DesiredStateManifest,
+  DoctorCheck,
   ExecutorType,
   Freeze,
   GraphObject,
@@ -2104,6 +2105,51 @@ export function buildProgram(): Command {
         printResult(result.objects, opts.output, (item) => objectRow(item as GraphObject));
       }
     );
+
+  // -------------------------------------------------------------------------------------
+  // doctor — read-only operational self-checks (`GET /doctor`).
+  //
+  // Sibling of `scp graph integrity` in spirit: a report, never a repair. The distinction from
+  // `pnpm doctor` (scripts/doctor.mjs) is deliberate and worth keeping straight — that one checks
+  // the TOOLCHAIN on a developer's machine and never opens a database; this one checks a running
+  // INSTANCE's state, over the public API like everything else in this CLI.
+  // -------------------------------------------------------------------------------------
+
+  program
+    .command("doctor")
+    .description(
+      "Read-only operational self-checks for your org (never repairs; exits 1 if any check warns)"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const report = await client.doctor.report();
+
+      if (opts.output === "json") {
+        printResult(report, opts.output, (item) => item as Record<string, string>);
+      } else {
+        printResult(report.checks, opts.output, (item) => {
+          const check = item as DoctorCheck;
+          return {
+            check: check.id,
+            status: check.status.toUpperCase(),
+            summary: check.summary
+          };
+        });
+        // The table row is a headline; `detail` is the part an operator at 2am actually needs — what
+        // is wrong, why it is silent, and which remedies are available. Printed in full, below the
+        // table, for every check that warns. Never truncated into a column.
+        for (const check of report.checks) {
+          if (check.status === "ok") continue;
+          console.log(`\n--- ${check.id} ---\n${check.detail}`);
+        }
+      }
+
+      // Same contract as `scp policy evaluate`'s block verdict and as `pnpm doctor`: a non-zero exit
+      // so this is usable as a CI/rollout gate, not merely something a human reads.
+      if (report.checks.some((c) => c.status !== "ok")) process.exitCode = 1;
+    });
 
   // -------------------------------------------------------------------------------------
   // plan / apply (`@scp/iac` server-side plan/apply — BUILD_AND_TEST.md §8 M2 item 4). A

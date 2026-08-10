@@ -44,6 +44,7 @@ import { registerInitiativeRoutes } from "./routes/initiatives.js";
 import { registerFederationRoutes } from "./routes/federation.js";
 import { registerExecutorRoutes } from "./routes/executors.js";
 import { registerHealthRoutes } from "./routes/health.js";
+import { registerDoctorRoutes } from "./routes/doctor.js";
 import { registerInstanceScanFloorRoutes } from "./routes/instance-scan-floors.js";
 import { registerScannerAssignmentRoutes } from "./routes/scanner-assignments.js";
 import { registerScanDbRoutes } from "./routes/scan-db.js";
@@ -246,6 +247,10 @@ export async function buildApp(
   // health; it never probes/polls/computes it (charter principle 1). Stored graph-natively as an
   // object-referencing projection row (DESIGN §4.1), not a new top-level table (principle 2).
   registerHealthRoutes(app, deps);
+  // `scp doctor` — read-only operational self-checks for the caller's org. Distinct from `/healthz`
+  // below in both senses that matter: it asks "is this instance's state COHERENT" rather than "is
+  // this process up", and it is exactly the class of condition a green liveness probe hides.
+  registerDoctorRoutes(app, deps);
 
   app.get("/healthz", async () => ({ status: "ok" }));
 
