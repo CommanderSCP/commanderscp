@@ -8,17 +8,26 @@ import type { ReactNode } from "react";
  *   blocked  — a gate denied it or the upstream wave failed; carries a `decision_id` when the
  *              server produced one (red, charter principle 6 "every block carries a decision_id")
  *   approval — a required manual approval is still pending (amber)
+ *   held     — a stage-scoped component coupling is withholding the trigger (ADR-0028): the release
+ *              is waiting on ANOTHER COMPONENT reaching this same stage (indigo)
  *   pending  — not yet at this gate / awaiting reconcile, no verdict to show (slate)
  *
  * There is NO "manual operator hold/release" state here on purpose — that record does not exist in
  * the model yet (coordination-ui-views.md Layer B, phase 5), so surfacing it would be fabrication.
+ * `held` is NOT that: it is a real server-side verdict re-evaluated on every request, and it exists
+ * as its own state because both of the states it could otherwise have borrowed would LIE.
+ * `blocked` is red and permanent-reading, and conflating a transient self-clearing wait with a
+ * denial is the exact bug ADR-0028 wrote `verdict: "hold"` rather than `"block"` to avoid;
+ * `approval` claims a human gate that nobody is standing at. The wait is real, it clears itself,
+ * and nothing is wrong — so it gets a colour of its own rather than the alarm or the queue.
  */
-export type PromotionState = "open" | "blocked" | "approval" | "pending";
+export type PromotionState = "open" | "blocked" | "approval" | "held" | "pending";
 
 const STATE_STYLES: Record<PromotionState, { bar: string; triangle: string; text: string }> = {
   open: { bar: "bg-green-500", triangle: "border-t-green-500", text: "text-green-700" },
   blocked: { bar: "bg-red-500", triangle: "border-t-red-500", text: "text-red-700" },
   approval: { bar: "bg-amber-500", triangle: "border-t-amber-500", text: "text-amber-700" },
+  held: { bar: "bg-indigo-500", triangle: "border-t-indigo-500", text: "text-indigo-700" },
   pending: { bar: "bg-slate-300", triangle: "border-t-slate-300", text: "text-slate-500" }
 };
 
