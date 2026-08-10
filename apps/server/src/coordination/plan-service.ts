@@ -21,7 +21,7 @@ import {
   type StagePlacement,
   type TopologyWaveSpec
 } from "./plan-compiler.js";
-import { typeOf } from "./changes-repo.js";
+import { stageDependenciesOf, typeOf } from "./changes-repo.js";
 import { parseTopologyWaves } from "./topology-waves.js";
 
 /** Reads `depends_on` edges among `targetIds` directly from the graph (DESIGN §9.3: "wave order
@@ -142,6 +142,22 @@ export async function compileAndPersistPlan(
   });
   const changeType = typeOf(changeRow?.properties as Record<string, unknown> | undefined);
 
+  // THE CHANGE'S OWN DECLARED COUPLINGS (ADR-0028), off the row already in hand — no second query.
+  // They exist here for ONE reason: `compileStages`'s co-placed cycle refusal has to see what the
+  // RUNTIME HOLD enforces, and the hold enforces declarations independently of whether any
+  // `depends_on` edge survives. `loadDependsOnEdges` above cannot supply that half — it filters
+  // `deleted_at IS NULL`, and `materialiseStageDependencyEdges` never re-mints an edge whose
+  // tombstone still occupies the unique key — so a mutual declaration with one deleted edge compiled
+  // clean and then wedged in `executing` forever. See `coPlacedCycle`.
+  //
+  // `malformed` is deliberately NOT passed. A malformed entry is unsatisfiable and holds every target
+  // (`stage-dependency-hold.ts`'s `undeclarable` branch), which is its own failure mode with its own
+  // remedy; it is not a CYCLE and this check must not start reporting it as one. Propose-time Zod
+  // validation makes such a row unreachable through the API in the first place.
+  const { stageDependencies: declaredStageDependencies } = stageDependenciesOf(
+    changeRow?.properties as Record<string, unknown> | undefined
+  );
+
   let topologyDocument: Record<string, unknown> | null = null;
   if (input.topologyObjectId) {
     const topology = await tx.query.objects.findFirst({
@@ -161,7 +177,8 @@ export async function compileAndPersistPlan(
     targets: input.targetObjectIds,
     dependsOn,
     ...(topologyWaves ? { topologyWaves } : {}),
-    ...(placements ? { placements } : {})
+    ...(placements ? { placements } : {}),
+    ...(declaredStageDependencies.length > 0 ? { declaredStageDependencies } : {})
   });
 
   if (!result.ok) {

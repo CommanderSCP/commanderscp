@@ -27,6 +27,12 @@
  * gone — per ADR-0028 decision 6 that ordering duty passed to the per-target trigger hold in
  * `reconcile.ts`'s executing loop. The reasoning is at the site inside `compileStages`; do not
  * restore the same-wave check, and do not remove the cycle check, without reading it.
+ *
+ * THAT CYCLE CHECK READS TWO SOURCES, because the hold it stands in for reads two: live `depends_on`
+ * edges AND the change's own declared `stageDependencies` (`declaredStageDependencies` below). An
+ * edge and a declaration are not the same fact and one can outlive the other in either direction —
+ * see `coPlacedCycle`. The compiler and the hold must agree on what orders what, or the refusal
+ * misses exactly the inputs that wedge.
  */
 
 export interface DependsOnEdge {
@@ -80,6 +86,23 @@ export type CompilePlanResult =
       detail: string;
     };
 
+/**
+ * One entry of the change's own `properties.stageDependencies` (ADR-0028), reduced to the two fields
+ * a cycle check can read: WHAT is depended on, and WHERE that applies.
+ *
+ * Structurally a subset of `changes-repo.ts`'s `ResolvedStageDependency`, restated here rather than
+ * imported because this module is PURE by contract (BUILD_AND_TEST.md §4.1) and that one lives in a
+ * file full of DB I/O. `ResolvedStageDependency[]` assigns to this directly — its extra `minWeight`
+ * is deliberately not in the shape, since a qualifier that RELAXES a wait cannot rescue a cycle: a
+ * mutual pair is never triggered at all, so neither side ever has a weight to read.
+ */
+export interface DeclaredStageDependency {
+  /** A component object id — resolved at propose time. */
+  dependsOn: string;
+  /** When present, the declaration applies ONLY at these deployment-target ids. */
+  atTargets?: string[];
+}
+
 /** One component placed at one deployment-target — the pair a stage-shaped wave resolves to. */
 export interface StagePlacement {
   componentObjectId: string;
@@ -98,6 +121,18 @@ export interface CompilePlanInput {
    * supplies this; the compiler stays pure.
    */
   placements?: StagePlacement[];
+  /**
+   * STAGE MODE ONLY — the change's own declared `stageDependencies`, already resolved to object ids
+   * (`stageDependenciesOf`, `changes-repo.ts`). Read for the CO-PLACED CYCLE REFUSAL and nothing
+   * else: it does not order waves, and it means nothing on the legacy or toposort paths, where a
+   * wave target names a component rather than a place, so the hold's `unscopeable` branch enforces
+   * no declaration there and no declaration can deadlock one.
+   *
+   * OPTIONAL because it REFINES a check that already had a source. Omitting it leaves the refusal
+   * exactly as wide as the edge set makes it — the behaviour before this field existed — so a caller
+   * with no declarations to hand is not made wrong by the parameter's existence.
+   */
+  declaredStageDependencies?: readonly DeclaredStageDependency[];
 }
 
 /** Builds `node -> set of nodes it depends on`, restricted to `nodes`. */
@@ -326,17 +361,27 @@ function compileStages(
   // `componentOf` was the same-wave check's only reader and went with it. If a future rule needs
   // placement -> component again, rebuild it from `input.placements` rather than re-introducing a
   // map that is populated on every push and read by nothing.
+  //
+  // AND IT READS THE CHANGE'S OWN DECLARATIONS BESIDE THE EDGES, because the hold does. `input.
+  // dependsOn` is `loadDependsOnEdges`, which filters `deleted_at IS NULL`; the hold enforces
+  // `properties.stageDependencies` whether or not any edge survives. The two sets were assumed equal
+  // and are not — see `coPlacedCycle`, which is where the divergence and the deadlock it bought are
+  // written down.
   const scheduledPlacementIds = new Set(steps.flatMap((step) => step.targets));
   const cycle = coPlacedCycle(
     relevant.filter((p) => scheduledPlacementIds.has(p.placementObjectId)),
-    input.dependsOn
+    input.dependsOn,
+    input.declaredStageDependencies ?? []
   );
   if (cycle) {
     return {
       ok: false,
       error: "cycle",
       cycle: cycle.components,
-      detail: `${cycle.components.map((c) => `'${c}'`).join(", ")} form a \`depends_on\` cycle and are all placed at '${cycle.deploymentTargetObjectId}', so none of them could ever be triggered there — break the cycle before releasing them together`
+      // NAMES BOTH SOURCES, because this string is the change's permanent epitaph and "delete the
+      // edge" is no longer sufficient advice on its own: the ordering may come from a declaration
+      // with no live edge behind it at all, which is the case that used to wedge silently.
+      detail: `${cycle.components.map((c) => `'${c}'`).join(", ")} form a dependency cycle and are all placed at '${cycle.deploymentTargetObjectId}', so none of them could ever be triggered there — break the cycle before releasing them together, checking BOTH the \`depends_on\` edges among this change's targets and the change's own declared \`stageDependencies\``
     };
   }
 
@@ -353,8 +398,8 @@ function compileStages(
 }
 
 /**
- * The one `depends_on` shape stage mode still refuses (ADR-0028 decision 6): a cycle among this
- * change's own targets that are ALL PLACED AT THE SAME deployment-target.
+ * The one ordering shape stage mode still refuses (ADR-0028 decision 6): a cycle among this change's
+ * own targets that are ALL PLACED AT THE SAME deployment-target.
  *
  * WHY IT CANNOT BE LEFT TO THE HOLD. `reconcile.ts`'s per-target hold withholds A's trigger at a
  * place until every dependency of A placed THERE has succeeded there. For a mutual pair co-placed
@@ -363,6 +408,42 @@ function compileStages(
  * sits in `executing` behind a `stage_dependency` Decision forever. A compile-time refusal turns
  * that into an epitaph an operator reads immediately (`auto-cancelled: plan compilation failed`),
  * which is exactly what the same-wave check used to do for this input.
+ *
+ * ============================================================================================
+ * IT READS BOTH OF THE HOLD'S SOURCES — EDGES *AND* THE CHANGE'S OWN DECLARATIONS
+ * ============================================================================================
+ * The hold's dependency set has two halves (`stage-dependency-hold.ts`): the change's declared
+ * `stageDependencies`, and plain `depends_on` edges with both endpoints among its targets. Reading
+ * only the edges here treats the two as interchangeable, and they are not — a declaration can exist
+ * with NO live edge behind it, permanently:
+ *
+ *   * `loadDependsOnEdges` (`plan-service.ts`) filters `deleted_at IS NULL`, so a soft-deleted edge
+ *     is invisible to the compiler; and
+ *   * `materialiseStageDependencyEdges` (`changes-repo.ts`) deliberately treats a TOMBSTONED edge as
+ *     "already materialised" — `relationships_org_type_from_to_key` is a plain UNIQUE, not a partial
+ *     index, so no create could replace it anyway — and therefore never re-mints it.
+ *
+ * So an operator deleting one edge of a mutual pair once makes that direction invisible here FOREVER,
+ * while the hold keeps enforcing the declaration that has not changed at all. The change then
+ * compiles, both targets hold each other at the shared place, `nonTerminalTargets - heldTargets`
+ * reaches 0 with nothing failed, and reconcile's pure-hold return fires every tick: a silent wedge in
+ * `executing` behind a watchdog warn, which is precisely the outcome this refusal exists to convert
+ * into a loud epitaph.
+ *
+ * The declarations are turned into ordering pairs the way the HOLD applies them, not the way one
+ * might wish they were scoped: a declaration is CHANGE-scoped and applies to EVERY target of the
+ * change (the KNOWN LIMITATION on `stageDependenciesOf`, pinned by tests — do not "fix" it here,
+ * where the compiler would then disagree with what actually runs). Hence, at each place: every
+ * component scheduled there -> every dependency declared for that place. `buildDependencyMap`
+ * discards the self-pairs and the ones naming a component not scheduled here, which is exactly the
+ * hold's `self` and `not_placed` branches — both satisfied, neither able to deadlock.
+ *
+ * `atTargets` IS HONOURED, for the same "no wider than the deadlock" reason the whole check is
+ * per-place. Two components each declaring the other, but at DIFFERENT places, deadlock at neither:
+ * at each place exactly one side is held and the other is free to proceed. `minWeight` is ignored on
+ * purpose — it relaxes a wait, and a pair that is never triggered never produces a weight to relax
+ * against (the composition rule in `stage-dependency-hold.ts` supersedes it for an edge-asserted
+ * pair regardless).
  *
  * SCOPED PER PLACE, NOT PER TARGET SET, so the refusal is neither wider nor narrower than the
  * deadlock. Two components that depend on each other but are never co-placed (A gamma-only, B
@@ -375,9 +456,13 @@ function compileStages(
  */
 function coPlacedCycle(
   relevant: readonly StagePlacement[],
-  dependsOn: readonly DependsOnEdge[]
+  dependsOn: readonly DependsOnEdge[],
+  declared: readonly DeclaredStageDependency[]
 ): { components: string[]; deploymentTargetObjectId: string } | null {
-  if (dependsOn.length === 0) return null;
+  // BOTH sources have to be empty to skip. Keying this on the edges alone was the shortest path to
+  // the wedge above: a change whose every edge had been tombstoned took the early return without
+  // looking at a single placement.
+  if (dependsOn.length === 0 && declared.length === 0) return null;
   const componentsByPlace = new Map<string, Set<string>>();
   for (const p of relevant) {
     let at = componentsByPlace.get(p.deploymentTargetObjectId);
@@ -390,10 +475,20 @@ function coPlacedCycle(
   for (const place of [...componentsByPlace.keys()].sort()) {
     const components = [...componentsByPlace.get(place)!].sort();
     if (components.length < 2) continue;
+    // The union, built per place because `atTargets` makes the declared half place-dependent. Edges
+    // carry no such qualifier — `minWeight`/`atTargets` deliberately do not ride on a relationship
+    // (`materialiseStageDependencyEdges`) — so they apply everywhere.
+    const applicable = declared.filter(
+      (dep) => dep.atTargets === undefined || dep.atTargets.includes(place)
+    );
+    const ordering: DependsOnEdge[] = [...dependsOn];
+    for (const from of components) {
+      for (const dep of applicable) ordering.push({ from, to: dep.dependsOn });
+    }
     // Reuses the toposort ONLY to find the cycle — its layers are discarded. Stage waves come from
     // the topology's places, never from this ordering (ADR-0026 §5), so this must not become a
     // second source of wave order.
-    const result = topoLayers(components, buildDependencyMap(components, dependsOn));
+    const result = topoLayers(components, buildDependencyMap(components, ordering));
     if ("cycle" in result) return { components: result.cycle, deploymentTargetObjectId: place };
   }
   return null;

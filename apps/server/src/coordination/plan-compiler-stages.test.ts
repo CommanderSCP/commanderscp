@@ -289,6 +289,144 @@ describe("coordination/plan-compiler — stage mode (waves name places)", () => 
     expect(result.waves.map((w) => w.targets)).toEqual([["api@target-gamma"], ["db@target-prod"]]);
   });
 
+  it("a MUTUAL pair declared in the CHANGE'S OWN stageDependencies is refused even when an edge is missing", () => {
+    // THE TOMBSTONE WEDGE. `materialiseStageDependencyEdges` deliberately treats a SOFT-DELETED edge
+    // as "already materialised" (a plain UNIQUE key, not a partial index), so an operator's one-off
+    // deletion of `api -> db` means that edge is never re-minted. `loadDependsOnEdges` filters on
+    // `deleted_at IS NULL`, so the compiler saw only `db -> api` and found no cycle.
+    //
+    // The RUNTIME hold does not read edges for this pair at all — it enforces the change's own
+    // DECLARATIONS, and a declaration is CHANGE-scoped, applying to EVERY target (the KNOWN
+    // LIMITATION in `changes-repo.ts`). So `api@gamma` holds behind `db@gamma` and `db@gamma` holds
+    // behind `api@gamma`: every target held, none failed, and reconcile's pure-hold return fires
+    // forever. The change wedges in `executing` behind a watchdog warn, and the loud
+    // `auto-cancelled: plan compilation failed` epitaph ADR-0028 promises never arrives.
+    //
+    // The compiler must therefore see what the HOLD enforces, not only what the graph still stores.
+    const result = compilePlan({
+      targets: ["api", "db"],
+      // Only the surviving edge: `api -> db` hit the tombstone at propose and was skipped.
+      dependsOn: [{ from: "db", to: "api" }],
+      declaredStageDependencies: [{ dependsOn: "api" }, { dependsOn: "db" }],
+      topologyWaves: gammaThenProd,
+      placements: [place("api", GAMMA), place("api", PROD), place("db", GAMMA), place("db", PROD)]
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("cycle");
+    if (result.error !== "cycle") return;
+    expect([...result.cycle].sort()).toEqual(["api", "db"]);
+    expect(result.detail).toContain("api");
+    expect(result.detail).toContain("db");
+    expect(result.detail).toContain(GAMMA);
+  });
+
+  it("declarations alone deadlock with NO surviving edge at all, and are refused", () => {
+    // The end state of the same tombstone story: BOTH edges deleted, so `loadDependsOnEdges` returns
+    // nothing. `coPlacedCycle` used to return `null` on an empty edge list before looking at a single
+    // placement — the shortest path to the wedge, and the one a union that only ever ADDS to a
+    // non-empty edge set would still miss.
+    const result = compilePlan({
+      targets: ["api", "db"],
+      dependsOn: [],
+      declaredStageDependencies: [{ dependsOn: "api" }, { dependsOn: "db" }],
+      topologyWaves: gammaThenProd,
+      placements: [place("api", GAMMA), place("api", PROD), place("db", GAMMA), place("db", PROD)]
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok || result.error !== "cycle") return;
+    expect([...result.cycle].sort()).toEqual(["api", "db"]);
+  });
+
+  it("a declaration that is NOT mutual still compiles and serialises — no false refusal", () => {
+    // The precision half. `db` is declared as a dependency of the change, which the KNOWN LIMITATION
+    // applies to BOTH targets — so `api` holds behind `db`, and `db`'s entry against itself is the
+    // `self` branch (satisfied, dropped, exactly as `buildDependencyMap` drops `from === to`). One
+    // wave per place, serialised inside it by the hold. Refusing this would auto-cancel the ordinary
+    // shape ADR-0028 exists to support.
+    const result = compilePlan({
+      targets: ["api", "db"],
+      dependsOn: [],
+      declaredStageDependencies: [{ dependsOn: "db" }],
+      topologyWaves: gammaThenProd,
+      placements: [place("api", GAMMA), place("api", PROD), place("db", GAMMA), place("db", PROD)]
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.waves.map((w) => [...w.targets].sort())).toEqual([
+      ["api@target-gamma", "db@target-gamma"],
+      ["api@target-prod", "db@target-prod"]
+    ]);
+  });
+
+  it("a mutual declaration whose `atTargets` never overlap still compiles — the hold cannot deadlock", () => {
+    // `atTargets` narrows WHERE a declaration applies, and the hold honours it. Here `api`'s
+    // coupling applies only at prod and `db`'s only at gamma: at gamma `db` holds behind `api` while
+    // `api` is free, at prod `api` holds behind `db` while `db` is free. Neither place deadlocks, so
+    // a refusal keyed on the declaration set as a whole would reject a working configuration — the
+    // same "no wider than the deadlock" rule that made the refusal per-place in the first place.
+    const result = compilePlan({
+      targets: ["api", "db"],
+      dependsOn: [],
+      declaredStageDependencies: [
+        { dependsOn: "db", atTargets: [PROD] },
+        { dependsOn: "api", atTargets: [GAMMA] }
+      ],
+      topologyWaves: gammaThenProd,
+      placements: [place("api", GAMMA), place("api", PROD), place("db", GAMMA), place("db", PROD)]
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.waves.map((w) => [...w.targets].sort())).toEqual([
+      ["api@target-gamma", "db@target-gamma"],
+      ["api@target-prod", "db@target-prod"]
+    ]);
+  });
+
+  it("a declaration cycle CO-PLACED ONLY where the topology never goes still compiles", () => {
+    // The declaration half of the `staging` case below: the derived pairs are scoped to the
+    // placements the plan ACTUALLY SCHEDULES, exactly as the edge-derived ones already were. `api`
+    // and `db` share only `staging`, which no wave names, so the hold can never look there.
+    const result = compilePlan({
+      targets: ["api", "db"],
+      dependsOn: [],
+      declaredStageDependencies: [{ dependsOn: "api" }, { dependsOn: "db" }],
+      topologyWaves: gammaThenProd,
+      placements: [
+        place("api", GAMMA),
+        place("db", PROD),
+        place("api", STAGING),
+        place("db", STAGING)
+      ]
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.waves.map((w) => w.targets)).toEqual([["api@target-gamma"], ["db@target-prod"]]);
+  });
+
+  it("a declaration and a surviving edge compose into one cycle — neither alone is one", () => {
+    // The union is not decoration. The graph still holds `db -> api` (an operator's, a seed's, or an
+    // earlier change's), and this change declares `api -> db`. Each source alone is a clean ordering;
+    // together they are the deadlock, and only a check that reads BOTH can see it.
+    const result = compilePlan({
+      targets: ["api", "db"],
+      dependsOn: [{ from: "db", to: "api" }],
+      declaredStageDependencies: [{ dependsOn: "db", atTargets: [GAMMA] }],
+      topologyWaves: gammaThenProd,
+      placements: [place("api", GAMMA), place("api", PROD), place("db", GAMMA), place("db", PROD)]
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok || result.error !== "cycle") return;
+    expect([...result.cycle].sort()).toEqual(["api", "db"]);
+    expect(result.detail).toContain(GAMMA);
+  });
+
   it("a LONGER cycle among co-placed targets is refused too — not just mutual pairs", () => {
     // The deadlock is a property of the cycle, not of its length: A waits on B waits on C waits on
     // A, all at gamma, holds all three forever. Keyed on the toposort's own cycle detection rather
