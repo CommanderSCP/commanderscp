@@ -6072,6 +6072,23 @@ export type GetComponentPipelineResponses = {
                     changeId: string | null;
                 }>;
             };
+            hold?: {
+                changeId: string;
+                changeName: string | null;
+                waveIndex: number | null;
+                dependencies: Array<{
+                    dependsOn: string;
+                    dependsOnName: string | null;
+                    branch: 'not_placed' | 'succeeded' | 'min_weight' | 'never_deployed' | 'behind' | 'weight_unreadable' | 'undeclarable' | 'unscopeable' | 'self';
+                    satisfied: boolean;
+                    source?: 'edge';
+                    dependencyStatus?: string;
+                    minWeight?: number;
+                    minWeightSupersededByEdge?: true;
+                    weightUnreadable?: 'no_weight' | 'not_observed' | 'stale';
+                    summary: string;
+                }>;
+            } | null;
             version: string | null;
             unknownFields: Array<string>;
         }>;

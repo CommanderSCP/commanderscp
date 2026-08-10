@@ -23368,6 +23368,125 @@
                             ],
                             "additionalProperties": false
                           },
+                          "hold": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "changeId": {
+                                    "type": "string",
+                                    "format": "uuid",
+                                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                  },
+                                  "changeName": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "waveIndex": {
+                                    "anyOf": [
+                                      {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "dependencies": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "dependsOn": {
+                                          "type": "string"
+                                        },
+                                        "dependsOnName": {
+                                          "anyOf": [
+                                            {
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "branch": {
+                                          "type": "string",
+                                          "enum": [
+                                            "not_placed",
+                                            "succeeded",
+                                            "min_weight",
+                                            "never_deployed",
+                                            "behind",
+                                            "weight_unreadable",
+                                            "undeclarable",
+                                            "unscopeable",
+                                            "self"
+                                          ]
+                                        },
+                                        "satisfied": {
+                                          "type": "boolean"
+                                        },
+                                        "source": {
+                                          "type": "string",
+                                          "const": "edge"
+                                        },
+                                        "dependencyStatus": {
+                                          "type": "string"
+                                        },
+                                        "minWeight": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "minWeightSupersededByEdge": {
+                                          "type": "boolean",
+                                          "const": true
+                                        },
+                                        "weightUnreadable": {
+                                          "type": "string",
+                                          "enum": [
+                                            "no_weight",
+                                            "not_observed",
+                                            "stale"
+                                          ]
+                                        },
+                                        "summary": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "dependsOn",
+                                        "dependsOnName",
+                                        "branch",
+                                        "satisfied",
+                                        "summary"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "changeId",
+                                  "changeName",
+                                  "waveIndex",
+                                  "dependencies"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "version": {
                             "anyOf": [
                               {
