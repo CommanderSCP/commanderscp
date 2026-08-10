@@ -186,7 +186,7 @@ async function advanceProposedChanges(
     // future candidate fetch that forgot the filter would find this still standing. The filter
     // makes the guard unreachable; it does not replace what the guard means.
     //
-    // WHAT THIS MUST NEVER BECOME is a round-robin `updated_at` bump on the skip path. Un-filtered,
+    // WHAT THIS MUST NEVER BECOME is a round-robin cursor bump on the skip path. Un-filtered,
     // this `continue` re-served a row without ever writing it — the batch-starvation property
     // (`candidate-loop-registry.test.ts`) that cost 13 days of production coordination — but the
     // bump used on every other instance of that property is ILLEGAL here: it would write a
@@ -426,10 +426,10 @@ async function advanceCoordinatedChanges(
  * `waiting -> executing` transition itself — its inputs pin, PER requirement, the id of the change
  * that satisfied it (coupled-pipelines.md §3.6 — explainability, charter principle 6).
  *
- * The ONE write a still-waiting change gets is an `updated_at` bump (STARVATION fix,
- * coupled-pipelines.md §3.5 hazard): `listChangeRowsInStates` serves oldest-`updated_at`-first with
- * a BATCH_LIMIT cap, so >BATCH_LIMIT stuck waiters whose `updated_at` never moved would permanently
- * occupy every batch slot and starve a releasable waiter sitting behind them. Bumping an evaluated,
+ * The ONE write a still-waiting change gets is a `reconcile_cursor_at` bump (STARVATION fix,
+ * coupled-pipelines.md §3.5 hazard): `listChangeRowsInStates` serves oldest-cursor-first with a
+ * BATCH_LIMIT cap, so >BATCH_LIMIT stuck waiters whose cursor never moved would permanently occupy
+ * every batch slot and starve a releasable waiter sitting behind them. Bumping an evaluated,
  * still-stuck waiter to the back of the queue round-robins the batch across ALL waiters, so every
  * one is re-evaluated within a few ticks no matter how many are stuck.
  *
@@ -475,9 +475,12 @@ async function advanceWaitingChanges(
         if (unmet.length > 0 || malformed.length > 0) {
           // Still waiting (or unsatisfiable — malformed is never releasable). Round-robin bump so
           // stuck waiters can't starve a releasable one out of the batch — see the doc comment.
+          // BUMP 1 OF 5. `reconcile_cursor_at` ONLY: nothing about this change's content changed
+          // (it is still waiting on the same unmet keys), so `updated_at` must not move — that is
+          // the whole point of migration 0057's split.
           await tx
             .update(changes)
-            .set({ updatedAt: new Date() })
+            .set({ reconcileCursorAt: new Date() })
             .where(and(eq(changes.orgId, orgId), eq(changes.objectId, change.objectId)));
           return;
         }
@@ -563,14 +566,18 @@ async function advanceValidatingChanges(
           actorObjectId: SYSTEM_ACTOR_ID
         })
       );
-      // ROUND-ROBIN BUMP — same starvation class as the `waiting` and `executing` paths, caught by
-      // sweeping for the property rather than the symptom. This loop NEVER writes the change row:
-      // `prewarmGovernanceForChange` materializes approval requests and control runs, and nothing
-      // here transitions the change (validating -> accepted is driven by the lifecycle gate, not by
-      // this sweep). So a validating change's `updated_at` is frozen from the moment it arrives,
-      // and >BATCH_LIMIT of them would permanently own this batch and starve the rest out of
-      // governance prewarm — meaning the newest changes would never get an approval request
-      // materialized, and so could never be approved.
+      // ROUND-ROBIN BUMP (2 of 5) — same starvation class as the `waiting` and `executing` paths,
+      // caught by sweeping for the property rather than the symptom. This loop NEVER advances the
+      // change: `prewarmGovernanceForChange` materializes approval requests and control runs, and
+      // nothing here transitions it (validating -> accepted is driven by the lifecycle gate, not by
+      // this sweep). So a validating change's cursor is frozen from the moment it arrives, and
+      // >BATCH_LIMIT of them would permanently own this batch and starve the rest out of governance
+      // prewarm — meaning the newest changes would never get an approval request materialized, and
+      // so could never be approved.
+      //
+      // `reconcile_cursor_at` ONLY (migration 0057). Prewarm writes approval requests and control
+      // runs, which are rows of their OWN; the change row's content is untouched, so `updated_at`
+      // stays where it was.
       //
       // NOT YET BITING, and pinned here so it cannot start silently: the homelab instance holds 7
       // validating changes against a BATCH_LIMIT of 25. The `executing` instance of this same bug
@@ -578,7 +585,7 @@ async function advanceValidatingChanges(
       await withTenantTx(db, orgId, (tx) =>
         tx
           .update(changes)
-          .set({ updatedAt: new Date() })
+          .set({ reconcileCursorAt: new Date() })
           .where(and(eq(changes.orgId, orgId), eq(changes.objectId, change.objectId)))
       );
     } catch (err) {
@@ -807,13 +814,13 @@ async function reconcileExecutingChange(
       );
     }
     if (gateOutcome.kind !== "running") {
-      // ROUND-ROBIN BUMP — THE SAME STARVATION FIX `advanceWaitingChanges` ALREADY APPLIES, and
-      // the reason it must be here too. A gate-blocked wave stays `pending` and its change stays
-      // `executing` (deliberately never parked — see the persist-on-change comment above), so
-      // WITHOUT this write the change's `updated_at` never moves again. `listChangeRowsInStates`
-      // serves oldest-`updated_at`-first capped at BATCH_LIMIT, so >BATCH_LIMIT permanently-blocked
-      // changes occupy every slot of every tick, forever, and every change queued behind them is
-      // NEVER EVALUATED EVEN ONCE.
+      // ROUND-ROBIN BUMP (3 of 5) — THE SAME STARVATION FIX `advanceWaitingChanges` ALREADY
+      // APPLIES, and the reason it must be here too. A gate-blocked wave stays `pending` and its
+      // change stays `executing` (deliberately never parked — see the persist-on-change comment
+      // above), so WITHOUT this write the change's cursor never moves again.
+      // `listChangeRowsInStates` serves oldest-`reconcile_cursor_at`-first capped at BATCH_LIMIT,
+      // so >BATCH_LIMIT permanently-blocked changes occupy every slot of every tick, forever, and
+      // every change queued behind them is NEVER EVALUATED EVEN ONCE.
       //
       // MEASURED IN PRODUCTION (homelab, 2026-08-01), which is why this is a bug report and not a
       // hypothetical: 25 changes blocked on one un-approved prod policy held the batch from
@@ -829,10 +836,17 @@ async function reconcileExecutingChange(
       //
       // `state_entered_at` is deliberately NOT touched (same as the waiting path): the watchdog's
       // stall SLA must keep measuring from when the change actually entered `executing`.
+      //
+      // NEITHER IS `updated_at`, since migration 0057. This bump is a queue position and nothing
+      // else — the change is blocked on the same policy it was blocked on last tick, and for the
+      // three days a rollout can sit here an operator reading `Change.updatedAt` must see the last
+      // time the change actually CHANGED, not the last time the scheduler looked at it. That
+      // conflation is precisely what made this incident invisible in every operator surface while
+      // it was happening.
       await withTenantTx(db, orgId, (tx) =>
         tx
           .update(changes)
-          .set({ updatedAt: new Date() })
+          .set({ reconcileCursorAt: new Date() })
           .where(and(eq(changes.orgId, orgId), eq(changes.objectId, change.objectId)))
       );
       return;
@@ -1131,7 +1145,7 @@ async function reconcileExecutingChange(
   // above) and a single `if (!allTerminal) return` therefore kept an already-FAILED wave alive
   // forever. A wave with one failed target and one held one never reached `markWaveTerminal`, so the
   // `failed` branch at the top of this function never ran: no `autoRollbackOnFailure`, no park, no
-  // epitaph, no failure recorded on the change, while the hold's `updated_at` bump re-served the
+  // epitaph, no failure recorded on the change, while the hold's cursor bump re-served the
   // change every tick and occupied a `BATCH_LIMIT` slot permanently. That was a REGRESSION on the
   // loud 400 the compile-time same-wave refusal used to give this exact shape (ADR-0028 decision 6).
   //
@@ -1146,23 +1160,23 @@ async function reconcileExecutingChange(
   // Its hold Decision was written just above, so what kept it from running stays on record beside
   // the failure that ended the wave.
   if (nonTerminalTargets - heldTargets.length > 0) {
-    // ROUND-ROBIN BUMP — THE FIFTH INSTANCE OF THE STARVATION CLASS, and the one the gate-blocked
-    // bump ~300 lines up does NOT cover. That bump fires only while the wave is still `pending`.
-    // The moment the gate ALLOWS, `markWaveRunning` moves the wave to `running` and every
-    // subsequent tick of that change skips the gate branch entirely and arrives HERE instead — and
-    // every write on the way here lands on `change_wave_targets` (`markWaveTargetTriggered`,
+    // ROUND-ROBIN BUMP (4 of 5) — THE FIFTH INSTANCE OF THE STARVATION CLASS, and the one the
+    // gate-blocked bump ~300 lines up does NOT cover. That bump fires only while the wave is still
+    // `pending`. The moment the gate ALLOWS, `markWaveRunning` moves the wave to `running` and
+    // every subsequent tick of that change skips the gate branch entirely and arrives HERE instead
+    // — and every write on the way here lands on `change_wave_targets` (`markWaveTargetTriggered`,
     // `updateWaveTargetObserved`) or on `change_waves`, never on `changes`. There are exactly four
     // other `UPDATE changes` in this file (waiting, validating, gate-blocked, and the hold) and not
     // one of them is on this path.
     //
     // So a change whose wave targets are merely being POLLED — an Argo CD Application stuck
     // `Progressing`, a workflow awaiting a manual step, any executor whose `status()` never
-    // terminalizes — freezes its `updated_at` at the instant it entered `executing` and never moves
-    // it again. `listChangeRowsInStates` serves oldest-`updated_at`-first capped at BATCH_LIMIT, so
-    // more than BATCH_LIMIT such changes own every slot of every tick forever and EVERY CHANGE
-    // QUEUED BEHIND THEM IS NEVER EVALUATED EVEN ONCE. That is the same 13-day production outage
-    // (homelab, 2026-08-01) the gate-blocked comment above records, one branch over: the fix went
-    // to the branch that was measured, not to the property.
+    // terminalizes — freezes its cursor at the instant it entered `executing` and never moves it
+    // again. `listChangeRowsInStates` serves oldest-`reconcile_cursor_at`-first capped at
+    // BATCH_LIMIT, so more than BATCH_LIMIT such changes own every slot of every tick forever and
+    // EVERY CHANGE QUEUED BEHIND THEM IS NEVER EVALUATED EVEN ONCE. That is the same 13-day
+    // production outage (homelab, 2026-08-01) the gate-blocked comment above records, one branch
+    // over: the fix went to the branch that was measured, not to the property.
     //
     // WIDER THAN POLLING, deliberately. Every `continue` above that leaves a target non-terminal
     // reaches this line without writing `changes`: the backoff-skipped `triggering` target, a
@@ -1178,23 +1192,27 @@ async function reconcileExecutingChange(
     // NOT THE ADR-0024 FLOOD, and the difference is worth stating rather than leaving a reader to
     // wonder. ADR-0024's measured 1.44 GB/day was a byte-identical Decision INSERT per tick per
     // parked change: a NEW row each time, carrying the gate's whole `inputContext` + `reasonTree`,
-    // retained indefinitely. This is one in-place `UPDATE changes SET updated_at` on a row that
-    // already exists — no append, no growth, nothing to retain or prune. It is also not even a new
+    // retained indefinitely. This is one in-place `UPDATE changes SET reconcile_cursor_at` on a row
+    // that already exists — no append, no growth, nothing to retain or prune, and still a HOT
+    // update, which is why 0057 deliberately left the new column un-indexed. It is not even a new
     // write in the tick: reaching this line means the loop above already wrote at least one
     // `change_wave_targets` row for this change (a poll restamps `last_observed_at`; a trigger
     // writes the claim and the ref), so the per-tick write count goes N -> N+1, not 0 -> 1. And
     // there is deliberately NO Decision on this path: nothing here is a verdict about the change,
     // only a queue position, and inventing a Decision for it is precisely how ADR-0024 happened.
     //
-    // `state_entered_at` is deliberately NOT touched — identical to the waiting, validating,
-    // gate-blocked and hold bumps. The watchdog's stall SLA must keep measuring from when the
-    // change actually entered `executing`, or a change that polls forever would look permanently
-    // fresh and never be reported as stalled. That is the whole reason the bump is on `updated_at`
-    // alone.
+    // NOTHING BUT THE CURSOR IS TOUCHED — identical to the waiting, validating, gate-blocked and
+    // hold bumps, and this path is the clearest illustration of why migration 0057 split the
+    // column. `state_entered_at` stays put because the watchdog's stall SLA must keep measuring
+    // from when the change actually entered `executing`, or a change that polls forever would look
+    // permanently fresh and never be reported as stalled. `updated_at` stays put for the operator's
+    // version of the same argument: a canary parked at 10% for three days, polled once a second, is
+    // a change that has not changed in three days, and saying "updated 1s ago" 259,200 times in a
+    // row is the scheduler talking over the only field an operator can read.
     await withTenantTx(db, orgId, (tx) =>
       tx
         .update(changes)
-        .set({ updatedAt: new Date() })
+        .set({ reconcileCursorAt: new Date() })
         .where(and(eq(changes.orgId, orgId), eq(changes.objectId, change.objectId)))
     );
     return; // something is genuinely still running
@@ -1229,14 +1247,16 @@ async function reconcileExecutingChange(
  * that is the only thing that notices the dependency finishing — only the redundant WRITE is
  * suppressed.
  *
- * THE `updated_at` BUMP IS NOT OPTIONAL, and it is the same starvation fix the gate-blocked branch
- * above documents. A change whose targets are all held stays `executing` with its wave `running`, so
- * nothing else moves its `updated_at`; `listChangeRowsInStates` serves oldest-`updated_at`-first
- * capped at `BATCH_LIMIT`, so more than `BATCH_LIMIT` held changes would occupy every slot of every
- * tick forever and every change queued behind them would never be evaluated even once. That is not a
- * hypothetical: the identical property stopped all coordination on the homelab for 13 days behind
- * green health checks. `state_entered_at` is deliberately untouched, so the watchdog's stall SLA
- * keeps measuring from when the change actually entered `executing`.
+ * THE `reconcile_cursor_at` BUMP IS NOT OPTIONAL, and it is the same starvation fix the
+ * gate-blocked branch above documents. A change whose targets are all held stays `executing` with
+ * its wave `running`, so nothing else moves its cursor; `listChangeRowsInStates` serves
+ * oldest-`reconcile_cursor_at`-first capped at `BATCH_LIMIT`, so more than `BATCH_LIMIT` held
+ * changes would occupy every slot of every tick forever and every change queued behind them would
+ * never be evaluated even once. That is not a hypothetical: the identical property stopped all
+ * coordination on the homelab for 13 days behind green health checks. `state_entered_at` is
+ * deliberately untouched, so the watchdog's stall SLA keeps measuring from when the change actually
+ * entered `executing` — and since migration 0057 `updated_at` is untouched too, so a held change
+ * does not advertise itself to an operator as freshly updated every tick it spends held.
  *
  * THE VERDICT IS `hold`, NOT `block`, and that is a deliberate correctness choice rather than a
  * naming preference. `latestBlockDecisionForSubject` (`decisions-repo.ts`) selects the newest row
@@ -1297,11 +1317,13 @@ async function recordStageDependencyHold(
         )
       }
     });
-    // The round-robin bump, in the SAME transaction as the Decision so a hold can never be recorded
-    // without its change also being moved to the back of the queue.
+    // The round-robin bump (5 of 5), in the SAME transaction as the Decision so a hold can never be
+    // recorded without its change also being moved to the back of the queue. `reconcile_cursor_at`
+    // ONLY: a held change is one whose targets were deliberately NOT triggered, so there is nothing
+    // about it that `updated_at` should claim has changed.
     await tx
       .update(changes)
-      .set({ updatedAt: new Date() })
+      .set({ reconcileCursorAt: new Date() })
       .where(and(eq(changes.orgId, orgId), eq(changes.objectId, change.objectId)));
     return recorded;
   });
@@ -1343,7 +1365,7 @@ async function recordStageDependencyHold(
  * this branch only evaluates a `pending`/`triggering` target, and a target this records is
  * triggering on this very tick, so the ordinary single-target case writes exactly one row ever.
  *
- * NO `updated_at` BUMP, unlike the hold, and the asymmetry is deliberate: nothing is being withheld
+ * NO CURSOR BUMP, unlike the hold, and the asymmetry is deliberate: nothing is being withheld
  * here, so the change keeps moving through the loop on its own and has no way to freeze in the
  * round-robin.
  */
@@ -2000,8 +2022,8 @@ export async function reconcileOrgTick(
   // `federation_self`) and threaded into every advance* step below — and, since this commit, on
   // through into `listChangeRowsInStates` itself, so a read-only replica of a peer's change is
   // filtered OUT OF THE SQL rather than skipped in the loop body. That distinction is the whole
-  // point: a loop-body skip left the row in the batch with a frozen `updated_at`, holding a slot
-  // under `ORDER BY updated_at ASC LIMIT 25` forever. See tracked-security-followups's "engine SKIP
+  // point: a loop-body skip left the row in the batch with a frozen cursor, holding a slot under
+  // `ORDER BY reconcile_cursor_at ASC LIMIT 25` forever. See tracked-security-followups's "engine SKIP
   // rather than park", `changes-repo.ts`'s doc comment, and
   // `foreign-origin-batch-starvation.integration.test.ts`.
   const selfDomainId = (await withTenantTx(db, orgId, (tx) => ensureFederationSelf(tx, orgId)))
