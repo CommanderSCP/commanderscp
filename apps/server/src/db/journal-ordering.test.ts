@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -84,12 +84,9 @@ describe("drizzle migration journal", () => {
     // leaves a `.sql` nothing applies, and an entry with no file makes `migrate()` throw at boot.
     const dir = path.join(path.dirname(journalPath), "..");
     const onDisk = new Set(
-      readFileSync
-        ? // eslint-disable-next-line @typescript-eslint/no-var-requires
-          (require("node:fs").readdirSync(dir) as string[])
-            .filter((f) => f.endsWith(".sql"))
-            .map((f) => f.replace(/\.sql$/, ""))
-        : []
+      readdirSync(dir)
+        .filter((f) => f.endsWith(".sql"))
+        .map((f) => f.replace(/\.sql$/, ""))
     );
     const inJournal = new Set(entries.map((e) => e.tag));
     expect({
