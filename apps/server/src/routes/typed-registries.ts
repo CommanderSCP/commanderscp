@@ -41,6 +41,16 @@ export interface TypedRegistryConfig {
   basePath: string;
   /** Singular PascalCase resource name driving operationIds, e.g. 'Domain', 'ServiceAccount'. */
   resourceName: string;
+  /**
+   * PLURAL PascalCase for the list operationId, when `resourceName + "s"` is wrong.
+   *
+   * Every resource through `Domain`..`ServiceAccount` pluralises by appending `s`, so this was never
+   * needed. `Assembly` does not — the naive form is `listAssemblys`. That matters more than it looks:
+   * the operationId is the generated SDK method name and `/v1` is additive-only, so a misspelling
+   * shipped once is a misspelling forever (renaming an operationId is an oasdiff break — see
+   * OASDIFF-EXCEPTIONS.md, where two such renames each cost an exception).
+   */
+  pluralResourceName?: string;
   /** M4: policies/controls gate writes behind their own permission ('policy:write') rather than
    *  the generic 'object:write' every other typed resource uses (DESIGN §7's example role
    *  bindings name 'policy:write' explicitly) — defaults to 'object:write'/'object:read' so every
@@ -65,6 +75,17 @@ export interface TypedRegistryConfig {
 export const TYPED_REGISTRY_RESOURCES: TypedRegistryConfig[] = [
   { typeId: "domain", basePath: "domains", resourceName: "Domain" },
   { typeId: "service", basePath: "services", resourceName: "Service" },
+  // The OPTIONAL level between a service and its components (migration 0055,
+  // `intermediate-grouping.md` D5). A plain typed registry like `service` — it needs no bespoke
+  // route, because the level is expressed by `contains` edges rather than by columns of its own.
+  // NOT listed in `components-repo.ts`'s parent check: that routes through `isContainerType`
+  // (containment.ts), which is the single definition of "may contain components".
+  {
+    typeId: "assembly",
+    basePath: "assemblies",
+    resourceName: "Assembly",
+    pluralResourceName: "Assemblies"
+  },
   { typeId: "deployment-target", basePath: "deployment-targets", resourceName: "DeploymentTarget" },
   { typeId: "team", basePath: "teams", resourceName: "Team" },
   { typeId: "group", basePath: "groups", resourceName: "Group" },
@@ -206,7 +227,7 @@ export function registerTypedRegistryRoutes(
     },
     config: {
       openapi: {
-        operationId: `list${resourceName}s`,
+        operationId: `list${config.pluralResourceName ?? `${resourceName}s`}`,
         summary: `List ${label} objects`,
         tags: [basePath]
       }

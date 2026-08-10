@@ -60,11 +60,20 @@ interface OwnerSubResourceConfig {
 const OWNS_TO_RESOURCES: OwnerSubResourceConfig[] = [
   { basePath: "domains", typeId: "domain", resourceName: "Domain" },
   { basePath: "services", typeId: "service", resourceName: "Service" },
+  // Migration 0055 added `assembly` to `owns.to_types` — an assembly is exactly the thing a team
+  // owns, and ownership was one of the reasons for having the level at all. Registered here so the
+  // `/owners` sub-resource exists; without it the type is ownable on the wire but has no door.
+  { basePath: "assemblies", typeId: "assembly", resourceName: "Assembly" },
   { basePath: "components", typeId: "component", resourceName: "Component" },
   { basePath: "deployment-targets", typeId: "deployment-target", resourceName: "DeploymentTarget" }
 ];
 
-/** The 2 typed resources valid on both sides of `consumes`/`depends_on` (same migration, §6). */
+/** The 2 typed resources valid on both sides of `consumes`/`depends_on` (same migration, §6).
+ *
+ *  `assembly` is deliberately ABSENT, matching migration 0055's ruling: `depends_on`/`consumes`
+ *  describe things that actually call each other, and an assembly does not make a request — its
+ *  components do. Admitting it would put a node in the dependency graph with no runtime edge behind
+ *  it, which is exactly the "guessing and assumptions" the dependency work is meant to remove. */
 const EDGE_RESOURCES: Pick<OwnerSubResourceConfig, "basePath" | "typeId" | "resourceName">[] = [
   { basePath: "services", typeId: "service", resourceName: "Service" },
   { basePath: "components", typeId: "component", resourceName: "Component" }

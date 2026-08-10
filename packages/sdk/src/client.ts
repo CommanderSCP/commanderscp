@@ -36,6 +36,15 @@ import {
   listAuditEvents as listAuditEventsRequest,
   // M2 typed registries (routes/typed-registries.ts) — 8 resources × create/list/get/update/
   // delete/upsertByUrn, generated from BUILD_AND_TEST.md §8 M2 item 1's operationIds.
+  createAssembly as createAssemblyRequest,
+  listAssemblies as listAssembliesRequest,
+  getAssembly as getAssemblyRequest,
+  updateAssembly as updateAssemblyRequest,
+  deleteAssembly as deleteAssemblyRequest,
+  upsertAssemblyByUrn as upsertAssemblyByUrnRequest,
+  addAssemblyOwner as addAssemblyOwnerRequest,
+  listAssemblyOwners as listAssemblyOwnersRequest,
+  removeAssemblyOwner as removeAssemblyOwnerRequest,
   createDomain as createDomainRequest,
   listDomains as listDomainsRequest,
   getDomain as getDomainRequest,
@@ -917,6 +926,25 @@ export class ScpClient {
       }
     };
   }
+
+  /** The OPTIONAL level between a service and its components (migration 0055). Ownable, like a
+   *  service; deliberately WITHOUT edge methods — `consumes`/`depends_on` describe things that call
+   *  each other, and an assembly does not make a request (migration 0055's census). */
+  readonly assemblies = {
+    ...this.typedResource({
+      create: createAssemblyRequest,
+      list: listAssembliesRequest,
+      get: getAssemblyRequest,
+      update: updateAssemblyRequest,
+      del: deleteAssemblyRequest,
+      upsert: upsertAssemblyByUrnRequest
+    }),
+    ...this.ownerMethods({
+      add: addAssemblyOwnerRequest,
+      list: listAssemblyOwnersRequest,
+      remove: removeAssemblyOwnerRequest
+    })
+  };
 
   readonly domains = {
     ...this.typedResource({
