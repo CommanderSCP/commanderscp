@@ -29,6 +29,7 @@ import {
   graphTraverse as graphTraverseRequest,
   graphSubgraph as graphSubgraphRequest,
   graphIntegrity as graphIntegrityRequest,
+  doctorReport as doctorReportRequest,
   pushObjectHealth as pushObjectHealthRequest,
   getObjectHealth as getObjectHealthRequest,
   graphHealth as graphHealthRequest,
@@ -257,6 +258,7 @@ import type {
   DeviceApproveResponse,
   DeviceStartResponse,
   GraphObject,
+  DoctorReport,
   GraphIntegrityReport,
   GraphQueryResult,
   NamedGraphQuery,
@@ -1169,6 +1171,24 @@ export class ScpClient {
      */
     integrity: async (): Promise<GraphIntegrityReport> => {
       const result = await graphIntegrityRequest({ client: this.client });
+      return unwrap(result);
+    }
+  };
+
+  // -----------------------------------------------------------------------------------------
+  // `scp doctor` — read-only operational self-checks. Distinct from `/healthz` ("is this process
+  // up") and from `client.health` below ("what did an owner say about this object"): these report
+  // whether the instance's own state is COHERENT, which is exactly the class of fault a green
+  // liveness probe hides.
+  // -----------------------------------------------------------------------------------------
+
+  readonly doctor = {
+    /**
+     * Every operational self-check for the caller's org. READ-ONLY — it never repairs what it finds,
+     * because the remedy for each finding depends on which side of a mismatch is wrong.
+     */
+    report: async (): Promise<DoctorReport> => {
+      const result = await doctorReportRequest({ client: this.client });
       return unwrap(result);
     }
   };
