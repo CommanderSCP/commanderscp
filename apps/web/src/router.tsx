@@ -87,7 +87,7 @@ const graphExplorerRoute = createRoute({
 
 // Component layer of the two-layer graph (coordination-ui-views.md Phase 3). A 3-segment static
 // `service` prefix — deeper than the 2-segment `/graph/$idOrUrn` object explorer, so the two never
-// collide (mirrors how `/services/$id/board` sits under the dynamic registry routes).
+// collide (mirrors how `/services/$idOrUrn` sits under the dynamic registry routes).
 const componentGraphRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/graph/service/$serviceId",
@@ -117,7 +117,7 @@ const changePipelineRoute = createRoute({
 // ONE COMPONENT — a LAYOUT route carrying the Pipeline/Settings tabs, with the pipeline as its index
 // child (coordination-ui-views.md §2, corrected 2026-08-03). The static `/components/$idOrUrn`
 // segment out-ranks the dynamic `/$basePath/$idOrUrn` registry-detail route below — the same
-// precedence trick `/services/$id/board` uses — so going to a component lands on its pipeline rather
+// precedence trick `/services/$idOrUrn` uses — so going to a component lands on its pipeline rather
 // than a properties table, because the pipeline IS what a component is operationally.
 //
 // That precedence had a cost this layout repays: it made the generic registry detail UNREACHABLE for
@@ -163,6 +163,20 @@ const serviceDetailRoute = createRoute({
 const serviceBoardRoute = createRoute({
   getParentRoute: () => serviceDetailRoute,
   path: "/",
+  component: ServiceBoardPage
+});
+
+// `/services/{id}/board` — the URL the board lived at BEFORE it became the index child, kept
+// working rather than removed. Two reasons, and the second is why this is a bug fix and not
+// politeness: it may be bookmarked or linked from outside the app, and
+// `apps/web/e2e/service-board-honesty.spec.ts` navigates to it. That spec is Playwright, every E2E
+// job is `main`-only, so removing this path passed EVERY required PR check and would have broken
+// only after merge — the exact hole `.github/workflows/ci.yml`'s own §6 comment warns about.
+// Renders the same component as the index; a redirect would work too, but two paths onto one view
+// is fewer moving parts than a redirect that has to reconstruct params.
+const serviceBoardLegacyRoute = createRoute({
+  getParentRoute: () => serviceDetailRoute,
+  path: "/board",
   component: ServiceBoardPage
 });
 
@@ -266,6 +280,7 @@ const routeTree = rootRoute.addChildren([
     ]),
     serviceDetailRoute.addChildren([
       serviceBoardRoute,
+      serviceBoardLegacyRoute,
       serviceInfrastructureRoute,
       serviceSettingsRoute
     ]),

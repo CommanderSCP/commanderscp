@@ -19,7 +19,7 @@
     "openapi:emit": "pnpm --filter @scp/server openapi:emit",
     "sdk:generate": "pnpm --filter @scp/sdk generate",
     "gen": "pnpm run openapi:emit && pnpm run sdk:generate",
-    "check": "pnpm run lint && pnpm run typecheck && pnpm run gen && git diff --exit-code",
+    "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run gen && git diff --exit-code",
     "doctor": "node scripts/doctor.mjs",
     "seed": "pnpm --filter @scp/server seed",
     "changeset": "changeset"
