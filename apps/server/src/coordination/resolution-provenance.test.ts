@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { resolutionProvenance } from "./binding-resolution.js";
 import type { BindingResolution } from "./binding-resolution.js";
+import type { ExecutorBindingRow } from "./executor-bindings-repo.js";
 
 /**
  * THE PROVENANCE LABEL IS READ, NOT INFERRED.
@@ -25,11 +26,8 @@ import type { BindingResolution } from "./binding-resolution.js";
  * | return a provenance for `outcome: "direct"` | "a direct resolution has NO provenance" fails, and reconcile would write a Decision per trigger |
  * | drop `hops` from the via_service branch | "carries how remote the inheritance was" fails |
  */
-const binding = { id: "b1", externalRef: "ref" } as unknown as BindingResolution extends {
-  binding: infer B;
-}
-  ? B
-  : never;
+/** A stand-in row: `resolutionProvenance` never looks inside the binding, only at the outcome. */
+const binding = { id: "b1", externalRef: "ref" } as unknown as ExecutorBindingRow;
 
 describe("resolutionProvenance: the level is read from the object, never from the branch", () => {
   const viaAncestor = (typeId: string, hops: number): BindingResolution =>
