@@ -53,7 +53,7 @@ import { createInMemoryFakeHost, withRefusingTrigger } from "./test-support/fake
  *   * Each such change keeps taking a slot for the whole run. (When this note was written a merely-
  *     POLLING change was ALSO un-bumped, so it froze at the FRONT of the queue permanently — that
  *     specific hole has since been closed by the poll-path bump, and the cursor moved to its own
- *     column in migration 0057. The fixture reason stands regardless: a fresh org per case is what
+ *     column in migration 0058. The fixture reason stands regardless: a fresh org per case is what
  *     makes "exactly N" a fact rather than a hope about batch contention.)
  *
  * MEASURED on the shared-org version of this file: the servable `executing` count climbed
@@ -1291,7 +1291,7 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     // `state_entered_at` is deliberately NOT bumped — the watchdog's stall SLA must keep measuring
     // from when the change actually entered `executing`.
     expect(second.stateEnteredAt.getTime()).toBe(first.stateEnteredAt.getTime());
-    // NOR IS `updated_at`, since migration 0057. Across these four ticks the change was held every
+    // NOR IS `updated_at`, since migration 0058. Across these four ticks the change was held every
     // time — its targets were deliberately never triggered — so nothing about it changed, and the
     // field an operator reads as "last modified" must say so. This is the assertion that fails if
     // the hold bump is ever moved back onto the shared column.

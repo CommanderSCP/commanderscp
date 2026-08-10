@@ -35,9 +35,9 @@ import { describe, expect, it } from "vitest";
  * this test is for: it cannot prove a loop is correct, but it makes ADDING one a deliberate act
  * that fails CI until somebody writes down which side of the property it falls on.
  *
- * THE ORDERING COLUMN IS `changes.reconcile_cursor_at` ON THE CHANGE SIDE (migration 0057), and
+ * THE ORDERING COLUMN IS `changes.reconcile_cursor_at` ON THE CHANGE SIDE (migration 0058), and
  * `objects.updated_at` on the campaign side. Read the property statement above with that in mind:
- * "a column the loop can fail to write" was, until 0057, `updated_at` — which every ordinary write
+ * "a column the loop can fail to write" was, until 0058, `updated_at` — which every ordinary write
  * also moved, so the scheduler's queue position and the operator-visible "last modified" were the
  * same field, and a change re-stamped every tick by the round-robin reported itself as freshly
  * updated forever. The cursor is now its own engine-owned column and `updated_at` is nobody's queue
@@ -189,11 +189,11 @@ const CANDIDATE_FETCHERS = ["listChangeRowsInStates", "listActiveCampaignObjectI
  * the fetching function's own body and reported the (present, working) executing bump as missing;
  * recording the location is what makes the check precise instead of merely loud.
  *
- * ## `count` and `queryIn` — added with migration 0057, and why "is there a bump in here" was not enough
+ * ## `count` and `queryIn` — added with migration 0058, and why "is there a bump in here" was not enough
  *
- * 0057 moved the round-robin off `changes.updated_at` onto `changes.reconcile_cursor_at`, which is
+ * 0058 moved the round-robin off `changes.updated_at` onto `changes.reconcile_cursor_at`, which is
  * a five-call-site edit on a codebase whose recurring bug is fixing SOME call sites of a concept.
- * The pre-0057 check would have passed a HALF-DONE split without a murmur: it asked only whether
+ * The pre-0058 check would have passed a HALF-DONE split without a murmur: it asked only whether
  * each registered function contained at least one bump, so moving four of the five — or moving the
  * `ORDER BY` and none of them — leaves every assertion satisfied while the engine reads one column
  * and writes another and starves exactly as it did for 13 days in production.
@@ -226,7 +226,7 @@ const BUMPED: Record<
     // THREE bumps across TWO functions, and enumerating them is the point — the second was missing
     // for the whole life of the first. See this file's header, "THIS REGISTRY CLASSIFIES FUNCTIONS;
     // THE PROPERTY LIVES ON PATHS". `recordStageDependencyHold` is reached only from
-    // `reconcileExecutingChange` and holds the ADR-0028 hold bump; before 0057 this registry did not
+    // `reconcileExecutingChange` and holds the ADR-0028 hold bump; before 0058 this registry did not
     // name it at all, so one of the five bumps in the subject area was entirely unguarded.
     bumpIn: ["reconcileExecutingChange", "recordStageDependencyHold"],
     count: 3,
@@ -250,7 +250,7 @@ const BUMPED: Record<
   reconcileCampaignsOrgTick: {
     bumpIn: ["reconcileCampaignsOrgTick"],
     count: 1,
-    // THE CAMPAIGN SIDE DID NOT MOVE IN 0057, and `queryIn` is what records that as a checked fact
+    // THE CAMPAIGN SIDE DID NOT MOVE IN 0058, and `queryIn` is what records that as a checked fact
     // rather than an omission. It orders `objects.updated_at` — the shared graph-object table, not
     // `changes` — so the change-side column does not exist for it to use, and giving the universal
     // object table an engine-scheduling column would put reconcile state on every service,
@@ -399,7 +399,7 @@ describe("candidate-loop registry: every batch-limited reconcile loop is classif
     // Guards the other direction: a refactor that deletes a bump must not leave the registry
     // asserting a protection that is no longer there. Looks for the write, not for a comment.
     //
-    // COUNTED, not merely detected (0057). "At least one bump somewhere in this function" is
+    // COUNTED, not merely detected (0058). "At least one bump somewhere in this function" is
     // satisfied by a half-finished migration of the cursor column, which is precisely the shape of
     // this repo's recurring bug. See the `count` note on BUMPED.
     const wrong: string[] = [];
@@ -426,7 +426,7 @@ describe("candidate-loop registry: every batch-limited reconcile loop is classif
   });
 
   it("THE CURSOR AGREES WITH ITSELF: every bump writes the column its own candidate query orders by", () => {
-    // THE INVARIANT NO COUNT CAN EXPRESS, and the one migration 0057 could have broken silently.
+    // THE INVARIANT NO COUNT CAN EXPRESS, and the one migration 0058 could have broken silently.
     // The round-robin only works if the column the scheduler READS to pick candidates is the column
     // the not-advanced paths WRITE to give up their turn. Point the `ORDER BY` at a new column and
     // leave one bump behind on the old one and every other assertion in this file still passes,

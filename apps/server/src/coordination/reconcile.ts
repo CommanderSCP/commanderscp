@@ -477,7 +477,7 @@ async function advanceWaitingChanges(
           // stuck waiters can't starve a releasable one out of the batch — see the doc comment.
           // BUMP 1 OF 5. `reconcile_cursor_at` ONLY: nothing about this change's content changed
           // (it is still waiting on the same unmet keys), so `updated_at` must not move — that is
-          // the whole point of migration 0057's split.
+          // the whole point of migration 0058's split.
           await tx
             .update(changes)
             .set({ reconcileCursorAt: new Date() })
@@ -575,7 +575,7 @@ async function advanceValidatingChanges(
       // prewarm — meaning the newest changes would never get an approval request materialized, and
       // so could never be approved.
       //
-      // `reconcile_cursor_at` ONLY (migration 0057). Prewarm writes approval requests and control
+      // `reconcile_cursor_at` ONLY (migration 0058). Prewarm writes approval requests and control
       // runs, which are rows of their OWN; the change row's content is untouched, so `updated_at`
       // stays where it was.
       //
@@ -837,7 +837,7 @@ async function reconcileExecutingChange(
       // `state_entered_at` is deliberately NOT touched (same as the waiting path): the watchdog's
       // stall SLA must keep measuring from when the change actually entered `executing`.
       //
-      // NEITHER IS `updated_at`, since migration 0057. This bump is a queue position and nothing
+      // NEITHER IS `updated_at`, since migration 0058. This bump is a queue position and nothing
       // else — the change is blocked on the same policy it was blocked on last tick, and for the
       // three days a rollout can sit here an operator reading `Change.updatedAt` must see the last
       // time the change actually CHANGED, not the last time the scheduler looked at it. That
@@ -1194,7 +1194,7 @@ async function reconcileExecutingChange(
     // parked change: a NEW row each time, carrying the gate's whole `inputContext` + `reasonTree`,
     // retained indefinitely. This is one in-place `UPDATE changes SET reconcile_cursor_at` on a row
     // that already exists — no append, no growth, nothing to retain or prune, and still a HOT
-    // update, which is why 0057 deliberately left the new column un-indexed. It is not even a new
+    // update, which is why 0058 deliberately left the new column un-indexed. It is not even a new
     // write in the tick: reaching this line means the loop above already wrote at least one
     // `change_wave_targets` row for this change (a poll restamps `last_observed_at`; a trigger
     // writes the claim and the ref), so the per-tick write count goes N -> N+1, not 0 -> 1. And
@@ -1202,7 +1202,7 @@ async function reconcileExecutingChange(
     // only a queue position, and inventing a Decision for it is precisely how ADR-0024 happened.
     //
     // NOTHING BUT THE CURSOR IS TOUCHED — identical to the waiting, validating, gate-blocked and
-    // hold bumps, and this path is the clearest illustration of why migration 0057 split the
+    // hold bumps, and this path is the clearest illustration of why migration 0058 split the
     // column. `state_entered_at` stays put because the watchdog's stall SLA must keep measuring
     // from when the change actually entered `executing`, or a change that polls forever would look
     // permanently fresh and never be reported as stalled. `updated_at` stays put for the operator's
@@ -1255,7 +1255,7 @@ async function reconcileExecutingChange(
  * never be evaluated even once. That is not a hypothetical: the identical property stopped all
  * coordination on the homelab for 13 days behind green health checks. `state_entered_at` is
  * deliberately untouched, so the watchdog's stall SLA keeps measuring from when the change actually
- * entered `executing` — and since migration 0057 `updated_at` is untouched too, so a held change
+ * entered `executing` — and since migration 0058 `updated_at` is untouched too, so a held change
  * does not advertise itself to an operator as freshly updated every tick it spends held.
  *
  * THE VERDICT IS `hold`, NOT `block`, and that is a deliberate correctness choice rather than a

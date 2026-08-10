@@ -67,7 +67,7 @@ export const ChangeSchema = z.object({
    * When this change's own row last CHANGED — a transition, a `sourceRef` stamp, a park. It means
    * what its name says, and it is safe to render as "last modified".
    *
-   * IT DID NOT ALWAYS. Until migration 0057 this column was also the reconcile engine's ROUND-ROBIN
+   * IT DID NOT ALWAYS. Until migration 0058 this column was also the reconcile engine's ROUND-ROBIN
    * CURSOR: `listChangeRowsInStates` served oldest-first capped at a batch limit, and five paths
    * re-stamped a change they had examined but could not advance, to send it to the back of the
    * queue. Those re-stamps are load-bearing — without them, more than one batch's worth of stuck

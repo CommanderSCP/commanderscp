@@ -24,7 +24,7 @@ import type { GateDeps } from "./gates.js";
  *
  * `advanceExecutingChanges` selects candidates with `listChangeRowsInStates(..., ["executing"],
  * BATCH_LIMIT)`, which is `ORDER BY reconcile_cursor_at ASC LIMIT 25` (it was `updated_at` when
- * this was measured; migration 0057 moved the round-robin onto its own column, and the property is
+ * this was measured; migration 0058 moved the round-robin onto its own column, and the property is
  * unchanged — see the note below). A change whose wave gate BLOCKS stays `executing` with its wave
  * `pending` and — deliberately, see reconcile.ts's persist-on-change comment — is never parked, so
  * that it keeps being re-served and re-evaluated (an approval granted elsewhere is noticed only by
@@ -49,7 +49,7 @@ import type { GateDeps } from "./gates.js";
  * (its loop only prewarms governance and never writes the change row); it is bumped now too, before
  * it can bite.
  *
- * MIGRATION 0057 MOVED THE COLUMN, NOT THE PROPERTY. The bumps now write `reconcile_cursor_at`
+ * MIGRATION 0058 MOVED THE COLUMN, NOT THE PROPERTY. The bumps now write `reconcile_cursor_at`
  * instead of `updated_at`, so that `Change.updatedAt` can stop reporting a gate-blocked change as
  * freshly updated on every tick of the week it spends blocked. This suite is re-pointed rather than
  * rewritten, because what it asserts — COVERAGE, that every parked change eventually gets a turn —
@@ -522,11 +522,11 @@ describe("executing-batch starvation, POLLING shape: >BATCH_LIMIT changes whose 
       // have bought fairness by disabling the one alarm that notices a change going nowhere.
       expect(row.enteredAt.getTime()).toBe(enteredAt.get(row.objectId));
 
-      // THE `updated_at` INVARIANT (migration 0057), and the arm that would have caught the split
+      // THE `updated_at` INVARIANT (migration 0058), and the arm that would have caught the split
       // being done backwards. These changes have been served, polled and bumped across four ticks
       // and NOTHING about them has changed: same state, same wave, same targets, same executor
       // answer. So the field an operator reads as "last modified" must be exactly where the fixture
-      // left it. Before 0057 this assertion was impossible to write — `updated_at` WAS the cursor,
+      // left it. Before 0058 this assertion was impossible to write — `updated_at` WAS the cursor,
       // and this same loop moved it every tick.
       expect(row.updatedAt.getTime()).toBe(updatedAtBefore.get(row.objectId));
     }

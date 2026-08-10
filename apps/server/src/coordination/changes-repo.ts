@@ -611,7 +611,7 @@ export async function getChangeRow(tx: TenantTx, orgId: string, id: string): Pro
  * churny newer one), capped at `limit` per tick so one org with a huge backlog can't starve every
  * other org's sweep turn.
  *
- * ## The ORDER BY column is `reconcile_cursor_at`, and it is not `updated_at` (migration 0057)
+ * ## The ORDER BY column is `reconcile_cursor_at`, and it is not `updated_at` (migration 0058)
  *
  * This query's ordering column IS the round-robin cursor — the whole starvation guarantee below is
  * a statement about it — so it must be a column NOTHING but the scheduler writes. It used to be

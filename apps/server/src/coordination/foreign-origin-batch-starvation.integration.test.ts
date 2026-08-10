@@ -201,7 +201,7 @@ describe("foreign-origin batch starvation: >BATCH_LIMIT replica changes must not
     // local change sits at position 31 — outside every batch, forever, unless the foreign rows
     // either rotate (they cannot; nothing writes them) or leave the candidate set (the fix).
     //
-    // BACKDATING THE CURSOR IS NOW THE ONLY THING THAT BUILDS THIS QUEUE (migration 0057). Writing
+    // BACKDATING THE CURSOR IS NOW THE ONLY THING THAT BUILDS THIS QUEUE (migration 0058). Writing
     // `updated_at` here would set the fixture up to prove nothing at all: the engine would not read
     // it, all 31 rows would keep their natural creation order, and the local change would sit at
     // position 31 only by accident of insertion time. `updated_at` is deliberately left ALONE so
