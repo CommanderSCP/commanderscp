@@ -1,6 +1,6 @@
 # ADR-0030: Dev pipelines are selected by source ref, and the exemption stays operator-declared
 
-**Status:** Proposed — pending owner review (owner-directed 2026-08-10; supersedes part of [ADR-0018](0018-domain-local-dev-pipelines.md) §1/§4 if accepted)
+**Status:** Proposed — §1/§2 implemented, §3 pending owner review (owner-directed 2026-08-10; supersedes part of [ADR-0018](0018-domain-local-dev-pipelines.md) §1/§4 if accepted)
 **Context doc:** [BUILD_AND_TEST.md §8 M18](../BUILD_AND_TEST.md); [ADR-0018](0018-domain-local-dev-pipelines.md)
 **Relates to:** [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (scan is a *boundary-crossing* authorization gate); [ADR-0016](0016-scoped-scan-requirement-policies.md) (scoped scan-requirement policies — the *local* gate); [ADR-0017](0017-ownership-refinement.md) (E6, the export-time gate); [ADR-0007](0007-executor-type-taxonomy.md) (the routing Type a mapping carries); charter principle 1 (coordinate, not execute), principle 6 (explainability)
 
@@ -92,22 +92,70 @@ every report read that declared property; nothing parses the branch name looking
 the owner's decision on the M18.3 label (2026-08-10) and it survives a repo whose `dev` branch
 legitimately drives a second pipeline kind — the failure mode named above.
 
-### 3. The exemption is an operator-declared CONFIG property, not a pushed string — and it does not reach E6
+### 3. The dev loop is made FAST by moving the scan left — not by exempting the crossing
 
-**This is the clause requiring owner sign-off, and it is a deliberate narrowing of the owner's stated
-direction. It is recorded as a recommendation, not as settled.**
+**Owner input, 2026-08-10, which decides this clause:**
 
-- **Gate 1 (local scan Control): branch-selected dev pipelines MAY be exempt.** Because dev-ness is a
-  property of an operator-created, RBAC-protected, RLS-scoped, audited `source_mappings` row — not of
-  a string in a `git push` — an attacker with push access cannot mint the exemption. Creating it
-  requires the API permission to write a mapping. This is defensible, and it is *already* the de-facto
-  default (local pipelines are ungated).
-- **Gate 2 (E6): unchanged, fail-closed, universal.** A dev-built digest promoted across a boundary is
-  refused unless a passing, digest-bound scan exists — scanned **at the crossing**, not grandfathered.
-  No branch, ref, mapping flag, or label is threaded into `evaluatePromotionScanGate`.
+| Question | Answer | Consequence |
+|---|---|---|
+| What is the friction? | **Dev iteration speed — scanning is too slow** | The problem is LATENCY, not the gate's existence. That admits fixes that do not touch E6. |
+| Which boundary? | **Commercial/routine crossings only, never CDS** | A carve-out would have to be boundary-scoped… but see below: the chosen fix needs no carve-out at all. |
+| Who can push `dev`? | **Wider — anyone with repo write** | **Decisive.** The branch cannot carry enforcement weight: the set that can mint the exemption is strictly larger than the set that can authorize a promotion. |
 
-The resulting guarantee is the one M18.1 exists to prove, and it is **strengthened**, not weakened, by
-branch routing: a digest built from `dev` cannot leak across a boundary *however* it was routed.
+The third answer settles the security question on its own. An exemption keyed on `refs/heads/dev`
+would be **mintable by anyone with repo write** — a strictly wider trust set than promotion approval,
+on the branch that conventionally carries the *weakest* protection. That is not a policy this ADR can
+write defensibly at any boundary, commercial included.
+
+But the first answer reframes the problem, and the fix already exists and is already shipped.
+
+#### The scan is slow because it is ON the promotion critical path — and it does not have to be
+
+The cost is not the vulnerability database (baked into the runner image; scans run
+`--skip-db-update --offline-scan`, so nothing is downloaded per scan). It is that
+`runPromotionScanStep` **pulls the image and scans it at export time**, while the operator waits.
+
+`runPromotionScanStep` already has the fix as its **first branch — the (a) SHORT-CIRCUIT**: if a
+passing, digest-bound scan outcome *already covers* the digest, it scans nothing at all. The predicate
+it uses (`isCoveringScanOutcome`) is deliberately the **exact predicate E6 applies**, so "already
+covered here" means "E6 will accept it there" — the two ingresses are tied by construction.
+
+So the decision is:
+
+- **Dev pipelines scan at BUILD time, in their own CI, via the shipped `scan-result-control`
+  ControlPlugin** (M17.1, digest-binding). The scan runs while the engineer is doing something else,
+  off the promotion critical path entirely.
+- **A later crossing then costs nothing.** The promotion step short-circuits, E6 reads the existing
+  evidence, and the export is as fast as an exempt one would have been.
+- **E6 is untouched.** No source, ref, or classification input; fail-closed and universal.
+
+This is strictly better than the exemption on every axis that was in tension:
+
+- It **removes the latency** — the thing actually asked for — rather than removing the control.
+- It is **not forgeable**: the evidence is a digest-bound control run, not a branch name, so "anyone
+  with repo write" buys nothing. A dev who tampers with the scan result produces evidence that does
+  not match the promoted digest, and `digestMatch: false` fails exactly like a missing scan.
+- It **needs no commercial-only carve-out**. The same mechanism works at a CDS boundary, so the
+  high-side guarantee is preserved without a second policy to reason about.
+- The artifact **is genuinely scanned**, so the answer to "was this scanned?" stays *yes* everywhere —
+  no class of promoted artifact becomes unauditable (charter principle 6).
+
+#### If that is still not fast enough
+
+The fallback is **not** an exemption; it is [ADR-0016](0016-scoped-scan-requirement-policies.md)'s
+scoped scan-requirement policies, which already express exactly the owner's boundary answer: a
+**permissive per-severity threshold on the commercial trust domain** and a strict one at the CDS
+partition. That mechanism is **operator-declared** (a policy row written through an authorized API,
+not a string in a `git push`), **boundary-scoped by design**, and **already built and tested**. It
+makes the gate cheaper to satisfy without making it absent, and it is not mintable by a pusher.
+
+#### What is NOT yet measured, and would change this
+
+The latency claim itself is taken from the owner, not measured: this ADR has **not** established how
+long a promotion scan actually takes on the live estate, nor what fraction is the skopeo pull versus
+the Trivy run. If the pull dominates for large images, moving the scan left removes essentially all of
+it. If something else dominates, that should be found before any further design. **Recommended next
+step: measure one real promotion scan end to end** and record the split here.
 
 ## Charter alignment
 
@@ -122,12 +170,16 @@ branch routing: a digest built from `dev` cannot leak across a boundary *however
 
 ## Alternatives considered
 
-- **Branch name as the enforcement input at E6 (recorded, not recommended).** The owner's stated
-  direction taken literally. Rejected here for the four reasons in Context: forgeable by any pusher,
-  attaches to the least-protected ref, travels with the digest, and requires new plumbing into a
-  fail-closed gate whose entire value is having no such input. **If the owner reaffirms this after
-  reading the above, it needs its own superseding ADR amending [ADR-0018](0018-domain-local-dev-pipelines.md)
-  §2 and a rewrite of the M18.1 leakage guarantee — which would then be provably false as written.**
+- **Branch name as the enforcement input at E6 (rejected on measured trust, 2026-08-10).** The
+  owner's direction taken literally. Rejected for the four reasons in Context — forgeable by any
+  pusher, attaches to the least-protected ref, travels with the digest, and requires new plumbing into
+  a fail-closed gate whose entire value is having no such input — and **decisively** by the owner's
+  own answer that push access to `dev` is WIDER than promotion-approval authority. It is also, on the
+  stated motivation, unnecessary: §3's scan-left path removes the latency without removing the
+  control. Adopting it anyway would need a superseding ADR amending
+  [ADR-0018](0018-domain-local-dev-pipelines.md) §2 and a rewrite of the M18.1 leakage guarantee,
+  which would then be provably false as written — the inertness test in
+  `federation.integration.test.ts` is mutation-proven to go red on exactly this change.
 - **A separate `dev_pipelines` table (rejected).** A pipeline is not a first-class object
   (component + Type + binding); ref matching is correlation config and belongs beside the other globs
   (principle 2, and Simplicity).
