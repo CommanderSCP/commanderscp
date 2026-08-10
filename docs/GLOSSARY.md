@@ -41,6 +41,7 @@ Audience: a new engineer trying to read the code, and an operator trying to read
 | **bundle** | Three distinct things — see the entry; always qualify | SCP-SPECIFIC |
 | **security domain** | A domain implementing one security policy under a single administering authority | INDUSTRY-STANDARD (CNSSI-4009) |
 | **containment domain** | The intra-org `domain` graph object type — an ordinary grouping below org | SCP-SPECIFIC |
+| **assembly** | The OPTIONAL grouping level between service and component — a macro-component | SCP-SPECIFIC |
 | **authorization boundary** | The components authorized for operation by one authorizing official, excluding separately authorized connected systems | INDUSTRY-STANDARD (NIST SP 800-37) |
 | **CDS / cross-domain solution** | The accredited mechanism that transfers information between security domains | INDUSTRY-STANDARD (CNSSI-4009) |
 | **retrans** | The SCP federation role that sits at a CDS boundary and validate-then-relays | SCP-SPECIFIC |
@@ -446,7 +447,7 @@ How wide that is — how many non-test source lines and files, with the exact co
 
 ### containment domain
 
-**Definition.** The `domain` **object type** in the graph — an ordinary intra-org grouping that sits **below** org in the containment chain: org → containment domain → service → component. It is the "domain" in policy resolution and in the scan-requirement scope chain.
+**Definition.** The `domain` **object type** in the graph — an ordinary intra-org grouping that sits **below** org in the containment chain: org → containment domain → service → [assembly] → component (the [**assembly**](#assembly) rung is optional). It is the "domain" in policy resolution and in the scan-requirement scope chain.
 
 **Industry-standard?** No — SCP-specific. It is closest to a folder/organizational-unit concept.
 
@@ -455,6 +456,22 @@ How wide that is — how many non-test source lines and files, with the exact co
 **In the code.** Object type `domain`, seeded in `apps/server/drizzle/0002_rls_rbac_seed.sql`; the column is `objects.domain_id` (`apps/server/src/db/schema.ts`); the walk is `apps/server/src/graph/containment.ts` (`containmentChain`), which is org-filtered on every join and rooted at the org root — it **structurally cannot** express any tier above org, which is exactly why the security-domain tier needed a separate instance-scoped table.
 
 **Same branded-types caveat as above:** `objects.domainId` and `federation_self.domainId` are both bare `uuid` today.
+
+---
+
+### assembly
+
+**Definition.** The **optional** grouping level between a **service** and its **components**. An assembly is a *macro-component*: a coherent sub-system that is built and released as a set, but is not itself the thing an organization owns end-to-end. A service made of two or three assemblies of dozens of components each is the shape this exists for; a service whose components sit directly under it needs no assembly and gets none.
+
+**Industry-standard?** No — SCP-specific, and deliberately not a borrowed word. The alternatives considered and rejected were **subsystem** (already means a runtime tier in too many estates), **module** (taken by the executor Module axis, [ADR-0007](adr/0007-executor-binding-type-taxonomy.md)), **group** (says nothing about what is grouped), and **macro-component** (accurate but unusable in a URL or a CLI noun). "Assembly" carries the right connotation — parts fitted together into a unit that is itself a part — and collides with nothing already in this glossary.
+
+**Optional, and only one level.** Containment is `service → assembly → component` **or** `service → component`; never `assembly → assembly`. `relationships-repo.ts` refuses the nested case outright rather than bounding it, because a depth limit is a number to argue about and a refusal is a rule. The owner's grouping decision (D2) capped the ladder at **three hops**, which one optional level cannot exceed.
+
+**What it inherits for free.** Everything that walks containment. `containmentChain` (`apps/server/src/graph/containment.ts`) matches on the `contains` **edge**, never on the parent's type, so an assembly rung is walked by policy resolution, RBAC scope expansion, freeze scoping, approval scope, and the scan-requirement tier chain with **no code change** — which is why [migration 0055](../apps/server/drizzle/0055_assembly_object_type.sql) touched no resolver. Binding resolution reaches it explicitly through the nearest-wins ancestor ladder of [ADR-0029](adr/0029-containment-ancestor-binding-rung.md).
+
+**What it is not.** Not a **containment domain** (that sits *above* service and is where policy scoping is normally expressed). Not a deployment unit — an assembly is never a wave target; **placements** are still per-component. Not a release unit either: a change is per-component, and rolling "the assembly is blocked" up out of its children would need a rule nobody has chosen, so the service board shows an assembly with a **component count and a link down**, not a status.
+
+**In the code.** Object type `assembly`, seeded in `apps/server/drizzle/0055_assembly_object_type.sql`, which also widens `contains`, `releases_via`, `owns` and `governed_by` to admit it. The type predicate is `CONTAINER_TYPES` / `isContainerType()` in `apps/server/src/graph/containment.ts` — a single place, so a future third container level lands in one edit rather than at every `typeId === "service"` in the tree. Registry at `/v1/assemblies` (`routes/typed-registries.ts`); decisions in [docs/proposals/intermediate-grouping.md](proposals/intermediate-grouping.md).
 
 ---
 

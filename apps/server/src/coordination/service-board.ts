@@ -11,6 +11,7 @@ import type {
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import {
+  relationships as relationshipsTable,
   changes,
   changePlans,
   changeWaveTargets,
@@ -506,12 +507,45 @@ export async function buildServiceBoard(
     maxDepth: 1
   });
   // DIRECT children only (intermediate-grouping D3), and they may now be ASSEMBLIES as well as
-  // components (migration 0055). Rows are still per-component; an assembly child contributes its own
-  // summary row rather than being flattened into hundreds of descendants, which is what D3 chose.
+  // components (migration 0055). `rows` stays strictly per-component — an assembly is reported
+  // separately, in `childAssemblies` below, rather than being flattened into its descendants.
   const components = objects
     .filter((o) => o.id !== service.id && o.typeId === "component")
     .sort((a, b) => a.name.localeCompare(b.name));
   const componentIds = components.map((c) => c.id);
+
+  // ASSEMBLY children get their own entries (D3). Until migration 0055 the filter above was the whole
+  // child list, so an assembly child — and every component under it — was silently absent from its
+  // parent's board. Counted with ONE query over all of them rather than a traversal per assembly.
+  const assemblyObjects = objects
+    .filter((o) => o.id !== service.id && o.typeId === "assembly")
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const assemblyCounts = new Map<string, number>();
+  if (assemblyObjects.length > 0) {
+    const counted = await tx
+      .select({ parent: relationshipsTable.fromId, child: relationshipsTable.toId })
+      .from(relationshipsTable)
+      .where(
+        and(
+          eq(relationshipsTable.orgId, orgId),
+          eq(relationshipsTable.typeId, "contains"),
+          isNull(relationshipsTable.deletedAt),
+          inArray(
+            relationshipsTable.fromId,
+            assemblyObjects.map((a) => a.id)
+          )
+        )
+      );
+    for (const row of counted) {
+      assemblyCounts.set(row.parent, (assemblyCounts.get(row.parent) ?? 0) + 1);
+    }
+  }
+  const childAssemblies = assemblyObjects.map((a) => ({
+    id: a.id,
+    urn: a.urn,
+    name: a.name,
+    componentCount: assemblyCounts.get(a.id) ?? 0
+  }));
 
   // 2. Latest change per component (the net-new join), then the active freezes to overlay read-only.
   //    `ensureFederationSelf` supplies THIS domain's federation id — the yardstick for "do I drive
@@ -804,6 +838,7 @@ export async function buildServiceBoard(
     summary: { releasing, blocked, stable, notDrivenHere },
     serviceFreeze: serviceFreeze ? toFreeze(serviceFreeze) : null,
     servicePipelines: pipelineSummary.forService,
+    childAssemblies,
     asOf,
     unknownFields: [
       ...new Set([...freezeVisibilityUnknowns, ...changeVisibilityUnknowns, ...stalenessUnknowns])

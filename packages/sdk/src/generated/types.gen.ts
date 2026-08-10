@@ -7326,6 +7326,12 @@ export type GetServiceBoardResponses = {
                 url: string | null;
             }>;
         }>;
+        childAssemblies: Array<{
+            id: string;
+            urn: string;
+            name: string;
+            componentCount: number;
+        }>;
         asOf: {
             peerDomainId: string;
             peerName: string;

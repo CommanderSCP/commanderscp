@@ -538,6 +538,34 @@ export function ServiceBoardPage(): React.JSX.Element {
           and therefore cannot assess, so it carries a warning (never `success`) treatment. */}
       <BoardSummary summary={summary} stableUnknown={changeVisibilityUnknown} />
 
+      {board.childAssemblies.length > 0 && (
+        // Assemblies get their own card rather than rows in the components table: they are a
+        // different KIND of child, and a count is not a release status. Rendered only when the
+        // service actually has them — unlike the pipeline cards, an empty list here is not a fact
+        // worth a card, it is simply a service whose components sit directly under it.
+        <Card data-testid="board-assemblies">
+          <CardHeader>
+            <CardTitle className="text-base">Assemblies ({board.childAssemblies.length})</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-1">
+            {board.childAssemblies.map((a) => (
+              <div key={a.id} className="text-sm" data-testid="board-assembly">
+                <Link
+                  to="/$basePath/$idOrUrn"
+                  params={{ basePath: "assemblies", idOrUrn: a.id }}
+                  className="font-medium text-slate-900 hover:underline"
+                >
+                  {a.name}
+                </Link>{" "}
+                <span className="text-xs text-slate-500">
+                  {a.componentCount} component{a.componentCount === 1 ? "" : "s"}
+                </span>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Components ({rows.length})</CardTitle>

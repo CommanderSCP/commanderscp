@@ -267,7 +267,13 @@ export async function containmentChain(
         WHERE child_o.id = c.id AND child_o.org_id = ${orgId} AND parent_o.org_id = ${orgId}
           AND parent_o.deleted_at IS NULL
         UNION ALL
-        -- 2. containing service, via the contains edge walked BACKWARDS (to_id = c.id, from_id = svc)
+        -- 2. containing CONTAINER, via the contains edge walked BACKWARDS (to_id = c.id, from_id).
+        -- Generic on the edge, never on the parent's type, so the ASSEMBLY level added by migration
+        -- 0055 is walked here with no change: component -> assembly -> service yields BOTH rungs, and
+        -- every consumer of this walk (policy resolution, RBAC scope expansion, freeze scoping,
+        -- approval scope) inherits the new tier for free. That is why 0055 shipped no edit here.
+        -- The alias stays svc because renaming it is churn, not because the parent must be a service.
+        -- (No backticks in this comment: it lives inside a JS template literal.)
         SELECT svc.id, svc.type_id, svc.labels
         FROM relationships r
         JOIN objects svc ON svc.id = r.from_id AND svc.org_id = ${orgId}

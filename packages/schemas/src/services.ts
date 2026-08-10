@@ -119,6 +119,30 @@ export const ServiceBoardPipelineSchema = z.object({
 });
 export type ServiceBoardPipeline = z.infer<typeof ServiceBoardPipelineSchema>;
 
+/**
+ * An ASSEMBLY child of this service — the optional level between service and component
+ * (migration 0055, `intermediate-grouping.md` D3/D5).
+ *
+ * D3 chose DIRECT children plus a per-child summary over flattening every descendant: a service with
+ * several assemblies of dozens of components each would otherwise render hundreds of rows and lose
+ * what the board is for. So an assembly appears as its own entry with a count and a link down, not as
+ * its components inlined here.
+ *
+ * Before this the board filtered children to `typeId === "component"`, so an assembly child — and
+ * therefore everything under it — was silently absent from its parent's board. That is the one thing
+ * this entry exists to stop.
+ */
+export const ServiceBoardAssemblySchema = z.object({
+  id: z.string().uuid(),
+  urn: z.string(),
+  name: z.string(),
+  /** DIRECT component children of this assembly. A count, not a status: rolling release state up
+   *  through a level needs a rule for what "the assembly is blocked" means, and inventing one here
+   *  would put a claim on the board that nothing computed. */
+  componentCount: z.number().int()
+});
+export type ServiceBoardAssembly = z.infer<typeof ServiceBoardAssemblySchema>;
+
 export const ServiceBoardRowSchema = z.object({
   component: z.object({
     id: z.string().uuid(),
@@ -252,6 +276,10 @@ export const ServiceBoardResponseSchema = z.object({
    * and the rung landed together rather than the view first.
    */
   servicePipelines: z.array(ServiceBoardPipelineSchema),
+  /** ASSEMBLY children of this service, each with a component count — see
+   *  {@link ServiceBoardAssemblySchema}. Empty for a service whose components sit directly under it,
+   *  which is every service on the estate today. */
+  childAssemblies: z.array(ServiceBoardAssemblySchema),
   /** DESIGN §13's "as of" label for the LIMITING upstream peer — see {@link ServiceBoardAsOfSchema}.
    *  `null` exactly when no peer's scope can carry change objects (including the single-domain case,
    *  where the board is a complete local observation and claiming an as-of would be theatre). */
