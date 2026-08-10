@@ -1126,7 +1126,10 @@ function registerTypedResourceCrud(
   if (opts?.serviceOption) {
     registerCmd.requiredOption(
       "--service <idOrUrn>",
-      `owning service id or URN (a ${name} belongs to a service)`
+      // "or assembly" since migration 0055: the server checks `isContainerType`, so this flag has
+      // always accepted whatever a container is — the help text was the only thing still saying
+      // service. A flag whose help contradicts what the server accepts is a support ticket.
+      `containing service or assembly id or URN (a ${name} belongs to one)`
     );
   }
   registerCmd

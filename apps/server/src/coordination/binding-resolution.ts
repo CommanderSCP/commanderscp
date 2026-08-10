@@ -80,9 +80,47 @@ export type BindingResolution =
       binding: ExecutorBindingRow;
       viaPlacementObjectId: null;
       viaServiceObjectId: string;
+      /** The `object_types.id` the ancestor ACTUALLY carries — `service`, `assembly`,
+       *  `organization`, or whatever a later level is called.
+       *
+       *  Here because the alternative is inferring the level from the branch name, and this branch
+       *  covers three different levels. A Decision built that way says "resolved via service" over an
+       *  assembly's id — a false statement in an audit record, which principle 6 does not allow —
+       *  and it was ALREADY false for the org rung before `assembly` existed. Read the level from the
+       *  object; never name it after the code path that found it. */
+      viaObjectTypeId: string;
       hops: number;
     }
   | { outcome: "none"; binding: null; viaPlacementObjectId: null };
+
+/**
+ * The PROVENANCE of an indirect resolution, as a Decision records it — or `null` for a direct/failed
+ * one, which writes no Decision.
+ *
+ * Here rather than inline at the call site because the label must be READ FROM THE RESOLVED OBJECT
+ * and never inferred from the branch that found it. `via_service` covers three levels (service,
+ * assembly, org root), so a label named after the branch is a false statement in an audit record for
+ * two of them — and it was false for the org rung from the day that rung shipped, before `assembly`
+ * existed. Principle 6: a Decision that misnames its own provenance reads as an answer, which makes
+ * it worse than no Decision at all.
+ *
+ * Exported so the mapping is testable without driving a whole wave through reconcile.
+ */
+export function resolutionProvenance(
+  resolution: BindingResolution
+): { via: string; viaObjectId: string; hops: number | null } | null {
+  if (resolution.outcome === "via_placement") {
+    return { via: "placement", viaObjectId: resolution.viaPlacementObjectId, hops: null };
+  }
+  if (resolution.outcome === "via_service") {
+    return {
+      via: resolution.viaObjectTypeId,
+      viaObjectId: resolution.viaServiceObjectId,
+      hops: resolution.hops
+    };
+  }
+  return null;
+}
 
 /**
  * The live placements of one component, read from `properties` — the source of truth for the pair
@@ -146,7 +184,7 @@ async function containsParentOf(
   tx: TenantTx,
   orgId: string,
   objectId: string
-): Promise<string | null> {
+): Promise<{ id: string; typeId: string } | null> {
   const edge = await tx.query.relationships.findFirst({
     where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
       andOp(
@@ -156,7 +194,15 @@ async function containsParentOf(
         isNullOp(t.deletedAt)
       )
   });
-  return edge?.fromId ?? null;
+  if (!edge) return null;
+  // The parent's TYPE comes back with it. The walk stays type-agnostic — it still does not branch on
+  // this — but whatever it resolves through has to be nameable truthfully in a Decision, and reading
+  // the type here costs nothing the walk was not already paying for this row.
+  const parent = await tx.query.objects.findFirst({
+    where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
+      andOp(eqOp(t.orgId, orgId), eqOp(t.id, edge.fromId), isNullOp(t.deletedAt))
+  });
+  return parent ? { id: parent.id, typeId: parent.typeId } : null;
 }
 
 /**
@@ -185,19 +231,19 @@ async function containsAncestors(
   tx: TenantTx,
   orgId: string,
   targetObjectId: string
-): Promise<string[]> {
+): Promise<{ id: string; typeId: string }[]> {
   const componentObjectId = await componentOfTarget(tx, orgId, targetObjectId);
   if (!componentObjectId) return [];
 
-  const ancestors: string[] = [];
+  const ancestors: { id: string; typeId: string }[] = [];
   const seen = new Set<string>([componentObjectId]);
   let current = componentObjectId;
   for (let hop = 0; hop < MAX_ANCESTOR_HOPS; hop += 1) {
     const parent = await containsParentOf(tx, orgId, current);
-    if (!parent || seen.has(parent)) break;
+    if (!parent || seen.has(parent.id)) break;
     ancestors.push(parent);
-    seen.add(parent);
-    current = parent;
+    seen.add(parent.id);
+    current = parent.id;
   }
   return ancestors;
 }
@@ -220,14 +266,15 @@ async function serviceRung(
   // NEAREST FIRST (ADR-0029 D1). The first ancestor carrying a binding of this Type wins, so a
   // component's assembly beats its service, which beats the org — most specific always.
   const ancestors = await containsAncestors(tx, orgId, targetObjectId);
-  for (const [index, ancestorObjectId] of ancestors.entries()) {
-    const binding = await getExecutorBinding(tx, orgId, ancestorObjectId, type);
+  for (const [index, ancestor] of ancestors.entries()) {
+    const binding = await getExecutorBinding(tx, orgId, ancestor.id, type);
     if (binding) {
       return {
         outcome: "via_service",
         binding,
         viaPlacementObjectId: null,
-        viaServiceObjectId: ancestorObjectId,
+        viaServiceObjectId: ancestor.id,
+        viaObjectTypeId: ancestor.typeId,
         hops: index + 1
       };
     }
@@ -245,6 +292,10 @@ async function serviceRung(
       binding: viaOrg,
       viaPlacementObjectId: null,
       viaServiceObjectId: orgRootId,
+      // Not "service": the org rung has never been one. This was the label's FIRST wrong case, live
+      // before `assembly` was added, which is why the fix is to read the level rather than to add
+      // one more name to a branch.
+      viaObjectTypeId: "organization",
       hops: 0
     };
   }

@@ -48,6 +48,9 @@ import {
  * | raise `MAX_ANCESTOR_HOPS` from 3 to 99 | the hop-cap test FAILS — a binding 4 levels up resolves, so without it the cap is decoration |
  * | walk ancestors farthest-first instead of nearest-first | the nearest-wins test FAILS — a component would inherit the top-level binding over its own parent's, inverting D1 |
  * | let `ambiguous` fall through to the service | 3 tests FAIL — two placements bound for one Type is a refusal, not an absence, and the service must not rescue it (ADR-0027 D2) |
+ * | `viaObjectTypeId: ancestor.typeId` -> `"service"` (the shipped defect) | BOTH real-assembly tests fail — a Decision would name an assembly a service |
+ * | `containsParentOf` returns `typeId: "service"` instead of the parent's | same two fail — the type must be READ, not assumed |
+ * | `ancestors.reverse()` (farthest ancestor first) | three tests fail, incl. hops 2-instead-of-1 — nearest-wins is load-bearing, not incidental |
  */
 describe("placement-aware binding resolution", () => {
   let server: ListeningTestServer;
@@ -329,15 +332,19 @@ describe("placement-aware binding resolution", () => {
     const chain = [top];
     for (let i = 1; i < depth; i += 1) {
       const mid = await admin.services.create({ name: `${label}-mid${i}-${Date.now()}` });
-      // PRIVILEGED FIXTURE SURGERY, and deliberately so: `contains` is registered
-      // `from_types: {service} -> to_types: {component}`, so the API REFUSES a service->service edge
-      // today (400). Widening that row is a separate decision — it depends on whether the `assembly`
-      // level is a new object type or a role a nested service plays, which is not settled.
+      // PRIVILEGED FIXTURE SURGERY, and STILL deliberate after migration 0055 — but for a different
+      // reason than when it was written, so read this rather than the history.
       //
-      // The LADDER is correct independently of that choice (ADR-0029 D4 — it is type-agnostic about
-      // the ancestor), and it must be correct BEFORE nesting is allowed, or the widening would land
-      // on an untested walk. So these tests build the shape directly, the same way
-      // `stage-compilation.integration.test.ts` writes property documents Ajv would refuse.
+      // 0055 settled the level: `assembly` is a real object type and `contains` legitimately accepts
+      // `service -> assembly -> component`. What it did NOT do is allow arbitrary depth —
+      // `assembly -> assembly` is refused outright (intermediate-grouping D2 caps the ladder at three
+      // hops, and a refusal beats a number to argue about). So the shapes DEEPER than one intermediate
+      // level, which the hop-cap tests need, cannot be built through the API at all — by design.
+      //
+      // Hence: the real-type case is tested with a REAL assembly and NO surgery (see the
+      // `viaObjectTypeId` test below), and the surgery survives only for the depths that exist to
+      // prove the CAP holds for a level nobody has added yet. ADR-0029 D4's ladder is type-agnostic,
+      // which is what makes that a meaningful thing to test ahead of the level.
       await admin.relationships.create({ typeId: "contains", fromId: parent.id, toId: mid.id });
       chain.push(mid);
       parent = mid;
@@ -354,6 +361,60 @@ describe("placement-aware binding resolution", () => {
     }
     return { chain, top, immediate: parent, component, placements };
   }
+
+  it("reports the ancestor's REAL type, so a Decision can name the level it actually used", async () => {
+    // Built with a REAL assembly and NO fixture surgery — migration 0055 makes this the shape the
+    // product produces. The point is `viaObjectTypeId`: before it, this resolution reported
+    // `resolvedVia: "service"` with an ASSEMBLY's id, a false statement in an audit record.
+    const service = await admin.services.create({ name: `real-asm-svc-${Date.now()}` });
+    const assembly = await admin.assemblies.create({ name: `real-asm-${Date.now()}` });
+    await admin.relationships.create({
+      typeId: "contains",
+      fromId: service.id,
+      toId: assembly.id
+    });
+    const component = await admin.components.create({
+      name: `real-asm-comp-${Date.now()}`,
+      service: assembly.id
+    });
+    await bind(assembly.id, "assembly-cluster", "infrastructure");
+
+    const r = await resolve(component.id, "infrastructure");
+    expect(r.outcome).toBe("via_service");
+    expect(
+      r.outcome === "via_service" ? r.viaObjectTypeId : null,
+      "the level is read from the object — naming it 'service' here would be false"
+    ).toBe("assembly");
+    expect(r.outcome === "via_service" ? r.viaServiceObjectId : null).toBe(assembly.id);
+    expect(r.outcome === "via_service" ? r.hops : null, "the immediate parent is one hop").toBe(1);
+  });
+
+  it("the NEAREST container wins: a real assembly beats the service above it", async () => {
+    // Two bindings of the same Type at two levels. Without nearest-first this returns the service's,
+    // which is the whole point of the ladder (ADR-0029 D1) and cannot be seen with only one binding.
+    const service = await admin.services.create({ name: `near-svc-${Date.now()}` });
+    const assembly = await admin.assemblies.create({ name: `near-asm-${Date.now()}` });
+    await admin.relationships.create({
+      typeId: "contains",
+      fromId: service.id,
+      toId: assembly.id
+    });
+    const component = await admin.components.create({
+      name: `near-comp-${Date.now()}`,
+      service: assembly.id
+    });
+    await bind(service.id, "outer-service-cluster", "infrastructure");
+    await bind(assembly.id, "inner-assembly-cluster", "infrastructure");
+
+    const r = await resolve(component.id, "infrastructure");
+    // Asserted on the binding's OWN target, not on a label in the fixture: `bind` sets
+    // `pluginInstanceId`, and checking `externalRef` here passed `null` into the comparison — a
+    // green-for-nothing assertion of exactly the kind this file's header is written against.
+    expect(r.binding?.targetObjectId, "the nearer declaration wins").toBe(assembly.id);
+    expect(r.binding?.pluginInstanceId).toBe("br-inner-assembly-cluster");
+    expect(r.outcome === "via_service" ? r.viaObjectTypeId : null).toBe("assembly");
+    expect(r.outcome === "via_service" ? r.hops : null).toBe(1);
+  });
 
   it("resolves from the ORG root — the rung ADR-0027 excluded", async () => {
     // intermediate-grouping D4: a cluster that serves the whole org is declared once, at the org.

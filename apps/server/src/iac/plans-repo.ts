@@ -80,9 +80,10 @@ function assertComponentsContained(diff: PlanDiff): void {
   const uncontained = uncontainedComponentCreates(diff);
   if (uncontained.length === 0) return;
   throw badRequest(
-    `plan creates component(s) with no owning service (no incoming 'contains' edge): ` +
-      `${uncontained.join(", ")}. A component must belong to a service — create it with ` +
-      `\`new Component(stack, id, { service })\` or add a 'contains' relationship from a service.`
+    `plan creates component(s) with no container (no incoming 'contains' edge): ` +
+      `${uncontained.join(", ")}. A component must belong to a service or an assembly — create it ` +
+      `with \`new Component(stack, id, { service })\` or add a 'contains' relationship from a ` +
+      `service or assembly.`
   );
 }
 

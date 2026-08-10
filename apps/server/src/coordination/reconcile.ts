@@ -58,7 +58,11 @@ import { describeError } from "../errors.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import { DEFAULT_EXECUTOR_INSTANCE_ID, DEFAULT_EXECUTOR_MODULE } from "./executor-config.js";
 import { resolveExecutorPluginInstance, DEFAULT_BINDING_TYPE } from "./executor-bindings-repo.js";
-import { listVisibleBindingsForTarget, resolveBindingForTarget } from "./binding-resolution.js";
+import {
+  listVisibleBindingsForTarget,
+  resolutionProvenance,
+  resolveBindingForTarget
+} from "./binding-resolution.js";
 import { evaluateRegionalDeployGate } from "./regional-executors.js";
 import { REGIONAL_EXECUTOR_EXPECTED_MODULE } from "@scp/schemas";
 import { processChangeSourceEvents } from "./webhook-processor.js";
@@ -1675,12 +1679,12 @@ async function triggerWaveTarget(
       // per trigger for it would double Decision volume for no information, which is a live
       // production concern on this instance. Bounded either way: this runs once per wave target
       // behind the claim lock, not once per tick.
-      if (resolution.outcome === "via_placement" || resolution.outcome === "via_service") {
-        const via = resolution.outcome === "via_placement" ? "placement" : "service";
-        const viaObjectId =
-          resolution.outcome === "via_placement"
-            ? resolution.viaPlacementObjectId
-            : resolution.viaServiceObjectId;
+      // `resolutionProvenance` is null for a direct or failed resolution, which is exactly the set
+      // that writes no Decision — so this one call is both the guard and the label, and the label
+      // cannot drift from the outcome it describes.
+      const provenance = resolutionProvenance(resolution);
+      if (provenance) {
+        const { via, viaObjectId } = provenance;
         await insertDecision(tx, {
           orgId,
           kind: "wave_target",
@@ -1691,11 +1695,14 @@ async function triggerWaveTarget(
             targetObjectId,
             requestedType: type,
             resolvedVia: via,
-            // Kept under the historical key for the placement case so existing Decisions and any
-            // query over them keep reading the same field; the service case names its own.
-            ...(via === "placement"
-              ? { placementObjectId: viaObjectId }
-              : { serviceObjectId: viaObjectId }),
+            // ALWAYS present and unambiguous, whatever the level turns out to be.
+            viaObjectId,
+            // The two historical keys stay exactly where they were TRUE, so existing Decisions and any
+            // query over them keep reading the same field — and `serviceObjectId` is now written only
+            // when the id really is a service's, rather than for every non-placement rung.
+            ...(via === "placement" ? { placementObjectId: viaObjectId } : {}),
+            ...(via === "service" ? { serviceObjectId: viaObjectId } : {}),
+            ...(provenance.hops === null ? {} : { hops: provenance.hops }),
             bindingId: binding?.id ?? null
           },
           reasonTree: {

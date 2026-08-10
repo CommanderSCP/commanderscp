@@ -151,13 +151,18 @@ function pipelineSummary(
     case "component":
       return "pipeline inherited from the target's own releases_via edge";
     case "service":
-      return `pipeline inherited from the owning service ${attachedToObjectId}`;
+      // NOT "the owning service": since migration 0055 this rung is a LADDER, and the enum value is
+      // kept at `service` only because widening the wire enum would be an oasdiff break
+      // (`pipeline-resolution.ts` rung 2 documents that). So the id here may be an assembly's, and a
+      // sentence asserting "service" would be a false explanation — the one thing `scp change
+      // explain` must not produce. The id disambiguates; the sentence must not overclaim.
+      return `pipeline inherited from the nearest containing service or assembly ${attachedToObjectId}`;
     case "organization":
       return `pipeline inherited from the org default on ${attachedToObjectId}`;
     default:
       return reason === "targets_disagree"
         ? "no pipeline: the change's targets resolve to different pipelines, so none is inherited"
-        : "no pipeline: no releases_via edge on the target, its service, or the org root";
+        : "no pipeline: no releases_via edge on the target, its containing service or assembly, or the org root";
   }
 }
 
