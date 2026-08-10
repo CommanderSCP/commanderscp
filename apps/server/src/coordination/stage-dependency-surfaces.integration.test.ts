@@ -38,6 +38,15 @@ import { createInMemoryFakeHost } from "./test-support/fake-plugin-host.js";
  * doc gives at length: `reconcileOrgTick` driven directly (so "N ticks" means exactly N), a FRESH ORG
  * per case (so a `BATCH_LIMIT` queue left by an earlier case cannot starve this one), and the
  * dependency's state moved only through the real poll path.
+ *
+ * ============================================================================================
+ * MUTATION LOG — the component-pipeline surface (each applied ALONE, then reverted)
+ * ============================================================================================
+ * | Mutation | Result |
+ * |---|---|
+ * | drop the `changeState !== "executing"` candidate gate | ONLY "does NOT call a stage held when the release it belongs to was cancelled" fails — `expected { …(4) } to be null`. The resolver reports on the first wave that is not succeeded/skipped, which on a dead change is the dead one, and its never-run `pending` targets each still evaluate to a hold |
+ * | source `stages[].hold` from the pinned `stage_dependency` hold Decision's `inputContext.held[]` (the join the grounding proposed) instead of re-running the predicate | 2 fail: the naming case (`expected null to be 'cp-dep-…'` — the Decision deliberately carries no display names, so "held by WHAT" degrades to an id) and the live-read case (`expected { …(4) } to be null`) |
+ * | …and the FIRST version of that live-read case stayed GREEN under it | recorded because it is the whole lesson: "hold, let the dependency land, assert the badge is gone" cannot catch a Decision-sourced projection, because by then the dependant's own target has been TRIGGERED on the same tick and the `pending`/`triggering` candidate gate drops it for an unrelated reason. The case was rewritten to make the two sources disagree with that gate held constant |
  */
 
 /** Mutable — the in-memory host closes over it and the plugin re-reads it on every call. */
@@ -240,6 +249,151 @@ describe("stage dependencies: the operator surfaces (ADR-0028 increment 4)", () 
     const change = await release("uncoupled-change", [lonely.id]);
     await tick(2);
     expect((await admin.changes.explain(change.id)).stageDependencyStatus).toBeNull();
+  }, 60_000);
+
+  // -----------------------------------------------------------------------------------------
+  // SURFACE 3 — the component-pipeline view's stage
+  // -----------------------------------------------------------------------------------------
+
+  it("the component pipeline marks the STAGE held, and names what by", async () => {
+    // The bug in one sentence: a held target's `change_wave_targets.status` is and stays `pending`
+    // (the hold `continue`s before `triggerWaveTarget`), and `pending` is also what a stage shows
+    // when the wave has simply not reached it — so "waiting on something named" and "nothing is
+    // happening here" were the same picture.
+    const dependency = await componentAt("cp-dep", [gamma]);
+    const dependant = await componentAt("cp-app", [gamma]);
+    const change = await release("cp-held", [dependant.id], [{ dependsOn: dependency.id }]);
+    await tick(3);
+
+    const stage = (await admin.components.pipeline(dependant.id)).stages[0]!;
+    // THE INPUT, asserted so the case cannot pass for the wrong reason: the raw column really is
+    // still `pending`, so `hold` is carrying information nothing else on this stage does.
+    expect(stage.currents[0]?.targetStatus).toBe("pending");
+
+    expect(stage.hold, "a withheld release must not render as an idle stage").toBeTruthy();
+    expect(stage.hold!.changeId).toBe(change.id);
+    expect(stage.hold!.waveIndex).toBe(0);
+    expect(stage.hold!.dependencies).toHaveLength(1);
+    const dep = stage.hold!.dependencies[0]!;
+    expect(dep.dependsOn).toBe(dependency.id);
+    // THE NAME, which is the whole ask: an operator on this page must learn WHAT it is waiting on
+    // without going and looking the id up.
+    expect(dep.dependsOnName).toBe(dependency.name);
+    expect(dep.branch).toBe("never_deployed");
+    expect(dep.satisfied).toBe(false);
+    expect(dep.summary).toContain("has never deployed here");
+  }, 60_000);
+
+  it("clears the stage's hold the moment the dependency lands", async () => {
+    // The everyday shape: the dependency deploys, and the stage stops saying it is waiting.
+    const dependency = await componentAt("cp-live-dep", [gamma]);
+    const dependant = await componentAt("cp-live-app", [gamma]);
+
+    await release("cp-live-dep-change", [dependency.id]);
+    const appChange = await release(
+      "cp-live-app-change",
+      [dependant.id],
+      [{ dependsOn: dependency.id }]
+    );
+    await tick(2);
+    expect((await admin.components.pipeline(dependant.id)).stages[0]!.hold).toBeTruthy();
+
+    executorConfig.forcePhase[dependency.at(gamma)] = "succeeded";
+    await tick(3);
+
+    const stale = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      latestDecisionForSubjectKind(tx, org.orgId, appChange.id, "stage_dependency")
+    );
+    expect(stale?.verdict, "the stale `hold` row must still be the newest of its kind").toBe(
+      "hold"
+    );
+
+    expect(
+      (await admin.components.pipeline(dependant.id)).stages[0]!.hold,
+      "the wait is over, and the stage must stop claiming otherwise"
+    ).toBeNull();
+  }, 60_000);
+
+  it("re-reads the predicate LIVE — the stage un-holds while the pinned `hold` Decision still says held, and the target is still `pending`", async () => {
+    // THE LIVE-READ TEST FOR THIS SURFACE, and it took two attempts to make it one.
+    //
+    // `recordStageDependencyHold` writes a `hold` Decision carrying exactly the join keys a
+    // projection would want (`targetObjectId` + `componentObjectId` + `deploymentTargetObjectId`
+    // per entry), and NOTHING anywhere writes a clearing row — so a badge sourced from it paints
+    // every stage that was ever held as held forever.
+    //
+    // The obvious test for that — hold, let the dependency land, assert the badge is gone — DOES
+    // NOT catch it. Measured: with the hold sourced from the pinned Decision instead of the live
+    // predicate, the case above stayed GREEN, because by the time the dependency has landed the
+    // dependant's own target has been TRIGGERED on the same tick, and the projection's
+    // `pending`/`triggering` candidate gate drops it for that reason instead. Green for the wrong
+    // reason, exactly the class this repo keeps hitting.
+    //
+    // So this case makes the two sources disagree with the candidate gate held constant: the
+    // coupling stops applying while the dependant's target is STILL `pending`. Removing the
+    // dependency's placement is the ordinary operator action that does it — the dependency no
+    // longer deploys at gamma, so ADR-0028 decision 4's `not_placed` branch SATISFIES the
+    // dependency (you cannot wait for a deploy that is not declared to happen). The Decision is
+    // untouched by that and still says `hold`.
+    const dependency = await componentAt("cp-stale-dep", [gamma]);
+    const dependant = await componentAt("cp-stale-app", [gamma]);
+    const appChange = await release(
+      "cp-stale-app-change",
+      [dependant.id],
+      [{ dependsOn: dependency.id }]
+    );
+    await tick(3);
+    expect((await admin.components.pipeline(dependant.id)).stages[0]!.hold).toBeTruthy();
+
+    await admin.placements.delete(dependency.at(gamma));
+
+    // THE THREE INPUTS, all asserted, so this cannot pass because the setup stopped working.
+    const stale = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      latestDecisionForSubjectKind(tx, org.orgId, appChange.id, "stage_dependency")
+    );
+    expect(stale?.verdict, "the stale `hold` row is still the newest of its kind").toBe("hold");
+    expect(await stateOf(appChange.id), "and the change is still in flight").toBe("executing");
+    const stage = (await admin.components.pipeline(dependant.id)).stages[0]!;
+    expect(
+      stage.currents[0]?.targetStatus,
+      "and the target is still `pending`, so the candidate gate cannot be what clears this"
+    ).toBe("pending");
+
+    expect(
+      stage.hold,
+      "only re-running the predicate can tell that this stage is no longer waiting"
+    ).toBeNull();
+  }, 60_000);
+
+  it("does NOT call a stage held when the release it belongs to was cancelled", async () => {
+    // The live-state gate, and it is not an optimisation. `resolveStageDependencyStatus` reports on
+    // the first wave that is not `succeeded`/`skipped`; on a dead change that IS the dead wave, and
+    // its never-run `pending` targets each still evaluate to a hold. Without the `executing` gate
+    // this stage would read "waiting on cp-cancel-dep" forever, about a release that is not waiting
+    // for anything and never will.
+    const dependency = await componentAt("cp-cancel-dep", [gamma]);
+    const dependant = await componentAt("cp-cancel-app", [gamma]);
+    const change = await release("cp-cancelled", [dependant.id], [{ dependsOn: dependency.id }]);
+    await tick(3);
+    expect((await admin.components.pipeline(dependant.id)).stages[0]!.hold).toBeTruthy();
+
+    await admin.changes.cancel(change.id, "abandoned while held");
+    expect(await stateOf(change.id)).toBe("cancelled");
+
+    const stage = (await admin.components.pipeline(dependant.id)).stages[0]!;
+    // The target is STILL `pending` — it was never triggered, and that record is truthful — so the
+    // raw status cannot be what distinguishes these two cases. Only the hold can.
+    expect(stage.currents[0]?.targetStatus).toBe("pending");
+    expect(stage.hold).toBeNull();
+  }, 60_000);
+
+  it("carries `hold: null` for an ordinary uncoupled release — not an empty claim", async () => {
+    const lonely = await componentAt("cp-uncoupled", [gamma]);
+    await release("cp-uncoupled-change", [lonely.id]);
+    await tick(3);
+    const stage = (await admin.components.pipeline(lonely.id)).stages[0]!;
+    expect(stage.currents).not.toHaveLength(0);
+    expect(stage.hold).toBeNull();
   }, 60_000);
 
   // -----------------------------------------------------------------------------------------
