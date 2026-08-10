@@ -32,7 +32,7 @@ import {
  *   and never a success colour — and no string on this page may read as "the outpost has this".
  *
  * Consumes ONLY the generated SDK (`client.federation.status()`), per charter principle 3.
- * Pinned on every PR by `outposts-honesty.test.tsx` (Playwright is main-only in this repo, so the
+ * Pinned on every PR by `outposts-honesty.test.tsx` (cheaper than the Playwright suite, which also
  * guarantees that must not regress live in plain vitest + `renderToStaticMarkup`).
  */
 
@@ -428,7 +428,7 @@ export function RecentTransfersCell({
 
 /** One outpost's row. EXPORTED for `outposts-honesty.test.tsx`, which renders it directly — the
  *  unknown-vs-observed distinction is the whole point of this view and must be pinned by a check
- *  that runs on every PR, not only by the main-only Playwright suite. */
+ *  that runs on every PR at unit-test cost, alongside the Playwright suite. */
 export function OutpostRow({ status }: { status: FederationPeerStatus }): React.JSX.Element {
   const { peer } = status;
   // THE ROW'S OWN CLAIM CARRIES ITS OWN QUALIFIER. `data-trust-tier` here used to be bare, so an

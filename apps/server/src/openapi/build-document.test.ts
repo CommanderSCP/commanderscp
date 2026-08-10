@@ -96,7 +96,7 @@ describe("buildOpenApiDocument: streaming responses", () => {
   it("the COMMITTED contract really declares the stream — not just this synthetic route", () => {
     // Reads the emitted artifact the SDK is generated from and the no-bypass sweep matches
     // against, so a regression that stopped registering the route fails here and not only in a
-    // main-only E2E job.
+    // E2E job (main-only when this was written; it runs on PRs now).
     const doc = JSON.parse(
       readFileSync(path.resolve(__dirname, "../../../../tools/openapi/openapi.v1.json"), "utf8")
     ) as Record<string, unknown>;

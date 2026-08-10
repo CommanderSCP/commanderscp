@@ -12,8 +12,9 @@ import { router } from "./router";
  * so typecheck has no opinion about which paths exist; the unit and integration suites never
  * navigate; and the one thing that did navigate there — `e2e/service-board-honesty.spec.ts` — is
  * Playwright. Every E2E job in `.github/workflows/ci.yml` carries `if: github.event_name == 'push'
- * && github.ref == 'refs/heads/main'`, so it is SKIPPED on pull requests. The break merged green and
- * would have surfaced only on `main`. That workflow's §6 comment predicts this precise hole.
+ * && github.ref == 'refs/heads/main'`, so it was SKIPPED on pull requests. The break merged green and
+ * surfaced only on `main` — job 9 RED with 5z GREEN beside it. That workflow's §6 comment predicted
+ * this precise hole; E2E now runs on pull requests and 5z requires it, which closes the general case.
  *
  * So the guard belongs where it runs on EVERY PR: over the real route tree, in the "4. Unit tests"
  * job, with no browser and no server. It does not replace the E2E specs — they prove the page

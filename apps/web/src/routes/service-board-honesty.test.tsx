@@ -12,14 +12,14 @@ import type {
  * EVERY PR.
  *
  * WHY THIS FILE EXISTS ALONGSIDE `apps/web/e2e/service-board-honesty.spec.ts`, which asserts the same
- * distinction end-to-end. That spec lives in the Playwright suite, and every E2E job in
- * `.github/workflows/ci.yml` is guarded by `github.event_name == 'push' && github.ref ==
- * 'refs/heads/main'` — they are SKIPPED on pull requests, and branch protection requires only the
- * integration-aggregation and codegen-drift contexts. So the server half of this rule (named in
- * `unknownFields`) was gated on PRs by `apps/server/src/coordination/service-board-*.integration.
- * test.ts`, while the rendering half — where a browser can still paint an unobservable field exactly
- * like an observed-and-empty one and undo the whole thing — could regress into `main` with both
- * required checks green. This file closes that: it runs in the existing "4. Unit tests" job (plain
+ * distinction end-to-end. It was written when every E2E job was `main`-only and SKIPPED on pull
+ * requests, so the rendering half of this rule — where a browser can paint an unobservable field
+ * exactly like an observed-and-empty one and undo the whole thing — could regress into `main` with
+ * both required checks green. **That is no longer true: E2E runs on pull requests and 5z requires
+ * it.** This file is kept anyway, for a reason that does not depend on the gap: it is milliseconds
+ * against a browser suite's minutes, it fails with a diff instead of a screenshot, and it pins the
+ * PRESENTATIONAL contract at a smaller altitude than a page walk can. The server half is pinned by
+ * `apps/server/src/coordination/service-board-*.integration.test.ts`. It runs in the "4. Unit tests" job (plain
  * `vitest run`, transitively required), needs no browser, no DOM library and no new dependency —
  * `react-dom/server`'s `renderToStaticMarkup` renders to a string in the Node environment Vitest
  * already uses — and takes milliseconds.
