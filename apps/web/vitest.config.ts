@@ -33,7 +33,7 @@ import { configDefaults, defineConfig } from "vitest/config";
  * `e2e/*.test.ts`, so PURE test HELPERS living beside the specs — today
  * `e2e/openapi-conformance.ts`, the matcher that decides whether a captured request path is a
  * declared OpenAPI operation — had no way to be unit-tested in a job that runs on pull requests. The
- * specs themselves are main-only, so an untested matcher there is a check nobody would notice
+ * specs cost minutes, so an untested matcher there is a check nobody would notice
  * silently accepting everything. `*.spec.ts` is the Playwright convention this directory already
  * follows, and it is exactly what must not run under Vitest.
  */
@@ -45,7 +45,7 @@ import { configDefaults, defineConfig } from "vitest/config";
  * The floors sit a point or two under each. RAISE them as coverage rises; never lower one to make
  * a red run green.
  *
- * The excluded `e2e/**\/*.spec.ts` Playwright specs are main-only and contribute nothing here, so
+ * The excluded `e2e/**\/*.spec.ts` Playwright specs run in their own jobs and contribute nothing here, so
  * these numbers describe the component/unit layer alone.
  */
 export default defineConfig({

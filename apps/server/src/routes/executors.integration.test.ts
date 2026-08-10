@@ -12,7 +12,7 @@ import {
 /**
  * M7 plugin-configuration surface (routes/executors.ts, routes/change-sources.ts's webhook-secret
  * addition) — real HTTP round trips via the SDK against a real Testcontainers Postgres, on every
- * PR (unlike scripts/e2e-m7.sh, which only runs main-only per the e2e-mN convention). This is the
+ * PR at integration cost, without waiting on the heavier scripts/e2e-m7.sh job. This is the
  * permanent regression coverage for the exact bug scripts/e2e-m7.sh caught manually once: migration
  * 0014 originally never granted `scp_app` DELETE on `secrets`/`notification_bindings` — a gap no
  * unit test or Testcontainers-with-schema-created-fresh-per-suite test would catch unless it

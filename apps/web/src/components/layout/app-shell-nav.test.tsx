@@ -5,9 +5,9 @@ import { renderToStaticMarkup } from "react-dom/server";
  * M16.2 phase B (B4) — THE NAV GUARANTEE, on every PR.
  *
  * The E2E spec (`apps/web/e2e/outposts-no-bypass.spec.ts`) walks nav → list → detail against the
- * real router, but every E2E job in `.github/workflows/ci.yml` is guarded by `github.event_name ==
- * 'push' && github.ref == 'refs/heads/main'` — SKIPPED on pull requests. So the two properties that
- * must not regress silently are pinned here instead:
+ * real router. When this was written every E2E job was `main`-only and SKIPPED on pull requests; they
+ * now run on PRs and 5z requires them. These two properties stay pinned here regardless, because a
+ * nav guarantee is worth a check that costs milliseconds:
  *
  *   1. "Outposts" is REACHABLE from the nav at all (a page nothing links to is a page nobody finds);
  *   2. the pre-existing `/federation` entry SURVIVES. It ships today and may be bookmarked; adding a
