@@ -68,24 +68,32 @@ export const ChangeSchema = z.object({
   properties: z.record(z.string(), z.unknown()),
   createdAt: z.string().datetime(),
   /**
-   * NOT "when this change last did something" — do not render it as activity. The reconcile engine
-   * uses `changes.updated_at` as its ROUND-ROBIN CURSOR: `listChangeRowsInStates` serves
-   * oldest-`updated_at`-first capped at a batch limit, so every pass re-stamps a change it examined
-   * but could not advance, to send it to the back of the queue. Without that, more than one batch's
-   * worth of stuck changes occupy every slot forever and everything behind them is never evaluated
-   * even once — measured in production as 13 days of fully stopped coordination behind green health
-   * checks (`reconcile.ts`'s gate-blocked bump documents the incident).
+   * When this change's own row last CHANGED — a transition, a `sourceRef` stamp, a park. It means
+   * what its name says, and it is safe to render as "last modified".
    *
-   * Five paths re-stamp: waiting, validating, gate-blocked, a stage-dependency hold (ADR-0028), and
-   * any executing change with a target still in flight. That last one means a change whose rollout
-   * has been sitting at the same canary weight for three days still reads `updatedAt` of one second
-   * ago. **The field an operator wants for "how long has this been stuck" is `stateEnteredAt`**,
-   * which the round-robin deliberately never touches and which the watchdog's stall SLA measures
-   * from.
+   * IT DID NOT ALWAYS. Until migration 0058 this column was also the reconcile engine's ROUND-ROBIN
+   * CURSOR: `listChangeRowsInStates` served oldest-first capped at a batch limit, and five paths
+   * re-stamped a change they had examined but could not advance, to send it to the back of the
+   * queue. Those re-stamps are load-bearing — without them, more than one batch's worth of stuck
+   * changes occupy every slot forever and everything behind them is never evaluated even once,
+   * measured in production as 13 days of fully stopped coordination behind green health checks. But
+   * sharing this field meant a change whose rollout had sat at the same canary weight for three
+   * days, polled once a second, reported `updatedAt` of one second ago. The scheduler was talking
+   * over the operator's only "last modified" signal, on exactly the changes an operator most needs
+   * to look at.
    *
-   * Splitting the cursor onto its own engine-owned column (beside `reconcileBlockedAt` and
-   * `stateEnteredAt`) would let this field mean what its name suggests; that is a migration and a
-   * change at every candidate-query call site, and is deliberately not bundled here.
+   * The cursor now has its own engine-owned column (`changes.reconcile_cursor_at`, beside
+   * `reconcileBlockedAt` and `stateEnteredAt`), and it is deliberately NOT on the wire. It is a
+   * queue position, not a fact about the change: a fresh cursor means the engine took this change's
+   * turn, which is true of every healthy change every few ticks and says nothing an operator can
+   * act on. Exposing it would re-create the misreading the split exists to end, one field over.
+   * `/v1` is additive-only, so adding it later stays possible if a real caller ever needs it;
+   * un-shipping it would not be.
+   *
+   * **For "how long has this been stuck", the field is still `stateEnteredAt`** — the round-robin
+   * never touched it even when it shared this one, and the watchdog's stall SLA measures from it.
+   * `updatedAt` answers a different question ("has anything about this change moved"), which the
+   * split is what makes it able to answer honestly.
    */
   updatedAt: z.string().datetime(),
   /**

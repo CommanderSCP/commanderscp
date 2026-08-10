@@ -606,10 +606,25 @@ export async function getChangeRow(tx: TenantTx, orgId: string, id: string): Pro
 /**
  * Batch fetch for the reconciliation loop (coordination/reconcile.ts — its SIX `advance*` passes are
  * the only callers; `watchdog.ts`, which an earlier version of this line also named, has never
- * called it): every change currently sitting in one of `states`, oldest-updated first (so a sweep
- * drains the longest-waiting changes first rather than starving them behind a churny newer one),
- * capped at `limit` per tick so one org with a huge backlog can't starve every other org's sweep
- * turn.
+ * called it): every change currently sitting in one of `states`, LONGEST-SINCE-ITS-LAST-TURN first
+ * (so a sweep drains the changes waiting longest for a turn rather than starving them behind a
+ * churny newer one), capped at `limit` per tick so one org with a huge backlog can't starve every
+ * other org's sweep turn.
+ *
+ * ## The ORDER BY column is `reconcile_cursor_at`, and it is not `updated_at` (migration 0058)
+ *
+ * This query's ordering column IS the round-robin cursor — the whole starvation guarantee below is
+ * a statement about it — so it must be a column NOTHING but the scheduler writes. It used to be
+ * `updated_at`, which meant two things at once: an ordinary content-changed timestamp that any
+ * write moved, and a queue position. Splitting them left this ORDER BY reading engine state alone
+ * and gave `Change.updatedAt` back to operators (see its docblock in `@scp/schemas`).
+ *
+ * THE SPLIT PRESERVES THE GUARANTEE BY DIRECTION, which is the thing to re-check if this is ever
+ * touched again. Starvation needs a not-advanced path to push a change BACKWARD in the queue; all
+ * five such paths write `reconcile_cursor_at` and are enumerated in `candidate-loop-registry.test.
+ * ts`. Every OTHER write that used to move `updated_at` — a transition, a `source_ref` stamp, a
+ * park — now leaves the cursor alone, which can only make a change be served SOONER than before.
+ * No write that could DELAY a change was removed, so nothing here got less fair.
  *
  * MAJOR #6 fix (PR #7 review — "batch starvation"): excludes changes `markChangeReconcileBlocked`
  * has parked (an `executing` change whose active wave failed and is awaiting an operator's manual
@@ -623,12 +638,12 @@ export async function getChangeRow(tx: TenantTx, orgId: string, id: string): Pro
  * `enforceLocalChangeAuthority`). Five of reconcile.ts's `advance*` loops already opened with
  * `if (object.originDomainId !== selfDomainId) continue;` — and that `continue` skips the row
  * WITHOUT writing it, which is precisely the batch-starvation property this query's `ORDER BY
- * updated_at ASC LIMIT n` makes lethal (see `candidate-loop-registry.test.ts`'s header, and the
- * 13-day production outage recorded in `executing-batch-starvation.integration.test.ts`). More than
- * `limit` foreign-origin rows in one state would freeze their `updated_at` forever, own every batch
- * slot, and starve every locally-originated change queued behind them.
+ * reconcile_cursor_at ASC LIMIT n` makes lethal (see `candidate-loop-registry.test.ts`'s header,
+ * and the 13-day production outage recorded in `executing-batch-starvation.integration.test.ts`).
+ * More than `limit` foreign-origin rows in one state would freeze their cursor forever, own every
+ * batch slot, and starve every locally-originated change queued behind them.
  *
- * The remedy is this filter, NOT a round-robin `updated_at` bump on the skip path: bumping would
+ * The remedy is this filter, NOT a round-robin cursor bump on the skip path: bumping would
  * WRITE to a replica's row, which is the very thing single-writer authority forbids. Filtering
  * removes those rows from the candidate set entirely — exactly what `reconcile_blocked_at IS NULL`
  * does for a parked change — which makes all six candidate loops genuinely self-evicting instead of
@@ -659,7 +674,7 @@ export async function listChangeRowsInStates(
         eq(objects.originDomainId, selfDomainId)
       )
     )
-    .orderBy(asc(changes.updatedAt))
+    .orderBy(asc(changes.reconcileCursorAt))
     .limit(limit);
 }
 

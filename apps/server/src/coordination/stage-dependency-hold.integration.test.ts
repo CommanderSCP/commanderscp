@@ -43,16 +43,18 @@ import { createInMemoryFakeHost, withRefusingTrigger } from "./test-support/fake
  *
  * A FRESH ORG PER CASE, and that is what makes the "exactly N" above TRUE rather than aspirational.
  * `reconcileOrgTick` sweeps the WHOLE org, and `advanceExecutingChanges` serves
- * `ORDER BY updated_at ASC LIMIT 25` — reconcile.ts's `BATCH_LIMIT`. On a shared org, every change an
- * earlier case leaves behind therefore competes for those same 25 slots with the change the current
- * case is about, and two properties of THIS fixture make that bite rather than merely being untidy:
+ * `ORDER BY reconcile_cursor_at ASC LIMIT 25` — reconcile.ts's `BATCH_LIMIT`. On a shared org, every
+ * change an earlier case leaves behind therefore competes for those same 25 slots with the change
+ * the current case is about, and two properties of THIS fixture make that bite rather than merely
+ * being untidy:
  *
  *   * `autoSucceedAfterMs` is ten minutes below, deliberately, so every target this file triggers is
  *     still `observing` when the file ends. Its change stays `executing` for the whole run.
- *   * A change that is merely POLLING in-flight targets is the one `executing` shape reconcile does
- *     not round-robin-bump — the `updated_at` bumps live on the gate-blocked and stage-dependency-
- *     hold paths only. So its `updated_at` freezes at the instant it started executing and it holds
- *     its slot at the FRONT of the queue permanently.
+ *   * Each such change keeps taking a slot for the whole run. (When this note was written a merely-
+ *     POLLING change was ALSO un-bumped, so it froze at the FRONT of the queue permanently — that
+ *     specific hole has since been closed by the poll-path bump, and the cursor moved to its own
+ *     column in migration 0058. The fixture reason stands regardless: a fresh org per case is what
+ *     makes "exactly N" a fact rather than a hope about batch contention.)
  *
  * MEASURED on the shared-org version of this file: the servable `executing` count climbed
  * 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 13, 15, 16, 17, 18, 19, 20, 20, 21, 21, 23, 24, 25, 26, 27, 28, 29
@@ -1271,9 +1273,9 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     }
   });
 
-  it("a held change keeps its place in the round-robin — `updated_at` moves every tick", async () => {
-    // THE 13-DAY OUTAGE PROPERTY. `listChangeRowsInStates` serves oldest-`updated_at`-first capped
-    // at BATCH_LIMIT; a held change whose `updated_at` froze would occupy a batch slot forever and
+  it("a held change keeps its place in the round-robin — the cursor moves every tick, and nothing else does", async () => {
+    // THE 13-DAY OUTAGE PROPERTY. `listChangeRowsInStates` serves oldest-`reconcile_cursor_at`-first
+    // capped at BATCH_LIMIT; a held change whose cursor froze would occupy a batch slot forever and
     // starve every change queued behind it. Measured on the live homelab: 231 changes proposed after
     // the wedge, ZERO ever evaluated once.
     const dependency = await componentAt("starve-dep", [gamma]);
@@ -1285,10 +1287,15 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     await tick(2);
     const second = await changeRow(change.id);
 
-    expect(second.updatedAt.getTime()).toBeGreaterThan(first.updatedAt.getTime());
+    expect(second.reconcileCursorAt.getTime()).toBeGreaterThan(first.reconcileCursorAt.getTime());
     // `state_entered_at` is deliberately NOT bumped — the watchdog's stall SLA must keep measuring
     // from when the change actually entered `executing`.
     expect(second.stateEnteredAt.getTime()).toBe(first.stateEnteredAt.getTime());
+    // NOR IS `updated_at`, since migration 0058. Across these four ticks the change was held every
+    // time — its targets were deliberately never triggered — so nothing about it changed, and the
+    // field an operator reads as "last modified" must say so. This is the assertion that fails if
+    // the hold bump is ever moved back onto the shared column.
+    expect(second.updatedAt.getTime()).toBe(first.updatedAt.getTime());
   });
 });
 
