@@ -22761,6 +22761,16 @@
                               }
                             ]
                           },
+                          "refPattern": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "type": {
                             "type": "string"
                           },
@@ -22770,6 +22780,20 @@
                               "build",
                               "infrastructure",
                               "configuration"
+                            ]
+                          },
+                          "classification": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "dev",
+                                  "beta"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
                             ]
                           },
                           "url": {
@@ -22788,8 +22812,10 @@
                           "sourceKind",
                           "repoPattern",
                           "pathPattern",
+                          "refPattern",
                           "type",
                           "category",
+                          "classification",
                           "url"
                         ],
                         "additionalProperties": false
@@ -46236,6 +46262,9 @@
                     "type": "string"
                   },
                   "path": {
+                    "type": "string"
+                  },
+                  "ref": {
                     "type": "string"
                   },
                   "correlationKey": {

@@ -5993,8 +5993,10 @@ export type GetComponentPipelineResponses = {
             sourceKind: string;
             repoPattern: string | null;
             pathPattern: string | null;
+            refPattern: string | null;
             type: string;
             category: 'build' | 'infrastructure' | 'configuration';
+            classification: 'dev' | 'beta' | null;
             url: string | null;
         }>;
         stages: Array<{
@@ -11652,6 +11654,7 @@ export type ReportChangeSourceData = {
     body: {
         repo?: string;
         path?: string;
+        ref?: string;
         correlationKey?: string;
         workspace?: string;
         artifactDigest?: string;

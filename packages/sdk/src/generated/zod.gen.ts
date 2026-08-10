@@ -1666,12 +1666,14 @@ export const zGetComponentPipelineResponse = z.object({
         sourceKind: z.string(),
         repoPattern: z.string().nullable(),
         pathPattern: z.string().nullable(),
+        refPattern: z.string().nullable(),
         type: z.string(),
         category: z.enum([
             'build',
             'infrastructure',
             'configuration'
         ]),
+        classification: z.enum(['dev', 'beta']).nullable(),
         url: z.string().nullable()
     })),
     stages: z.array(z.object({

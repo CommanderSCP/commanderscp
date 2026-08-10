@@ -549,11 +549,11 @@ export const sourceMappings = pgTable(
     sourceKind: text("source_kind").notNull(), // github|argocd|terraform|manual|...
     repoPattern: text("repo_pattern"), // glob, matched against source_ref.repo
     pathPattern: text("path_pattern"), // glob, matched against source_ref.path (optional)
-    // Glob matched against the event's git REF (`refs/heads/dev`), migration 0056 / ADR-0030 §1.
+    // Glob matched against the event's git REF (`refs/heads/dev`), migration 0057 / ADR-0030 §1.
     // The third routing glob and a PEER of the two above, not a rank above them: paths and refs are
     // orthogonal, and the same directory on two branches is two pipelines — which no path glob can
     // express. NULL matches EVERY ref (the matcher skips a null one, exactly as it already does for
-    // the other two), so every mapping written before 0056 keeps its behaviour unchanged.
+    // the other two), so every mapping written before 0057 keeps its behaviour unchanged.
     refPattern: text("ref_pattern"),
     componentObjectId: uuid("component_object_id").notNull(),
     // WHICH pipeline of that component this source drives — the routing Type (ADR-0007, migration
@@ -562,7 +562,7 @@ export const sourceMappings = pgTable(
     // because `github` can run Terraform OR deploy an app. Defaults to 'configuration'. Plain text
     // (no pg enum / CHECK): the closed value set is enforced in packages/schemas (Zod).
     type: text("type").notNull().default("configuration"),
-    // The operator's DECLARED classification of this pipeline (`dev`|`beta`), migration 0056 /
+    // The operator's DECLARED classification of this pipeline (`dev`|`beta`), migration 0057 /
     // ADR-0030 §2. UI and reporting read THIS; nothing parses the branch name looking for "dev".
     // A label named after WHICH BRANCH MATCHED goes false the moment that branch covers a second
     // kind — a failure already shipped once here (charter principle 6).

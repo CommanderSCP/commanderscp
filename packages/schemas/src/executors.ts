@@ -468,6 +468,13 @@ export type AcceptDiscoveryResponse = z.infer<typeof AcceptDiscoveryResponseSche
 export const ChangeReportRequestSchema = z.strictObject({
   repo: z.string().optional(),
   path: z.string().optional(),
+  /** Correlation hint: the fully-qualified git ref (`refs/heads/dev`) this release was built from,
+   *  matched against a mapping's `ref_pattern` (ADR-0030 §1).
+   *
+   *  It has to be declared HERE, not merely read by the processor's generic hint extractor: this is
+   *  a `strictObject`, so an undeclared `ref` on a report body is REFUSED outright — a CI step
+   *  reporting a ref-scoped dev build would have got a validation error rather than a route. */
+  ref: z.string().optional(),
   correlationKey: z.string().optional(),
   workspace: z.string().optional(),
   artifactDigest: z.string().optional(),

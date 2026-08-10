@@ -35,7 +35,7 @@ export interface CorrelationHint {
   paths?: string[];
   /**
    * The event's git REF, fully qualified (`refs/heads/dev`) — what a `refPattern` mapping matches
-   * against (migration 0056, ADR-0030 §1). This is what makes "the dev branch drives the dev
+   * against (migration 0057, ADR-0030 §1). This is what makes "the dev branch drives the dev
    * pipeline" expressible: before it, a push to `dev` and a push to `main` in the same repository
    * correlated to the same component AND the same routing Type.
    *

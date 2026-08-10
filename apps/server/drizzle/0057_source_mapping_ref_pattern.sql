@@ -45,7 +45,7 @@ ALTER TABLE "source_mappings" ADD COLUMN IF NOT EXISTS "ref_pattern" text;
 ALTER TABLE "source_mappings" ADD COLUMN IF NOT EXISTS "classification" text;
 
 COMMENT ON COLUMN "source_mappings"."ref_pattern" IS
-  'Glob matched against the event git ref (refs/heads/dev). NULL matches every ref, so pre-0056 mappings are unchanged. Ranked as a peer of repo_pattern/path_pattern (ADR-0030 §1).';
+  'Glob matched against the event git ref (refs/heads/dev). NULL matches every ref, so pre-0057 mappings are unchanged. Ranked as a peer of repo_pattern/path_pattern (ADR-0030 §1).';
 
 COMMENT ON COLUMN "source_mappings"."classification" IS
   'Operator-declared pipeline classification (dev|beta), UI/reporting ONLY. NEVER an enforcement input — forging or removing it changes no gate outcome (ADR-0030 §2/§3).';

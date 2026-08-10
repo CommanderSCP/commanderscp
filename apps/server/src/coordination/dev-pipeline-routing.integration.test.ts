@@ -125,7 +125,7 @@ describe("dev pipelines route by source ref (ADR-0030)", () => {
     expect(await match(sourceKind, repo, "refs/heads/dev")).not.toBeNull();
   });
 
-  it("a NULL ref_pattern still matches every ref — the pre-0056 mapping is untouched", async () => {
+  it("a NULL ref_pattern still matches every ref — the pre-0057 mapping is untouched", async () => {
     // The additive-expand guarantee the migration rests on. If this ever goes red, every mapping on
     // every existing estate changed behaviour on upgrade.
     const sourceKind = `dev-null-ref-${uuidv7()}`;

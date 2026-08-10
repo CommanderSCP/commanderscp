@@ -140,9 +140,11 @@ function genericHint(payload: unknown): ExtractedHint {
     paths: Array.isArray(p.paths)
       ? p.paths.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
       : undefined,
-    // The flat generic shape carries a ref too, so a first-party reporter (`scp change-source
-    // report`) and a hand-crafted test payload can drive a ref-scoped mapping without a provider
-    // adapter in the path — the same door every other correlation field already has.
+    // The flat generic shape carries a ref too, so a hand-crafted raw `/webhook` payload can drive
+    // a ref-scoped mapping with no provider adapter in the path. The TYPED `/report` ingress needed
+    // more than this line: `ChangeReportRequestSchema` is a `strictObject`, so until `ref` was
+    // declared there a CI step sending one got a validation REFUSAL, not a route — reading it here
+    // would have been necessary and not sufficient.
     ref: typeof p.ref === "string" && p.ref.length > 0 ? p.ref : undefined,
     correlationKey: typeof p.correlationKey === "string" ? p.correlationKey : undefined,
     artifactDigest:

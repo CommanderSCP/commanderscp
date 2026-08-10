@@ -1771,7 +1771,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     // Stuff a plausible operator-label shape (ADR-0018 §4 / ADR-0030 §2) directly onto the change's
     // sourceRef — the most literal "forge the label onto a boundary-crossing artifact" a caller
     // could attempt. The gate must ignore it. The REAL declared column (`source_mappings.
-    // classification`, migration 0056) is covered separately below; this case keeps the forged-shape
+    // classification`, migration 0057) is covered separately below; this case keeps the forged-shape
     // axis, which is the one an attacker actually controls.
     const { changeId } = await proposeApprovedChangeInA(
       { artifact_digest: DEV_DIGEST, classification: "dev", origin: "local", devPipeline: true },

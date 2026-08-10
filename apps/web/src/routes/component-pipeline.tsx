@@ -909,6 +909,31 @@ function SourceNode({
                 whole repo
               </span>
             )}{" "}
+            {source.refPattern ? (
+              <span className="font-mono text-slate-500">{source.refPattern}</span>
+            ) : (
+              // The ref-side twin of "whole repo" above, and broad for the same reason: a null ref
+              // matches EVERY branch. Rendering it is what keeps two mappings that route `dev` and
+              // `main` to different pipelines from looking identical here (ADR-0030 §1).
+              <span
+                className="text-amber-700"
+                title="This mapping has no ref filter, so a push to any branch releases this component."
+                data-testid="pipeline-source-any-branch"
+              >
+                any branch
+              </span>
+            )}{" "}
+            {source.classification && (
+              // Declared by the operator, never inferred from the branch name — and inert for
+              // enforcement (ADR-0030 §3), so this is a label and nothing more.
+              <span
+                className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-medium text-slate-600"
+                title="Operator-declared pipeline classification. UI/reporting only — it grants no scan exemption."
+                data-testid="pipeline-source-classification"
+              >
+                {source.classification}
+              </span>
+            )}{" "}
             <span className="text-slate-400">→ {source.type}</span>
           </div>
         ))

@@ -454,15 +454,20 @@ export async function getComponentPipeline(
       sourceKind: m.sourceKind,
       repoPattern: m.repoPattern ?? null,
       pathPattern: m.pathPattern ?? null,
+      refPattern: m.refPattern ?? null,
       type: m.type,
       category: categoryOfType(m.type),
+      classification: m.classification ?? null,
       url: repoConsoleUrl(m.sourceKind, m.repoPattern ?? null)
     }))
     .sort(
       (a, b) =>
         a.category.localeCompare(b.category) ||
         (a.repoPattern ?? "").localeCompare(b.repoPattern ?? "") ||
-        (a.pathPattern ?? "").localeCompare(b.pathPattern ?? "")
+        (a.pathPattern ?? "").localeCompare(b.pathPattern ?? "") ||
+        // Without this, two mappings differing ONLY by ref have no tiebreak and render in whatever
+        // order the query returned — an unstable list for the exact pair this feature creates.
+        (a.refPattern ?? "").localeCompare(b.refPattern ?? "")
     );
 
   const currents = await currentsByPlacement(

@@ -406,8 +406,10 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
           sourceKind: request.params.sourceKind,
           repoPattern: request.body.repoPattern,
           pathPattern: request.body.pathPattern,
+          refPattern: request.body.refPattern,
           componentIdOrUrn: request.body.component,
-          type: request.body.type
+          type: request.body.type,
+          classification: request.body.classification
         });
       });
       reply.status(201).send(mapping);

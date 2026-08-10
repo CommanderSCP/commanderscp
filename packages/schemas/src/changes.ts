@@ -608,7 +608,7 @@ export const CreateSourceMappingRequestSchema = z.object({
   repoPattern: z.string().optional(),
   pathPattern: z.string().optional(),
   /** Glob matched against the event's git ref (`refs/heads/dev`), ADR-0030 §1. Omitted means "match
-   *  any ref" — the pre-0056 behaviour, so an existing caller is unaffected. */
+   *  any ref" — the pre-0057 behaviour, so an existing caller is unaffected. */
   refPattern: z.string().optional(),
   component: z.string().min(1), // idOrUrn
   /** The routing Type (ADR-0007). Omitted means 'configuration' (defaulted server-side in
