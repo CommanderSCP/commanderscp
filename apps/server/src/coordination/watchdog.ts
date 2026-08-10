@@ -1,6 +1,6 @@
 import { and, eq, isNull, lt } from "drizzle-orm";
 import type PgBoss from "pg-boss";
-import type { ChangeState } from "@scp/schemas";
+import type { ChangeStageDependencyTarget, ChangeState } from "@scp/schemas";
 import type { Db } from "../db/client.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { changes, objects, orgs } from "../db/schema.js";
@@ -105,10 +105,16 @@ export async function runWatchdogSweep(
       let waitingDetail: { waitingOn: string; unsatisfied?: unknown; malformed?: unknown } | null =
         null;
       if (state === "waiting") {
+        // `org_id` alongside the id, like every other query in this file. RLS would scope this on
+        // its own — the tenant tx sets `app.org_id` and the policy on `objects` enforces it — but a
+        // predicate that leans on RLS ALONE is one `withSystemTx`, one maintenance script or one
+        // policy regression away from reading another tenant's row, and this is a defence in depth
+        // the rest of the codebase already pays for everywhere. Both of this file's `objects`
+        // lookups were missing it (census, not one instance).
         const objRows = await tx
           .select({ properties: objects.properties })
           .from(objects)
-          .where(eq(objects.id, change.objectId))
+          .where(and(eq(objects.orgId, orgId), eq(objects.id, change.objectId)))
           .limit(1);
         const { requirements, malformed } = requiresOf(
           (objRows[0]?.properties ?? {}) as Record<string, unknown>
@@ -159,7 +165,7 @@ export async function runWatchdogSweep(
         const objRows = await tx
           .select({ properties: objects.properties })
           .from(objects)
-          .where(eq(objects.id, change.objectId))
+          .where(and(eq(objects.orgId, orgId), eq(objects.id, change.objectId)))
           .limit(1);
         const stageStatus = await resolveStageDependencyStatus(tx, orgId, {
           objectId: change.objectId,
@@ -169,7 +175,7 @@ export async function runWatchdogSweep(
         if (stageStatus && described) {
           heldDetail = {
             waitingOn: described,
-            held: stageStatus.targets.filter((target) => target.held)
+            held: stageStatus.targets.filter((target) => target.held).map(withoutDisplayNames)
           };
         }
       }
@@ -188,9 +194,10 @@ export async function runWatchdogSweep(
             ? { unsatisfiedRequirements: waitingDetail.unsatisfied }
             : {}),
           ...(waitingDetail?.malformed ? { malformedRequires: waitingDetail.malformed } : {}),
-          // The held targets, verbatim, so `scp decision get` answers "which dependency, where"
-          // without a second call. Absent — not an empty array — when no coupling is involved, so
-          // every pre-increment-4 watchdog Decision keeps exactly the shape it had.
+          // The held targets — IDS ONLY (`withoutDisplayNames`) — so `scp decision get` answers
+          // "which dependency, where" without a second call, in terms that cannot be rewritten by
+          // a later rename. Absent, not an empty array, when no coupling is involved, so every
+          // pre-increment-4 watchdog Decision keeps exactly the shape it had.
           ...(heldDetail ? { heldStageDependencies: heldDetail.held } : {})
         },
         reasonTree: {
@@ -270,6 +277,35 @@ export async function runWatchdogSweep(
   }
 
   return flags;
+}
+
+/**
+ * THE HELD TARGETS AS IDS ONLY, for the Decision's `inputContext`.
+ *
+ * `resolveStageDependencyStatus` returns display names alongside every id, because its primary
+ * consumers are a CLI and a web page where an id is not an answer. A DECISION is the other kind of
+ * consumer: `stage-dependency-status.ts`'s own `toWireVerdict` doc states the rule — display names
+ * are the thing a persisted Decision deliberately does NOT carry, because renaming a component
+ * would then rewrite the recorded inputs of a verdict that was reached about something else
+ * entirely. An audit record has to keep meaning what it meant, and an id is the only part of this
+ * that does.
+ *
+ * `summary` stays: `describeStageDependencyHold` renders ids, never names (checked, and it is the
+ * same function the hold Decision's own `reasonTree` is built from), so it is already byte-stable.
+ *
+ * The `reasonTree.waitingOn` sentence beside this DOES name the deployment-target, and that is
+ * deliberate rather than an oversight of the same rule: it is the line that goes out in the
+ * notification to a human being woken at 2am, and `describeStageDependencyStatus` says so where it
+ * appends the place. Structured inputs get ids; prose gets names.
+ */
+function withoutDisplayNames(target: ChangeStageDependencyTarget): unknown {
+  return {
+    targetObjectId: target.targetObjectId,
+    componentObjectId: target.componentObjectId,
+    deploymentTargetObjectId: target.deploymentTargetObjectId,
+    held: target.held,
+    dependencies: target.dependencies.map(({ dependsOnName: _dropped, ...verdict }) => verdict)
+  };
 }
 
 // -------------------------------------------------------------------------------------------

@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import type {
   ApprovalRequest,
   Change,
+  ChangeStageDependencyTarget,
   ChangeWave,
   ChangeWaveTarget,
   ControlRun,
@@ -324,6 +325,15 @@ export function ChangePipelinePage(): React.JSX.Element {
   }
 
   const { decisions, controlRuns, waitStatus } = explainQuery.data;
+  // ADR-0028 increment 4 — the LIVE stage-dependency verdict for each untriggered wave target.
+  // `undefined` from a pre-increment-4 server (the field is additive and optional), `null` from a
+  // current one meaning "this change coupled nothing at any stage"; both render as they always did.
+  //
+  // This page had the field on the wire and threw it away, which is the whole defect: a held target
+  // is `pending` in `change_wave_targets.status`, so it was indistinguishable from a target the
+  // wave has not reached. Read here rather than re-fetched — it arrives on the same `explain`
+  // response the page is already built from, so nothing about this costs a round trip.
+  const stageDependencyStatus = explainQuery.data.stageDependencyStatus ?? null;
   // M16.1 — the boundary segment. `undefined` only from a pre-M16.1 server (the field is additive
   // and optional); `null` from a current server means "this change never crossed a boundary".
   const boundarySegment = explainQuery.data.boundarySegment ?? null;
@@ -344,6 +354,17 @@ export function ChangePipelinePage(): React.JSX.Element {
       executorSystemUrl,
       repoPattern: data.repoByKey[`${target.targetObjectId}::${target.type}`]
     };
+  }
+
+  /** The hold verdict for one wave target, or null. Keyed on `targetObjectId` — the server's status
+   *  reports the same id the wave target carries — and gated on `held`, because the status also
+   *  lists targets whose dependencies are all SATISFIED, and painting one of those "held" would
+   *  invert the fact. */
+  function holdFor(target: ChangeWaveTarget): ChangeStageDependencyTarget | null {
+    const found = stageDependencyStatus?.targets.find(
+      (entry) => entry.targetObjectId === target.targetObjectId
+    );
+    return found?.held ? found : null;
   }
 
   const gate = finalGate(change, approvals, decisions, gateQuery.data, controlRuns);
@@ -482,7 +503,12 @@ export function ChangePipelinePage(): React.JSX.Element {
             const promo = next ? wavePromotion(wave, next) : undefined;
             return (
               <div key={wave.id} className="flex w-full flex-col items-center gap-1">
-                <PipelineWaveCard wave={wave} waveNumber={index + 1} linksFor={linksFor} />
+                <PipelineWaveCard
+                  wave={wave}
+                  waveNumber={index + 1}
+                  linksFor={linksFor}
+                  holdFor={holdFor}
+                />
                 {promo && <PromotionArrow state={promo.state} label={promo.label} />}
                 {isLast && (
                   <PromotionArrow

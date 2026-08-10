@@ -215,8 +215,9 @@ const WITHHOLDABLE_STATUSES = new Set(["pending", "triggering"]);
  * Nothing for a component with nothing releasing (the candidate set is empty and this returns before
  * any query), and nothing for an uncoupled release: the resolver's declaration parse is in memory
  * and it returns `null` before touching the plan. The candidates are only those releases that could
- * still be withheld — an `executing` change with a `pending`/`triggering` target at one of THIS
- * component's placements — which is at most one per pipeline per stage.
+ * still be withheld — a change with a `pending`/`triggering` target at one of THIS component's
+ * placements — which is at most one per pipeline per stage. A candidate whose change is no longer
+ * `executing` costs one indexed state read inside the resolver and stops there.
  */
 async function holdsByPlacement(
   tx: TenantTx,
@@ -225,15 +226,19 @@ async function holdsByPlacement(
 ): Promise<Map<string, ComponentPipelineHold>> {
   const out = new Map<string, ComponentPipelineHold>();
 
-  // THE LIVE-STATE GATE, and it is not an optimisation. The resolver reports on the first wave that
-  // is not `succeeded`/`skipped`, so on a FAILED or CANCELLED change that wave is the dead one and
-  // its never-run `pending` targets would each evaluate to a hold — a "waiting on X" badge on a
-  // release that is not waiting for anything and never will. The change's own state is what
-  // separates a wait from an abandonment, and only `executing` is a wait.
+  // NO LIVE-STATE GATE HERE ANY MORE, and its absence is the fix rather than an omission. This
+  // module used to carry one — `current.changeState !== "executing" && continue` — and it was the
+  // ONLY one of the resolver's three call sites that did, so `explain` and the watchdog reported a
+  // cancelled release as held forever. The gate now lives inside `resolveStageDependencyStatus`
+  // (`isStillTriggerable`), which is the one place every caller passes through. Re-adding a copy
+  // here would restore the two-predicates-one-question shape that produced the bug.
+  //
+  // This filter is a DIFFERENT predicate and stays: a target past `pending`/`triggering` has been
+  // handed to an executor, so no release at this stage could be withheld and there is nothing to
+  // ask the resolver about.
   const candidates = new Set<string>();
   for (const list of currents.values()) {
     for (const current of list) {
-      if (current.changeState !== "executing") continue;
       if (current.targetStatus && WITHHOLDABLE_STATUSES.has(current.targetStatus)) {
         candidates.add(current.changeId);
       }

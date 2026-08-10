@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { and, eq } from "drizzle-orm";
 import { ScpClient } from "@scp/sdk";
 import type { ChangeStageDependencyStatus, ChangeWaitStatus, GraphObject } from "@scp/schemas";
+import { withTenantTx } from "../db/tenant-tx.js";
+import { objects } from "../db/schema.js";
 import {
   createTestComponent,
   createTestOrg,
@@ -167,6 +170,72 @@ describe("stage dependencies: `scp change wait-status` / `explain` (ADR-0028 inc
       const { stdout } = await cli.run(["change", "explain", change.id]);
       expect(stdout).toContain("Decisions (");
       expect(stdout).toContain("pending");
+    } finally {
+      await cli.cleanup();
+    }
+  }, 180_000);
+
+  it("PRINTS `NOT ENFORCED` and the footer for a coupling that had no place to be scoped by", async () => {
+    // THE PATHS THE REVIEW CALLED DEAD. `stageDependencyMark`'s `unscopeable` arm and
+    // `formatStageDependencyLines`'s footer were pinned only against hand-written fixtures, and the
+    // reviewer's test was decisive: hard-coding the server's `unenforced` to `false` left all 43 of
+    // this increment's cases green. That does not mean the state is unreachable — it means nothing
+    // reached it. `stage-dependency-surfaces.integration.test.ts` now pins the server half; this is
+    // the terminal half, through the real binary, so the two cannot drift apart.
+    //
+    // THE SHAPE, and why it is the honest one: NO `topology:`, so `compilePlan` takes its toposort
+    // path and the wave targets name COMPONENTS rather than placements. A component is not a place,
+    // so a stage-scoped coupling has nothing to be scoped by and fails OPEN. The malformed entry
+    // beside it is what makes the state durable rather than one tick wide — the fail-open triggers
+    // its target immediately, and only a fail-CLOSED entry keeps the target awaiting a trigger long
+    // enough for an operator (or this test) to read the surface at all.
+    const dependency = await componentAtGamma("cli-unenf-dep");
+    const dependant = await componentAtGamma("cli-unenf-app");
+    const change = await admin.changes.propose({
+      name: `cli-unenf-${randomUUID().slice(0, 8)}`,
+      targets: [dependant.id],
+      stageDependencies: [{ dependsOn: dependency.id }]
+    });
+    const stored = (await admin.changes.get(change.id)).properties as Record<string, unknown>;
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(objects)
+        .set({
+          properties: {
+            ...stored,
+            stageDependencies: [{ dependsOn: dependency.id }, "not-a-stage-dependency-at-all"]
+          }
+        })
+        .where(and(eq(objects.orgId, org.orgId), eq(objects.id, change.id)))
+    );
+    for (let i = 0; i < 4; i++) {
+      await reconcileOrgTick(
+        server.deps.db,
+        org.orgId,
+        host,
+        server.deps.celSandbox!,
+        server.deps.config.secretsMasterKey
+      );
+    }
+    // The precondition, asserted: the server really is reporting the fail-open. Without it the
+    // stdout assertions below could pass on a server that never produced the state.
+    const explained = await admin.changes.explain(change.id);
+    expect(explained.stageDependencyStatus?.unenforced).toBe(true);
+
+    const cli: CliInvocation = await startCliSession(server.baseUrl);
+    try {
+      await cli.run(["login", "--username", org.adminUsername, "--password", org.adminPassword]);
+      const { stdout } = await cli.run(["change", "wait-status", change.id]);
+
+      // THE MARK. `unscopeable` carries `satisfied: true` because the release proceeds — printing
+      // "satisfied" for it would tell an operator their coupling held when it was never applied.
+      expect(stdout).toContain("NOT ENFORCED");
+      expect(stdout).toContain("unscopeable");
+      // THE FOOTER, and the query it sends the operator to. That query has to be one that returns a
+      // row: the persisted counterpart is asserted server-side in the surfaces suite.
+      expect(stdout).toContain("stage_dependency_unscoped");
+      // The PLACE, said outright rather than rendered as a stage called `null` — there is no place.
+      expect(stdout).toContain("no placement");
     } finally {
       await cli.cleanup();
     }

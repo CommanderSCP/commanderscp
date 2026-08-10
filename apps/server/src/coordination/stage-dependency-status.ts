@@ -5,7 +5,7 @@ import type {
   ChangeStageDependencyTarget,
   ChangeStageDependencyVerdict
 } from "@scp/schemas";
-import { objects } from "../db/schema.js";
+import { changes, objects } from "../db/schema.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { stageDependenciesOf, targetObjectIdsOf } from "./changes-repo.js";
 import { getLatestPlanForChange, loadDependsOnEdges } from "./plan-service.js";
@@ -48,6 +48,15 @@ import {
  * nothing at all. Stamping a `held` flag anywhere so a projection could read it back cheaply would be
  * one write per held target per 1 s tick: the 1.44 GB/day write amplification relocated to another
  * table.
+ *
+ * THE LIVE-STATE GATE IS IN HERE, not at the call sites, and that placement is the fix for a real
+ * defect rather than tidying. The first version of this module left the gate to the caller;
+ * `component-pipeline.ts` applied one and the other two callers did not, so `explain` — and
+ * therefore `scp change explain` and `scp change wait-status` — reported `held: true` FOREVER for a
+ * CANCELLED change. That is the permanent-marker trap the module doc above is entirely about,
+ * arrived at from the other direction: not a stale row, but a live predicate run against a change
+ * nothing will ever act on. A gate a caller has to remember is a gate the next caller forgets, so it
+ * lives at the one place all of them pass through. See `isStillTriggerable` below for the predicate.
  */
 export async function resolveStageDependencyStatus(
   tx: TenantTx,
@@ -74,6 +83,16 @@ export async function resolveStageDependencyStatus(
   ) {
     return null;
   }
+
+  // THE LIVE-STATE GATE. Read here rather than taken from the caller: a parameter is a thing a
+  // caller can pass wrongly or a future caller can forget, and forgetting it is precisely the bug
+  // this replaces. One indexed lookup, and only for a change that actually coupled something.
+  const [changeRow] = await tx
+    .select({ state: changes.state })
+    .from(changes)
+    .where(and(eq(changes.orgId, orgId), eq(changes.objectId, change.objectId)))
+    .limit(1);
+  if (!isStillTriggerable(changeRow?.state)) return NOTHING_AWAITING_A_TRIGGER;
 
   const resolvedPlan =
     plan === undefined ? await getLatestPlanForChange(tx, orgId, change.objectId) : plan;
@@ -136,6 +155,45 @@ export async function resolveStageDependencyStatus(
   };
 }
 
+/**
+ * A HOLD IS ONLY REAL WHILE THE ENGINE WOULD STILL TRIGGER THE TARGET, and exactly one change state
+ * satisfies that: `executing`. `reconcile.ts` evaluates the coupling in ONE place —
+ * `advanceExecutingChanges`, whose selector is `listChangeRowsInStates(tx, orgId, ["executing"], …)`
+ * — inside the branch that decides whether to call `triggerWaveTarget`. No other state reaches it.
+ *
+ * So for every other state the honest answer is "no wave target is awaiting a trigger", and it is
+ * NOT the same as "held: false because the dependencies are satisfied". A cancelled or failed
+ * change's active wave is the dead one; its never-run `pending` targets each still evaluate to a
+ * hold, because the dependency genuinely never deployed and nothing about that verdict knows the
+ * release was abandoned. Reporting it would tell an operator a corpse is waiting for something.
+ *
+ * The two states it is tempting to include, and why they are not:
+ *   - `coordinated` — the plan exists and its targets are `pending`, but the hold has not been
+ *     applied to them yet and the change may still be blocked before it ever gets there. A verdict
+ *     here would be a forecast, and this surface's whole claim is that it reports what IS.
+ *   - `waiting` — parked on a CROSS-CHANGE `requires` prerequisite (a different mechanism entirely,
+ *     `coupling.ts`). Its targets are not being withheld by a stage dependency; they are not being
+ *     considered at all. `waitStatus` is the field that answers for that change.
+ *
+ * The value is deliberately a `state`, not "does a plan exist" or "is the wave running": those are
+ * derived facts that can be true of a dead change, and the state column is the one the engine's own
+ * selector reads.
+ */
+function isStillTriggerable(state: string | undefined): boolean {
+  return state === "executing";
+}
+
+/** What a change that IS coupled but is past (or short of) the point of being triggered reports.
+ *  NOT `null` — null is "this change coupled nothing at any stage", a different claim, and the CLI
+ *  prints it as one. An empty `targets` renders as "no wave target is awaiting a trigger", which is
+ *  the true statement about a cancelled release that declared a coupling. */
+const NOTHING_AWAITING_A_TRIGGER: ChangeStageDependencyStatus = {
+  held: false,
+  waveIndex: null,
+  unenforced: false,
+  targets: []
+};
+
 /** The verdict as reconcile computed it, plus the two things a persisted Decision deliberately does
  *  NOT carry: display names (they would make the Decision's `inputContext` churn on a rename) and the
  *  rendered sentence (`reasonTree` carries it once, for the UNSATISFIED verdicts only). */
@@ -161,6 +219,17 @@ function toWireVerdict(
   };
 }
 
+/** A `dependsOn` that is actually an object id. An `undeclarable` verdict's `dependsOn` is the raw
+ *  stored entry rendered as JSON — `"not-a-stage-dependency-at-all"`, `{"dependsOn":42}` — because
+ *  there was no parseable id to name, and the wire schema says so (`ChangeStageDependencyVerdict`'s
+ *  `dependsOn` is deliberately NOT `.uuid()`). Postgres does not shrug at those: `id IN ('…')`
+ *  against a `uuid` column RAISES `invalid input syntax for type uuid`, so a single malformed stored
+ *  entry turned this whole read into a 500 — `GET /changes/{id}/explain`, `scp change explain` and
+ *  `scp change wait-status` all of them, for exactly the change an operator is trying to diagnose.
+ *  The comment below already said such ids "are simply absent"; the query it described had no way to
+ *  make that true. Naming a hazard is not handling it. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** Display names for every id this status mentions, in ONE query. Ids that resolve to nothing (a
  *  deleted component, an `undeclarable` entry's raw JSON) are simply absent, and the caller renders
  *  `null` — never the id dressed up as a name. */
@@ -179,7 +248,9 @@ async function resolveNames(
       ids.add(entry.evaluation.stage.componentObjectId);
       ids.add(entry.evaluation.stage.deploymentTargetObjectId);
     }
-    for (const verdict of entry.evaluation.verdicts) ids.add(verdict.dependsOn);
+    for (const verdict of entry.evaluation.verdicts) {
+      if (UUID.test(verdict.dependsOn)) ids.add(verdict.dependsOn);
+    }
   }
   if (ids.size === 0) return new Map();
   const rows = await tx
