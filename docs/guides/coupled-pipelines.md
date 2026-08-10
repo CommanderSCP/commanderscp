@@ -106,6 +106,8 @@ $ scp change wait-status 019f-...-abcd
 Waiting on 1 of 1 prerequisite(s):
   - feature-a @ us-east-1 (019f-...-1234): OUTSTANDING
       did you mean one of: feature-b, feature-c?
+
+(no stage dependencies — this change coupled nothing at any stage)
 ```
 
 Once satisfied:
@@ -114,7 +116,16 @@ Once satisfied:
 $ scp change wait-status 019f-...-abcd
 Coupled prerequisites (1, all satisfied):
   - feature-a @ us-east-1 (019f-...-1234): satisfied by change 019f-...-5678
+
+(no stage dependencies — this change coupled nothing at any stage)
 ```
+
+The second section is the **other** coupling —
+[ADR-0028](../adr/0028-stage-scoped-component-coupling.md)'s stage-scoped component dependencies,
+which withhold one wave target's trigger at one place rather than parking the whole change in
+`waiting`. The two are independent: a change can be in either, both, or neither, and `wait-status`
+prints a line for each so an unanswered "why is this not moving?" is never answered by silence.
+The examples above declare only `requires`, so the stage-dependency section says so and stops.
 
 **CLI, full picture** — `scp change explain <id>` shows the same coupling section alongside the
 compiled plan and every Decision made about the change.

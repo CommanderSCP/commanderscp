@@ -36,14 +36,52 @@ import { PromotionArrow, type PromotionState } from "../components/pipeline/Prom
  * side by side, because that is what a parallel wave means.
  */
 
+/**
+ * WHICH OF THIS STAGE'S PIPELINES THE HOLD IS ABOUT (ADR-0028 increment 4).
+ *
+ * `stages[].hold` is keyed on the PLACEMENT — the coupling is evaluated per wave target and a wave
+ * target's `target_object_id` is the placement — so it says "a release is being withheld here"
+ * without saying which lane. That distinction matters: a change can hold this place's
+ * `configuration` target while the infrastructure pipeline here is simply idle, and painting the
+ * infra lane "held" would claim a pipeline is waiting when nothing of it is running at all.
+ *
+ * The join is the one the response already carries: the hold names its `changeId`, and each lane's
+ * `current` names the change whose release is in that lane. The status check is what keeps it exact
+ * — a target already handed to an executor is past the hold, whatever another target of the same
+ * change at the same place is doing.
+ */
+function holdFor(
+  stage: ComponentPipelineStage,
+  lane: Lane
+): NonNullable<ComponentPipelineStage["hold"]> | null {
+  const hold = stage.hold;
+  if (!hold) return null;
+  const current = currentFor(stage, lane);
+  if (!current || current.changeId !== hold.changeId) return null;
+  if (current.targetStatus !== "pending" && current.targetStatus !== "triggering") return null;
+  return hold;
+}
+
 /** A stage's promotion state, from what the SERVER could observe — never invented.
  *
  *  `pending` (grey) is the honest default: it means "nothing has released here", which is a real and
- *  common state for a placement, NOT a failure. Only an actually-failed target goes red. */
-function stateOf(current: ComponentPipelineStage["current"]): PromotionState {
+ *  common state for a placement, NOT a failure. Only an actually-failed target goes red.
+ *
+ *  `held` sits between the two and is the reason this function grew a second argument. A held wave
+ *  target's status is and stays `pending` — the server's hold `continue`s before it is ever handed
+ *  to an executor — so without the hold it painted identically to "the wave has not reached here
+ *  yet". Those are opposite facts: one is waiting on something NAMED, the other on nothing. */
+function stateOf(
+  current: ComponentPipelineStage["current"],
+  hold: ComponentPipelineStage["hold"] = null
+): PromotionState {
   if (!current) return "pending";
   const status = current.targetStatus ?? "";
   if (status === "failed" || status === "blocked") return "blocked";
+  // Before the `waiting` check, not after: the two cannot co-occur (a stage-dependency hold applies
+  // to a change in `executing`), and reading the more specific fact first keeps it that way if they
+  // ever could.
+  if (hold) return "held";
   if (current.changeState === "waiting") return "approval";
   if (status === "succeeded") return "open";
   return "pending";
@@ -248,13 +286,21 @@ function MaintainerLine({
 }
 
 function StatusPill({
-  current
+  current,
+  hold
 }: {
   current: ComponentPipelineStage["current"];
+  hold?: ComponentPipelineStage["hold"];
 }): React.JSX.Element {
   const status = current?.targetStatus ?? null;
-  const style =
-    status === "succeeded"
+  // A HELD TARGET'S RAW STATUS IS `pending`, AND SAYING SO IS THE BUG. The word is what an operator
+  // reads first, and "pending" here means the opposite of what it means one card up: not "the wave
+  // has not reached this stage" but "the wave IS here and something named is withholding it". So
+  // the hold overrides the word — the raw column is still on the wire and still in the Deployment
+  // row below, it is just no longer the headline.
+  const style = hold
+    ? "bg-indigo-50 text-indigo-700"
+    : status === "succeeded"
       ? "bg-green-50 text-green-700"
       : status === "failed" || status === "blocked"
         ? "bg-red-50 text-red-700"
@@ -265,9 +311,65 @@ function StatusPill({
     <span
       className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-medium ${style}`}
       data-testid="stage-status-pill"
+      data-held={hold ? "true" : undefined}
     >
-      {status ?? "never deployed"}
+      {hold ? "held" : (status ?? "never deployed")}
     </span>
+  );
+}
+
+/**
+ * WHAT IS WITHHOLDING THIS STAGE'S RELEASE — a subnode of the stage, beside its entry gate.
+ *
+ * A subnode rather than a node of the pipeline, for exactly the reason the gate is one: this is a
+ * condition on entering ONE place, not a step the release passes through on its way somewhere.
+ *
+ * IT NAMES THE DEPENDENCY, which is the entire point of the increment. A badge saying only "held"
+ * would move the operator from "why is this pending?" to "why is this held?" and no further, and
+ * the answer is not discoverable from anywhere else on this page. Each line is the server's own
+ * `describeStageDependencyHold` sentence — the same one the hold Decision's `reasonTree` carries —
+ * so the page and the audit record cannot describe the same verdict differently.
+ *
+ * The dependency renders by NAME with the id only as a tooltip, and falls back to the id when the
+ * server sent no name (a deleted component, or an `undeclarable` entry whose raw JSON never had an
+ * id to resolve). It is never an id dressed up as a name.
+ */
+function HoldSubnode({
+  hold
+}: {
+  hold: NonNullable<ComponentPipelineStage["hold"]>;
+}): React.JSX.Element {
+  return (
+    <div
+      className="border-l-2 border-indigo-200 pl-2 text-[11px] leading-snug text-indigo-800"
+      data-testid="stage-hold"
+    >
+      <span className="text-indigo-400">Held here</span>{" "}
+      <span title="A stage-scoped component coupling (ADR-0028): this release is waiting for another component to reach this same stage. It clears itself — no operator action releases it.">
+        the release{" "}
+        <span className="font-medium">{hold.changeName ?? hold.changeId.slice(0, 8)}</span> is
+        waiting on:
+      </span>
+      <div className="mt-0.5">
+        {hold.dependencies.map((dependency) => (
+          <div key={dependency.dependsOn} data-testid="stage-hold-dependency">
+            <span className="font-medium" title={dependency.dependsOn}>
+              {dependency.dependsOnName ?? dependency.dependsOn}
+            </span>{" "}
+            <span className="text-indigo-500">— {dependency.summary}</span>
+            {dependency.source === "edge" && (
+              // The remedy differs and must be visible: this coupling came from a `depends_on` edge
+              // between two of the change's own targets, not from a declaration, so it is deleted in
+              // the graph rather than edited in a pipeline.
+              <span className="text-indigo-400" data-testid="stage-hold-from-edge">
+                {" "}
+                (from a <span className="font-mono">depends_on</span> edge, not a declaration)
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -281,6 +383,7 @@ function StageCard({
   const versionUnknown = stage.unknownFields.includes("version");
   const bindings = bindingsFor(stage, lane);
   const current = currentFor(stage, lane);
+  const hold = holdFor(stage, lane);
   return (
     <Card className="min-w-[15rem] flex-1" data-testid="pipeline-stage">
       <CardHeader className="pb-2">
@@ -290,7 +393,7 @@ function StageCard({
           hint={`deploys to ${stage.deploymentTarget.name}`}
           right={
             <span className="flex items-center gap-1.5">
-              <StatusPill current={current} />
+              <StatusPill current={current} hold={hold} />
               {stage.bindings.length === 0 && (
                 // An unbound placement FAKE-SUCCEEDS under stage-shaped compilation (ADR-0006 case (a)).
                 // It must be loud, not absent. Gated on the WHOLE stage, not on this lane: a stage with a
@@ -309,6 +412,7 @@ function StageCard({
       <CardContent className="space-y-2 pl-[3.4rem] text-xs text-slate-600">
         <MaintainerLine maintainedBy={stage.maintainedBy} />
         <GateSubnode gate={stage.gate} />
+        {hold && <HoldSubnode hold={hold} />}
         {/* ONE ROW PER PIPELINE. A stage runs a build, an infra plan/apply and a config sync as
             separate pipelines (ADR-0007 Type), and rendering only the first hides the others. The
             Type is shown, not implied: "agentkit-bootstrap @ homelab-argo" says nothing about
@@ -351,16 +455,24 @@ function StageCard({
             // `change_wave_targets.status` IS the deployment outcome at this place. The arrow into
             // the stage already uses it for colour; showing it in words is what makes "deployed and
             // succeeded" distinguishable from "deployed and failed" without reading a colour.
+            //
+            // The RAW value is kept even when held — this row is the one place the column is
+            // reported verbatim, and a held target really is `pending` — with the reason appended
+            // rather than substituted, so the two facts stay separable. Reading `pending` here and
+            // nothing else was the whole defect.
             <span
               className={
                 current.targetStatus === "failed" || current.targetStatus === "blocked"
                   ? "font-medium text-red-700"
-                  : current.targetStatus === "succeeded"
-                    ? "font-medium text-green-700"
-                    : "text-slate-500"
+                  : hold
+                    ? "font-medium text-indigo-700"
+                    : current.targetStatus === "succeeded"
+                      ? "font-medium text-green-700"
+                      : "text-slate-500"
               }
             >
               {current.targetStatus ?? "unknown"}
+              {hold ? " — never triggered: a stage dependency is withholding it" : ""}
               {current.waveName ? ` · wave ${current.waveName}` : ""}
             </span>
           ) : (
@@ -429,17 +541,47 @@ function UnplacedStageCard({
   );
 }
 
-/** The arrow INTO a wave, coloured by what that wave can honestly claim. */
-function arrowInto(wave: JourneyWave, lane: Lane): { state: PromotionState; label: string } {
-  const states = wave.entries.flatMap((e) =>
-    e.placed ? [stateOf(currentFor(e.stage, lane))] : []
-  );
+/**
+ * The arrow INTO a wave, coloured by what that wave can honestly claim.
+ *
+ * Exported for `component-pipeline-continuous.test.tsx`: the precedence ladder is a contract, and a
+ * new state has to be PLACED in it deliberately rather than fall through to whatever is left.
+ */
+export function arrowInto(
+  wave: JourneyWave,
+  lane: Lane
+): { state: PromotionState; label: string; detail?: string } {
+  const placed = wave.entries.flatMap((e) => (e.placed ? [e.stage] : []));
+  const states = placed.map((stage) => stateOf(currentFor(stage, lane), holdFor(stage, lane)));
   if (states.length === 0) {
     // Not `blocked` — nothing failed and no gate denied anything. There is simply nowhere for the
     // release to land, which is a configuration fact, not a verdict.
     return { state: "pending", label: "not placed — releases stop before here" };
   }
   if (states.includes("blocked")) return { state: "blocked", label: "blocked" };
+  // ABOVE `approval` and below `blocked`. A wave with one failed target and one held one has
+  // already gone wrong, and the failure is the thing to act on — the server agrees, and stops
+  // holding on a failed wave for exactly that reason. But a hold outranks `approval` and `pending`:
+  // it is the only one of the three that names a specific other thing to go and look at.
+  if (states.includes("held")) {
+    // The dependency BY NAME on the arrow itself, so the reason survives without opening a stage —
+    // for a parallel wave whose targets are held by different things, all of them, de-duplicated.
+    const names = [
+      ...new Set(
+        placed.flatMap(
+          (stage) =>
+            holdFor(stage, lane)?.dependencies.map(
+              (dependency) => dependency.dependsOnName ?? dependency.dependsOn
+            ) ?? []
+        )
+      )
+    ];
+    return {
+      state: "held",
+      label: "held",
+      detail: `waiting for ${names.join(", ")} at this stage`
+    };
+  }
   if (states.includes("approval")) return { state: "approval", label: "awaiting approval" };
   if (states.every((s) => s === "open")) return { state: "open", label: "released" };
   return { state: "pending", label: "nothing released yet" };
@@ -1105,25 +1247,31 @@ export function ComponentPipelinePage({
                   {lane.absent}
                 </p>
               )}
-              {nodes.map((node, i) => (
-                <div key={node.key} className="flex w-full flex-col items-center gap-1">
-                  {i > 0 && (
-                    // Between two nodes, the connector is only a verdict where the model HAS one: a
-                    // promotion into a deploy stage. Everywhere else it is a plain link, because
-                    // colouring build→registry green would invent a gate nobody evaluated.
-                    <PromotionArrow
-                      state={node.kind === "wave" ? arrowInto(node.wave, lane).state : "pending"}
-                      label={node.kind === "wave" ? arrowInto(node.wave, lane).label : ""}
-                    />
-                  )}
-                  {node.kind === "source" && (
-                    <SourceNode label={node.label} sources={node.sources} />
-                  )}
-                  {node.kind === "build" && <BuildNode bindings={node.bindings} />}
-                  {node.kind === "registry" && <RegistryNode />}
-                  {node.kind === "wave" && <WaveRow wave={node.wave} lane={lane} />}
-                </div>
-              ))}
+              {nodes.map((node, i) => {
+                // Computed ONCE. It was called twice inline for `state` and `label`, and a third
+                // call for `detail` would have made the duplication the shape of the code.
+                const arrow = node.kind === "wave" ? arrowInto(node.wave, lane) : null;
+                return (
+                  <div key={node.key} className="flex w-full flex-col items-center gap-1">
+                    {i > 0 && (
+                      // Between two nodes, the connector is only a verdict where the model HAS one: a
+                      // promotion into a deploy stage. Everywhere else it is a plain link, because
+                      // colouring build→registry green would invent a gate nobody evaluated.
+                      <PromotionArrow
+                        state={arrow?.state ?? "pending"}
+                        label={arrow?.label ?? ""}
+                        detail={arrow?.detail}
+                      />
+                    )}
+                    {node.kind === "source" && (
+                      <SourceNode label={node.label} sources={node.sources} />
+                    )}
+                    {node.kind === "build" && <BuildNode bindings={node.bindings} />}
+                    {node.kind === "registry" && <RegistryNode />}
+                    {node.kind === "wave" && <WaveRow wave={node.wave} lane={lane} />}
+                  </div>
+                );
+              })}
             </section>
           );
         })()

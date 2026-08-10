@@ -43,7 +43,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   Link: ({ children }: { children?: React.ReactNode }) => <a>{children}</a>
 }));
 
-const { StageCardForTest, UnplacedStageCardForTest, buildJourney, laneNodes, LANES } =
+const { StageCardForTest, UnplacedStageCardForTest, arrowInto, buildJourney, laneNodes, LANES } =
   await import("./component-pipeline");
 
 const SOFTWARE_LANE = LANES.find((l) => l.key === "software")!;
@@ -803,5 +803,248 @@ describe("who MAINTAINS a place", () => {
   it("names the domain on an UNPLACED stage too — it is still somebody's to run", () => {
     const html = renderToStaticMarkup(<UnplacedStageCardForTest stage={unplaced()} />);
     expect(html, "'not placed' must not read as 'nowhere'").toContain("Maintained by");
+  });
+});
+
+/**
+ * ADR-0028 INCREMENT 4 — A HELD STAGE IS LEGIBLE AS ONE.
+ *
+ * The defect in one line: a wave target whose trigger is withheld by a stage-scoped component
+ * coupling keeps `change_wave_targets.status = "pending"` forever — the server's hold `continue`s
+ * before the target is ever handed to an executor — and this view painted that identically to "the
+ * wave has not reached this stage yet". Those are opposite facts. One is waiting on something NAMED
+ * and clears itself; the other is waiting on nothing.
+ *
+ * The server half (`apps/server/src/coordination/stage-dependency-surfaces.integration.test.ts`)
+ * proves `stages[].hold` is computed live and self-clearing. This file owns what a browser can still
+ * undo: given that response, does the page say WHAT it is waiting on?
+ *
+ * ============================================================================================
+ * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
+ * ============================================================================================
+ * | Mutation | Result |
+ * |---|---|
+ * | `StatusPill` renders `status ?? "never deployed"` regardless of the hold | 1 fails — `expected 'pending' to contain 'held'`. The pill reads `pending`: the defect verbatim |
+ * | `HoldSubnode` maps over `[]` instead of `hold.dependencies` | 4 fail — the naming, id-fallback, edge-provenance and per-lane cases. The card still says "Held here" and gives no way to find out by what |
+ * | `holdFor` ignores the lane and returns `stage.hold` whenever it is set | 1 fails — `expected … not to contain 'payments-api'`. The infrastructure lane, whose release here succeeded a month ago, is painted as held by the software pipeline's coupling |
+ * | `stateOf` maps a hold to `"blocked"` — the union member that already existed | 2 fail — `expected 'blocked' to be 'held'`. Worth keeping in mind: it type-checks, it renders, and it re-creates the permanent-red marker the server deliberately wrote `verdict: "hold"` rather than `"block"` to avoid |
+ * | `arrowInto` checks `held` AFTER `approval` | 1 fails — `expected 'approval' to be 'held'` |
+ * | `arrowInto` checks `held` BEFORE `blocked` (by dropping the `blocked` rung) | 1 fails — `expected 'held' to be 'blocked'`. This is the rung the ladder test was given a two-target fixture for; with one target per wave it would have stayed green, which is why the fixture holds a held target and a FAILED one in the same wave |
+ */
+describe("a HELD stage is not a `pending` one", () => {
+  const HELD_CHANGE = "019f0000-0000-7000-8000-00000000e001";
+  const OTHER_CHANGE = "019f0000-0000-7000-8000-00000000e002";
+  const DEP = "019f0000-0000-7000-8000-00000000e003";
+
+  /** The software lane's release at this stage is held; nothing else about the stage is unusual. */
+  function heldStage(over: Partial<ComponentPipelineStage> = {}): ComponentPipelineStage {
+    return stage({
+      currents: [
+        {
+          changeId: HELD_CHANGE,
+          changeName: "bump-config",
+          changeState: "executing",
+          waveName: "gamma",
+          // THE RAW COLUMN, verbatim — and the whole reason this fixture is shaped this way. A held
+          // target really is `pending`, so a fixture that gave it any other status would be testing
+          // a state the server cannot produce.
+          targetStatus: "pending",
+          type: "configuration",
+          category: "configuration"
+        }
+      ],
+      hold: {
+        changeId: HELD_CHANGE,
+        changeName: "bump-config",
+        waveIndex: 0,
+        dependencies: [
+          {
+            dependsOn: DEP,
+            dependsOnName: "payments-api",
+            branch: "never_deployed",
+            satisfied: false,
+            summary: "payments-api has never deployed here"
+          }
+        ]
+      },
+      ...over
+    });
+  }
+
+  it("says HELD where it used to say `pending` — the defect, verbatim", () => {
+    const html = renderToStaticMarkup(<StageCardForTest stage={heldStage()} />);
+    const pill = /data-testid="stage-status-pill"[^>]*>(.*?)<\/span>/s.exec(html)?.[1] ?? "";
+    expect(pill, "the headline must not be the word that means the opposite here").toContain(
+      "held"
+    );
+    expect(pill).not.toContain("pending");
+    // The raw column is NOT hidden — it is reported where it is reported verbatim, with the reason
+    // appended rather than substituted, so "never triggered" and "in progress" stay separable.
+    const deployment = /data-testid="stage-deployment">(.*?)<\/div>/s.exec(html)?.[1] ?? "";
+    expect(deployment).toContain("pending");
+    expect(deployment).toContain("never triggered");
+  });
+
+  it("NAMES what it is waiting on — the entire point of the increment", () => {
+    const html = renderToStaticMarkup(<StageCardForTest stage={heldStage()} />);
+    const hold = /data-testid="stage-hold"[^>]*>(.*?)<\/div><\/div>/s.exec(html)?.[1] ?? "";
+    expect(
+      hold,
+      "a badge saying only 'held' moves the reader one question along, not to the answer"
+    ).toContain("payments-api");
+    expect(hold, "and the server's own sentence, not a re-worded one").toContain(
+      "has never deployed here"
+    );
+    expect(hold, "and which release is being withheld").toContain("bump-config");
+  });
+
+  it("falls back to the dependency's id when the server resolved no name", () => {
+    // A deleted component, or an `undeclarable` entry whose raw JSON never had an id to resolve.
+    // The id is worse than a name and much better than nothing.
+    const held = heldStage();
+    const html = renderToStaticMarkup(
+      <StageCardForTest
+        stage={{
+          ...held,
+          hold: {
+            ...held.hold!,
+            dependencies: [{ ...held.hold!.dependencies[0]!, dependsOnName: null }]
+          }
+        }}
+      />
+    );
+    expect(html).toContain(DEP);
+  });
+
+  it("says when the coupling came from a `depends_on` EDGE, because the remedy differs", () => {
+    const held = heldStage();
+    const html = renderToStaticMarkup(
+      <StageCardForTest
+        stage={{
+          ...held,
+          hold: {
+            ...held.hold!,
+            dependencies: [{ ...held.hold!.dependencies[0]!, source: "edge" }]
+          }
+        }}
+      />
+    );
+    expect(html, "an edge is deleted in the graph, not edited in a pipeline").toContain(
+      "depends_on"
+    );
+  });
+
+  it("marks ONLY the lane whose release is being withheld", () => {
+    // The hold is keyed on the PLACEMENT, so it says a release is withheld HERE without saying
+    // which pipeline. A stage can hold its `configuration` release while its infrastructure
+    // pipeline is simply idle, and painting the infra lane held would claim a pipeline is waiting
+    // when nothing of it is running.
+    const shared = heldStage({
+      currents: [
+        {
+          changeId: HELD_CHANGE,
+          changeName: "bump-config",
+          changeState: "executing",
+          waveName: "gamma",
+          targetStatus: "pending",
+          type: "configuration",
+          category: "configuration"
+        },
+        {
+          changeId: OTHER_CHANGE,
+          changeName: "tf-apply",
+          changeState: "accepted",
+          waveName: "gamma",
+          targetStatus: "succeeded",
+          type: "infrastructure",
+          category: "infrastructure"
+        }
+      ]
+    });
+
+    const software = renderToStaticMarkup(<StageCardForTest stage={shared} lane={SOFTWARE_LANE} />);
+    expect(software).toContain("payments-api");
+
+    const infra = renderToStaticMarkup(<StageCardForTest stage={shared} lane={INFRA_LANE} />);
+    expect(infra, "the infra pipeline released here a month ago and is not waiting").not.toContain(
+      "payments-api"
+    );
+    expect(infra).not.toContain('data-testid="stage-hold"');
+  });
+
+  it("colours the arrow into the wave `held`, and names the dependency on it", () => {
+    // Neither `blocked` (red, and permanent-reading — the exact conflation the server's
+    // `verdict: "hold"` was chosen to avoid) nor `approval` (which claims a human gate nobody is
+    // standing at). The reason has to survive on the arrow, so it is readable without opening a
+    // stage.
+    const waves = buildJourney({ stages: [heldStage()], unplacedStages: [] });
+    const arrow = arrowInto(waves[0]!, SOFTWARE_LANE);
+    expect(arrow.state).toBe("held");
+    expect(arrow.detail).toContain("payments-api");
+  });
+
+  it("lets a FAILED target outrank a held one, and a held one outrank an approval", () => {
+    // The ladder, with a fixture that can actually tell the rungs apart. A wave that has already
+    // gone wrong is not a wave to describe as waiting — and the server agrees: it stops holding on
+    // a failed wave, because the dependency is not going to arrive in it.
+    const failed = stage({
+      placement: { id: "019f0000-0000-7000-8000-00000000e0f1", urn: "urn:scp:o:placement:x/f" },
+      deploymentTarget: {
+        id: "019f0000-0000-7000-8000-00000000e0f2",
+        name: "gamma-b",
+        environment: "gamma",
+        region: null
+      },
+      currents: [
+        {
+          changeId: OTHER_CHANGE,
+          changeName: "broke-it",
+          changeState: "executing",
+          waveName: "gamma",
+          targetStatus: "failed",
+          type: "configuration",
+          category: "configuration"
+        }
+      ]
+    });
+    const bothWaves = buildJourney({ stages: [heldStage(), failed], unplacedStages: [] });
+    expect(arrowInto(bothWaves[0]!, SOFTWARE_LANE).state).toBe("blocked");
+
+    const awaiting = stage({
+      placement: { id: "019f0000-0000-7000-8000-00000000e0a1", urn: "urn:scp:o:placement:x/a" },
+      deploymentTarget: {
+        id: "019f0000-0000-7000-8000-00000000e0a2",
+        name: "gamma-c",
+        environment: "gamma",
+        region: null
+      },
+      currents: [
+        {
+          changeId: OTHER_CHANGE,
+          changeName: "needs-a-human",
+          changeState: "waiting",
+          waveName: "gamma",
+          targetStatus: "pending",
+          type: "configuration",
+          category: "configuration"
+        }
+      ]
+    });
+    const heldAndAwaiting = buildJourney({
+      stages: [heldStage(), awaiting],
+      unplacedStages: []
+    });
+    expect(
+      arrowInto(heldAndAwaiting[0]!, SOFTWARE_LANE).state,
+      "a hold names a specific other thing to go and look at; an approval names a queue"
+    ).toBe("held");
+  });
+
+  it("leaves an ordinary stage untouched — `hold` absent is not an empty claim", () => {
+    // The boundary. Every response predating increment 4, and every stage that is simply not held,
+    // must render exactly as before.
+    const html = renderToStaticMarkup(<StageCardForTest stage={stage()} />);
+    expect(html).not.toContain('data-testid="stage-hold"');
+    expect(html).toContain("never deployed");
   });
 });

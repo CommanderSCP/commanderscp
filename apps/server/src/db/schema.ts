@@ -524,7 +524,16 @@ export const decisions = pgTable(
     // (drizzle/0046 carries the full before/after EXPLAIN and the write cost).
     index("decisions_org_subject_block_created")
       .on(table.orgId, table.subjectId, table.createdAt.desc())
-      .where(sql`${table.verdict} = 'block'`)
+      .where(sql`${table.verdict} = 'block'`),
+    // `GET /decisions?kind=…` WITHOUT a subject (ADR-0028 increment 4) — the operator who knows the
+    // coupling but not the change id. Every index above leads with `subject_id` or omits `kind`, so
+    // that filter was a PARALLEL SEQ SCAN of the whole table, sorted: measured at 4M rows,
+    // 100.0 ms / 55,650 buffers and every row scanned to return 101, versus 0.098 ms / 8 buffers
+    // with this index (drizzle/0056 carries the full before/after EXPLAIN and the write cost).
+    // `created_at, id` closes the key because that is the keyset cursor's ordering verbatim, so a
+    // page costs one descent and no sort — 0044 leaves `id` out for the opposite reason, its query
+    // is a `LIMIT 1` where a tiebreak cannot change the answer.
+    index("decisions_org_kind_created").on(table.orgId, table.kind, table.createdAt, table.id)
   ]
 );
 
