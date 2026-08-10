@@ -8,7 +8,7 @@ import type {
 import { client } from "../lib/client";
 import { componentPipelineKey } from "../lib/query-client";
 import { useIdOrUrnParam } from "../lib/use-route-params";
-import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { Card, CardContent, CardHeader } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { PromotionArrow, type PromotionState } from "../components/pipeline/PromotionArrow";
