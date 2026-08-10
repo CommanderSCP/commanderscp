@@ -18,6 +18,7 @@ import type {
   DesiredStateManifest,
   DoctorCheck,
   ExecutorType,
+  PipelineClassification,
   Freeze,
   GraphObject,
   Initiative,
@@ -770,12 +771,17 @@ type PlanDiffEntry =
   | PlanSourceMappingDiffEntry
   | PlanExecutorBindingDiffEntry;
 
-function diffEntryRow(entry: PlanDiffEntry): Record<string, string> {
+export function diffEntryRow(entry: PlanDiffEntry): Record<string, string> {
   if (entry.kind === "object") {
     return { kind: "object", action: entry.action, ref: entry.urn, reason: entry.reason };
   }
   if (entry.kind === "source-mapping") {
-    const glob = [entry.repoPattern ?? "*", entry.pathPattern ?? "*"].join(":");
+    // The ref is part of the mapping IDENTITY (ADR-0030 §1), so it MUST appear here: two mappings
+    // differing only by ref render identically without it, and a prune whose ref the plan did not
+    // show is a prune the operator cannot check.
+    const glob = [entry.repoPattern ?? "*", entry.pathPattern ?? "*", entry.refPattern ?? "*"].join(
+      ":"
+    );
     return {
       kind: "source-mapping",
       action: entry.action,
@@ -4657,8 +4663,16 @@ export function buildProgram(): Command {
     )
     .option("--path <pattern>", "path glob within the repo")
     .option(
+      "--ref <pattern>",
+      "git ref glob (e.g. refs/heads/dev) — omitted matches ANY ref, which is the pre-0056 behaviour"
+    )
+    .option(
       "--type <type>",
       "routing Type (ADR-0007): image|rpm|deb|npm|infrastructure|configuration (default: configuration)"
+    )
+    .option(
+      "--classification <label>",
+      "declared pipeline classification: dev|beta (UI/reporting ONLY — never an enforcement input, ADR-0030 §3)"
     )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
@@ -4669,7 +4683,9 @@ export function buildProgram(): Command {
           component: string;
           repo?: string;
           path?: string;
+          ref?: string;
           type?: ExecutorType;
+          classification?: PipelineClassification;
         }
       ) => {
         const client = await clientFromStoredCredentials(opts);
@@ -4677,7 +4693,9 @@ export function buildProgram(): Command {
           component: opts.component,
           repoPattern: opts.repo,
           pathPattern: opts.path,
-          type: opts.type
+          refPattern: opts.ref,
+          type: opts.type,
+          classification: opts.classification
         });
         printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
       }
