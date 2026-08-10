@@ -28,7 +28,7 @@ import { ensureFederationSelf } from "../federation/self-repo.js";
  *     if (object.originDomainId !== selfDomainId) continue;
  *
  * and that `continue` skips the row WITHOUT WRITING IT. `listChangeRowsInStates` is `ORDER BY
- * updated_at ASC LIMIT 25`, so a foreign-origin row in the candidate set freezes its `updated_at`,
+ * reconcile_cursor_at ASC LIMIT 25`, so a foreign-origin row in the candidate set freezes its cursor,
  * holds a batch slot forever, and starves every locally-originated change queued behind it —
  * exactly the shape that stopped production coordination for 13 days behind green health checks.
  *
@@ -102,8 +102,9 @@ describe("foreign-origin batch starvation: >BATCH_LIMIT replica changes must not
    *  what any change targets. Keeps a 31-change fixture cheap. */
   let componentId: string;
 
-  /** A change in `proposed`, created in its own transaction so its `updated_at` (Postgres
-   *  transaction time) is strictly ordered against its siblings'. */
+  /** A change in `proposed`, created in its own transaction so its `reconcile_cursor_at` (which
+   *  defaults to `now()`, i.e. Postgres transaction time) is strictly ordered against its
+   *  siblings'. */
   async function propose(label: string): Promise<string> {
     return withTenantTx(server.deps.db, org.orgId, async (tx) => {
       const { change } = await proposeChange(tx, {
@@ -141,6 +142,10 @@ describe("foreign-origin batch starvation: >BATCH_LIMIT replica changes must not
 
   const foreignIds: string[] = [];
   let localId: string;
+  /** Each foreign row's `updated_at` as the fixture left it. Captured so the "not stamped" arm can
+   *  assert EQUALITY rather than "is in the past" — the latter is true of every row in the table at
+   *  every instant, so it would pass on an engine that stamped replicas on every single tick. */
+  const foreignUpdatedAt = new Map<string, number>();
 
   it(`builds ${FOREIGN_COUNT} foreign-origin changes ahead of ONE locally-originated change (fixture)`, async () => {
     const service = await inject("/api/v1/services", { name: "svc-starve" });
@@ -192,18 +197,33 @@ describe("foreign-origin batch starvation: >BATCH_LIMIT replica changes must not
 
     // THE QUEUE POSITION IS THE WHOLE FIXTURE, so it is made explicit rather than left to the
     // resolution of Postgres' transaction clock: every foreign row is backdated an hour, so under
-    // `ORDER BY updated_at ASC LIMIT 25` the 25 oldest candidates are all foreign and the local
-    // change sits at position 31 — outside every batch, forever, unless the foreign rows either
-    // rotate (they cannot; nothing writes them) or leave the candidate set (the fix).
+    // `ORDER BY reconcile_cursor_at ASC LIMIT 25` the 25 oldest candidates are all foreign and the
+    // local change sits at position 31 — outside every batch, forever, unless the foreign rows
+    // either rotate (they cannot; nothing writes them) or leave the candidate set (the fix).
+    //
+    // BACKDATING THE CURSOR IS NOW THE ONLY THING THAT BUILDS THIS QUEUE (migration 0057). Writing
+    // `updated_at` here would set the fixture up to prove nothing at all: the engine would not read
+    // it, all 31 rows would keep their natural creation order, and the local change would sit at
+    // position 31 only by accident of insertion time. `updated_at` is deliberately left ALONE so
+    // the "not stamped" assertion below can watch both columns independently.
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
         .update(changes)
-        .set({ updatedAt: new Date(Date.now() - 60 * 60_000) })
+        .set({ reconcileCursorAt: new Date(Date.now() - 60 * 60_000) })
         .where(and(eq(changes.orgId, org.orgId), inArray(changes.objectId, foreignIds)))
     );
 
     // Everything starts in `proposed`; nothing has ticked yet.
     for (const id of [...foreignIds, localId]) expect(await stateOf(id)).toBe("proposed");
+
+    const before = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select({ objectId: changes.objectId, updatedAt: changes.updatedAt })
+        .from(changes)
+        .where(and(eq(changes.orgId, org.orgId), inArray(changes.objectId, foreignIds)))
+    );
+    for (const row of before) foreignUpdatedAt.set(row.objectId, row.updatedAt.getTime());
+    expect(foreignUpdatedAt.size).toBe(FOREIGN_COUNT);
   }, 300_000);
 
   it("THE REGRESSION: the locally-originated change behind them IS served", async () => {
@@ -233,6 +253,7 @@ describe("foreign-origin batch starvation: >BATCH_LIMIT replica changes must not
           state: changes.state,
           blockedAt: changes.reconcileBlockedAt,
           updatedAt: changes.updatedAt,
+          cursorAt: changes.reconcileCursorAt,
           origin: objects.originDomainId
         })
         .from(changes)
@@ -246,9 +267,15 @@ describe("foreign-origin batch starvation: >BATCH_LIMIT replica changes must not
       expect(row.state).toBe("proposed");
       expect(row.blockedAt).toBeNull();
       expect(row.origin).toBe(FOREIGN);
-      // NOT BUMPED. The fixture backdated these an hour; if any tick had stamped one, its
-      // `updated_at` would now be within the last few seconds.
-      expect(row.updatedAt.getTime()).toBeLessThan(hourAgoish);
+      // NOT BUMPED. The fixture backdated the cursor an hour; if any tick had stamped one, it
+      // would now be within the last few seconds.
+      expect(row.cursorAt.getTime()).toBeLessThan(hourAgoish);
+      // AND NOT WRITTEN AT ALL — pinned to the exact value the fixture left, not merely "in the
+      // past", which every row satisfies always. `updated_at` was deliberately NOT backdated, so
+      // checking it separately is what makes this a statement about WRITES TO A REPLICA rather than
+      // only about the scheduler: both columns are engine-written on the local path, and S10 forbids
+      // either of them landing on a row this domain does not own.
+      expect(row.updatedAt.getTime()).toBe(foreignUpdatedAt.get(row.objectId));
     }
   }, 120_000);
 
