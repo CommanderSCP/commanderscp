@@ -1,6 +1,6 @@
 # ADR 0027 — a SERVICE rung in executor-binding resolution
 
-**Status:** Accepted (owner decision, 2026-08-04). Implements the scope walk-up
+**Status:** Accepted (owner decisions, 2026-08-10). Implements the scope walk-up
 [ADR-0007](0007-executor-binding-type-taxonomy.md) deferred.
 
 **Relates to:** [ADR-0007](0007-executor-binding-type-taxonomy.md) ("Scope walk-up resolution

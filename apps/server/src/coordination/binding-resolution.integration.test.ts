@@ -287,13 +287,13 @@ describe("placement-aware binding resolution", () => {
   });
 
   // ============================================================================================
-  // ADR-0028 — the capped CONTAINMENT-ANCESTOR ladder, generalising ADR-0027's single service rung.
+  // ADR-0029 — the capped CONTAINMENT-ANCESTOR ladder, generalising ADR-0027's single service rung.
   // Infra scope IS the attachment point (intermediate-grouping D4), so resolution must find a
   // binding at whatever level it hangs — including the org.
   // ============================================================================================
 
   /** A `contains` chain of the given depth above a component, using SERVICES as the intermediate
-   *  objects. The ladder is type-agnostic (ADR-0028 D4), so this exercises the walk regardless of
+   *  objects. The ladder is type-agnostic (ADR-0029 D4), so this exercises the walk regardless of
    *  what the `assembly` level ends up being called or typed. */
   /**
    * Loosens ONE registry row so `contains` accepts a service->service edge, then lets the REAL API
@@ -334,7 +334,7 @@ describe("placement-aware binding resolution", () => {
       // today (400). Widening that row is a separate decision — it depends on whether the `assembly`
       // level is a new object type or a role a nested service plays, which is not settled.
       //
-      // The LADDER is correct independently of that choice (ADR-0028 D4 — it is type-agnostic about
+      // The LADDER is correct independently of that choice (ADR-0029 D4 — it is type-agnostic about
       // the ancestor), and it must be correct BEFORE nesting is allowed, or the widening would land
       // on an untested walk. So these tests build the shape directly, the same way
       // `stage-compilation.integration.test.ts` writes property documents Ajv would refuse.

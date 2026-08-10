@@ -114,7 +114,7 @@ describe("pipeline inheritance: the three-rung walk (D15)", () => {
     return { component, service };
   }
 
-  /** A component under an ASSEMBLY under a service (migration 0054). Returns all three so a test can
+  /** A component under an ASSEMBLY under a service (migration 0055). Returns all three so a test can
    *  attach a topology at whichever level it means. */
   async function componentUnderAssembly(label: string): Promise<{
     component: GraphObject;

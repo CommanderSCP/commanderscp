@@ -143,7 +143,7 @@ function AttentionCell({ row }: { row: ServiceBoardRow }): React.JSX.Element {
  *
  * The board used to say ONE thing per component — its latest change — about a component that runs
  * several independent pipelines. Whichever moved most recently spoke for all of them, so a pipeline
- * that had never run was indistinguishable from one that had just succeeded (owner, 2026-08-04).
+ * that had never run was indistinguishable from one that had just succeeded (owner, 2026-08-10).
  *
  * `not bound` is rendered, not omitted: a component with no infrastructure pipeline is a fact, and
  * an absent chip would read as "this board does not show infra". Same rule as the component

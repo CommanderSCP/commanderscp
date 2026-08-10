@@ -506,7 +506,7 @@ export async function buildServiceBoard(
     maxDepth: 1
   });
   // DIRECT children only (intermediate-grouping D3), and they may now be ASSEMBLIES as well as
-  // components (migration 0054). Rows are still per-component; an assembly child contributes its own
+  // components (migration 0055). Rows are still per-component; an assembly child contributes its own
   // summary row rather than being flattened into hundreds of descendants, which is what D3 chose.
   const components = objects
     .filter((o) => o.id !== service.id && o.typeId === "component")

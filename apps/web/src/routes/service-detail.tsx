@@ -4,7 +4,7 @@ import { useIdOrUrnParam } from "../lib/use-route-params";
 /**
  * The chrome shared by every view of ONE service — Board, Infrastructure and Settings.
  *
- * WHY THE BOARD IS THE DEFAULT (owner, 2026-08-04): `/services/{id}` fell through to the generic
+ * WHY THE BOARD IS THE DEFAULT (owner, 2026-08-10): `/services/{id}` fell through to the generic
  * `RegistryDetailPage`, so the operational view of a service — what is releasing, what is blocked,
  * which pipelines are bound — lived at a URL nothing linked to except one button on the properties
  * page. That is the same orphaning `/components/{id}` had, and it gets the same fix: the board IS

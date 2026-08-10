@@ -1,6 +1,6 @@
 -- ===========================================================================================
 -- `assembly` — the OPTIONAL level between a service and its components
--- (docs/proposals/intermediate-grouping.md, owner decisions 2026-08-04 D1-D5; owner chose the
+-- (docs/proposals/intermediate-grouping.md, owner decisions 2026-08-10 D1-D5; owner chose the
 -- distinct-type shape over a `kind` property on a nested service, 2026-08-04).
 --
 -- A service may be made of two or more assemblies, each made of dozens of components. Graph-native:
@@ -40,7 +40,7 @@
 -- thing at the database. Together they now mean: a component has at most one parent, which may be a
 -- service OR an assembly; and an assembly has at most one parent service. That is exactly the
 -- invariant `pipeline-resolution.ts` and `binding-resolution.ts` rely on when they walk UP one
--- parent at a time (ADR-0028), so the walks need no ambiguity rule.
+-- parent at a time (ADR-0029), so the walks need no ambiguity rule.
 -- ===========================================================================================
 
 INSERT INTO object_types (id, org_id, display_name, property_schema, is_builtin) VALUES

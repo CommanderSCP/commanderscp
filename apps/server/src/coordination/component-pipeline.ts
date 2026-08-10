@@ -36,7 +36,7 @@ import { federationPeers } from "../db/schema.js";
  * Only `current` reads change rows, and it is legitimately null for a stage nothing has released to.
  *
  * ============================================================================================
- * WHY STAGES COME FROM THE TOPOLOGY AND NOT FROM THE PLACEMENTS (owner, 2026-08-03)
+ * WHY STAGES COME FROM THE TOPOLOGY AND NOT FROM THE PLACEMENTS (owner, 2026-08-10)
  * ============================================================================================
  * The first version of this module built the stage list from the component's PLACEMENTS. That is
  * backwards for a pipeline. A pipeline's job is to show the JOURNEY — where a release goes next and

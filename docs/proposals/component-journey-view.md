@@ -4,7 +4,7 @@
 **Role:** Extends the component pipeline view (`coordination-ui-views.md` §2) from the deploy segment it renders today to the whole journey a change makes: the repo it comes from, the build that produces the artifact, and the stages it rolls through.
 **Relates to:** [ADR-0007](../adr/0007-executor-binding-type-taxonomy.md) (Type taxonomy — the routing key), [ADR-0017](../adr/0017-ownership-refinement.md) (build devolves to the originating outpost; the commander never runs build), [ADR-0026](../adr/0026-placements-and-derived-stage-names.md) (placements, derived stage names), [ADR-0006](../adr/0006-fail-closed-on-missing-executor-binding-for-purpose.md) (no-executor fail-closed), `promotion-and-execution-model.md` (the authoritative end-to-end flow this view is trying to draw), `coupled-pipelines.md` (`provides`/`requires`), `coordination-ui-views.md` §2.
 
-Owner ask, 2026-08-03, on seeing the corrected pipeline view: *"the overall pipeline is very incomplete. Where are all the repos and such? agentkit-bootstrap comes from a repo right? When someone makes a change there, it should affect this right?"* — and, asked how far to go, **the full source→build→deploy journey**, not just a sources header. Then, on seeing it running: *"The component pipeline is missing: 1. The infra pipeline 2. The software pipeline 3. The code repos 4. The image/RPM/etc repo."*
+Owner ask, 2026-08-10, on seeing the corrected pipeline view: *"the overall pipeline is very incomplete. Where are all the repos and such? agentkit-bootstrap comes from a repo right? When someone makes a change there, it should affect this right?"* — and, asked how far to go, **the full source→build→deploy journey**, not just a sources header. Then, on seeing it running: *"The component pipeline is missing: 1. The infra pipeline 2. The software pipeline 3. The code repos 4. The image/RPM/etc repo."*
 
 ## 0. This is not a new design — it is the rest of an accepted one
 
@@ -126,7 +126,7 @@ Additive to `GET /components/{idOrUrn}/pipeline`, for the same reason the deploy
 
 ## 6. Open questions for review
 
-1. **DECIDED (owner, 2026-08-04) — per component, and the view says which.** A component with a
+1. **DECIDED (owner, 2026-08-10) — per component, and the view says which.** A component with a
    `build`-Type binding shows a coordinated Build stage; one without shows "built upstream" plus the
    CI run observed in `changes.source_ref`. Both arrangements are sanctioned by
    `promotion-and-execution-model.md` §1, so the product does not have to choose one — but the VIEW

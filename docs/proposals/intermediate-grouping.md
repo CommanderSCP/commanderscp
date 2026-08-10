@@ -4,7 +4,7 @@
 **Role:** How to express "a service is made of 2+ macro components, each made of dozens of components" without inventing a parallel hierarchy.
 **Relates to:** migration `0021_service_contains_component.sql` (the `contains` type), `0022_contains_single_service_constraint.sql` (one parent per child), `apps/server/src/graph/containment.ts` (`containmentChain`, `nearestAncestorOfKind`), [ADR-0026](../adr/0026-placements-and-derived-stage-names.md), [ADR-0027](../adr/0027-service-rung-binding-resolution.md), `service-component-model.md`, PROJECT_CHARTER principle 2 (graph-native).
 
-Owner ask, 2026-08-04: *"A service might be made up of 2+ macro components that are made up of dozens of components. How do you suggest we organize that?"*
+Owner ask, 2026-08-10: *"A service might be made up of 2+ macro components that are made up of dozens of components. How do you suggest we organize that?"*
 
 ## 1. What the model allows today — measured
 

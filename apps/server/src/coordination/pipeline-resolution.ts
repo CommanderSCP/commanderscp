@@ -107,7 +107,7 @@ async function attachedTopology(
 /** The component's owning service, via the `contains` edge walked INBOUND (`to_id` = component). */
 /**
  * The CONTAINER ANCESTORS of a component, nearest first — its assembly, then that assembly's
- * service (migration 0054, `intermediate-grouping.md` D1 "walk up, nearest wins").
+ * service (migration 0055, `intermediate-grouping.md` D1 "walk up, nearest wins").
  *
  * Before the `assembly` level this read exactly one edge, because a component's parent could only be
  * a service. With an optional level in between, reading one edge would mean a component under an
@@ -166,7 +166,7 @@ export async function resolvePipelineForTarget(
     return { rung: "component", attachedToObjectId: targetObjectId, ...own };
   }
 
-  // RUNG 2, now a LADDER (migration 0054 / intermediate-grouping D1): the component's assembly is
+  // RUNG 2, now a LADDER (migration 0055 / intermediate-grouping D1): the component's assembly is
   // consulted before its service, so the nearest declaration wins. The rung is still reported as
   // `service` — it is the wire enum and widening it would be an oasdiff break for a distinction the
   // `attachedToObjectId` already carries, since that names the exact object the edge hangs off.

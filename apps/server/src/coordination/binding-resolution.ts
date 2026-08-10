@@ -67,7 +67,7 @@ export type BindingResolution =
       /** Every competing placement, so the refusal can NAME them. */
       candidates: { placementObjectId: string; bindingId: string }[];
     }
-  /** ADR-0027, generalised by ADR-0028 — a containment ANCESTOR carries the binding. Infrastructure
+  /** ADR-0027, generalised by ADR-0029 — a containment ANCESTOR carries the binding. Infrastructure
    *  that serves a whole service, assembly or org (a cluster, a shared database) is declared once at
    *  the level it serves rather than duplicated onto every component or placement under it.
    *
@@ -118,7 +118,7 @@ async function placementsOfComponent(
  * migration 0022's partial unique index — the same invariant `pipeline-resolution.ts` relies on, so
  * a binding and a pipeline can never disagree about which service owns a component.
  */
-/** ADR-0028 D3 — `intermediate-grouping.md` D2's cap, in hops of `contains`. Bounded so the walk's
+/** ADR-0029 D3 — `intermediate-grouping.md` D2's cap, in hops of `contains`. Bounded so the walk's
  *  cost is provable and a mis-declared containment cycle cannot spin. */
 const MAX_ANCESTOR_HOPS = 3;
 
@@ -175,9 +175,9 @@ async function containsParentOf(
  * A nearest-wins binding ladder IS that code. Walking the single `contains` axis is what makes
  * "nearest" unambiguous, and it leaves `containmentChain` untouched — the same reasoning
  * `pipeline-resolution.ts` gives for walking named rungs rather than reusing it. The consequence is
- * deliberate and worth stating: **a binding on a containment `domain` does not resolve** (ADR-0028 D2).
+ * deliberate and worth stating: **a binding on a containment `domain` does not resolve** (ADR-0029 D2).
  *
- * The walk is TYPE-AGNOSTIC (ADR-0028 D4): it does not care whether a parent is a `service`, an
+ * The walk is TYPE-AGNOSTIC (ADR-0029 D4): it does not care whether a parent is a `service`, an
  * `assembly`, or something that does not exist yet — only whether it carries a binding of this Type.
  * A `seen` set makes a mis-declared cycle terminate even inside the cap.
  */
@@ -217,7 +217,7 @@ async function serviceRung(
   targetObjectId: string,
   type: BindingType
 ): Promise<BindingResolution> {
-  // NEAREST FIRST (ADR-0028 D1). The first ancestor carrying a binding of this Type wins, so a
+  // NEAREST FIRST (ADR-0029 D1). The first ancestor carrying a binding of this Type wins, so a
   // component's assembly beats its service, which beats the org — most specific always.
   const ancestors = await containsAncestors(tx, orgId, targetObjectId);
   for (const [index, ancestorObjectId] of ancestors.entries()) {
@@ -233,7 +233,7 @@ async function serviceRung(
     }
   }
 
-  // THE ORG RUNG (ADR-0028, which ADR-0027 D4 excluded). Reached DIRECTLY rather than by walking,
+  // THE ORG RUNG (ADR-0029, which ADR-0027 D4 excluded). Reached DIRECTLY rather than by walking,
   // for the same reason `pipeline-resolution.ts` reaches it directly: the org root is normally found
   // through the `domain_id` axis, which this ladder deliberately does not walk, so a hop-based walk
   // would silently never arrive. `hops: 0` marks it as the least specific rung there is.

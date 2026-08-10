@@ -55,7 +55,7 @@ function stateOf(current: ComponentPipelineStage["current"]): PromotionState {
  * The software pipeline builds an artifact and syncs config; the infrastructure pipeline stands up
  * the substrate underneath it. They have their own executors, their own source repos and their own
  * release histories, and drawing them as one list of stages says a component has a single pipeline
- * when it has two (owner, 2026-08-03: "Each component needs 2 pipelines: infra & software").
+ * when it has two (owner, 2026-08-10: "Each component needs 2 pipelines: infra & software").
  *
  * Lane membership is by ADR-0007 CATEGORY, which the server derives from the routing Type and sends
  * on the wire — so this file holds no copy of the Type→Category map. `build` and `configuration`
@@ -567,7 +567,7 @@ function ConsoleLink({
  *
  * Every node previously rendered as an identical white rectangle, so the chain read as a stack of
  * boxes and the KIND of each step was carried only by its title text. The glyph is what makes
- * "repo, build, registry, deploy" legible at a glance (owner, 2026-08-04).
+ * "repo, build, registry, deploy" legible at a glance (owner, 2026-08-10).
  */
 type NodeKind = "source" | "config" | "build" | "registry" | "stage" | "unplaced";
 
@@ -845,7 +845,7 @@ function RegistryNode(): React.JSX.Element {
  * component with nothing in flight. A verdict belongs to a change and carries a `decision_id`; the
  * change-scoped pipeline view owns that.
  *
- * "No automated checks" is stated OUT LOUD rather than left blank. Measured 2026-08-04, every live
+ * "No automated checks" is stated OUT LOUD rather than left blank. Measured 2026-08-10, every live
  * policy has an empty `requireControls` and the estate holds 0 control bindings and 0 control runs
  * — so a silent gate node would be indistinguishable from a view that cannot see checks, when the
  * truth is that none are configured.
@@ -856,7 +856,7 @@ function RegistryNode(): React.JSX.Element {
  * A gate is not a step a release passes through on its way somewhere; it is a condition on ENTERING
  * one place. Drawn as its own full-width node it doubled the length of every pipeline and implied
  * the release stops somewhere between two stages, which is not where it stops — it stops at the
- * door of the next one (owner, 2026-08-04). Attached to the stage it governs, it also stops needing
+ * door of the next one (owner, 2026-08-10). Attached to the stage it governs, it also stops needing
  * to merge several placements' policies into one wave-level gate: each target keeps its own.
  *
  * Resolved from the `policy` objects matching this placement (DESIGN §10.1) — the SAME resolution
@@ -864,7 +864,7 @@ function RegistryNode(): React.JSX.Element {
  * It is a REQUIREMENT, not a verdict: a verdict belongs to a change in flight and carries a
  * `decision_id`.
  *
- * "No automated check" is stated rather than left blank. Measured 2026-08-04: every live policy has
+ * "No automated check" is stated rather than left blank. Measured 2026-08-10: every live policy has
  * an empty `requireControls`, and the estate holds 0 control bindings and 0 control runs — so a
  * silent gate would be indistinguishable from a view that cannot see checks, when the truth is that
  * none are configured.
@@ -938,7 +938,7 @@ function GateSubnode({ gate }: { gate: ComponentPipelineStage["gate"] }): React.
           </span>
           <div data-testid="gate-checks" className="mt-0.5">
             {gate.checks.length === 0 ? (
-              // Measured 2026-08-04: EVERY live policy is like this, and the estate holds 0 control
+              // Measured 2026-08-10: EVERY live policy is like this, and the estate holds 0 control
               // bindings and 0 control runs. Said out loud, because a missing list would read as
               // "this view cannot see checks" when the truth is that none are configured.
               <span className="italic text-slate-400">no automated check required</span>

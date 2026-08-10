@@ -575,7 +575,7 @@ describe("the entry gate — a SUBNODE of the stage it governs", () => {
   });
 
   it("names the approval and says NO CHECK is required, rather than going quiet", () => {
-    // Measured 2026-08-04: every live policy requires one Owner approval and asks for NO automated
+    // Measured 2026-08-10: every live policy requires one Owner approval and asks for NO automated
     // check (0 control bindings, 0 control runs estate-wide). A blank would be indistinguishable
     // from a view that cannot see checks; the truth is that none are configured.
     const html = renderToStaticMarkup(<StageCardForTest stage={stage({ gate: gated() })} />);

@@ -158,7 +158,7 @@ export const ComponentPipelineGateSchema = z.object({
     z.object({
       name: z.string(),
       enforcement: z.enum(["advisory", "recommended", "required"]),
-      /** Automated checks that must pass — the TESTS. Measured 2026-08-04: every live policy has
+      /** Automated checks that must pass — the TESTS. Measured 2026-08-10: every live policy has
        *  this EMPTY, and the estate holds 0 control bindings and 0 control runs. So a component
        *  showing no required checks is reporting the truth about its configuration, not a gap in
        *  this projection. */
@@ -170,7 +170,7 @@ export const ComponentPipelineGateSchema = z.object({
     })
   ),
   /** Every control the policies above require, de-duplicated, each with its current outcome. Empty
-   *  when no policy asks for one — measured 2026-08-04, that is EVERY policy on the live estate
+   *  when no policy asks for one — measured 2026-08-10, that is EVERY policy on the live estate
    *  (0 control bindings, 0 control runs), so this array being empty is a fact about the estate's
    *  configuration and not a limit of this projection. */
   checks: z.array(ComponentPipelineCheckSchema)
@@ -269,7 +269,7 @@ export type ComponentPipelineStage = z.infer<typeof ComponentPipelineStageSchema
  * version of it said nothing at all: stages were derived from placements, so a wave the component is
  * not placed at did not exist in the view. Measured on the live estate the day it was reported —
  * topology `commercial-gamma-then-prod` declares gamma then prod, `agentkit-bootstrap` holds one
- * gamma placement, and prod rendered nowhere (owner, 2026-08-03).
+ * gamma placement, and prod rendered nowhere (owner, 2026-08-10).
  *
  * It carries no `binding`, `current` or `version`: all three are keyed on a placement that does not
  * exist, and inventing nulls for them would invite a client to render "no executor" — the ADR-0006

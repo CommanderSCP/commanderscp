@@ -41,7 +41,7 @@ export async function createComponentInService(
 ): Promise<GraphObject> {
   // Resolve and type-check the service FIRST — a bad or wrong-type ref fails before any write.
   const service = await getObjectByIdOrUrnAnyType(tx, input.orgId, input.serviceIdOrUrn);
-  // A component's parent may be a service OR an assembly (migration 0054) — the optional level
+  // A component's parent may be a service OR an assembly (migration 0055) — the optional level
   // between them. Routed through `isContainerType` rather than compared here, so adding a level is a
   // change to ONE constant instead of a search for every site that spelled out "service".
   if (!isContainerType(service.typeId)) {
@@ -142,7 +142,7 @@ export async function setComponentService(
     throw badRequest(`'${input.componentIdOrUrn}' is a '${component.typeId}', not a component`);
   }
   const service = await getObjectByIdOrUrnAnyType(tx, input.orgId, input.serviceIdOrUrn);
-  // A component's parent may be a service OR an assembly (migration 0054) — the optional level
+  // A component's parent may be a service OR an assembly (migration 0055) — the optional level
   // between them. Routed through `isContainerType` rather than compared here, so adding a level is a
   // change to ONE constant instead of a search for every site that spelled out "service".
   if (!isContainerType(service.typeId)) {

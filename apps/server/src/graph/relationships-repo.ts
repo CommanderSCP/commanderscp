@@ -84,7 +84,7 @@ const SINGULAR_SIDES: Record<string, { from: boolean; to: boolean }> = {
  * Before the `assembly` level, a cycle was IMPOSSIBLE by construction: `contains` only ran
  * `service -> component`, and a component has no children. Widening the type makes A-contains-B,
  * B-contains-A expressible for the first time, and a containment cycle is not a cosmetic problem —
- * `containmentChain` (policy scope, freeze scope, RBAC scope) and the ADR-0028 binding ladder all
+ * `containmentChain` (policy scope, freeze scope, RBAC scope) and the ADR-0029 binding ladder all
  * walk parents, so a cycle is an infinite walk in the code paths that authorize releases.
  *
  * Walks UP from the proposed parent looking for the proposed child. Bounded by the same cap the
@@ -216,7 +216,7 @@ export async function createRelationship(
     );
   }
 
-  // THE PAIRWISE RULES THE TYPE REGISTRY CANNOT EXPRESS (migration 0054's header).
+  // THE PAIRWISE RULES THE TYPE REGISTRY CANNOT EXPRESS (migration 0055's header).
   // `relationship_types` holds flat from/to arrays — a cross-product — so widening `contains` to
   // admit the `assembly` level necessarily also admits `assembly -> assembly`, which is not a shape
   // we want. It is refused here, with the containment cycle check, because there is nowhere in the

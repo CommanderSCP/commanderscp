@@ -28,7 +28,7 @@ import {
  */
 /**
  * ============================================================================================
- * MUTATION LOG — the `assembly` level (migration 0054). Each applied ALONE, then reverted.
+ * MUTATION LOG — the `assembly` level (migration 0055). Each applied ALONE, then reverted.
  * ============================================================================================
  * | Mutation | Result |
  * |---|---|
@@ -66,7 +66,7 @@ describe("service --contains--> component (membership, one service per component
   });
 
   // ============================================================================================
-  // THE PAIRWISE RULES THE TYPE REGISTRY CANNOT EXPRESS (migration 0054).
+  // THE PAIRWISE RULES THE TYPE REGISTRY CANNOT EXPRESS (migration 0055).
   // `relationship_types` holds flat from/to arrays — a cross-product — so widening `contains` for the
   // `assembly` level necessarily admits shapes we do not want. They are refused in the app, and these
   // are the tests that keep the refusals honest.
@@ -99,7 +99,7 @@ describe("service --contains--> component (membership, one service per component
     // The check is kept anyway as defence-in-depth, because it becomes REACHABLE the moment anyone
     // widens those arrays — e.g. to allow `service -> service`, which was the rejected alternative
     // shape for this very level. A containment cycle is not cosmetic: `containmentChain` (policy,
-    // freeze and RBAC scope) and the ADR-0028 binding ladder all walk parents, so a cycle is an
+    // freeze and RBAC scope) and the ADR-0029 binding ladder all walk parents, so a cycle is an
     // infinite walk in the code that authorizes releases.
     //
     // What this test therefore pins is the OUTCOME (the loop cannot be closed), not the mechanism.

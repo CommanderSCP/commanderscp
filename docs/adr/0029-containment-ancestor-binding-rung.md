@@ -1,6 +1,6 @@
-# ADR 0028 — from one service rung to a capped CONTAINMENT-ANCESTOR ladder
+# ADR 0029 — from one service rung to a capped CONTAINMENT-ANCESTOR ladder
 
-**Status:** Accepted (owner decisions, 2026-08-04 — `intermediate-grouping.md` D1/D2/D4). **Amends
+**Status:** Accepted (owner decisions, 2026-08-10 — `intermediate-grouping.md` D1/D2/D4). **Amends
 [ADR-0027](0027-service-rung-binding-resolution.md)**, whose D4 stopped at the service and explicitly
 excluded the org rung.
 
