@@ -249,9 +249,9 @@ describe("executing-batch starvation: >BATCH_LIMIT gate-blocked changes must not
  * block. The instant a gate ALLOWS, `markWaveRunning` moves the wave to `running`, and from then on
  * every tick of that change SKIPS the gate branch entirely and falls through to the per-target
  * loop. Every write down there lands on `change_wave_targets` or `change_waves`. NOTHING on that
- * path writes the `changes` row — there were exactly three `UPDATE changes` in reconcile.ts (the
- * `waiting` path, the `validating` path and the gate-blocked path) and not one of them was
- * reachable from it.
+ * path writes the `changes` row — there were exactly four `UPDATE changes` in reconcile.ts (the
+ * `waiting` path, the `validating` path, the gate-blocked path and `recordStageDependencyHold`) and
+ * not one of them was reachable from it.
  *
  * So a change whose targets are merely being POLLED froze its `updated_at` at the instant it
  * entered `executing` and held a `BATCH_LIMIT` slot for as long as its executor kept answering

@@ -14,11 +14,22 @@ import {
   markChangeReconcileBlocked,
   targetObjectIdsOf,
   requiresOf,
+  stageDependenciesOf,
   type ChangeRow
 } from "./changes-repo.js";
+import {
+  describeStageDependencyHold,
+  evaluateStageDependencies,
+  type StageDependencyVerdict
+} from "./stage-dependency-hold.js";
 import { transitionChange } from "./transition.js";
 import { triggerRollback } from "./rollback.js";
-import { compileAndPersistPlan, getLatestPlanForChange } from "./plan-service.js";
+import {
+  compileAndPersistPlan,
+  getLatestPlanForChange,
+  loadDependsOnEdges
+} from "./plan-service.js";
+import type { DependsOnEdge } from "./plan-compiler.js";
 import {
   requirementStatuses,
   unsatisfiedRequirements,
@@ -596,7 +607,18 @@ async function advanceExecutingChanges(
     // call) without needing a separate check inside each of those.
     if (object.originDomainId !== selfDomainId) continue;
     try {
-      await reconcileExecutingChange(db, orgId, change, host, sandbox, masterKey);
+      // `object.properties` is threaded in because the stage-dependency hold (ADR-0028) reads its
+      // declarations from there, and `changes` rows carry no properties of their own — the same
+      // reason `advanceCoordinatedChanges` above reads `requires` off the object.
+      await reconcileExecutingChange(
+        db,
+        orgId,
+        change,
+        object.properties as Record<string, unknown> | null,
+        host,
+        sandbox,
+        masterKey
+      );
     } catch (err) {
       logChangeError(orgId, change, "executing-advance", err);
     }
@@ -607,6 +629,7 @@ async function reconcileExecutingChange(
   db: Db,
   orgId: string,
   change: ChangeRow,
+  changeProperties: Record<string, unknown> | null,
   host: PluginHost,
   sandbox: CelSandbox,
   masterKey: Buffer
@@ -821,8 +844,78 @@ async function reconcileExecutingChange(
   // target A and polling target B in the same tick can't half-commit anything: each target's
   // durable state is exactly as fresh as its own last transaction, no more and no less.
   const isRollback = change.rollbackOfObjectId !== null;
-  let allTerminal = true;
+  /**
+   * Targets still in flight when this loop ends — HELD ONES INCLUDED. A count rather than the
+   * `allTerminal` boolean it replaces, because the terminalization at the bottom has to tell
+   * "something is genuinely still running" apart from "nothing is left except targets the
+   * stage-dependency hold withheld", and a boolean cannot say which. Exactly one increment per
+   * target: every branch that reaches one `continue`s or ends the iteration.
+   */
+  let nonTerminalTargets = 0;
   let anyFailed = false;
+
+  // THE STAGE-DEPENDENCY HOLD (ADR-0028) — parsed ONCE per change per tick, in memory, before the
+  // loop. The overwhelming majority of changes declare nothing, and `evaluateStageDependencies`
+  // returns on an empty declaration set before issuing a single query, so an undeclared change pays
+  // one property read it was already doing and nothing else. That inertness is a property this
+  // feature has to keep, not a nicety: the per-target loop runs on every tick of every executing
+  // change on the instance.
+  //
+  // A ROLLBACK CARRIES NO DECLARATIONS TODAY (`rollback.ts` does not spread the original's
+  // properties, and a test pins that), so this is empty for one by construction rather than by a
+  // guard. Named because the guarantee matters: holding a rollback behind a dependency would keep a
+  // broken release in place while waiting for the very component it is trying to get away from.
+  const declared = stageDependenciesOf(changeProperties);
+
+  /**
+   * THE OTHER HALF OF THE HOLD'S DEPENDENCY SET (ADR-0028 decision 6) — plain `depends_on` edges
+   * with BOTH endpoints among this change's own targets. That is the exact set `compileStages` used
+   * to refuse a same-wave pair over, and it is `loadDependsOnEdges`, the SAME function the compiler
+   * is fed from, so the two can never drift into meaning different things.
+   *
+   * LAZY AND MEMOISED, once per change per tick, and both properties are load-bearing:
+   *
+   *   * A SINGLE-TARGET CHANGE NEVER QUERIES. Both endpoints must be in the target set, so one
+   *     target can only ever produce a self-edge, which orders nothing. 277 of 281 measured changes
+   *     target exactly one component (ADR-0026), so the ordinary release pays nothing for this.
+   *   * A CHANGE WITH NOTHING PENDING NEVER QUERIES either — the call sits inside the trigger
+   *     branch, so a wave that is purely polling in-flight targets does not touch the graph.
+   *
+   * Unlike the declarations, this cannot be read off the change's properties: an edge is graph
+   * state, and the whole point is that it may have been written by something other than this change.
+   */
+  const changeTargets = targetObjectIdsOf(changeProperties);
+  let inTargetSetEdges: DependsOnEdge[] | undefined;
+  const loadInTargetSetEdges = async (): Promise<DependsOnEdge[]> =>
+    (inTargetSetEdges ??=
+      changeTargets.length < 2
+        ? []
+        : await withTenantTx(db, orgId, (tx) => loadDependsOnEdges(tx, orgId, changeTargets)));
+
+  /** Every target held this tick, with the verdict that held it — collected across the whole loop so
+   *  ONE Decision covers the change rather than one per target. That is not tidiness: `decisions`
+   *  are deduped per `(subject_id, kind)` on the LATEST row, so per-target rows for a multi-target
+   *  change would alternate, each differing from the one before it, and every tick would write again
+   *  — the ADR-0024 flood rebuilt from parts. */
+  const heldTargets: {
+    targetObjectId: string;
+    stage: { componentObjectId: string; deploymentTargetObjectId: string } | null;
+    verdicts: StageDependencyVerdict[];
+  }[] = [];
+
+  /** Every target this tick that declared a coupling and got NONE — the `unscopeable` branch, where
+   *  the wave target names a component rather than a placement so there is no place for a
+   *  stage-scoped hold to be scoped by (a legacy-shaped topology, or no resolvable topology at all,
+   *  which puts the plan on the toposort path).
+   *
+   *  COLLECTED SEPARATELY FROM `heldTargets` BECAUSE IT IS NOT A HOLD. This target triggers on this
+   *  very tick; ADR-0028 decision 4's fail-open-with-warning branch is what it exercises. But
+   *  "proceeded" is not the same as "nothing to say": a change whose author declared a dependency
+   *  and received no enforcement at all was, before this, invisible everywhere — `held` was false,
+   *  no Decision was written, and the one `console.warn` in the seam fires only for
+   *  `weightUnreadable`. Made visible so the fail-open is something an operator can find rather than
+   *  something they have to deduce. */
+  const unscopeableTargets: { targetObjectId: string; verdicts: StageDependencyVerdict[] }[] = [];
 
   for (const target of activeWave.targets) {
     if (target.status === "succeeded") continue;
@@ -839,12 +932,12 @@ async function reconcileExecutingChange(
     }
 
     if (target.status === "pending" || target.status === "triggering") {
-      allTerminal = false;
+      nonTerminalTargets++;
       // BACKOFF GATE — skip a target whose executor refused it recently (see `triggerBackoffMs`).
-      // `allTerminal` is set false FIRST, deliberately: a backed-off target is still in flight, so
-      // the wave must not be treated as complete while one waits. Skipping here (rather than inside
-      // `triggerWaveTarget`) also avoids taking the advisory trigger-claim lock and re-reading the
-      // binding for a target we already know we are not going to fire this tick.
+      // The target is counted as in flight FIRST, deliberately: a backed-off target is still in
+      // flight, so the wave must not be treated as complete while one waits. Skipping here (rather
+      // than inside `triggerWaveTarget`) also avoids taking the advisory trigger-claim lock and
+      // re-reading the binding for a target we already know we are not going to fire this tick.
       //
       // GATED ON `triggering`, NOT ON `attempt` ALONE, and that is a correctness requirement rather
       // than an optimisation: `attempt` is NOT a pure failure counter — `markWaveTargetTriggered`
@@ -855,6 +948,79 @@ async function reconcileExecutingChange(
       // the state a refusal leaves behind.
       const backoffMs = target.status === "triggering" ? triggerBackoffMs(target.attempt) : 0;
       if (backoffMs > 0 && Date.now() - Date.parse(target.updatedAt) < backoffMs) continue;
+
+      // STAGE-DEPENDENCY HOLD (ADR-0028 decision 2) — withhold this target's trigger while a
+      // dependency of its component is not yet satisfied AT THIS PLACE: one its own CI declared, or
+      // a plain `depends_on` edge to another target of this same change (decision 6 — the set the
+      // removed compile-time refusal covered). The two invariants of the
+      // backoff gate above are copied verbatim and are load-bearing for the same reasons:
+      //
+      //   1. The target was already counted in `nonTerminalTargets` at the top of this branch,
+      //      BEFORE this `continue`. A held target is still in flight; without that the wave would
+      //      be marked terminal and the change would complete while one of its targets had never
+      //      run. What that count must NOT do is keep an already-FAILED wave alive forever — see
+      //      the terminalization at the bottom of this loop, which is why the count is a number.
+      //   2. The skip happens BEFORE `triggerWaveTarget`, so a held target takes no advisory
+      //      trigger-claim lock and re-reads no executor binding for a call it is not going to make.
+      //
+      // WHY HERE AND NOWHERE ELSE. Not the wave gate: `evaluateWaveGate` issues ONE verdict for the
+      // whole wave with no target dimension, and in stage mode a dependent pair at the same place is
+      // in that same wave — so blocking the gate to hold A would also hold B, the dependency could
+      // never clear, and both would park forever. It also fires exactly once, on pending -> running,
+      // so it could not re-evaluate a hold even if it were per-target. Not the `waiting`/`requires`
+      // engine either: that parks the WHOLE change on `coordinated -> executing`, so A would be held
+      // out of dev because B is behind in gamma.
+      //
+      // AND WHY AFTER THE BACKOFF GATE, not before: a backed-off target is `triggering`, which means
+      // it has ALREADY been handed to its executor. Re-deciding its coupling cannot un-ring that
+      // bell, and evaluating it would spend a graph read per tick on a target that is not going to
+      // fire this tick anyway. For a `pending` target — every first trigger, which is the case the
+      // coupling is about — `backoffMs` is 0 and the two orders are identical.
+      const edgeDependencies = await loadInTargetSetEdges();
+      if (
+        declared.stageDependencies.length > 0 ||
+        declared.malformed.length > 0 ||
+        edgeDependencies.length > 0
+      ) {
+        const evaluation = await withTenantTx(db, orgId, (tx) =>
+          evaluateStageDependencies(tx, {
+            orgId,
+            waveTargetObjectId: target.targetObjectId,
+            stageDependencies: declared.stageDependencies,
+            malformed: declared.malformed,
+            edgeDependencies
+          })
+        );
+        // DECLARED A COUPLING AND GOT NONE (ADR-0028 decision 4's fail-open-with-warning branch).
+        // Collected BEFORE the hold check, not after: a malformed entry holds even on a legacy-
+        // shaped target, so `held` and `unscopeable` are not mutually exclusive and an `else` here
+        // would lose exactly the case where both are true.
+        const unscopeable = evaluation.verdicts.filter((v) => v.branch === "unscopeable");
+        if (unscopeable.length > 0) {
+          unscopeableTargets.push({
+            targetObjectId: target.targetObjectId,
+            verdicts: unscopeable
+          });
+        }
+        if (evaluation.held) {
+          heldTargets.push({
+            targetObjectId: target.targetObjectId,
+            stage: evaluation.stage,
+            verdicts: evaluation.verdicts
+          });
+          continue;
+        }
+        // PROCEEDING, but a weight qualifier the author wrote was never consulted (not ArgoCD,
+        // blue/green, the extra call failed, or the reading has gone stale). Logged rather than
+        // recorded, because there is no hold and therefore no Decision to carry it — and it is at
+        // most one line per target, since this target triggers on this very tick.
+        for (const verdict of evaluation.verdicts) {
+          if (verdict.weightUnreadable === undefined) continue;
+          console.warn(
+            `[reconcile] org ${orgId} change ${change.objectId} target ${target.targetObjectId}: declared minWeight ${verdict.minWeight} on '${verdict.dependsOn}' could not be evaluated (${verdict.weightUnreadable}) — fell back to requiring its deploy here to have succeeded`
+          );
+        }
+      }
       try {
         await triggerWaveTarget(
           db,
@@ -889,7 +1055,7 @@ async function reconcileExecutingChange(
     if (!target.executorRef) {
       // Shouldn't happen (triggered/observing always carry the ref markWaveTargetTriggered set) —
       // defensive no-op; next tick will see the same state and try again.
-      allTerminal = false;
+      nonTerminalTargets++;
       continue;
     }
     try {
@@ -935,13 +1101,13 @@ async function reconcileExecutingChange(
           });
         });
       } else {
-        allTerminal = false;
+        nonTerminalTargets++;
         await withTenantTx(db, orgId, (tx) =>
           updateWaveTargetObserved(tx, orgId, target.id, "observing", observedState)
         );
       }
     } catch (err) {
-      allTerminal = false; // still in flight as far as we know — polled again next tick
+      nonTerminalTargets++; // still in flight as far as we know — polled again next tick
       console.error(
         `[reconcile] org ${orgId} change ${change.objectId} target ${target.targetObjectId} poll failed (will retry next tick):`,
         err
@@ -949,15 +1115,41 @@ async function reconcileExecutingChange(
     }
   }
 
-  if (!allTerminal) {
+  if (unscopeableTargets.length > 0) {
+    await recordStageDependencyUnscoped(db, orgId, change, activeWave, unscopeableTargets);
+  }
+
+  if (heldTargets.length > 0) {
+    await recordStageDependencyHold(db, orgId, change, activeWave, heldTargets);
+  }
+
+  // TERMINALIZATION, IN TWO RULES RATHER THAN ONE — because a held target is in flight (invariant 1
+  // above) and a single `if (!allTerminal) return` therefore kept an already-FAILED wave alive
+  // forever. A wave with one failed target and one held one never reached `markWaveTerminal`, so the
+  // `failed` branch at the top of this function never ran: no `autoRollbackOnFailure`, no park, no
+  // epitaph, no failure recorded on the change, while the hold's `updated_at` bump re-served the
+  // change every tick and occupied a `BATCH_LIMIT` slot permanently. That was a REGRESSION on the
+  // loud 400 the compile-time same-wave refusal used to give this exact shape (ADR-0028 decision 6).
+  //
+  // Holding a dependant on a doomed wave buys nothing — its dependency is not going to arrive in
+  // THIS wave, and the wave's verdict is already decided — so the hold stops keeping it open. The
+  // test is `anyFailed`, NOT the `failed` literal, so `aborted` and `no_executor` (both of which
+  // mark a wave failed, and neither of which ever ran) are covered by the same line.
+  //
+  // The held target is still NEVER TRIGGERED on the way there, which is the whole point of the hold:
+  // it is left `pending` on a terminal wave — the truthful record, since no executor was ever handed
+  // it — and from the next tick on the `failed` branch returns before this loop is reached at all.
+  // Its hold Decision was written just above, so what kept it from running stays on record beside
+  // the failure that ended the wave.
+  if (nonTerminalTargets - heldTargets.length > 0) {
     // ROUND-ROBIN BUMP — THE FIFTH INSTANCE OF THE STARVATION CLASS, and the one the gate-blocked
-    // bump ~150 lines up does NOT cover. That bump fires only while the wave is still `pending`.
+    // bump ~300 lines up does NOT cover. That bump fires only while the wave is still `pending`.
     // The moment the gate ALLOWS, `markWaveRunning` moves the wave to `running` and every
     // subsequent tick of that change skips the gate branch entirely and arrives HERE instead — and
     // every write on the way here lands on `change_wave_targets` (`markWaveTargetTriggered`,
-    // `updateWaveTargetObserved`) or on `change_waves`, never on `changes`. There are exactly three
-    // other `UPDATE changes` in this file (waiting, validating, and gate-blocked) and not one of
-    // them is on this path.
+    // `updateWaveTargetObserved`) or on `change_waves`, never on `changes`. There are exactly four
+    // other `UPDATE changes` in this file (waiting, validating, gate-blocked, and the hold) and not
+    // one of them is on this path.
     //
     // So a change whose wave targets are merely being POLLED — an Argo CD Application stuck
     // `Progressing`, a workflow awaiting a manual step, any executor whose `status()` never
@@ -974,6 +1166,11 @@ async function reconcileExecutingChange(
     // case. The condition here is "this change took its turn and is still in flight", which is
     // exactly the condition the round-robin needs.
     //
+    // UNCONDITIONAL, even though `recordStageDependencyHold` may already have bumped this same row
+    // a few lines above (a wave with one held target and one in-flight target reaches both). One
+    // redundant narrow UPDATE on that uncommon shape is a better trade than making this guarantee
+    // depend on a call several lines up staying where it is.
+    //
     // NOT THE ADR-0024 FLOOD, and the difference is worth stating rather than leaving a reader to
     // wonder. ADR-0024's measured 1.44 GB/day was a byte-identical Decision INSERT per tick per
     // parked change: a NEW row each time, carrying the gate's whole `inputContext` + `reasonTree`,
@@ -985,21 +1182,207 @@ async function reconcileExecutingChange(
     // there is deliberately NO Decision on this path: nothing here is a verdict about the change,
     // only a queue position, and inventing a Decision for it is precisely how ADR-0024 happened.
     //
-    // `state_entered_at` is deliberately NOT touched — identical to the waiting, validating and
-    // gate-blocked bumps. The watchdog's stall SLA must keep measuring from when the change
-    // actually entered `executing`, or a change that polls forever would look permanently fresh
-    // and never be reported as stalled. That is the whole reason the bump is on `updated_at` alone.
+    // `state_entered_at` is deliberately NOT touched — identical to the waiting, validating,
+    // gate-blocked and hold bumps. The watchdog's stall SLA must keep measuring from when the
+    // change actually entered `executing`, or a change that polls forever would look permanently
+    // fresh and never be reported as stalled. That is the whole reason the bump is on `updated_at`
+    // alone.
     await withTenantTx(db, orgId, (tx) =>
       tx
         .update(changes)
         .set({ updatedAt: new Date() })
         .where(and(eq(changes.orgId, orgId), eq(changes.objectId, change.objectId)))
     );
-    return; // something is genuinely still running — next tick polls/resumes again
+    return; // something is genuinely still running
   }
+  if (heldTargets.length > 0 && !anyFailed) return; // the PURE hold: unchanged, still in flight
   await withTenantTx(db, orgId, (tx) =>
     markWaveTerminal(tx, orgId, activeWave.id, anyFailed ? "failed" : "succeeded")
   );
+}
+
+/**
+ * The explainability half of the stage-dependency hold (charter principle 6): a held target carries a
+ * Decision naming the dependency, the place, and WHICH of ADR-0028 decision 4's branches applied. The
+ * backoff gate beside it writes nothing at all today, so this is a strict improvement in the same
+ * loop — but it is also the exact seam that produced this project's worst production incident, so
+ * three properties are non-negotiable.
+ *
+ * ONE DECISION PER CHANGE, NOT PER TARGET. `insertDecisionIfChanged` compares against the LATEST row
+ * of the same `(subject_id, kind)`. Two held targets writing their own rows would alternate — each
+ * row differing from the one before it — and suppression would never fire once. Aggregating makes
+ * the statement "these targets are held, for these reasons", which is stable exactly while the
+ * situation is.
+ *
+ * CONTENT-STABLE INPUTS. No wall clock, and no observed weight (see `StageDependencyVerdict`). What
+ * DOES vary is `dependencyStatus`, and deliberately: a dependency walking pending -> triggered ->
+ * observing is a genuinely different explanation each time, and that is a handful of rows over a
+ * hold's whole life, not one per 1 s tick. Targets are sorted so a reordered `activeWave.targets`
+ * can never make an unchanged situation look new.
+ *
+ * PERSIST ON CHANGE. Measured: a byte-identical Decision rewritten every tick reached 1.44 GB/day
+ * across 25 parked changes on the live homelab (ADR-0024). The evaluation still runs every tick —
+ * that is the only thing that notices the dependency finishing — only the redundant WRITE is
+ * suppressed.
+ *
+ * THE `updated_at` BUMP IS NOT OPTIONAL, and it is the same starvation fix the gate-blocked branch
+ * above documents. A change whose targets are all held stays `executing` with its wave `running`, so
+ * nothing else moves its `updated_at`; `listChangeRowsInStates` serves oldest-`updated_at`-first
+ * capped at `BATCH_LIMIT`, so more than `BATCH_LIMIT` held changes would occupy every slot of every
+ * tick forever and every change queued behind them would never be evaluated even once. That is not a
+ * hypothetical: the identical property stopped all coordination on the homelab for 13 days behind
+ * green health checks. `state_entered_at` is deliberately untouched, so the watchdog's stall SLA
+ * keeps measuring from when the change actually entered `executing`.
+ *
+ * THE VERDICT IS `hold`, NOT `block`, and that is a deliberate correctness choice rather than a
+ * naming preference. `latestBlockDecisionForSubject` (`decisions-repo.ts`) selects the newest row
+ * with `verdict = 'block'` for a subject, filtered on the verdict ALONE — no kind, no recency, no
+ * change-state gate — and `service-board.ts`'s `isBlocked = hasFailedWave || blockDecision !==
+ * undefined` feeds it straight into a component row's `attention.blocked` and the board's `blocked`
+ * tally. Nothing ever writes a clearing row. So a `block` here would mark the component blocked
+ * PERMANENTLY: after the hold released, after the change reached `accepted`, forever.
+ *
+ * That is tolerable for the other nineteen `verdict: "block"` writers, because each fires when
+ * something is genuinely stuck and wants an operator. This one fires on EVERY coupled release, by
+ * design — a brief, expected, self-clearing wait is the feature working. Reusing `block` would make
+ * the board's attention signal permanently wrong for exactly the components that adopted the
+ * feature, which is worse than useless: it trains operators to ignore the field.
+ *
+ * A held change still reads honestly on the board without it — it is in `executing`, so it counts as
+ * `releasing`, which is what it is doing. And a hold that is genuinely stuck is not silent: the
+ * watchdog's `executing` SLA still fires, and `scp change explain` still shows this Decision with the
+ * unsatisfied dependency named. The fix belongs here rather than in the shared query because
+ * `latestBlockDecisionQuery`'s `eq(decisions.verdict, "block")` must stay a compile-time constant
+ * matching `drizzle/0046`'s partial-index predicate verbatim (its own comment says so at length).
+ */
+async function recordStageDependencyHold(
+  db: Db,
+  orgId: string,
+  change: ChangeRow,
+  activeWave: { id: string; waveIndex: number },
+  heldTargets: {
+    targetObjectId: string;
+    stage: { componentObjectId: string; deploymentTargetObjectId: string } | null;
+    verdicts: StageDependencyVerdict[];
+  }[]
+): Promise<void> {
+  const held = [...heldTargets]
+    .sort((a, b) => a.targetObjectId.localeCompare(b.targetObjectId))
+    .map((entry) => ({
+      targetObjectId: entry.targetObjectId,
+      componentObjectId: entry.stage?.componentObjectId ?? null,
+      deploymentTargetObjectId: entry.stage?.deploymentTargetObjectId ?? null,
+      dependencies: entry.verdicts
+    }));
+
+  const firstHold = await withTenantTx(db, orgId, async (tx) => {
+    const recorded = await insertDecisionIfChanged(tx, {
+      orgId,
+      kind: "stage_dependency",
+      subjectId: change.objectId,
+      verdict: "hold",
+      inputContext: { waveId: activeWave.id, waveIndex: activeWave.waveIndex, held },
+      reasonTree: {
+        summary: `${held.length} wave target(s) held: a stage dependency is not yet satisfied at that deployment-target`,
+        blocked: held.flatMap((entry) =>
+          entry.dependencies
+            .filter((verdict) => !verdict.satisfied)
+            .map(
+              (verdict) => `target ${entry.targetObjectId}: ${describeStageDependencyHold(verdict)}`
+            )
+        )
+      }
+    });
+    // The round-robin bump, in the SAME transaction as the Decision so a hold can never be recorded
+    // without its change also being moved to the back of the queue.
+    await tx
+      .update(changes)
+      .set({ updatedAt: new Date() })
+      .where(and(eq(changes.orgId, orgId), eq(changes.objectId, change.objectId)));
+    return recorded;
+  });
+
+  // Logged exactly once per distinct hold, on the tick that actually persisted it — `created` is the
+  // same signal the gate-blocked log line uses, and for the same reason: a target held for a week is
+  // one line, not 604,800.
+  if (firstHold.created) {
+    console.info(
+      `[reconcile] org ${orgId} change ${change.objectId} wave ${activeWave.waveIndex}: ${held.length} target(s) held by a stage dependency — decision ${firstHold.decision.id} (scp decision get ${firstHold.decision.id}); re-evaluated every tick until it clears`
+    );
+  }
+}
+
+/**
+ * THE FAIL-OPEN, MADE VISIBLE (ADR-0028 decision 4, unreadable/unscopeable branch). A wave target
+ * that is not a live `placement` — a legacy-shaped topology whose waves name the change's own
+ * targets, or NO resolvable topology at all, which puts the plan on `compilePlan`'s toposort path —
+ * has no place for a stage-scoped hold to be scoped by. The declaration is not enforced, and the
+ * release proceeds, which is the right call: failing closed on a shape the coupling cannot express
+ * would strand every legacy plan behind a dependency it can never evaluate.
+ *
+ * WHAT WAS WRONG WAS THE SILENCE, NOT THE VERDICT. The branch returned `satisfied: true`, so `held`
+ * was false, `recordStageDependencyHold` never ran, and the seam's only `console.warn` fires
+ * exclusively on `weightUnreadable` — a change whose CI declared a coupling and got NONE was
+ * invisible in every surface an operator has. This records it, at `warn` (not `block`: nothing is
+ * being withheld), so `scp decision list` answers "was my coupling enforced here?" with a row.
+ *
+ * The guarantee is not lost so much as never this mechanism's to keep — `plan-compiler.ts`'s LEGACY
+ * path still refuses to schedule two components joined by a `depends_on` edge into one wave, and
+ * only the STAGE path's copy of that check was replaced by the hold (ADR-0028 decision 6). What it
+ * does not cover is the QUALIFIED declaration: a `minWeight` or a cross-change dependency on a
+ * component this change does not target orders nothing here.
+ *
+ * SAME THREE PROPERTIES AS THE HOLD, for the same ADR-0024 reason. One Decision per CHANGE, not per
+ * target (`insertDecisionIfChanged` compares against the latest row of the same `(subject_id,
+ * kind)`, so per-target rows would alternate and suppression would never fire). Content-stable
+ * inputs — ids and branch names only, no clock. Persist on change. It also converges on its own:
+ * this branch only evaluates a `pending`/`triggering` target, and a target this records is
+ * triggering on this very tick, so the ordinary single-target case writes exactly one row ever.
+ *
+ * NO `updated_at` BUMP, unlike the hold, and the asymmetry is deliberate: nothing is being withheld
+ * here, so the change keeps moving through the loop on its own and has no way to freeze in the
+ * round-robin.
+ */
+async function recordStageDependencyUnscoped(
+  db: Db,
+  orgId: string,
+  change: ChangeRow,
+  activeWave: { id: string; waveIndex: number },
+  unscopeableTargets: { targetObjectId: string; verdicts: StageDependencyVerdict[] }[]
+): Promise<void> {
+  const unenforced = [...unscopeableTargets]
+    .sort((a, b) => a.targetObjectId.localeCompare(b.targetObjectId))
+    .map((entry) => ({
+      targetObjectId: entry.targetObjectId,
+      dependencies: entry.verdicts
+    }));
+
+  const recorded = await withTenantTx(db, orgId, (tx) =>
+    insertDecisionIfChanged(tx, {
+      orgId,
+      kind: "stage_dependency_unscoped",
+      subjectId: change.objectId,
+      verdict: "warn",
+      inputContext: { waveId: activeWave.id, waveIndex: activeWave.waveIndex, unenforced },
+      reasonTree: {
+        summary: `${unenforced.length} wave target(s) declared a stage dependency that was NOT enforced: the target is not a placement, so there is no deployment-target to scope the coupling by — the release proceeded`,
+        unenforced: unenforced.flatMap((entry) =>
+          entry.dependencies.map(
+            (verdict) =>
+              `target ${entry.targetObjectId}: '${verdict.dependsOn}' was declared but not enforced here — this plan's wave targets name components, not placements (a legacy-shaped release topology, or none resolved at all), so a stage-scoped hold has no place to be scoped by`
+          )
+        )
+      }
+    })
+  );
+
+  // One line per distinct fail-open, on the tick that persisted it — the same `created` signal the
+  // hold's log line uses, so a change sitting in this state does not reprint every second.
+  if (recorded.created) {
+    console.warn(
+      `[reconcile] org ${orgId} change ${change.objectId} wave ${activeWave.waveIndex}: ${unenforced.length} target(s) declared a stage dependency that was NOT enforced (the wave target is not a placement) — decision ${recorded.decision.id} (scp decision get ${recorded.decision.id})`
+    );
+  }
 }
 
 /**

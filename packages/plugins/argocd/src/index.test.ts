@@ -336,6 +336,116 @@ describe("status()", () => {
     });
   }
 
+  // ADR-0028 decision 3 / docs/proposals/rollout-step-coupling.md §2.5 — EXHAUSTIVE pin of the
+  // health -> phase mapping a FINISHED sync uses (`phaseAfterFinishedSync` in index.ts). It had no
+  // test for `Suspended` at all, and the stage-coupling gate now reads its consequence: a
+  // `succeeded` phase terminalizes the wave target, reconcile stops polling it, and its observed
+  // canary weight is frozen at whatever the last poll saw. Every row here is therefore a
+  // behavioural contract with that gate, not an implementation detail — including the ones that
+  // stay NON-terminal, because those are what keep a dependency's weight refreshing.
+  const finishedSyncArms: ReadonlyArray<{
+    health: string | undefined;
+    phase: string;
+    terminal: boolean;
+  }> = [
+    { health: "Healthy", phase: "succeeded", terminal: true },
+    { health: "Suspended", phase: "succeeded", terminal: true },
+    { health: undefined, phase: "succeeded", terminal: true },
+    { health: "Degraded", phase: "failed", terminal: true },
+    { health: "Missing", phase: "failed", terminal: true },
+    { health: "Progressing", phase: "running", terminal: false },
+    { health: "Unknown", phase: "running", terminal: false }
+  ];
+  for (const arm of finishedSyncArms) {
+    const label = arm.health ?? "(absent)";
+    it(`a FINISHED sync with health '${label}' maps to phase '${arm.phase}' (${arm.terminal ? "TERMINAL — reconcile stops polling, observed weight freezes" : "non-terminal — keep polling"})`, async () => {
+      const appName = `status-finished-${(arm.health ?? "absent").toLowerCase()}`;
+      const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+      const scope = nock(SERVER_URL)
+        .get(`/api/v1/applications/${appName}`)
+        .reply(200, {
+          metadata: { name: appName },
+          status: {
+            operationState: { phase: "Succeeded" },
+            sync: { status: "Synced" },
+            // The `undefined` arm is a health block ArgoCD genuinely omitted, not `{status: null}`.
+            ...(arm.health === undefined ? {} : { health: { status: arm.health } })
+          }
+        });
+
+      const result = await createArgoCdExecutorPlugin().status(ctx, {
+        externalId: `${appName}::run-1`
+      });
+
+      expect(scope.isDone()).toBe(true);
+      expect(result.phase).toBe(arm.phase);
+      // `progress` is the only externally visible witness of index.ts's internal `settled` flag,
+      // which is exactly the terminal/non-terminal split reconcile keys its skip on.
+      expect(result.progress).toBe(arm.terminal ? 1 : 0.5);
+    });
+  }
+
+  // The hazard of §2.5 in ONE fixture: an Application aggregating to `Suspended` while the Rollout
+  // underneath it is PAUSED at 10%. status() reports the target DONE (`succeeded`, progress 1) and
+  // carries weight 10 in the same response. reconcile.ts then skips this target on every later tick
+  // (`if (target.status === "succeeded") continue;`), so 10 is the LAST weight ever persisted for
+  // it — it stays 10 even after somebody promotes the Rollout to 100%. This is a pin of what SCP
+  // does GIVEN that input; whether Argo really aggregates a paused Rollout to `Suspended` cannot be
+  // established from this tree and must be checked against a live instance (§2.5).
+  it("a 'Suspended' Application whose Rollout is paused at 10% reports BOTH terminal 'succeeded' AND weight 10 — the stale-snapshot shape the coupling gate must not trust as live", async () => {
+    const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
+    const appScope = nock(SERVER_URL)
+      .get("/api/v1/applications/status-suspended-paused-rollout")
+      .reply(200, {
+        metadata: { name: "status-suspended-paused-rollout" },
+        status: {
+          operationState: { phase: "Succeeded" },
+          sync: { status: "Synced", revision: "abc123" },
+          health: { status: "Suspended" },
+          resources: [
+            {
+              group: "argoproj.io",
+              version: "v1alpha1",
+              kind: "Rollout",
+              namespace: "prod",
+              name: "web-rollout",
+              health: { status: "Suspended", message: "Rollout is paused" }
+            }
+          ]
+        }
+      });
+    const resourceScope = nock(SERVER_URL)
+      .get("/api/v1/applications/status-suspended-paused-rollout/resource")
+      .query(true)
+      .reply(200, {
+        manifest: JSON.stringify({
+          status: {
+            phase: "Paused",
+            message: "Rollout is paused",
+            currentStepIndex: 1,
+            canary: { weights: { canary: { weight: 10 } } }
+          }
+        })
+      });
+
+    const result = await createArgoCdExecutorPlugin().status(ctx, {
+      externalId: "status-suspended-paused-rollout::run-1"
+    });
+
+    expect(appScope.isDone()).toBe(true);
+    expect(resourceScope.isDone()).toBe(true);
+    // TERMINAL, despite the rollout being mid-canary.
+    expect(result.phase).toBe("succeeded");
+    expect(result.progress).toBe(1);
+    // ...and the weight this snapshot freezes at is a PARTIAL one.
+    expect(result.observed?.rollout).toEqual({
+      phase: "Paused",
+      message: "Rollout is paused",
+      step: 1,
+      weight: 10
+    });
+  });
+
   it("operationState.phase 'Failed' maps to phase 'failed'", async () => {
     const ctx = testCtx({ serverUrl: SERVER_URL, token: "test-token" });
     nock(SERVER_URL)

@@ -66,6 +66,13 @@ export async function compileAndPersistCampaignPlan(
   // and not a second copy.
   const topologyWaves = parseTopologyWaves(topologyDocument);
 
+  // NO `declaredStageDependencies` HERE, and that is a ruling rather than an omission (ADR-0028).
+  // The field feeds ONE thing: `compileStages`'s co-placed cycle refusal, which lives on the STAGE
+  // path — the one entered only when `placements` is supplied. This function never supplies them, so
+  // a campaign plan cannot reach that code at all. There is also nothing to supply: a declaration is
+  // a property of a CHANGE (`stageDependenciesOf`), a `campaign` object carries none, and each member
+  // change gets its own plan through `plan-service.ts`'s `compileAndPersistPlan`, which does pass its
+  // own. Threading an always-empty array through here would suggest a coupling that does not exist.
   const result = compilePlan({
     targets: input.targetObjectIds,
     dependsOn,

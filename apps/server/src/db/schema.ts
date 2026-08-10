@@ -576,6 +576,15 @@ export const changeSourceEvents = pgTable(
     dedupeKey: text("dedupe_key"),
     headers: jsonb("headers").notNull(),
     payload: jsonb("payload").notNull(),
+    /**
+     * ADR-0028 (migration 0054): the authenticated principal that reported this event. The
+     * processor runs as SYSTEM_ACTOR_ID — right for the CHANGE, since nobody asked for it — but a
+     * declared `stageDependencies` on the same body MINTS a `depends_on` edge, and an edge write
+     * attributed to the system actor leaves "who declared this?" unanswerable in the audit chain,
+     * the federation journal and the emitted event. NULL for observe()-driven rows (no principal
+     * exists) and for rows written before 0054; the processor falls back to the system actor.
+     */
+    reportedByObjectId: uuid("reported_by_object_id"),
     processedAt: timestamp("processed_at", { withTimezone: true }),
     resultingChangeObjectId: uuid("resulting_change_object_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()

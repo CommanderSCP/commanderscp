@@ -6,6 +6,7 @@ import {
   type ChangeState,
   type ContainmentDomainId,
   type ExecutorType,
+  type StageDependency,
   type TrustDomainId
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -13,6 +14,7 @@ import { changes, objects } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { createRelationship } from "../graph/relationships-repo.js";
 import { insertDecision } from "./decisions-repo.js";
 import {
   resolvePipelineForTargets,
@@ -110,6 +112,22 @@ export interface ProposeChangeInput {
    *  object id here (a bad ref 404s), then stored in `properties.requires`. When set, the change
    *  parks in `waiting` until every requirement is satisfied. */
   requires?: { key: string; at: string }[];
+  /** Stage-scoped component couplings (ADR-0028): each entry's `dependsOn`, and every member of its
+   *  `atTargets`, is an idOrUrn RESOLVED to an object id here (a bad ref 404s), then stored in
+   *  `properties.stageDependencies`. Unlike `requires`, this does NOT park the change: it is read
+   *  per (target × stage) in the executing loop to decide whether to fire that target's trigger. */
+  stageDependencies?: StageDependency[];
+  /**
+   * WHO DECLARED the `stageDependencies` above, when that is not who the change is attributed to
+   * (ADR-0028). Used ONLY to attribute the `depends_on` edges the declaration mints; everything
+   * else about the change — its object, its Decision, its audit event — stays `actorObjectId`'s.
+   *
+   * It exists for exactly one caller: the persist-then-process ingress, whose processor runs as
+   * SYSTEM_ACTOR_ID (nobody asked for the change; a push happened) while the declaration riding the
+   * same body is a deliberate, authorized graph write by the reporting principal the ROUTE
+   * authenticated and authorized. Absent everywhere else, where the actor already IS the declarer.
+   */
+  declarationActorObjectId?: string;
   /** Set only when this Change IS a rollback of another change (coordination/rollback.ts). */
   rollbackOfObjectId?: string;
   /** M6 (DESIGN §13): set when this Change was instantiated from a Promotion Bundle —
@@ -185,13 +203,103 @@ export async function proposeChange(
             at: (await getObjectByIdOrUrnAnyType(tx, input.orgId, req.at)).id
           }))
         );
+  // ADR-0028: resolve every stage dependency's `dependsOn` — and every member of its `atTargets` —
+  // to an object id NOW, for exactly the reason `requires[].at` is resolved above: an unresolvable
+  // reference must be refused where it was AUTHORED, not become a hold that never clears because
+  // the thing it names never existed. Both halves are resolved: an `atTargets` typo would otherwise
+  // scope the coupling to a place that does not exist, which reads as "applies nowhere" — a silent
+  // fail-OPEN, the mirror image of the forever-wait.
+  //
+  // AND THE TYPE IS CHECKED, ON THE SAME PRINCIPLE. Resolving proves the object EXISTS; it does not
+  // prove the declaration can ever be enforced, and a reference of the wrong type is inert in
+  // exactly the silent way an unresolvable one would have been:
+  //
+  //   * `dependsOn` MUST BE A COMPONENT. The `depends_on` edge type permits a service at both
+  //     endpoints, and a service is the shape users write (`seed.ts` has service->service), so this
+  //     is accepted-looking: the edge is minted, the declaration is stored, and NOTHING EVER HOLDS.
+  //     The hold resolves a wave target to its placement and asks `listPlacementsForComponents` for
+  //     the dependency's placements — and a placement's `component` must be typeId `component`
+  //     (`graph/placements-repo.ts`), so a service returns no rows, every verdict is `not_placed`
+  //     -> satisfied, and not even the `stage_dependency_unscoped` warn fires. Silently inert
+  //     forever is the worst of the available answers.
+  //   * `atTargets` MUST BE DEPLOYMENT-TARGETS. The hold matches these against the placement's own
+  //     `deploymentTargetId`, so anything else matches nothing, the declaration applies nowhere, and
+  //     the release runs uncoupled — the same fail-open the unresolvable-ref 404 above exists to
+  //     prevent, just wearing a valid id.
+  //
+  // Refused with a 400 where it was authored, the same call `createRelationship` already makes for
+  // an endpoint its type forbids (a `dependsOn` naming a deployment-target used to reach that check
+  // and is now refused here instead, with a message that says what to do about it).
+  const resolveDeclaredRef = async (
+    idOrUrn: string,
+    expectedTypeId: "component" | "deployment-target",
+    describe: (actualTypeId: string) => string
+  ): Promise<string> => {
+    const object = await getObjectByIdOrUrnAnyType(tx, input.orgId, idOrUrn);
+    if (object.typeId !== expectedTypeId) throw badRequest(describe(object.typeId));
+    return object.id;
+  };
+  const resolvedStageDependencies =
+    input.stageDependencies === undefined
+      ? undefined
+      : await Promise.all(
+          input.stageDependencies.map(async (dep) => ({
+            dependsOn: await resolveDeclaredRef(
+              dep.dependsOn,
+              "component",
+              (typeId) =>
+                `stage dependency '${dep.dependsOn}' names a '${typeId}' — \`stageDependencies[].dependsOn\` must name a component, because a stage-scoped hold is evaluated against the dependency's PLACEMENTS and only a component can be placed; a '${typeId}' would never hold anything`
+            ),
+            ...(dep.minWeight === undefined ? {} : { minWeight: dep.minWeight }),
+            ...(dep.atTargets === undefined
+              ? {}
+              : {
+                  atTargets: await Promise.all(
+                    dep.atTargets.map((t) =>
+                      resolveDeclaredRef(
+                        t,
+                        "deployment-target",
+                        (typeId) =>
+                          `stage dependency '${dep.dependsOn}' is scoped to '${t}', which is a '${typeId}' — \`atTargets\` must name deployment-targets, and a scope that names anything else matches no place at all, so the coupling would silently apply nowhere`
+                      )
+                    )
+                  )
+                })
+          }))
+        );
   const providesValue = input.provides ?? providesOf(input.properties);
   const requiresValue = resolvedRequires;
-  // Strip any caller-supplied `provides`/`requires` from the raw properties so the ONLY values
-  // stored are the computed ones above (the resolved typed field, or `provides`'s explicit fallback).
+  // `stageDependencies` follows `requires`' TYPED-FIELD-ONLY idiom, not `provides`' fallback one:
+  // the typed field is the only way to store one, and a caller-supplied `properties.stageDependencies`
+  // is DROPPED (the destructure below is what drops it).
+  //
+  // THERE IS NO PROPERTIES FALLBACK BECAUSE IT WAS A THIRD, UNGUARDED DECLARATION DOOR. `POST
+  // /changes` authorizes the TYPED field — `relationship:write` at both endpoints of every edge the
+  // declaration would mint (`campaign-scope-authz.ts`) — and passes `properties` straight through.
+  // A fallback preserving the same declaration verbatim therefore accepted, and the hold honoured,
+  // exactly what the typed field 403s: an authority bypass, plus disclosure of another component's
+  // deployment state through the Decision's `branch`/`dependencyStatus`. (No edge is minted that
+  // way — `materialiseStageDependencyEdges` reads the resolved typed field only — so it is not a
+  // privilege escalation, but a coupling that binds a component the declarer has no authority over
+  // is not the declarer's to write either.)
+  //
+  // AND NO LEGITIMATE CALLER NEEDS IT, which is the same census `requires` passed: the typed field
+  // covers the API, the CLI and the CI report ingress, campaign fan-out and rollback pass no
+  // properties at all, and federation promotion STRIPS `stageDependencies` before it re-proposes
+  // (`federation/promotion-repo.ts`, ADR-0028 — the coupling was enforced upstream at the commander
+  // and evaluating it in the receiving domain would fail open under any sync scope narrower than
+  // `full`). The only propose path that carries caller properties at all is `POST /changes`.
+  const stageDependenciesValue =
+    resolvedStageDependencies !== undefined && resolvedStageDependencies.length > 0
+      ? resolvedStageDependencies
+      : undefined;
+  // Strip any caller-supplied `provides`/`requires`/`stageDependencies` from the raw properties so
+  // the ONLY values stored are the computed ones above (the resolved typed field, or the explicit
+  // properties fallback `provides` keeps).
   const {
     provides: _rawProvides,
     requires: _rawRequires,
+    stageDependencies: _rawStageDependencies,
     ...restProperties
   } = input.properties ?? {};
 
@@ -259,7 +367,8 @@ export async function proposeChange(
       // Only written when non-empty, so a change that couples nothing stays byte-identical to a
       // pre-P4B change (and the no-wait fast path in reconcile is a pure absence check).
       ...(providesValue.length > 0 ? { provides: providesValue } : {}),
-      ...(requiresValue.length > 0 ? { requires: requiresValue } : {})
+      ...(requiresValue.length > 0 ? { requires: requiresValue } : {}),
+      ...(stageDependenciesValue === undefined ? {} : { stageDependencies: stageDependenciesValue })
     },
     labels: input.labels
   });
@@ -348,7 +457,119 @@ export async function proposeChange(
     }
   });
 
+  // ADR-0028 decision 6/7, increment 2. Materialised from the RESOLVED TYPED FIELD only — which is
+  // now also the only thing this function stores, since a caller-supplied
+  // `properties.stageDependencies` is dropped above. Edges are never minted from stored entries
+  // that did not go through propose-time resolution and the both-endpoint authority check: a
+  // replayed peer's entries name the PEER's object ids, so writing edges from them would either
+  // fabricate an edge this domain never asserted or 400 on an endpoint that was never synced here
+  // and take the whole import down with it. Edges have their own federation channel
+  // (`relationship_upsert`); the origin domain's materialisation is what travels.
+  if (resolvedStageDependencies !== undefined) {
+    await materialiseStageDependencyEdges(tx, input, targetObjectIds, resolvedStageDependencies);
+  }
+
   return { change: toChangeShape(row, object), targetObjectIds };
+}
+
+/**
+ * ADR-0028 decision 6 — a change's declared stage dependencies become `depends_on` edges,
+ * component→component, so the declaration that will gate the trigger ALSO answers "what depends on
+ * what". This is the "derive the dependency charts instead of guessing" half of the owner's ask, and
+ * it is the only half there can be: nothing SCP observes carries inter-component dependency data
+ * (ADR-0028 decision 7 — the ArgoCD resource tree models `{group,version,kind,namespace,name,
+ * status,health}`, discovery proposes no dependency edges, and no scan/SBOM code writes edges), so a
+ * dependency edge can only ever be DECLARED.
+ *
+ * IDEMPOTENT BY PRE-CHECK, NOT BY CATCHING THE 409. The same CI declaration arrives on every single
+ * push, so a duplicate must be a silent no-op — but `createRelationship`'s unique-violation branch
+ * throws only AFTER postgres has already aborted the surrounding transaction, and `proposeChange` is
+ * mid-transaction with more edges (and its caller's own writes) still to come. Catching the conflict
+ * here would fail on the very next statement. The pre-check is therefore the mechanism, and the
+ * unique index stays the backstop for the one race it cannot cover — two first-ever pushes of the
+ * same declaration committing at the same instant — which surfaces as a 409 on propose and is
+ * retried by the ingress path. That is the identical pre-check-plus-index shape `assertCardinality`
+ * already uses in `graph/relationships-repo.ts`.
+ *
+ * THE PRE-CHECK DELIBERATELY DOES NOT FILTER ON `deleted_at`. `relationships_org_type_from_to_key`
+ * is a plain UNIQUE, not a partial index, and `deleteRelationship` is a SOFT delete — so a
+ * tombstoned edge still occupies the key and NO create can ever replace it. Treating a tombstone as
+ * "already materialised" is what stops an operator's one-off deletion from turning every subsequent
+ * push of that microservice into a 409. THE DECLARED coupling is unaffected either way: the hold
+ * reads it off `properties.stageDependencies`, which no edge deletion touches. (The edge is not
+ * inert — it ALSO orders a pair that are both targets of one change, ADR-0028 decision 6 — but that
+ * is the same fact arriving twice, and the declaration is the half a tombstone cannot take away.)
+ *
+ * NOTHING IS EVER DELETED HERE, and there is no pruning story on purpose. A declaration is ONE
+ * repo's assertion about its own component; pruning "edges this push did not mention" would let A's
+ * repo silently delete the dependency B's repo asserted.
+ *
+ * `minWeight`/`atTargets` DO NOT RIDE ON THE EDGE. Relationship `properties` are silently discarded
+ * on four separate legs of the way in (rollout-step-coupling.md §0.5) and relationships have no
+ * update path at all, so per-dependency semantics hung on an edge would validate, apply, and store
+ * nothing. The change's own `properties.stageDependencies` stays the only source of a QUALIFIED
+ * dependency; the edge carries only the FACT of one, which is all impact analysis
+ * (`graph/named-queries.ts`'s `DEFAULT_IMPACT_TYPES`) consumes — and all the hold reads it for, in
+ * the one case where it does (both endpoints targets of the same change, ADR-0028 decision 6, where
+ * it applies the plain `succeeded` test with no qualifiers). Existing `consumes` edges are left
+ * strictly alone for the same reason — impact analysis reads both, so nothing is lost by not
+ * converging them, and converging them would rewrite data this feature never authored.
+ */
+async function materialiseStageDependencyEdges(
+  tx: TenantTx,
+  input: Pick<
+    ProposeChangeInput,
+    "orgId" | "actorObjectId" | "requestId" | "declarationActorObjectId"
+  >,
+  fromObjectIds: readonly string[],
+  dependencies: readonly { dependsOn: string }[]
+): Promise<void> {
+  for (const fromId of fromObjectIds) {
+    for (const dep of dependencies) {
+      const toId = dep.dependsOn;
+      // A self-edge is dropped rather than refused: both compiler paths already ignore
+      // `from === to` (`buildDependencyMap`, and the stage-mode edge walk), so the graph layer's
+      // 400 would be the only consequence of a declaration that means nothing either way.
+      if (fromId === toId) continue;
+      // The pre-check runs INSIDE this transaction and so sees this loop's own uncommitted inserts.
+      // That is what makes two entries naming the same dependency (differing only in
+      // `minWeight`/`atTargets`, which the edge does not carry) collapse onto one edge, with no
+      // separate in-memory de-dupe: the earlier iteration's row is simply already there. A
+      // belt-and-braces `Set` was written here first and then removed — a mutation proved it dead,
+      // because the pre-check already covered every case it claimed to.
+
+      const existing = await tx.query.relationships.findFirst({
+        where: (t, { eq: eqOp, and: andOp }) =>
+          andOp(
+            eqOp(t.orgId, input.orgId),
+            eqOp(t.typeId, "depends_on"),
+            eqOp(t.fromId, fromId),
+            eqOp(t.toId, toId)
+          )
+      });
+      if (existing) continue;
+
+      // An endpoint that cannot participate in a `depends_on` is already refused by
+      // `proposeChange`'s type-checked resolution above, before anything is written; this call is
+      // reached only for a resolved component.
+      //
+      // ATTRIBUTED TO THE DECLARER, which is not always the change's own actor. The persist-then-
+      // process ingress proposes as SYSTEM_ACTOR_ID — right for a change nobody asked for — but
+      // this edge IS an authorized graph write by the principal the ingress route authenticated,
+      // and `graph.dependentIds` is a live CEL policy input for the depended-on component, so an
+      // audit event naming the system actor would leave a policy-relevant write unattributable
+      // (charter principle 6). Falls back to the change's actor, which is who declared it on every
+      // other path.
+      await createRelationship(tx, {
+        orgId: input.orgId,
+        actorObjectId: input.declarationActorObjectId ?? input.actorObjectId,
+        requestId: input.requestId,
+        typeId: "depends_on",
+        fromId,
+        toId
+      });
+    }
+  }
 }
 
 async function fetchChangeWithObject(
@@ -575,6 +796,114 @@ export function requiresOf(properties: Record<string, unknown> | null | undefine
     malformed.push(r);
   }
   return { requirements, malformed };
+}
+
+/** `stageDependenciesOf`'s parse result — the same two-field contract as `ParsedRequires`, and for
+ *  the same reason: callers must treat any `malformed` entry as an UNSATISFIABLE dependency. */
+export interface ParsedStageDependencies {
+  stageDependencies: ResolvedStageDependency[];
+  /** Stored `stageDependencies` entries that do not parse — verbatim, for diagnostics. When
+   *  `properties.stageDependencies` is present but not an array at all, the whole raw value is one
+   *  entry. */
+  malformed: unknown[];
+}
+
+/** A stage dependency as STORED: `dependsOn` and every `atTargets` member are already object ids,
+ *  resolved at propose time. The wire shape (`StageDependency`) is identical in structure but its
+ *  string fields are ids-OR-URNs; the two are kept as separate types so a reader can never mistake
+ *  an unresolved caller reference for a resolved one. */
+export interface ResolvedStageDependency {
+  dependsOn: string;
+  minWeight?: number;
+  atTargets?: string[];
+}
+
+/**
+ * Stage-scoped component couplings a change declared (ADR-0028), off `properties.stageDependencies`
+ * — each a `{ dependsOn, minWeight?, atTargets? }` whose object references are already ids
+ * (resolved at propose time by `proposeChange`).
+ *
+ * NARROWS AND COLLECTS, exactly as `requiresOf` does above, and for the identical reason: a
+ * malformed entry is NOT silently dropped, because dropping one fails OPEN — the release would
+ * deploy with no hold at all, ahead of the very component its author named. It is returned under
+ * `malformed` for the hold to treat as unsatisfiable and surface. Deliberately RETURNS rather than
+ * throws: a throw in the per-target executing loop would let one corrupt row wedge every other
+ * target in the same tick, where "unsatisfiable, hold, surface" contains the blast radius to the one
+ * change carrying the junk.
+ *
+ * A `minWeight` outside 1..100, or a non-integer, makes the WHOLE entry malformed rather than
+ * degrading it to the universal succeeded-test. The two inputs are not the same: an ABSENT
+ * `minWeight` means "no weight qualifier was asked for", which has a right answer; a present but
+ * nonsensical one means somebody DID ask and asked for something we cannot honour — the same
+ * distinction `typeOf` draws below. Propose-time Zod validation makes these unreachable through the
+ * API, and `proposeChange` no longer stores a caller's raw `properties.stageDependencies` at all —
+ * so a malformed entry can only be a row written before that (or one repaired by hand). The narrower
+ * stays because "unsatisfiable, hold, surface" is the only reading of such a row that is not
+ * fail-open.
+ *
+ * ============================================================================================
+ * KNOWN LIMITATION: A DECLARATION IS CHANGE-SCOPED, AND IS APPLIED TO EVERY TARGET
+ * ============================================================================================
+ * `properties.stageDependencies` hangs off the CHANGE. Nothing in it records WHICH of the change's
+ * targets a given entry was declared for, so `reconcile.ts` parses this once per change and
+ * evaluates the whole set against every one of that change's wave targets. For a change targeting
+ * [A, B] where only A's CI declared `dependsOn: C`, **B is held behind C as well.**
+ *
+ * WHY IT IS NOT FIXED HERE. There is no data to fix it FROM. ADR-0028 decision 5 has the
+ * microservice's own CI declare its own dependencies, and a webhook-born change targets exactly one
+ * component (`webhook-processor.ts`) — 277 of 281 measured changes, so the declaration and the
+ * target coincide and the over-application is unobservable. A multi-target change arrives through
+ * the API or campaign fan-out with ONE array and several targets, and the association between an
+ * entry and a target simply was never carried. `materialiseStageDependencyEdges` above takes the
+ * same reading — it mints an edge from EVERY target to `dependsOn` — so the breadth is already a
+ * standing graph fact for such a change, not something this parse could narrow after the event.
+ *
+ * WHAT THE SHAPE WOULD NEED TO BE. One optional field on `StageDependencySchema`, e.g.
+ * `forComponents?: string[]` — component ids/URNs, resolved at propose time exactly as `dependsOn`
+ * and `atTargets` already are, absent meaning "every target of this change" so existing declarations
+ * keep their current meaning. `atTargets` cannot stand in for it: that axis is deployment-targets
+ * (WHERE the coupling applies), and this one is components (WHOSE coupling it is). The hold would
+ * filter on it beside the existing `atTargets` filter, and `materialiseStageDependencyEdges` would
+ * mint edges only from the named components. Additive request field, so the oasdiff gate stays
+ * green. Recorded in ADR-0028's Non-goals; `stage-dependency-hold.integration.test.ts` pins the
+ * current breadth so a future narrowing has a red test to flip rather than a silent behaviour swap.
+ */
+export function stageDependenciesOf(
+  properties: Record<string, unknown> | null | undefined
+): ParsedStageDependencies {
+  const raw = properties?.stageDependencies;
+  if (raw === undefined || raw === null) return { stageDependencies: [], malformed: [] };
+  if (!Array.isArray(raw)) return { stageDependencies: [], malformed: [raw] };
+  const stageDependencies: ResolvedStageDependency[] = [];
+  const malformed: unknown[] = [];
+  for (const entry of raw) {
+    if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+      const { dependsOn, minWeight, atTargets } = entry as {
+        dependsOn?: unknown;
+        minWeight?: unknown;
+        atTargets?: unknown;
+      };
+      const weightOk =
+        minWeight === undefined ||
+        (typeof minWeight === "number" &&
+          Number.isInteger(minWeight) &&
+          minWeight >= 1 &&
+          minWeight <= 100);
+      const targetsOk =
+        atTargets === undefined ||
+        (Array.isArray(atTargets) && atTargets.every((t) => typeof t === "string" && t.length > 0));
+      if (typeof dependsOn === "string" && dependsOn.length > 0 && weightOk && targetsOk) {
+        stageDependencies.push({
+          dependsOn,
+          ...(minWeight === undefined ? {} : { minWeight: minWeight as number }),
+          ...(atTargets === undefined ? {} : { atTargets: atTargets as string[] })
+        });
+        continue;
+      }
+    }
+    malformed.push(entry);
+  }
+  return { stageDependencies, malformed };
 }
 
 /**

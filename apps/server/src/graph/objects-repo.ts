@@ -309,6 +309,28 @@ export async function getObjectByIdOrUrnAnyType(
   idOrUrn: string,
   opts: { includeDeleted?: boolean } = {}
 ): Promise<GraphObject> {
+  const found = await findObjectByIdOrUrnAnyType(tx, orgId, idOrUrn, opts);
+  if (!found) throw notFound(`object '${idOrUrn}' not found`);
+  return found;
+}
+
+/**
+ * The same lookup, returning `undefined` instead of throwing — for the callers whose answer to "no
+ * such object" is NOT a 404 on this request. Today that is the stage-dependency authority check
+ * (`coordination/campaign-scope-authz.ts`), which must not turn an unresolvable reference on the
+ * persist-then-process ingress path into a 4xx: that path's contract is that a caller-shaped defect
+ * surfaces as a recorded refusal at process time, not as an error on the webhook/report POST.
+ *
+ * Shares the id-or-urn condition with `getObjectByIdOrUrnAnyType` rather than restating it, so the
+ * "is it a UUID or a URN" rule can never mean one thing for a check and another for the write it
+ * guards.
+ */
+export async function findObjectByIdOrUrnAnyType(
+  tx: TenantTx,
+  orgId: string,
+  idOrUrn: string,
+  opts: { includeDeleted?: boolean } = {}
+): Promise<GraphObject | undefined> {
   const conditions = [idOrUrnAnyTypeCondition(orgId, idOrUrn)];
   if (!opts.includeDeleted) conditions.push(isNull(objects.deletedAt));
   const row = await tx
@@ -316,7 +338,7 @@ export async function getObjectByIdOrUrnAnyType(
     .from(objects)
     .where(and(...conditions))
     .limit(1);
-  if (row.length === 0 || !row[0]) throw notFound(`object '${idOrUrn}' not found`);
+  if (row.length === 0 || !row[0]) return undefined;
   return toGraphObject(row[0]);
 }
 

@@ -9876,6 +9876,11 @@ export type ProposeChangeData = {
             key: string;
             at: string;
         }>;
+        stageDependencies?: Array<{
+            dependsOn: string;
+            minWeight?: number;
+            atTargets?: Array<string>;
+        }>;
         targets: Array<string>;
     };
     path?: never;
@@ -10726,6 +10731,11 @@ export type ReportChangeSourceData = {
         requires?: Array<{
             key: string;
             at: string;
+        }>;
+        stageDependencies?: Array<{
+            dependsOn: string;
+            minWeight?: number;
+            atTargets?: Array<string>;
         }>;
         sbom?: {
             format: 'cyclonedx' | 'spdx';

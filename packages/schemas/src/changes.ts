@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   ChangeRequirementSchema,
   CursorPageQuerySchema,
+  StageDependencySchema,
   cursorPageResponseSchema
 } from "./common.js";
 import { ControlRunSchema } from "./governance.js";
@@ -71,8 +72,8 @@ export const ChangeSchema = z.object({
    * even once — measured in production as 13 days of fully stopped coordination behind green health
    * checks (`reconcile.ts`'s gate-blocked bump documents the incident).
    *
-   * Four paths re-stamp: waiting, validating, gate-blocked, and any executing change with a target
-   * still in flight. That last one means a change whose rollout
+   * Five paths re-stamp: waiting, validating, gate-blocked, a stage-dependency hold (ADR-0028), and
+   * any executing change with a target still in flight. That last one means a change whose rollout
    * has been sitting at the same canary weight for three days still reads `updatedAt` of one second
    * ago. **The field an operator wants for "how long has this been stuck" is `stateEnteredAt`**,
    * which the round-robin deliberately never touches and which the watchdog's stall SLA measures
@@ -151,6 +152,14 @@ export const CreateChangeRequestSchema = z.object({
    *  or URN resolved at propose time (a bad ref is a 404, never a silent forever-wait). Omitted/empty
    *  ⇒ no wait; the change goes coordinated→executing as before. */
   requires: z.array(ChangeRequirementSchema).optional(),
+  /** Stage-scoped component couplings (ADR-0028): components this release's component must not
+   *  deploy AHEAD OF at a shared place. Each entry's `dependsOn` and `atTargets` are ids or URNs
+   *  resolved at propose time (a bad ref is a 404, never a silent forever-wait) and stored resolved
+   *  in `properties.stageDependencies`. Omitted/empty ⇒ nothing holds this release's triggers.
+   *
+   *  `.optional()` and NOT `.default([])`: a Zod default renders the property REQUIRED in the
+   *  generated SDK type, which oasdiff scores as a /v1 break. */
+  stageDependencies: z.array(StageDependencySchema).optional(),
   /** Object ids or URNs this change targets — plan compiler input. */
   targets: z.array(z.string().min(1)).min(1)
 });

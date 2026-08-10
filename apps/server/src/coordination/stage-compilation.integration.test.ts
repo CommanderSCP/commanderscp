@@ -32,6 +32,8 @@ import {
  * | `parseTopologyWaves`: allow `waves: []` | "an empty waves array is refused" fails |
  * | `parseTopologyWaves`: drop the unknown-key check | "an unknown wave key is refused" fails |
  * | `parseTopologyWaves`: drop the per-wave mode/targets checks | "a wave with a bad mode" fails |
+ * | stop passing `declaredStageDependencies` from `plan-service.ts` | "the tombstoned edge" fails |
+ * | pass `[]` for `declaredStageDependencies` (keep the parameter, drop the value) | the same test fails |
  */
 describe("stage-shaped compilation + malformed-topology loudness", () => {
   let server: ListeningTestServer;
@@ -176,6 +178,93 @@ describe("stage-shaped compilation + malformed-topology loudness", () => {
     const plan = await compile(change, [component.id], topo.id);
     expect(plan.waves).toHaveLength(1);
     expect(plan.waves[0]!.targets.map((t) => t.targetObjectId)).toEqual([component.id]);
+  });
+
+  it("REFUSES a mutual declaration whose edge was TOMBSTONED — the compiler reads what the hold enforces", async () => {
+    // THE SILENT WEDGE, end to end, and the reason this arm is an integration test rather than one
+    // more `compilePlan` unit case: the unit tests hand the compiler its declarations directly, so
+    // they cannot tell whether `plan-service.ts` actually reads them off the change. This one starts
+    // from an HTTP propose and a real tombstone.
+    //
+    //  1. `a -> b` is minted and then SOFT-DELETED by an operator. `deleteRelationship` is a soft
+    //     delete and `relationships_org_type_from_to_key` is a plain UNIQUE, so the tombstone keeps
+    //     the key forever.
+    //  2. A change targeting [a, b] declares BOTH couplings. `materialiseStageDependencyEdges` mints
+    //     `b -> a` and SKIPS `a -> b`, whose tombstone it reads as "already materialised".
+    //  3. `loadDependsOnEdges` filters `deleted_at IS NULL`, so the compiler sees only `b -> a` — no
+    //     cycle — and the plan compiled clean.
+    //  4. At reconcile the declaration is CHANGE-scoped and applies to every target, so `a@gamma`
+    //     holds behind `b@gamma` and `b@gamma` holds behind `a@gamma`. Every target held, none
+    //     failed: the pure-hold return fires every tick and the change sits in `executing` forever
+    //     behind nothing louder than a watchdog warn.
+    //
+    // It must fail LOUDLY here instead, which is the epitaph ADR-0028 promises.
+    const a = await componentWithPlacements("tombstone-a", [gamma, prod]);
+    const b = await componentWithPlacements("tombstone-b", [gamma, prod]);
+
+    const edge = await admin.relationships.create({
+      typeId: "depends_on",
+      fromId: a.id,
+      toId: b.id
+    });
+    await admin.relationships.delete(edge.id);
+
+    const change = await admin.changes.propose({
+      name: "mutual declaration over a tombstone",
+      targets: [a.id, b.id],
+      stageDependencies: [{ dependsOn: a.id }, { dependsOn: b.id }]
+    });
+
+    // The premise the wedge rested on: exactly ONE live edge survives, so an edges-only cycle check
+    // finds nothing. If this ever stops holding, the test below would pass for the wrong reason.
+    const live = await admin.relationships.list({ typeId: "depends_on", fromId: a.id, toId: b.id });
+    expect(live.items).toHaveLength(0);
+    const reverse = await admin.relationships.list({
+      typeId: "depends_on",
+      fromId: b.id,
+      toId: a.id
+    });
+    expect(reverse.items).toHaveLength(1);
+
+    const topo = await topology("tombstone-gamma-then-prod", gammaThenProdDoc());
+
+    // ASSERTED ON `detail`, NOT ON THE MESSAGE. `badRequest(detail)` builds
+    // `new ProblemError(400, "Bad Request", { detail })` (`errors.ts`), so `err.message` is the
+    // literal "Bad Request" for EVERY 400 this route can raise — matching on it would pass for a
+    // malformed topology, an unknown target, or a plan with nothing to do, none of which is the
+    // refusal under test. The other refusal tests in this file use a bare `.rejects.toThrow()` and
+    // are weaker than they look for the same reason; this one pins the CAUSE.
+    const err = await compile(change, [a.id, b.id], topo.id).then(
+      () => null,
+      (e: unknown) => e as { status?: number; detail?: string }
+    );
+    expect(err, "compilation must be REFUSED, not merely slow").not.toBeNull();
+    expect(err!.status).toBe(400);
+    expect(err!.detail).toMatch(/dependency cycle/);
+    // Names both components, so the epitaph tells an operator what to break.
+    expect(err!.detail).toContain(a.id);
+    expect(err!.detail).toContain(b.id);
+  });
+
+  it("a NON-mutual declaration over the same shape still compiles and serialises", async () => {
+    // The false-refusal guard for the arm above, driven the same way. `a` declares `b` and nothing
+    // declares `a`; the declaration still applies to BOTH targets (the KNOWN LIMITATION), so `b`
+    // carries an entry naming itself — the hold's `self` branch, satisfied. One wave per place, both
+    // placements in it, serialised at trigger time rather than refused at compile time.
+    const a = await componentWithPlacements("oneway-a", [gamma, prod]);
+    const b = await componentWithPlacements("oneway-b", [gamma, prod]);
+
+    const change = await admin.changes.propose({
+      name: "one-way declaration",
+      targets: [a.id, b.id],
+      stageDependencies: [{ dependsOn: b.id }]
+    });
+
+    const topo = await topology("oneway-gamma-then-prod", gammaThenProdDoc());
+    const plan = await compile(change, [a.id, b.id], topo.id);
+
+    expect(plan.waves).toHaveLength(2);
+    expect(plan.waves.map((w) => w.targets.length)).toEqual([2, 2]);
   });
 
   // -------------------------------------------------------------------------------------------

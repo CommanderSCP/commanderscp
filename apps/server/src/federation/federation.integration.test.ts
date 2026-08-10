@@ -26,7 +26,12 @@ import {
 import { getCursor } from "./cursors-repo.js";
 import { createOverlay, getMergedOverlayView } from "./overlay-repo.js";
 import { handFillObject } from "./handfill-repo.js";
-import { proposeChange, getChange, requiresOf } from "../coordination/changes-repo.js";
+import {
+  proposeChange,
+  getChange,
+  requiresOf,
+  stageDependenciesOf
+} from "../coordination/changes-repo.js";
 import { enforceLocalChangeAuthority } from "../coordination/transition.js";
 import { materializeApprovalRequest, castApprovalVote } from "../governance/approvals-repo.js";
 import { insertControlRun } from "../governance/controls-repo.js";
@@ -888,8 +893,20 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
        *  exercise the promotion-import strip (§8 Q2). The target doubles as the `at` scope because
        *  `requires[].at` must resolve in domain A at propose time. */
       coupling?: boolean;
+      /** ADR-0028: propose the change with a declared `stageDependencies` naming a second object
+       *  in domain A, to exercise the promotion-import strip. A separate object rather than the
+       *  change's own target, because a self-declaration mints no `depends_on` edge and would make
+       *  the fixture answer an easier question than the real one. A COMPONENT specifically:
+       *  `dependsOn` is refused for anything else at propose time, since only a component can be
+       *  placed and therefore only a component can ever be held against. */
+      stageCoupling?: boolean;
     } = {}
-  ): Promise<{ changeId: string; changeUrn: string; targetId: string }> {
+  ): Promise<{
+    changeId: string;
+    changeUrn: string;
+    targetId: string;
+    stageDependsOnId: string;
+  }> {
     const seedScan = opts.seedScan ?? true;
     const target = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
       createObject(tx, {
@@ -899,6 +916,16 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
         actorObjectId: domainA.orgId,
         requestId: "t-promo-target",
         name: `promo-target-${randomUUID()}`
+      })
+    );
+    const stageDependsOn = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      createObject(tx, {
+        orgId: domainA.orgId,
+        domainId: null,
+        typeId: "component",
+        actorObjectId: domainA.orgId,
+        requestId: "t-promo-stage-dep",
+        name: `promo-stage-dep-${randomUUID()}`
       })
     );
     // Sync the new target to B too, so the promotion bundle's target resolves there.
@@ -924,6 +951,9 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
         ...(sourceRef ? { sourceRef } : {}),
         ...(opts.coupling
           ? { provides: ["feature-a"], requires: [{ key: "infra-ready", at: target.id }] }
+          : {}),
+        ...(opts.stageCoupling
+          ? { stageDependencies: [{ dependsOn: stageDependsOn.id, minWeight: 25 }] }
           : {})
       })
     );
@@ -956,7 +986,12 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
         : undefined;
     if (seedOci) await seedPassingScan(change.id, seedOci);
 
-    return { changeId: change.id, changeUrn: change.urn, targetId: target.id };
+    return {
+      changeId: change.id,
+      changeUrn: change.urn,
+      targetId: target.id,
+      stageDependsOnId: stageDependsOn.id
+    };
   }
 
   /** Insert a `trivy` scan control run for `changeId`. Defaults to the PASSING, digest-bound outcome
@@ -1166,6 +1201,86 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
       tx.select().from(changes).where(eq(changes.objectId, result.localChangeObjectId))
     );
     expect(importedRow[0]!.state).toBe("proposed");
+  });
+
+  it("ADR-0028 round-trip: promotion STRIPS `stageDependencies`, and records WHY rather than losing the coupling silently", async () => {
+    // WHAT THIS PREVENTS. A promoted change is re-proposed LOCALLY with this domain's own origin, so
+    // reconcile's foreign-origin skip does not exclude it and the outpost really would evaluate the
+    // coupling. But `change_wave_targets`/`observed_state` are journaled by nothing and
+    // `relationship_upsert` ships only under sync scope `full`; under any narrower scope the
+    // depended-on component is not here at all, every verdict resolves to `not_placed` -> SATISFIED,
+    // and the release fires with no hold and NO RECORD — the silent fail-open ADR-0028's own
+    // Consequences call the worst available answer. Stripping defers the open federation ruling (D5)
+    // instead of shipping it.
+    const { changeId, stageDependsOnId } = await proposeApprovedChangeInA(undefined, {
+      stageCoupling: true
+    });
+
+    const bundle = await exportBundleA(changeId);
+    // The bundle carries the declaration VERBATIM (federation is a properties passthrough) — which
+    // is what makes the import-side assertion below a real one rather than a vacuous absence.
+    const bundleProps = bundle.change.properties as Record<string, unknown>;
+    expect(bundleProps.stageDependencies).toEqual([{ dependsOn: stageDependsOnId, minWeight: 25 }]);
+
+    const result = await importPromotionBundle(domainB.db, domainB.orgId, bundle);
+
+    const imported = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      getObjectByIdOrUrnAnyType(tx, domainB.orgId, result.localChangeObjectId)
+    );
+    const importedProps = imported.properties as Record<string, unknown>;
+    expect(importedProps.stageDependencies).toBeUndefined();
+    // Asserted through the READER the hold actually uses, not only the raw key: a strip that left
+    // the value somewhere `stageDependenciesOf` still finds would pass a key check and fail here.
+    const parsed = stageDependenciesOf(importedProps);
+    expect(parsed.stageDependencies).toEqual([]);
+    expect(parsed.malformed).toEqual([]);
+
+    // The strip is an engine verdict, so it is EXPLAINABLE (charter principle 6) — recorded under the
+    // HOLD's own kind, so the row says which mechanism removed the declaration rather than leaving an
+    // unexplained absence. An operator reaches it by the promoted change (`scp change explain <id>`,
+    // or `scp decision list --subject-id <change-id>`); an earlier version of this comment promised
+    // `--kind stage_dependency`, a filter that does not exist — see `promotion-repo.ts`'s note.
+    const stripDecisions = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      tx
+        .select()
+        .from(decisions)
+        .where(
+          and(
+            eq(decisions.orgId, domainB.orgId),
+            eq(decisions.subjectId, result.localChangeObjectId),
+            eq(decisions.kind, "stage_dependency")
+          )
+        )
+    );
+    expect(stripDecisions).toHaveLength(1);
+    expect(stripDecisions[0]!.verdict).toBe("allow");
+    const inputContext = stripDecisions[0]!.inputContext as Record<string, unknown>;
+    expect(inputContext.strippedStageDependencies).toEqual([
+      { dependsOn: stageDependsOnId, minWeight: 25 }
+    ]);
+    const reasonTree = stripDecisions[0]!.reasonTree as { summary?: string };
+    expect(reasonTree.summary).toContain("enforced upstream at the commander");
+
+    // An UNCOUPLED promotion stays byte-identical: no strip Decision is written for it.
+    const plain = await proposeApprovedChangeInA();
+    const plainResult = await importPromotionBundle(
+      domainB.db,
+      domainB.orgId,
+      await exportBundleA(plain.changeId)
+    );
+    const plainDecisions = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      tx
+        .select()
+        .from(decisions)
+        .where(
+          and(
+            eq(decisions.orgId, domainB.orgId),
+            eq(decisions.subjectId, plainResult.localChangeObjectId),
+            eq(decisions.kind, "stage_dependency")
+          )
+        )
+    );
+    expect(plainDecisions).toHaveLength(0);
   });
 
   it("SECURITY: a promotion bundle with a forged approval attestation (signed by the WRONG key) rejects that approval as evidence, but does not block the import", async () => {

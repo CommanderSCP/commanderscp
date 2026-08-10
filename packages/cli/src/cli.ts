@@ -52,7 +52,9 @@ import type {
   OutpostTrustTier,
   UpdateFederationPeerRequest,
   SyncScope,
-  ScanMethod
+  ScanMethod,
+  // ADR-0028 — stage-scoped component coupling declared by a microservice's own CI.
+  StageDependency
 } from "@scp/schemas";
 import {
   DesiredStateManifestSchema,
@@ -124,6 +126,44 @@ function parseRequiresFlag(value: string | undefined): { key: string; at: string
       throw new Error(`--requires entry '${entry}' must be 'key@objectIdOrUrn'`);
     }
     return { key, at };
+  });
+}
+
+/** ADR-0028 — parse `--stage-depends-on` / `--stage-depends-at` into `stageDependencies` (the SAME
+ *  pair of flags on `scp change propose` and `scp change-source report`).
+ *
+ *  `--stage-depends-on` is comma-separated `componentIdOrUrn` or `componentIdOrUrn@minWeight`; the
+ *  '@' split is the LAST one, so a URN (which contains ':' but never '@') survives, exactly as
+ *  `parseRequiresFlag` does. A present-but-unparseable weight is an error, not a silent drop to "no
+ *  qualifier": the two mean different things and coercing one into the other would quietly widen the
+ *  hold the author asked for.
+ *
+ *  `--stage-depends-at` scopes EVERY entry to the same deployment targets. The wire shape carries
+ *  `atTargets` PER dependency, which is strictly more expressive; a release needing two dependencies
+ *  scoped to different places must use the API/SDK. Said plainly here rather than pretending the
+ *  flags are complete. */
+export function parseStageDependenciesFlags(
+  dependsOn: string | undefined,
+  atTargets: string | undefined
+): StageDependency[] | undefined {
+  if (dependsOn === undefined) {
+    if (atTargets !== undefined) {
+      throw new Error("--stage-depends-at has no effect without --stage-depends-on");
+    }
+    return undefined;
+  }
+  const at = parseList(atTargets);
+  return parseList(dependsOn)?.map((entry) => {
+    const cut = entry.lastIndexOf("@");
+    if (cut < 0) return { dependsOn: entry, ...(at ? { atTargets: at } : {}) };
+    const ref = entry.slice(0, cut).trim();
+    const weight = Number(entry.slice(cut + 1).trim());
+    if (!ref || !Number.isInteger(weight) || weight < 1 || weight > 100) {
+      throw new Error(
+        `--stage-depends-on entry '${entry}' must be 'componentIdOrUrn' or 'componentIdOrUrn@minWeight' with minWeight an integer 1-100`
+      );
+    }
+    return { dependsOn: ref, minWeight: weight, ...(at ? { atTargets: at } : {}) };
   });
 }
 
@@ -2195,6 +2235,16 @@ export function buildProgram(): Command {
       "M12 P4B coupled pipelines: comma-separated prerequisites as key@objectIdOrUrn — this change " +
         "WAITS until another change provides each key at that object before it executes"
     )
+    .option(
+      "--stage-depends-on <list>",
+      "ADR-0028 stage-scoped coupling: comma-separated componentIdOrUrn (or componentIdOrUrn@minWeight, " +
+        "a percentage 1-100) this change's component must not deploy AHEAD OF at a shared place"
+    )
+    .option(
+      "--stage-depends-at <targets>",
+      "ADR-0028: comma-separated deployment-target ids/URNs restricting EVERY --stage-depends-on entry " +
+        "to those places (omit for every stage the components share)"
+    )
     .option("--properties <json>", "JSON object")
     .option("--labels <json>", "JSON object")
     .option("--base-url <url>", "API base URL override")
@@ -2207,6 +2257,8 @@ export function buildProgram(): Command {
           type?: ExecutorType;
           provides?: string;
           requires?: string;
+          stageDependsOn?: string;
+          stageDependsAt?: string;
           topology?: string;
           sourceKind?: string;
           correlationKey?: string;
@@ -2228,6 +2280,10 @@ export function buildProgram(): Command {
             type: opts.type,
             provides: parseList(opts.provides),
             requires,
+            stageDependencies: parseStageDependenciesFlags(
+              opts.stageDependsOn,
+              opts.stageDependsAt
+            ),
             properties: parseJsonOption(opts.properties, "--properties"),
             labels: parseJsonOption(opts.labels, "--labels")
           },
@@ -4511,6 +4567,19 @@ export function buildProgram(): Command {
       "M12 P4B coupled pipelines: comma-separated prerequisites as key@objectIdOrUrn — the resulting " +
         "change WAITS until another change provides each key at that object before it executes"
     )
+    // ADR-0028 stage-scoped coupling — THE declaration channel (owner ruling D2): the people who
+    // know that A calls B are the people editing A, and nothing SCP observes carries inter-component
+    // dependency data. Same flag pair as `scp change propose`.
+    .option(
+      "--stage-depends-on <list>",
+      "ADR-0028 stage-scoped coupling: comma-separated componentIdOrUrn (or componentIdOrUrn@minWeight, " +
+        "a percentage 1-100) this release's component must not deploy AHEAD OF at a shared place"
+    )
+    .option(
+      "--stage-depends-at <targets>",
+      "ADR-0028: comma-separated deployment-target ids/URNs restricting EVERY --stage-depends-on entry " +
+        "to those places (omit for every stage the components share)"
+    )
     // M17.2 (ADR-0015 §5) — a REFERENCE to the build-time SBOM the pipeline's own Trivy step emitted
     // and cosign-signed. SCP stores the reference, NEVER the document: do not pipe the SBOM itself.
     .option("--sbom-format <format>", "SBOM reference: cyclonedx|spdx (required to record an SBOM)")
@@ -4552,6 +4621,8 @@ export function buildProgram(): Command {
           planJson?: string;
           provides?: string;
           requires?: string;
+          stageDependsOn?: string;
+          stageDependsAt?: string;
           sbomFormat?: string;
           sbomDigest?: string;
           sbomLocation?: string;
@@ -4611,7 +4682,8 @@ export function buildProgram(): Command {
           planJson,
           sbom,
           provides: parseList(opts.provides),
-          requires: parseRequiresFlag(opts.requires)
+          requires: parseRequiresFlag(opts.requires),
+          stageDependencies: parseStageDependenciesFlags(opts.stageDependsOn, opts.stageDependsAt)
         });
         printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
       }

@@ -22,7 +22,10 @@ import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
-import { assertCoordinationTargetsWithinAuthority } from "../coordination/campaign-scope-authz.js";
+import {
+  assertCoordinationTargetsWithinAuthority,
+  assertStageDependenciesWithinAuthority
+} from "../coordination/campaign-scope-authz.js";
 import { getChange, listChanges, proposeChange, requiresOf } from "../coordination/changes-repo.js";
 import { requirementStatuses, listProvidedKeysAtScope } from "../coordination/coupling.js";
 import { transitionChange } from "../coordination/transition.js";
@@ -166,6 +169,16 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
           actorObjectId: auth.subjectObjectId,
           targets: body.targets
         });
+        // ADR-0028: `targets` is not the only declared field that reaches out of the actor's own
+        // scope. A `stageDependencies` entry is materialised as a `depends_on` edge from each target
+        // to the named component, so it must clear the SAME both-endpoint bar `POST /relationships`
+        // demands — see the helper for the blast radius of an unauthorized one.
+        await assertStageDependenciesWithinAuthority(tx, {
+          orgId: auth.orgId,
+          actorObjectId: auth.subjectObjectId,
+          targets: body.targets,
+          stageDependencies: body.stageDependencies
+        });
         return proposeChange(tx, {
           orgId: auth.orgId,
           actorObjectId: auth.subjectObjectId,
@@ -185,7 +198,8 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
           targets: body.targets,
           type: body.type,
           provides: body.provides,
-          requires: body.requires
+          requires: body.requires,
+          stageDependencies: body.stageDependencies
         });
       });
       reply.status(201).send(change);
