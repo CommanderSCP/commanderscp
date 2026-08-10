@@ -114,6 +114,58 @@ describe("pipeline inheritance: the three-rung walk (D15)", () => {
     return { component, service };
   }
 
+  /** A component under an ASSEMBLY under a service (migration 0055). Returns all three so a test can
+   *  attach a topology at whichever level it means. */
+  async function componentUnderAssembly(label: string): Promise<{
+    component: GraphObject;
+    assembly: GraphObject;
+    service: GraphObject;
+  }> {
+    const service = await admin.services.create({ name: `${label}-svc-${Date.now()}` });
+    const assembly = await admin.object("assembly").create({
+      name: `${label}-asm-${Date.now()}`
+    });
+    await admin.relationships.create({
+      typeId: "contains",
+      fromId: service.id,
+      toId: assembly.id
+    });
+    const component = await admin.components.create({
+      name: `${label}-comp-${Date.now()}`,
+      service: assembly.id
+    });
+    return { component, assembly, service };
+  }
+
+  it("rung 2 is a LADDER — the ASSEMBLY's topology beats its service's", async () => {
+    // intermediate-grouping D1, walk up nearest wins. Both levels are populated and point at
+    // DIFFERENT topologies, which is the only way this can tell precedence from mere resolution.
+    const { component, assembly, service } = await componentUnderAssembly("ladder-near");
+    const asmPipeline = await topology(`asm-near-${Date.now()}`);
+    const svcPipeline = await topology(`svc-far-${Date.now()}`);
+    await attach(service.id, svcPipeline.id);
+    await attach(assembly.id, asmPipeline.id);
+
+    const { change, pipeline } = await proposeAndExplain([component.id]);
+    expect(change.topologyObjectId).toBe(asmPipeline.id);
+    expect(
+      pipeline.attachedToObjectId,
+      "the rung enum still says 'service', so the attached-to object is what names the real level"
+    ).toBe(assembly.id);
+  });
+
+  it("reaches the SERVICE through an assembly that carries nothing", async () => {
+    // The quiet failure this replaces: reading ONE `contains` edge meant a component under an
+    // assembly inherited NOTHING from its service and released as a single anonymous wave.
+    const { component, service } = await componentUnderAssembly("ladder-through");
+    const svcPipeline = await topology(`svc-through-${Date.now()}`);
+    await attach(service.id, svcPipeline.id);
+
+    const { change, pipeline } = await proposeAndExplain([component.id]);
+    expect(change.topologyObjectId).toBe(svcPipeline.id);
+    expect(pipeline.attachedToObjectId).toBe(service.id);
+  });
+
   it("rung 1 — the target's OWN edge WINS over its service's", async () => {
     // Both rungs are populated and they point at DIFFERENT topologies, which is the only way this
     // test can tell precedence from mere resolution. Asserting the topology alone would pass with

@@ -26,6 +26,15 @@ import {
  * license flipping this edge: 0022's partial unique index and the authz/policy containment walks all
  * key on `service -> component`, so the direction below stays exactly as shipped.
  */
+/**
+ * ============================================================================================
+ * MUTATION LOG — the `assembly` level (migration 0055). Each applied ALONE, then reverted.
+ * ============================================================================================
+ * | Mutation | Result |
+ * |---|---|
+ * | allow `assembly -> assembly` (drop the app-level refusal) | the assembly-in-assembly test FAILS — the registry's flat from/to arrays admit the pair, so only the app can refuse it |
+ * | delete `assertNoContainmentCycle` | **NO TEST FAILS**, and that is recorded rather than hidden. `to_types` excludes `service`, so `assembly -> service` is refused by the endpoint check and a type-legal cycle cannot be built today. The check is unreachable defence-in-depth, kept because widening the arrays makes it live; the loop test pins the OUTCOME, not the mechanism, and says so |
+ */
 describe("service --contains--> component (membership, one service per component)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
@@ -41,15 +50,75 @@ describe("service --contains--> component (membership, one service per component
     await server?.close();
   });
 
-  it("is registered as a built-in type: service -> component, one_to_many", async () => {
+  it("is registered as a built-in type spanning the ASSEMBLY level, one_to_many", async () => {
     const types = await admin.typeRegistry.relationshipTypes.list();
     const contains = types.items.find((t) => t.id === "contains");
     expect(contains, "migration 0021 must register the `contains` relationship type").toBeDefined();
-    expect(contains!.fromTypes).toEqual(["service"]);
-    expect(contains!.toTypes).toEqual(["component"]);
+    // Migration 0054 widened both sides for the optional `assembly` level. The arrays are a
+    // CROSS-PRODUCT, so this necessarily also admits `assembly -> assembly`, which the registry
+    // cannot forbid — `relationships-repo.ts` refuses that pair at write time, and there is a test
+    // for it below. If you widen these arrays again, go and look at that refusal.
+    expect(contains!.fromTypes).toEqual(["service", "assembly"]);
+    expect(contains!.toTypes).toEqual(["assembly", "component"]);
     // one_to_many (NOT many_to_one — see the module doc); this is the value that makes the
     // component side singular in assertCardinality.
     expect(contains!.cardinality).toBe("one_to_many");
+  });
+
+  // ============================================================================================
+  // THE PAIRWISE RULES THE TYPE REGISTRY CANNOT EXPRESS (migration 0055).
+  // `relationship_types` holds flat from/to arrays — a cross-product — so widening `contains` for the
+  // `assembly` level necessarily admits shapes we do not want. They are refused in the app, and these
+  // are the tests that keep the refusals honest.
+  // ============================================================================================
+
+  it("a service may contain an ASSEMBLY, and the assembly may contain components", async () => {
+    const svc = await admin.object("service").create({ name: `svc-${Date.now()}` });
+    const asm = await admin.object("assembly").create({ name: `asm-${Date.now()}` });
+    await admin.relationships.create({ typeId: "contains", fromId: svc.id, toId: asm.id });
+
+    const comp = await admin.components.create({ name: `c-${Date.now()}`, service: asm.id });
+    expect(comp.id, "a component's parent may be an assembly, not only a service").toBeTruthy();
+  });
+
+  it("REFUSES an assembly containing an assembly — the registry admits it, the app must not", async () => {
+    const a = await admin.object("assembly").create({ name: `asm-a-${Date.now()}` });
+    const b = await admin.object("assembly").create({ name: `asm-b-${Date.now()}` });
+    await expect(
+      admin.relationships.create({ typeId: "contains", fromId: a.id, toId: b.id })
+    ).rejects.toThrow();
+  });
+
+  it("REFUSES closing a containment loop — TODAY by the endpoint types, not by the cycle check", async () => {
+    // READ THIS BEFORE TRUSTING IT. This test passes, but NOT because of
+    // `assertNoContainmentCycle` — deleting that check leaves this test GREEN (recorded in the
+    // mutation log). With `to_types = {assembly, component}`, a `service` is not a legal `to`
+    // endpoint at all, so `assembly -> service` is refused one layer earlier and a type-legal cycle
+    // is currently unconstructible.
+    //
+    // The check is kept anyway as defence-in-depth, because it becomes REACHABLE the moment anyone
+    // widens those arrays — e.g. to allow `service -> service`, which was the rejected alternative
+    // shape for this very level. A containment cycle is not cosmetic: `containmentChain` (policy,
+    // freeze and RBAC scope) and the ADR-0029 binding ladder all walk parents, so a cycle is an
+    // infinite walk in the code that authorizes releases.
+    //
+    // What this test therefore pins is the OUTCOME (the loop cannot be closed), not the mechanism.
+    // If you widen the endpoint arrays, come back and make this test construct a type-legal cycle,
+    // or the cycle check goes back to being untested.
+    const outer = await admin.object("service").create({ name: `cyc-outer-${Date.now()}` });
+    const inner = await admin.object("assembly").create({ name: `cyc-inner-${Date.now()}` });
+    await admin.relationships.create({ typeId: "contains", fromId: outer.id, toId: inner.id });
+
+    await expect(
+      admin.relationships.create({ typeId: "contains", fromId: inner.id, toId: outer.id })
+    ).rejects.toThrow();
+  });
+
+  it("REFUSES an object containing ITSELF", async () => {
+    const svc = await admin.object("service").create({ name: `self-${Date.now()}` });
+    await expect(
+      admin.relationships.create({ typeId: "contains", fromId: svc.id, toId: svc.id })
+    ).rejects.toThrow();
   });
 
   it("a service may contain MANY components", async () => {

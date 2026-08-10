@@ -105,24 +105,49 @@ async function attachedTopology(
 }
 
 /** The component's owning service, via the `contains` edge walked INBOUND (`to_id` = component). */
-async function owningServiceId(
+/**
+ * The CONTAINER ANCESTORS of a component, nearest first — its assembly, then that assembly's
+ * service (migration 0055, `intermediate-grouping.md` D1 "walk up, nearest wins").
+ *
+ * Before the `assembly` level this read exactly one edge, because a component's parent could only be
+ * a service. With an optional level in between, reading one edge would mean a component under an
+ * assembly does NOT inherit a topology attached to its service — silently releasing as a single
+ * anonymous wave. That is one of the three one-hop sites `intermediate-grouping.md` §3 names, and it
+ * is the one whose failure is quietest.
+ *
+ * Each hop is at most one edge, guaranteed by `contains`'s `one_to_many` plus migration 0022's
+ * partial unique index — the invariant RBAC and policy scope also depend on — so there is no
+ * ambiguity rule to write. Capped at D2's depth, and `assembly -> assembly` is refused at write time,
+ * so in practice this yields at most `[assembly, service]`.
+ */
+async function containerAncestorIds(
   tx: TenantTx,
   orgId: string,
   componentObjectId: string
-): Promise<string | null> {
-  // At most one, guaranteed by `contains`'s `one_to_many` plus migration 0022's partial unique
-  // index — the same "one service per component" invariant RBAC and policy scope depend on.
-  const row = await tx.query.relationships.findFirst({
-    where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
-      andOp(
-        eqOp(t.orgId, orgId),
-        eqOp(t.typeId, "contains"),
-        eqOp(t.toId, componentObjectId),
-        isNullOp(t.deletedAt)
-      )
-  });
-  return row?.fromId ?? null;
+): Promise<string[]> {
+  const ancestors: string[] = [];
+  const seen = new Set<string>([componentObjectId]);
+  let current = componentObjectId;
+  for (let hop = 0; hop < MAX_CONTAINER_HOPS; hop += 1) {
+    const row = await tx.query.relationships.findFirst({
+      where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
+        andOp(
+          eqOp(t.orgId, orgId),
+          eqOp(t.typeId, "contains"),
+          eqOp(t.toId, current),
+          isNullOp(t.deletedAt)
+        )
+    });
+    if (!row || seen.has(row.fromId)) break;
+    ancestors.push(row.fromId);
+    seen.add(row.fromId);
+    current = row.fromId;
+  }
+  return ancestors;
 }
+
+/** `intermediate-grouping.md` D2 — the depth cap, in `contains` hops. */
+const MAX_CONTAINER_HOPS = 3;
 
 /**
  * Resolves ONE target's pipeline by walking the three rungs, nearest first.
@@ -141,11 +166,14 @@ export async function resolvePipelineForTarget(
     return { rung: "component", attachedToObjectId: targetObjectId, ...own };
   }
 
-  const serviceId = await owningServiceId(tx, orgId, targetObjectId);
-  if (serviceId) {
-    const viaService = await attachedTopology(tx, orgId, serviceId);
-    if (viaService) {
-      return { rung: "service", attachedToObjectId: serviceId, ...viaService };
+  // RUNG 2, now a LADDER (migration 0055 / intermediate-grouping D1): the component's assembly is
+  // consulted before its service, so the nearest declaration wins. The rung is still reported as
+  // `service` — it is the wire enum and widening it would be an oasdiff break for a distinction the
+  // `attachedToObjectId` already carries, since that names the exact object the edge hangs off.
+  for (const ancestorId of await containerAncestorIds(tx, orgId, targetObjectId)) {
+    const viaAncestor = await attachedTopology(tx, orgId, ancestorId);
+    if (viaAncestor) {
+      return { rung: "service", attachedToObjectId: ancestorId, ...viaAncestor };
     }
   }
 

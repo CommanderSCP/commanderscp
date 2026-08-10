@@ -2832,6 +2832,521 @@ export type UpsertServiceByUrnResponses = {
 
 export type UpsertServiceByUrnResponse = UpsertServiceByUrnResponses[keyof UpsertServiceByUrnResponses];
 
+export type ListAssembliesData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+        domainId?: string;
+        includeDeleted?: boolean;
+    };
+    url: '/assemblies';
+};
+
+export type ListAssembliesErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListAssembliesError = ListAssembliesErrors[keyof ListAssembliesErrors];
+
+export type ListAssembliesResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            typeId: string;
+            name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            provenance: 'manual' | null;
+            version: number;
+            createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListAssembliesResponse = ListAssembliesResponses[keyof ListAssembliesResponses];
+
+export type CreateAssemblyData = {
+    body: {
+        id?: string;
+        urn?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/assemblies';
+};
+
+export type CreateAssemblyErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateAssemblyError = CreateAssemblyErrors[keyof CreateAssemblyErrors];
+
+export type CreateAssemblyResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        provenance: 'manual' | null;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type CreateAssemblyResponse = CreateAssemblyResponses[keyof CreateAssemblyResponses];
+
+export type DeleteAssemblyData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/assemblies/{idOrUrn}';
+};
+
+export type DeleteAssemblyErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteAssemblyError = DeleteAssemblyErrors[keyof DeleteAssemblyErrors];
+
+export type DeleteAssemblyResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        provenance: 'manual' | null;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type DeleteAssemblyResponse = DeleteAssemblyResponses[keyof DeleteAssemblyResponses];
+
+export type GetAssemblyData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/assemblies/{idOrUrn}';
+};
+
+export type GetAssemblyErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetAssemblyError = GetAssemblyErrors[keyof GetAssemblyErrors];
+
+export type GetAssemblyResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        provenance: 'manual' | null;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type GetAssemblyResponse = GetAssemblyResponses[keyof GetAssemblyResponses];
+
+export type UpdateAssemblyData = {
+    body: {
+        name?: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+        version?: number;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/assemblies/{idOrUrn}';
+};
+
+export type UpdateAssemblyErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    412: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpdateAssemblyError = UpdateAssemblyErrors[keyof UpdateAssemblyErrors];
+
+export type UpdateAssemblyResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        provenance: 'manual' | null;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpdateAssemblyResponse = UpdateAssemblyResponses[keyof UpdateAssemblyResponses];
+
+export type UpsertAssemblyByUrnData = {
+    body: {
+        id?: string;
+        name: string;
+        domainId?: string | null;
+        properties?: {
+            [key: string]: unknown;
+        };
+        labels?: {
+            [key: string]: unknown;
+        };
+    };
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/assemblies/{urn}';
+};
+
+export type UpsertAssemblyByUrnErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpsertAssemblyByUrnError = UpsertAssemblyByUrnErrors[keyof UpsertAssemblyByUrnErrors];
+
+export type UpsertAssemblyByUrnResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        provenance: 'manual' | null;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        domainId: string | null;
+        typeId: string;
+        name: string;
+        urn: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        provenance: 'manual' | null;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type UpsertAssemblyByUrnResponse = UpsertAssemblyByUrnResponses[keyof UpsertAssemblyByUrnResponses];
+
 export type ListDeploymentTargetsData = {
     body?: never;
     path?: never;
@@ -5472,10 +5987,99 @@ export type GetComponentPipelineResponses = {
             attachedToObjectId: string;
             attachedToName: string | null;
         } | null;
+        stageSource: 'topology' | 'placements';
+        sources: Array<{
+            id: string;
+            sourceKind: string;
+            repoPattern: string | null;
+            pathPattern: string | null;
+            type: string;
+            category: 'build' | 'infrastructure' | 'configuration';
+            url: string | null;
+        }>;
         stages: Array<{
             placement: {
                 id: string;
                 urn: string;
+            };
+            order: number;
+            wave: {
+                index: number;
+                name: string | null;
+            } | null;
+            deploymentTarget: {
+                id: string;
+                name: string;
+                environment: string | null;
+                region: string | null;
+            };
+            maintainedBy: {
+                domainId: string | null;
+                name: string | null;
+                isSelf: boolean;
+                role: string | null;
+            };
+            stageName: string | null;
+            binding: {
+                externalRef: string | null;
+                type: string;
+                url: string | null;
+                category: 'build' | 'infrastructure' | 'configuration';
+                executionSystemId: string | null;
+                executionSystemName: string | null;
+            } | null;
+            bindings: Array<{
+                externalRef: string | null;
+                type: string;
+                url: string | null;
+                category: 'build' | 'infrastructure' | 'configuration';
+                executionSystemId: string | null;
+                executionSystemName: string | null;
+            }>;
+            current: {
+                changeId: string;
+                changeName: string | null;
+                changeState: string | null;
+                waveName: string | null;
+                targetStatus: string | null;
+                type: string;
+                category: 'build' | 'infrastructure' | 'configuration';
+            } | null;
+            currents: Array<{
+                changeId: string;
+                changeName: string | null;
+                changeState: string | null;
+                waveName: string | null;
+                targetStatus: string | null;
+                type: string;
+                category: 'build' | 'infrastructure' | 'configuration';
+            }>;
+            gate: {
+                policies: Array<{
+                    name: string;
+                    enforcement: 'advisory' | 'recommended' | 'required';
+                    requireControls: Array<string>;
+                    requireApprovals: Array<{
+                        count: number;
+                        fromRole: string;
+                        scope: string;
+                    }>;
+                }>;
+                checks: Array<{
+                    controlId: string;
+                    name: string | null;
+                    status: 'not_started' | 'pending' | 'pass' | 'fail' | 'warning' | 'skipped' | 'timed_out' | 'expired';
+                    changeId: string | null;
+                }>;
+            };
+            version: string | null;
+            unknownFields: Array<string>;
+        }>;
+        unplacedStages: Array<{
+            order: number;
+            wave: {
+                index: number;
+                name: string | null;
             };
             deploymentTarget: {
                 id: string;
@@ -5483,22 +6087,13 @@ export type GetComponentPipelineResponses = {
                 environment: string | null;
                 region: string | null;
             };
+            maintainedBy: {
+                domainId: string | null;
+                name: string | null;
+                isSelf: boolean;
+                role: string | null;
+            };
             stageName: string | null;
-            binding: {
-                externalRef: string | null;
-                type: string;
-                executionSystemId: string | null;
-                executionSystemName: string | null;
-            } | null;
-            current: {
-                changeId: string;
-                changeName: string | null;
-                changeState: string | null;
-                waveName: string | null;
-                targetStatus: string | null;
-            } | null;
-            version: string | null;
-            unknownFields: Array<string>;
         }>;
         unknownFields: Array<string>;
     };
@@ -6685,6 +7280,18 @@ export type GetServiceBoardResponses = {
                 awaitingApproval: boolean;
                 emergency: boolean;
             };
+            pipelines: Array<{
+                category: 'build' | 'infrastructure' | 'configuration';
+                bound: boolean;
+                status: string | null;
+                changeId: string | null;
+                bindings: Array<{
+                    type: string;
+                    externalRef: string | null;
+                    executionSystemName: string | null;
+                    url: string | null;
+                }>;
+            }>;
             activeFreeze: {
                 id: string;
                 reason: string;
@@ -6707,6 +7314,24 @@ export type GetServiceBoardResponses = {
             reason: string;
             endsAt: string;
         } | null;
+        servicePipelines: Array<{
+            category: 'build' | 'infrastructure' | 'configuration';
+            bound: boolean;
+            status: string | null;
+            changeId: string | null;
+            bindings: Array<{
+                type: string;
+                externalRef: string | null;
+                executionSystemName: string | null;
+                url: string | null;
+            }>;
+        }>;
+        childAssemblies: Array<{
+            id: string;
+            urn: string;
+            name: string;
+            componentCount: number;
+        }>;
         asOf: {
             peerDomainId: string;
             peerName: string;
@@ -7216,6 +7841,253 @@ export type RemoveServiceOwnerResponses = {
 };
 
 export type RemoveServiceOwnerResponse = RemoveServiceOwnerResponses[keyof RemoveServiceOwnerResponses];
+
+export type ListAssemblyOwnersData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: {
+        cursor?: string;
+        limit?: number;
+    };
+    url: '/assemblies/{idOrUrn}/owners';
+};
+
+export type ListAssemblyOwnersErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListAssemblyOwnersError = ListAssemblyOwnersErrors[keyof ListAssemblyOwnersErrors];
+
+export type ListAssemblyOwnersResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string;
+            typeId: string;
+            fromId: string;
+            toId: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            createdAt: string;
+            deletedAt: string | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListAssemblyOwnersResponse = ListAssemblyOwnersResponses[keyof ListAssemblyOwnersResponses];
+
+export type AddAssemblyOwnerData = {
+    body: {
+        ownerIdOrUrn: string;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/assemblies/{idOrUrn}/owners';
+};
+
+export type AddAssemblyOwnerErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type AddAssemblyOwnerError = AddAssemblyOwnerErrors[keyof AddAssemblyOwnerErrors];
+
+export type AddAssemblyOwnerResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        createdAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type AddAssemblyOwnerResponse = AddAssemblyOwnerResponses[keyof AddAssemblyOwnerResponses];
+
+export type RemoveAssemblyOwnerData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+        ownerIdOrUrn: string;
+    };
+    query?: never;
+    url: '/assemblies/{idOrUrn}/owners/{ownerIdOrUrn}';
+};
+
+export type RemoveAssemblyOwnerErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RemoveAssemblyOwnerError = RemoveAssemblyOwnerErrors[keyof RemoveAssemblyOwnerErrors];
+
+export type RemoveAssemblyOwnerResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        typeId: string;
+        fromId: string;
+        toId: string;
+        properties: {
+            [key: string]: unknown;
+        };
+        labels: {
+            [key: string]: unknown;
+        };
+        originDomainId: string;
+        revision: number;
+        createdAt: string;
+        deletedAt: string | null;
+    };
+};
+
+export type RemoveAssemblyOwnerResponse = RemoveAssemblyOwnerResponses[keyof RemoveAssemblyOwnerResponses];
 
 export type ListComponentOwnersData = {
     body?: never;

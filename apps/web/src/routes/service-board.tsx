@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import type {
   ServiceBoardAsOf,
+  ServiceBoardAssembly,
   ServiceBoardRow,
   ServiceBoardSummary,
   ServiceBoardWave
@@ -9,7 +10,7 @@ import type {
 import { client } from "../lib/client";
 import { declaredUnknowns, isAbsent } from "../lib/absent";
 import { serviceBoardKey } from "../lib/query-client";
-import { useIdParam } from "../lib/use-route-params";
+import { useIdOrUrnParam } from "../lib/use-route-params";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -138,6 +139,58 @@ function AttentionCell({ row }: { row: ServiceBoardRow }): React.JSX.Element {
  * the unknown-vs-observed distinction below is the whole point of this view, and it must be pinned
  * by a check that runs on every PR — not only by the Playwright suite, which is main-only.
  */
+/**
+ * THE PER-PIPELINE STATE of one row, as one chip per ADR-0007 Category.
+ *
+ * The board used to say ONE thing per component — its latest change — about a component that runs
+ * several independent pipelines. Whichever moved most recently spoke for all of them, so a pipeline
+ * that had never run was indistinguishable from one that had just succeeded (owner, 2026-08-10).
+ *
+ * `not bound` is rendered, not omitted: a component with no infrastructure pipeline is a fact, and
+ * an absent chip would read as "this board does not show infra". Same rule as the component
+ * pipeline's lanes.
+ */
+export const CATEGORY_LABEL: Record<string, string> = {
+  build: "build",
+  infrastructure: "infra",
+  configuration: "config"
+};
+
+export function PipelineChips({ row }: { row: ServiceBoardRow }): React.JSX.Element {
+  return (
+    <div className="flex flex-wrap gap-1" data-testid="board-pipelines">
+      {row.pipelines.map((p) => {
+        const tone = !p.bound
+          ? "bg-slate-50 text-slate-400"
+          : p.status === "succeeded"
+            ? "bg-green-50 text-green-700"
+            : p.status === "failed" || p.status === "blocked"
+              ? "bg-red-50 text-red-700"
+              : p.status
+                ? "bg-amber-50 text-amber-700"
+                : "bg-slate-100 text-slate-500";
+        const state = !p.bound ? "not bound" : (p.status ?? "never run");
+        return (
+          <span
+            key={p.category}
+            className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium ${tone}`}
+            data-testid="board-pipeline-chip"
+            data-category={p.category}
+            data-bound={String(p.bound)}
+            title={
+              p.bound
+                ? `${p.category} pipeline — ${state}`
+                : `no ${p.category} executor is bound for this component, so nothing can run it`
+            }
+          >
+            {CATEGORY_LABEL[p.category] ?? p.category} · {state}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 export function BoardRow({ row }: { row: ServiceBoardRow }): React.JSX.Element {
   // "No change here" is only an observation when this deployment can actually see the changes its
   // peers drive. When the server names `latestChangeId` unobservable (a peer's sync scope withholds
@@ -178,6 +231,9 @@ export function BoardRow({ row }: { row: ServiceBoardRow }): React.JSX.Element {
             Frozen
           </Badge>
         )}
+      </TableCell>
+      <TableCell>
+        <PipelineChips row={row} />
       </TableCell>
       <TableCell>
         {/* The pipeline link points at the COMPONENT, always — a pipeline is durable and exists with
@@ -399,8 +455,44 @@ export function BoardSummary({
  * READ-ONLY status here; declaring/lifting one is a controls-phase concern (Phase 5), so the
  * "Freeze service" affordance is present but disabled.
  */
+/**
+ * ASSEMBLY children of this service (migration 0055, intermediate-grouping D3).
+ *
+ * Their own card rather than rows in the components table: an assembly is a different KIND of child,
+ * and a component COUNT is not a release status — putting it in a status column would read as one.
+ * Renders nothing at all when there are none, which is every service on the estate today; unlike the
+ * pipeline chips, an empty list here is not a fact worth a card, just a service whose components sit
+ * directly under it.
+ */
+export function BoardAssemblies({ assemblies }: { assemblies: ServiceBoardAssembly[] }) {
+  if (assemblies.length === 0) return null;
+  return (
+    <Card data-testid="board-assemblies">
+      <CardHeader>
+        <CardTitle className="text-base">Assemblies ({assemblies.length})</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-1">
+        {assemblies.map((a) => (
+          <div key={a.id} className="text-sm" data-testid="board-assembly">
+            <Link
+              to="/$basePath/$idOrUrn"
+              params={{ basePath: "assemblies", idOrUrn: a.id }}
+              className="font-medium text-slate-900 hover:underline"
+            >
+              {a.name}
+            </Link>{" "}
+            <span className="text-xs text-slate-500">
+              {a.componentCount} component{a.componentCount === 1 ? "" : "s"}
+            </span>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function ServiceBoardPage(): React.JSX.Element {
-  const id = useIdParam();
+  const id = useIdOrUrnParam();
 
   const boardQuery = useQuery({
     queryKey: serviceBoardKey(id ?? ""),
@@ -483,6 +575,8 @@ export function ServiceBoardPage(): React.JSX.Element {
           and therefore cannot assess, so it carries a warning (never `success`) treatment. */}
       <BoardSummary summary={summary} stableUnknown={changeVisibilityUnknown} />
 
+      <BoardAssemblies assemblies={board.childAssemblies} />
+
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Components ({rows.length})</CardTitle>
@@ -497,6 +591,9 @@ export function ServiceBoardPage(): React.JSX.Element {
               <TableHeader>
                 <TableRow>
                   <TableHead>Component</TableHead>
+                  <TableHead title="One chip per pipeline this component runs (ADR-0007 Category)">
+                    Pipelines
+                  </TableHead>
                   <TableHead>Latest change</TableHead>
                   <TableHead>Current wave</TableHead>
                   <TableHead>Waves</TableHead>

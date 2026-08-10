@@ -78,6 +78,56 @@ const SINGULAR_SIDES: Record<string, { from: boolean; to: boolean }> = {
   one_to_one: { from: true, to: true }
 };
 
+/**
+ * Refuses a `contains` edge that would close a cycle.
+ *
+ * Before the `assembly` level, a cycle was IMPOSSIBLE by construction: `contains` only ran
+ * `service -> component`, and a component has no children. Widening the type makes A-contains-B,
+ * B-contains-A expressible for the first time, and a containment cycle is not a cosmetic problem —
+ * `containmentChain` (policy scope, freeze scope, RBAC scope) and the ADR-0029 binding ladder all
+ * walk parents, so a cycle is an infinite walk in the code paths that authorize releases.
+ *
+ * Walks UP from the proposed parent looking for the proposed child. Bounded by the same cap the
+ * ladder uses, plus a `seen` set, so a cycle already in the table (written before this check existed,
+ * or by privileged surgery) terminates rather than hanging the request that discovers it.
+ */
+async function assertNoContainmentCycle(
+  tx: TenantTx,
+  orgId: string,
+  fromId: string,
+  toId: string
+): Promise<void> {
+  if (fromId === toId) {
+    throw badRequest("an object cannot contain itself");
+  }
+  const seen = new Set<string>([fromId]);
+  let current: string | null = fromId;
+  for (let hop = 0; hop < CONTAINMENT_CYCLE_SCAN_LIMIT && current; hop += 1) {
+    const parent: { fromId: string } | undefined = await tx.query.relationships.findFirst({
+      where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
+        andOp(
+          eqOp(t.orgId, orgId),
+          eqOp(t.typeId, "contains"),
+          eqOp(t.toId, current!),
+          isNullOp(t.deletedAt)
+        )
+    });
+    if (!parent) return;
+    if (parent.fromId === toId) {
+      throw badRequest(
+        `'contains' would create a containment cycle: ${toId} is already an ancestor of ${fromId}`
+      );
+    }
+    if (seen.has(parent.fromId)) return;
+    seen.add(parent.fromId);
+    current = parent.fromId;
+  }
+}
+
+/** Bounded so a pre-existing cycle cannot hang the request that trips over it. Generous relative to
+ *  the depth cap of 3 (intermediate-grouping D2) — this is a safety stop, not the product rule. */
+const CONTAINMENT_CYCLE_SCAN_LIMIT = 32;
+
 async function assertCardinality(
   tx: TenantTx,
   orgId: string,
@@ -164,6 +214,21 @@ export async function createRelationship(
     throw badRequest(
       `relationship type '${type.id}' does not allow '${toObj.typeId}' as the 'to' endpoint`
     );
+  }
+
+  // THE PAIRWISE RULES THE TYPE REGISTRY CANNOT EXPRESS (migration 0055's header).
+  // `relationship_types` holds flat from/to arrays — a cross-product — so widening `contains` to
+  // admit the `assembly` level necessarily also admits `assembly -> assembly`, which is not a shape
+  // we want. It is refused here, with the containment cycle check, because there is nowhere in the
+  // registry to say it.
+  if (type.id === "contains") {
+    if (fromObj.typeId === "assembly" && toObj.typeId === "assembly") {
+      throw badRequest(
+        "an assembly cannot contain another assembly — the levels are service -> assembly -> " +
+          "component, so nest the components rather than the assemblies"
+      );
+    }
+    await assertNoContainmentCycle(tx, input.orgId, input.fromId, input.toId);
   }
 
   await assertCardinality(tx, input.orgId, type.id, type.cardinality, input.fromId, input.toId);

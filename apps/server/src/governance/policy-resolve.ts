@@ -12,7 +12,8 @@ import type { MatchedPolicy, PolicyEffect, PolicyEnforcement } from "./policy-mo
  * output. Kept deliberately separate per BUILD_AND_TEST.md §4.1's "anything testable as a pure
  * function must be written as a pure function."
  *
- * Resolution walks the target's containment chain (org → domain → service → component — DESIGN
+ * Resolution walks the target's containment chain (org → domain → service → [assembly] → component
+ * — the assembly rung is OPTIONAL and arrives via the same generic `contains` walk — DESIGN
  * §10.1; `graph/containment.ts`'s `containmentChain`, shared with the gate orchestrator so a policy
  * and a freeze can never disagree about what contains what) and, at every ancestor, checks every
  * `policy`-typed graph object in the org for a scope match (explicit `objectRef`, label `selector`,

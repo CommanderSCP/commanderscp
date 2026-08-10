@@ -91,7 +91,7 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
           permission: "object:read",
           scopeObjectId: component.id
         });
-        return getComponentPipeline(tx, auth.orgId, component);
+        return getComponentPipeline(tx, auth.orgId, component, auth.subjectObjectId);
       });
       reply.status(200).send(pipeline);
     }

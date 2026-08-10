@@ -72,7 +72,11 @@ describe("cardinality: many_to_one and `releases_via`", () => {
     // attach a pipeline that silently did nothing. Migration 0052 widened it when that walk landed,
     // and this assertion moved with it rather than being loosened: `domain` is still absent, which
     // is the part that would re-create the attach-but-never-resolve trap (D15 dropped that axis).
-    expect(rv!.fromTypes).toEqual(["component", "service", "organization"]);
+    // Migration 0054 inserted `assembly` between component and service: the middle rung is now a
+    // LADDER (intermediate-grouping D1), so an assembly must be able to CARRY the attachment the
+    // ladder now consults it for — otherwise the level is decoration. `domain` is still absent,
+    // which is the part that would re-create the attach-but-never-resolve trap (D15 dropped that axis).
+    expect(rv!.fromTypes).toEqual(["component", "assembly", "service", "organization"]);
     expect(rv!.toTypes).toEqual(["release-topology"]);
     // many_to_one — the FROM side is singular. one_to_many here would constrain the pipeline
     // instead of the component, i.e. exactly backwards.

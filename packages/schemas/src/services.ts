@@ -80,6 +80,69 @@ export type ServiceBoardDriver = z.infer<typeof ServiceBoardDriverSchema>;
 /** One board row = one component of the service. `latestChangeId` links the row to that component's
  *  active/most-recent change pipeline (`/changes/{id}/pipeline`); null when the component has never
  *  been a change target. `currentWave` is the running (or last non-pending) wave's display name. */
+/**
+ * ONE PIPELINE'S HIGH-LEVEL STATE, summarised for a board row.
+ *
+ * The board was change-anchored: one `latestChangeId` per component, so a row said ONE thing about
+ * a component that runs several independent pipelines (ADR-0007 Category — a `build`, an
+ * `infrastructure` plan/apply, a `configuration` sync). Whichever pipeline moved most recently
+ * spoke for all of them, so a pipeline that had never run read exactly like one that just
+ * succeeded.
+ *
+ * EVERY CATEGORY IS EMITTED, always — `bound: false` included. A component with no infrastructure
+ * pipeline is a fact worth seeing, and omitting the entry would make "none is bound" impossible to
+ * tell from "this board does not show infra".
+ */
+export const ServiceBoardPipelineSchema = z.object({
+  category: ExecutorCategorySchema,
+  /** Is any executor bound for this pipeline — directly, via a placement, or (ADR-0027) via the
+   *  owning service? False means nothing can run it. */
+  bound: z.boolean(),
+  /** The newest `change_wave_targets.status` for THIS pipeline across the component's placements.
+   *  Null when this pipeline has never run here — never conflated with a sibling's status. */
+  status: z.string().nullable(),
+  /** The change that status is as of, so "succeeded" is never a standing property of the row. */
+  changeId: z.string().uuid().nullable(),
+  /** What actually executes this pipeline, deduplicated. For a COMPONENT row this is the union
+   *  across its placements (one entry per distinct type+ref, so a binding repeated at every place
+   *  appears once); for a SERVICE-level pipeline it is the binding on the service itself. Empty
+   *  exactly when `bound` is false. */
+  bindings: z.array(
+    z.object({
+      type: z.string(),
+      externalRef: z.string().nullable(),
+      executionSystemName: z.string().nullable(),
+      /** Human console URL, or null when it cannot be known — see `console-urls.ts`. */
+      url: z.string().nullable()
+    })
+  )
+});
+export type ServiceBoardPipeline = z.infer<typeof ServiceBoardPipelineSchema>;
+
+/**
+ * An ASSEMBLY child of this service — the optional level between service and component
+ * (migration 0055, `intermediate-grouping.md` D3/D5).
+ *
+ * D3 chose DIRECT children plus a per-child summary over flattening every descendant: a service with
+ * several assemblies of dozens of components each would otherwise render hundreds of rows and lose
+ * what the board is for. So an assembly appears as its own entry with a count and a link down, not as
+ * its components inlined here.
+ *
+ * Before this the board filtered children to `typeId === "component"`, so an assembly child — and
+ * therefore everything under it — was silently absent from its parent's board. That is the one thing
+ * this entry exists to stop.
+ */
+export const ServiceBoardAssemblySchema = z.object({
+  id: z.string().uuid(),
+  urn: z.string(),
+  name: z.string(),
+  /** DIRECT component children of this assembly. A count, not a status: rolling release state up
+   *  through a level needs a rule for what "the assembly is blocked" means, and inventing one here
+   *  would put a claim on the board that nothing computed. */
+  componentCount: z.number().int()
+});
+export type ServiceBoardAssembly = z.infer<typeof ServiceBoardAssemblySchema>;
+
 export const ServiceBoardRowSchema = z.object({
   component: z.object({
     id: z.string().uuid(),
@@ -92,6 +155,9 @@ export const ServiceBoardRowSchema = z.object({
   currentWave: z.string().nullable(),
   waves: z.array(ServiceBoardWaveSchema),
   attention: ServiceBoardAttentionSchema,
+  /** THE HIGH-LEVEL STATE OF EACH PIPELINE this component runs — one entry per ADR-0007 Category,
+   *  always all of them. See {@link ServiceBoardPipelineSchema}. */
+  pipelines: z.array(ServiceBoardPipelineSchema),
   /** An active freeze scoped to THIS component (read-only). Null when none covers it directly. */
   activeFreeze: ServiceBoardFreezeSchema.nullable(),
   /** Which domain drives `latestChangeId`. Null exactly when `latestChangeId` is null (there is no
@@ -200,6 +266,20 @@ export const ServiceBoardResponseSchema = z.object({
   summary: ServiceBoardSummarySchema,
   /** An active freeze scoped directly to the SERVICE object (read-only), covering every component. */
   serviceFreeze: ServiceBoardFreezeSchema.nullable(),
+  /**
+   * PIPELINES BOUND TO THE SERVICE ITSELF — infrastructure that serves the whole service.
+   *
+   * A cluster, a shared database or a VPC stands up once and every component runs on top; declaring
+   * that as N identical component bindings is duplication that drifts. ADR-0027 added the service
+   * rung to binding resolution, so a binding here now actually routes — before it, this would have
+   * been inert config that ALSO blocked releases (fail-closed `no_executor`), which is why the view
+   * and the rung landed together rather than the view first.
+   */
+  servicePipelines: z.array(ServiceBoardPipelineSchema),
+  /** ASSEMBLY children of this service, each with a component count — see
+   *  {@link ServiceBoardAssemblySchema}. Empty for a service whose components sit directly under it,
+   *  which is every service on the estate today. */
+  childAssemblies: z.array(ServiceBoardAssemblySchema),
   /** DESIGN §13's "as of" label for the LIMITING upstream peer — see {@link ServiceBoardAsOfSchema}.
    *  `null` exactly when no peer's scope can carry change objects (including the single-domain case,
    *  where the board is a complete local observation and claiming an as-of would be theatre). */

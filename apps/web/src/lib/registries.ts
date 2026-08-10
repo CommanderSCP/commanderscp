@@ -18,6 +18,7 @@ import type {
 export type RegistryClientKey =
   | "domains"
   | "services"
+  | "assemblies"
   | "components"
   | "deploymentTargets"
   | "teams"
@@ -60,6 +61,19 @@ export const REGISTRIES: RegistryConfig[] = [
     typeId: "service",
     ownable: true,
     edges: true
+  },
+  {
+    // The OPTIONAL level between a service and its components (migration 0055,
+    // `intermediate-grouping.md` D5). Ownable like a service; `edges: false` because
+    // `consumes`/`depends_on` describe things that call each other and an assembly does not make a
+    // request — the same ruling migration 0055's census recorded, kept consistent here so the UI
+    // cannot offer an edge the server would refuse.
+    basePath: "assemblies",
+    label: "Assemblies",
+    clientKey: "assemblies",
+    typeId: "assembly",
+    ownable: true,
+    edges: false
   },
   {
     basePath: "components",

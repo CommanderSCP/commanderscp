@@ -1,6 +1,7 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects } from "../db/schema.js";
+import { getOrgRootObjectId } from "../graph/objects-repo.js";
 import {
   DEFAULT_BINDING_TYPE,
   getExecutorBinding,
@@ -66,7 +67,60 @@ export type BindingResolution =
       /** Every competing placement, so the refusal can NAME them. */
       candidates: { placementObjectId: string; bindingId: string }[];
     }
+  /** ADR-0027, generalised by ADR-0029 — a containment ANCESTOR carries the binding. Infrastructure
+   *  that serves a whole service, assembly or org (a cluster, a shared database) is declared once at
+   *  the level it serves rather than duplicated onto every component or placement under it.
+   *
+   *  The name is retained from ADR-0027 for wire/Decision continuity; `viaServiceObjectId` is now
+   *  "the ancestor it resolved through", which may be an assembly or the org root. `hops` is how far
+   *  up it was found (1 = the immediate parent, 0 = the org rung), so a Decision can say how remote
+   *  the inheritance is — the further away, the more surprising it is to whoever hits it. */
+  | {
+      outcome: "via_service";
+      binding: ExecutorBindingRow;
+      viaPlacementObjectId: null;
+      viaServiceObjectId: string;
+      /** The `object_types.id` the ancestor ACTUALLY carries — `service`, `assembly`,
+       *  `organization`, or whatever a later level is called.
+       *
+       *  Here because the alternative is inferring the level from the branch name, and this branch
+       *  covers three different levels. A Decision built that way says "resolved via service" over an
+       *  assembly's id — a false statement in an audit record, which principle 6 does not allow —
+       *  and it was ALREADY false for the org rung before `assembly` existed. Read the level from the
+       *  object; never name it after the code path that found it. */
+      viaObjectTypeId: string;
+      hops: number;
+    }
   | { outcome: "none"; binding: null; viaPlacementObjectId: null };
+
+/**
+ * The PROVENANCE of an indirect resolution, as a Decision records it — or `null` for a direct/failed
+ * one, which writes no Decision.
+ *
+ * Here rather than inline at the call site because the label must be READ FROM THE RESOLVED OBJECT
+ * and never inferred from the branch that found it. `via_service` covers three levels (service,
+ * assembly, org root), so a label named after the branch is a false statement in an audit record for
+ * two of them — and it was false for the org rung from the day that rung shipped, before `assembly`
+ * existed. Principle 6: a Decision that misnames its own provenance reads as an answer, which makes
+ * it worse than no Decision at all.
+ *
+ * Exported so the mapping is testable without driving a whole wave through reconcile.
+ */
+export function resolutionProvenance(
+  resolution: BindingResolution
+): { via: string; viaObjectId: string; hops: number | null } | null {
+  if (resolution.outcome === "via_placement") {
+    return { via: "placement", viaObjectId: resolution.viaPlacementObjectId, hops: null };
+  }
+  if (resolution.outcome === "via_service") {
+    return {
+      via: resolution.viaObjectTypeId,
+      viaObjectId: resolution.viaServiceObjectId,
+      hops: resolution.hops
+    };
+  }
+  return null;
+}
 
 /**
  * The live placements of one component, read from `properties` — the source of truth for the pair
@@ -92,12 +146,175 @@ async function placementsOfComponent(
 }
 
 /**
- * Resolves the binding driving one pipeline of one wave target, falling back through the target's
- * placements when the target itself has none of that type.
+ * The owning SERVICE of a wave target (ADR-0027 D3/D4), or null.
  *
- * Order is deliberate: DIRECT FIRST, always. A target that carries its own binding never consults
- * placements, so this is a pure extension — no existing resolution can change answer, and the
- * common path costs one extra query only when it was already about to resolve nothing.
+ * Accepts either shape a wave target takes: a COMPONENT under legacy compilation, or a PLACEMENT
+ * under stage-shaped compilation — the case the estate actually runs, which a component-only rung
+ * would have missed entirely.
+ *
+ * The service is the inbound `contains` edge, at most one by `contains`'s `one_to_many` plus
+ * migration 0022's partial unique index — the same invariant `pipeline-resolution.ts` relies on, so
+ * a binding and a pipeline can never disagree about which service owns a component.
+ */
+/** ADR-0029 D3 — `intermediate-grouping.md` D2's cap, in hops of `contains`. Bounded so the walk's
+ *  cost is provable and a mis-declared containment cycle cannot spin. */
+const MAX_ANCESTOR_HOPS = 3;
+
+/**
+ * The component a wave target is about, whichever shape the target takes: a COMPONENT under legacy
+ * compilation, or a PLACEMENT under stage-shaped compilation — the shape the estate actually runs.
+ */
+async function componentOfTarget(
+  tx: TenantTx,
+  orgId: string,
+  targetObjectId: string
+): Promise<string | null> {
+  const target = await tx.query.objects.findFirst({
+    where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.id, targetObjectId), eqOp(t.orgId, orgId))
+  });
+  if (!target) return null;
+  if (target.typeId !== "placement") return targetObjectId;
+  const props = (target.properties ?? {}) as { componentId?: unknown };
+  return typeof props.componentId === "string" ? props.componentId : null;
+}
+
+/** The `contains` parent of one object, or null. At most one by `contains`'s `one_to_many` plus
+ *  migration 0022's partial unique index — the invariant `pipeline-resolution.ts` also relies on. */
+async function containsParentOf(
+  tx: TenantTx,
+  orgId: string,
+  objectId: string
+): Promise<{ id: string; typeId: string } | null> {
+  const edge = await tx.query.relationships.findFirst({
+    where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
+      andOp(
+        eqOp(t.orgId, orgId),
+        eqOp(t.typeId, "contains"),
+        eqOp(t.toId, objectId),
+        isNullOp(t.deletedAt)
+      )
+  });
+  if (!edge) return null;
+  // The parent's TYPE comes back with it. The walk stays type-agnostic — it still does not branch on
+  // this — but whatever it resolves through has to be nameable truthfully in a Decision, and reading
+  // the type here costs nothing the walk was not already paying for this row.
+  const parent = await tx.query.objects.findFirst({
+    where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
+      andOp(eqOp(t.orgId, orgId), eqOp(t.id, edge.fromId), isNullOp(t.deletedAt))
+  });
+  return parent ? { id: parent.id, typeId: parent.typeId } : null;
+}
+
+/**
+ * The `contains` ancestors of a wave target, NEAREST FIRST, capped at {@link MAX_ANCESTOR_HOPS}.
+ *
+ * ============================================================================================
+ * WHY THIS WALKS `contains` ONLY, AND NOT `containmentChain` — READ BEFORE "SIMPLIFYING" IT
+ * ============================================================================================
+ * `containmentChain` walks TWO axes per hop (the `contains` edge AND `domain_id`), and its own
+ * docblock records that when a component's `domain_id` differs from its service's, the domain and the
+ * service are each exactly ONE hop away and **TIE** — "no ordering of these two routes is obviously
+ * correct". It then says explicitly that this "WOULD become a real precedence bug the moment any code
+ * compares depth across differently-named [ancestors] to pick a single most-specific winner — if you
+ * are about to write that, fix this first."
+ *
+ * A nearest-wins binding ladder IS that code. Walking the single `contains` axis is what makes
+ * "nearest" unambiguous, and it leaves `containmentChain` untouched — the same reasoning
+ * `pipeline-resolution.ts` gives for walking named rungs rather than reusing it. The consequence is
+ * deliberate and worth stating: **a binding on a containment `domain` does not resolve** (ADR-0029 D2).
+ *
+ * The walk is TYPE-AGNOSTIC (ADR-0029 D4): it does not care whether a parent is a `service`, an
+ * `assembly`, or something that does not exist yet — only whether it carries a binding of this Type.
+ * A `seen` set makes a mis-declared cycle terminate even inside the cap.
+ */
+async function containsAncestors(
+  tx: TenantTx,
+  orgId: string,
+  targetObjectId: string
+): Promise<{ id: string; typeId: string }[]> {
+  const componentObjectId = await componentOfTarget(tx, orgId, targetObjectId);
+  if (!componentObjectId) return [];
+
+  const ancestors: { id: string; typeId: string }[] = [];
+  const seen = new Set<string>([componentObjectId]);
+  let current = componentObjectId;
+  for (let hop = 0; hop < MAX_ANCESTOR_HOPS; hop += 1) {
+    const parent = await containsParentOf(tx, orgId, current);
+    if (!parent || seen.has(parent.id)) break;
+    ancestors.push(parent);
+    seen.add(parent.id);
+    current = parent.id;
+  }
+  return ancestors;
+}
+
+/**
+ * RUNG 3 (ADR-0027) — the owning service's binding, else `none`.
+ *
+ * In its own function because it is reached from TWO places: a target with no placements at all (a
+ * placement, under stage-shaped compilation) and a component whose placements carry nothing of this
+ * type. Those are separate exits from the walk, and a rung written inline at one of them would
+ * silently not apply at the other — the failure mode being that the case the estate actually runs
+ * is the one left out.
+ */
+async function serviceRung(
+  tx: TenantTx,
+  orgId: string,
+  targetObjectId: string,
+  type: BindingType
+): Promise<BindingResolution> {
+  // NEAREST FIRST (ADR-0029 D1). The first ancestor carrying a binding of this Type wins, so a
+  // component's assembly beats its service, which beats the org — most specific always.
+  const ancestors = await containsAncestors(tx, orgId, targetObjectId);
+  for (const [index, ancestor] of ancestors.entries()) {
+    const binding = await getExecutorBinding(tx, orgId, ancestor.id, type);
+    if (binding) {
+      return {
+        outcome: "via_service",
+        binding,
+        viaPlacementObjectId: null,
+        viaServiceObjectId: ancestor.id,
+        viaObjectTypeId: ancestor.typeId,
+        hops: index + 1
+      };
+    }
+  }
+
+  // THE ORG RUNG (ADR-0029, which ADR-0027 D4 excluded). Reached DIRECTLY rather than by walking,
+  // for the same reason `pipeline-resolution.ts` reaches it directly: the org root is normally found
+  // through the `domain_id` axis, which this ladder deliberately does not walk, so a hop-based walk
+  // would silently never arrive. `hops: 0` marks it as the least specific rung there is.
+  const orgRootId = await getOrgRootObjectId(tx, orgId);
+  const viaOrg = await getExecutorBinding(tx, orgId, orgRootId, type);
+  if (viaOrg) {
+    return {
+      outcome: "via_service",
+      binding: viaOrg,
+      viaPlacementObjectId: null,
+      viaServiceObjectId: orgRootId,
+      // Not "service": the org rung has never been one. This was the label's FIRST wrong case, live
+      // before `assembly` was added, which is why the fix is to read the level rather than to add
+      // one more name to a branch.
+      viaObjectTypeId: "organization",
+      hops: 0
+    };
+  }
+
+  return { outcome: "none", binding: null, viaPlacementObjectId: null };
+}
+
+/**
+ * Resolves the binding driving one pipeline of one wave target, falling back through the target's
+ * placements and then its owning SERVICE when the target itself has none of that type.
+ *
+ * Order is deliberate and MOST-SPECIFIC-WINS (ADR-0027 D1): direct, then placement, then service. A
+ * target that carries its own binding never consults the others, so each rung is a pure extension —
+ * no resolution that succeeds today can change answer, and the only behaviour that moves is
+ * `none` → `via_service`, i.e. a target that was BLOCKED may now resolve.
+ *
+ * `ambiguous` is terminal and does NOT fall through to the service (ADR-0027 D2): two placements
+ * bound for one Type is a refusal, not an absence, and answering it from the service would suppress
+ * exactly the refusal ADR-0026 exists to make.
  */
 export async function resolveBindingForTarget(
   tx: TenantTx,
@@ -109,8 +326,11 @@ export async function resolveBindingForTarget(
   if (direct) return { outcome: "direct", binding: direct, viaPlacementObjectId: null };
 
   const placementIds = await placementsOfComponent(tx, orgId, targetObjectId);
-  if (placementIds.length === 0)
-    return { outcome: "none", binding: null, viaPlacementObjectId: null };
+  // BOTH ways of having no placement binding fall through to rung 3, and they are DIFFERENT paths:
+  // a PLACEMENT target has no placements of its own (`placementsOfComponent` returns nothing for
+  // it), and that is the shape stage-shaped compilation actually produces. Adding the service rung
+  // at only the other exit would have missed the estate's common case entirely.
+  if (placementIds.length === 0) return serviceRung(tx, orgId, targetObjectId, type);
 
   const candidates: { placementObjectId: string; binding: ExecutorBindingRow }[] = [];
   for (const placementObjectId of placementIds) {
@@ -118,8 +338,7 @@ export async function resolveBindingForTarget(
     if (binding) candidates.push({ placementObjectId, binding });
   }
 
-  if (candidates.length === 0)
-    return { outcome: "none", binding: null, viaPlacementObjectId: null };
+  if (candidates.length === 0) return serviceRung(tx, orgId, targetObjectId, type);
   if (candidates.length > 1) {
     return {
       outcome: "ambiguous",
